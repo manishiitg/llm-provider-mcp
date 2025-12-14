@@ -55,6 +55,24 @@ func (o *OpenAIAdapter) GetModelID() string {
 	return o.modelID
 }
 
+// GetModelMetadata implements the llmtypes.Model interface
+func (o *OpenAIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	// If modelID is empty, use the adapter's default modelID
+	if modelID == "" {
+		modelID = o.modelID
+	}
+
+	// Check if this is an OpenRouter model (contains "/" separator)
+	// OpenRouter model IDs are in format: "provider/model-name"
+	if strings.Contains(modelID, "/") {
+		// Fetch metadata from OpenRouter API
+		return GetOpenRouterModelMetadata(modelID)
+	}
+
+	// Get metadata from OpenAI models registry
+	return GetOpenAIModelMetadata(modelID)
+}
+
 // GenerateContent implements the llmtypes.Model interface
 func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options

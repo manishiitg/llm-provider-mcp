@@ -8,6 +8,10 @@ type Model interface {
 	// GetModelID returns the model ID for this LLM instance
 	// Returns empty string if the model ID is not available
 	GetModelID() string
+	// GetModelMetadata returns metadata for the specified model ID (token limits, pricing, etc.)
+	// If modelID is empty, returns metadata for the default model
+	// Returns nil, nil if metadata is not available for the model
+	GetModelMetadata(modelID string) (*ModelMetadata, error)
 }
 
 // ChatMessageType represents the role of a chat message

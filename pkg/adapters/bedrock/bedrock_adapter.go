@@ -39,6 +39,11 @@ func (b *BedrockAdapter) GetModelID() string {
 	return b.modelID
 }
 
+// GetModelMetadata implements the llmtypes.Model interface
+func (b *BedrockAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	return GetBedrockModelMetadata(modelID)
+}
+
 // GenerateContent implements the llmtypes.Model interface
 func (b *BedrockAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options

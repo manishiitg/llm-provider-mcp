@@ -35,6 +35,11 @@ func (a *AnthropicAdapter) GetModelID() string {
 	return a.modelID
 }
 
+// GetModelMetadata implements the llmtypes.Model interface
+func (a *AnthropicAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	return GetAnthropicModelMetadata(modelID)
+}
+
 // GenerateContent implements the llmtypes.Model interface
 func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options

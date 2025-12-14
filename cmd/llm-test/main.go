@@ -67,6 +67,7 @@ func main() {
 	rootCmd.AddCommand(openroutercmd.OpenRouterStructuredOutputTestCmd)
 	rootCmd.AddCommand(openroutercmd.OpenRouterTokenUsageTestCmd)
 	rootCmd.AddCommand(openroutercmd.OpenRouterImageTestCmd)
+	rootCmd.AddCommand(openroutercmd.OpenRouterModelMetadataTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexCmd)
 	rootCmd.AddCommand(vertexcmd.VertexAnthropicCmd)
 	rootCmd.AddCommand(vertexcmd.VertexToolCallTestCmd)

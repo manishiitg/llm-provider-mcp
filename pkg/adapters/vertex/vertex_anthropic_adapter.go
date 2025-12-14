@@ -13,6 +13,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 )
 
 // VertexAnthropicAdapter implements llmtypes.Model for Vertex AI Anthropic models
@@ -40,6 +41,12 @@ func NewVertexAnthropicAdapter(projectID, locationID, modelID string, logger int
 // GetModelID implements the llmtypes.Model interface
 func (v *VertexAnthropicAdapter) GetModelID() string {
 	return v.modelID
+}
+
+// GetModelMetadata implements the llmtypes.Model interface
+// Vertex Anthropic models use the same metadata as direct Anthropic models
+func (v *VertexAnthropicAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	return anthropic.GetAnthropicModelMetadata(modelID)
 }
 
 // GenerateContent implements the llmtypes.Model interface

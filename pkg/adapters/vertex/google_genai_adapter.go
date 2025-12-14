@@ -49,6 +49,11 @@ func (g *GoogleGenAIAdapter) GetModelID() string {
 	return g.modelID
 }
 
+// GetModelMetadata implements the llmtypes.Model interface
+func (g *GoogleGenAIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	return GetVertexGeminiModelMetadata(modelID)
+}
+
 // GenerateContent implements the llmtypes.Model interface
 func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options
