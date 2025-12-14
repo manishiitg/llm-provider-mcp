@@ -68,7 +68,10 @@ func runOpenRouterModelMetadataTest(cmd *cobra.Command, args []string) {
 		fmt.Printf("  Reasoning:     $%.2f\n", metadata.ReasoningCostPer1MTokens)
 	}
 	if metadata.CachedInputCostPer1MTokens > 0 {
-		fmt.Printf("  Cached Input:  $%.2f\n", metadata.CachedInputCostPer1MTokens)
+		fmt.Printf("  Cached Read:   $%.2f\n", metadata.CachedInputCostPer1MTokens)
+	}
+	if metadata.CachedInputCostWritePer1MTokens > 0 {
+		fmt.Printf("  Cached Write:  $%.2f\n", metadata.CachedInputCostWritePer1MTokens)
 	}
 	fmt.Println(repeat("=", 80))
 

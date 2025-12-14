@@ -67,12 +67,16 @@ type OpenRouterTopProvider struct {
 
 // fetchOpenRouterModels fetches the list of models from OpenRouter's API
 func fetchOpenRouterModels() (*OpenRouterModelsResponse, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
 	req, err := http.NewRequestWithContext(context.Background(), "GET", openRouterModelsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OpenRouter models: %w", err)
 	}
@@ -99,6 +103,8 @@ func parsePriceString(priceStr string) float64 {
 
 	price, err := strconv.ParseFloat(priceStr, 64)
 	if err != nil {
+		// Log the error for debugging but don't fail - pricing is informational
+		fmt.Printf("warning: failed to parse price string %q: %v\n", priceStr, err)
 		return 0.0
 	}
 
@@ -108,9 +114,11 @@ func parsePriceString(priceStr string) float64 {
 
 // convertOpenRouterModelToMetadata converts an OpenRouter model to our ModelMetadata format
 func convertOpenRouterModelToMetadata(model OpenRouterModel) *llmtypes.ModelMetadata {
-	// Use top_provider context_length if available, otherwise use model context_length
+	// Use model context_length as primary, fallback to top_provider context_length if model context_length is 0
+	// According to OpenRouter API semantics, model.ContextLength is the standard context window,
+	// while TopProvider.ContextLength is provider-specific and should only be used if model.ContextLength is missing
 	contextWindow := model.ContextLength
-	if model.TopProvider.ContextLength > 0 {
+	if contextWindow == 0 && model.TopProvider.ContextLength > 0 {
 		contextWindow = model.TopProvider.ContextLength
 	}
 
@@ -121,14 +129,15 @@ func convertOpenRouterModelToMetadata(model OpenRouterModel) *llmtypes.ModelMeta
 	}
 
 	return &llmtypes.ModelMetadata{
-		ModelID:                    model.ID,
-		ModelName:                  model.Name,
-		ContextWindow:              contextWindow,
-		InputCostPer1MTokens:       parsePriceString(model.Pricing.Prompt),
-		OutputCostPer1MTokens:      parsePriceString(model.Pricing.Completion),
-		ReasoningCostPer1MTokens:   parsePriceString(model.Pricing.InternalReasoning),
-		CachedInputCostPer1MTokens: parsePriceString(model.Pricing.InputCacheRead),
-		Provider:                   provider,
+		ModelID:                         model.ID,
+		ModelName:                       model.Name,
+		ContextWindow:                   contextWindow,
+		InputCostPer1MTokens:            parsePriceString(model.Pricing.Prompt),
+		OutputCostPer1MTokens:           parsePriceString(model.Pricing.Completion),
+		ReasoningCostPer1MTokens:        parsePriceString(model.Pricing.InternalReasoning),
+		CachedInputCostPer1MTokens:      parsePriceString(model.Pricing.InputCacheRead),
+		CachedInputCostWritePer1MTokens: parsePriceString(model.Pricing.InputCacheWrite),
+		Provider:                        provider,
 	}
 }
 

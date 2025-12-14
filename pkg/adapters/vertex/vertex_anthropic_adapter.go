@@ -46,7 +46,21 @@ func (v *VertexAnthropicAdapter) GetModelID() string {
 // GetModelMetadata implements the llmtypes.Model interface
 // Vertex Anthropic models use the same metadata as direct Anthropic models
 func (v *VertexAnthropicAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	return anthropic.GetAnthropicModelMetadata(modelID)
+	// Guard against empty modelID - use default Anthropic model if not provided
+	if modelID == "" {
+		modelID = anthropic.ModelClaude35Sonnet
+	}
+
+	// Get metadata from Anthropic package
+	metadata, err := anthropic.GetAnthropicModelMetadata(modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Override provider to reflect Vertex as the provider
+	metadata.Provider = "vertex"
+
+	return metadata, nil
 }
 
 // GenerateContent implements the llmtypes.Model interface

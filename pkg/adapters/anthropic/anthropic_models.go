@@ -50,7 +50,9 @@ func normalizeToBaseModel(modelID string) string {
 }
 
 // GetAnthropicModelMetadata returns metadata for Anthropic models including token limits and pricing
-// Pricing includes input, output, and cached input tokens
+// Pricing includes input, output, cached input read tokens, and cached input write tokens
+// Cache read cost: 10% of base input cost
+// Cache write cost: 125% of base input cost (25% more than base)
 // Accepts both base model names (e.g., "claude-3-5-sonnet") and versioned names (e.g., "claude-3-5-sonnet-20241022")
 // Versioned names are normalized to base model names
 func GetAnthropicModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
@@ -62,122 +64,133 @@ func GetAnthropicModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) 
 	models := map[string]*llmtypes.ModelMetadata{
 		// Claude 3 Series
 		ModelClaude3Opus: {
-			ModelID:                    ModelClaude3Opus,
-			ModelName:                  "Claude 3 Opus",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       15.00,
-			OutputCostPer1MTokens:      75.00,
-			ReasoningCostPer1MTokens:   0.0,  // No separate reasoning tokens
-			CachedInputCostPer1MTokens: 0.75, // Cache read pricing (estimated, based on Opus 4.5 ratio)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude3Opus,
+			ModelName:                       "Claude 3 Opus",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            15.00,
+			OutputCostPer1MTokens:           75.00,
+			ReasoningCostPer1MTokens:        0.0,   // No separate reasoning tokens
+			CachedInputCostPer1MTokens:      1.50,  // Cache read pricing (10% of base input: 15.00 * 0.1)
+			CachedInputCostWritePer1MTokens: 18.75, // Cache write pricing (1.25x base input: 15.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaude3Sonnet: {
-			ModelID:                    ModelClaude3Sonnet,
-			ModelName:                  "Claude 3 Sonnet",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      15.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.30, // Cache read pricing (estimated, similar to Sonnet 4.5)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude3Sonnet,
+			ModelName:                       "Claude 3 Sonnet",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (estimated, similar to Sonnet 4.5)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaude3Haiku: {
-			ModelID:                    ModelClaude3Haiku,
-			ModelName:                  "Claude 3 Haiku",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       0.25,
-			OutputCostPer1MTokens:      1.25,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.0125, // Cache read pricing (estimated)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude3Haiku,
+			ModelName:                       "Claude 3 Haiku",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            0.25,
+			OutputCostPer1MTokens:           1.25,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.025,  // Cache read pricing (10% of base input: 0.25 * 0.1)
+			CachedInputCostWritePer1MTokens: 0.3125, // Cache write pricing (1.25x base input: 0.25 * 1.25)
+			Provider:                        "anthropic",
 		},
 
 		// Claude 3.5 Series
 		ModelClaude35Sonnet: {
-			ModelID:                    ModelClaude35Sonnet,
-			ModelName:                  "Claude 3.5 Sonnet",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      15.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.30, // Cache read pricing (for ≤200K tokens)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude35Sonnet,
+			ModelName:                       "Claude 3.5 Sonnet",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (for ≤200K tokens)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaude35Haiku: {
-			ModelID:                    ModelClaude35Haiku,
-			ModelName:                  "Claude 3.5 Haiku",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       0.80,
-			OutputCostPer1MTokens:      4.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.10, // Cache read pricing (estimated, similar to Haiku 4.5)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude35Haiku,
+			ModelName:                       "Claude 3.5 Haiku",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            0.80,
+			OutputCostPer1MTokens:           4.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.08, // Cache read pricing (10% of base input: 0.80 * 0.1)
+			CachedInputCostWritePer1MTokens: 1.00, // Cache write pricing (1.25x base input: 0.80 * 1.25)
+			Provider:                        "anthropic",
 		},
 
 		// Claude 3.7 Series
 		ModelClaude37Sonnet: {
-			ModelID:                    ModelClaude37Sonnet,
-			ModelName:                  "Claude 3.7 Sonnet",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      15.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.30, // Cache read pricing (for ≤200K tokens, similar to Sonnet 4.5)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaude37Sonnet,
+			ModelName:                       "Claude 3.7 Sonnet",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (for ≤200K tokens, similar to Sonnet 4.5)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 
 		// Claude 4 Series
 		ModelClaudeSonnet4: {
-			ModelID:                    ModelClaudeSonnet4,
-			ModelName:                  "Claude Sonnet 4",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      15.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.30, // Cache read pricing (for ≤200K tokens, similar to Sonnet 4.5)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaudeSonnet4,
+			ModelName:                       "Claude Sonnet 4",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (for ≤200K tokens, similar to Sonnet 4.5)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaudeOpus4: {
-			ModelID:                    ModelClaudeOpus4,
-			ModelName:                  "Claude Opus 4",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       5.00,
-			OutputCostPer1MTokens:      25.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.50, // Cache read pricing (similar to Opus 4.5)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaudeOpus4,
+			ModelName:                       "Claude Opus 4",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           25.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.50, // Cache read pricing (similar to Opus 4.5)
+			CachedInputCostWritePer1MTokens: 6.25, // Cache write pricing (1.25x base input: 5.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 
 		// Claude 4.5 Series
 		ModelClaudeSonnet45: {
-			ModelID:                    ModelClaudeSonnet45,
-			ModelName:                  "Claude Sonnet 4.5",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      15.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.30, // Cache read pricing (for ≤200K tokens)
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaudeSonnet45,
+			ModelName:                       "Claude Sonnet 4.5",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (for ≤200K tokens)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaudeHaiku45: {
-			ModelID:                    ModelClaudeHaiku45,
-			ModelName:                  "Claude Haiku 4.5",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       1.00,
-			OutputCostPer1MTokens:      5.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.10, // Cache read pricing
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaudeHaiku45,
+			ModelName:                       "Claude Haiku 4.5",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            1.00,
+			OutputCostPer1MTokens:           5.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.10, // Cache read pricing
+			CachedInputCostWritePer1MTokens: 1.25, // Cache write pricing (1.25x base input: 1.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 		ModelClaudeOpus45: {
-			ModelID:                    ModelClaudeOpus45,
-			ModelName:                  "Claude Opus 4.5",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       5.00,
-			OutputCostPer1MTokens:      25.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.50, // Cache read pricing
-			Provider:                   "anthropic",
+			ModelID:                         ModelClaudeOpus45,
+			ModelName:                       "Claude Opus 4.5",
+			ContextWindow:                   200000, // 200k tokens
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           25.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.50, // Cache read pricing
+			CachedInputCostWritePer1MTokens: 6.25, // Cache write pricing (1.25x base input: 5.00 * 1.25)
+			Provider:                        "anthropic",
 		},
 	}
 

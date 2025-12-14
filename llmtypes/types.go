@@ -10,7 +10,8 @@ type Model interface {
 	GetModelID() string
 	// GetModelMetadata returns metadata for the specified model ID (token limits, pricing, etc.)
 	// If modelID is empty, returns metadata for the default model
-	// Returns nil, nil if metadata is not available for the model
+	// Returns (nil, error) if metadata is not available for the model (e.g., model not found).
+	// The error should be descriptive and indicate why the metadata is unavailable.
 	GetModelMetadata(modelID string) (*ModelMetadata, error)
 }
 

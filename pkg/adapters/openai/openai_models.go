@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -341,20 +342,11 @@ func GetOpenAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 func normalizeToBaseModel(modelID string) string {
 	normalized := strings.ToLower(strings.TrimSpace(modelID))
 
-	// Remove version date patterns (YYYY-MM-DD)
+	// Remove version date patterns (YYYY-MM-DD) using regex to match trailing date suffix
 	// e.g., "gpt-4o-2024-08-06" -> "gpt-4o"
-	parts := strings.Split(normalized, "-")
-	if len(parts) >= 3 {
-		// Check if last part looks like a date (YYYY-MM-DD format)
-		lastPart := parts[len(parts)-1]
-		if len(lastPart) == 10 {
-			// Check if it's a date pattern (4 digits, dash, 2 digits, dash, 2 digits)
-			if strings.Count(lastPart, "-") == 2 {
-				// Remove date suffix
-				normalized = strings.Join(parts[:len(parts)-1], "-")
-			}
-		}
-	}
+	// The regex matches "-YYYY-MM-DD" at the end of the string
+	datePattern := regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
+	normalized = datePattern.ReplaceAllString(normalized, "")
 
 	// Remove common suffixes like "-preview"
 	normalized = strings.TrimSuffix(normalized, "-preview")

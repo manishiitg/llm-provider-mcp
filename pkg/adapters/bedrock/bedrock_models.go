@@ -47,6 +47,8 @@ func GetBedrockModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 
 	// Update provider to "bedrock" to indicate this is accessed via Bedrock
 	metadata.Provider = "bedrock"
+	// Preserve the original Bedrock model ID
+	metadata.ModelID = modelID
 
 	return metadata, nil
 }

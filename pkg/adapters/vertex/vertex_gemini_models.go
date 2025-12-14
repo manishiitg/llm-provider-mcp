@@ -27,7 +27,7 @@ const (
 )
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
-// Gemini models may have version suffixes like "-preview", "-exp", or date suffixes
+// Strips numeric version suffixes (-\d{3}) and -exp suffix
 // Examples:
 //   - "gemini-3-pro-preview" -> "gemini-3-pro-preview" (keep preview as it's part of base name)
 //   - "gemini-1.5-pro-001" -> "gemini-1.5-pro"
@@ -131,6 +131,10 @@ func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, erro
 	if !exists {
 		return nil, fmt.Errorf("unknown Gemini model: %s (normalized from: %s)", baseModelID, modelID)
 	}
+
+	// Preserve the original modelID (which may include version suffixes) for consistency
+	// with OpenAI/Anthropic adapters
+	metadata.ModelID = modelID
 
 	return &metadata, nil
 }

@@ -23,10 +23,15 @@ type ModelMetadata struct {
 	// Set to 0 if the model doesn't support reasoning tokens
 	ReasoningCostPer1MTokens float64
 
-	// CachedInputCostPer1MTokens is the cost per 1 million cached input tokens (in USD)
+	// CachedInputCostPer1MTokens is the cost per 1 million cached input tokens read from cache (in USD)
 	// Cached tokens typically have a 50-90% discount compared to regular input tokens
 	// Set to 0 if the model doesn't support prompt caching
 	CachedInputCostPer1MTokens float64
+
+	// CachedInputCostWritePer1MTokens is the cost per 1 million cached input tokens written to cache (in USD)
+	// Cache write costs are typically higher than regular input tokens (e.g., Anthropic charges 25% more)
+	// Set to 0 if the model doesn't support cache write tracking or if cache writes are charged at regular input rate
+	CachedInputCostWritePer1MTokens float64
 
 	// Provider is the name of the provider (e.g., "openai", "anthropic", "bedrock")
 	Provider string
