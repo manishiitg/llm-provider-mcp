@@ -571,23 +571,30 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 		}
 	}
 
-	// Handle thinking level for Gemini 3 Pro
+	// Handle thinking level for Gemini 3 Pro (gemini-3-pro-preview)
 	if opts.ThinkingLevel != "" {
-		if g.logger != nil {
-			g.logger.Debugf("Setting thinking_level to: %s", opts.ThinkingLevel)
-		}
-		// Check if model is Gemini 3 Pro
-		if strings.Contains(modelID, "gemini-3") {
-			if g.logger != nil {
-				g.logger.Infof("🔍 [GEMINI] Setting thinking level to %s for model %s", opts.ThinkingLevel, modelID)
-			}
-			// Set thinking level via ThinkingConfig
-			thinkingLevel := genai.ThinkingLevel(opts.ThinkingLevel)
-			config.ThinkingConfig = &genai.ThinkingConfig{
-				ThinkingLevel: thinkingLevel,
+		// Normalize model ID so we can match preview/base model IDs reliably
+		baseModelID := normalizeToBaseModel(modelID)
+
+		// thinking_level is currently only supported on Gemini 3 Pro Preview.
+		if baseModelID == ModelGemini3ProPreview {
+			// Validate allowed values: "low" or "high"
+			switch opts.ThinkingLevel {
+			case "low", "high":
+				if g.logger != nil {
+					g.logger.Infof("🔍 [GEMINI] Setting thinking_level=%s for model %s", opts.ThinkingLevel, modelID)
+				}
+				config.ThinkingConfig = &genai.ThinkingConfig{
+					ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel),
+				}
+			default:
+				if g.logger != nil {
+					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"low\" or \"high\". Ignoring.", opts.ThinkingLevel, modelID)
+				}
 			}
 		} else if g.logger != nil {
-			g.logger.Debugf("⚠️  [GEMINI] Thinking level specified but model %s is not Gemini 3 Pro, ignoring", modelID)
+			// User set ThinkingLevel, but this model doesn't support it; log and ignore.
+			g.logger.Debugf("⚠️ [GEMINI] thinking_level specified (%s) but model %s does not support it, ignoring", opts.ThinkingLevel, modelID)
 		}
 	}
 

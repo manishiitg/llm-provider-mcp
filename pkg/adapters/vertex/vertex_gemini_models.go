@@ -23,13 +23,15 @@ const (
 	ModelGemini25FlashLite = "gemini-2.5-flash-lite"
 
 	// Gemini 3 Series
-	ModelGemini3ProPreview = "gemini-3-pro-preview"
+	ModelGemini3ProPreview   = "gemini-3-pro-preview"
+	ModelGemini3FlashPreview = "gemini-3-flash-preview"
 )
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
 // Strips numeric version suffixes (-\d{3}) and -exp suffix
 // Examples:
 //   - "gemini-3-pro-preview" -> "gemini-3-pro-preview" (keep preview as it's part of base name)
+//   - "gemini-3-flash-preview" -> "gemini-3-flash-preview" (keep preview as it's part of base name)
 //   - "gemini-1.5-pro-001" -> "gemini-1.5-pro"
 //   - "gemini-2.5-flash-exp" -> "gemini-2.5-flash"
 func normalizeToBaseModel(modelID string) string {
@@ -89,8 +91,15 @@ func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, erro
 			InputCostPer1MTokens:       1.25,
 			OutputCostPer1MTokens:      10.00,
 			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.125, // Cache read pricing (estimated, 90% discount)
+			CachedInputCostPer1MTokens: 0.3125, // Cache read pricing (for prompts ≤200k tokens)
 			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   false,
+			ThinkingLevels:          nil,
+			SupportsReasoningEffort: false,
+			SupportsThinkingBudget:  true,
 		},
 		// Gemini 2.5 Flash - 1M context window
 		ModelGemini25Flash: {
@@ -102,6 +111,12 @@ func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, erro
 			ReasoningCostPer1MTokens:   0.0,
 			CachedInputCostPer1MTokens: 0.03, // Cache read pricing (estimated, 90% discount)
 			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   false,
+			ThinkingLevels:          nil,
+			SupportsReasoningEffort: false,
 		},
 		// Gemini 2.5 Flash-Lite - 1M context window
 		ModelGemini25FlashLite: {
@@ -113,17 +128,46 @@ func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, erro
 			ReasoningCostPer1MTokens:   0.0,
 			CachedInputCostPer1MTokens: 0.01, // Cache read pricing (estimated, 90% discount)
 			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   false,
+			ThinkingLevels:          nil,
+			SupportsReasoningEffort: false,
 		},
-		// Gemini 3 Pro Preview - 1M context window (estimated, may vary)
+		// Gemini 3 Pro Preview - 1M context window
 		ModelGemini3ProPreview: {
 			ModelID:                    ModelGemini3ProPreview,
 			ModelName:                  "Gemini 3 Pro Preview",
-			ContextWindow:              1000000, // 1M tokens (estimated)
-			InputCostPer1MTokens:       1.25,    // Estimated, similar to Gemini 2.5 Pro
-			OutputCostPer1MTokens:      10.00,   // Estimated, similar to Gemini 2.5 Pro
+			ContextWindow:              1000000, // 1M tokens
+			InputCostPer1MTokens:       2.00,    // For prompts ≤200k tokens
+			OutputCostPer1MTokens:      12.00,   // For prompts ≤200k tokens
 			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.125, // Cache read pricing (estimated, 90% discount)
+			CachedInputCostPer1MTokens: 0.20, // Cache read pricing (for prompts ≤200k tokens)
 			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   true,
+			ThinkingLevels:          []string{"low", "high"},
+			SupportsReasoningEffort: false,
+		},
+		// Gemini 3 Flash Preview - 1M context window
+		ModelGemini3FlashPreview: {
+			ModelID:                    ModelGemini3FlashPreview,
+			ModelName:                  "Gemini 3 Flash Preview",
+			ContextWindow:              1000000, // 1M tokens
+			InputCostPer1MTokens:       0.50,    // Pricing from https://blog.google/products/gemini/gemini-3-flash/
+			OutputCostPer1MTokens:      3.00,    // Pricing from https://blog.google/products/gemini/gemini-3-flash/
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.05, // Cache read pricing (estimated, 90% discount)
+			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   false, // Not documented for Flash; reserved for Pro
+			ThinkingLevels:          nil,
+			SupportsReasoningEffort: false,
 		},
 	}
 

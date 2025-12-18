@@ -3266,6 +3266,75 @@ func logTokenUsage(info *llmtypes.GenerationInfo) {
 			log.Printf("   Cache creation tokens: %v", cacheCreate)
 		}
 	}
+
+	log.Printf("✅ Plain text test passed")
+}
+
+// RunGeminiThinkingLevelTestWithContext tests Gemini thinking_level behavior (e.g., low/high) for supported models.
+// It sends a mildly reasoning-heavy prompt and applies the requested thinking level via CallOptions.
+func RunGeminiThinkingLevelTestWithContext(ctx context.Context, llm llmtypes.Model, modelID string, thinkingLevel string) {
+	log.Printf("🧪 Testing Gemini thinking_level=%s with model: %s", thinkingLevel, modelID)
+
+	messages := []llmtypes.MessageContent{
+		llmtypes.TextParts(
+			llmtypes.ChatMessageTypeHuman,
+			"You're an expert reasoning assistant. Solve this step-by-step:",
+			"Anna has 3 red apples and 5 green apples. She gives 2 red apples to Bob and buys 4 more green apples.",
+			"How many red apples and how many green apples does Anna have now? Explain your reasoning briefly.",
+		),
+	}
+
+	startTime := time.Now()
+	resp, err := llm.GenerateContent(
+		ctx,
+		messages,
+		llmtypes.WithModel(modelID),
+		llmtypes.WithThinkingLevel(thinkingLevel),
+	)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		log.Printf("❌ Gemini thinking_level test failed for %s (level=%s): %v", modelID, thinkingLevel, err)
+		return
+	}
+
+	if resp == nil || len(resp.Choices) == 0 {
+		log.Printf("❌ Gemini thinking_level test failed - no choices returned for %s", modelID)
+		return
+	}
+
+	choice := resp.Choices[0]
+	if choice.Content == "" && len(choice.ToolCalls) == 0 {
+		log.Printf("❌ Gemini thinking_level test failed - empty content and no tool calls for %s", modelID)
+		return
+	}
+
+	log.Printf("✅ Gemini thinking_level test passed for %s (level=%s) in %v", modelID, thinkingLevel, duration)
+
+	// Log a short preview of the response content
+	preview := choice.Content
+	if len(preview) > 400 {
+		preview = preview[:400] + "..."
+	}
+	log.Printf("📝 Response preview: %s", preview)
+
+	// If GenerationInfo is present, log thought/usage-related fields
+	if choice.GenerationInfo != nil {
+		info := choice.GenerationInfo
+		log.Printf("📊 GenerationInfo:")
+		if info.InputTokens != nil {
+			log.Printf("   Input tokens: %v", *info.InputTokens)
+		}
+		if info.OutputTokens != nil {
+			log.Printf("   Output tokens: %v", *info.OutputTokens)
+		}
+		if info.TotalTokens != nil {
+			log.Printf("   Total tokens: %v", *info.TotalTokens)
+		}
+		if info.ThoughtsTokens != nil {
+			log.Printf("   Thoughts tokens: %v", *info.ThoughtsTokens)
+		}
+	}
 }
 
 // validateConversationTypeAssertions validates that all ContentPart types in a conversation
