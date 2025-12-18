@@ -1,7 +1,7 @@
 package llmtypes
 
 // ModelMetadata contains comprehensive metadata about an LLM model including
-// token limits and pricing for all token types (input, output, reasoning, cache)
+// token limits, pricing, and high-level capabilities (reasoning, thinking level, tools, etc.)
 type ModelMetadata struct {
 	// ModelID is the unique identifier for the model (e.g., "gpt-4o", "claude-3-5-sonnet-20241022")
 	ModelID string
@@ -33,8 +33,31 @@ type ModelMetadata struct {
 	// Set to 0 if the model doesn't support cache write tracking or if cache writes are charged at regular input rate
 	CachedInputCostWritePer1MTokens float64
 
-	// Provider is the name of the provider (e.g., "openai", "anthropic", "bedrock")
+	// Provider is the name of the provider (e.g., "openai", "anthropic", "bedrock", "vertex")
 	Provider string
+
+	// ===== Capabilities (optional; zero values mean "unknown/unsupported" unless documented) =====
+
+	// SupportsToolCalls indicates whether the model can call tools/functions
+	SupportsToolCalls bool
+
+	// SupportsJSONMode indicates whether the model can enforce JSON responses (JSON mode / response_format)
+	SupportsJSONMode bool
+
+	// SupportsThinkingLevel indicates whether the model supports a thinking-level knob (e.g., Gemini 3 Pro)
+	// When true, ThinkingLevels lists the allowed string values (e.g., ["low","high"])
+	SupportsThinkingLevel bool
+	ThinkingLevels        []string
+
+	// SupportsReasoningEffort indicates whether the model supports a reasoning-effort knob (e.g., gpt-5.1)
+	// When true, ReasoningEffortLevels lists the allowed string values (e.g., ["minimal","low","medium","high"])
+	SupportsReasoningEffort bool
+	ReasoningEffortLevels   []string
+
+	// SupportsThinkingBudget indicates whether the model supports a numeric thinking budget
+	// (e.g., Gemini 2.5 Pro's thinkingBudget, which controls reasoning token budget).
+	// Specific ranges/units are provider-specific and documented externally.
+	SupportsThinkingBudget bool
 }
 
 // ModelMetadataProvider is an optional interface that models can implement
