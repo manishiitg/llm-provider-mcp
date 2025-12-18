@@ -2,6 +2,7 @@ package utils
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/pkoukk/tiktoken-go"
@@ -9,14 +10,12 @@ import (
 
 // TokenCounter provides provider/model-aware token counting using tiktoken
 type TokenCounter struct {
-	encodingCache map[string]*tiktoken.Tiktoken
+	encodingCache sync.Map
 }
 
 // NewTokenCounter creates a new token counter instance
 func NewTokenCounter() *TokenCounter {
-	return &TokenCounter{
-		encodingCache: make(map[string]*tiktoken.Tiktoken),
-	}
+	return &TokenCounter{}
 }
 
 // CountTokens counts tokens for the given content using provider/model-specific encoding
@@ -47,10 +46,48 @@ func (tc *TokenCounter) getEncodingForModel(provider, modelID string) string {
 
 	switch provider {
 	case "openai", "openrouter":
-		// OpenAI and OpenRouter models use cl100k_base encoding
-		// This is the official encoding for GPT-3.5, GPT-4, GPT-4o, o1, o3, and all OpenAI models
-		// Reference: tiktoken-python encoding_for_model() function
-		return "cl100k_base"
+		// OpenAI (and OpenRouter when proxying OpenAI) models use different encodings
+		// depending on the model family.
+		//
+		// Current split, based on OpenAI/tokenizer libs and tiktoken:
+		//   - GPT-3.5, GPT-4, GPT-4-turbo  -> cl100k_base
+		//   - GPT-4o, GPT-4.1(+ variants), o1/o3, GPT-5.x -> o200k_base
+		//
+		// NOTE: We intentionally branch on model ID patterns here instead of using a
+		// single encoding for all OpenAI models, because newer families switched
+		// to o200k_base while older ones remain on cl100k_base.
+
+		// Normalize once more in case the caller passed mixed-case IDs
+		m := modelID
+
+		// Older GPT-3.5 / GPT-4 families → cl100k_base
+		if strings.Contains(m, "gpt-3.5") {
+			return "cl100k_base"
+		}
+		// GPT-4* but NOT 4o / 4.1 → cl100k_base (e.g. gpt-4, gpt-4-32k, gpt-4-turbo)
+		if strings.HasPrefix(m, "gpt-4") &&
+			!strings.HasPrefix(m, "gpt-4o") &&
+			!strings.HasPrefix(m, "gpt-4.1") {
+			return "cl100k_base"
+		}
+
+		// Modern OpenAI families → o200k_base
+		// - gpt-4o and variants (including dated versions)
+		// - gpt-4.1 and variants (mini, nano, etc.)
+		// - gpt-5.x (including mini/nano/pro/etc.)
+		// - o1, o3, o4 families
+		if strings.HasPrefix(m, "gpt-4o") ||
+			strings.HasPrefix(m, "gpt-4.1") ||
+			strings.HasPrefix(m, "gpt-5") ||
+			strings.HasPrefix(m, "o1") ||
+			strings.HasPrefix(m, "o3") ||
+			strings.HasPrefix(m, "o4") {
+			return "o200k_base"
+		}
+
+		// Fallback for any other OpenAI/OpenRouter models:
+		// default to the newer o200k_base encoding.
+		return "o200k_base"
 
 	case "anthropic":
 		// IMPORTANT: Anthropic Claude models use their own proprietary tokenizer
@@ -106,9 +143,11 @@ func (tc *TokenCounter) getEncodingForModel(provider, modelID string) string {
 // Uses caching to avoid re-initializing encodings
 func (tc *TokenCounter) countTokensWithEncoding(content string, encodingName string) (int, error) {
 	// Check cache first
-	if enc, exists := tc.encodingCache[encodingName]; exists {
-		tokens := enc.Encode(content, nil, nil)
-		return len(tokens), nil
+	if val, exists := tc.encodingCache.Load(encodingName); exists {
+		if enc, ok := val.(*tiktoken.Tiktoken); ok {
+			tokens := enc.Encode(content, nil, nil)
+			return len(tokens), nil
+		}
 	}
 
 	// Get encoding from tiktoken
@@ -120,7 +159,7 @@ func (tc *TokenCounter) countTokensWithEncoding(content string, encodingName str
 	}
 
 	// Cache the encoding for future use
-	tc.encodingCache[encodingName] = encoding
+	tc.encodingCache.Store(encodingName, encoding)
 
 	// Count tokens
 	tokens := encoding.Encode(content, nil, nil)

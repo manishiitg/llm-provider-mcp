@@ -30,11 +30,9 @@ const (
 	ModelGPT51         = "gpt-5.1"
 	ModelGPT51Mini     = "gpt-5.1-mini"
 	ModelGPT51Nano     = "gpt-5.1-nano"
-	// GPT-5.2 family: base, mini, nano, and Pro
-	ModelGPT52     = "gpt-5.2"
-	ModelGPT52Mini = "gpt-5.2-mini"
-	ModelGPT52Nano = "gpt-5.2-nano"
-	ModelGPT52Pro  = "gpt-5.2-pro"
+	// GPT-5.2 family: base and Pro (plus specialized Instant/Thinking variants)
+	ModelGPT52    = "gpt-5.2"
+	ModelGPT52Pro = "gpt-5.2-pro"
 	// GPT-5.2 specialized variants
 	ModelGPT52Instant  = "gpt-5.2-instant"
 	ModelGPT52Thinking = "gpt-5.2-thinking"
@@ -268,26 +266,6 @@ func GetOpenAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 			SupportsToolCalls:     true,
 			SupportsJSONMode:      true,
 			SupportsThinkingLevel: false,
-		},
-		ModelGPT52Mini: {
-			ModelID:                    ModelGPT52Mini,
-			ModelName:                  "GPT-5.2 Mini",
-			ContextWindow:              400000, // 400k tokens (input context)
-			InputCostPer1MTokens:       0.35,
-			OutputCostPer1MTokens:      2.80,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.035, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT52Nano: {
-			ModelID:                    ModelGPT52Nano,
-			ModelName:                  "GPT-5.2 Nano",
-			ContextWindow:              400000, // 400k tokens (input context)
-			InputCostPer1MTokens:       0.0875,
-			OutputCostPer1MTokens:      0.70,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.00875, // 90% discount
-			Provider:                   "openai",
 		},
 		// GPT-5.2 Pro - higher pricing, reasoning-focused
 		ModelGPT52Pro: {

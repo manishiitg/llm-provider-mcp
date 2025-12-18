@@ -293,27 +293,10 @@ func RunPlainTextTestWithContext(ctx context.Context, llm llmtypes.Model, modelI
 
 	// Display token usage if available
 	if choice.GenerationInfo != nil {
-		info := choice.GenerationInfo
-		log.Printf("📊 Token Usage:")
-		if info.InputTokens != nil {
-			log.Printf("   Input tokens: %v", *info.InputTokens)
-		}
-		if info.OutputTokens != nil {
-			log.Printf("   Output tokens: %v", *info.OutputTokens)
-		}
-		if info.TotalTokens != nil {
-			log.Printf("   Total tokens: %v", *info.TotalTokens)
-		}
-		// Check for cache tokens in Additional map
-		if info.Additional != nil {
-			if cacheRead, ok := info.Additional["cache_read_input_tokens"]; ok {
-				log.Printf("   Cache read tokens: %v", cacheRead)
-			}
-			if cacheCreate, ok := info.Additional["cache_creation_input_tokens"]; ok {
-				log.Printf("   Cache creation tokens: %v", cacheCreate)
-			}
-		}
+		logTokenUsage(choice.GenerationInfo)
 	}
+
+	log.Printf("✅ Plain text test passed")
 
 	if len(choice.Content) > 0 {
 		log.Printf("✅ Success! Response received in %s", duration)
@@ -3266,8 +3249,6 @@ func logTokenUsage(info *llmtypes.GenerationInfo) {
 			log.Printf("   Cache creation tokens: %v", cacheCreate)
 		}
 	}
-
-	log.Printf("✅ Plain text test passed")
 }
 
 // RunGeminiThinkingLevelTestWithContext tests Gemini thinking_level behavior (e.g., low/high) for supported models.
