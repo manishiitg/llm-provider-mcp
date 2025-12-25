@@ -90,6 +90,9 @@ func (v *VertexAnthropicAdapter) GenerateContent(ctx context.Context, messages [
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
 
+	// Generate unique request ID for tracking request/response correlation
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
 	// Build request payload
 	requestPayload := map[string]interface{}{
 		"anthropic_version": "vertex-2023-10-16",
@@ -103,6 +106,11 @@ func (v *VertexAnthropicAdapter) GenerateContent(ctx context.Context, messages [
 	if len(opts.Tools) > 0 {
 		tools := v.convertToolsToAnthropic(opts.Tools)
 		requestPayload["tools"] = tools
+	}
+
+	// Log raw input details for all requests (not just errors)
+	if v.logger != nil {
+		v.logRawInput(requestID, v.modelID, requestPayload)
 	}
 
 	// Build endpoint URL
@@ -130,11 +138,11 @@ func (v *VertexAnthropicAdapter) GenerateContent(ctx context.Context, messages [
 	}
 
 	// Vertex AI requires streaming for Anthropic models, but we accumulate all chunks
-	return v.generateContent(ctx, endpoint, accessToken, requestPayload, opts)
+	return v.generateContent(ctx, endpoint, accessToken, requestPayload, opts, requestID)
 }
 
 // generateContent handles responses (Vertex AI requires streaming for Anthropic models, but we accumulate all chunks)
-func (v *VertexAnthropicAdapter) generateContent(ctx context.Context, endpoint, accessToken string, payload map[string]interface{}, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (v *VertexAnthropicAdapter) generateContent(ctx context.Context, endpoint, accessToken string, payload map[string]interface{}, opts *llmtypes.CallOptions, requestID string) (*llmtypes.ContentResponse, error) {
 	// Ensure channel is closed when done (if streaming is enabled)
 	defer func() {
 		if opts.StreamChan != nil {
@@ -170,6 +178,7 @@ func (v *VertexAnthropicAdapter) generateContent(ctx context.Context, endpoint, 
 		body, _ := io.ReadAll(resp.Body)
 		if v.logger != nil {
 			v.logger.Infof("🔍 [VERTEX ANTHROPIC] Error response (status %d): %s", resp.StatusCode, string(body))
+			v.logRawResponse(requestID, v.modelID, nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body)))
 		}
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -487,6 +496,9 @@ func (v *VertexAnthropicAdapter) generateContent(ctx context.Context, endpoint, 
 	}
 
 	if err := scanner.Err(); err != nil {
+		if v.logger != nil {
+			v.logRawResponse(requestID, v.modelID, nil, err)
+		}
 		return nil, fmt.Errorf("streaming error: %w", err)
 	}
 
@@ -502,6 +514,28 @@ func (v *VertexAnthropicAdapter) generateContent(ctx context.Context, endpoint, 
 	var usage *llmtypes.Usage
 	if choice.GenerationInfo != nil {
 		usage = llmtypes.ExtractUsageFromGenerationInfo(choice.GenerationInfo)
+	}
+
+	// Build response summary for logging
+	responseSummary := map[string]interface{}{
+		"content":    fullContent.String(),
+		"tool_calls": make([]map[string]interface{}, 0, len(toolCalls)),
+		"usage":      usage,
+	}
+
+	// Add tool calls details
+	for _, tc := range toolCalls {
+		tcDetail := map[string]interface{}{
+			"id":   tc.ID,
+			"name": tc.FunctionCall.Name,
+			"args": tc.FunctionCall.Arguments,
+		}
+		responseSummary["tool_calls"] = append(responseSummary["tool_calls"].([]map[string]interface{}), tcDetail)
+	}
+
+	// Log raw response for successful requests
+	if v.logger != nil {
+		v.logRawResponse(requestID, v.modelID, responseSummary, nil)
 	}
 
 	// Return accumulated response
@@ -1236,4 +1270,57 @@ func (v *VertexAnthropicAdapter) fetchImageFromURL(ctx context.Context, url stri
 	}
 
 	return imageBytes, strings.TrimSpace(mimeType), nil
+}
+
+// logRawInput logs the complete raw request payload that will be sent to the Vertex Anthropic API
+func (v *VertexAnthropicAdapter) logRawInput(requestID, modelID string, payload map[string]interface{}) {
+	if v.logger == nil {
+		return
+	}
+
+	rawInput := map[string]interface{}{
+		"request_id": requestID,
+		"model_id":   modelID,
+		"payload":    payload,
+	}
+
+	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
+	v.logger.Infof("🔍 [REQUEST_ID: %s] RAW VERTEX ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
+}
+
+// logRawResponse logs the complete raw response from the Vertex Anthropic API
+func (v *VertexAnthropicAdapter) logRawResponse(requestID, modelID string, responseSummary map[string]interface{}, err error) {
+	if v.logger == nil {
+		return
+	}
+
+	if err != nil {
+		errorInfo := map[string]interface{}{
+			"request_id": requestID,
+			"model_id":   modelID,
+			"error":      err.Error(),
+			"error_type": fmt.Sprintf("%T", err),
+		}
+		errorJSON, _ := json.MarshalIndent(errorInfo, "", "  ")
+		v.logger.Errorf("❌ [REQUEST_ID: %s] RAW VERTEX ANTHROPIC API ERROR (FULL JSON):\n%s", requestID, string(errorJSON))
+		return
+	}
+
+	if responseSummary == nil {
+		return
+	}
+
+	// Build complete response structure
+	responseInfo := map[string]interface{}{
+		"request_id": requestID,
+		"model_id":   modelID,
+	}
+
+	// Copy all fields from responseSummary
+	for k, v := range responseSummary {
+		responseInfo[k] = v
+	}
+
+	responseJSON, _ := json.MarshalIndent(responseInfo, "", "  ")
+	v.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
 }

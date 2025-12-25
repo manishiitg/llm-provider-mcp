@@ -472,51 +472,6 @@ func IsO3O4Model(modelID string) bool {
 		strings.HasPrefix(modelID, "o4")
 }
 
-// extractTokenUsageFromGenerationInfo extracts token usage from GenerationInfo
-func extractTokenUsageFromGenerationInfo(generationInfo *llmtypes.GenerationInfo) TokenUsage {
-	usage := TokenUsage{Unit: "TOKENS"}
-
-	if generationInfo == nil {
-		return usage
-	}
-
-	// Extract input tokens (check multiple naming conventions in priority order)
-	if generationInfo.InputTokens != nil {
-		usage.InputTokens = *generationInfo.InputTokens
-	} else if generationInfo.InputTokensCap != nil {
-		usage.InputTokens = *generationInfo.InputTokensCap
-	} else if generationInfo.PromptTokens != nil {
-		usage.InputTokens = *generationInfo.PromptTokens
-	} else if generationInfo.PromptTokensCap != nil {
-		usage.InputTokens = *generationInfo.PromptTokensCap
-	}
-
-	// Extract output tokens (check multiple naming conventions in priority order)
-	if generationInfo.OutputTokens != nil {
-		usage.OutputTokens = *generationInfo.OutputTokens
-	} else if generationInfo.OutputTokensCap != nil {
-		usage.OutputTokens = *generationInfo.OutputTokensCap
-	} else if generationInfo.CompletionTokens != nil {
-		usage.OutputTokens = *generationInfo.CompletionTokens
-	} else if generationInfo.CompletionTokensCap != nil {
-		usage.OutputTokens = *generationInfo.CompletionTokensCap
-	}
-
-	// Extract total tokens (check multiple naming conventions in priority order)
-	if generationInfo.TotalTokens != nil {
-		usage.TotalTokens = *generationInfo.TotalTokens
-	} else if generationInfo.TotalTokensCap != nil {
-		usage.TotalTokens = *generationInfo.TotalTokensCap
-	}
-
-	// Calculate total tokens if not provided by the provider
-	if usage.TotalTokens == 0 && usage.InputTokens > 0 && usage.OutputTokens > 0 {
-		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	}
-
-	return usage
-}
-
 // Helper functions for event emission
 func emitLLMInitializationStart(emitter interfaces.EventEmitter, provider string, modelID string, temperature float64, traceID interfaces.TraceID, metadata LLMMetadata) {
 	if emitter != nil {
@@ -1504,19 +1459,36 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
-	// Extract token usage from GenerationInfo if available
-	if len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
-		// Extract token usage and create success event with comprehensive data
-		usage := extractTokenUsageFromGenerationInfo(resp.Choices[0].GenerationInfo)
+	// Extract token usage using unified Usage struct (comprehensive extraction)
+	var usage *llmtypes.Usage
+	if resp.Usage != nil {
+		// Use unified Usage field (already populated by adapters with all token types)
+		usage = resp.Usage
+	} else if len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
+		// Fallback: Extract from GenerationInfo using comprehensive extraction
+		usage = llmtypes.ExtractUsageFromGenerationInfo(resp.Choices[0].GenerationInfo)
+	}
 
+	if usage != nil {
 		// Calculate total tokens if not provided by the provider
 		if usage.TotalTokens == 0 && usage.InputTokens > 0 && usage.OutputTokens > 0 {
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 
-		p.logger.Infof("Token usage extracted: Input=%d, Output=%d, Total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+		// Build comprehensive log message with all token types
+		logMsg := fmt.Sprintf("Token usage extracted: Input=%d, Output=%d, Total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+		if usage.CacheTokens != nil && *usage.CacheTokens > 0 {
+			logMsg += fmt.Sprintf(", Cached=%d", *usage.CacheTokens)
+		}
+		if usage.ThoughtsTokens != nil && *usage.ThoughtsTokens > 0 {
+			logMsg += fmt.Sprintf(", Thoughts=%d", *usage.ThoughtsTokens)
+		}
+		if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+			logMsg += fmt.Sprintf(", Reasoning=%d", *usage.ReasoningTokens)
+		}
+		p.logger.Infof(logMsg)
 
-		// Emit LLM generation success event with token usage
+		// Emit LLM generation success event with comprehensive token usage
 		successMetadata := LLMMetadata{
 			User: "llm_generation_user",
 			CustomFields: map[string]string{
@@ -1530,13 +1502,25 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 				"input_tokens":    fmt.Sprintf("%d", usage.InputTokens),
 				"output_tokens":   fmt.Sprintf("%d", usage.OutputTokens),
 				"total_tokens":    fmt.Sprintf("%d", usage.TotalTokens),
-				"note":            "Token usage extracted from GenerationInfo",
 			},
 		}
+
+		// Add optional token types to metadata if present
+		if usage.CacheTokens != nil && *usage.CacheTokens > 0 {
+			successMetadata.CustomFields["cache_tokens"] = fmt.Sprintf("%d", *usage.CacheTokens)
+		}
+		if usage.ThoughtsTokens != nil && *usage.ThoughtsTokens > 0 {
+			successMetadata.CustomFields["thoughts_tokens"] = fmt.Sprintf("%d", *usage.ThoughtsTokens)
+		}
+		if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+			successMetadata.CustomFields["reasoning_tokens"] = fmt.Sprintf("%d", *usage.ReasoningTokens)
+		}
+
+		successMetadata.CustomFields["note"] = "Token usage extracted from unified Usage struct"
 		emitLLMGenerationSuccess(p.eventEmitter, string(p.provider), p.modelID, OperationLLMGeneration, len(messages), getTemperatureFromOptions(options), extractMessageContentAsString(messages), len(resp.Choices[0].Content), len(resp.Choices), p.traceID, successMetadata)
 	} else {
 		// No token usage available, emit success event without usage
-		p.logger.Infof("No GenerationInfo available")
+		p.logger.Infof("No token usage available (neither resp.Usage nor GenerationInfo)")
 
 		// Emit LLM generation success event without token usage
 		successMetadata := LLMMetadata{

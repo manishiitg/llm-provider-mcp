@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -461,18 +463,10 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 			for i, part := range msg.Parts {
 				switch p := part.(type) {
 				case llmtypes.TextContent:
-					preview := p.Text
-					if len(preview) > 50 {
-						preview = preview[:50] + "..."
-					}
-					g.logger.Infof("🔍 [GEMINI]   Part %d: TextContent: %s", i+1, preview)
+					g.logger.Infof("🔍 [GEMINI]   Part %d: TextContent (full): %s", i+1, p.Text)
 				case llmtypes.ToolCallResponse:
-					contentPreview := p.Content
-					if len(contentPreview) > 50 {
-						contentPreview = contentPreview[:50] + "..."
-					}
-					g.logger.Infof("🔍 [GEMINI]   Part %d: ToolCallResponse: ToolCallID=%s, Name=%s, Content: %s",
-						i+1, p.ToolCallID, p.Name, contentPreview)
+					g.logger.Infof("🔍 [GEMINI]   Part %d: ToolCallResponse: ToolCallID=%s, Name=%s, Content (full): %s",
+						i+1, p.ToolCallID, p.Name, p.Content)
 				case llmtypes.ToolCall:
 					if p.FunctionCall != nil {
 						g.logger.Infof("🔍 [GEMINI]   Part %d: ToolCall: ID=%s, Name=%s, Arguments length=%d",
@@ -548,9 +542,22 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 	}
 
 	// Set max output tokens
-	if opts.MaxTokens > 0 {
+	maxTokens := opts.MaxTokens
+
+	// Gemini 3 Pro Preview requires max_output_tokens to be set (cannot be 0 or omitted)
+	if maxTokens == 0 {
+		baseModelID := normalizeToBaseModel(modelID)
+		if baseModelID == ModelGemini3ProPreview {
+			// Set a safe default for Gemini 3 Pro Preview (8192 is within typical limits)
+			maxTokens = 8192
+			if g.logger != nil {
+				g.logger.Infof("🔍 [GEMINI] gemini-3-pro-preview requires max_output_tokens, setting default: %d", maxTokens)
+			}
+		}
+	}
+
+	if maxTokens > 0 {
 		// Clamp to int32 max to prevent integer overflow
-		maxTokens := opts.MaxTokens
 		if maxTokens > math.MaxInt32 {
 			maxTokens = math.MaxInt32
 		}
@@ -626,8 +633,15 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 		}
 	}
 
-	// Generate unique request ID for tracking request/response correlation (only logged on errors)
+	// Generate unique request ID for tracking request/response correlation
 	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
+	// Log raw input details for all requests (not just errors)
+	if g.logger != nil {
+		g.logInputDetails(requestID, modelID, messages, config, opts)
+		// Also log the actual genai contents that will be sent to API (full, no truncation)
+		g.logRawInput(requestID, modelID, genaiContents, config)
+	}
 
 	// Track if we had to split any mixed messages - this helps correlate with empty responses
 	var hadMixedMessages bool
@@ -770,13 +784,20 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 		stream := g.client.Models.GenerateContentStream(ctx, modelID, genaiContents, config)
 
 		// Process streaming responses
+		var lastResponse *genai.GenerateContentResponse
 		for response, err := range stream {
 			if err != nil {
+				// Try to capture any response that came before the error
 				if g.logger != nil {
-					g.logErrorDetails(requestID, modelID, messages, config, opts, err, nil)
+					// Log raw input that caused the error
+					g.logRawInput(requestID, modelID, genaiContents, config)
+					// Log error with any partial response we might have
+					g.logErrorDetails(requestID, modelID, messages, config, opts, err, lastResponse)
 				}
 				return nil, fmt.Errorf("genai streaming error: %w", err)
 			}
+			// Store the last successful response in case we get an error next
+			lastResponse = response
 
 			// Record chunk if recording is enabled
 			if rec != nil && rec.IsRecordingEnabled() {
@@ -916,6 +937,45 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 
 	// Extract usage from GenerationInfo
 	usageExtracted := llmtypes.ExtractUsageFromGenerationInfo(choice.GenerationInfo)
+
+	// Build response summary for logging (since we accumulated from streaming)
+	// This captures the complete raw response for debugging
+	if g.logger != nil {
+		responseSummary := &genai.GenerateContentResponse{
+			UsageMetadata: usage,
+		}
+		if len(accumulatedToolCalls) > 0 || accumulatedContent.Len() > 0 {
+			candidate := &genai.Candidate{
+				FinishReason: "STOP",
+			}
+			parts := make([]*genai.Part, 0)
+			if accumulatedContent.Len() > 0 {
+				parts = append(parts, &genai.Part{Text: accumulatedContent.String()})
+			}
+			// Add tool calls as function calls in the response
+			for _, toolCall := range accumulatedToolCalls {
+				if toolCall.FunctionCall != nil {
+					// Parse arguments JSON back to map
+					var argsMap map[string]interface{}
+					if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &argsMap); err == nil {
+						parts = append(parts, &genai.Part{
+							FunctionCall: &genai.FunctionCall{
+								Name: toolCall.FunctionCall.Name,
+								Args: argsMap,
+							},
+						})
+					}
+				}
+			}
+			if len(parts) > 0 {
+				candidate.Content = &genai.Content{Parts: parts}
+			}
+			responseSummary.Candidates = []*genai.Candidate{candidate}
+		}
+		// Log raw response for successful requests
+		g.logRawResponse(requestID, modelID, responseSummary, nil)
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{choice},
 		Usage:   usageExtracted,
@@ -1667,29 +1727,46 @@ func (g *GoogleGenAIAdapter) logInputDetails(requestID, modelID string, messages
 		"tools_count":   len(opts.Tools),
 	}
 
-	// Add message summaries (first 200 chars of each)
-	messageSummaries := make([]string, 0, len(messages))
-	for i, msg := range messages {
-		role := string(msg.Role)
-		var contentPreview string
-		if len(msg.Parts) > 0 {
-			if textPart, ok := msg.Parts[0].(llmtypes.TextContent); ok {
-				content := textPart.Text
-				if len(content) > 200 {
-					contentPreview = content[:200] + "..."
-				} else {
-					contentPreview = content
+	// Add full message details (no truncation)
+	messageDetails := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
+		msgDetail := map[string]interface{}{
+			"role":  string(msg.Role),
+			"parts": make([]map[string]interface{}, 0, len(msg.Parts)),
+		}
+		for _, part := range msg.Parts {
+			partDetail := make(map[string]interface{})
+			switch p := part.(type) {
+			case llmtypes.TextContent:
+				partDetail["type"] = "TextContent"
+				partDetail["text"] = p.Text
+			case llmtypes.ToolCallResponse:
+				partDetail["type"] = "ToolCallResponse"
+				partDetail["tool_call_id"] = p.ToolCallID
+				partDetail["name"] = p.Name
+				partDetail["content"] = p.Content
+			case llmtypes.ToolCall:
+				partDetail["type"] = "ToolCall"
+				partDetail["id"] = p.ID
+				if p.FunctionCall != nil {
+					partDetail["function_name"] = p.FunctionCall.Name
+					partDetail["arguments"] = p.FunctionCall.Arguments
+					partDetail["thought_signature"] = p.ThoughtSignature
 				}
-			} else {
-				contentPreview = fmt.Sprintf("[%T]", msg.Parts[0])
+			case llmtypes.ImageContent:
+				partDetail["type"] = "ImageContent"
+				partDetail["source_type"] = p.SourceType
+				partDetail["media_type"] = p.MediaType
+				partDetail["data_length"] = len(p.Data)
+			default:
+				partDetail["type"] = fmt.Sprintf("%T", part)
+				partDetail["value"] = fmt.Sprintf("%+v", part)
 			}
+			msgDetail["parts"] = append(msgDetail["parts"].([]map[string]interface{}), partDetail)
 		}
-		messageSummaries = append(messageSummaries, fmt.Sprintf("%s: %s", role, contentPreview))
-		if i >= 4 { // Limit to first 5 messages
-			break
-		}
+		messageDetails = append(messageDetails, msgDetail)
 	}
-	inputSummary["messages"] = messageSummaries
+	inputSummary["messages"] = messageDetails
 
 	// Add config details
 	if config.Temperature != nil {
@@ -1710,7 +1787,100 @@ func (g *GoogleGenAIAdapter) logInputDetails(requestID, modelID string, messages
 	}
 
 	inputSummaryJSON, _ := json.MarshalIndent(inputSummary, "", "  ")
-	g.logger.Infof("🔍 [REQUEST_ID: %s] MESSAGES SENT TO LLM:\n%s", requestID, string(inputSummaryJSON))
+	g.logger.Infof("🔍 [REQUEST_ID: %s] MESSAGES SENT TO LLM (FULL DETAILS):\n%s", requestID, string(inputSummaryJSON))
+}
+
+// logRawInput logs the complete raw genai contents that will be sent to the API
+func (g *GoogleGenAIAdapter) logRawInput(requestID, modelID string, genaiContents []*genai.Content, config *genai.GenerateContentConfig) {
+	if g.logger == nil {
+		return
+	}
+
+	// Build complete input structure
+	rawInput := map[string]interface{}{
+		"request_id": requestID,
+		"model_id":   modelID,
+		"contents":   make([]map[string]interface{}, 0, len(genaiContents)),
+		"config":     make(map[string]interface{}),
+	}
+
+	// Add all genai contents (full, no truncation)
+	for i, content := range genaiContents {
+		contentDetail := map[string]interface{}{
+			"index": i,
+			"role":  content.Role,
+			"parts": make([]map[string]interface{}, 0, len(content.Parts)),
+		}
+		for _, part := range content.Parts {
+			partDetail := make(map[string]interface{})
+			if part.Text != "" {
+				partDetail["type"] = "text"
+				partDetail["text"] = part.Text
+			}
+			if part.FunctionCall != nil {
+				partDetail["type"] = "function_call"
+				partDetail["function_name"] = part.FunctionCall.Name
+				argsJSON := convertArgumentsToString(part.FunctionCall.Args)
+				partDetail["arguments"] = argsJSON
+
+				// Extract thought signature from JSON representation (since it's injected via JSON manipulation)
+				partJSON, err := json.Marshal(part)
+				if err == nil {
+					var partMap map[string]interface{}
+					if err := json.Unmarshal(partJSON, &partMap); err == nil {
+						// Check for thoughtSignature at top level
+						if thoughtSig, ok := partMap["thoughtSignature"].(string); ok && thoughtSig != "" {
+							partDetail["thought_signature"] = thoughtSig
+							partDetail["thought_signature_length"] = len(thoughtSig)
+						}
+						// Also check in extra_content.google.thought_signature
+						if extraContent, ok := partMap["extra_content"].(map[string]interface{}); ok {
+							if google, ok := extraContent["google"].(map[string]interface{}); ok {
+								if thoughtSig, ok := google["thought_signature"].(string); ok && thoughtSig != "" {
+									if _, exists := partDetail["thought_signature"]; !exists {
+										partDetail["thought_signature"] = thoughtSig
+										partDetail["thought_signature_length"] = len(thoughtSig)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			if part.FunctionResponse != nil {
+				partDetail["type"] = "function_response"
+				partDetail["name"] = part.FunctionResponse.Name
+				partDetail["response"] = part.FunctionResponse.Response
+			}
+			if part.InlineData != nil {
+				partDetail["type"] = "inline_data"
+				partDetail["mime_type"] = part.InlineData.MIMEType
+				partDetail["data_length"] = len(part.InlineData.Data)
+			}
+			contentDetail["parts"] = append(contentDetail["parts"].([]map[string]interface{}), partDetail)
+		}
+		rawInput["contents"] = append(rawInput["contents"].([]map[string]interface{}), contentDetail)
+	}
+
+	// Add config details
+	if config.Temperature != nil {
+		rawInput["config"].(map[string]interface{})["temperature"] = *config.Temperature
+	}
+	if config.MaxOutputTokens > 0 {
+		rawInput["config"].(map[string]interface{})["max_output_tokens"] = config.MaxOutputTokens
+	}
+	if config.ResponseMIMEType != "" {
+		rawInput["config"].(map[string]interface{})["response_mime_type"] = config.ResponseMIMEType
+	}
+	if config.ResponseSchema != nil {
+		rawInput["config"].(map[string]interface{})["has_response_schema"] = true
+	}
+	if len(config.Tools) > 0 {
+		rawInput["config"].(map[string]interface{})["tools_count"] = len(config.Tools)
+	}
+
+	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
+	g.logger.Infof("🔍 [REQUEST_ID: %s] RAW GENAI API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
 }
 
 // logErrorDetails logs both input and error response details when an error occurs
@@ -1722,6 +1892,35 @@ func (g *GoogleGenAIAdapter) logErrorDetails(requestID, modelID string, messages
 		"error_type":    fmt.Sprintf("%T", err),
 		"model_id":      modelID,
 		"message_count": len(messages),
+	}
+
+	// Try to extract structured error information from error message
+	// GenAI errors often have format: "Error <code>, Message: <message>, Status: <status>, Details: <details>"
+	errMsg := err.Error()
+	errorInfo["raw_error_message"] = errMsg
+
+	// Extract HTTP status code if present
+	statusCodeRegex := regexp.MustCompile(`Error (\d+)`)
+	if matches := statusCodeRegex.FindStringSubmatch(errMsg); len(matches) > 1 {
+		errorInfo["http_status_code"] = matches[1]
+	}
+
+	// Extract status name if present (e.g., "Status: INVALID_ARGUMENT")
+	statusRegex := regexp.MustCompile(`Status: ([A-Z_]+)`)
+	if matches := statusRegex.FindStringSubmatch(errMsg); len(matches) > 1 {
+		errorInfo["api_status"] = matches[1]
+	}
+
+	// Extract message if present (e.g., "Message: Request contains an invalid argument.")
+	messageRegex := regexp.MustCompile(`Message: ([^,]+)`)
+	if matches := messageRegex.FindStringSubmatch(errMsg); len(matches) > 1 {
+		errorInfo["api_message"] = strings.TrimSpace(matches[1])
+	}
+
+	// Extract details if present
+	detailsRegex := regexp.MustCompile(`Details: (\[.*?\])`)
+	if matches := detailsRegex.FindStringSubmatch(errMsg); len(matches) > 1 {
+		errorInfo["api_details"] = matches[1]
 	}
 
 	// Try to extract more error details by unwrapping
@@ -1743,6 +1942,15 @@ func (g *GoogleGenAIAdapter) logErrorDetails(requestID, modelID string, messages
 	if len(errorChain) > 1 {
 		errorInfo["error_chain"] = errorChain
 		errorInfo["full_error_chain"] = strings.Join(errorChain, " -> ")
+	}
+
+	// Try to extract error details using errors.As if GenAI SDK provides structured errors
+	// Check for common error interface patterns
+	var httpErr interface {
+		StatusCode() int
+	}
+	if errors.As(err, &httpErr) {
+		errorInfo["http_status_code_from_error"] = httpErr.StatusCode()
 	}
 
 	// Add config summary
@@ -1788,9 +1996,57 @@ func (g *GoogleGenAIAdapter) logErrorDetails(requestID, modelID string, messages
 			}
 		}
 		if result.PromptFeedback != nil {
-			errorInfo["prompt_feedback"] = map[string]interface{}{
+			promptFeedbackInfo := map[string]interface{}{
 				"block_reason": result.PromptFeedback.BlockReason,
 			}
+			if len(result.PromptFeedback.SafetyRatings) > 0 {
+				safetyRatings := make([]map[string]interface{}, 0, len(result.PromptFeedback.SafetyRatings))
+				for _, rating := range result.PromptFeedback.SafetyRatings {
+					safetyRatings = append(safetyRatings, map[string]interface{}{
+						"category":    rating.Category,
+						"probability": rating.Probability,
+					})
+				}
+				promptFeedbackInfo["safety_ratings"] = safetyRatings
+			}
+			errorInfo["prompt_feedback"] = promptFeedbackInfo
+		}
+
+		// Log the complete raw response even on error (it might contain useful debugging info)
+		g.logRawResponse(requestID, modelID, result, err)
+	}
+
+	// Add config details to error info for debugging
+	if config.Temperature != nil {
+		errorInfo["config_temperature"] = *config.Temperature
+	}
+	if config.MaxOutputTokens > 0 {
+		errorInfo["config_max_output_tokens"] = config.MaxOutputTokens
+	}
+	if config.ResponseMIMEType != "" {
+		errorInfo["config_response_mime_type"] = config.ResponseMIMEType
+	}
+	if config.ResponseSchema != nil {
+		errorInfo["config_has_response_schema"] = true
+		if config.ResponseSchema.Type != "" {
+			errorInfo["config_response_schema_type"] = config.ResponseSchema.Type
+		}
+	}
+	if len(config.Tools) > 0 {
+		errorInfo["config_tools_count"] = len(config.Tools)
+		// Log tool names for debugging
+		toolNames := make([]string, 0, len(config.Tools))
+		for _, tool := range config.Tools {
+			if tool != nil && tool.FunctionDeclarations != nil {
+				for _, fn := range tool.FunctionDeclarations {
+					if fn != nil && fn.Name != "" {
+						toolNames = append(toolNames, fn.Name)
+					}
+				}
+			}
+		}
+		if len(toolNames) > 0 {
+			errorInfo["config_tool_names"] = toolNames
 		}
 	}
 
@@ -1803,8 +2059,6 @@ func (g *GoogleGenAIAdapter) logErrorDetails(requestID, modelID string, messages
 }
 
 // logRawResponse logs the complete raw GenAI API response as JSON for debugging
-//
-//nolint:unused // Reserved for future debugging use
 func (g *GoogleGenAIAdapter) logRawResponse(requestID, modelID string, result *genai.GenerateContentResponse, err error) {
 	g.logger.Infof("🔍 [REQUEST_ID: %s] Raw Vertex (GenAI) response received - model: %s, err: %v, result: %v", requestID, modelID, err != nil, result != nil)
 
@@ -1824,21 +2078,12 @@ func (g *GoogleGenAIAdapter) logRawResponse(requestID, modelID string, result *g
 			g.logger.Infof("🔍 [REQUEST_ID: %s]    Content.Parts count: %d", requestID, len(candidate.Content.Parts))
 			for j, part := range candidate.Content.Parts {
 				if part.Text != "" {
-					textPreview := part.Text
-					if len(textPreview) > 200 {
-						textPreview = textPreview[:200] + "..."
-					}
-					g.logger.Infof("🔍 [REQUEST_ID: %s]      Part %d - Text: %q (length: %d)", requestID, j, textPreview, len(part.Text))
+					g.logger.Infof("🔍 [REQUEST_ID: %s]      Part %d - Text (full, length: %d): %q", requestID, j, len(part.Text), part.Text)
 				}
 				if part.FunctionCall != nil {
-					// Log full FunctionCall arguments as JSON
+					// Log full FunctionCall arguments as JSON (no truncation)
 					argsJSON := convertArgumentsToString(part.FunctionCall.Args)
-					if len(argsJSON) > 1000 {
-						argsPreview := argsJSON[:1000] + "... (truncated, total length: " + fmt.Sprintf("%d", len(argsJSON)) + " bytes)"
-						g.logger.Infof("🔍 [REQUEST_ID: %s]      Part %d - FunctionCall: Name=%q, Args=%s", requestID, j, part.FunctionCall.Name, argsPreview)
-					} else {
-						g.logger.Infof("🔍 [REQUEST_ID: %s]      Part %d - FunctionCall: Name=%q, Args=%s", requestID, j, part.FunctionCall.Name, argsJSON)
-					}
+					g.logger.Infof("🔍 [REQUEST_ID: %s]      Part %d - FunctionCall: Name=%q, Args (full, length: %d): %s", requestID, j, part.FunctionCall.Name, len(argsJSON), argsJSON)
 				}
 			}
 		} else {
@@ -1930,14 +2175,10 @@ func (g *GoogleGenAIAdapter) logRawResponse(requestID, modelID string, result *g
 
 	// Try to log the complete raw response as JSON for maximum debugging
 	// This captures everything including PromptFeedback, SafetyRatings, and any error details
+	// NO TRUNCATION - log full response
 	if resultJSON, err := json.MarshalIndent(result, "   ", "  "); err == nil {
 		jsonStr := string(resultJSON)
-		// For very large responses, truncate but keep important parts
-		if len(jsonStr) > 10000 {
-			// Keep first 5000 chars and last 5000 chars
-			jsonStr = jsonStr[:5000] + "\n   ... (truncated, total length: " + fmt.Sprintf("%d", len(jsonStr)) + " bytes) ...\n   " + jsonStr[len(jsonStr)-5000:]
-		}
-		g.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX API RESPONSE (FULL JSON):\n   %s", requestID, jsonStr)
+		g.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX API RESPONSE (FULL JSON, length: %d):\n   %s", requestID, len(jsonStr), jsonStr)
 	} else {
 		g.logger.Debugf("🔍 [REQUEST_ID: %s] Could not serialize complete response to JSON (may have unexported fields): %v", requestID, err)
 	}

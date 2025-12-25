@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -70,8 +71,26 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		if opts.JSONMode {
 			systemMessage = systemMessage + "\n\nYou must respond with valid JSON only, no other text. Return a JSON object."
 		}
+
+		// Apply cache control to system prompts if they're large enough
+		// Anthropic requires at least 1024 tokens for Claude 3.5 Sonnet/Opus, but 2048 tokens for Claude Haiku
+		// We estimate ~4 chars per token, so 8000+ chars ≈ 2000+ tokens (safe for all models)
+		estimatedTokens := len(systemMessage) / 4
+		shouldCache := estimatedTokens >= 2000 // Ensure we meet Anthropic's 2048 token minimum for Haiku
+
+		systemBlock := anthropic.TextBlockParam{
+			Text: systemMessage,
+		}
+
+		if shouldCache {
+			// Apply cache control to system prompt for large contexts
+			cacheControl := anthropic.NewCacheControlEphemeralParam()
+			cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m // Set TTL to 5 minutes
+			systemBlock.CacheControl = cacheControl
+		}
+
 		params.System = []anthropic.TextBlockParam{
-			{Text: systemMessage},
+			systemBlock,
 		}
 	} else if opts.JSONMode && len(anthropicMessages) > 0 {
 		// If no system message, prepend JSON instruction to first user message
@@ -103,9 +122,14 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
-	// Log input details if logger is available (for debugging errors)
+	// Generate unique request ID for tracking request/response correlation
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
+	// Log raw input details for all requests (not just errors)
 	if a.logger != nil {
 		a.logInputDetails(modelID, messages, params, opts)
+		// Also log the actual params that will be sent to API (full, no truncation)
+		a.logRawInput(requestID, modelID, params)
 	}
 
 	// Always use streaming API for Anthropic to avoid "streaming is required" error
@@ -138,6 +162,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 			stream.Close()
 			if a.logger != nil {
 				a.logErrorDetails(modelID, messages, params, opts, err, &message)
+				a.logRawResponse(requestID, modelID, &message, err)
 			}
 			return nil, fmt.Errorf("anthropic streaming accumulate error: %w", err)
 		}
@@ -169,6 +194,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if err := stream.Err(); err != nil {
 		if a.logger != nil {
 			a.logErrorDetails(modelID, messages, params, opts, err, &message)
+			a.logRawResponse(requestID, modelID, &message, err)
 		}
 		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}
@@ -250,6 +276,11 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
+	// Log raw response for successful requests
+	if a.logger != nil {
+		a.logRawResponse(requestID, modelID, &message, nil)
+	}
+
 	// Convert the accumulated message to llm format
 	return convertResponse(&message), nil
 }
@@ -282,6 +313,11 @@ func (a *AnthropicAdapter) Call(ctx context.Context, prompt string, options ...l
 func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.MessageParam, string) {
 	anthropicMessages := make([]anthropic.MessageParam, 0, len(langMessages))
 	var systemMessage string
+
+	// Track if we've seen any tool calls/responses - if so, don't cache user messages
+	// Only cache the first static user message (before any tool interactions)
+	hasSeenToolInteraction := false
+	isFirstUserMessage := true
 
 	for _, msg := range langMessages {
 		// Extract content parts
@@ -322,14 +358,16 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			if len(contentParts) > 0 {
 				content := strings.Join(contentParts, "\n")
 
-				// Enable caching by default for large contexts
-				// Anthropic requires at least 1024 tokens for Claude 3.5 Sonnet/Opus, but 2048 tokens for Claude Haiku
-				// We estimate ~4 chars per token, so 8000+ chars ≈ 2000+ tokens (safe for all models)
+				// Only cache user messages if:
+				// 1. It's the first user message in the conversation
+				// 2. No tool interactions have occurred yet (static conversation)
+				// 3. The content is large enough (>= 2000 tokens)
+				// Never cache user messages after tool calls/responses (they're part of dynamic conversation flow)
 				estimatedTokens := len(content) / 4
-				shouldCache := estimatedTokens >= 2000 // Ensure we meet Anthropic's 2048 token minimum for Haiku
+				shouldCache := !hasSeenToolInteraction && isFirstUserMessage && estimatedTokens >= 2000
 
 				if shouldCache {
-					// For large content, we apply cache control to the entire block
+					// For large static content, we apply cache control to the entire block
 					// Cache control marks the END of cacheable content
 					// This tells Anthropic to cache everything up to this point
 					// IMPORTANT: The cache_control parameter must be on a text block that contains
@@ -345,10 +383,13 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 					// Cache control is now applied - this will be sent to Anthropic API
 					// The entire content block will be cached and can be reused in subsequent requests
 				} else {
-					// Use standard text block for smaller content (no caching)
+					// Use standard text block (no caching for dynamic content or small messages)
 					contentBlocks = append(contentBlocks, anthropic.NewTextBlock(content))
 				}
 			}
+
+			// Mark that we've seen a user message (so subsequent ones won't be cached)
+			isFirstUserMessage = false
 
 			// Add image content blocks if present
 			for _, img := range imageParts {
@@ -367,6 +408,11 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			}
 		case string(llmtypes.ChatMessageTypeAI):
 			// Assistant message can have text content or tool calls
+			// If there are tool calls, mark that we've seen tool interactions
+			if len(toolCalls) > 0 {
+				hasSeenToolInteraction = true
+			}
+
 			content := ""
 			if len(contentParts) > 0 {
 				content = strings.Join(contentParts, "\n")
@@ -411,7 +457,9 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			}
 		case string(llmtypes.ChatMessageTypeTool):
 			// Tool message - handle tool responses
+			// Mark that we've seen tool interactions (tool responses are dynamic)
 			if toolCallID != "" {
+				hasSeenToolInteraction = true
 				// Create tool result content block using helper
 				// isError is false - we could enhance this to detect errors
 				contentBlock := anthropic.NewToolResultBlock(toolCallID, toolResponseContent, false)
@@ -775,9 +823,34 @@ func (a *AnthropicAdapter) logInputDetails(modelID string, messages []llmtypes.M
 		inputSummary["params_tool_choice"] = "set"
 	}
 
-	// Check for cache control in messages (for debugging cache functionality)
+	// Check for cache control in system prompts and messages (for debugging cache functionality)
 	cacheControlCount := 0
 	cacheControlDetails := []map[string]interface{}{}
+
+	// Check system prompts for cache control
+	for i, systemBlock := range params.System {
+		hasCacheControl := systemBlock.CacheControl.TTL != "" || systemBlock.CacheControl.Type != ""
+		if hasCacheControl {
+			cacheControlCount++
+			textLength := len(systemBlock.Text)
+			estimatedTokens := textLength / 4
+			cacheControlDetails = append(cacheControlDetails, map[string]interface{}{
+				"location":         "system",
+				"block_index":      i,
+				"text_length":      textLength,
+				"estimated_tokens": estimatedTokens,
+				"ttl":              systemBlock.CacheControl.TTL,
+				"type":             systemBlock.CacheControl.Type,
+			})
+			// DEBUG: Print cache control details using logger
+			if a.logger != nil {
+				a.logger.Debugf("[ANTHROPIC DEBUG] Found cache control in system prompt - block %d: TTL=%s, Type=%s, TextLength=%d, EstimatedTokens=%d",
+					i, systemBlock.CacheControl.TTL, systemBlock.CacheControl.Type, textLength, estimatedTokens)
+			}
+		}
+	}
+
+	// Check user messages for cache control
 	for i, msg := range params.Messages {
 		if msg.Role == anthropic.MessageParamRoleUser {
 			for j, block := range msg.Content {
@@ -790,6 +863,7 @@ func (a *AnthropicAdapter) logInputDetails(modelID string, messages []llmtypes.M
 						textLength := len(textBlock.Text)
 						estimatedTokens := textLength / 4
 						cacheControlDetails = append(cacheControlDetails, map[string]interface{}{
+							"location":         "message",
 							"message_index":    i,
 							"block_index":      j,
 							"text_length":      textLength,
@@ -799,24 +873,32 @@ func (a *AnthropicAdapter) logInputDetails(modelID string, messages []llmtypes.M
 						})
 						// DEBUG: Print cache control details using logger
 						if a.logger != nil {
-							a.logger.Debugf("[ANTHROPIC DEBUG] Found cache control in params - message %d, block %d: TTL=%s, Type=%s, TextLength=%d",
-								i, j, textBlock.CacheControl.TTL, textBlock.CacheControl.Type, textLength)
+							a.logger.Debugf("[ANTHROPIC DEBUG] Found cache control in params - message %d, block %d: TTL=%s, Type=%s, TextLength=%d, EstimatedTokens=%d",
+								i, j, textBlock.CacheControl.TTL, textBlock.CacheControl.Type, textLength, estimatedTokens)
 						}
 					}
 				}
 			}
 		}
 	}
+
 	if cacheControlCount > 0 {
 		inputSummary["cache_control_blocks"] = cacheControlCount
 		inputSummary["cache_enabled"] = true
 		inputSummary["cache_control_details"] = cacheControlDetails
 		if a.logger != nil {
-			a.logger.Debugf("[ANTHROPIC DEBUG] Total cache control blocks in params: %d", cacheControlCount)
+			a.logger.Debugf("[ANTHROPIC DEBUG] Total cache control blocks found: %d (system: %d, messages: %d)",
+				cacheControlCount, len(params.System), len(params.Messages))
 		}
 	} else {
+		// Only log as info (not warning) since this is expected for small messages
 		if a.logger != nil {
-			a.logger.Debugf("[ANTHROPIC DEBUG] WARNING: No cache control blocks found in params.Messages!")
+			systemSize := 0
+			if len(params.System) > 0 {
+				systemSize = len(params.System[0].Text)
+			}
+			a.logger.Debugf("[ANTHROPIC DEBUG] No cache control blocks found. System prompt size: %d chars (~%d tokens), Messages: %d",
+				systemSize, systemSize/4, len(params.Messages))
 		}
 	}
 
@@ -893,4 +975,89 @@ func (a *AnthropicAdapter) logErrorDetails(modelID string, messages []llmtypes.M
 
 	// Also log input details for full context
 	a.logInputDetails(modelID, messages, params, opts)
+}
+
+// logRawInput logs the complete raw params that will be sent to the Anthropic API
+func (a *AnthropicAdapter) logRawInput(requestID, modelID string, params anthropic.MessageNewParams) {
+	if a.logger == nil {
+		return
+	}
+
+	// Build complete input structure by marshaling params to JSON
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		a.logger.Errorf("❌ [ANTHROPIC] Failed to marshal params for raw input logging: %v", err)
+		return
+	}
+
+	var paramsMap map[string]interface{}
+	if err := json.Unmarshal(paramsJSON, &paramsMap); err != nil {
+		a.logger.Errorf("❌ [ANTHROPIC] Failed to unmarshal params JSON: %v", err)
+		return
+	}
+
+	rawInput := map[string]interface{}{
+		"request_id": requestID,
+		"model_id":   modelID,
+		"params":     paramsMap,
+	}
+
+	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
+	a.logger.Infof("🔍 [REQUEST_ID: %s] RAW ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
+}
+
+// logRawResponse logs the complete raw response from the Anthropic API
+func (a *AnthropicAdapter) logRawResponse(requestID, modelID string, message *anthropic.Message, err error) {
+	if a.logger == nil {
+		return
+	}
+
+	if err != nil {
+		errorInfo := map[string]interface{}{
+			"request_id": requestID,
+			"model_id":   modelID,
+			"error":      err.Error(),
+			"error_type": fmt.Sprintf("%T", err),
+		}
+		errorJSON, _ := json.MarshalIndent(errorInfo, "", "  ")
+		a.logger.Errorf("❌ [REQUEST_ID: %s] RAW ANTHROPIC API ERROR (FULL JSON):\n%s", requestID, string(errorJSON))
+		return
+	}
+
+	// Build complete response structure
+	responseSummary := map[string]interface{}{
+		"request_id":  requestID,
+		"model_id":    modelID,
+		"content":     make([]map[string]interface{}, 0, len(message.Content)),
+		"stop_reason": string(message.StopReason),
+		"usage": map[string]interface{}{
+			"input_tokens":  message.Usage.InputTokens,
+			"output_tokens": message.Usage.OutputTokens,
+		},
+	}
+
+	// Add all content blocks (full, no truncation)
+	for _, block := range message.Content {
+		blockDetail := make(map[string]interface{})
+		blockDetail["type"] = block.Type
+
+		if block.Type == "text" {
+			blockDetail["text"] = block.Text
+		} else if block.Type == "tool_use" {
+			blockDetail["id"] = block.ID
+			blockDetail["name"] = block.Name
+			// Convert input to JSON string (full, no truncation)
+			inputJSON, err := json.Marshal(block.Input)
+			if err == nil {
+				blockDetail["input"] = string(inputJSON)
+			} else {
+				blockDetail["input"] = "{}"
+			}
+		}
+
+		responseSummary["content"] = append(responseSummary["content"].([]map[string]interface{}), blockDetail)
+	}
+
+	responseJSON, _ := json.MarshalIndent(responseSummary, "", "  ")
+	a.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
 }
