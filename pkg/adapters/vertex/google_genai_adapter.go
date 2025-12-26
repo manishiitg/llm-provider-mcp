@@ -1096,6 +1096,10 @@ func convertTools(llmTools []llmtypes.Tool, logger interfaces.Logger) []*genai.T
 				}
 			}
 
+			// Normalize array parameters (including nested arrays) before validation
+			// This ensures all arrays have items field, and nested arrays have items.items
+			utils.NormalizeArrayParameters(paramsMap)
+
 			// Validate schema before conversion
 			if logger != nil {
 				logger.Infof("🔍 [VERTEX] Validating schema for function %s", tool.Function.Name)
@@ -1152,6 +1156,15 @@ func validateSchemaForGemini(schema map[string]interface{}, functionName string,
 				if propType, ok := propMap["type"].(string); ok && propType == "array" {
 					if _, hasItems := propMap["items"]; !hasItems {
 						logger.Errorf("❌ [VERTEX] Function %s: Property '%s' is array type but missing 'items' field - this will cause MALFORMED_FUNCTION_CALL", functionName, propName)
+					} else {
+						// Check for nested arrays (arrays of arrays) missing items.items
+						if itemsMap, ok := propMap["items"].(map[string]interface{}); ok {
+							if itemsType, ok := itemsMap["type"].(string); ok && itemsType == "array" {
+								if _, hasItemsItems := itemsMap["items"]; !hasItemsItems {
+									logger.Errorf("❌ [VERTEX] Function %s: Property '%s' has nested array (items.type='array') but missing 'items.items' field - this will cause Error 400", functionName, propName)
+								}
+							}
+						}
 					}
 				}
 				// Recursively check nested objects
