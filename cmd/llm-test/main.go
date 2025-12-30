@@ -82,6 +82,7 @@ func main() {
 	rootCmd.AddCommand(vertexcmd.VertexEmbeddingTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexGeminiThinkingLevelTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexNestedArrayTestCmd)
+	rootCmd.AddCommand(vertexcmd.VertexSchemaValidationTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

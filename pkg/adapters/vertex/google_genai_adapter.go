@@ -1100,6 +1100,26 @@ func convertTools(llmTools []llmtypes.Tool, logger interfaces.Logger) []*genai.T
 			// This ensures all arrays have items field, and nested arrays have items.items
 			utils.NormalizeArrayParameters(paramsMap)
 
+			// CRITICAL FIX: Ensure root schema has type="object" if properties exist
+			// Google Gemini API requires type="object" when properties/required are present
+			if _, hasProperties := paramsMap["properties"]; hasProperties {
+				if schemaType, ok := paramsMap["type"].(string); !ok || schemaType == "" {
+					paramsMap["type"] = "object"
+					if logger != nil {
+						logger.Infof("🔍 [VERTEX] Function %s: Added missing type='object' to root schema", tool.Function.Name)
+					}
+				}
+			}
+
+			// Normalize schema to ensure type constraints are met recursively
+			normalizeSchemaTypes(paramsMap)
+
+			// Debug: Log normalized schema to verify normalization worked
+			if logger != nil {
+				schemaJSON, _ := json.Marshal(paramsMap)
+				logger.Debugf("🔍 [VERTEX] Normalized schema for function %s: %s", tool.Function.Name, string(schemaJSON))
+			}
+
 			// Validate schema before conversion
 			if logger != nil {
 				logger.Infof("🔍 [VERTEX] Validating schema for function %s", tool.Function.Name)
@@ -1188,10 +1208,14 @@ func validateSchemaForGemini(schema map[string]interface{}, functionName string,
 
 // convertJSONSchemaToSchema converts a JSON Schema map to genai.Schema
 // Uses JSON marshaling/unmarshaling for proper conversion
+// Note: Schema should already be normalized by normalizeSchemaTypes() before calling this
 func convertJSONSchemaToSchema(jsonSchema map[string]interface{}) *genai.Schema {
 	if jsonSchema == nil {
 		return nil
 	}
+
+	// Ensure schema is normalized (defensive check - should already be done)
+	normalizeSchemaTypes(jsonSchema)
 
 	// Convert the JSON Schema map to JSON bytes
 	jsonBytes, err := json.Marshal(jsonSchema)
@@ -1207,11 +1231,57 @@ func convertJSONSchemaToSchema(jsonSchema map[string]interface{}) *genai.Schema 
 		return buildSchemaManually(jsonSchema)
 	}
 
-	return &schema
+	// CRITICAL: After unmarshaling, we need to ensure Type is preserved
+	// The genai.Schema might not preserve Type field during JSON round-trip
+	// So we rebuild manually to ensure all type constraints are met
+	// This is safer than relying on JSON unmarshaling which might strip Type
+	return buildSchemaManually(jsonSchema)
+}
+
+// normalizeSchemaTypes recursively normalizes schema to ensure type constraints are met
+// - properties/required can only exist when type="object"
+// - items can only exist when type="array"
+func normalizeSchemaTypes(schema map[string]interface{}) {
+	if schema == nil {
+		return
+	}
+
+	schemaType, hasType := schema["type"].(string)
+	_, hasProperties := schema["properties"]
+	_, hasRequired := schema["required"]
+	_, hasItems := schema["items"]
+
+	// If properties or required exist, ensure type is "object"
+	if (hasProperties || hasRequired) && (!hasType || schemaType != "object") {
+		schema["type"] = "object"
+		schemaType = "object" // Update local variable for consistency
+	}
+
+	// If items exist, ensure type is "array"
+	if hasItems && (!hasType || schemaType != "array") {
+		schema["type"] = "array"
+	}
+
+	// CRITICAL: Recursively normalize nested properties FIRST
+	// This ensures nested schemas are normalized before we process the current level
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for _, propValue := range props {
+			if propMap, ok := propValue.(map[string]interface{}); ok {
+				// Recursively normalize each property
+				normalizeSchemaTypes(propMap)
+			}
+		}
+	}
+
+	// Recursively normalize items
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		normalizeSchemaTypes(items)
+	}
 }
 
 // buildSchemaManually manually builds a genai.Schema from JSON Schema map
 // This is a fallback if JSON unmarshaling doesn't work
+// CRITICAL: Only adds properties/required when type="object", items when type="array"
 func buildSchemaManually(jsonSchema map[string]interface{}) *genai.Schema {
 	schema := &genai.Schema{}
 
@@ -1220,29 +1290,47 @@ func buildSchemaManually(jsonSchema map[string]interface{}) *genai.Schema {
 		schema.Description = desc
 	}
 
-	// Extract properties for object type
-	if props, ok := jsonSchema["properties"].(map[string]interface{}); ok {
-		schema.Properties = make(map[string]*genai.Schema)
-		for key, value := range props {
-			if propMap, ok := value.(map[string]interface{}); ok {
-				schema.Properties[key] = buildSchemaManually(propMap)
+	// Extract type field and set it in the schema
+	// CRITICAL: The Type field must be set for the API to accept properties/required/items
+	schemaType, hasType := jsonSchema["type"].(string)
+	if hasType {
+		// Convert string type to genai.Type (which is just a string type)
+		schema.Type = genai.Type(schemaType)
+	}
+
+	// CRITICAL FIX: Only extract properties and required when type is "object"
+	// Google Gemini API requires type="object" when properties/required are present
+	if hasType && schemaType == "object" {
+		// Extract properties for object type
+		if props, ok := jsonSchema["properties"].(map[string]interface{}); ok {
+			schema.Properties = make(map[string]*genai.Schema)
+			for key, value := range props {
+				if propMap, ok := value.(map[string]interface{}); ok {
+					schema.Properties[key] = buildSchemaManually(propMap)
+				}
+			}
+		}
+
+		// Extract required fields (only valid for object type)
+		if req, ok := jsonSchema["required"].([]interface{}); ok {
+			schema.Required = make([]string, 0, len(req))
+			for _, r := range req {
+				if str, ok := r.(string); ok {
+					schema.Required = append(schema.Required, str)
+				}
 			}
 		}
 	}
+	// Note: If properties exist but type is not "object", we skip adding them
+	// This is safe because normalizeSchemaTypes() has already fixed the schema
+	// before this function is called
 
-	// Extract required fields
-	if req, ok := jsonSchema["required"].([]interface{}); ok {
-		schema.Required = make([]string, 0, len(req))
-		for _, r := range req {
-			if str, ok := r.(string); ok {
-				schema.Required = append(schema.Required, str)
-			}
+	// CRITICAL FIX: Only extract items when type is "array"
+	// Google Gemini API requires type="array" when items is present
+	if hasType && schemaType == "array" {
+		if items, ok := jsonSchema["items"].(map[string]interface{}); ok {
+			schema.Items = buildSchemaManually(items)
 		}
-	}
-
-	// Extract items for array type
-	if items, ok := jsonSchema["items"].(map[string]interface{}); ok {
-		schema.Items = buildSchemaManually(items)
 	}
 
 	return schema
