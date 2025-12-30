@@ -700,7 +700,8 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 	var accumulatedContent strings.Builder
 	var accumulatedToolCalls []llmtypes.ToolCall
 	var usage *genai.GenerateContentResponseUsageMetadata
-	var sharedThoughtSignature string // For parallel tool calls, share thought signature across all
+	var promptFeedback *genai.GenerateContentResponsePromptFeedback // Accumulate PromptFeedback from streaming chunks
+	var sharedThoughtSignature string                               // For parallel tool calls, share thought signature across all
 
 	// Handle replay mode - create iterator from recorded chunks
 	if rec != nil && rec.IsReplayEnabled() {
@@ -727,6 +728,11 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 			// Process this replayed chunk
 			if response.UsageMetadata != nil {
 				usage = response.UsageMetadata
+			}
+
+			// Extract prompt feedback if available (for replay mode)
+			if response.PromptFeedback != nil {
+				promptFeedback = response.PromptFeedback
 			}
 
 			// Process candidates (same logic as below)
@@ -821,6 +827,15 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 				usage = response.UsageMetadata
 			}
 
+			// Extract prompt feedback if available (accumulate from streaming chunks)
+			// PromptFeedback may appear in any chunk, so we keep the last non-nil one
+			if response.PromptFeedback != nil {
+				promptFeedback = response.PromptFeedback
+				if g.logger != nil {
+					g.logger.Infof("🔍 [REQUEST_ID: %s] Found PromptFeedback in streaming chunk - BlockReason: %q", requestID, response.PromptFeedback.BlockReason)
+				}
+			}
+
 			// Process candidates
 			for _, candidate := range response.Candidates {
 				// First pass: Extract thought signature from any part (for parallel calls)
@@ -910,39 +925,12 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 		}
 	}
 
-	// Build final response
-	choice := &llmtypes.ContentChoice{
-		Content: accumulatedContent.String(),
-	}
-	if len(accumulatedToolCalls) > 0 {
-		choice.ToolCalls = accumulatedToolCalls
-	}
-
-	// Extract token usage if available
-	choice.GenerationInfo = utils.ExtractGenerationInfoFromVertexUsage(usage)
-
-	// Save recorded chunks if recording was enabled
-	if rec != nil && rec.IsRecordingEnabled() && len(recordedChunks) > 0 {
-		// Build request info for matching
-		requestInfo := buildRequestInfo(messages, modelID, opts)
-		filePath, err := rec.RecordVertexChunks(recordedChunks, requestInfo)
-		if err != nil {
-			if g.logger != nil {
-				g.logger.Errorf("Failed to save recorded chunks: %v", err)
-			}
-		} else if g.logger != nil {
-			g.logger.Infof("📹 [RECORDER] Saved %d chunks to %s", len(recordedChunks), filePath)
-		}
-	}
-
-	// Extract usage from GenerationInfo
-	usageExtracted := llmtypes.ExtractUsageFromGenerationInfo(choice.GenerationInfo)
-
-	// Build response summary for logging (since we accumulated from streaming)
+	// Build response summary for logging BEFORE error check (so we can see raw response even when zero candidates)
 	// This captures the complete raw response for debugging
 	if g.logger != nil {
 		responseSummary := &genai.GenerateContentResponse{
-			UsageMetadata: usage,
+			UsageMetadata:  usage,
+			PromptFeedback: promptFeedback, // Include accumulated PromptFeedback
 		}
 		if len(accumulatedToolCalls) > 0 || accumulatedContent.Len() > 0 {
 			candidate := &genai.Candidate{
@@ -972,9 +960,74 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 			}
 			responseSummary.Candidates = []*genai.Candidate{candidate}
 		}
-		// Log raw response for successful requests
+		// Log raw response (includes PromptFeedback even when candidates are zero)
 		g.logRawResponse(requestID, modelID, responseSummary, nil)
 	}
+
+	// Check for empty content with zero candidates - this indicates an API issue
+	hasEmptyContent := accumulatedContent.Len() == 0 && len(accumulatedToolCalls) == 0
+	if hasEmptyContent {
+		// Build error message with context
+		var errorMsg string
+		if promptFeedback != nil {
+			if promptFeedback.BlockReason != "" {
+				errorMsg = fmt.Sprintf("Gemini API blocked response - BlockReason: %q", promptFeedback.BlockReason)
+			} else {
+				errorMsg = "Gemini API returned zero candidates (PromptFeedback present but no BlockReason)"
+			}
+			if g.logger != nil {
+				g.logger.Errorf("❌ [REQUEST_ID: %s] %s", requestID, errorMsg)
+				g.logger.Errorf("🔍 [REQUEST_ID: %s] PromptFeedback details:", requestID)
+				g.logger.Errorf("   BlockReason: %q", promptFeedback.BlockReason)
+				if len(promptFeedback.SafetyRatings) > 0 {
+					g.logger.Errorf("   SafetyRatings count: %d", len(promptFeedback.SafetyRatings))
+					for i, rating := range promptFeedback.SafetyRatings {
+						g.logger.Errorf("     SafetyRating %d - Category: %q, Probability: %q", i, rating.Category, rating.Probability)
+					}
+				}
+			}
+		} else {
+			// No PromptFeedback - likely token limit or other API issue
+			if usage != nil {
+				errorMsg = fmt.Sprintf("Gemini API returned zero candidates (no PromptFeedback) - PromptTokens: %d, TotalTokens: %d", usage.PromptTokenCount, usage.TotalTokenCount)
+			} else {
+				errorMsg = "Gemini API returned zero candidates with no content"
+			}
+			if g.logger != nil {
+				g.logger.Errorf("❌ [REQUEST_ID: %s] %s", requestID, errorMsg)
+				g.logger.Errorf("⚠️ [REQUEST_ID: %s] Possible causes: token limit exceeded, API-side issue, or streaming completed without generating candidates", requestID)
+			}
+		}
+		return nil, errors.New(errorMsg)
+	}
+
+	// Build final response
+	choice := &llmtypes.ContentChoice{
+		Content: accumulatedContent.String(),
+	}
+	if len(accumulatedToolCalls) > 0 {
+		choice.ToolCalls = accumulatedToolCalls
+	}
+
+	// Extract token usage if available
+	choice.GenerationInfo = utils.ExtractGenerationInfoFromVertexUsage(usage)
+
+	// Save recorded chunks if recording was enabled
+	if rec != nil && rec.IsRecordingEnabled() && len(recordedChunks) > 0 {
+		// Build request info for matching
+		requestInfo := buildRequestInfo(messages, modelID, opts)
+		filePath, err := rec.RecordVertexChunks(recordedChunks, requestInfo)
+		if err != nil {
+			if g.logger != nil {
+				g.logger.Errorf("Failed to save recorded chunks: %v", err)
+			}
+		} else if g.logger != nil {
+			g.logger.Infof("📹 [RECORDER] Saved %d chunks to %s", len(recordedChunks), filePath)
+		}
+	}
+
+	// Extract usage from GenerationInfo
+	usageExtracted := llmtypes.ExtractUsageFromGenerationInfo(choice.GenerationInfo)
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{choice},
