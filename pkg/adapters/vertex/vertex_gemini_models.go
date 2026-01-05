@@ -45,11 +45,9 @@ func normalizeToBaseModel(modelID string) string {
 	return baseModelID
 }
 
-// GetVertexGeminiModelMetadata returns model metadata for a given Gemini model ID
-func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	baseModelID := normalizeToBaseModel(modelID)
-
-	models := map[string]llmtypes.ModelMetadata{
+// getVertexGeminiModels returns the map of Vertex Gemini model metadata
+func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
+	return map[string]llmtypes.ModelMetadata{
 		// Gemini 1.5 Pro - 2M context window
 		ModelGemini15Pro: {
 			ModelID:                    ModelGemini15Pro,
@@ -170,6 +168,25 @@ func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, erro
 			SupportsReasoningEffort: false,
 		},
 	}
+}
+
+// GetAllVertexGeminiModels returns a list of all available Vertex Gemini models
+func GetAllVertexGeminiModels() []*llmtypes.ModelMetadata {
+	models := getVertexGeminiModels()
+	result := make([]*llmtypes.ModelMetadata, 0, len(models))
+	for _, m := range models {
+		// Make a copy to avoid referencing loop variable
+		metadata := m
+		result = append(result, &metadata)
+	}
+	return result
+}
+
+// GetVertexGeminiModelMetadata returns model metadata for a given Gemini model ID
+func GetVertexGeminiModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	baseModelID := normalizeToBaseModel(modelID)
+
+	models := getVertexGeminiModels()
 
 	metadata, exists := models[baseModelID]
 	if !exists {

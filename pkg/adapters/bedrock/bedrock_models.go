@@ -52,3 +52,24 @@ func GetBedrockModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 
 	return metadata, nil
 }
+
+// GetAllBedrockModels returns a list of common Bedrock models
+func GetAllBedrockModels() []*llmtypes.ModelMetadata {
+	// List of common Bedrock model IDs
+	commonIDs := []string{
+		"us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"us.anthropic.claude-3-5-haiku-20241022-v1:0",
+		"us.anthropic.claude-3-opus-20240229-v1:0",
+		"us.anthropic.claude-3-sonnet-20240229-v1:0",
+		"us.anthropic.claude-3-haiku-20240307-v1:0",
+	}
+
+	var models []*llmtypes.ModelMetadata
+	for _, id := range commonIDs {
+		if meta, err := GetBedrockModelMetadata(id); err == nil {
+			models = append(models, meta)
+		}
+	}
+	return models
+}

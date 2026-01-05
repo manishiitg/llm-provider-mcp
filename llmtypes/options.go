@@ -177,3 +177,11 @@ func WithThinkingLevel(level string) CallOption {
 		opts.ThinkingLevel = level
 	}
 }
+
+// WithThinkingBudget sets the thinking budget (token limit) for models that support it
+// (e.g., Gemini 2.5 Flash Thinking)
+func WithThinkingBudget(budget int) CallOption {
+	return func(opts *CallOptions) {
+		opts.ThinkingBudget = budget
+	}
+}

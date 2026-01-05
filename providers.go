@@ -1620,9 +1620,10 @@ type LLMDefaultsResponse struct {
 
 // APIKeyValidationRequest represents a request to validate an API key
 type APIKeyValidationRequest struct {
-	Provider string `json:"provider"`
-	APIKey   string `json:"api_key"`
-	ModelID  string `json:"model_id,omitempty"` // Optional model ID for Bedrock validation
+	Provider string                 `json:"provider"`
+	APIKey   string                 `json:"api_key"`
+	ModelID  string                 `json:"model_id,omitempty"` // Optional model ID for Bedrock validation
+	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
 // APIKeyValidationResponse represents the response for API key validation
@@ -1837,28 +1838,28 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	fmt.Printf("[API KEY VALIDATION] Validating %s API key\n", req.Provider)
 	switch req.Provider {
 	case "openrouter":
-		isValid, message, err = validateOpenRouterAPIKey(req.APIKey, req.ModelID)
+		isValid, message, err = validateOpenRouterAPIKey(req.APIKey, req.ModelID, req.Options)
 	case "openai":
-		isValid, message, err = validateOpenAIAPIKey(req.APIKey, req.ModelID)
+		isValid, message, err = validateOpenAIAPIKey(req.APIKey, req.ModelID, req.Options)
 	case "bedrock":
 		// Bedrock uses AWS credentials, test them instead of API key
 		fmt.Printf("[API KEY VALIDATION] Testing AWS Bedrock credentials\n")
-		isValid, message, err = validateBedrockCredentials(req.ModelID)
+		isValid, message, err = validateBedrockCredentials(req.ModelID, req.Options)
 	case "vertex":
 		// Vertex supports both API key and OAuth authentication
 		if req.APIKey == "" {
 			// Test OAuth authentication (gcloud/service account/ADC)
 			fmt.Printf("[API KEY VALIDATION] Testing Vertex AI OAuth credentials\n")
-			isValid, message, err = validateVertexCredentials(req.ModelID)
+			isValid, message, err = validateVertexCredentials(req.ModelID, req.Options)
 		} else {
 			// Test API key authentication
 			fmt.Printf("[API KEY VALIDATION] Testing Vertex AI API key\n")
-			isValid, message, err = validateVertexAPIKey(req.APIKey, req.ModelID)
+			isValid, message, err = validateVertexAPIKey(req.APIKey, req.ModelID, req.Options)
 		}
 	case "anthropic":
 		// Anthropic validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Anthropic API key\n")
-		isValid, message, err = validateAnthropicAPIKey(req.APIKey, req.ModelID)
+		isValid, message, err = validateAnthropicAPIKey(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -1890,7 +1891,7 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 }
 
 // validateOpenRouterAPIKey validates an OpenRouter API key by making a real GenerateContent call
-func validateOpenRouterAPIKey(apiKey string, modelID string) (bool, string, error) {
+func validateOpenRouterAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[OPENROUTER VALIDATION] Starting API key validation\n")
 
 	// Basic format validation
@@ -1920,12 +1921,15 @@ func validateOpenRouterAPIKey(apiKey string, modelID string) (bool, string, erro
 	// Create a no-op logger for validation
 	noopLog := &noopLoggerImpl{}
 
+	// Extract temperature from options (no default - let the model use its own default)
+	temperature := extractTemperatureFromOptions(options)
+
 	// Create OpenRouter LLM instance
-	fmt.Printf("[OPENROUTER VALIDATION] Creating OpenRouter LLM instance\n")
+	fmt.Printf("[OPENROUTER VALIDATION] Creating OpenRouter LLM instance (temperature: %v)\n", temperature)
 	config := Config{
 		Provider:    ProviderOpenRouter,
 		ModelID:     modelID,
-		Temperature: 0.7,
+		Temperature: temperature,
 		Logger:      noopLog,
 		Context:     context.Background(),
 	}
@@ -1935,6 +1939,9 @@ func validateOpenRouterAPIKey(apiKey string, modelID string) (bool, string, erro
 		fmt.Printf("[OPENROUTER VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
 		return false, fmt.Sprintf("Failed to create OpenRouter LLM instance: %v", err), nil
 	}
+
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
 
 	// Test the LLM with a simple generation call
 	fmt.Printf("[OPENROUTER VALIDATION] Making test generation call to OpenRouter\n")
@@ -1946,7 +1953,7 @@ func validateOpenRouterAPIKey(apiKey string, modelID string) (bool, string, erro
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[OPENROUTER VALIDATION ERROR] OpenRouter test generation failed: %v\n", err)
 		// Check for specific error types
@@ -1967,7 +1974,7 @@ func validateOpenRouterAPIKey(apiKey string, modelID string) (bool, string, erro
 }
 
 // validateOpenAIAPIKey validates an OpenAI API key by making a real GenerateContent call
-func validateOpenAIAPIKey(apiKey string, modelID string) (bool, string, error) {
+func validateOpenAIAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[OPENAI VALIDATION] Starting API key validation\n")
 	// Basic format validation
 	if !strings.HasPrefix(apiKey, "sk-") {
@@ -1996,12 +2003,15 @@ func validateOpenAIAPIKey(apiKey string, modelID string) (bool, string, error) {
 	// Create a no-op logger for validation
 	noopLog := &noopLoggerImpl{}
 
+	// Extract temperature from options (no default - let the model use its own default)
+	temperature := extractTemperatureFromOptions(options)
+
 	// Create OpenAI LLM instance
-	fmt.Printf("[OPENAI VALIDATION] Creating OpenAI LLM instance\n")
+	fmt.Printf("[OPENAI VALIDATION] Creating OpenAI LLM instance (temperature: %v)\n", temperature)
 	config := Config{
 		Provider:    ProviderOpenAI,
 		ModelID:     modelID,
-		Temperature: 0.7,
+		Temperature: temperature,
 		Logger:      noopLog,
 		Context:     context.Background(),
 	}
@@ -2011,6 +2021,9 @@ func validateOpenAIAPIKey(apiKey string, modelID string) (bool, string, error) {
 		fmt.Printf("[OPENAI VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
 		return false, fmt.Sprintf("Failed to create OpenAI LLM instance: %v", err), nil
 	}
+
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
 
 	// Test the LLM with a simple generation call
 	fmt.Printf("[OPENAI VALIDATION] Making test generation call to OpenAI\n")
@@ -2022,7 +2035,7 @@ func validateOpenAIAPIKey(apiKey string, modelID string) (bool, string, error) {
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[OPENAI VALIDATION ERROR] OpenAI test generation failed: %v\n", err)
 		// Check for specific error types
@@ -2043,7 +2056,7 @@ func validateOpenAIAPIKey(apiKey string, modelID string) (bool, string, error) {
 }
 
 // validateAnthropicAPIKey validates an Anthropic API key by making a real GenerateContent call
-func validateAnthropicAPIKey(apiKey string, modelID string) (bool, string, error) {
+func validateAnthropicAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[ANTHROPIC VALIDATION] Starting API key validation\n")
 
 	// Basic format validation - Anthropic API keys start with "sk-ant-"
@@ -2073,12 +2086,15 @@ func validateAnthropicAPIKey(apiKey string, modelID string) (bool, string, error
 	// Create a no-op logger for validation
 	noopLog := &noopLoggerImpl{}
 
+	// Extract temperature from options (no default - let the model use its own default)
+	temperature := extractTemperatureFromOptions(options)
+
 	// Create Anthropic LLM instance
-	fmt.Printf("[ANTHROPIC VALIDATION] Creating Anthropic LLM instance\n")
+	fmt.Printf("[ANTHROPIC VALIDATION] Creating Anthropic LLM instance (temperature: %v)\n", temperature)
 	config := Config{
 		Provider:    ProviderAnthropic,
 		ModelID:     modelID,
-		Temperature: 0.7,
+		Temperature: temperature,
 		Logger:      noopLog,
 		Context:     context.Background(),
 	}
@@ -2088,6 +2104,9 @@ func validateAnthropicAPIKey(apiKey string, modelID string) (bool, string, error
 		fmt.Printf("[ANTHROPIC VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
 		return false, fmt.Sprintf("Failed to create Anthropic LLM instance: %v", err), nil
 	}
+
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
 
 	// Test the LLM with a simple generation call
 	fmt.Printf("[ANTHROPIC VALIDATION] Making test generation call to Anthropic\n")
@@ -2099,7 +2118,7 @@ func validateAnthropicAPIKey(apiKey string, modelID string) (bool, string, error
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[ANTHROPIC VALIDATION ERROR] Anthropic test generation failed: %v\n", err)
 		// Check for specific error types
@@ -2120,7 +2139,7 @@ func validateAnthropicAPIKey(apiKey string, modelID string) (bool, string, error
 }
 
 // validateVertexCredentials validates Vertex AI OAuth credentials (gcloud/service account/ADC)
-func validateVertexCredentials(modelID string) (bool, string, error) {
+func validateVertexCredentials(modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[VERTEX VALIDATION] Starting OAuth credentials validation\n")
 
 	// Check for required environment variables
@@ -2216,6 +2235,9 @@ func validateVertexCredentials(modelID string) (bool, string, error) {
 		llm = vertexadapter.NewGoogleGenAIAdapter(client, modelID, noopLog)
 	}
 
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
+
 	// Test the LLM with a simple generation call
 	fmt.Printf("[VERTEX VALIDATION] Making test generation call to Vertex AI\n")
 	_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
@@ -2223,7 +2245,7 @@ func validateVertexCredentials(modelID string) (bool, string, error) {
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[VERTEX VALIDATION ERROR] Vertex AI test generation failed: %v\n", err)
 		// Check for specific error types
@@ -2244,7 +2266,7 @@ func validateVertexCredentials(modelID string) (bool, string, error) {
 }
 
 // validateVertexAPIKey validates a Vertex AI (Google Gemini) API key by making a real GenerateContent call
-func validateVertexAPIKey(apiKey string, modelID string) (bool, string, error) {
+func validateVertexAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[VERTEX VALIDATION] Starting API key validation\n")
 	// Basic validation - Google API keys don't have a specific prefix
 	if apiKey == "" {
@@ -2277,12 +2299,15 @@ func validateVertexAPIKey(apiKey string, modelID string) (bool, string, error) {
 	// Create a no-op logger for validation
 	noopLog := &noopLoggerImpl{}
 
+	// Extract temperature from options (no default - let the model use its own default)
+	temperature := extractTemperatureFromOptions(options)
+
 	// Create Vertex LLM instance (for Gemini models with API key)
-	fmt.Printf("[VERTEX VALIDATION] Creating Vertex Gemini LLM instance\n")
+	fmt.Printf("[VERTEX VALIDATION] Creating Vertex Gemini LLM instance (temperature: %v)\n", temperature)
 	config := Config{
 		Provider:    ProviderVertex,
 		ModelID:     modelID,
-		Temperature: 0.7,
+		Temperature: temperature,
 		Logger:      noopLog,
 		Context:     context.Background(),
 		APIKeys: &ProviderAPIKeys{
@@ -2296,6 +2321,9 @@ func validateVertexAPIKey(apiKey string, modelID string) (bool, string, error) {
 		return false, fmt.Sprintf("Failed to create Vertex LLM instance: %v", err), nil
 	}
 
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
+
 	// Test the LLM with a simple generation call
 	fmt.Printf("[VERTEX VALIDATION] Making test generation call to Vertex AI\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2306,7 +2334,7 @@ func validateVertexAPIKey(apiKey string, modelID string) (bool, string, error) {
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[VERTEX VALIDATION ERROR] Vertex AI test generation failed: %v\n", err)
 		// Check for specific error types
@@ -2403,7 +2431,7 @@ func (l *DefaultLogger) Debugf(format string, args ...interface{}) {
 }
 
 // validateBedrockCredentials validates AWS Bedrock credentials and region
-func validateBedrockCredentials(modelID string) (bool, string, error) {
+func validateBedrockCredentials(modelID string, options map[string]interface{}) (bool, string, error) {
 	fmt.Printf("[BEDROCK VALIDATION] Starting AWS Bedrock credentials validation\n")
 	// Check if AWS region is configured
 	region := os.Getenv("AWS_REGION")
@@ -2447,6 +2475,9 @@ func validateBedrockCredentials(modelID string) (bool, string, error) {
 	// Create Bedrock adapter instance
 	llm := bedrockadapter.NewBedrockAdapter(client, modelID, noopLog)
 
+	// Create call options from map
+	callOptions := createCallOptionsFromMap(options)
+
 	// Test the LLM with a simple generation call
 	fmt.Printf("[BEDROCK VALIDATION] Making test generation call to Bedrock\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -2457,7 +2488,7 @@ func validateBedrockCredentials(modelID string) (bool, string, error) {
 			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "test"}},
 		},
-	})
+	}, callOptions...)
 	if err != nil {
 		fmt.Printf("[BEDROCK VALIDATION ERROR] Bedrock test generation failed: %v\n", err)
 		// Check for specific error types
@@ -2540,4 +2571,50 @@ func getOpenAIAvailableModels() []string {
 		models[i] = strings.TrimSpace(model)
 	}
 	return models
+}
+
+// Helper to create call options from map
+// extractTemperatureFromOptions extracts temperature from options map
+// Returns 0 if not found (model will use its own default)
+func extractTemperatureFromOptions(options map[string]interface{}) float64 {
+	if options == nil {
+		return 0
+	}
+	if temp, ok := options["temperature"].(float64); ok {
+		return temp
+	}
+	if temp, ok := options["temperature"].(int); ok {
+		return float64(temp)
+	}
+	return 0
+}
+
+func createCallOptionsFromMap(options map[string]interface{}) []llmtypes.CallOption {
+	var callOptions []llmtypes.CallOption
+	if options == nil {
+		return callOptions
+	}
+
+	// Handle temperature
+	if temp, ok := options["temperature"].(float64); ok && temp >= 0 {
+		callOptions = append(callOptions, llmtypes.WithTemperature(temp))
+	} else if temp, ok := options["temperature"].(int); ok && temp >= 0 {
+		callOptions = append(callOptions, llmtypes.WithTemperature(float64(temp)))
+	}
+
+	if effort, ok := options["reasoning_effort"].(string); ok && effort != "" {
+		callOptions = append(callOptions, llmtypes.WithReasoningEffort(effort))
+	}
+	if verbosity, ok := options["verbosity"].(string); ok && verbosity != "" {
+		callOptions = append(callOptions, llmtypes.WithVerbosity(verbosity))
+	}
+	if thinkingLevel, ok := options["thinking_level"].(string); ok && thinkingLevel != "" {
+		callOptions = append(callOptions, llmtypes.WithThinkingLevel(thinkingLevel))
+	}
+	if thinkingBudget, ok := options["thinking_budget"].(float64); ok && thinkingBudget > 0 {
+		callOptions = append(callOptions, llmtypes.WithThinkingBudget(int(thinkingBudget)))
+	} else if thinkingBudget, ok := options["thinking_budget"].(int); ok && thinkingBudget > 0 {
+		callOptions = append(callOptions, llmtypes.WithThinkingBudget(thinkingBudget))
+	}
+	return callOptions
 }

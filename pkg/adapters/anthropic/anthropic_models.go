@@ -49,19 +49,9 @@ func normalizeToBaseModel(modelID string) string {
 	return baseModelID
 }
 
-// GetAnthropicModelMetadata returns metadata for Anthropic models including token limits and pricing
-// Pricing includes input, output, cached input read tokens, and cached input write tokens
-// Cache read cost: 10% of base input cost
-// Cache write cost: 125% of base input cost (25% more than base)
-// Accepts both base model names (e.g., "claude-3-5-sonnet") and versioned names (e.g., "claude-3-5-sonnet-20241022")
-// Versioned names are normalized to base model names
-func GetAnthropicModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	// Normalize model ID to base model name (remove date/version suffixes)
-	baseModelID := normalizeToBaseModel(modelID)
-
-	// Anthropic model metadata with comprehensive pricing
-	// Only base model names are stored - versioned names are normalized to base names
-	models := map[string]*llmtypes.ModelMetadata{
+// getAnthropicModels returns the map of Anthropic model metadata
+func getAnthropicModels() map[string]*llmtypes.ModelMetadata {
+	return map[string]*llmtypes.ModelMetadata{
 		// Claude 3 Series
 		ModelClaude3Opus: {
 			ModelID:                         ModelClaude3Opus,
@@ -193,6 +183,31 @@ func GetAnthropicModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) 
 			Provider:                        "anthropic",
 		},
 	}
+}
+
+// GetAllAnthropicModels returns a list of all available Anthropic models
+func GetAllAnthropicModels() []*llmtypes.ModelMetadata {
+	models := getAnthropicModels()
+	result := make([]*llmtypes.ModelMetadata, 0, len(models))
+	for _, m := range models {
+		result = append(result, m)
+	}
+	return result
+}
+
+// GetAnthropicModelMetadata returns metadata for Anthropic models including token limits and pricing
+// Pricing includes input, output, cached input read tokens, and cached input write tokens
+// Cache read cost: 10% of base input cost
+// Cache write cost: 125% of base input cost (25% more than base)
+// Accepts both base model names (e.g., "claude-3-5-sonnet") and versioned names (e.g., "claude-3-5-sonnet-20241022")
+// Versioned names are normalized to base model names
+func GetAnthropicModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	// Normalize model ID to base model name (remove date/version suffixes)
+	baseModelID := normalizeToBaseModel(modelID)
+
+	// Anthropic model metadata with comprehensive pricing
+	// Only base model names are stored - versioned names are normalized to base names
+	models := getAnthropicModels()
 
 	// Look up the model by base model ID
 	metadata, exists := models[baseModelID]

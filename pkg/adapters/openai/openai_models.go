@@ -41,17 +41,9 @@ const (
 	ModelGPT41Nano     = "gpt-4.1-nano"
 )
 
-// GetOpenAIModelMetadata returns metadata for OpenAI models including token limits and pricing
-// Pricing includes input, output, reasoning (for reasoning models), and cached input tokens
-// Accepts both base model names (e.g., "gpt-4o") and versioned names (e.g., "gpt-4o-2024-11-20")
-// Versioned names are normalized to base model names
-func GetOpenAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	// Normalize model ID to base model name (remove version suffixes)
-	baseModelID := normalizeToBaseModel(modelID)
-
-	// OpenAI model metadata with comprehensive pricing
-	// Only base model names are stored - versioned names are normalized to base names
-	models := map[string]*llmtypes.ModelMetadata{
+// getOpenAIModels returns the map of OpenAI model metadata
+func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
+	return map[string]*llmtypes.ModelMetadata{
 		ModelGPT4o: {
 			ModelID:                    ModelGPT4o,
 			ModelName:                  "GPT-4o",
@@ -345,6 +337,29 @@ func GetOpenAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 			Provider:                   "openai",
 		},
 	}
+}
+
+// GetAllOpenAIModels returns a list of all available OpenAI models
+func GetAllOpenAIModels() []*llmtypes.ModelMetadata {
+	models := getOpenAIModels()
+	result := make([]*llmtypes.ModelMetadata, 0, len(models))
+	for _, m := range models {
+		result = append(result, m)
+	}
+	return result
+}
+
+// GetOpenAIModelMetadata returns metadata for OpenAI models including token limits and pricing
+// Pricing includes input, output, reasoning (for reasoning models), and cached input tokens
+// Accepts both base model names (e.g., "gpt-4o") and versioned names (e.g., "gpt-4o-2024-11-20")
+// Versioned names are normalized to base model names
+func GetOpenAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	// Normalize model ID to base model name (remove version suffixes)
+	baseModelID := normalizeToBaseModel(modelID)
+
+	// OpenAI model metadata with comprehensive pricing
+	// Only base model names are stored - versioned names are normalized to base names
+	models := getOpenAIModels()
 
 	// Look up by base model name (versioned names are normalized)
 	if metadata, exists := models[baseModelID]; exists {

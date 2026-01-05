@@ -4,60 +4,60 @@ package llmtypes
 // token limits, pricing, and high-level capabilities (reasoning, thinking level, tools, etc.)
 type ModelMetadata struct {
 	// ModelID is the unique identifier for the model (e.g., "gpt-4o", "claude-3-5-sonnet-20241022")
-	ModelID string
+	ModelID string `json:"model_id"`
 
 	// ModelName is the human-readable name of the model
-	ModelName string
+	ModelName string `json:"model_name"`
 
 	// ContextWindow is the maximum number of tokens the model can process in a single request
-	ContextWindow int
+	ContextWindow int `json:"context_window"`
 
 	// InputCostPer1MTokens is the cost per 1 million input tokens (in USD)
-	InputCostPer1MTokens float64
+	InputCostPer1MTokens float64 `json:"input_cost_per_1m"`
 
 	// OutputCostPer1MTokens is the cost per 1 million output tokens (in USD)
-	OutputCostPer1MTokens float64
+	OutputCostPer1MTokens float64 `json:"output_cost_per_1m"`
 
 	// ReasoningCostPer1MTokens is the cost per 1 million reasoning tokens (in USD)
 	// This applies to reasoning models like o1, o3, gpt-5.1
 	// Set to 0 if the model doesn't support reasoning tokens
-	ReasoningCostPer1MTokens float64
+	ReasoningCostPer1MTokens float64 `json:"reasoning_cost_per_1m"`
 
 	// CachedInputCostPer1MTokens is the cost per 1 million cached input tokens read from cache (in USD)
 	// Cached tokens typically have a 50-90% discount compared to regular input tokens
 	// Set to 0 if the model doesn't support prompt caching
-	CachedInputCostPer1MTokens float64
+	CachedInputCostPer1MTokens float64 `json:"cached_input_cost_per_1m"`
 
 	// CachedInputCostWritePer1MTokens is the cost per 1 million cached input tokens written to cache (in USD)
 	// Cache write costs are typically higher than regular input tokens (e.g., Anthropic charges 25% more)
 	// Set to 0 if the model doesn't support cache write tracking or if cache writes are charged at regular input rate
-	CachedInputCostWritePer1MTokens float64
+	CachedInputCostWritePer1MTokens float64 `json:"cached_input_cost_write_per_1m"`
 
 	// Provider is the name of the provider (e.g., "openai", "anthropic", "bedrock", "vertex")
-	Provider string
+	Provider string `json:"provider"`
 
 	// ===== Capabilities (optional; zero values mean "unknown/unsupported" unless documented) =====
 
 	// SupportsToolCalls indicates whether the model can call tools/functions
-	SupportsToolCalls bool
+	SupportsToolCalls bool `json:"supports_tool_calls"`
 
 	// SupportsJSONMode indicates whether the model can enforce JSON responses (JSON mode / response_format)
-	SupportsJSONMode bool
+	SupportsJSONMode bool `json:"supports_json_mode"`
 
 	// SupportsThinkingLevel indicates whether the model supports a thinking-level knob (e.g., Gemini 3 Pro)
 	// When true, ThinkingLevels lists the allowed string values (e.g., ["low","high"])
-	SupportsThinkingLevel bool
-	ThinkingLevels        []string
+	SupportsThinkingLevel bool     `json:"supports_thinking_level"`
+	ThinkingLevels        []string `json:"thinking_levels"`
 
 	// SupportsReasoningEffort indicates whether the model supports a reasoning-effort knob (e.g., gpt-5.1)
 	// When true, ReasoningEffortLevels lists the allowed string values (e.g., ["minimal","low","medium","high"])
-	SupportsReasoningEffort bool
-	ReasoningEffortLevels   []string
+	SupportsReasoningEffort bool     `json:"supports_reasoning_effort"`
+	ReasoningEffortLevels   []string `json:"reasoning_effort_levels"`
 
 	// SupportsThinkingBudget indicates whether the model supports a numeric thinking budget
 	// (e.g., Gemini 2.5 Pro's thinkingBudget, which controls reasoning token budget).
 	// Specific ranges/units are provider-specific and documented externally.
-	SupportsThinkingBudget bool
+	SupportsThinkingBudget bool `json:"supports_thinking_budget"`
 }
 
 // ModelMetadataProvider is an optional interface that models can implement
