@@ -24,8 +24,14 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 	// Vertex
 	allModels = append(allModels, vertex.GetAllVertexGeminiModels()...)
 
-	// OpenRouter (Popular models)
-	allModels = append(allModels, getPopularOpenRouterModels()...)
+	// OpenRouter - fetch dynamically from API (cached for 24 hours)
+	openRouterModels := openai.GetAllOpenRouterModels()
+	if len(openRouterModels) > 0 {
+		allModels = append(allModels, openRouterModels...)
+	} else {
+		// Fallback to hardcoded popular models if API fails
+		allModels = append(allModels, getPopularOpenRouterModels()...)
+	}
 
 	return allModels
 }

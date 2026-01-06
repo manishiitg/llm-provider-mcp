@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,21 +16,22 @@ import (
 )
 
 const (
+	// MaxLatestOpenRouterModels is the number of latest models to return from OpenRouter
+	MaxLatestOpenRouterModels = 10
+)
+
+const (
 	openRouterAPIBaseURL = "https://openrouter.ai/api/v1"
 	openRouterModelsURL  = openRouterAPIBaseURL + "/models"
 	cacheTTL             = 24 * time.Hour // Cache models for 24 hours
 )
 
 var (
-	openRouterCache     = make(map[string]*cachedModelMetadata)
-	openRouterCacheMu   sync.RWMutex
-	openRouterCacheTime time.Time
+	// Cache for raw OpenRouter models from API
+	openRouterModelsCache     []OpenRouterModel
+	openRouterModelsCacheMu   sync.RWMutex
+	openRouterModelsCacheTime time.Time
 )
-
-type cachedModelMetadata struct {
-	metadata *llmtypes.ModelMetadata
-	expires  time.Time
-}
 
 // OpenRouterModelsResponse represents the response from OpenRouter's Models API
 type OpenRouterModelsResponse struct {
@@ -38,12 +40,23 @@ type OpenRouterModelsResponse struct {
 
 // OpenRouterModel represents a single model from OpenRouter's API
 type OpenRouterModel struct {
-	ID            string                `json:"id"`
-	CanonicalSlug string                `json:"canonical_slug"`
-	Name          string                `json:"name"`
-	ContextLength int                   `json:"context_length"`
-	Pricing       OpenRouterPricing     `json:"pricing"`
-	TopProvider   OpenRouterTopProvider `json:"top_provider"`
+	ID            string                     `json:"id"`
+	CanonicalSlug string                     `json:"canonical_slug"`
+	Name          string                     `json:"name"`
+	Created       int64                      `json:"created"`
+	ContextLength int                        `json:"context_length"`
+	Architecture  OpenRouterArchitecture     `json:"architecture"`
+	Pricing       OpenRouterPricing          `json:"pricing"`
+	TopProvider   OpenRouterTopProvider      `json:"top_provider"`
+}
+
+// OpenRouterArchitecture represents architecture information from OpenRouter
+type OpenRouterArchitecture struct {
+	Modality         string   `json:"modality"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+	Tokenizer        string   `json:"tokenizer"`
+	InstructType     string   `json:"instruct_type"`
 }
 
 // OpenRouterPricing represents pricing information from OpenRouter
@@ -141,40 +154,24 @@ func convertOpenRouterModelToMetadata(model OpenRouterModel) *llmtypes.ModelMeta
 	}
 }
 
-// getOpenRouterModelsFromAPI fetches and caches OpenRouter models
-func getOpenRouterModelsFromAPI() (map[string]*llmtypes.ModelMetadata, error) {
-	openRouterCacheMu.RLock()
+// getCachedOpenRouterModels returns cached OpenRouter models, fetching from API if cache is expired
+func getCachedOpenRouterModels() ([]OpenRouterModel, error) {
+	openRouterModelsCacheMu.RLock()
 	// Check if cache is still valid
-	if time.Since(openRouterCacheTime) < cacheTTL && len(openRouterCache) > 0 {
-		// Build metadata map from cache
-		metadataMap := make(map[string]*llmtypes.ModelMetadata)
-		for id, cached := range openRouterCache {
-			if time.Now().Before(cached.expires) {
-				metadataMap[id] = cached.metadata
-			}
-		}
-		openRouterCacheMu.RUnlock()
-		if len(metadataMap) > 0 {
-			return metadataMap, nil
-		}
+	if time.Since(openRouterModelsCacheTime) < cacheTTL && len(openRouterModelsCache) > 0 {
+		models := openRouterModelsCache
+		openRouterModelsCacheMu.RUnlock()
+		return models, nil
 	}
-	openRouterCacheMu.RUnlock()
+	openRouterModelsCacheMu.RUnlock()
 
 	// Cache expired or empty, fetch from API
-	openRouterCacheMu.Lock()
-	defer openRouterCacheMu.Unlock()
+	openRouterModelsCacheMu.Lock()
+	defer openRouterModelsCacheMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if time.Since(openRouterCacheTime) < cacheTTL && len(openRouterCache) > 0 {
-		metadataMap := make(map[string]*llmtypes.ModelMetadata)
-		for id, cached := range openRouterCache {
-			if time.Now().Before(cached.expires) {
-				metadataMap[id] = cached.metadata
-			}
-		}
-		if len(metadataMap) > 0 {
-			return metadataMap, nil
-		}
+	if time.Since(openRouterModelsCacheTime) < cacheTTL && len(openRouterModelsCache) > 0 {
+		return openRouterModelsCache, nil
 	}
 
 	// Fetch from API
@@ -183,25 +180,78 @@ func getOpenRouterModelsFromAPI() (map[string]*llmtypes.ModelMetadata, error) {
 		return nil, err
 	}
 
-	// Convert and cache all models
-	metadataMap := make(map[string]*llmtypes.ModelMetadata)
-	newCache := make(map[string]*cachedModelMetadata)
-	expires := time.Now().Add(cacheTTL)
+	// Update cache with raw models
+	openRouterModelsCache = modelsResp.Data
+	openRouterModelsCacheTime = time.Now()
 
-	for _, model := range modelsResp.Data {
-		metadata := convertOpenRouterModelToMetadata(model)
-		metadataMap[model.ID] = metadata
-		newCache[model.ID] = &cachedModelMetadata{
-			metadata: metadata,
-			expires:  expires,
+	return openRouterModelsCache, nil
+}
+
+// GetAllOpenRouterModels returns the latest OpenRouter models with their metadata (costs, context window, etc.)
+// It fetches from OpenRouter's API, filters to text-only input models, sorts by creation date,
+// and returns only the latest MaxLatestOpenRouterModels models.
+func GetAllOpenRouterModels() []*llmtypes.ModelMetadata {
+	models, err := getLatestOpenRouterModels()
+	if err != nil {
+		// Log error and return empty slice - don't fail the entire metadata request
+		fmt.Printf("warning: failed to fetch OpenRouter models: %v\n", err)
+		return []*llmtypes.ModelMetadata{}
+	}
+
+	result := make([]*llmtypes.ModelMetadata, 0, len(models))
+	for _, metadata := range models {
+		// Mark all as openrouter provider for consistency
+		metadata.Provider = "openrouter"
+		result = append(result, metadata)
+	}
+	return result
+}
+
+// getLatestOpenRouterModels fetches models from cache (or API if expired), filters to text-only, and returns latest N
+func getLatestOpenRouterModels() ([]*llmtypes.ModelMetadata, error) {
+	// Get models from cache (fetches from API if cache expired)
+	allModels, err := getCachedOpenRouterModels()
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter to text-only input modality models
+	var textOnlyModels []OpenRouterModel
+	for _, model := range allModels {
+		if isTextOnlyInput(model.Architecture.InputModalities) {
+			textOnlyModels = append(textOnlyModels, model)
 		}
 	}
 
-	// Update cache
-	openRouterCache = newCache
-	openRouterCacheTime = time.Now()
+	// Sort by created timestamp (descending - newest first)
+	sort.Slice(textOnlyModels, func(i, j int) bool {
+		return textOnlyModels[i].Created > textOnlyModels[j].Created
+	})
 
-	return metadataMap, nil
+	// Take only the latest N models
+	limit := MaxLatestOpenRouterModels
+	if len(textOnlyModels) < limit {
+		limit = len(textOnlyModels)
+	}
+	latestModels := textOnlyModels[:limit]
+
+	// Convert to metadata
+	result := make([]*llmtypes.ModelMetadata, 0, len(latestModels))
+	for _, model := range latestModels {
+		metadata := convertOpenRouterModelToMetadata(model)
+		result = append(result, metadata)
+	}
+
+	return result, nil
+}
+
+// isTextOnlyInput checks if the model only accepts text input
+func isTextOnlyInput(inputModalities []string) bool {
+	if len(inputModalities) == 0 {
+		return false
+	}
+	// Check if the only input modality is "text"
+	return len(inputModalities) == 1 && inputModalities[0] == "text"
 }
 
 // GetOpenRouterModelMetadata retrieves metadata for an OpenRouter model by fetching from the API
@@ -216,17 +266,18 @@ func GetOpenRouterModelMetadata(modelID string) (*llmtypes.ModelMetadata, error)
 		return nil, fmt.Errorf("model ID does not appear to be an OpenRouter model (expected format: provider/model-name)")
 	}
 
-	// Get models from API (with caching)
-	models, err := getOpenRouterModelsFromAPI()
+	// Get models from cache (fetches from API if cache expired)
+	models, err := getCachedOpenRouterModels()
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OpenRouter models: %w", err)
 	}
 
-	// Look up the model
-	metadata, found := models[modelID]
-	if !found {
-		return nil, fmt.Errorf("model not found in OpenRouter: %s", modelID)
+	// Look up the model by ID
+	for _, model := range models {
+		if model.ID == modelID {
+			return convertOpenRouterModelToMetadata(model), nil
+		}
 	}
 
-	return metadata, nil
+	return nil, fmt.Errorf("model not found in OpenRouter: %s", modelID)
 }

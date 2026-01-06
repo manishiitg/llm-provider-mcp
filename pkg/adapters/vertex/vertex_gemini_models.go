@@ -10,10 +10,6 @@ import (
 
 // Gemini model name constants
 const (
-	// Gemini 1.5 Series
-	ModelGemini15Pro   = "gemini-1.5-pro"
-	ModelGemini15Flash = "gemini-1.5-flash"
-
 	// Gemini 2.0 Series
 	ModelGemini20Flash = "gemini-2.0-flash"
 
@@ -48,28 +44,6 @@ func normalizeToBaseModel(modelID string) string {
 // getVertexGeminiModels returns the map of Vertex Gemini model metadata
 func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 	return map[string]llmtypes.ModelMetadata{
-		// Gemini 1.5 Pro - 2M context window
-		ModelGemini15Pro: {
-			ModelID:                    ModelGemini15Pro,
-			ModelName:                  "Gemini 1.5 Pro",
-			ContextWindow:              2000000, // 2M tokens
-			InputCostPer1MTokens:       3.50,
-			OutputCostPer1MTokens:      10.50,
-			ReasoningCostPer1MTokens:   0.0,  // No separate reasoning tokens
-			CachedInputCostPer1MTokens: 0.35, // Cache read pricing (estimated, 90% discount)
-			Provider:                   "vertex",
-		},
-		// Gemini 1.5 Flash - 2M context window
-		ModelGemini15Flash: {
-			ModelID:                    ModelGemini15Flash,
-			ModelName:                  "Gemini 1.5 Flash",
-			ContextWindow:              2000000, // 2M tokens
-			InputCostPer1MTokens:       0.35,
-			OutputCostPer1MTokens:      1.05,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.035, // Cache read pricing (estimated, 90% discount)
-			Provider:                   "vertex",
-		},
 		// Gemini 2.0 Flash - 1M context window
 		ModelGemini20Flash: {
 			ModelID:                    ModelGemini20Flash,

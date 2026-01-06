@@ -10,16 +10,9 @@ import (
 
 // OpenAI model name constants
 const (
-	ModelGPT4o         = "gpt-4o"
-	ModelGPT4oMini     = "gpt-4o-mini"
-	ModelGPT4Turbo     = "gpt-4-turbo"
-	ModelGPT4          = "gpt-4"
-	ModelGPT432k       = "gpt-4-32k"
-	ModelGPT35Turbo    = "gpt-3.5-turbo"
-	ModelGPT35Turbo16k = "gpt-3.5-turbo-16k"
-	ModelO1Preview     = "o1-preview"
-	ModelO1Mini        = "o1-mini"
-	ModelO1Pro         = "o1-pro"
+	ModelGPT4o     = "gpt-4o"
+	ModelGPT4oMini = "gpt-4o-mini"
+	ModelO1Pro     = "o1-pro"
 	ModelO3Mini        = "o3-mini"
 	ModelO3Pro         = "o3-pro"
 	ModelO4Mini        = "o4-mini"
@@ -62,76 +55,6 @@ func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 			OutputCostPer1MTokens:      0.60,
 			ReasoningCostPer1MTokens:   0.0,
 			CachedInputCostPer1MTokens: 0.075, // 50% discount
-			Provider:                   "openai",
-		},
-		ModelGPT4Turbo: {
-			ModelID:                    ModelGPT4Turbo,
-			ModelName:                  "GPT-4 Turbo",
-			ContextWindow:              128000, // 128k tokens
-			InputCostPer1MTokens:       10.00,
-			OutputCostPer1MTokens:      30.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 1.00, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT4: {
-			ModelID:                    ModelGPT4,
-			ModelName:                  "GPT-4",
-			ContextWindow:              8192, // 8k tokens
-			InputCostPer1MTokens:       30.00,
-			OutputCostPer1MTokens:      60.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.0, // No prompt caching
-			Provider:                   "openai",
-		},
-		ModelGPT432k: {
-			ModelID:                    ModelGPT432k,
-			ModelName:                  "GPT-4 32k",
-			ContextWindow:              32768, // 32k tokens
-			InputCostPer1MTokens:       60.00,
-			OutputCostPer1MTokens:      120.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.0,
-			Provider:                   "openai",
-		},
-		ModelGPT35Turbo: {
-			ModelID:                    ModelGPT35Turbo,
-			ModelName:                  "GPT-3.5 Turbo",
-			ContextWindow:              16385, // 16k tokens
-			InputCostPer1MTokens:       0.50,
-			OutputCostPer1MTokens:      1.50,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.0,
-			Provider:                   "openai",
-		},
-		ModelGPT35Turbo16k: {
-			ModelID:                    ModelGPT35Turbo16k,
-			ModelName:                  "GPT-3.5 Turbo 16k",
-			ContextWindow:              16385,
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      4.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.0,
-			Provider:                   "openai",
-		},
-		ModelO1Preview: {
-			ModelID:                    ModelO1Preview,
-			ModelName:                  "O1 Preview",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       15.00,
-			OutputCostPer1MTokens:      60.00,
-			ReasoningCostPer1MTokens:   3.00, // Reasoning tokens are charged separately
-			CachedInputCostPer1MTokens: 0.75, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelO1Mini: {
-			ModelID:                    ModelO1Mini,
-			ModelName:                  "O1 Mini",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      12.00,
-			ReasoningCostPer1MTokens:   0.60, // Reasoning tokens are charged separately
-			CachedInputCostPer1MTokens: 0.15, // 95% discount
 			Provider:                   "openai",
 		},
 		ModelO1Pro: {
