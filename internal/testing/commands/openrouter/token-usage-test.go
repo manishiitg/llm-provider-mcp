@@ -90,7 +90,7 @@ func testOpenRouterTokenUsage(messages []llmtypes.MessageContent, mainTraceID in
 
 	openrouterConfig := llmproviders.Config{
 		Provider:     llmproviders.ProviderOpenRouter,
-		ModelID:      "moonshotai/kimi-k2",
+		ModelID:      "xiaomi/mimo-v2-flash:free",
 		Temperature:  0.7,
 		EventEmitter: nil,
 		TraceID:      mainTraceID,

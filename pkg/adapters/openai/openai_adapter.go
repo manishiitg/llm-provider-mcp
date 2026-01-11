@@ -168,14 +168,22 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 	isOpenRouter := strings.Contains(modelID, "/")
 	if isOpenRouter && opts.Metadata != nil && opts.Metadata.Usage != nil && opts.Metadata.Usage.Include {
 		// OpenRouter requires usage: {include: true} to get cache token information
-		// The OpenAI SDK doesn't have a Usage field, so we need to add it via ExtraBody or similar
-		// For now, we'll log that we're trying to set it
+		// Use SetExtraFields to inject this custom parameter
 		if o.logger != nil {
-			o.logger.Infof("[OPENROUTER DEBUG] Usage.Include is set to true, but OpenAI SDK doesn't support usage parameter directly")
-			o.logger.Infof("[OPENROUTER DEBUG] Note: OpenRouter may return prompt_tokens_details even without usage parameter")
+			o.logger.Debugf("[OPENROUTER] Setting include.usage=true via SetExtraFields")
 		}
-		// TODO: Check if OpenAI SDK v3 supports ExtraBody or additional parameters
-		// If not, we may need to use a custom HTTP client or modify the request
+		
+		// Create the include map structure
+		includeMap := map[string]interface{}{
+			"usage": true,
+		}
+		
+		// Inject into params using SetExtraFields
+		// Note: params is a struct, but we can call methods on it if we use the pointer or assign back
+		// In openai-go v3, NewParams types often have SetExtraFields method
+		params.SetExtraFields(map[string]interface{}{
+			"include": includeMap,
+		})
 	}
 
 	// Log input details if logger is available (for debugging errors)
@@ -1136,7 +1144,7 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 		// (OpenRouter may have slightly different response format)
 		if usageJSON, err := json.Marshal(result.Usage); err == nil {
 			if logger != nil {
-				logger.Infof("[OPENROUTER DEBUG] Raw Usage struct: %s", string(usageJSON))
+				logger.Debugf("[OPENROUTER DEBUG] Raw Usage struct: %s", string(usageJSON))
 			}
 			// Parse using proper typed struct instead of map[string]interface{}
 			var openRouterUsage OpenRouterUsageResponse
@@ -1145,11 +1153,11 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 				if openRouterUsage.PromptTokensDetails != nil {
 					cachedTokens = openRouterUsage.PromptTokensDetails.CachedTokens
 					if logger != nil {
-						logger.Infof("[OPENROUTER DEBUG] Found cached_tokens: %d (using typed struct)", cachedTokens)
+						logger.Debugf("[OPENROUTER DEBUG] Found cached_tokens: %d (using typed struct)", cachedTokens)
 					}
 				} else {
 					if logger != nil {
-						logger.Infof("[OPENROUTER DEBUG] PromptTokensDetails is nil")
+						logger.Debugf("[OPENROUTER DEBUG] PromptTokensDetails is nil")
 					}
 				}
 			} else {
@@ -1162,7 +1170,7 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 							if cached, ok := promptDetails["cached_tokens"].(float64); ok {
 								cachedTokens = int(cached)
 								if logger != nil {
-									logger.Infof("[OPENROUTER DEBUG] Found cached_tokens: %d (using fallback map)", cachedTokens)
+									logger.Debugf("[OPENROUTER DEBUG] Found cached_tokens: %d (using fallback map)", cachedTokens)
 								}
 							}
 						}
@@ -1173,7 +1181,7 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 		// Also check CompletionTokensDetails for cache-related fields
 		if logger != nil {
 			if detailsJSON, err := json.Marshal(result.Usage.CompletionTokensDetails); err == nil {
-				logger.Infof("[OPENROUTER DEBUG] CompletionTokensDetails: %s", string(detailsJSON))
+				logger.Debugf("[OPENROUTER DEBUG] CompletionTokensDetails: %s", string(detailsJSON))
 			}
 		}
 	} else {
@@ -1182,7 +1190,7 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 		if result.Usage.PromptTokensDetails.CachedTokens > 0 {
 			cachedTokens = int(result.Usage.PromptTokensDetails.CachedTokens)
 			if logger != nil {
-				logger.Infof("[OPENAI DEBUG] Found cached_tokens: %d (from PromptTokensDetails)", cachedTokens)
+				logger.Debugf("[OPENAI DEBUG] Found cached_tokens: %d (from PromptTokensDetails)", cachedTokens)
 			}
 		}
 	}
@@ -1269,10 +1277,10 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 
 			if logger != nil {
 				if isOpenRouter {
-					logger.Infof("[OPENROUTER DEBUG] Extracted cache tokens: %d (discount: %.2f%%)",
+					logger.Debugf("[OPENROUTER DEBUG] Extracted cache tokens: %d (discount: %.2f%%)",
 						cachedTokens, *langChoice.GenerationInfo.CacheDiscount*100)
 				} else {
-					logger.Infof("[OPENAI DEBUG] Extracted cache tokens: %d (discount: %.2f%%)",
+					logger.Debugf("[OPENAI DEBUG] Extracted cache tokens: %d (discount: %.2f%%)",
 						cachedTokens, *langChoice.GenerationInfo.CacheDiscount*100)
 				}
 			}
@@ -1281,9 +1289,9 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 			langChoice.GenerationInfo.Additional["cached_tokens"] = 0
 			if logger != nil {
 				if isOpenRouter {
-					logger.Infof("[OPENROUTER DEBUG] No cache tokens found (cached_tokens: 0)")
+					logger.Debugf("[OPENROUTER DEBUG] No cache tokens found (cached_tokens: 0)")
 				} else {
-					logger.Infof("[OPENAI DEBUG] No cache tokens found (cached_tokens: 0)")
+					logger.Debugf("[OPENAI DEBUG] No cache tokens found (cached_tokens: 0)")
 				}
 			}
 		}
