@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	anthropiccmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/anthropic"
+	azurecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/azure"
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
@@ -83,6 +84,20 @@ func main() {
 	rootCmd.AddCommand(vertexcmd.VertexGeminiThinkingLevelTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexNestedArrayTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexSchemaValidationTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureCmd)
+	rootCmd.AddCommand(azurecmd.AzureToolCallTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureToolCallEventsTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStructuredOutputTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureImageTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureTokenUsageTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingContentTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingMixedTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingParallelTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingFuncTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureStreamingCancellationTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureModelMetadataTestCmd)
+	rootCmd.AddCommand(azurecmd.AzureResponsesTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

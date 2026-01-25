@@ -285,6 +285,12 @@ func initTestRegistry() {
 		TestLLMTokenUsage(ctx, llm, messages, "Hi", llmtypes.WithReasoningEffort("high"), llmtypes.WithVerbosity("high"))
 		return true, ""
 	})
+
+	// Register codex_agentic tests
+	registerTest("codex_agentic", func(ctx context.Context, llm llmtypes.Model, modelID string, provider string, logger interfaces.Logger) (bool, string) {
+		RunCodexAgenticTest(ctx, llm, modelID)
+		return true, ""
+	})
 }
 
 func runTestGroup(grouped map[string]map[string][]testCase, logger interfaces.Logger) []testResult {
@@ -362,6 +368,14 @@ func runTestWithProvider(testName, modelID, provider string, logger interfaces.L
 	if provider == "openai" {
 		llmInstance, err = llmproviders.InitializeLLM(llmproviders.Config{
 			Provider:    llmproviders.ProviderOpenAI,
+			ModelID:     modelID,
+			Temperature: 0.7,
+			Logger:      logger,
+			Context:     ctx,
+		})
+	} else if provider == "azure" {
+		llmInstance, err = llmproviders.InitializeLLM(llmproviders.Config{
+			Provider:    llmproviders.ProviderAzure,
 			ModelID:     modelID,
 			Temperature: 0.7,
 			Logger:      logger,

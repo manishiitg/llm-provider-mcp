@@ -89,6 +89,37 @@ func (r *Recorder) LoadOpenAIResponse(request RequestInfo) (map[string]interface
 	return responseMap, nil
 }
 
+// RecordResponsesAPIResponse records a response from the Responses API
+func (r *Recorder) RecordResponsesAPIResponse(response interface{}, request RequestInfo) (string, error) {
+	if !r.config.Enabled {
+		return "", nil
+	}
+
+	// Save response directly as interface{}
+	filePath, err := SaveResponse(r.config, response, 1, request)
+	if err != nil {
+		return "", err
+	}
+
+	return filePath, nil
+}
+
+// LoadResponsesAPIResponse loads a recorded Responses API response that matches the given request
+func (r *Recorder) LoadResponsesAPIResponse(request RequestInfo) (map[string]interface{}, error) {
+	recorded, err := LoadResponseByRequest(r.config, request)
+	if err != nil {
+		return nil, err
+	}
+
+	// ResponseData is already unmarshaled as interface{}, convert to map
+	responseMap, ok := recorded.ResponseData.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("response_data is not a map")
+	}
+
+	return responseMap, nil
+}
+
 // RecordOpenAIChunks records streaming chunks from OpenAI
 func (r *Recorder) RecordOpenAIChunks(chunks []interface{}, request RequestInfo) (string, error) {
 	if !r.config.Enabled {

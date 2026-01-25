@@ -359,6 +359,7 @@ type CallOptions struct {
 	Verbosity       string             // Response verbosity level: "low", "medium", "high" (for reasoning models)
 	ThinkingLevel   string             // Thinking level: "low", "high" (for Gemini 3 Pro)
 	ThinkingBudget  int                // Thinking budget (token limit) for reasoning models (e.g., Gemini 2.5 Flash Thinking)
+	AllowedTools    []string           // Explicitly allowed tools for agentic models (e.g., gpt-5.2-codex)
 }
 
 // CallOption is a function type for setting call options

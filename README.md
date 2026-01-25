@@ -1,6 +1,6 @@
 # llm-providers
 
-A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, and Google Vertex AI.
+A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, and Azure AI.
 
 ## Overview
 
@@ -30,6 +30,7 @@ go get github.com/manishiitg/multi-llm-provider-go@v0.1.0
 - **Anthropic** - Claude models via direct API
 - **OpenRouter** - Multi-provider access via OpenRouter API
 - **Vertex AI** - Google Gemini models and Anthropic Claude via Vertex AI
+- **Azure AI** - OpenAI models via Azure AI Services/Foundry
 
 ## Quick Start
 
@@ -81,7 +82,8 @@ llm-providers/
 │   │   ├── bedrock/
 │   │   ├── openai/
 │   │   ├── anthropic/
-│   │   └── vertex/
+│   │   ├── vertex/
+│   │   └── azure/
 │   └── interfaces/            # Public interfaces
 ├── internal/
 │   └── testing/               # Test utilities
@@ -102,6 +104,7 @@ See `.env.example` for all available environment variables. Key variables:
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` - AWS credentials for Bedrock
 - `GOOGLE_API_KEY` or `VERTEX_API_KEY` - Google API key for Vertex AI
 - `OPEN_ROUTER_API_KEY` - OpenRouter API key
+- `AZURE_AI_ENDPOINT`, `AZURE_AI_API_KEY` - Azure AI Services endpoint and API key
 
 ### Provider Configuration
 
@@ -170,6 +173,7 @@ All providers have **identical test coverage** using the same standardized tests
 | **Bedrock** | ✅ | ✅ (4 tests) | ✅ (JSON mode) | ✅ (3 tests) | ✅ (with cache) | ✅ (7 tests) |
 | **OpenRouter** | ✅ | ✅ (4 tests) | ✅ (JSON mode) | ✅ (3 tests) | ✅ (with cache) | ❌ |
 | **Vertex AI** | ✅ | ✅ (4 tests) | ✅ (JSON mode) | ✅ (3 tests) | ✅ (with cache) | ✅ (4 tests) |
+| **Azure AI** | ✅ | ✅ (4 tests) | ✅ (JSON Schema) | ✅ (3 tests) | ✅ (with cache) | ✅ (7 tests + Responses API) |
 
 #### Anthropic (`anthropic-*`)
 
@@ -303,6 +307,44 @@ All providers have **identical test coverage** using the same standardized tests
 ./bin/llm-test vertex-parallel-tool-response --model gemini-3-pro-preview
 ```
 
+#### Azure AI (`azure-*`)
+
+| Test Type | Command | Features |
+|-----------|---------|----------|
+| Plain Text | `azure` | Basic text generation |
+| Tool Calls | `azure-tool-call` | 4 standardized tests |
+| Tool Call Events | `azure-tool-call-events` | Tool call event emission test |
+| Structured Output | `azure-structured-output` | JSON Schema with strict mode |
+| Image Understanding | `azure-image` | 3 standardized tests |
+| Token Usage | `azure-token-usage` | Simple, complex, cache tests |
+| Model Metadata | `azure-model-metadata` | Display model pricing, context window, capabilities |
+| Streaming Content | `azure-streaming-content` | Content streaming validation |
+| Streaming Mixed | `azure-streaming-mixed` | Mixed content/tool call streaming |
+| Streaming Parallel | `azure-streaming-parallel` | Parallel tool call streaming |
+| Streaming Func | `azure-streaming-func` | Function calling with streaming |
+| Streaming Multi-Turn | `azure-streaming-multiturn` | Multi-turn conversation streaming |
+| Streaming Cancellation | `azure-streaming-cancellation` | Streaming cancellation handling |
+| Responses API | `azure-responses` | Test agentic models (e.g., gpt-5.2-codex) using the specialized Responses API |
+
+**Note:** Azure AI requires `AZURE_AI_ENDPOINT` and `AZURE_AI_API_KEY` environment variables. The model parameter is the deployment name in your Azure AI resource.
+
+**Example:**
+```bash
+./bin/llm-test azure --model gpt-4o
+./bin/llm-test azure-tool-call --model gpt-4o
+./bin/llm-test azure-structured-output --model gpt-4o
+./bin/llm-test azure-image --model gpt-4o
+./bin/llm-test azure-streaming-content --model gpt-4o
+./bin/llm-test azure-streaming-mixed --model gpt-4o
+./bin/llm-test azure-streaming-parallel --model gpt-4o
+./bin/llm-test azure-token-usage --model gpt-4o
+./bin/llm-test azure-responses --model gpt-5.2-codex
+
+# Model metadata (shows pricing, context window, capabilities)
+./bin/llm-test azure-model-metadata --all           # List all models
+./bin/llm-test azure-model-metadata --model gpt-4o  # Show specific model
+```
+
 ### Standardized Test Features
 
 All providers use the same test implementations from shared functions:
@@ -421,8 +463,9 @@ Streaming tests validate real-time response streaming capabilities across provid
 | **Bedrock** | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **OpenRouter** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Vertex AI** | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **Azure AI** | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 
-**Note**: OpenRouter does not currently support streaming tests. Vertex AI has partial streaming support (content, mixed, multi-turn, and cancellation only).
+**Note**: OpenRouter does not currently support streaming tests. Vertex AI has partial streaming support (content, mixed, multi-turn, and cancellation only). Azure AI uses OpenAI-compatible API and supports most streaming features.
 
 ### Running Tests
 
@@ -434,6 +477,7 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test bedrock
 ./bin/llm-test openrouter --model moonshotai/kimi-k2
 ./bin/llm-test vertex --model gemini-2.5-flash
+./bin/llm-test azure --model gpt-4o
 
 # Tool call tests (all providers have same 4 tests)
 ./bin/llm-test anthropic-tool-call
@@ -441,6 +485,7 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test llm-tool-call  # Bedrock
 ./bin/llm-test openrouter-tool-call --model moonshotai/kimi-k2
 ./bin/llm-test vertex-tool-call
+./bin/llm-test azure-tool-call --model gpt-4o
 
 # Token usage tests (all providers have cache tests)
 ./bin/llm-test anthropic-token-usage --prompt "Hello world"
@@ -448,6 +493,7 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test bedrock-token-usage --prompt "Hello world"
 ./bin/llm-test openrouter-token-usage --prompt "Hello world"
 ./bin/llm-test vertex-token-usage --prompt "Hello world"
+./bin/llm-test azure-token-usage --prompt "Hello world" --model gpt-4o
 
 # Structured output tests
 ./bin/llm-test anthropic-structured-output
@@ -455,6 +501,7 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test bedrock-structured-output
 ./bin/llm-test openrouter-structured-output --model moonshotai/kimi-k2
 ./bin/llm-test vertex-structured-output
+./bin/llm-test azure-structured-output --model gpt-4o
 
 # Image understanding tests (all providers have same 3 tests)
 ./bin/llm-test anthropic-image --model claude-sonnet-4-5-20250929
@@ -462,6 +509,7 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test bedrock-image
 ./bin/llm-test openrouter-image --model openai/gpt-4o-mini
 ./bin/llm-test vertex-image
+./bin/llm-test azure-image --model gpt-4o
 
 # Image tests with custom images
 ./bin/llm-test openai-image --image-url https://example.com/image.jpg
@@ -499,6 +547,14 @@ Streaming tests validate real-time response streaming capabilities across provid
 ./bin/llm-test vertex-streaming-mixed
 ./bin/llm-test vertex-streaming-multiturn
 ./bin/llm-test vertex-streaming-cancellation
+
+# Azure AI streaming
+./bin/llm-test azure-streaming-content --model gpt-4o
+./bin/llm-test azure-streaming-mixed --model gpt-4o
+./bin/llm-test azure-streaming-parallel --model gpt-4o
+./bin/llm-test azure-streaming-func --model gpt-4o
+./bin/llm-test azure-streaming-multiturn --model gpt-4o
+./bin/llm-test azure-streaming-cancellation --model gpt-4o
 ```
 
 ### Test Output

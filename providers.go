@@ -12,6 +12,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
+	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -37,6 +38,7 @@ const (
 	ProviderAnthropic  Provider = "anthropic"
 	ProviderOpenRouter Provider = "openrouter"
 	ProviderVertex     Provider = "vertex"
+	ProviderAzure      Provider = "azure"
 )
 
 // Config holds configuration for LLM initialization
@@ -65,6 +67,15 @@ type ProviderAPIKeys struct {
 	Anthropic  *string
 	Vertex     *string
 	Bedrock    *BedrockConfig
+	Azure      *AzureAPIConfig
+}
+
+// AzureAPIConfig holds Azure-specific configuration
+type AzureAPIConfig struct {
+	Endpoint   string // Azure AI endpoint URL
+	APIKey     string // Azure API key
+	APIVersion string // API version (optional, defaults to 2024-10-21)
+	Region     string // Azure region (optional, for logging)
 }
 
 // BedrockConfig holds Bedrock-specific configuration
@@ -88,6 +99,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeOpenRouterWithFallback(config)
 	case ProviderVertex:
 		llm, err = initializeVertexWithFallback(config)
+	case ProviderAzure:
+		llm, err = initializeAzureWithFallback(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -639,6 +652,130 @@ func initializeAnthropic(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeAzureWithFallback creates an Azure LLM with fallback models for rate limiting
+func initializeAzureWithFallback(config Config) (llmtypes.Model, error) {
+	// Try primary model first
+	llm, err := initializeAzure(config)
+	if err == nil {
+		return llm, nil
+	}
+
+	// If primary fails and we have fallback models, try them
+	if len(config.FallbackModels) > 0 {
+		logger := config.Logger
+		if logger == nil {
+			logger = &noopLoggerImpl{}
+		}
+		logger.Infof("Primary Azure model failed, trying fallback models - primary_model: %s, fallback_models: %v, error: %s", config.ModelID, config.FallbackModels, err.Error())
+
+		for _, fallbackModel := range config.FallbackModels {
+			fallbackConfig := config
+			fallbackConfig.ModelID = fallbackModel
+
+			llm, err := initializeAzure(fallbackConfig)
+			if err == nil {
+				logger.Infof("Successfully initialized fallback Azure model - fallback_model: %s", fallbackModel)
+				return llm, nil
+			}
+
+			logger.Infof("Fallback Azure model failed - fallback_model: %s, error: %s", fallbackModel, err.Error())
+		}
+	}
+
+	// If all models fail, return the original error
+	return nil, fmt.Errorf("all Azure models failed: %w", err)
+}
+
+// initializeAzure creates and configures an Azure AI LLM instance
+func initializeAzure(config Config) (llmtypes.Model, error) {
+	// LLM Initialization event data
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0, // Will be set at call time
+		TopP:         config.Temperature,
+		User:         "azure_user",
+		CustomFields: map[string]string{
+			"provider":  "azure",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	// Emit LLM initialization start event
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	// Check for Azure config from APIKeys or environment
+	var endpoint, apiKey, apiVersion, region string
+
+	if config.APIKeys != nil && config.APIKeys.Azure != nil {
+		endpoint = config.APIKeys.Azure.Endpoint
+		apiKey = config.APIKeys.Azure.APIKey
+		apiVersion = config.APIKeys.Azure.APIVersion
+		region = config.APIKeys.Azure.Region
+	}
+
+	// Fallback to environment variables
+	if endpoint == "" {
+		endpoint = os.Getenv("AZURE_AI_ENDPOINT")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("AZURE_AI_API_KEY")
+	}
+	if apiVersion == "" {
+		apiVersion = os.Getenv("AZURE_AI_API_VERSION")
+	}
+	if region == "" {
+		region = os.Getenv("AZURE_AI_REGION")
+	}
+
+	// Validate required fields
+	if endpoint == "" {
+		return nil, fmt.Errorf("AZURE_AI_ENDPOINT is required for Azure provider (not found in config or environment)")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("AZURE_AI_API_KEY is required for Azure provider (not found in config or environment)")
+	}
+
+	// Set default model if not specified
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "gpt-4o"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Azure AI LLM - model_id: %s, endpoint: %s, region: %s", modelID, endpoint, region)
+
+	// Create Azure adapter config
+	azureConfig := azureadapter.AzureConfig{
+		Endpoint:   endpoint,
+		APIKey:     apiKey,
+		APIVersion: apiVersion,
+		Region:     region,
+	}
+
+	// Create Azure adapter
+	llm := azureadapter.NewAzureAdapter(azureConfig, modelID, logger)
+
+	// Emit LLM initialization success event
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "azure_user",
+		CustomFields: map[string]string{
+			"provider":     "azure",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+			"endpoint":     endpoint,
+			"region":       region,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Azure AI LLM - model_id: %s", modelID)
+	return llm, nil
+}
+
 // initializeOpenRouter creates and configures an OpenRouter LLM instance
 func initializeOpenRouter(config Config) (llmtypes.Model, error) {
 	// LLM Initialization event data - use typed structure directly
@@ -912,6 +1049,12 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "gemini-2.5-flash"
+	case ProviderAzure:
+		// Get primary model from environment variable
+		if primaryModel := os.Getenv("AZURE_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return "gpt-4o"
 	default:
 		return ""
 	}
@@ -962,6 +1105,19 @@ func GetDefaultFallbackModels(provider Provider) []string {
 	case ProviderVertex:
 		// Get fallback models from environment variable
 		fallbackModelsEnv := os.Getenv("VERTEX_FALLBACK_MODELS")
+		if fallbackModelsEnv != "" {
+			// Split by comma and trim whitespace
+			models := strings.Split(fallbackModelsEnv, ",")
+			for i, model := range models {
+				models[i] = strings.TrimSpace(model)
+			}
+			return models
+		}
+		// No fallback models if environment variable is not set
+		return []string{}
+	case ProviderAzure:
+		// Get fallback models from environment variable
+		fallbackModelsEnv := os.Getenv("AZURE_FALLBACK_MODELS")
 		if fallbackModelsEnv != "" {
 			// Split by comma and trim whitespace
 			models := strings.Split(fallbackModelsEnv, ",")
@@ -1030,10 +1186,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure", provider)
 	}
 }
 
@@ -1628,9 +1784,10 @@ type APIKeyValidationRequest struct {
 
 // APIKeyValidationResponse represents the response for API key validation
 type APIKeyValidationResponse struct {
-	Valid   bool   `json:"valid"`
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Valid            bool                   `json:"valid"`
+	Message          string                 `json:"message,omitempty"`
+	Error            string                 `json:"error,omitempty"`
+	CorrectedOptions map[string]interface{} `json:"corrected_options,omitempty"`
 }
 
 // GetLLMDefaults returns default LLM configurations from environment variables
@@ -1834,6 +1991,7 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	var isValid bool
 	var message string
 	var err error
+	var correctedOptions map[string]interface{}
 
 	fmt.Printf("[API KEY VALIDATION] Validating %s API key\n", req.Provider)
 	switch req.Provider {
@@ -1860,6 +2018,10 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		// Anthropic validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Anthropic API key\n")
 		isValid, message, err = validateAnthropicAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "azure":
+		// Azure AI validation with real GenerateContent call
+		fmt.Printf("[API KEY VALIDATION] Testing Azure AI API key\n")
+		isValid, message, correctedOptions, err = validateAzureAPIKey(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -1885,8 +2047,9 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	}
 
 	return APIKeyValidationResponse{
-		Valid:   isValid,
-		Message: message,
+		Valid:            isValid,
+		Message:          message,
+		CorrectedOptions: correctedOptions,
 	}
 }
 
@@ -2136,6 +2299,216 @@ func validateAnthropicAPIKey(apiKey string, modelID string, options map[string]i
 
 	fmt.Printf("[ANTHROPIC VALIDATION SUCCESS] Anthropic API key is valid\n")
 	return true, fmt.Sprintf("Anthropic API key is valid for model %s", modelID), nil
+}
+
+// validateAzureAPIKey validates an Azure AI API key by making a real GenerateContent call
+// Returns: isValid, message, correctedOptions, error
+func validateAzureAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, map[string]interface{}, error) {
+	fmt.Printf("[AZURE VALIDATION] Starting API key validation for model: %s\n", modelID)
+
+	// Check for required endpoint in options
+	var endpoint string
+	if options != nil {
+		if e, ok := options["endpoint"].(string); ok {
+			endpoint = e
+		}
+	}
+	if endpoint == "" {
+		// Fallback to environment variable
+		endpoint = os.Getenv("AZURE_AI_ENDPOINT")
+	}
+	if endpoint == "" {
+		fmt.Printf("[AZURE VALIDATION WARN] No endpoint provided\n")
+		return false, "Azure endpoint URL is required", nil, nil
+	}
+	fmt.Printf("[AZURE VALIDATION] Endpoint: %s\n", endpoint)
+
+	// Basic validation - API key should not be empty
+	if apiKey == "" {
+		fmt.Printf("[AZURE VALIDATION WARN] API key is empty\n")
+		return false, "Azure API key is required", nil, nil
+	}
+	fmt.Printf("[AZURE VALIDATION] API key format validation passed\n")
+
+	// Use a default model if none provided
+	if modelID == "" {
+		modelID = "gpt-4o"
+		fmt.Printf("[AZURE VALIDATION] Using default model: %s\n", modelID)
+	}
+
+	// Helper to try validation with a specific endpoint and modelID
+	tryValidation := func(testEndpoint string, testModelID string) (bool, string, error) {
+		// Extract optional fields from options
+		var apiVersion, region string
+		if options != nil {
+			if v, ok := options["api_version"].(string); ok {
+				apiVersion = v
+			}
+			if r, ok := options["region"].(string); ok {
+				region = r
+			}
+		}
+
+		// Set environment variables temporarily for initialization
+		originalEndpoint := os.Getenv("AZURE_AI_ENDPOINT")
+		originalKey := os.Getenv("AZURE_AI_API_KEY")
+		originalVersion := os.Getenv("AZURE_AI_API_VERSION")
+		originalRegion := os.Getenv("AZURE_AI_REGION")
+
+		os.Setenv("AZURE_AI_ENDPOINT", testEndpoint)
+		os.Setenv("AZURE_AI_API_KEY", apiKey)
+		if apiVersion != "" {
+			os.Setenv("AZURE_AI_API_VERSION", apiVersion)
+		}
+		if region != "" {
+			os.Setenv("AZURE_AI_REGION", region)
+		}
+		defer func() {
+			// Restore original environment variables
+			if originalEndpoint != "" {
+				os.Setenv("AZURE_AI_ENDPOINT", originalEndpoint)
+			} else {
+				os.Unsetenv("AZURE_AI_ENDPOINT")
+			}
+			if originalKey != "" {
+				os.Setenv("AZURE_AI_API_KEY", originalKey)
+			} else {
+				os.Unsetenv("AZURE_AI_API_KEY")
+			}
+			if originalVersion != "" {
+				os.Setenv("AZURE_AI_API_VERSION", originalVersion)
+			} else {
+				os.Unsetenv("AZURE_AI_API_VERSION")
+			}
+			if originalRegion != "" {
+				os.Setenv("AZURE_AI_REGION", originalRegion)
+			} else {
+				os.Unsetenv("AZURE_AI_REGION")
+			}
+		}()
+
+		// Create a no-op logger for validation
+		noopLog := &noopLoggerImpl{}
+
+		// Extract temperature from options
+		temperature := extractTemperatureFromOptions(options)
+
+		// Create Azure LLM instance
+		fmt.Printf("[AZURE VALIDATION] Creating Azure LLM instance (endpoint: %s, model: %s)\n", testEndpoint, testModelID)
+		config := Config{
+			Provider:    ProviderAzure,
+			ModelID:     testModelID,
+			Temperature: temperature,
+			Logger:      noopLog,
+			Context:     context.Background(),
+		}
+
+		llm, err := initializeAzure(config)
+		if err != nil {
+			return false, fmt.Sprintf("Failed to create Azure LLM instance: %v", err), nil
+		}
+
+		// Create call options from map
+		callOptions := createCallOptionsFromMap(options)
+
+		// Test the LLM with a simple generation call
+		fmt.Printf("[AZURE VALIDATION] Making test generation call to Azure AI\n")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role:  llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
+			},
+		}, callOptions...)
+		if err != nil {
+			// Check for specific error types
+			if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "Unauthorized") {
+				return false, "Invalid Azure API key", nil
+			}
+			if strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "429") {
+				return false, "Azure API rate limit exceeded", nil
+			}
+			if strings.Contains(err.Error(), "timeout") {
+				return false, "Azure service timeout - check network connectivity", nil
+			}
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "unknown_model") || strings.Contains(err.Error(), "Unknown model") || strings.Contains(err.Error(), "DeploymentNotFound") {
+				return false, fmt.Sprintf("Model '%s' not found or endpoint incorrect", testModelID), nil
+			}
+			return false, fmt.Sprintf("Azure test generation failed: %v", err), nil
+		}
+
+		return true, fmt.Sprintf("Azure API key is valid for model %s", testModelID), nil
+	}
+
+	// Clean Model ID: strip date suffix like -2026-01-14
+	cleanModelID := modelID
+	if parts := strings.Split(modelID, "-20"); len(parts) > 1 {
+		cleanModelID = parts[0]
+	}
+
+	// Try combinations
+	endpoints := []string{endpoint}
+	
+	// Case 1: services.ai.azure.com -> cognitiveservices.azure.com
+	if strings.Contains(endpoint, "services.ai.azure.com") {
+		parts := strings.Split(endpoint, "services.ai.azure.com")
+		if len(parts) > 0 {
+			prefix := parts[0]
+			if strings.HasPrefix(prefix, "https://") {
+				resourceName := strings.TrimPrefix(prefix, "https://")
+				resourceName = strings.TrimSuffix(resourceName, ".")
+				if resourceName != "" {
+					derivedEndpoint := fmt.Sprintf("https://%s.cognitiveservices.azure.com/", resourceName)
+					endpoints = append(endpoints, derivedEndpoint)
+				}
+			}
+		}
+	}
+
+	models := []string{modelID}
+	if cleanModelID != modelID {
+		models = append(models, cleanModelID)
+	}
+
+	var lastMessage string
+	var lastErr error
+
+	for _, testEndpoint := range endpoints {
+		for _, testModel := range models {
+			isValid, message, err := tryValidation(testEndpoint, testModel)
+			if isValid {
+				// Success! Check if we need to return corrected options
+				correctedOptions := make(map[string]interface{})
+				if options != nil {
+					for k, v := range options {
+						correctedOptions[k] = v
+					}
+				}
+				
+				isCorrected := false
+				if testEndpoint != endpoint {
+					correctedOptions["endpoint"] = testEndpoint
+					isCorrected = true
+				}
+				if testModel != modelID {
+					correctedOptions["model_id"] = testModel
+					isCorrected = true
+				}
+
+				if isCorrected {
+					msg := fmt.Sprintf("%s (Note: We automatically optimized your configuration to endpoint: %s, model: %s)", message, testEndpoint, testModel)
+					return true, msg, correctedOptions, nil
+				}
+				return true, message, nil, nil
+			}
+			lastMessage = message
+			lastErr = err
+		}
+	}
+
+	return false, lastMessage, nil, lastErr
 }
 
 // validateVertexCredentials validates Vertex AI OAuth credentials (gcloud/service account/ADC)

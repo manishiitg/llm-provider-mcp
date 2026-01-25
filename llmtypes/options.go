@@ -185,3 +185,10 @@ func WithThinkingBudget(budget int) CallOption {
 		opts.ThinkingBudget = budget
 	}
 }
+
+// WithAllowedTools sets the list of explicitly allowed tools for the model (e.g., gpt-5.2-codex)
+func WithAllowedTools(tools []string) CallOption {
+	return func(opts *CallOptions) {
+		opts.AllowedTools = tools
+	}
+}

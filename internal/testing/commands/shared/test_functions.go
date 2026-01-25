@@ -3226,6 +3226,88 @@ func RunImageTest(llm llmtypes.Model, modelID string, imagePath, imageURL string
 }
 
 // logTokenUsage logs token usage information
+// RunCodexAgenticTest runs specialized agentic tests for gpt-5.2-codex
+func RunCodexAgenticTest(ctx context.Context, llm llmtypes.Model, modelID string) {
+	log.Printf("🚀 Testing agentic capabilities of %s", modelID)
+
+	// Define complex tools for agentic reasoning
+	searchRepoTool := llmtypes.Tool{
+		Type: "function",
+		Function: &llmtypes.FunctionDefinition{
+			Name:        "search_repository",
+			Description: "Searches for a keyword in the repository",
+			Parameters: llmtypes.NewParameters(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Keyword to search for",
+					},
+				},
+				"required": []string{"query"},
+			}),
+		},
+	}
+
+	terminalTool := llmtypes.Tool{
+		Type: "function",
+		Function: &llmtypes.FunctionDefinition{
+			Name:        "execute_terminal_command",
+			Description: "Executes a shell command",
+			Parameters: llmtypes.NewParameters(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"command": map[string]interface{}{
+						"type":        "string",
+						"description": "The shell command to run",
+					},
+				},
+				"required": []string{"command"},
+			}),
+		},
+	}
+
+	messages := []llmtypes.MessageContent{
+		llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "I need to find where the 'recorder' logic is implemented in this repo. Please search the repository and then list the files in that directory using the terminal."),
+	}
+
+	startTime := time.Now()
+	// Use AllowedTools to restrict the agent
+	resp, err := llm.GenerateContent(ctx, messages,
+		llmtypes.WithModel(modelID),
+		llmtypes.WithTools([]llmtypes.Tool{searchRepoTool, terminalTool}),
+		// llmtypes.WithAllowedTools([]string{"search_repository", "execute_terminal_command"}), // Removed as it causes "Unknown parameter" error
+		llmtypes.WithReasoningEffort("high"),
+	)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		log.Printf("❌ Codex Agentic test failed: %v", err)
+		return
+	}
+
+	if len(resp.Choices) == 0 {
+		log.Printf("❌ Test failed - no choices returned")
+		return
+	}
+
+	choice := resp.Choices[0]
+	log.Printf("✅ Codex Agentic test passed in %s", duration)
+
+	if len(choice.ToolCalls) > 0 {
+		log.Printf("✅ Agent decided to call %d tools", len(choice.ToolCalls))
+		for i, tc := range choice.ToolCalls {
+			log.Printf("   [%d] Tool: %s, Args: %s", i+1, tc.FunctionCall.Name, tc.FunctionCall.Arguments)
+		}
+	} else if choice.Content != "" {
+		log.Printf("📝 Model Response: %s", choice.Content)
+	}
+
+	if resp.Usage != nil {
+		log.Printf("📊 Usage: Input=%d, Output=%d, Total=%d", resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+	}
+}
+
 func logTokenUsage(info *llmtypes.GenerationInfo) {
 	if info == nil {
 		return

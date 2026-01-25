@@ -3,6 +3,7 @@ package utils
 import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -23,6 +24,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Vertex
 	allModels = append(allModels, vertex.GetAllVertexGeminiModels()...)
+
+	// Azure - static models (dynamic API requires endpoint/key at runtime)
+	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
 
 	// OpenRouter - fetch dynamically from API (cached for 24 hours)
 	openRouterModels := openai.GetAllOpenRouterModels()

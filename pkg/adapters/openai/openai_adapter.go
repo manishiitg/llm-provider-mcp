@@ -1,10 +1,15 @@
 package openai
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -109,10 +114,6 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		// Don't set temperature - OpenAI will use default
 	}
 
-	// Note: max_tokens is omitted - OpenAI API will use model defaults
-	// Some newer models (o1, o3, o4, gpt-4.1) don't support max_tokens and require max_completion_tokens instead
-	// To avoid parameter compatibility issues, we omit it entirely
-
 	// Handle JSON Schema structured outputs
 	if opts.JSONSchema != nil {
 		schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
@@ -153,8 +154,6 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 	}
 
 	// Handle verbosity (for reasoning models)
-	// Valid values: "low", "medium", "high"
-	// Lower values result in more concise responses, higher values result in more verbose responses
 	if opts.Verbosity != "" {
 		if o.logger != nil {
 			o.logger.Debugf("Setting verbosity to: %s", opts.Verbosity)
@@ -166,6 +165,36 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 
 	// Check if we're using OpenRouter and need to add usage parameter
 	isOpenRouter := strings.Contains(modelID, "/")
+	
+	// Check if this is an agentic model that requires the Responses API
+	if isAgenticModel(modelID) && !isOpenRouter {
+		// Check for recorder in context
+		rec, _ := recorder.FromContext(ctx)
+		if rec != nil {
+			if rec.IsReplayEnabled() {
+				// Build request info for matching
+				requestInfo := buildRequestInfo(messages, modelID, opts)
+
+				// Load recorded response
+				recordedResponse, err := rec.LoadResponsesAPIResponse(requestInfo)
+				if err != nil {
+					if o.logger != nil {
+						o.logger.Errorf("Failed to load recorded Responses API response: %v", err)
+					}
+					return nil, fmt.Errorf("failed to load recorded Responses API response: %w", err)
+				}
+
+				if o.logger != nil {
+					o.logger.Infof("▶️  [RECORDER] Replaying recorded OpenAI Responses API response")
+				}
+
+				return o.convertResponsesAPIResponse(recordedResponse)
+			}
+		}
+
+		return o.runRawResponsesAPI(ctx, modelID, messages, opts)
+	}
+
 	if isOpenRouter && opts.Metadata != nil && opts.Metadata.Usage != nil && opts.Metadata.Usage.Include {
 		// OpenRouter requires usage: {include: true} to get cache token information
 		// Use SetExtraFields to inject this custom parameter
@@ -1726,6 +1755,390 @@ func (o *OpenAIAdapter) logErrorDetails(modelID string, messages []llmtypes.Mess
 
 	// Also log input details for full context
 	o.logInputDetails(modelID, messages, params, opts)
+}
+
+// isAgenticModel checks if a model is an agentic model (e.g., gpt-5.2-codex) that requires the Responses API
+func isAgenticModel(modelID string) bool {
+	modelIDLower := strings.ToLower(modelID)
+	return strings.Contains(modelIDLower, "codex") && strings.Contains(modelIDLower, "gpt-5.2")
+}
+
+// runRawResponsesAPI makes a direct HTTP call to the /responses API for agentic models
+func (o *OpenAIAdapter) runRawResponsesAPI(ctx context.Context, modelID string, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	// Handle native streaming if requested
+	if opts.StreamChan != nil {
+		return o.executeResponsesStreamingRequest(ctx, modelID, messages, opts)
+	}
+
+	return o.executeResponsesRequest(ctx, modelID, messages, opts)
+}
+
+// executeResponsesStreamingRequest handles native SSE streaming for the Responses API
+func (o *OpenAIAdapter) executeResponsesStreamingRequest(ctx context.Context, modelID string, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	// Convert messages to Responses API format
+	apiMessages := convertMessagesForResponsesAPI(messages)
+
+	// Construct the Responses API payload with stream: true
+	payload := map[string]interface{}{
+		"model":  modelID,
+		"input":  apiMessages,
+		"stream": true,
+	}
+
+	// Add tools if provided
+	if len(opts.Tools) > 0 {
+		apiTools := make([]map[string]interface{}, 0, len(opts.Tools))
+		for _, t := range opts.Tools {
+			if t.Function == nil {
+				continue
+			}
+			toolObj := map[string]interface{}{
+				"name": t.Function.Name,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        t.Function.Name,
+					"description": t.Function.Description,
+					"parameters":  t.Function.Parameters,
+				},
+			}
+			apiTools = append(apiTools, toolObj)
+		}
+		payload["tools"] = apiTools
+	}
+
+	// Handle tool choice
+	if opts.ToolChoice != nil && opts.ToolChoice.Type != "" {
+		payload["tool_choice"] = opts.ToolChoice.Type
+	}
+
+	// Handle allowed_tools
+	if len(opts.AllowedTools) > 0 {
+		payload["allowed_tools"] = opts.AllowedTools
+	}
+
+	// Construct full URL
+	responsesURL := "https://api.openai.com/v1/responses"
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", responsesURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create responses request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req) //nolint:bodyclose // Body closed in goroutine at line 1852 or error paths
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		return nil, fmt.Errorf("execute responses streaming request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("responses API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Process SSE stream in a goroutine
+	go func() {
+		defer resp.Body.Close()
+		defer close(opts.StreamChan)
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				continue
+			}
+
+			eventType, _ := event["type"].(string)
+			switch eventType {
+			case "response.output_text.delta":
+				if delta, ok := event["delta"].(string); ok {
+					opts.StreamChan <- llmtypes.StreamChunk{
+						Type:    llmtypes.StreamChunkTypeContent,
+						Content: delta,
+					}
+				}
+			case "response.output_item.done":
+				// Handle completed item (could be message or tool call)
+				if item, ok := event["item"].(map[string]interface{}); ok {
+					itemType, _ := item["type"].(string)
+					if itemType == "function_call" {
+						callID, _ := item["call_id"].(string)
+						callName, _ := item["name"].(string)
+						callArgs, _ := item["arguments"].(string)
+
+						tc := llmtypes.ToolCall{
+							ID:   callID,
+							Type: "function",
+							FunctionCall: &llmtypes.FunctionCall{
+								Name:      callName,
+								Arguments: callArgs,
+							},
+						}
+						opts.StreamChan <- llmtypes.StreamChunk{
+							Type:     llmtypes.StreamChunkTypeToolCall,
+							ToolCall: &tc,
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	return nil, nil
+}
+
+// executeResponsesRequest handles the actual HTTP request to the Responses API
+func (o *OpenAIAdapter) executeResponsesRequest(ctx context.Context, modelID string, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	// Convert messages to Responses API format
+	apiMessages := convertMessagesForResponsesAPI(messages)
+
+	// Construct the Responses API payload
+	payload := map[string]interface{}{
+		"model": modelID,
+		"input": apiMessages,
+	}
+
+	// Add tools if provided (Responses API requires tool name at top level)
+	if len(opts.Tools) > 0 {
+		apiTools := make([]map[string]interface{}, 0, len(opts.Tools))
+		for _, t := range opts.Tools {
+			if t.Function == nil {
+				continue
+			}
+			toolObj := map[string]interface{}{
+				"name": t.Function.Name,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        t.Function.Name,
+					"description": t.Function.Description,
+					"parameters":  t.Function.Parameters,
+				},
+			}
+			apiTools = append(apiTools, toolObj)
+		}
+		payload["tools"] = apiTools
+	}
+
+	// Handle tool choice
+	if opts.ToolChoice != nil {
+		if opts.ToolChoice.Type != "" {
+			payload["tool_choice"] = opts.ToolChoice.Type
+		}
+	}
+
+	// Handle allowed_tools
+	if len(opts.AllowedTools) > 0 {
+		payload["allowed_tools"] = opts.AllowedTools
+	}
+
+	// Construct full URL
+	// Note: In OpenAIAdapter, we assume standard OpenAI URL structure if not provided via client options
+	// For simplicity, we can try to extract it or use a default
+	responsesURL := "https://api.openai.com/v1/responses"
+
+	// Create request
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", responsesURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create responses request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	// Note: We need the API key here. Standard OpenAI client might not expose it easily
+	// In this adapter, we might need to store it or expect it via environment
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	// Execute request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute responses request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read responses response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("responses API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var apiResponse map[string]interface{}
+	if err := json.Unmarshal(body, &apiResponse); err != nil {
+		return nil, fmt.Errorf("unmarshal responses response: %w", err)
+	}
+
+	// Record response if recording is enabled
+	rec, _ := recorder.FromContext(ctx)
+	if rec != nil && rec.IsRecordingEnabled() {
+		requestInfo := buildRequestInfo(messages, modelID, opts)
+		filePath, err := rec.RecordResponsesAPIResponse(apiResponse, requestInfo)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Errorf("Failed to save recorded Responses API response: %v", err)
+			}
+		} else if o.logger != nil {
+			o.logger.Infof("📹 [RECORDER] Saved Responses API response to %s", filePath)
+		}
+	}
+
+	return o.convertResponsesAPIResponse(apiResponse)
+}
+
+// convertMessagesForResponsesAPI converts llmtypes messages to Responses API format
+func convertMessagesForResponsesAPI(messages []llmtypes.MessageContent) []map[string]interface{} {
+	apiMessages := make([]map[string]interface{}, 0, len(messages))
+
+	for _, msg := range messages {
+		role := string(msg.Role)
+		// Map internal roles to API roles
+		switch msg.Role {
+		case llmtypes.ChatMessageTypeHuman:
+			role = "user"
+		case llmtypes.ChatMessageTypeAI:
+			role = "assistant"
+		case llmtypes.ChatMessageTypeSystem:
+			role = "system"
+		case llmtypes.ChatMessageTypeTool:
+			role = "tool"
+		}
+
+		// Extract content
+		var content string
+		for _, part := range msg.Parts {
+			if textPart, ok := part.(llmtypes.TextContent); ok {
+				content += textPart.Text
+			}
+		}
+
+		apiMessages = append(apiMessages, map[string]interface{}{
+			"role":    role,
+			"content": content,
+		})
+	}
+
+	return apiMessages
+}
+
+// convertResponsesAPIResponse converts the Responses API output format to llmtypes.ContentResponse
+func (o *OpenAIAdapter) convertResponsesAPIResponse(apiResponse map[string]interface{}) (*llmtypes.ContentResponse, error) {
+	output, ok := apiResponse["output"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("responses output missing or invalid")
+	}
+
+	contentResponse := &llmtypes.ContentResponse{
+		Choices: []*llmtypes.ContentChoice{},
+	}
+
+	choice := &llmtypes.ContentChoice{}
+	toolCalls := []llmtypes.ToolCall{}
+
+	for _, item := range output {
+		block, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		blockType, _ := block["type"].(string)
+		switch blockType {
+		case "message":
+			contentArr, _ := block["content"].([]interface{})
+			for _, c := range contentArr {
+				contentObj, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				contentType, _ := contentObj["type"].(string)
+				if contentType == "output_text" {
+					text, _ := contentObj["text"].(string)
+					choice.Content += text
+				}
+			}
+		case "function_call": // Tool call block (Responses API uses "function_call")
+			callID, _ := block["call_id"].(string) // Note: use call_id, not id
+			callName, _ := block["name"].(string)
+			callArgs, _ := block["arguments"].(string)
+			toolCalls = append(toolCalls, llmtypes.ToolCall{
+				ID:   callID,
+				Type: "function",
+				FunctionCall: &llmtypes.FunctionCall{
+					Name:      callName,
+					Arguments: callArgs,
+				},
+			})
+		case "call": // Older/alternative format check
+			callID, _ := block["id"].(string)
+			callName, _ := block["name"].(string)
+			callArgs, _ := block["arguments"].(string)
+			toolCalls = append(toolCalls, llmtypes.ToolCall{
+				ID:   callID,
+				Type: "function",
+				FunctionCall: &llmtypes.FunctionCall{
+					Name:      callName,
+					Arguments: callArgs,
+				},
+			})
+		}
+	}
+
+	choice.ToolCalls = toolCalls
+	contentResponse.Choices = append(contentResponse.Choices, choice)
+
+	// Extract usage
+	if usageMap, ok := apiResponse["usage"].(map[string]interface{}); ok {
+		inputTokens := 0
+		outputTokens := 0
+		if it, ok := usageMap["input_tokens"].(float64); ok {
+			inputTokens = int(it)
+		}
+		if ot, ok := usageMap["output_tokens"].(float64); ok {
+			outputTokens = int(ot)
+		}
+
+		contentResponse.Usage = &llmtypes.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		}
+	}
+
+	return contentResponse, nil
 }
 
 // buildRequestInfo creates a RequestInfo from messages and options for recording/matching
