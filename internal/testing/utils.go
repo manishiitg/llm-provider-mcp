@@ -38,16 +38,16 @@ func GetTracingInfo() map[string]interface{} {
 	tracingProvider := os.Getenv("TRACING_PROVIDER")
 	publicKey := os.Getenv("LANGFUSE_PUBLIC_KEY")
 	secretKey := os.Getenv("LANGFUSE_SECRET_KEY")
-	host := os.Getenv("LANGFUSE_HOST")
+	host := os.Getenv("LANGFUSE_BASE_URL")
 
 	if host == "" {
 		host = "https://cloud.langfuse.com"
 	}
 
 	return map[string]interface{}{
-		"tracing_provider": tracingProvider,
-		"langfuse_enabled": tracingProvider == "langfuse" && publicKey != "" && secretKey != "",
-		"langfuse_host":    host,
-		"has_credentials":  publicKey != "" && secretKey != "",
+		"tracing_provider":  tracingProvider,
+		"langfuse_enabled":  tracingProvider == "langfuse" && publicKey != "" && secretKey != "",
+		"langfuse_base_url": host,
+		"has_credentials":   publicKey != "" && secretKey != "",
 	}
 }
