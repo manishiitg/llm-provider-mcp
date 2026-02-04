@@ -48,7 +48,7 @@ func (v *VertexAnthropicAdapter) GetModelID() string {
 func (v *VertexAnthropicAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	// Guard against empty modelID - use default Anthropic model if not provided
 	if modelID == "" {
-		modelID = anthropic.ModelClaude35Sonnet
+		modelID = anthropic.ModelClaudeSonnet45
 	}
 
 	// Get metadata from Anthropic package

@@ -62,7 +62,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(modelID),
 		Messages:  anthropicMessages,
-		MaxTokens: 4096, // Default max tokens
+		MaxTokens: 32768, // High default - API will cap to model's max if exceeded
 	}
 
 	// Set system message if present
