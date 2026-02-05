@@ -1771,6 +1771,8 @@ type LLMDefaultsResponse struct {
 	OpenrouterConfig map[string]interface{} `json:"openrouter_config"`
 	BedrockConfig    map[string]interface{} `json:"bedrock_config"`
 	OpenaiConfig     map[string]interface{} `json:"openai_config"`
+	AnthropicConfig  map[string]interface{} `json:"anthropic_config"`
+	AzureConfig      map[string]interface{} `json:"azure_config"`
 	AvailableModels  map[string][]string    `json:"available_models"`
 }
 
@@ -1946,6 +1948,18 @@ func GetLLMDefaults() LLMDefaultsResponse {
 		}
 	}
 
+	// Anthropic configuration
+	anthropicModel := os.Getenv("ANTHROPIC_PRIMARY_MODEL")
+	if anthropicModel == "" {
+		anthropicModel = "claude-sonnet-4-20250514"
+	}
+	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
+
+	// Azure configuration
+	azureModel := os.Getenv("AZURE_PRIMARY_MODEL")
+	azureAPIKey := os.Getenv("AZURE_AI_API_KEY")
+	azureEndpoint := os.Getenv("AZURE_AI_ENDPOINT")
+
 	// Build response
 	return LLMDefaultsResponse{
 		PrimaryConfig: map[string]interface{}{
@@ -1959,7 +1973,7 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"model_id":                defaultModel,
 			"fallback_models":         fallbackModels,
 			"cross_provider_fallback": crossProviderFallback,
-			"api_key":                 openrouterAPIKey, // Prefill from environment if available
+			"api_key":                 openrouterAPIKey,
 		},
 		BedrockConfig: map[string]interface{}{
 			"provider":                "bedrock",
@@ -1973,12 +1987,27 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"model_id":                openaiModel,
 			"fallback_models":         openaiFallbacks,
 			"cross_provider_fallback": openaiCrossProviderFallback,
-			"api_key":                 openaiAPIKey, // Prefill from environment if available
+			"api_key":                 openaiAPIKey,
+		},
+		AnthropicConfig: map[string]interface{}{
+			"provider":        "anthropic",
+			"model_id":        anthropicModel,
+			"fallback_models": []string{},
+			"api_key":         anthropicAPIKey,
+		},
+		AzureConfig: map[string]interface{}{
+			"provider":        "azure",
+			"model_id":        azureModel,
+			"fallback_models": []string{},
+			"api_key":         azureAPIKey,
+			"endpoint":        azureEndpoint,
 		},
 		AvailableModels: map[string][]string{
 			"bedrock":    getBedrockAvailableModels(),
 			"openrouter": getOpenRouterAvailableModels(),
 			"openai":     getOpenAIAvailableModels(),
+			"anthropic":  getAnthropicAvailableModels(),
+			"azure":      getAzureAvailableModels(),
 		},
 	}
 }
@@ -2935,6 +2964,44 @@ func getOpenAIAvailableModels() []string {
 	}
 	if modelsStr == "" {
 		// Return empty array if no environment variable is set
+		return []string{}
+	}
+
+	// Parse comma-separated models
+	models := strings.Split(modelsStr, ",")
+	for i, model := range models {
+		models[i] = strings.TrimSpace(model)
+	}
+	return models
+}
+
+// getAnthropicAvailableModels returns available Anthropic models from environment variables
+func getAnthropicAvailableModels() []string {
+	// Get from environment variable
+	modelsStr := os.Getenv("ANTHROPIC_AVAILABLE_MODELS")
+	if modelsStr == "" {
+		modelsStr = os.Getenv("ANTHROPIC_MODELS")
+	}
+	if modelsStr == "" {
+		return []string{}
+	}
+
+	// Parse comma-separated models
+	models := strings.Split(modelsStr, ",")
+	for i, model := range models {
+		models[i] = strings.TrimSpace(model)
+	}
+	return models
+}
+
+// getAzureAvailableModels returns available Azure models from environment variables
+func getAzureAvailableModels() []string {
+	// Get from environment variable
+	modelsStr := os.Getenv("AZURE_AVAILABLE_MODELS")
+	if modelsStr == "" {
+		modelsStr = os.Getenv("AZURE_MODELS")
+	}
+	if modelsStr == "" {
 		return []string{}
 	}
 
