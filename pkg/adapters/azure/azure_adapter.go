@@ -902,16 +902,24 @@ func (a *AzureAdapter) executeResponsesStreamingRequest(ctx context.Context, mod
 		return nil, fmt.Errorf("responses API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Process SSE stream in a goroutine
+	// Process SSE stream; wait for completion so we can return an accumulated response
+	// (callers like the provider expect a non-nil response to avoid "response is nil" error)
 	var accumulatedContent strings.Builder
-	// Use map to accumulate tool call items if needed for multi-part tool calls in future
 	toolCallMap := make(map[string]*llmtypes.ToolCall)
+	done := make(chan struct{})
 
 	go func() {
 		defer resp.Body.Close()
 		defer close(opts.StreamChan)
+		defer close(done)
 
 		scanner := bufio.NewScanner(resp.Body)
+		// Increase buffer size to handle large events (e.g. response.created with many tools)
+		// Default is 64KB, increasing to 5MB
+		const maxCapacity = 5 * 1024 * 1024
+		buf := make([]byte, maxCapacity)
+		scanner.Buffer(buf, maxCapacity)
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
@@ -936,6 +944,67 @@ func (a *AzureAdapter) executeResponsesStreamingRequest(ctx context.Context, mod
 					opts.StreamChan <- llmtypes.StreamChunk{
 						Type:    llmtypes.StreamChunkTypeContent,
 						Content: delta,
+					}
+				}
+			case "response.output_text.done":
+				// Fallback: some deployments send full text only in .done (e.g. gpt-5.2)
+				// Only use if we haven't received any content via deltas
+				if text, ok := event["text"].(string); ok && text != "" {
+					if accumulatedContent.Len() == 0 {
+						accumulatedContent.WriteString(text)
+						opts.StreamChan <- llmtypes.StreamChunk{
+							Type:    llmtypes.StreamChunkTypeContent,
+							Content: text,
+						}
+					}
+				}
+			case "response.content_part.done":
+				// Fallback: full text in part.text when content part is done
+				if part, ok := event["part"].(map[string]interface{}); ok {
+					if partType, _ := part["type"].(string); partType == "output_text" {
+						if text, ok := part["text"].(string); ok && text != "" {
+							if accumulatedContent.Len() == 0 {
+								accumulatedContent.WriteString(text)
+								opts.StreamChan <- llmtypes.StreamChunk{
+									Type:    llmtypes.StreamChunkTypeContent,
+									Content: text,
+								}
+							}
+						}
+					}
+				}
+			case "response.completed":
+				// Azure may send full output only in response.completed (e.g. gpt-5.2)
+				if respObj, ok := event["response"].(map[string]interface{}); ok {
+					if outputArr, ok := respObj["output"].([]interface{}); ok {
+						for _, outItem := range outputArr {
+							item, _ := outItem.(map[string]interface{})
+							if item == nil {
+								continue
+							}
+							if itemType, _ := item["type"].(string); itemType != "message" {
+								continue
+							}
+							if contentArr, ok := item["content"].([]interface{}); ok {
+								for _, c := range contentArr {
+									part, _ := c.(map[string]interface{})
+									if part == nil {
+										continue
+									}
+									if partType, _ := part["type"].(string); partType == "output_text" {
+										if text, ok := part["text"].(string); ok && text != "" {
+											if accumulatedContent.Len() == 0 {
+												accumulatedContent.WriteString(text)
+												opts.StreamChan <- llmtypes.StreamChunk{
+													Type:    llmtypes.StreamChunkTypeContent,
+													Content: text,
+												}
+											}
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			case "response.output_item.done":
@@ -965,17 +1034,39 @@ func (a *AzureAdapter) executeResponsesStreamingRequest(ctx context.Context, mod
 				}
 			}
 		}
+
+		if err := scanner.Err(); err != nil {
+			if a.logger != nil {
+				a.logger.Errorf("Azure SSE scanner error: %v", err)
+			}
+		}
 	}()
 
-	// Return a placeholder or wait if necessary? 
-	// For GenerateContent with StreamChan, the pattern is to return a response structure 
-	// but the content will be in the stream. However, langchaingo patterns often 
-	// return the full response at the end too.
-	// Since we are running the scanner in a goroutine, we return nil, nil 
-	// or we can wait for completion if we want to return the full response.
-	// Most callers of streaming expect nil response and then read from chan.
-	
-	return nil, nil
+	// Wait for stream to finish so we can return a non-nil response (avoids "all LLMs failed: response is nil")
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-done:
+	}
+
+	// Build response from accumulated content and tool calls
+	var toolCalls []llmtypes.ToolCall
+	for _, tc := range toolCallMap {
+		toolCalls = append(toolCalls, *tc)
+	}
+	stopReason := "stop"
+	if len(toolCalls) > 0 {
+		stopReason = "tool_calls"
+	}
+	choices := []*llmtypes.ContentChoice{{
+		Content:    accumulatedContent.String(),
+		StopReason: stopReason,
+		ToolCalls:  toolCalls,
+	}}
+	return &llmtypes.ContentResponse{
+		Choices: choices,
+		Usage:   nil, // Responses API stream may not include usage in SSE events
+	}, nil
 }
 
 // executeResponsesRequest handles the actual HTTP request to the Responses API
