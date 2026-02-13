@@ -170,11 +170,16 @@ func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 		}
 	}
 
-	// Handle tool choice - only set when tools are provided
-	if opts.ToolChoice != nil && len(opts.Tools) > 0 {
-		toolChoice := convertToolChoice(opts.ToolChoice)
-		if toolChoice != nil {
-			params.ToolChoice = *toolChoice
+	// Convert tools if provided (required for SDK path — mirrors OpenAI adapter)
+	if len(opts.Tools) > 0 {
+		params.Tools = convertTools(opts.Tools)
+
+		// Handle tool choice - only set when tools are provided
+		if opts.ToolChoice != nil {
+			toolChoice := convertToolChoice(opts.ToolChoice)
+			if toolChoice != nil {
+				params.ToolChoice = *toolChoice
+			}
 		}
 	}
 
@@ -625,6 +630,65 @@ func convertToolChoice(toolChoice interface{}) *openai.ChatCompletionToolChoiceO
 		OfAuto: param.NewOpt("auto"),
 	}
 	return &result
+}
+
+// convertTools converts llmtypes tools to OpenAI SDK tools format for the Azure SDK path.
+// This mirrors the OpenAI adapter's convertTools function since both use the same SDK.
+func convertTools(llmTools []llmtypes.Tool) []openai.ChatCompletionToolUnionParam {
+	openaiTools := make([]openai.ChatCompletionToolUnionParam, 0, len(llmTools))
+
+	for _, tool := range llmTools {
+		if tool.Function == nil {
+			continue
+		}
+
+		var parameters shared.FunctionParameters
+		if tool.Function.Parameters != nil {
+			paramsMap := make(map[string]interface{})
+			if tool.Function.Parameters.Type != "" {
+				paramsMap["type"] = tool.Function.Parameters.Type
+			}
+			if len(tool.Function.Parameters.Properties) > 0 {
+				paramsMap["properties"] = tool.Function.Parameters.Properties
+			}
+			if len(tool.Function.Parameters.Required) > 0 {
+				paramsMap["required"] = tool.Function.Parameters.Required
+			}
+			if tool.Function.Parameters.AdditionalProperties != nil {
+				paramsMap["additionalProperties"] = tool.Function.Parameters.AdditionalProperties
+			}
+			if tool.Function.Parameters.PatternProperties != nil {
+				paramsMap["patternProperties"] = tool.Function.Parameters.PatternProperties
+			}
+			if tool.Function.Parameters.Additional != nil {
+				for k, v := range tool.Function.Parameters.Additional {
+					paramsMap[k] = v
+				}
+			}
+			// OpenAI requires properties to be present when type is "object"
+			if paramsMap["type"] == "object" {
+				if _, hasProperties := paramsMap["properties"]; !hasProperties {
+					paramsMap["properties"] = map[string]interface{}{
+						"_": map[string]interface{}{
+							"type":        "string",
+							"description": "Unused parameter",
+						},
+					}
+				}
+			}
+			parameters = shared.FunctionParameters(paramsMap)
+		}
+
+		functionDef := shared.FunctionDefinitionParam{
+			Name:        tool.Function.Name,
+			Description: param.NewOpt(tool.Function.Description),
+			Parameters:  parameters,
+		}
+
+		openaiTools = append(openaiTools, openai.ChatCompletionFunctionTool(functionDef))
+	}
+
+	return openaiTools
 }
 
 // hasTemperatureRestrictions checks if a model only supports default temperature (1.0)
