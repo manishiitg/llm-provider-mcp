@@ -9,6 +9,10 @@ import (
 
 // Anthropic model name constants
 const (
+	// Claude 4.6 Series
+	ModelClaudeOpus46   = "claude-opus-4-6"
+	ModelClaudeSonnet46 = "claude-sonnet-4-6"
+
 	// Claude 4.5 Series
 	ModelClaudeSonnet45 = "claude-sonnet-4-5"
 	ModelClaudeHaiku45  = "claude-haiku-4-5"
@@ -36,6 +40,29 @@ func normalizeToBaseModel(modelID string) string {
 // getAnthropicModels returns the map of Anthropic model metadata
 func getAnthropicModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
+		// Claude 4.6 Series
+		ModelClaudeOpus46: {
+			ModelID:                         ModelClaudeOpus46,
+			ModelName:                       "Claude Opus 4.6",
+			ContextWindow:                   200000, // 200k tokens (1M beta available)
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           25.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.50, // Cache read pricing (10% of base)
+			CachedInputCostWritePer1MTokens: 6.25, // Cache write pricing (1.25x base input: 5.00 * 1.25)
+			Provider:                        "anthropic",
+		},
+		ModelClaudeSonnet46: {
+			ModelID:                         ModelClaudeSonnet46,
+			ModelName:                       "Claude Sonnet 4.6",
+			ContextWindow:                   200000, // 200k tokens (1M beta available)
+			InputCostPer1MTokens:            3.00,
+			OutputCostPer1MTokens:           15.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.30, // Cache read pricing (10% of base)
+			CachedInputCostWritePer1MTokens: 3.75, // Cache write pricing (1.25x base input: 3.00 * 1.25)
+			Provider:                        "anthropic",
+		},
 		// Claude 4.5 Series
 		ModelClaudeSonnet45: {
 			ModelID:                         ModelClaudeSonnet45,
