@@ -1822,6 +1822,11 @@ func WithOpenRouterUsage() CallOption {
 	}
 }
 
+// WithMCPConfig sets the MCP configuration JSON string for the Claude Code adapter session.
+func WithMCPConfig(config string) CallOption {
+	return claudecodeadapter.WithMCPConfig(config)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
