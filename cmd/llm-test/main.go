@@ -8,6 +8,7 @@ import (
 	anthropiccmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/anthropic"
 	azurecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/azure"
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
+	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
 	sharedcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/shared"
@@ -98,6 +99,10 @@ func main() {
 	rootCmd.AddCommand(azurecmd.AzureStreamingCancellationTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureModelMetadataTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureResponsesTestCmd)
+	rootCmd.AddCommand(claudecodecmd.ClaudeCodeCmd)
+	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingContentTestCmd)
+	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(claudecodecmd.ClaudeCodePermissionTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

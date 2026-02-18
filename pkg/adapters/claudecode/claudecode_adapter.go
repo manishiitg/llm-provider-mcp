@@ -121,6 +121,11 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		}
 	}
 
+	// Ensure StreamChan is closed on exit if it was provided
+	if opts.StreamChan != nil {
+		defer close(opts.StreamChan)
+	}
+
 	// 2. Build Stream-JSON Input
 	var inputStream bytes.Buffer
 	encoder := json.NewEncoder(&inputStream)
@@ -157,55 +162,83 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	var finalResponse *llmtypes.ContentResponse
 	decoder := json.NewDecoder(stdoutPipe)
 	
-	for decoder.More() {
-		var raw map[string]interface{}
-		if err := decoder.Decode(&raw); err != nil {
-			c.logger.Errorf("Failed to decode stream-json object: %v", err)
-			break
+	// Count AI messages in history to skip them during playback streaming
+	aiHistoryCount := 0
+	for _, msg := range convoMessages {
+		if msg.Role == llmtypes.ChatMessageTypeAI {
+			aiHistoryCount++
 		}
+	}
+	aiSeenCount := 0
 
-		msgType, _ := raw["type"].(string)
-		switch msgType {
-		case "assistant":
-			// Handle assistant message (could be a chunk or a complete message)
-			if msg, ok := raw["message"].(map[string]interface{}); ok {
-				if content, ok := msg["content"].([]interface{}); ok {
-					for _, cPart := range content {
-						if cp, ok := cPart.(map[string]interface{}); ok {
-							if txt, ok := cp["text"].(string); ok && txt != "" {
-								// If user requested streaming, send chunk
-								if opts.StreamChan != nil {
-									opts.StreamChan <- llmtypes.StreamChunk{
-										Type:    llmtypes.StreamChunkTypeContent,
-										Content: txt,
+	// Create a channel to signal completion of decoding
+	decodeDone := make(chan bool)
+	go func() {
+		for decoder.More() {
+			var raw map[string]interface{}
+			if err := decoder.Decode(&raw); err != nil {
+				c.logger.Errorf("Failed to decode stream-json object: %v", err)
+				break
+			}
+
+			msgType, _ := raw["type"].(string)
+			switch msgType {
+			case "assistant":
+				aiSeenCount++
+				// Only stream tokens if we've passed all historical AI messages
+				if aiSeenCount <= aiHistoryCount {
+					continue
+				}
+
+				// Handle assistant message (could be a chunk or a complete message)
+				if msg, ok := raw["message"].(map[string]interface{}); ok {
+					if content, ok := msg["content"].([]interface{}); ok {
+						for _, cPart := range content {
+							if cp, ok := cPart.(map[string]interface{}); ok {
+								if txt, ok := cp["text"].(string); ok && txt != "" {
+									// If user requested streaming, send chunk
+									if opts.StreamChan != nil {
+										opts.StreamChan <- llmtypes.StreamChunk{
+											Type:    llmtypes.StreamChunkTypeContent,
+											Content: txt,
+										}
 									}
 								}
 							}
 						}
 					}
 				}
-			}
-		case "result":
-			// Parse the final result summary
-			var claudeResp ClaudeCodeResponse
-			jsonBytes, _ := json.Marshal(raw)
-			if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
-				finalResponse, _ = c.mapResponseToContentResponse(&claudeResp)
+			case "result":
+				// Parse the final result summary
+				var claudeResp ClaudeCodeResponse
+				jsonBytes, _ := json.Marshal(raw)
+				if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
+					finalResponse, _ = c.mapResponseToContentResponse(&claudeResp)
+				}
 			}
 		}
+		decodeDone <- true
+	}()
+
+	// Wait for command completion or context cancellation
+	var cmdErr error
+	select {
+	case <-ctx.Done():
+		c.logger.Errorf("Context cancelled/timed out: %v", ctx.Err())
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		cmdErr = ctx.Err()
+	case <-decodeDone:
+		cmdErr = cmd.Wait()
 	}
 
-	// Wait for command completion
-	if err := cmd.Wait(); err != nil {
-		c.logger.Errorf("Claude Code CLI failed with error: %v. Stderr: %s", err, stderr.String())
+	if cmdErr != nil {
+		c.logger.Errorf("Claude Code CLI failed with error: %v. Stderr: %s", cmdErr, stderr.String())
 		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
 		if finalResponse == nil {
-			return nil, fmt.Errorf("claude cli execution failed: %w, stderr: %s", err, stderr.String())
+			return nil, fmt.Errorf("claude cli execution failed: %w, stderr: %s", cmdErr, stderr.String())
 		}
-	}
-
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
 	}
 
 	if finalResponse == nil {
@@ -291,9 +324,9 @@ type ClaudeUsage struct {
 }
 
 type PermissionDenial struct {
-	ToolName string      `json:"tool_name"`
-	Reason   string      `json:"reason"`
-	Input    interface{} `json:"input"`
+	ToolName  string      `json:"tool_name"`
+	ToolUseID string      `json:"tool_use_id"`
+	ToolInput interface{} `json:"tool_input"`
 }
 
 func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeResponse) (*llmtypes.ContentResponse, error) {

@@ -77,9 +77,9 @@ func TestMapResponseToContentResponse(t *testing.T) {
 		},
 		PermissionDenials: []PermissionDenial{
 			{
-				ToolName: "bash",
-				Reason:   "requires_permission",
-				Input:    map[string]interface{}{"command": "rm -rf /"},
+				ToolName:  "bash",
+				ToolUseID: "toolu_123",
+				ToolInput: map[string]interface{}{"command": "rm -rf /"},
 			},
 		},
 	}
