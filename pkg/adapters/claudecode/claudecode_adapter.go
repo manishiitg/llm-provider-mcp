@@ -72,6 +72,11 @@ func ensureMetadata(opts *llmtypes.CallOptions) {
 
 // GenerateContent generates content using the Claude Code CLI.
 func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	// 0. Check for 'claude' binary
+	if _, err := exec.LookPath("claude"); err != nil {
+		return nil, fmt.Errorf("claude cli not found in PATH. Please install it first (npm install -g @anthropics/claude-code)")
+	}
+
 	// Parse options
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -79,7 +84,8 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 
 	// 1. Prepare Command Arguments
-	args := []string{"-p", "--output-format", "json", "--input-format", "stream-json"}
+	// Note: --input-format stream-json requires --output-format stream-json and --verbose
+	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"}
 
 	// Extract system prompt
 	var systemPrompts []string
@@ -135,25 +141,78 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = &inputStream
 	
-	// Capture stdout and stderr
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	// Use Pipe for stdout to parse as a stream
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	if err != nil {
-		c.logger.Errorf("Claude Code CLI failed: %v. Stderr: %s", err, stderr.String())
-		return nil, fmt.Errorf("claude cli execution failed: %w, stderr: %s", err, stderr.String())
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start claude cli: %w", err)
 	}
 
-	// 4. Parse Output
-	var response ClaudeCodeResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		c.logger.Errorf("Failed to parse Claude Code response: %v. Output: %s", err, stdout.String())
-		return nil, fmt.Errorf("failed to parse response json: %w", err)
+	// 4. Parse Streamed Output
+	var finalResponse *llmtypes.ContentResponse
+	decoder := json.NewDecoder(stdoutPipe)
+	
+	for decoder.More() {
+		var raw map[string]interface{}
+		if err := decoder.Decode(&raw); err != nil {
+			c.logger.Errorf("Failed to decode stream-json object: %v", err)
+			break
+		}
+
+		msgType, _ := raw["type"].(string)
+		switch msgType {
+		case "assistant":
+			// Handle assistant message (could be a chunk or a complete message)
+			if msg, ok := raw["message"].(map[string]interface{}); ok {
+				if content, ok := msg["content"].([]interface{}); ok {
+					for _, cPart := range content {
+						if cp, ok := cPart.(map[string]interface{}); ok {
+							if txt, ok := cp["text"].(string); ok && txt != "" {
+								// If user requested streaming, send chunk
+								if opts.StreamChan != nil {
+									opts.StreamChan <- llmtypes.StreamChunk{
+										Type:    llmtypes.StreamChunkTypeContent,
+										Content: txt,
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		case "result":
+			// Parse the final result summary
+			var claudeResp ClaudeCodeResponse
+			jsonBytes, _ := json.Marshal(raw)
+			if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
+				finalResponse, _ = c.mapResponseToContentResponse(&claudeResp)
+			}
+		}
 	}
 
-	return c.mapResponseToContentResponse(&response)
+	// Wait for command completion
+	if err := cmd.Wait(); err != nil {
+		c.logger.Errorf("Claude Code CLI failed with error: %v. Stderr: %s", err, stderr.String())
+		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
+		if finalResponse == nil {
+			return nil, fmt.Errorf("claude cli execution failed: %w, stderr: %s", err, stderr.String())
+		}
+	}
+
+	if opts.StreamChan != nil {
+		close(opts.StreamChan)
+	}
+
+	if finalResponse == nil {
+		return nil, fmt.Errorf("failed to receive final result from claude cli")
+	}
+
+	return finalResponse, nil
 }
 
 // GetModelID returns the model ID.
@@ -197,13 +256,13 @@ func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage
 
 	var content []interface{}
 	for _, part := range msg.Parts {
-		if textPart, ok := part.(llmtypes.TextContent); ok {
+		switch p := part.(type) {
+		case llmtypes.TextContent:
 			content = append(content, TextContentBlock{
 				Type: "text",
-				Text: textPart.Text,
+				Text: p.Text,
 			})
 		}
-		// TODO: Add support for ImageContent when CLI supports it via stream-json or file attachments
 	}
 
 	return &StreamJSONMessage{

@@ -71,10 +71,13 @@ Claude Code supports ephemeral MCP server configuration for a single session via
 - JSON response parsing (text + usage + cost + permission_denials).
 - Error handling for CLI execution failures.
 
-### Phase 2: Advanced Features (Future)
-- **Image Support:** Mapping `ImageContent` to CLI `--file` flags or JSON content.
-- **Streaming:** Utilizing `--output-format stream-json` for real-time response chunks.
-- **Library Tool Integration:** Mapping Go-defined tools to CLI tool calls.
+### Phase 2: Advanced Features (Current)
+- **Streaming:** Utilizing `--output-format stream-json` for real-time response chunks via `StreamChan`.
+- **Enhanced Execution:** Non-blocking pipe architecture for CLI communication.
+
+### Phase 3: Future Enhancements
+- **Image Support:** Mapping `ImageContent` to CLI --file flags or JSON content.
+- **Library Tool Integration:** Mapping Go-defined tools to CLI tool calls via ephemeral MCP servers.
 
 ## Verification Strategy
 1.  **Unit Tests:** Test `stream-json` construction and response parsing.
