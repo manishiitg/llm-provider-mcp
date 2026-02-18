@@ -14,6 +14,7 @@ import (
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
+	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 
@@ -39,6 +40,7 @@ const (
 	ProviderOpenRouter Provider = "openrouter"
 	ProviderVertex     Provider = "vertex"
 	ProviderAzure      Provider = "azure"
+	ProviderClaudeCode Provider = "claude-code"
 )
 
 // Config holds configuration for LLM initialization
@@ -101,6 +103,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeVertexWithFallback(config)
 	case ProviderAzure:
 		llm, err = initializeAzureWithFallback(config)
+	case ProviderClaudeCode:
+		llm, err = initializeClaudeCode(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -1016,6 +1020,55 @@ func initializeVertexGemini(config Config, modelID string, logger interfaces.Log
 	return llm, nil
 }
 
+// initializeClaudeCode creates and configures a Claude Code CLI adapter instance
+func initializeClaudeCode(config Config) (llmtypes.Model, error) {
+	// LLM Initialization event data
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0, // Will be set at call time or by CLI
+		TopP:         config.Temperature,
+		User:         "claude_code_user",
+		CustomFields: map[string]string{
+			"provider":  "claude-code",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	// Emit LLM initialization start event
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	// Set default model if not specified
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "claude-code" // Default ID representing the CLI
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Claude Code CLI adapter - model_id: %s", modelID)
+
+	// Create Claude Code adapter
+	// Note: API key is not used by the CLI adapter as it uses local auth
+	llm := claudecodeadapter.NewClaudeCodeAdapter("", modelID, logger)
+
+	// Emit LLM initialization success event
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "claude_code_user",
+		CustomFields: map[string]string{
+			"provider":     "claude-code",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling, // CLI has native tools
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Claude Code CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // GetDefaultModel returns the default model for each provider from environment variables
 func GetDefaultModel(provider Provider) string {
 	switch provider {
@@ -1055,6 +1108,12 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "gpt-4o"
+	case ProviderClaudeCode:
+		// Get primary model from environment variable
+		if primaryModel := os.Getenv("CLAUDE_CODE_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return "claude-code"
 	default:
 		return ""
 	}
@@ -1186,10 +1245,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code", provider)
 	}
 }
 
