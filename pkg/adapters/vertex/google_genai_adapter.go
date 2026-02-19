@@ -1941,7 +1941,7 @@ func (g *GoogleGenAIAdapter) logInputDetails(requestID, modelID string, messages
 	}
 
 	inputSummaryJSON, _ := json.MarshalIndent(inputSummary, "", "  ")
-	g.logger.Infof("🔍 [REQUEST_ID: %s] MESSAGES SENT TO LLM (FULL DETAILS):\n%s", requestID, string(inputSummaryJSON))
+	g.logger.Debugf("🔍 [REQUEST_ID: %s] MESSAGES SENT TO LLM (FULL DETAILS):\n%s", requestID, string(inputSummaryJSON))
 }
 
 // logRawInput logs the complete raw genai contents that will be sent to the API
@@ -2034,7 +2034,7 @@ func (g *GoogleGenAIAdapter) logRawInput(requestID, modelID string, genaiContent
 	}
 
 	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
-	g.logger.Infof("🔍 [REQUEST_ID: %s] RAW GENAI API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
+	g.logger.Debugf("🔍 [REQUEST_ID: %s] RAW GENAI API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
 }
 
 // logErrorDetails logs both input and error response details when an error occurs
@@ -2322,7 +2322,7 @@ func (g *GoogleGenAIAdapter) logRawResponse(requestID, modelID string, result *g
 		if len(jsonStr) > 5000 {
 			jsonStr = jsonStr[:5000] + "\n   ... (truncated)"
 		}
-		g.logger.Infof("🔍 [REQUEST_ID: %s] RAW VERTEX RESPONSE SUMMARY (JSON):\n   %s", requestID, jsonStr)
+		g.logger.Debugf("🔍 [REQUEST_ID: %s] RAW VERTEX RESPONSE SUMMARY (JSON):\n   %s", requestID, jsonStr)
 	} else {
 		g.logger.Debugf("⚠️ [REQUEST_ID: %s] Failed to serialize response summary to JSON: %v", requestID, err)
 	}
@@ -2332,7 +2332,7 @@ func (g *GoogleGenAIAdapter) logRawResponse(requestID, modelID string, result *g
 	// NO TRUNCATION - log full response
 	if resultJSON, err := json.MarshalIndent(result, "   ", "  "); err == nil {
 		jsonStr := string(resultJSON)
-		g.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX API RESPONSE (FULL JSON, length: %d):\n   %s", requestID, len(jsonStr), jsonStr)
+		g.logger.Debugf("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX API RESPONSE (FULL JSON, length: %d):\n   %s", requestID, len(jsonStr), jsonStr)
 	} else {
 		g.logger.Debugf("🔍 [REQUEST_ID: %s] Could not serialize complete response to JSON (may have unexported fields): %v", requestID, err)
 	}

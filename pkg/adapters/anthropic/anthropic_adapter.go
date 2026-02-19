@@ -1003,7 +1003,7 @@ func (a *AnthropicAdapter) logRawInput(requestID, modelID string, params anthrop
 	}
 
 	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
-	a.logger.Infof("🔍 [REQUEST_ID: %s] RAW ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
+	a.logger.Debugf("🔍 [REQUEST_ID: %s] RAW ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
 }
 
 // logRawResponse logs the complete raw response from the Anthropic API
@@ -1059,5 +1059,5 @@ func (a *AnthropicAdapter) logRawResponse(requestID, modelID string, message *an
 	}
 
 	responseJSON, _ := json.MarshalIndent(responseSummary, "", "  ")
-	a.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
+	a.logger.Debugf("🔍 [REQUEST_ID: %s] COMPLETE RAW ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
 }
