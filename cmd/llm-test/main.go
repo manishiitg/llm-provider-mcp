@@ -78,6 +78,7 @@ func main() {
 	rootCmd.AddCommand(vertexcmd.VertexStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexStreamingCancellationTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexStructuredOutputTestCmd)
+	rootCmd.AddCommand(vertexcmd.VertexParallelToolResponseTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexTokenUsageTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexImageTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexEmbeddingTestCmd)
