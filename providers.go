@@ -1823,8 +1823,14 @@ func WithOpenRouterUsage() CallOption {
 }
 
 // WithMCPConfig sets the MCP configuration JSON string for the Claude Code adapter session.
-func WithMCPConfig(config string) CallOption {
+func WithMCPConfig(config string) llmtypes.CallOption {
 	return claudecodeadapter.WithMCPConfig(config)
+}
+
+// WithDangerouslySkipPermissions enables the --dangerously-skip-permissions flag for the Claude Code CLI.
+// CAUTION: This allows the agent to execute any tool without user confirmation.
+func WithDangerouslySkipPermissions() llmtypes.CallOption {
+	return claudecodeadapter.WithDangerouslySkipPermissions()
 }
 
 // LLM Configuration Management Functions
