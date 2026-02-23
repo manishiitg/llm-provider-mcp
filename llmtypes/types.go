@@ -1,6 +1,9 @@
 package llmtypes
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Model is the core interface for LLM implementations
 type Model interface {
@@ -53,16 +56,23 @@ type ImageContent struct {
 type StreamChunkType string
 
 const (
-	StreamChunkTypeContent  StreamChunkType = "content"   // Text content chunk
-	StreamChunkTypeToolCall StreamChunkType = "tool_call" // Complete tool call
+	StreamChunkTypeContent       StreamChunkType = "content"   // Text content chunk
+	StreamChunkTypeToolCall      StreamChunkType = "tool_call" // Complete tool call
+	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
+	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
 )
 
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	Type     StreamChunkType // Type of chunk: "content" or "tool_call"
-	Content  string          // Text content (when Type is "content")
-	ToolCall *ToolCall       // Complete tool call (when Type is "tool_call")
+	Type         StreamChunkType // Type of chunk: "content" or "tool_call"
+	Content      string          // Text content (when Type is "content")
+	ToolCall     *ToolCall       // Complete tool call (when Type is "tool_call")
+	ToolName     string          // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
+	ToolCallID   string          // ID of the tool call (when Type is "tool_call_start" or "tool_call_end")
+	ToolArgs     string          // JSON arguments of the tool call (when Type is "tool_call_end")
+	ToolResult   string          // Tool execution result (when Type is "tool_call_end")
+	ToolDuration time.Duration   // Duration of the tool call (when Type is "tool_call_end")
 }
 
 // ToolCall represents a tool/function call request

@@ -5,12 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+// pendingToolCall tracks a tool call that has started but hasn't received its result yet
+type pendingToolCall struct {
+	toolName  string
+	toolID    string
+	toolArgs  string
+	startTime time.Time
+}
 
 // Constants for custom metadata keys
 const (
@@ -85,7 +95,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 
 	// 1. Prepare Command Arguments
 	// Note: --input-format stream-json requires --output-format stream-json and --verbose
-	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"}
+	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages"}
 
 	// Extract system prompt
 	var systemPrompts []string
@@ -143,6 +153,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 
 	// 3. Execute Command
 	c.logger.Infof("Executing Claude Code CLI: claude %v", args)
+	c.logger.Debugf("Input stream: %s", inputStream.String())
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = &inputStream
 	
@@ -151,8 +162,9 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	
+	// Stream stderr for debugging
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start claude cli: %w", err)
@@ -173,20 +185,141 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 
 	// Create a channel to signal completion of decoding
 	decodeDone := make(chan bool)
+
+	var currentToolName string
+	var currentToolID string
+	var currentToolInput strings.Builder
+	var inToolBlock bool
+	hasStreamEvents := false
+	// Buffer pending tool calls to match with tool_result for complete events
+	pendingTools := make(map[string]*pendingToolCall)
+
 	go func() {
+		c.logger.Infof("Starting stream decode loop...")
 		for decoder.More() {
 			var raw map[string]interface{}
 			if err := decoder.Decode(&raw); err != nil {
 				c.logger.Errorf("Failed to decode stream-json object: %v", err)
 				break
 			}
+			c.logger.Infof("Decoded raw stream object of type: %v", raw["type"])
 
 			msgType, _ := raw["type"].(string)
 			switch msgType {
+			case "stream_event":
+				hasStreamEvents = true
+				event, _ := raw["event"].(map[string]interface{})
+				if event == nil {
+					continue
+				}
+				eventType, _ := event["type"].(string)
+
+				switch eventType {
+				case "content_block_start":
+					cb, _ := event["content_block"].(map[string]interface{})
+					if cb == nil {
+						break
+					}
+					cbType, _ := cb["type"].(string)
+					if cbType == "tool_use" {
+						currentToolName, _ = cb["name"].(string)
+						currentToolID, _ = cb["id"].(string)
+						currentToolInput.Reset()
+						inToolBlock = true
+						if opts.StreamChan != nil {
+							opts.StreamChan <- llmtypes.StreamChunk{
+								Type:       llmtypes.StreamChunkTypeToolCallStart,
+								ToolName:   currentToolName,
+								ToolCallID: currentToolID,
+							}
+						}
+						// Track start time for duration calculation
+						pendingTools[currentToolID] = &pendingToolCall{
+							toolName:  currentToolName,
+							toolID:    currentToolID,
+							startTime: time.Now(),
+						}
+					}
+
+				case "content_block_delta":
+					delta, _ := event["delta"].(map[string]interface{})
+					if delta == nil {
+						break
+					}
+					deltaType, _ := delta["type"].(string)
+					if deltaType == "text_delta" {
+						if txt, ok := delta["text"].(string); ok && txt != "" && !inToolBlock {
+							if opts.StreamChan != nil {
+								opts.StreamChan <- llmtypes.StreamChunk{
+									Type:    llmtypes.StreamChunkTypeContent,
+									Content: txt,
+								}
+							}
+						}
+					} else if deltaType == "input_json_delta" {
+						if partialJSON, ok := delta["partial_json"].(string); ok {
+							currentToolInput.WriteString(partialJSON)
+						}
+					}
+
+				case "content_block_stop":
+					if inToolBlock {
+						// Save args to pending tool (don't emit ToolCallEnd yet — wait for tool_result)
+						if pt, ok := pendingTools[currentToolID]; ok {
+							pt.toolArgs = currentToolInput.String()
+						}
+						inToolBlock = false
+						currentToolName = ""
+						currentToolID = ""
+						currentToolInput.Reset()
+					}
+				}
+
+			case "user":
+				// Parse tool_result messages to complete pending tool calls
+				if msg, ok := raw["message"].(map[string]interface{}); ok {
+					if content, ok := msg["content"].([]interface{}); ok {
+						for _, cPart := range content {
+							cp, ok := cPart.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							if cp["type"] != "tool_result" {
+								continue
+							}
+							toolUseID, _ := cp["tool_use_id"].(string)
+							if toolUseID == "" {
+								continue
+							}
+							resultContent, _ := cp["content"].(string)
+
+							if pt, ok := pendingTools[toolUseID]; ok {
+								duration := time.Since(pt.startTime)
+								if opts.StreamChan != nil {
+									opts.StreamChan <- llmtypes.StreamChunk{
+										Type:         llmtypes.StreamChunkTypeToolCallEnd,
+										ToolName:     pt.toolName,
+										ToolCallID:   pt.toolID,
+										ToolArgs:     pt.toolArgs,
+										ToolResult:   resultContent,
+										ToolDuration: duration,
+									}
+								}
+								delete(pendingTools, toolUseID)
+							}
+						}
+					}
+				}
+
 			case "assistant":
 				aiSeenCount++
 				// Only stream tokens if we've passed all historical AI messages
 				if aiSeenCount <= aiHistoryCount {
+					continue
+				}
+
+				// If we are getting stream_events, we don't need to parse the consolidated assistant message for text streaming
+				if hasStreamEvents {
 					continue
 				}
 
@@ -209,6 +342,20 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 					}
 				}
 			case "result":
+				// Flush any remaining pending tool calls that never got a tool_result
+				for _, pt := range pendingTools {
+					if opts.StreamChan != nil {
+						opts.StreamChan <- llmtypes.StreamChunk{
+							Type:         llmtypes.StreamChunkTypeToolCallEnd,
+							ToolName:     pt.toolName,
+							ToolCallID:   pt.toolID,
+							ToolArgs:     pt.toolArgs,
+							ToolDuration: time.Since(pt.startTime),
+						}
+					}
+				}
+				pendingTools = make(map[string]*pendingToolCall)
+
 				// Parse the final result summary
 				var claudeResp ClaudeCodeResponse
 				jsonBytes, _ := json.Marshal(raw)
@@ -234,10 +381,10 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 
 	if cmdErr != nil {
-		c.logger.Errorf("Claude Code CLI failed with error: %v. Stderr: %s", cmdErr, stderr.String())
+		c.logger.Errorf("Claude Code CLI failed with error: %v.", cmdErr)
 		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
 		if finalResponse == nil {
-			return nil, fmt.Errorf("claude cli execution failed: %w, stderr: %s", cmdErr, stderr.String())
+			return nil, fmt.Errorf("claude cli execution failed: %w", cmdErr)
 		}
 	}
 

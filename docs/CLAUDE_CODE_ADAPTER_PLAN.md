@@ -1,90 +1,124 @@
-# Plan: Claude Code CLI Adapter Implementation
+# Claude Code CLI Adapter
 
-## Objective
-Implement a new LLM provider adapter for [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`). This will allow the library to use the local `claude` CLI as an LLM provider, leveraging its powerful agentic capabilities and efficient local context handling.
+## Overview
+LLM provider adapter for [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`). Uses the local `claude` CLI as an LLM provider, leveraging its agentic capabilities and efficient local context handling.
 
-## Architecture & Design
+## Architecture
 
-### Multi-Turn Conversation Strategy (Stream-JSON)
-The `llmtypes.Model` interface defines `GenerateContent` as a stateless operation where the entire conversation history is provided in the `messages []MessageContent` slice. 
+### Multi-Turn Conversation (Stream-JSON)
+The `llmtypes.Model` interface defines `GenerateContent` as a stateless operation. We map this to the CLI using **stateless conversation playback piped via stdin**:
 
-To map this to the `claude` CLI, we will use a **stateless conversation playback approach piped via stdin in JSON format**:
-1.  **Extract System Prompt:** Identify any system messages and pass them via the `--system-prompt` flag.
-2.  **Construct JSON History:** Convert the remaining conversation history (User/Assistant turns) into a sequence of JSON objects (one per line).
-3.  **Stateless Execution via Stdin:** Pipe the JSON objects to `claude -p --input-format stream-json --output-format json` via stdin.
-4.  **Rationale:** This approach is the native protocol used by Claude's official IDE integrations. It avoids the ambiguity of text-based transcripts, bypasses command-line argument limits, and correctly preserves complex conversation state (including tool calls/results in the future).
+1.  **Extract System Prompt:** Identify system messages and pass via `--system-prompt`.
+2.  **Construct JSON History:** Convert conversation history (User/Assistant turns) into stream-json objects.
+3.  **Execute via Stdin:** Pipe to `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages`.
+4.  **Parse Streamed Output:** Real-time JSON stream parsing with tool event extraction.
 
-### Tool Management & Capabilities
-Claude Code is an agentic CLI with a built-in toolset. Our adapter will handle tools with the following principles:
-1.  **Default Capabilities:** By default, the CLI enables a core set of tools including `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `WebSearch`.
-2.  **WebSearch:** We will ensure `WebSearch` remains enabled by default, as it is a core value-add of the CLI provider.
-3.  **Core Tool Persistence:** Core tools (File operations, Bash, Task) are intrinsic to the CLI's operation as an agent. While the `--tools` and `--disallowedTools` flags exist, they may not fully disable these core capabilities if the model's internal logic requires them.
-4.  **Explicit Control:** The adapter will support mapping library-level tool definitions to the CLI's `--tools` (whitelist) and `--disallowedTools` (blacklist) flags for advanced users.
+### CLI Flags
+```
+claude -p \
+  --output-format stream-json \
+  --input-format stream-json \
+  --verbose \
+  --include-partial-messages \
+  --system-prompt "..." \
+  --mcp-config '{"mcpServers":{...}}' \
+  --dangerously-skip-permissions
+```
 
-### Permission Handling (Interactive Loop)
-Claude Code CLI enforces permissions for sensitive tools (like Bash or Write).
-1.  **Detection:** The adapter will detect `permission_denials` in the JSON response.
-2.  **Human-in-the-Loop:** If denied, the adapter will trigger an `ask_user` tool call (simulated or real depending on agent config) to request permission.
-3.  **Resolution:** Upon approval, the agent loop (outside the adapter) is responsible for re-invoking the model with the approval context or appropriate flags (e.g., `--dangerously-skip-permissions` if configured for trusted execution).
-4.  **Autonomous Mode:** Users can optionally enable `DangerouslySkipPermissions` in the adapter config to bypass all checks entirely.
+### Tool Management
+Claude Code has a built-in toolset (Bash, Read, Write, Edit, Glob, Grep, WebSearch, etc.). The adapter supports:
+*   `WithMCPConfig(json)` — Ephemeral MCP server configuration for a session.
+*   `WithDangerouslySkipPermissions()` — Bypass permission checks for autonomous execution.
+*   `WithClaudeCodeTools(tools)` — Whitelist specific tools via `--tools` flag.
 
-### Ephemeral MCP Configuration
-Claude Code supports ephemeral MCP server configuration for a single session via the `--mcp-config` flag.
-1.  **Configuration:** A JSON string defining the MCP servers (SSE or Stdio).
-2.  **Execution:** Pass the configuration to the CLI using `--mcp-config '<json_string>'`.
-3.  **Use Case:** Allows an agent to dynamically connect to tools like `docfork` for specific tasks without modifying the user's global configuration.
+## Stream Event Parsing
 
-### Component Breakdown
+The adapter parses the CLI's real-time JSON stream to extract tool call events for observability.
 
-#### 1. Provider Registration (`providers.go`)
-- Add `ProviderClaudeCode Provider = "claude-code"` to the enum.
-- Add `claudecodeadapter` to the imports.
-- Update `InitializeLLM` to handle the new provider.
-- Implement `initializeClaudeCode` helper.
+### Event Flow
+```
+CLI Output                              → Adapter Action
+─────────────────────────────────────────────────────────
+"type": "system"                        → Skip (metadata)
+"type": "stream_event"
+  event.type: "content_block_start"
+    content_block.type: "tool_use"      → Emit StreamChunkTypeToolCallStart
+                                          Buffer pendingToolCall with startTime
+  event.type: "content_block_delta"
+    delta.type: "text_delta"            → Emit StreamChunkTypeContent
+    delta.type: "input_json_delta"      → Accumulate tool args
+  event.type: "content_block_stop"      → Save args to pending buffer (wait for result)
+"type": "user"
+  content[].type: "tool_result"         → Match by tool_use_id, emit StreamChunkTypeToolCallEnd
+                                          with args + result + duration
+"type": "assistant"                     → Skip if stream_events present (dedup)
+"type": "result"                        → Flush pending tools, parse final response
+```
 
-#### 2. Adapter Implementation (`pkg/adapters/claudecode/claudecode_adapter.go`)
-- **`ClaudeCodeAdapter` Struct:** Holds `modelID` and `logger`.
-- **`GenerateContent` Method:**
-    - Parse `llmtypes.CallOptions`.
-    - Extract system prompt and construct the `stream-json` history.
-    - Check for ephemeral MCP configuration in metadata/options.
-    - Execute `claude` with `--input-format stream-json`, `--output-format json`, `--system-prompt`, and `--mcp-config`.
-    - Set `cmd.Stdin` to the JSON stream.
-    - Parse the final JSON response for `result`, `usage`, and `permission_denials`.
+### Pending Tool Buffering
+Tool calls are buffered between `content_block_stop` and the `tool_result` message to capture:
+*   **ToolArgs** — Complete JSON arguments accumulated from `input_json_delta` chunks
+*   **ToolResult** — Execution result from the CLI's internal tool loop
+*   **ToolDuration** — Wall-clock time from `content_block_start` to `tool_result`
 
-#### 3. Data Mapping & Usage Tracking
+If the CLI exits before returning a result, pending tools are flushed at `"type": "result"` without result content.
+
+### Playback Deduplication
+*   Counts historical AI messages in conversation to skip them during playback.
+*   Skips consolidated `assistant` messages when `stream_event`s provide real-time deltas.
+
+## StreamChunk Types
+
+```go
+const (
+    StreamChunkTypeContent       StreamChunkType = "content"
+    StreamChunkTypeToolCall      StreamChunkType = "tool_call"
+    StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
+    StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
+)
+
+type StreamChunk struct {
+    Type         StreamChunkType
+    Content      string          // Text content
+    ToolCall     *ToolCall       // Complete tool call
+    ToolName     string          // Tool name (start/end)
+    ToolCallID   string          // Tool call ID (start/end)
+    ToolArgs     string          // JSON arguments (end)
+    ToolResult   string          // Execution result (end)
+    ToolDuration time.Duration   // Duration from start to result (end)
+}
+```
+
+## Data Mapping
+
 | CLI JSON Field | Go Struct Field | Description |
 | :--- | :--- | :--- |
-| `result` | `Choices[0].Content` | The generated text content. |
-| `usage.input_tokens` | `Usage.InputTokens` | Total tokens in the prompt. |
-| `usage.output_tokens` | `Usage.OutputTokens` | Tokens generated in the response. |
-| `usage.cache_read_input_tokens` | `Usage.CacheTokens` | Tokens read from the prompt cache. |
-| `total_cost_usd` | `GenerationInfo.Additional["cost_usd"]` | Estimated cost of the request. |
-| `permission_denials` | `GenerationInfo.Additional["permission_denials"]` | List of denied tool calls. |
+| `result` | `Choices[0].Content` | Generated text content |
+| `usage.input_tokens` | `Usage.InputTokens` | Prompt tokens |
+| `usage.output_tokens` | `Usage.OutputTokens` | Response tokens |
+| `usage.cache_read_input_tokens` | `Usage.CacheTokens` | Cache read tokens |
+| `total_cost_usd` | `GenerationInfo.Additional["cost_usd"]` | Estimated cost |
+| `permission_denials` | `GenerationInfo.Additional["permission_denials"]` | Denied tool calls |
 
-## Implementation Phases
+## Known Limitations
 
-### Phase 1: Core Support (Current Focus)
-- Basic provider registration.
-- Multi-turn conversation via `stream-json` piping.
-- System prompt and Ephemeral MCP configuration support.
-- JSON response parsing (text + usage + cost + permission_denials).
-- Error handling for CLI execution failures.
+### HTTP/SSE MCP Servers
+The CLI cannot dynamically bootstrap remote HTTP/SSE MCP servers via `--mcp-config` in headless mode (`-p`). Use `stdio` based local servers only.
 
-### Phase 2: Advanced Features (Current)
-- **Streaming:** Utilizing `--output-format stream-json` for real-time response chunks via `StreamChan`.
-- **Enhanced Execution:** Non-blocking pipe architecture for CLI communication.
+### Nested Sessions
+CLI cannot be launched inside another Claude Code session. Unset the `CLAUDECODE` environment variable for testing.
 
-### Phase 3: Future Enhancements
-- **Image Support:** Mapping `ImageContent` to CLI --file flags or JSON content.
-- **Library Tool Integration:** Mapping Go-defined tools to CLI tool calls via ephemeral MCP servers.
+### Tool Result Availability
+Tool results are captured from the CLI's internal `tool_result` messages. If interrupted before returning a result, the `ToolCallEnd` chunk will have empty `ToolResult`.
 
-## Verification Strategy
-1.  **Unit Tests:** Test `stream-json` construction and response parsing.
-2.  **Integration Tests:** Verify multi-turn context and ephemeral MCP tool discovery.
-3.  **Manual CLI Check:**
-    - `echo '{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Hi"}]}}' | claude -p --input-format stream-json --output-format json --mcp-config '{"mcpServers":{...}}'`
+## Testing
 
-## Security Considerations
-- **Command Injection:** Pass JSON and flags as direct arguments to `exec.Command`.
-- **Secret Handling:** Ensure MCP configurations containing API keys are handled securely in memory.
+```bash
+# Integration test (requires claude CLI installed)
+go test -v ./pkg/adapters/claudecode -run TestClaudeCodeStreaming -timeout 60s
+```
+
+## Files
+*   `pkg/adapters/claudecode/claudecode_adapter.go` — Main adapter implementation
+*   `pkg/adapters/claudecode/claudecode_stream_integration_test.go` — Integration test
+*   `llmtypes/types.go` — StreamChunk types

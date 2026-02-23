@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -9,9 +10,9 @@ import (
 
 type MockLogger struct{}
 
-func (l *MockLogger) Infof(format string, args ...any)  {}
-func (l *MockLogger) Errorf(format string, args ...any) {}
-func (l *MockLogger) Debugf(format string, args ...interface{}) {}
+func (l *MockLogger) Infof(format string, args ...any)  { fmt.Printf("INFO: "+format+"\n", args...) }
+func (l *MockLogger) Errorf(format string, args ...any) { fmt.Printf("ERROR: "+format+"\n", args...) }
+func (l *MockLogger) Debugf(format string, args ...interface{}) { fmt.Printf("DEBUG: "+format+"\n", args...) }
 
 func TestConvertMessageToStreamJSON(t *testing.T) {
 	tests := []struct {
