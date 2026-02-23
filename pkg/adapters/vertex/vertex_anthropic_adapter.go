@@ -1285,7 +1285,7 @@ func (v *VertexAnthropicAdapter) logRawInput(requestID, modelID string, payload 
 	}
 
 	rawInputJSON, _ := json.MarshalIndent(rawInput, "", "  ")
-	v.logger.Infof("🔍 [REQUEST_ID: %s] RAW VERTEX ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
+	v.logger.Debugf("🔍 [REQUEST_ID: %s] RAW VERTEX ANTHROPIC API INPUT (FULL JSON):\n%s", requestID, string(rawInputJSON))
 }
 
 // logRawResponse logs the complete raw response from the Vertex Anthropic API
@@ -1322,5 +1322,5 @@ func (v *VertexAnthropicAdapter) logRawResponse(requestID, modelID string, respo
 	}
 
 	responseJSON, _ := json.MarshalIndent(responseInfo, "", "  ")
-	v.logger.Infof("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
+	v.logger.Debugf("🔍 [REQUEST_ID: %s] COMPLETE RAW VERTEX ANTHROPIC API RESPONSE (FULL JSON):\n%s", requestID, string(responseJSON))
 }

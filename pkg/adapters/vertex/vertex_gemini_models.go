@@ -10,9 +10,6 @@ import (
 
 // Gemini model name constants
 const (
-	// Gemini 2.0 Series
-	ModelGemini20Flash = "gemini-2.0-flash"
-
 	// Gemini 2.5 Series
 	ModelGemini25Pro       = "gemini-2.5-pro"
 	ModelGemini25Flash     = "gemini-2.5-flash"
@@ -20,6 +17,7 @@ const (
 
 	// Gemini 3 Series
 	ModelGemini3ProPreview   = "gemini-3-pro-preview"
+	ModelGemini31ProPreview  = "gemini-3.1-pro-preview"
 	ModelGemini3FlashPreview = "gemini-3-flash-preview"
 )
 
@@ -44,17 +42,6 @@ func normalizeToBaseModel(modelID string) string {
 // getVertexGeminiModels returns the map of Vertex Gemini model metadata
 func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 	return map[string]llmtypes.ModelMetadata{
-		// Gemini 2.0 Flash - 1M context window
-		ModelGemini20Flash: {
-			ModelID:                    ModelGemini20Flash,
-			ModelName:                  "Gemini 2.0 Flash",
-			ContextWindow:              1000000, // 1M tokens
-			InputCostPer1MTokens:       0.15,
-			OutputCostPer1MTokens:      0.60,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.015, // Cache read pricing (estimated, 90% discount)
-			Provider:                   "vertex",
-		},
 		// Gemini 2.5 Pro - 1M context window
 		ModelGemini25Pro: {
 			ModelID:                    ModelGemini25Pro,
@@ -122,6 +109,23 @@ func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 			SupportsJSONMode:        true,
 			SupportsThinkingLevel:   true,
 			ThinkingLevels:          []string{"low", "high"},
+			SupportsReasoningEffort: false,
+		},
+		// Gemini 3.1 Pro Preview - 1M context window
+		ModelGemini31ProPreview: {
+			ModelID:                    ModelGemini31ProPreview,
+			ModelName:                  "Gemini 3.1 Pro Preview",
+			ContextWindow:              1000000, // 1M tokens
+			InputCostPer1MTokens:       2.00,    // Keep aligned with Gemini 3 Pro Preview until official pricing update
+			OutputCostPer1MTokens:      12.00,   // Keep aligned with Gemini 3 Pro Preview until official pricing update
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.20, // Keep aligned with Gemini 3 Pro Preview until official pricing update
+			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   true,
+			ThinkingLevels:          []string{"low", "medium", "high"},
 			SupportsReasoningEffort: false,
 		},
 		// Gemini 3 Flash Preview - 1M context window
