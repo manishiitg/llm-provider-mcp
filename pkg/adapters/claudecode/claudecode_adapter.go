@@ -27,6 +27,9 @@ const (
 	MetadataKeyMCPConfig                 = "mcp_config"
 	MetadataKeyDangerouslySkipPermissions = "dangerously_skip_permissions"
 	MetadataKeyTools                     = "claude_code_tools"
+	MetadataKeyAllowedTools              = "claude_code_allowed_tools"
+	MetadataKeySettings                  = "claude_code_settings"
+	MetadataKeyMaxTurns                  = "claude_code_max_turns"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -52,6 +55,14 @@ func WithMCPConfig(config string) llmtypes.CallOption {
 	}
 }
 
+// WithClaudeCodeSettings sets the --settings flag to a JSON string or file path.
+func WithClaudeCodeSettings(settings string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeySettings] = settings
+	}
+}
+
 // WithDangerouslySkipPermissions enables the --dangerously-skip-permissions flag.
 // CAUTION: This allows the agent to execute any tool without user confirmation.
 func WithDangerouslySkipPermissions() llmtypes.CallOption {
@@ -68,6 +79,25 @@ func WithClaudeCodeTools(tools string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyTools] = tools
+	}
+}
+
+// WithAllowedTools sets the --allowed-tools flag to whitelist specific tools
+// from requiring permission confirmation.
+// Example: "mcp__mcpbridge__*" to allow all tools from the mcpbridge server.
+func WithAllowedTools(tools string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyAllowedTools] = tools
+	}
+}
+
+// WithMaxTurns sets the --max-turns flag to limit the number of agentic turns.
+// Claude Code exits with an error when the limit is reached.
+func WithMaxTurns(maxTurns int) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMaxTurns] = maxTurns
 	}
 }
 
@@ -115,19 +145,28 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 
 	if len(systemPrompts) > 0 {
-		args = append(args, "--system-prompt", strings.Join(systemPrompts, "\n\n"))
+		args = append(args, "--append-system-prompt", strings.Join(systemPrompts, "\n\n"))
 	}
 
 	// Handle Custom Options
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && mcpConfig != "" {
-			args = append(args, "--mcp-config", mcpConfig)
+			args = append(args, "--mcp-config", mcpConfig, "--strict-mcp-config")
+		}
+		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && settings != "" {
+			args = append(args, "--settings", settings)
 		}
 		if skip, ok := opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions].(bool); ok && skip {
 			args = append(args, "--dangerously-skip-permissions")
 		}
 		if tools, ok := opts.Metadata.Custom[MetadataKeyTools].(string); ok {
 			args = append(args, "--tools", tools)
+		}
+		if allowedTools, ok := opts.Metadata.Custom[MetadataKeyAllowedTools].(string); ok && allowedTools != "" {
+			args = append(args, "--allowed-tools", allowedTools)
+		}
+		if maxTurns, ok := opts.Metadata.Custom[MetadataKeyMaxTurns].(int); ok && maxTurns > 0 {
+			args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 		}
 	}
 
@@ -156,7 +195,17 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	c.logger.Debugf("Input stream: %s", inputStream.String())
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = &inputStream
-	
+
+	// Filter out CLAUDECODE env var to allow nested invocation (e.g., when
+	// this adapter is called from within a Claude Code session during testing)
+	var filteredEnv []string
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, "CLAUDECODE=") {
+			filteredEnv = append(filteredEnv, env)
+		}
+	}
+	cmd.Env = filteredEnv
+
 	// Use Pipe for stdout to parse as a stream
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -202,7 +251,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 				c.logger.Errorf("Failed to decode stream-json object: %v", err)
 				break
 			}
-			c.logger.Infof("Decoded raw stream object of type: %v", raw["type"])
+			c.logger.Infof("Decoded raw stream object of type: %v, raw: %+v", raw["type"], raw)
 
 			msgType, _ := raw["type"].(string)
 			switch msgType {
@@ -226,13 +275,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 						currentToolID, _ = cb["id"].(string)
 						currentToolInput.Reset()
 						inToolBlock = true
-						if opts.StreamChan != nil {
-							opts.StreamChan <- llmtypes.StreamChunk{
-								Type:       llmtypes.StreamChunkTypeToolCallStart,
-								ToolName:   currentToolName,
-								ToolCallID: currentToolID,
-							}
-						}
+						
 						// Track start time for duration calculation
 						pendingTools[currentToolID] = &pendingToolCall{
 							toolName:  currentToolName,
@@ -264,9 +307,20 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 
 				case "content_block_stop":
 					if inToolBlock {
+						toolArgs := currentToolInput.String()
+						// Emit ToolCallStart now that we have the full arguments
+						if opts.StreamChan != nil {
+							opts.StreamChan <- llmtypes.StreamChunk{
+								Type:       llmtypes.StreamChunkTypeToolCallStart,
+								ToolName:   currentToolName,
+								ToolCallID: currentToolID,
+								ToolArgs:   toolArgs,
+							}
+						}
+
 						// Save args to pending tool (don't emit ToolCallEnd yet — wait for tool_result)
 						if pt, ok := pendingTools[currentToolID]; ok {
-							pt.toolArgs = currentToolInput.String()
+							pt.toolArgs = toolArgs
 						}
 						inToolBlock = false
 						currentToolName = ""

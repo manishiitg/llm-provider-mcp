@@ -1833,6 +1833,30 @@ func WithDangerouslySkipPermissions() llmtypes.CallOption {
 	return claudecodeadapter.WithDangerouslySkipPermissions()
 }
 
+// WithClaudeCodeSettings sets the --settings flag for the Claude Code CLI.
+// It accepts either a JSON string or a file path.
+func WithClaudeCodeSettings(settings string) llmtypes.CallOption {
+	return claudecodeadapter.WithClaudeCodeSettings(settings)
+}
+
+// WithClaudeCodeTools sets the --tools flag for the Claude Code CLI.
+// Use "" to disable all built-in tools.
+func WithClaudeCodeTools(tools string) llmtypes.CallOption {
+	return claudecodeadapter.WithClaudeCodeTools(tools)
+}
+
+// WithAllowedTools sets the --allowed-tools flag for the Claude Code CLI.
+// Example: "mcp__api-bridge__*" to allow all tools from the bridge.
+func WithAllowedTools(tools string) llmtypes.CallOption {
+	return claudecodeadapter.WithAllowedTools(tools)
+}
+
+// WithMaxTurns sets the --max-turns flag for the Claude Code CLI.
+// Limits the number of agentic turns. Claude Code exits with an error when the limit is reached.
+func WithMaxTurns(maxTurns int) llmtypes.CallOption {
+	return claudecodeadapter.WithMaxTurns(maxTurns)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
