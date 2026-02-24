@@ -70,6 +70,7 @@ type ProviderAPIKeys struct {
 	OpenAI     *string
 	Anthropic  *string
 	Vertex     *string
+	GeminiCLI  *string
 	Bedrock    *BedrockConfig
 	Azure      *AzureAPIConfig
 }
@@ -1103,8 +1104,16 @@ func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Gemini CLI adapter - model_id: %s", modelID)
 
-	// Create Gemini CLI adapter
-	llm := geminicli.NewGeminiCLIAdapter("", modelID, logger)
+	// Resolve API key: explicit config > environment variable
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.GeminiCLI != nil {
+		apiKey = *config.APIKeys.GeminiCLI
+	} else if envKey := os.Getenv("GEMINI_API_KEY"); envKey != "" {
+		apiKey = envKey
+	}
+
+	// Create Gemini CLI adapter — pass API key so it can set GEMINI_API_KEY on the subprocess
+	llm := geminicli.NewGeminiCLIAdapter(apiKey, modelID, logger)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{

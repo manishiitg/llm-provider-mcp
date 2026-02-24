@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,14 +25,15 @@ type pendingToolCall struct {
 
 // GeminiCLIAdapter implements the LLM interface for the Gemini CLI.
 type GeminiCLIAdapter struct {
+	apiKey  string
 	modelID string
 	logger  interfaces.Logger
 }
 
 // NewGeminiCLIAdapter creates a new instance of the GeminiCLIAdapter.
 func NewGeminiCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *GeminiCLIAdapter {
-	// apiKey is not used for the CLI adapter as auth is handled by the CLI itself
 	return &GeminiCLIAdapter{
+		apiKey:  apiKey,
 		modelID: modelID,
 		logger:  logger,
 	}
@@ -195,26 +197,29 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 
 	// Build environment: inherit current env + add custom vars
 	env := os.Environ()
+	if g.apiKey != "" {
+		env = append(env, "GEMINI_API_KEY="+g.apiKey)
+	}
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
 	cmd.Env = env
 
-	// If project settings JSON is provided, create a temp directory with
+	// If project settings JSON is provided, create a stable project directory with
 	// .gemini/settings.json and run the CLI from there. This is how we
 	// restrict built-in tools (tools.core) and configure MCP servers
 	// per-invocation without modifying the user's global config.
+	// We use a single stable directory so that --resume can find previous sessions
+	// (Gemini CLI stores sessions per project directory).
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if settingsJSON, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok && settingsJSON != "" {
-			tmpDir, err := os.MkdirTemp("", "gemini-project-*")
-			if err == nil {
-				geminiDir := tmpDir + "/.gemini"
-				os.MkdirAll(geminiDir, 0755)
-				os.WriteFile(geminiDir+"/settings.json", []byte(settingsJSON), 0644)
-				cmd.Dir = tmpDir
-				defer os.RemoveAll(tmpDir)
-				g.logger.Infof("Using temp project dir with settings: %s", tmpDir)
-			}
+			projectDir := filepath.Join(os.TempDir(), "gemini-cli-project")
+			os.MkdirAll(projectDir, 0755)
+			geminiDir := filepath.Join(projectDir, ".gemini")
+			os.MkdirAll(geminiDir, 0755)
+			os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0644)
+			cmd.Dir = projectDir
+			g.logger.Infof("Using project dir with settings: %s (resume=%s)", projectDir, resumeID)
 		}
 	}
 
