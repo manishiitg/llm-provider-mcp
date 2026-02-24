@@ -15,6 +15,7 @@ import (
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 
@@ -41,6 +42,7 @@ const (
 	ProviderVertex     Provider = "vertex"
 	ProviderAzure      Provider = "azure"
 	ProviderClaudeCode Provider = "claude-code"
+	ProviderGeminiCLI  Provider = "gemini-cli"
 )
 
 // Config holds configuration for LLM initialization
@@ -105,6 +107,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeAzureWithFallback(config)
 	case ProviderClaudeCode:
 		llm, err = initializeClaudeCode(config)
+	case ProviderGeminiCLI:
+		llm, err = initializeGeminiCLI(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -1069,6 +1073,55 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeGeminiCLI creates and configures a Gemini CLI adapter instance
+func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
+	// LLM Initialization event data
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "gemini_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "gemini-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	// Emit LLM initialization start event
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	// Set default model if not specified
+	// Gemini CLI supports aliases: "auto" (default), "pro", "flash", "flash-lite"
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "auto"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Gemini CLI adapter - model_id: %s", modelID)
+
+	// Create Gemini CLI adapter
+	llm := geminicli.NewGeminiCLIAdapter("", modelID, logger)
+
+	// Emit LLM initialization success event
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "gemini_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "gemini-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Gemini CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // GetDefaultModel returns the default model for each provider from environment variables
 func GetDefaultModel(provider Provider) string {
 	switch provider {
@@ -1114,6 +1167,14 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "claude-code"
+	case ProviderGeminiCLI:
+		// Get primary model from environment variable
+		// Supports aliases: "auto" (default), "pro", "flash", "flash-lite"
+		// or full names: "gemini-2.5-flash", "gemini-2.5-pro", etc.
+		if primaryModel := os.Getenv("GEMINI_CLI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return "auto"
 	default:
 		return ""
 	}
@@ -1245,10 +1306,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli", provider)
 	}
 }
 
@@ -1861,6 +1922,42 @@ func WithMaxTurns(maxTurns int) llmtypes.CallOption {
 // an existing session instead of starting a new one.
 func WithResumeSessionID(id string) llmtypes.CallOption {
 	return claudecodeadapter.WithResumeSessionID(id)
+}
+
+// --- Gemini CLI Wrapper Functions ---
+
+// WithGeminiModel sets the --model flag for the Gemini CLI.
+func WithGeminiModel(model string) llmtypes.CallOption {
+	return geminicli.WithGeminiModel(model)
+}
+
+// WithGeminiResumeSessionID sets the --resume flag so the Gemini CLI resumes
+// an existing session instead of starting a new one.
+func WithGeminiResumeSessionID(id string) llmtypes.CallOption {
+	return geminicli.WithResumeSessionID(id)
+}
+
+// WithGeminiApprovalMode sets the --approval-mode flag for the Gemini CLI.
+func WithGeminiApprovalMode(mode string) llmtypes.CallOption {
+	return geminicli.WithApprovalMode(mode)
+}
+
+// WithGeminiSystemPromptFile sets the GEMINI_SYSTEM_MD environment variable path.
+func WithGeminiSystemPromptFile(path string) llmtypes.CallOption {
+	return geminicli.WithSystemPromptFile(path)
+}
+
+// WithGeminiProjectSettings writes a .gemini/settings.json in a temp directory
+// and runs the Gemini CLI from there. This controls tool restrictions (tools.core),
+// MCP server configuration (mcpServers), and other project-level settings.
+func WithGeminiProjectSettings(settingsJSON string) llmtypes.CallOption {
+	return geminicli.WithProjectSettings(settingsJSON)
+}
+
+// WithGeminiAllowedTools sets the --allowed-tools flag for the Gemini CLI.
+// These tools bypass the confirmation dialog.
+func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
+	return geminicli.WithAllowedTools(tools)
 }
 
 // LLM Configuration Management Functions

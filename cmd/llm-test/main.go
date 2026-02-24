@@ -9,6 +9,7 @@ import (
 	azurecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/azure"
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
 	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
+	geminiclichmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/geminicli"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
 	sharedcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/shared"
@@ -104,6 +105,9 @@ func main() {
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingContentTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodePermissionTestCmd)
+	rootCmd.AddCommand(geminiclichmd.GeminiCLICmd)
+	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingContentTestCmd)
+	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

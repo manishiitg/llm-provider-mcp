@@ -563,14 +563,36 @@ type ClaudeCodeResponse struct {
 	Result            string             `json:"result"`
 	Usage             ClaudeUsage        `json:"usage"`
 	TotalCostUSD      float64            `json:"total_cost_usd"`
+	DurationMs        float64            `json:"duration_ms"`
+	DurationAPIMs     float64            `json:"duration_api_ms"`
+	NumTurns          int                `json:"num_turns"`
+	ModelUsage        map[string]ModelUsageEntry `json:"modelUsage,omitempty"`
 	PermissionDenials []PermissionDenial `json:"permission_denials,omitempty"`
 }
 
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	InputTokens              int              `json:"input_tokens"`
+	OutputTokens             int              `json:"output_tokens"`
+	CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int              `json:"cache_creation_input_tokens"`
+	ServiceTier              string           `json:"service_tier,omitempty"`
+	ServerToolUse            *ServerToolUse   `json:"server_tool_use,omitempty"`
+}
+
+type ServerToolUse struct {
+	WebSearchRequests int `json:"web_search_requests"`
+	WebFetchRequests  int `json:"web_fetch_requests"`
+}
+
+type ModelUsageEntry struct {
+	InputTokens           int     `json:"inputTokens"`
+	OutputTokens          int     `json:"outputTokens"`
+	CacheReadInputTokens  int     `json:"cacheReadInputTokens"`
+	CacheCreationTokens   int     `json:"cacheCreationInputTokens"`
+	WebSearchRequests     int     `json:"webSearchRequests"`
+	CostUSD               float64 `json:"costUSD"`
+	ContextWindow         int     `json:"contextWindow"`
+	MaxOutputTokens       int     `json:"maxOutputTokens"`
 }
 
 type PermissionDenial struct {
@@ -595,14 +617,51 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 
 	// Map GenerationInfo
 	genInfo := &llmtypes.GenerationInfo{
-		InputTokens:  &totalInputTokens,
-		OutputTokens: &resp.Usage.OutputTokens,
-		TotalTokens:  &totalTokens,
+		InputTokens:         &totalInputTokens,
+		OutputTokens:        &resp.Usage.OutputTokens,
+		TotalTokens:         &totalTokens,
+		CachedContentTokens: &resp.Usage.CacheReadInputTokens,
 		Additional: map[string]interface{}{
-			"cost_usd":                resp.TotalCostUSD,
-			"cache_creation_tokens":   resp.Usage.CacheCreationInputTokens,
-			"claude_code_session_id":  resp.SessionID,
+			"cost_usd":               resp.TotalCostUSD,
+			"cache_creation_tokens":  resp.Usage.CacheCreationInputTokens,
+			"claude_code_session_id": resp.SessionID,
 		},
+	}
+
+	// Add duration and turn count from result event
+	if resp.DurationMs > 0 {
+		genInfo.Additional["claude_code_duration_ms"] = resp.DurationMs
+	}
+	if resp.DurationAPIMs > 0 {
+		genInfo.Additional["claude_code_duration_api_ms"] = resp.DurationAPIMs
+	}
+	if resp.NumTurns > 0 {
+		genInfo.Additional["claude_code_num_turns"] = resp.NumTurns
+	}
+
+	// Add per-model usage breakdown (includes resolved model name, context window, cost)
+	if len(resp.ModelUsage) > 0 {
+		genInfo.Additional["claude_code_model_usage"] = resp.ModelUsage
+		// Extract the resolved model name (first key in modelUsage)
+		for modelName := range resp.ModelUsage {
+			genInfo.Additional["claude_code_model"] = modelName
+			break
+		}
+	}
+
+	// Add service tier
+	if resp.Usage.ServiceTier != "" {
+		genInfo.Additional["claude_code_service_tier"] = resp.Usage.ServiceTier
+	}
+
+	// Add server tool use counts (web search, web fetch)
+	if resp.Usage.ServerToolUse != nil {
+		if resp.Usage.ServerToolUse.WebSearchRequests > 0 {
+			genInfo.Additional["claude_code_web_search_requests"] = resp.Usage.ServerToolUse.WebSearchRequests
+		}
+		if resp.Usage.ServerToolUse.WebFetchRequests > 0 {
+			genInfo.Additional["claude_code_web_fetch_requests"] = resp.Usage.ServerToolUse.WebFetchRequests
+		}
 	}
 
 	// Handle Permission Denials
