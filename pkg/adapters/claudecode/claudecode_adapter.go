@@ -530,6 +530,18 @@ type TextContentBlock struct {
 	Text string `json:"text"`
 }
 
+type ImageContentBlock struct {
+	Type   string            `json:"type"`
+	Source ImageSourceBlock  `json:"source"`
+}
+
+type ImageSourceBlock struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
 func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage, error) {
 	role := "user"
 	if msg.Role == llmtypes.ChatMessageTypeAI {
@@ -544,6 +556,21 @@ func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage
 				Type: "text",
 				Text: p.Text,
 			})
+		case llmtypes.ImageContent:
+			block := ImageContentBlock{Type: "image"}
+			if p.SourceType == "url" {
+				block.Source = ImageSourceBlock{
+					Type: "url",
+					URL:  p.Data,
+				}
+			} else {
+				block.Source = ImageSourceBlock{
+					Type:      "base64",
+					MediaType: p.MediaType,
+					Data:      p.Data,
+				}
+			}
+			content = append(content, block)
 		}
 	}
 
