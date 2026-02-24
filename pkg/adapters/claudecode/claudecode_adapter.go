@@ -250,9 +250,10 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
-	
-	// Stream stderr for debugging
-	cmd.Stderr = os.Stderr
+
+	// Capture stderr so we can log it (helps debug permission prompts / errors)
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start claude cli: %w", err)
@@ -476,8 +477,13 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		cmdErr = cmd.Wait()
 	}
 
+	// Log stderr output from Claude CLI (captures permission prompts, errors, debug info)
+	if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+		c.logger.Infof("Claude Code CLI stderr:\n%s", stderrOutput)
+	}
+
 	if cmdErr != nil {
-		c.logger.Errorf("Claude Code CLI failed with error: %v.", cmdErr)
+		c.logger.Errorf("Claude Code CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
 		if finalResponse == nil {
 			return nil, fmt.Errorf("claude cli execution failed: %w", cmdErr)
