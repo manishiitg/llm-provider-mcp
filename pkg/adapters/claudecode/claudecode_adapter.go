@@ -30,6 +30,7 @@ const (
 	MetadataKeyAllowedTools              = "claude_code_allowed_tools"
 	MetadataKeySettings                  = "claude_code_settings"
 	MetadataKeyMaxTurns                  = "claude_code_max_turns"
+	MetadataKeyResumeSessionID           = "claude_code_resume_session_id"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -101,6 +102,15 @@ func WithMaxTurns(maxTurns int) llmtypes.CallOption {
 	}
 }
 
+// WithResumeSessionID sets the --resume flag with a session ID so the Claude Code CLI
+// resumes an existing session instead of starting a new one.
+func WithResumeSessionID(sessionID string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyResumeSessionID] = sessionID
+	}
+}
+
 func ensureMetadata(opts *llmtypes.CallOptions) {
 	if opts.Metadata == nil {
 		opts.Metadata = &llmtypes.Metadata{Custom: make(map[string]interface{})}
@@ -168,6 +178,9 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		if maxTurns, ok := opts.Metadata.Custom[MetadataKeyMaxTurns].(int); ok && maxTurns > 0 {
 			args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 		}
+		if resumeID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && resumeID != "" {
+			args = append(args, "--resume", resumeID)
+		}
 	}
 
 	// Ensure StreamChan is closed on exit if it was provided
@@ -175,18 +188,44 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		defer close(opts.StreamChan)
 	}
 
+	// Check if we're resuming an existing session
+	resumeID := ""
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if rid, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok {
+			resumeID = rid
+		}
+	}
+
 	// 2. Build Stream-JSON Input
 	var inputStream bytes.Buffer
 	encoder := json.NewEncoder(&inputStream)
 
-	for _, msg := range convoMessages {
-		jsonMsg, err := convertMessageToStreamJSON(msg)
-		if err != nil {
-			c.logger.Errorf("Failed to convert message to stream-json: %v", err)
-			return nil, fmt.Errorf("failed to convert message: %w", err)
+	if resumeID != "" {
+		// Resuming: only send the last user message (CLI has full history internally)
+		for i := len(convoMessages) - 1; i >= 0; i-- {
+			if convoMessages[i].Role == llmtypes.ChatMessageTypeHuman {
+				jsonMsg, err := convertMessageToStreamJSON(convoMessages[i])
+				if err != nil {
+					c.logger.Errorf("Failed to convert message to stream-json: %v", err)
+					return nil, fmt.Errorf("failed to convert message: %w", err)
+				}
+				if err := encoder.Encode(jsonMsg); err != nil {
+					return nil, fmt.Errorf("failed to encode message json: %w", err)
+				}
+				break
+			}
 		}
-		if err := encoder.Encode(jsonMsg); err != nil {
-			return nil, fmt.Errorf("failed to encode message json: %w", err)
+	} else {
+		// First turn: send full history as before
+		for _, msg := range convoMessages {
+			jsonMsg, err := convertMessageToStreamJSON(msg)
+			if err != nil {
+				c.logger.Errorf("Failed to convert message to stream-json: %v", err)
+				return nil, fmt.Errorf("failed to convert message: %w", err)
+			}
+			if err := encoder.Encode(jsonMsg); err != nil {
+				return nil, fmt.Errorf("failed to encode message json: %w", err)
+			}
 		}
 	}
 
@@ -224,10 +263,13 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	decoder := json.NewDecoder(stdoutPipe)
 	
 	// Count AI messages in history to skip them during playback streaming
+	// When resuming, we only sent the new user message so there's no history to skip
 	aiHistoryCount := 0
-	for _, msg := range convoMessages {
-		if msg.Role == llmtypes.ChatMessageTypeAI {
-			aiHistoryCount++
+	if resumeID == "" {
+		for _, msg := range convoMessages {
+			if msg.Role == llmtypes.ChatMessageTypeAI {
+				aiHistoryCount++
+			}
 		}
 	}
 	aiSeenCount := 0
@@ -511,6 +553,7 @@ func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage
 // ClaudeCodeResponse mirrors the JSON output from `claude -p --output-format json`
 type ClaudeCodeResponse struct {
 	Type              string             `json:"type"`
+	SessionID         string             `json:"session_id"`
 	Result            string             `json:"result"`
 	Usage             ClaudeUsage        `json:"usage"`
 	TotalCostUSD      float64            `json:"total_cost_usd"`
@@ -531,11 +574,14 @@ type PermissionDenial struct {
 }
 
 func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeResponse) (*llmtypes.ContentResponse, error) {
-	totalTokens := resp.Usage.InputTokens + resp.Usage.OutputTokens
+	// In the Anthropic API, input_tokens = non-cached input only.
+	// Total input context = input_tokens + cache_read_input_tokens.
+	totalInputTokens := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens
+	totalTokens := totalInputTokens + resp.Usage.OutputTokens
 
 	// Map Usage
 	usage := &llmtypes.Usage{
-		InputTokens:  resp.Usage.InputTokens,
+		InputTokens:  totalInputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 		TotalTokens:  totalTokens,
 		CacheTokens:  &resp.Usage.CacheReadInputTokens,
@@ -543,12 +589,13 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 
 	// Map GenerationInfo
 	genInfo := &llmtypes.GenerationInfo{
-		InputTokens:  &resp.Usage.InputTokens,
+		InputTokens:  &totalInputTokens,
 		OutputTokens: &resp.Usage.OutputTokens,
 		TotalTokens:  &totalTokens,
 		Additional: map[string]interface{}{
-			"cost_usd":              resp.TotalCostUSD,
-			"cache_creation_tokens": resp.Usage.CacheCreationInputTokens,
+			"cost_usd":                resp.TotalCostUSD,
+			"cache_creation_tokens":   resp.Usage.CacheCreationInputTokens,
+			"claude_code_session_id":  resp.SessionID,
 		},
 	}
 

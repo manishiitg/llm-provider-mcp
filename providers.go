@@ -1857,6 +1857,12 @@ func WithMaxTurns(maxTurns int) llmtypes.CallOption {
 	return claudecodeadapter.WithMaxTurns(maxTurns)
 }
 
+// WithResumeSessionID sets the --resume flag so the Claude Code CLI resumes
+// an existing session instead of starting a new one.
+func WithResumeSessionID(id string) llmtypes.CallOption {
+	return claudecodeadapter.WithResumeSessionID(id)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
