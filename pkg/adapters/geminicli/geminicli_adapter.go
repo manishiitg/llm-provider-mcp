@@ -146,10 +146,8 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		defer os.Remove(systemPromptTempFile)
 	}
 
-	// Ensure StreamChan is closed on exit if it was provided
-	if opts.StreamChan != nil {
-		defer close(opts.StreamChan)
-	}
+	// StreamChan will be closed manually before return (not via defer)
+	// to allow the retry logic to stream additional chunks if needed
 
 	// 2. Extract the prompt text
 	// Gemini CLI takes the prompt as a positional argument (plain text), not stream-json input
@@ -239,6 +237,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 
 	// 4. Parse Streamed Output (JSONL, one JSON object per line)
 	var finalResponse *llmtypes.ContentResponse
+	var emptyResultSessionID string
 	decodeDone := make(chan bool)
 	pendingTools := make(map[string]*pendingToolCall)
 
@@ -415,6 +414,13 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 				// Parse the final result, passing accumulated text since result event
 				// doesn't contain the response text itself
 				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, accumulatedText.String())
+
+				// Detect empty result: if accumulated text is empty and we have a session,
+				// this may indicate the CLI hit an internal limit (similar to Claude's error_max_turns)
+				if accumulatedText.String() == "" && sessionID != "" {
+					emptyResultSessionID = sessionID
+					g.logger.Infof("Detected empty result with sessionID=%s, may need retry", emptyResultSessionID)
+				}
 			}
 		}
 
@@ -433,6 +439,10 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
+		// Wait for decode goroutine to finish before closing StreamChan,
+		// otherwise it may send on a closed channel causing a panic.
+		<-decodeDone
+		cmd.Wait()
 		cmdErr = ctx.Err()
 	case <-decodeDone:
 		cmdErr = cmd.Wait()
@@ -446,12 +456,36 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if cmdErr != nil {
 		g.logger.Errorf("Gemini CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		if finalResponse == nil {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
 			return nil, fmt.Errorf("gemini cli execution failed: %w", cmdErr)
 		}
 	}
 
 	if finalResponse == nil {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
 		return nil, fmt.Errorf("failed to receive final result from gemini cli")
+	}
+
+	// If result was empty and we have a session ID, retry with a finalization prompt
+	if emptyResultSessionID != "" {
+		g.logger.Infof("Empty result detected, retrying with finalization prompt (sessionID=%s)", emptyResultSessionID)
+		retryResp, retryErr := g.retryForFinalAnswer(ctx, emptyResultSessionID, opts, systemPromptFile)
+		if retryErr != nil {
+			g.logger.Errorf("Retry for final answer failed: %v", retryErr)
+		} else if retryResp != nil && len(retryResp.Choices) > 0 && retryResp.Choices[0].Content != "" {
+			g.logger.Infof("Retry produced final answer (%d chars)", len(retryResp.Choices[0].Content))
+			finalResponse = retryResp
+		} else {
+			g.logger.Infof("Retry produced empty result, using original response")
+		}
+	}
+
+	if opts.StreamChan != nil {
+		close(opts.StreamChan)
 	}
 
 	return finalResponse, nil
@@ -574,6 +608,167 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 		},
 		Usage: usage,
 	}
+}
+
+// retryForFinalAnswer resumes a Gemini CLI session that produced an empty result
+// and asks it to provide a final summary.
+func (g *GeminiCLIAdapter) retryForFinalAnswer(
+	ctx context.Context,
+	sessionID string,
+	opts *llmtypes.CallOptions,
+	systemPromptFile string,
+) (*llmtypes.ContentResponse, error) {
+	finalizationPrompt := "You have run out of turns. Please provide your final answer now based on what you have accomplished so far. Summarize results, findings, and any remaining work."
+
+	args := []string{
+		"--output-format", "stream-json",
+		"--resume", sessionID,
+	}
+
+	// Set approval mode (default to yolo for retry)
+	approvalMode := "yolo"
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if mode, ok := opts.Metadata.Custom[MetadataKeyApprovalMode].(string); ok && mode != "" {
+			approvalMode = mode
+		}
+	}
+	args = append(args, "--approval-mode", approvalMode)
+
+	// Add the finalization prompt as positional arg
+	args = append(args, finalizationPrompt)
+
+	g.logger.Infof("Retry: executing Gemini CLI: gemini %v", args)
+	cmd := exec.CommandContext(ctx, "gemini", args...)
+
+	// Build environment
+	env := os.Environ()
+	if g.apiKey != "" {
+		env = append(env, "GEMINI_API_KEY="+g.apiKey)
+	}
+	if systemPromptFile != "" {
+		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
+	}
+	cmd.Env = env
+
+	// Apply project settings directory if configured
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if settingsJSON, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok && settingsJSON != "" {
+			projectDir := filepath.Join(os.TempDir(), "gemini-cli-project")
+			os.MkdirAll(projectDir, 0755)
+			geminiDir := filepath.Join(projectDir, ".gemini")
+			os.MkdirAll(geminiDir, 0755)
+			os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0644)
+			cmd.Dir = projectDir
+		}
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("retry: failed to create stdout pipe: %w", err)
+	}
+
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("retry: failed to start gemini cli: %w", err)
+	}
+
+	// Simplified decode loop
+	var retryResponse *llmtypes.ContentResponse
+	var retryAccumulatedText strings.Builder
+	var retrySessionID string
+	var retryResolvedModel string
+	decodeDone := make(chan bool)
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &raw); err != nil {
+				g.logger.Errorf("Retry: failed to decode stream-json: %v", err)
+				continue
+			}
+
+			msgType, _ := raw["type"].(string)
+			switch msgType {
+			case "init":
+				if sid, ok := raw["session_id"].(string); ok {
+					retrySessionID = sid
+				}
+				if m, ok := raw["model"].(string); ok && m != "" {
+					retryResolvedModel = m
+				}
+
+			case "message":
+				role, _ := raw["role"].(string)
+				if role != "assistant" {
+					continue
+				}
+				if content, ok := raw["content"].(string); ok && content != "" {
+					retryAccumulatedText.WriteString(content)
+					if opts.StreamChan != nil {
+						opts.StreamChan <- llmtypes.StreamChunk{
+							Type:    llmtypes.StreamChunkTypeContent,
+							Content: content,
+						}
+					}
+				}
+				if contentArr, ok := raw["content"].([]interface{}); ok {
+					for _, part := range contentArr {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							if text, ok := partMap["text"].(string); ok && text != "" {
+								retryAccumulatedText.WriteString(text)
+								if opts.StreamChan != nil {
+									opts.StreamChan <- llmtypes.StreamChunk{
+										Type:    llmtypes.StreamChunkTypeContent,
+										Content: text,
+									}
+								}
+							}
+						}
+					}
+				}
+
+			case "result":
+				if sid, ok := raw["session_id"].(string); ok && sid != "" {
+					retrySessionID = sid
+				}
+				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, retryAccumulatedText.String())
+			}
+		}
+		decodeDone <- true
+	}()
+
+	var cmdErr error
+	select {
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		cmdErr = ctx.Err()
+	case <-decodeDone:
+		cmdErr = cmd.Wait()
+	}
+
+	if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+		g.logger.Infof("Retry: Gemini CLI stderr:\n%s", stderrOutput)
+	}
+
+	if cmdErr != nil {
+		g.logger.Errorf("Retry: Gemini CLI failed: %v", cmdErr)
+		if retryResponse == nil {
+			return nil, fmt.Errorf("retry: gemini cli execution failed: %w", cmdErr)
+		}
+	}
+
+	return retryResponse, nil
 }
 
 func truncate(s string, maxLen int) string {

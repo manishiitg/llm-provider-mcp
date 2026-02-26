@@ -183,10 +183,8 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		}
 	}
 
-	// Ensure StreamChan is closed on exit if it was provided
-	if opts.StreamChan != nil {
-		defer close(opts.StreamChan)
-	}
+	// StreamChan will be closed manually before return (not via defer)
+	// to allow the retry logic to stream additional chunks if needed
 
 	// Check if we're resuming an existing session
 	resumeID := ""
@@ -261,6 +259,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 
 	// 4. Parse Streamed Output
 	var finalResponse *llmtypes.ContentResponse
+	var maxTurnsSessionID string
 	decoder := json.NewDecoder(stdoutPipe)
 	
 	// Count AI messages in history to skip them during playback streaming
@@ -283,6 +282,8 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	var currentToolInput strings.Builder
 	var inToolBlock bool
 	hasStreamEvents := false
+	var resultIsError bool   // tracks is_error from the CLI result event
+	var resultErrorText string // the error text from the result when is_error=true
 	// Buffer pending tool calls to match with tool_result for complete events
 	pendingTools := make(map[string]*pendingToolCall)
 
@@ -388,7 +389,24 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 							if toolUseID == "" {
 								continue
 							}
-							resultContent, _ := cp["content"].(string)
+							// content can be a plain string OR an array of content blocks
+							// e.g. [{"type":"text","text":"..."}]
+							var resultContent string
+							switch v := cp["content"].(type) {
+							case string:
+								resultContent = v
+							case []interface{}:
+								// Extract text from content blocks
+								var parts []string
+								for _, block := range v {
+									if bm, ok := block.(map[string]interface{}); ok {
+										if txt, ok := bm["text"].(string); ok {
+											parts = append(parts, txt)
+										}
+									}
+								}
+								resultContent = strings.Join(parts, "")
+							}
 
 							if pt, ok := pendingTools[toolUseID]; ok {
 								duration := time.Since(pt.startTime)
@@ -458,6 +476,17 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 				jsonBytes, _ := json.Marshal(raw)
 				if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
 					finalResponse, _ = c.mapResponseToContentResponse(&claudeResp)
+					// Detect max turns error: subtype indicates limit was hit and result is empty
+					if claudeResp.Subtype == "error_max_turns" && claudeResp.Result == "" {
+						maxTurnsSessionID = claudeResp.SessionID
+						c.logger.Infof("Detected error_max_turns with empty result, sessionID=%s", maxTurnsSessionID)
+					}
+					// Detect CLI-reported errors (e.g., API 500, auth failures)
+					if claudeResp.IsError {
+						resultIsError = true
+						resultErrorText = claudeResp.Result
+						c.logger.Errorf("Claude Code CLI reported is_error=true, subtype=%q, result=%q", claudeResp.Subtype, claudeResp.Result)
+					}
 				}
 			}
 		}
@@ -486,12 +515,45 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		c.logger.Errorf("Claude Code CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
 		if finalResponse == nil {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
 			return nil, fmt.Errorf("claude cli execution failed: %w", cmdErr)
 		}
 	}
 
 	if finalResponse == nil {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
 		return nil, fmt.Errorf("failed to receive final result from claude cli")
+	}
+
+	// Surface CLI-reported errors as Go errors so upstream retry logic can handle them.
+	// This catches API errors (500, 502, 503, etc.) that the CLI reports via is_error=true.
+	if resultIsError && resultErrorText != "" {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("claude cli error: %s", resultErrorText)
+	}
+
+	// If max turns was hit with an empty result, retry with a finalization prompt
+	if maxTurnsSessionID != "" {
+		c.logger.Infof("Max turns reached, retrying with finalization prompt (sessionID=%s)", maxTurnsSessionID)
+		retryResp, retryErr := c.retryForFinalAnswer(ctx, maxTurnsSessionID, opts)
+		if retryErr != nil {
+			c.logger.Errorf("Retry for final answer failed: %v", retryErr)
+		} else if retryResp != nil && len(retryResp.Choices) > 0 && retryResp.Choices[0].Content != "" {
+			c.logger.Infof("Retry produced final answer (%d chars)", len(retryResp.Choices[0].Content))
+			finalResponse = retryResp
+		} else {
+			c.logger.Infof("Retry produced empty result, using original response")
+		}
+	}
+
+	if opts.StreamChan != nil {
+		close(opts.StreamChan)
 	}
 
 	return finalResponse, nil
@@ -586,6 +648,8 @@ func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage
 // ClaudeCodeResponse mirrors the JSON output from `claude -p --output-format json`
 type ClaudeCodeResponse struct {
 	Type              string             `json:"type"`
+	Subtype           string             `json:"subtype,omitempty"`
+	IsError           bool               `json:"is_error,omitempty"`
 	SessionID         string             `json:"session_id"`
 	Result            string             `json:"result"`
 	Usage             ClaudeUsage        `json:"usage"`
@@ -705,4 +769,174 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 		},
 		Usage: usage,
 	}, nil
+}
+
+// retryForFinalAnswer resumes a Claude Code session that hit max turns
+// and asks it to provide a final summary in a single turn.
+func (c *ClaudeCodeAdapter) retryForFinalAnswer(
+	ctx context.Context,
+	sessionID string,
+	opts *llmtypes.CallOptions,
+) (*llmtypes.ContentResponse, error) {
+	// Build minimal arg list: resume the session with 1 turn
+	args := []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--verbose",
+		"--resume", sessionID,
+		"--max-turns", "1",
+	}
+
+	// Carry over MCP config, settings, and permissions from original opts
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && mcpConfig != "" {
+			args = append(args, "--mcp-config", mcpConfig, "--strict-mcp-config")
+		}
+		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && settings != "" {
+			args = append(args, "--settings", settings)
+		}
+		if skip, ok := opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions].(bool); ok && skip {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+	}
+	// Note: --append-system-prompt is NOT passed — the session already has it
+
+	// Prepare the finalization prompt as stdin
+	var inputStream bytes.Buffer
+	encoder := json.NewEncoder(&inputStream)
+	finalizationMsg := StreamJSONMessage{
+		Type: "user",
+		Message: InternalMessage{
+			Role: "user",
+			Content: []interface{}{
+				TextContentBlock{
+					Type: "text",
+					Text: "You have run out of turns. Please provide your final answer now based on what you have accomplished so far. Summarize results, findings, and any remaining work.",
+				},
+			},
+		},
+	}
+	if err := encoder.Encode(finalizationMsg); err != nil {
+		return nil, fmt.Errorf("failed to encode finalization message: %w", err)
+	}
+
+	c.logger.Infof("Retry: executing Claude Code CLI: claude %v", args)
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Stdin = &inputStream
+
+	// Filter out CLAUDECODE env var (same as main call)
+	var filteredEnv []string
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, "CLAUDECODE=") {
+			filteredEnv = append(filteredEnv, env)
+		}
+	}
+	cmd.Env = filteredEnv
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("retry: failed to create stdout pipe: %w", err)
+	}
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("retry: failed to start claude cli: %w", err)
+	}
+
+	// Simplified decode loop: only care about result event and text streaming
+	var retryResponse *llmtypes.ContentResponse
+	decoder := json.NewDecoder(stdoutPipe)
+	decodeDone := make(chan bool)
+
+	go func() {
+		for decoder.More() {
+			var raw map[string]interface{}
+			if err := decoder.Decode(&raw); err != nil {
+				c.logger.Errorf("Retry: failed to decode stream-json: %v", err)
+				break
+			}
+
+			msgType, _ := raw["type"].(string)
+			switch msgType {
+			case "stream_event":
+				// Stream text chunks to StreamChan if still open
+				event, _ := raw["event"].(map[string]interface{})
+				if event == nil {
+					continue
+				}
+				eventType, _ := event["type"].(string)
+				if eventType == "content_block_delta" {
+					delta, _ := event["delta"].(map[string]interface{})
+					if delta == nil {
+						continue
+					}
+					if deltaType, _ := delta["type"].(string); deltaType == "text_delta" {
+						if txt, ok := delta["text"].(string); ok && txt != "" {
+							if opts.StreamChan != nil {
+								opts.StreamChan <- llmtypes.StreamChunk{
+									Type:    llmtypes.StreamChunkTypeContent,
+									Content: txt,
+								}
+							}
+						}
+					}
+				}
+
+			case "assistant":
+				// Fallback streaming for non-stream_event mode
+				if msg, ok := raw["message"].(map[string]interface{}); ok {
+					if content, ok := msg["content"].([]interface{}); ok {
+						for _, cPart := range content {
+							if cp, ok := cPart.(map[string]interface{}); ok {
+								if txt, ok := cp["text"].(string); ok && txt != "" {
+									if opts.StreamChan != nil {
+										opts.StreamChan <- llmtypes.StreamChunk{
+											Type:    llmtypes.StreamChunkTypeContent,
+											Content: txt,
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+			case "result":
+				var claudeResp ClaudeCodeResponse
+				jsonBytes, _ := json.Marshal(raw)
+				if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
+					retryResponse, _ = c.mapResponseToContentResponse(&claudeResp)
+				}
+			}
+		}
+		decodeDone <- true
+	}()
+
+	// Wait for completion
+	var cmdErr error
+	select {
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		cmdErr = ctx.Err()
+	case <-decodeDone:
+		cmdErr = cmd.Wait()
+	}
+
+	if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+		c.logger.Infof("Retry: Claude Code CLI stderr:\n%s", stderrOutput)
+	}
+
+	if cmdErr != nil {
+		c.logger.Errorf("Retry: Claude Code CLI failed: %v", cmdErr)
+		if retryResponse == nil {
+			return nil, fmt.Errorf("retry: claude cli execution failed: %w", cmdErr)
+		}
+	}
+
+	return retryResponse, nil
 }

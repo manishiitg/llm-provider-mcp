@@ -1108,8 +1108,12 @@ func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 	apiKey := ""
 	if config.APIKeys != nil && config.APIKeys.GeminiCLI != nil {
 		apiKey = *config.APIKeys.GeminiCLI
+		logger.Infof("Gemini CLI: using API key from config (length=%d)", len(apiKey))
 	} else if envKey := os.Getenv("GEMINI_API_KEY"); envKey != "" {
 		apiKey = envKey
+		logger.Infof("Gemini CLI: using API key from GEMINI_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Gemini CLI: no API key found in config or environment")
 	}
 
 	// Create Gemini CLI adapter — pass API key so it can set GEMINI_API_KEY on the subprocess
