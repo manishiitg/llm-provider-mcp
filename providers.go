@@ -1973,6 +1973,12 @@ func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
 	return geminicli.WithAllowedTools(tools)
 }
 
+// WithGeminiProjectDirID sets an explicit project directory ID for the Gemini CLI.
+// This ensures resume calls use the same isolated project directory as the original invocation.
+func WithGeminiProjectDirID(id string) llmtypes.CallOption {
+	return geminicli.WithProjectDirID(id)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults

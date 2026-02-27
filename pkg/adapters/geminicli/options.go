@@ -13,6 +13,11 @@ const (
 	// in a temp working directory. This controls tools.core (tool restriction),
 	// mcpServers (MCP bridge), and other Gemini CLI project settings.
 	MetadataKeyProjectSettings = "gemini_project_settings"
+
+	// MetadataKeyProjectDirID controls which per-invocation project directory to use.
+	// When set, the adapter uses /tmp/gemini-cli-project-{id} instead of generating a new one.
+	// This is used to ensure resume calls use the same directory as the original invocation.
+	MetadataKeyProjectDirID = "gemini_project_dir_id"
 )
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -64,6 +69,16 @@ func WithProjectSettings(settingsJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyProjectSettings] = settingsJSON
+	}
+}
+
+// WithProjectDirID sets an explicit project directory ID so the Gemini CLI uses
+// /tmp/gemini-cli-project-{id}. This ensures resume calls and retries use the
+// same isolated project directory as the original invocation.
+func WithProjectDirID(id string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectDirID] = id
 	}
 }
 
