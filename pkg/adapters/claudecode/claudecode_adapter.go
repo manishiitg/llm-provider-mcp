@@ -137,6 +137,11 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	// Note: --input-format stream-json requires --output-format stream-json and --verbose
 	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages"}
 
+	// Pass --model flag if a specific model was requested (anything other than the generic "claude-code" sentinel)
+	if c.modelID != "" && c.modelID != "claude-code" {
+		args = append(args, "--model", c.modelID)
+	}
+
 	// Extract system prompt
 	var systemPrompts []string
 	var convoMessages []llmtypes.MessageContent
@@ -786,6 +791,11 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 		"--verbose",
 		"--resume", sessionID,
 		"--max-turns", "1",
+	}
+
+	// Carry over model override from original invocation
+	if c.modelID != "" && c.modelID != "claude-code" {
+		args = append(args, "--model", c.modelID)
 	}
 
 	// Carry over MCP config, settings, and permissions from original opts
