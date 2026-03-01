@@ -505,6 +505,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					startTime: time.Now(),
 				}
 
+				lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
 				if opts.StreamChan != nil {
 					opts.StreamChan <- llmtypes.StreamChunk{
 						Type:       llmtypes.StreamChunkTypeToolCallStart,
@@ -530,6 +531,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					resultContent, _ = raw["content"].(string)
 				}
 
+			lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
 				if pt, ok := pendingTools[toolID]; ok {
 					duration := time.Since(pt.startTime)
 					if opts.StreamChan != nil {
