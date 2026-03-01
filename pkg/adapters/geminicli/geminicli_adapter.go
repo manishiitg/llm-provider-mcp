@@ -45,7 +45,9 @@ func NewGeminiCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 // inactivityTimeout is the maximum time to wait for output from the Gemini CLI
 // before killing the process. This prevents indefinite hangs when the CLI stops
 // producing output (e.g., due to corrupted session history).
-const inactivityTimeout = 3 * time.Minute
+// Note: the watchdog is suppressed while tool calls are in flight — only idle
+// silence (no pending tools) counts toward this threshold.
+const inactivityTimeout = 10 * time.Minute
 
 // resolveProjectDir determines the per-invocation project directory.
 // Priority: explicit dirID from metadata > resumeID-based > generate new unique ID.
@@ -325,9 +327,12 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	var resolvedModel string
 	var accumulatedText strings.Builder
 
-	// Inactivity watchdog: track the last time we received output
+	// Inactivity watchdog: track the last time we received output.
+	// pendingToolCalls counts tool_use events that haven't yet received a tool_result.
+	// The watchdog skips the kill while any tool call is in flight.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
+	var pendingToolCalls atomic.Int64
 
 	// Progress heartbeat: if Gemini is silent for >30s (thinking, retrying, slow API),
 	// send a single status message so the user knows something is happening.
@@ -385,6 +390,12 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 				lastNano := lastActivity.Load()
 				elapsed := time.Since(time.Unix(0, lastNano))
 				if elapsed >= inactivityTimeout {
+					if pendingToolCalls.Load() > 0 {
+						// A tool call is still in flight — reset the clock and wait.
+						g.logger.Infof("Inactivity watchdog: no output for %v but %d tool call(s) in flight, resetting timer", elapsed, pendingToolCalls.Load())
+						lastActivity.Store(time.Now().UnixNano())
+						continue
+					}
 					g.logger.Errorf("Inactivity watchdog: no output for %v, killing Gemini CLI process group", elapsed)
 					if cmd.Process != nil {
 						// Kill entire process group (negative PID) to also kill child processes
@@ -499,6 +510,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					toolArgs:  toolArgsJSON,
 					startTime: time.Now(),
 				}
+				pendingToolCalls.Add(1) // signal watchdog: tool is in flight, don't kill
 
 				lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
 				if opts.StreamChan != nil {
@@ -540,6 +552,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 						}
 					}
 					delete(pendingTools, toolID)
+					pendingToolCalls.Add(-1) // tool done; watchdog may kill again if idle
 				}
 
 			case "error":
