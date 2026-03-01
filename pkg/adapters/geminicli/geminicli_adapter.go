@@ -89,14 +89,12 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	// 1. Prepare Command Arguments
 	args := []string{"--output-format", "stream-json"}
 
-	// Set approval mode (default to yolo for non-interactive usage)
-	approvalMode := "yolo"
+	// Set approval mode only if explicitly provided (Policy Engine handles tool approval via TOML rules)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if mode, ok := opts.Metadata.Custom[MetadataKeyApprovalMode].(string); ok && mode != "" {
-			approvalMode = mode
+			args = append(args, "--approval-mode", mode)
 		}
 	}
-	args = append(args, "--approval-mode", approvalMode)
 
 	// Set model if specified via metadata or adapter default
 	modelToUse := g.modelID
@@ -115,15 +113,12 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	args = append(args, "--model", modelToUse)
 
 	// Handle --allowed-tools (deprecated in Gemini CLI 0.30+, use Policy Engine instead).
-	// Skip when approval mode is yolo — yolo already approves all tools, making it redundant.
-	if approvalMode != "yolo" {
-		if opts.Metadata != nil && opts.Metadata.Custom != nil {
-			if allowedTools, ok := opts.Metadata.Custom[MetadataKeyAllowedTools].(string); ok && allowedTools != "" {
-				for _, tool := range strings.Split(allowedTools, ",") {
-					tool = strings.TrimSpace(tool)
-					if tool != "" {
-						args = append(args, "--allowed-tools", tool)
-					}
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if allowedTools, ok := opts.Metadata.Custom[MetadataKeyAllowedTools].(string); ok && allowedTools != "" {
+			for _, tool := range strings.Split(allowedTools, ",") {
+				tool = strings.TrimSpace(tool)
+				if tool != "" {
+					args = append(args, "--allowed-tools", tool)
 				}
 			}
 		}
@@ -830,14 +825,12 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 		"--resume", sessionID,
 	}
 
-	// Set approval mode (default to yolo for retry)
-	approvalMode := "yolo"
+	// Set approval mode only if explicitly provided (Policy Engine handles tool approval via TOML rules)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if mode, ok := opts.Metadata.Custom[MetadataKeyApprovalMode].(string); ok && mode != "" {
-			approvalMode = mode
+			args = append(args, "--approval-mode", mode)
 		}
 	}
-	args = append(args, "--approval-mode", approvalMode)
 
 	// Use -p/--prompt for non-interactive (headless) mode
 	args = append(args, "--prompt", finalizationPrompt)
