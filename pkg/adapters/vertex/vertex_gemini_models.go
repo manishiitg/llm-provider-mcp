@@ -16,9 +16,10 @@ const (
 	ModelGemini25FlashLite = "gemini-2.5-flash-lite"
 
 	// Gemini 3 Series
-	ModelGemini3ProPreview   = "gemini-3-pro-preview"
-	ModelGemini31ProPreview  = "gemini-3.1-pro-preview"
-	ModelGemini3FlashPreview = "gemini-3-flash-preview"
+	ModelGemini3ProPreview       = "gemini-3-pro-preview"
+	ModelGemini31ProPreview      = "gemini-3.1-pro-preview"
+	ModelGemini3FlashPreview     = "gemini-3-flash-preview"
+	ModelGemini31FlashLitePreview = "gemini-3.1-flash-lite-preview"
 )
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
@@ -126,6 +127,23 @@ func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 			SupportsJSONMode:        true,
 			SupportsThinkingLevel:   true,
 			ThinkingLevels:          []string{"low", "medium", "high"},
+			SupportsReasoningEffort: false,
+		},
+		// Gemini 3.1 Flash-Lite Preview - 1M context window (launched March 2026)
+		ModelGemini31FlashLitePreview: {
+			ModelID:                    ModelGemini31FlashLitePreview,
+			ModelName:                  "Gemini 3.1 Flash-Lite Preview",
+			ContextWindow:              1000000, // 1M tokens
+			InputCostPer1MTokens:       0.25,
+			OutputCostPer1MTokens:      1.50,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.025, // Cache read pricing (estimated, 90% discount)
+			Provider:                   "vertex",
+			// Capabilities
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsThinkingLevel:   false,
+			ThinkingLevels:          nil,
 			SupportsReasoningEffort: false,
 		},
 		// Gemini 3 Flash Preview - 1M context window
