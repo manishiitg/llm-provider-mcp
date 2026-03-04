@@ -109,7 +109,7 @@ paths = [
 [[rules]]
   id = "bedrock-credentials"
   description = "AWS Bedrock Credentials"
-  regex = '''(?:AWS_REGION|AWS_PROFILE|bedrock.*credential)[\s=:]+([^\s]+)'''
+  regex = '''(?:bedrock.*credential)[\s=:]+([^\s]+)'''
   tags = ["aws", "bedrock", "credentials"]
   entropy = 2.5
   secretGroup = 1
