@@ -5,6 +5,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 )
@@ -24,6 +25,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Vertex
 	allModels = append(allModels, vertex.GetAllVertexGeminiModels()...)
+
+	// MiniMax
+	allModels = append(allModels, minimax.GetAllMiniMaxModels()...)
 
 	// Azure - static models (dynamic API requires endpoint/key at runtime)
 	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
