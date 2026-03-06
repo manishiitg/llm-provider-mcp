@@ -1,6 +1,6 @@
 # llm-providers
 
-A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, Azure AI, and **Claude Code CLI**.
+A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, Azure AI, **Claude Code CLI**, and **MiniMax**.
 
 ## Overview
 
@@ -33,6 +33,7 @@ go get github.com/manishiitg/multi-llm-provider-go@v0.1.0
 - **Vertex AI** - Google Gemini models and Anthropic Claude via Vertex AI
 - **Azure AI** - OpenAI models via Azure AI Services/Foundry
 - **Claude Code CLI** - Local agentic CLI integration (`claude`)
+- **MiniMax** - MiniMax-M2.5/M2.1/M2 text models + image-01 image generation
 
 ## Quick Start
 
@@ -90,6 +91,7 @@ llm-providers/
 │   │   ├── anthropic/
 │   │   ├── vertex/
 │   │   ├── azure/
+│   │   ├── minimax/           # MiniMax text + image adapter
 │   │   └── claudecode/        # Claude Code CLI Adapter
 │   └── interfaces/            # Public interfaces
 ├── internal/
@@ -112,6 +114,7 @@ See `.env.example` for all available environment variables. Key variables:
 - `GOOGLE_API_KEY` or `VERTEX_API_KEY` - Google API key for Vertex AI
 - `OPEN_ROUTER_API_KEY` - OpenRouter API key
 - `AZURE_AI_ENDPOINT`, `AZURE_AI_API_KEY` - Azure AI Services endpoint and API key
+- `MINIMAX_API_KEY` - MiniMax API key (for both text and image generation)
 - **Claude Code**: Requires `claude` binary in PATH and authenticated via `claude login`.
 
 ### Provider Configuration
@@ -143,15 +146,61 @@ All providers have **identical test coverage** using standardized tests, with sp
 
 #### Test Coverage Matrix
 
-| Provider | Plain Text | Tool Calls | Structured Output | Image | Token Usage | Streaming | Agentic |
-|----------|------------|------------|-------------------|-------|-------------|-----------|---------|
+| Provider | Plain Text | Tool Calls | Structured Output | Image Input | Token Usage | Streaming | Agentic |
+|----------|------------|------------|-------------------|-------------|-------------|-----------|---------|
 | **Anthropic** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **OpenAI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Bedrock** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **OpenRouter** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Vertex AI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Azure AI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **MiniMax** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | **Claude Code** | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
+
+#### Image Generation
+
+Image generation is a separate interface (`ImageGenerationModel`) initialized via `InitializeImageGenerationModel`.
+
+| Provider | Model | Cost | Aspect Ratios | Subject Reference (Editing) |
+|----------|-------|------|---------------|-----------------------------|
+| **Vertex AI** | imagen-4.0-generate-001 | $0.04/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
+| **Vertex AI** | imagen-4.0-fast-generate-001 | $0.02/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
+| **Vertex AI** | imagen-4.0-ultra-generate-001 | $0.06/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
+| **MiniMax** | image-01 | $0.0035/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ✅ (URL) |
+
+**MiniMax image generation example:**
+
+```go
+imageGen, err := llmproviders.InitializeImageGenerationModel(llmproviders.Config{
+    Provider: llmproviders.ProviderMiniMax,
+    ModelID:  "image-01",
+    Logger:   logger,
+})
+
+// Basic generation
+resp, err := imageGen.GenerateImages(ctx, "A mountain lake at sunset",
+    llmproviders.WithAspectRatio("16:9"),
+    llmproviders.WithNumberOfImages(2),
+)
+
+// Subject-reference editing (keep character, change scene)
+resp, err := imageGen.GenerateImages(ctx, "Same person in a library",
+    llmproviders.WithInputImageURL("https://example.com/reference.jpg"),
+    llmproviders.WithAspectRatio("16:9"),
+)
+```
+
+**CLI test commands:**
+```bash
+# Basic generation
+./bin/llm-test minimax-image-generate --prompt "A futuristic city" --aspect-ratio 16:9 --num-images 2
+
+# Subject-reference editing
+./bin/llm-test minimax-image-generate \
+  --prompt "Same person in a library" \
+  --input-image-url "https://example.com/reference.jpg" \
+  --aspect-ratio 16:9
+```
 
 #### Claude Code CLI (`claude-code-*`)
 
@@ -187,6 +236,26 @@ The **Claude Code adapter** is unique because it integrates with a local **Agent
 ### Other Provider Tests
 
 (See full list in original README for standard providers like Anthropic, OpenAI, Bedrock, etc.)
+
+## MiniMax Provider
+
+### Text Models
+
+| Model | Input | Output | Cache Read | Cache Write | Context |
+|-------|-------|--------|------------|-------------|---------|
+| MiniMax-M2.5 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |
+| MiniMax-M2.5-highspeed | $0.60/M | $2.40/M | $0.03/M | $0.375/M | 1M tokens |
+| MiniMax-M2.1 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |
+| MiniMax-M2.1-highspeed | $0.60/M | $2.40/M | $0.03/M | $0.375/M | 1M tokens |
+| MiniMax-M2 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |
+
+Uses the OpenAI-compatible endpoint (`/v1/text/chatcompletion_v2`) with full support for tool calling, streaming, JSON mode, and prompt caching.
+
+### Image Model
+
+| Model | Price | Notes |
+|-------|-------|-------|
+| image-01 | $0.0035/image | Supports subject-reference editing via URL |
 
 ## Code Quality
 

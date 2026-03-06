@@ -16,6 +16,7 @@ import (
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
+	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 
@@ -43,6 +44,7 @@ const (
 	ProviderAzure      Provider = "azure"
 	ProviderClaudeCode Provider = "claude-code"
 	ProviderGeminiCLI  Provider = "gemini-cli"
+	ProviderMiniMax    Provider = "minimax"
 )
 
 // Config holds configuration for LLM initialization
@@ -71,6 +73,7 @@ type ProviderAPIKeys struct {
 	Anthropic  *string
 	Vertex     *string
 	GeminiCLI  *string
+	MiniMax    *string
 	Bedrock    *BedrockConfig
 	Azure      *AzureAPIConfig
 }
@@ -110,6 +113,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeClaudeCode(config)
 	case ProviderGeminiCLI:
 		llm, err = initializeGeminiCLI(config)
+	case ProviderMiniMax:
+		llm, err = initializeMiniMax(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -147,6 +152,99 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 	}
 
 	return embeddingModel, nil
+}
+
+// InitializeImageGenerationModel creates and initializes an image generation model.
+// Provider must be "vertex". Model selection determines the API path:
+//   - "imagen-*" models use the Imagen GenerateImages API
+//   - "gemini-*" models use GenerateContent with IMAGE response modality
+//
+// Requires GEMINI_API_KEY environment variable.
+func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationModel, error) {
+	switch config.Provider {
+	case ProviderVertex:
+		return initializeVertexImagen(config)
+	case ProviderMiniMax:
+		return initializeMiniMaxImagen(config)
+	default:
+		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax", config.Provider)
+	}
+}
+
+// initializeMiniMaxImagen creates a MiniMax image generation adapter.
+func initializeMiniMaxImagen(config Config) (llmtypes.ImageGenerationModel, error) {
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MiniMax != nil && *config.APIKeys.MiniMax != "" {
+		apiKey = *config.APIKeys.MiniMax
+	} else {
+		apiKey = os.Getenv("MINIMAX_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("MINIMAX_API_KEY is required for MiniMax image generation")
+	}
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = minimaxadapter.ModelMiniMaxImage01
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	logger.Infof("Initializing MiniMax Image Generation with model: %s", modelID)
+	return minimaxadapter.NewMiniMaxImageAdapter(apiKey, modelID, logger), nil
+}
+
+// initializeVertexImagen creates an image generation adapter using the Gemini API.
+// If the model starts with "gemini-", uses GenerateContent (native Gemini image output).
+// Otherwise assumes an Imagen model and uses the GenerateImages API.
+// Uses GEMINI_API_KEY with the Gemini Developer API backend.
+func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "gemini-2.5-flash-image"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	// Check config APIKeys first, then fall back to environment variables
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Vertex != nil && *config.APIKeys.Vertex != "" {
+		apiKey = *config.APIKeys.Vertex
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("VERTEX_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Imagen image generation (or provide api_key in config)")
+	}
+
+	ctx := config.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GenAI client for Imagen: %w", err)
+	}
+
+	logger.Infof("Initialized Gemini image model - model_id: %s", modelID)
+	return vertexadapter.NewGeminiImageAdapter(client, modelID, logger), nil
 }
 
 // initializeOpenAIEmbedding creates and configures an OpenAI embedding model instance
@@ -658,6 +756,57 @@ func initializeAnthropic(config Config) (llmtypes.Model, error) {
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
 	logger.Infof("Initialized Anthropic LLM - model_id: %s", modelID)
+	return llm, nil
+}
+
+// initializeMiniMax creates and configures a MiniMax LLM instance using the Anthropic-compatible API
+func initializeMiniMax(config Config) (llmtypes.Model, error) {
+	// Check for API key from config first, then environment
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MiniMax != nil && *config.APIKeys.MiniMax != "" {
+		apiKey = *config.APIKeys.MiniMax
+	} else {
+		apiKey = os.Getenv("MINIMAX_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("MINIMAX_API_KEY is required for MiniMax provider (not found in config or environment)")
+	}
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = minimaxadapter.ModelMiniMaxM25
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing MiniMax LLM with model: %s", modelID)
+
+	llmMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "minimax_user",
+		CustomFields: map[string]string{
+			"provider":  "minimax",
+			"operation": "llm_initialization",
+		},
+	}
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), modelID, config.Temperature, config.TraceID, llmMetadata)
+
+	llm := minimaxadapter.NewMiniMaxAdapter(apiKey, modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "minimax_user",
+		CustomFields: map[string]string{
+			"provider":     "minimax",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized MiniMax LLM - model_id: %s", modelID)
 	return llm, nil
 }
 

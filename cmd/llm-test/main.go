@@ -10,6 +10,7 @@ import (
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
 	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
 	geminiclichmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/geminicli"
+	minimaxcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/minimax"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
 	sharedcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/shared"
@@ -84,6 +85,7 @@ func main() {
 	rootCmd.AddCommand(vertexcmd.VertexTokenUsageTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexImageTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexEmbeddingTestCmd)
+	rootCmd.AddCommand(vertexcmd.VertexImagenGenerateTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexGeminiThinkingLevelTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexNestedArrayTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexSchemaValidationTestCmd)
@@ -101,6 +103,14 @@ func main() {
 	rootCmd.AddCommand(azurecmd.AzureStreamingCancellationTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureModelMetadataTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureResponsesTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxToolCallTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxStreamingContentTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxStreamingMixedTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxStructuredOutputTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxTokenUsageTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxImageGenerateTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingContentTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingMultiTurnTestCmd)

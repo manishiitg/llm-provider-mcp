@@ -33,6 +33,10 @@ type ModelMetadata struct {
 	// Set to 0 if the model doesn't support cache write tracking or if cache writes are charged at regular input rate
 	CachedInputCostWritePer1MTokens float64 `json:"cached_input_cost_write_per_1m"`
 
+	// CostPerImage is the cost per generated image (in USD).
+	// Applies to image generation models (e.g., Imagen). Set to 0 for text/embedding models.
+	CostPerImage float64 `json:"cost_per_image,omitempty"`
+
 	// Provider is the name of the provider (e.g., "openai", "anthropic", "bedrock", "vertex")
 	Provider string `json:"provider"`
 

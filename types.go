@@ -29,6 +29,13 @@ type FunctionName = llmtypes.FunctionName
 type CallOptions = llmtypes.CallOptions
 type CallOption = llmtypes.CallOption
 
+// Re-export image generation types
+type ImageGenerationModel = llmtypes.ImageGenerationModel
+type ImageGenerationResponse = llmtypes.ImageGenerationResponse
+type GeneratedImage = llmtypes.GeneratedImage
+type ImageGenerationOptions = llmtypes.ImageGenerationOptions
+type ImageGenerationOption = llmtypes.ImageGenerationOption
+
 // Re-export embedding types
 type EmbeddingModel = llmtypes.EmbeddingModel
 type Embedding = llmtypes.Embedding
@@ -61,6 +68,11 @@ var (
 	ImagePart          = llmtypes.ImagePart
 	ImagePartBase64    = llmtypes.ImagePartBase64
 	ImagePartURL       = llmtypes.ImagePartURL
-	WithEmbeddingModel = llmtypes.WithEmbeddingModel
-	WithDimensions     = llmtypes.WithDimensions
+	WithEmbeddingModel   = llmtypes.WithEmbeddingModel
+	WithDimensions       = llmtypes.WithDimensions
+	WithNumberOfImages   = llmtypes.WithNumberOfImages
+	WithAspectRatio      = llmtypes.WithAspectRatio
+	WithNegativePrompt   = llmtypes.WithNegativePrompt
+	WithInputImage       = llmtypes.WithInputImage
+	WithInputImageURL    = llmtypes.WithInputImageURL
 )
