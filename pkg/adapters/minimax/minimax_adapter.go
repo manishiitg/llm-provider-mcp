@@ -1,53 +1,43 @@
-// Package minimax provides an adapter for MiniMax's API.
-// MiniMax exposes an OpenAI-compatible endpoint at /v1/text/chatcompletion_v2.
-// We use the OpenAI Go SDK with a URL-rewriting middleware to hit the correct path.
+// Package minimax provides an adapter for MiniMax's Anthropic-compatible API.
+// MiniMax exposes an Anthropic-compatible endpoint at https://api.minimax.io
+// We use the Anthropic Go SDK with a custom base URL.
 package minimax
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
-	openai "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/shared"
+	"github.com/anthropics/anthropic-sdk-go"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 )
 
 const (
-	// MiniMaxBaseURL is the base URL for MiniMax's API
-	MiniMaxBaseURL = "https://api.minimax.io"
-	// MiniMaxEndpointPath is the path for chat completions (OpenAI-compatible)
-	MiniMaxEndpointPath = "/v1/text/chatcompletion_v2"
+	// MiniMaxAnthropicBaseURL is the base URL for MiniMax's Anthropic-compatible API.
+	// The Anthropic SDK appends /v1/messages, resulting in https://api.minimax.io/anthropic/v1/messages.
+	MiniMaxAnthropicBaseURL = "https://api.minimax.io/anthropic"
 )
 
 // MiniMaxAdapter implements the llmtypes.Model interface using MiniMax's
-// OpenAI-compatible API at /v1/text/chatcompletion_v2.
+// Anthropic-compatible API.
 type MiniMaxAdapter struct {
-	client  *openai.Client
+	client  anthropic.Client
 	modelID string
 	logger  interfaces.Logger
 }
 
-// NewMiniMaxAdapter creates a new MiniMax adapter.
-// A middleware rewrites all chat completion requests to MiniMax's endpoint path.
+// NewMiniMaxAdapter creates a new MiniMax adapter using the Anthropic SDK.
 func NewMiniMaxAdapter(apiKey, modelID string, logger interfaces.Logger) *MiniMaxAdapter {
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(MiniMaxBaseURL),
-		option.WithMiddleware(func(req *http.Request, next func(*http.Request) (*http.Response, error)) (*http.Response, error) {
-			// Rewrite to MiniMax's non-standard endpoint path
-			req.URL.Path = MiniMaxEndpointPath
-			return next(req)
-		}),
+	client := anthropic.NewClient(
+		anthropicoption.WithAPIKey(apiKey),
+		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
 	)
 	return &MiniMaxAdapter{
-		client:  &client,
+		client:  client,
 		modelID: modelID,
 		logger:  logger,
 	}
@@ -75,63 +65,148 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		modelID = opts.Model
 	}
 
-	openaiMessages := convertMessages(messages)
+	anthropicMessages, systemMessage := convertMessages(messages)
 
-	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(modelID),
-		Messages: openaiMessages,
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(modelID),
+		Messages:  anthropicMessages,
+		MaxTokens: 8192,
+	}
+
+	if systemMessage != "" {
+		if opts.JSONMode {
+			systemMessage = systemMessage + "\n\nYou must respond with valid JSON only, no other text. Return a JSON object."
+		}
+		params.System = []anthropic.TextBlockParam{
+			{Text: systemMessage},
+		}
+	} else if opts.JSONMode && len(anthropicMessages) > 0 {
+		jsonInstruction := anthropic.NewTextBlock("You must respond with valid JSON only, no other text. Return a JSON object.")
+		if len(anthropicMessages) > 0 && anthropicMessages[0].Role == anthropic.MessageParamRoleUser {
+			anthropicMessages[0].Content = append([]anthropic.ContentBlockParamUnion{jsonInstruction}, anthropicMessages[0].Content...)
+		}
 	}
 
 	if opts.Temperature > 0 {
-		params.Temperature = param.NewOpt(opts.Temperature)
+		params.Temperature = anthropic.Float(opts.Temperature)
 	}
 	if opts.MaxTokens > 0 {
-		params.MaxTokens = param.NewOpt(int64(opts.MaxTokens))
-	}
-
-	if opts.JSONMode {
-		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONObject: &openai.ResponseFormatJSONObjectParam{},
-		}
+		params.MaxTokens = int64(opts.MaxTokens)
 	}
 
 	if len(opts.Tools) > 0 {
 		params.Tools = convertTools(opts.Tools)
 		if opts.ToolChoice != nil {
-			if tc := convertToolChoice(opts.ToolChoice); tc != nil {
-				params.ToolChoice = *tc
-			}
+			params.ToolChoice = convertToolChoice(opts.ToolChoice)
 		}
 	}
 
 	if m.logger != nil {
-		m.logger.Debugf("[MINIMAX] GenerateContent model=%s messages=%d", modelID, len(messages))
+		m.logger.Debugf("[MINIMAX] GenerateContent model=%s messages=%d tools=%d", modelID, len(messages), len(params.Tools))
 	}
 
-	if opts.StreamChan != nil {
-		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: param.NewOpt(true),
+	stream := m.client.Messages.NewStreaming(ctx, params)
+
+	defer func() {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
 		}
-		return m.generateStreaming(ctx, modelID, params, opts)
+	}()
+
+	message := anthropic.Message{}
+	var contentChunksSent int
+	for stream.Next() {
+		event := stream.Current()
+
+		if err := message.Accumulate(event); err != nil {
+			stream.Close()
+			return nil, fmt.Errorf("minimax streaming accumulate error: %w", err)
+		}
+
+		if opts.StreamChan != nil {
+			switch eventVariant := event.AsAny().(type) {
+			case anthropic.ContentBlockDeltaEvent:
+				switch deltaVariant := eventVariant.Delta.AsAny().(type) {
+				case anthropic.TextDelta:
+					if deltaVariant.Text != "" {
+						contentChunksSent++
+						select {
+						case opts.StreamChan <- llmtypes.StreamChunk{
+							Type:    llmtypes.StreamChunkTypeContent,
+							Content: deltaVariant.Text,
+						}:
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					}
+				}
+			}
+		}
 	}
 
-	result, err := m.client.Chat.Completions.New(ctx, params)
-	if err != nil {
+	if err := stream.Err(); err != nil {
 		if m.logger != nil {
-			m.logger.Errorf("[MINIMAX] API error: %v", err)
+			m.logger.Errorf("[MINIMAX] Streaming error: %v", err)
 		}
-		return nil, fmt.Errorf("minimax generate content: %w", err)
+		return nil, fmt.Errorf("minimax streaming error: %w", err)
+	}
+	stream.Close()
+
+	if m.logger != nil {
+		m.logger.Debugf("[MINIMAX] Stream complete: content_chunks=%d stop_reason=%s", contentChunksSent, message.StopReason)
 	}
 
-	if m.logger != nil && len(result.Choices) > 0 {
-		m.logger.Debugf("[MINIMAX] Response stop_reason=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-			result.Choices[0].FinishReason, result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
-		if result.Usage.PromptTokensDetails.CachedTokens > 0 {
-			m.logger.Debugf("[MINIMAX] Cache details: cached_tokens=%d", result.Usage.PromptTokensDetails.CachedTokens)
+	// Fallback: if no chunks sent during streaming but message has text, emit it now
+	if opts.StreamChan != nil {
+		if contentChunksSent == 0 {
+			var textContent strings.Builder
+			for _, block := range message.Content {
+				if block.Type == "text" && block.Text != "" {
+					textContent.WriteString(block.Text)
+				}
+			}
+			if textContent.Len() > 0 {
+				select {
+				case opts.StreamChan <- llmtypes.StreamChunk{
+					Type:    llmtypes.StreamChunkTypeContent,
+					Content: textContent.String(),
+				}:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+		}
+
+		// Stream tool calls
+		for _, block := range message.Content {
+			if block.Type == "tool_use" {
+				var argsJSON []byte
+				if len(block.Input) > 0 {
+					argsJSON = block.Input
+				} else {
+					argsJSON = []byte("{}")
+				}
+				toolCall := llmtypes.ToolCall{
+					ID:   block.ID,
+					Type: "function",
+					FunctionCall: &llmtypes.FunctionCall{
+						Name:      block.Name,
+						Arguments: string(argsJSON),
+					},
+				}
+				select {
+				case opts.StreamChan <- llmtypes.StreamChunk{
+					Type:     llmtypes.StreamChunkTypeToolCall,
+					ToolCall: &toolCall,
+				}:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
 		}
 	}
 
-	return convertResponse(result), nil
+	return convertResponse(&message), nil
 }
 
 // Call implements a convenience method for simple text generation
@@ -152,148 +227,14 @@ func (m *MiniMaxAdapter) Call(ctx context.Context, prompt string, options ...llm
 	return resp.Choices[0].Content, nil
 }
 
-// generateStreaming handles streaming responses
-func (m *MiniMaxAdapter) generateStreaming(ctx context.Context, modelID string, params openai.ChatCompletionNewParams, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
-	defer func() {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-	}()
-
-	stream := m.client.Chat.Completions.NewStreaming(ctx, params)
-	defer stream.Close()
-
-	var accumulatedContent strings.Builder
-	var accumulatedToolCalls []llmtypes.ToolCall
-	var finishReason string
-	var usage *openai.CompletionUsage
-	toolCallMap := make(map[int64]*llmtypes.ToolCall)
-
-	for stream.Next() {
-		chunk := stream.Current()
-
-		// Capture usage from final chunk
-		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
-			u := chunk.Usage
-			usage = &u
-		}
-
-		for _, choice := range chunk.Choices {
-			if choice.FinishReason != "" {
-				finishReason = string(choice.FinishReason)
-			}
-
-			// Handle text delta
-			if choice.Delta.Content != "" {
-				accumulatedContent.WriteString(choice.Delta.Content)
-				if opts.StreamChan != nil {
-					select {
-					case opts.StreamChan <- llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeContent,
-						Content: choice.Delta.Content,
-					}:
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					}
-				}
-			}
-
-			// Handle tool call deltas
-			for _, tcDelta := range choice.Delta.ToolCalls {
-				idx := tcDelta.Index
-				if toolCallMap[idx] == nil {
-					toolCallMap[idx] = &llmtypes.ToolCall{
-						ID:           tcDelta.ID,
-						Type:         "function",
-						FunctionCall: &llmtypes.FunctionCall{},
-					}
-				}
-				tc := toolCallMap[idx]
-				if tcDelta.ID != "" {
-					tc.ID = tcDelta.ID
-				}
-				if tcDelta.Function.Name != "" {
-					tc.FunctionCall.Name = tcDelta.Function.Name
-				}
-				if tcDelta.Function.Arguments != "" {
-					tc.FunctionCall.Arguments += tcDelta.Function.Arguments
-				}
-			}
-		}
-	}
-
-	if err := stream.Err(); err != nil {
-		return nil, fmt.Errorf("minimax streaming error: %w", err)
-	}
-
-	// Collect completed tool calls in order
-	for i := int64(0); int(i) < len(toolCallMap); i++ {
-		if tc, ok := toolCallMap[i]; ok {
-			accumulatedToolCalls = append(accumulatedToolCalls, *tc)
-		}
-	}
-
-	// Stream tool calls to channel
-	if opts.StreamChan != nil {
-		for _, tc := range accumulatedToolCalls {
-			tcCopy := tc
-			select {
-			case opts.StreamChan <- llmtypes.StreamChunk{
-				Type:     llmtypes.StreamChunkTypeToolCall,
-				ToolCall: &tcCopy,
-			}:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-	}
-
-	if m.logger != nil && usage != nil {
-		m.logger.Debugf("[MINIMAX] Stream complete stop_reason=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-			finishReason, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
-		if usage.PromptTokensDetails.CachedTokens > 0 {
-			m.logger.Debugf("[MINIMAX] Cache details: cached_tokens=%d", usage.PromptTokensDetails.CachedTokens)
-		}
-	}
-
-	choice := &llmtypes.ContentChoice{
-		Content:    accumulatedContent.String(),
-		StopReason: finishReason,
-		ToolCalls:  accumulatedToolCalls,
-	}
-
-	var genInfo *llmtypes.GenerationInfo
-	if usage != nil {
-		inputTokens := int(usage.PromptTokens)
-		outputTokens := int(usage.CompletionTokens)
-		totalTokens := int(usage.TotalTokens)
-		genInfo = &llmtypes.GenerationInfo{
-			InputTokens:     &inputTokens,
-			OutputTokens:    &outputTokens,
-			TotalTokens:     &totalTokens,
-			InputTokensCap:  &inputTokens,
-			OutputTokensCap: &outputTokens,
-		}
-		if usage.PromptTokensDetails.CachedTokens > 0 {
-			cachedTokens := int(usage.PromptTokensDetails.CachedTokens)
-			genInfo.CachedContentTokens = &cachedTokens
-		}
-	}
-	choice.GenerationInfo = genInfo
-
-	usageInfo := llmtypes.ExtractUsageFromGenerationInfo(genInfo)
-	return &llmtypes.ContentResponse{
-		Choices: []*llmtypes.ContentChoice{choice},
-		Usage:   usageInfo,
-	}, nil
-}
-
-// convertMessages converts llmtypes messages to OpenAI message format
-func convertMessages(langMessages []llmtypes.MessageContent) []openai.ChatCompletionMessageParamUnion {
-	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(langMessages))
+// convertMessages converts llmtypes messages to Anthropic message format
+func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.MessageParam, string) {
+	anthropicMessages := make([]anthropic.MessageParam, 0, len(langMessages))
+	var systemMessage string
 
 	for _, msg := range langMessages {
-		var textParts []string
+		var contentParts []string
+		var imageParts []llmtypes.ImageContent
 		var toolCallID string
 		var toolResponseContent string
 		var toolCalls []llmtypes.ToolCall
@@ -301,7 +242,9 @@ func convertMessages(langMessages []llmtypes.MessageContent) []openai.ChatComple
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llmtypes.TextContent:
-				textParts = append(textParts, p.Text)
+				contentParts = append(contentParts, p.Text)
+			case llmtypes.ImageContent:
+				imageParts = append(imageParts, p)
 			case llmtypes.ToolCallResponse:
 				toolCallID = p.ToolCallID
 				toolResponseContent = p.Content
@@ -310,147 +253,208 @@ func convertMessages(langMessages []llmtypes.MessageContent) []openai.ChatComple
 			}
 		}
 
-		content := strings.Join(textParts, "\n")
-
 		switch string(msg.Role) {
 		case string(llmtypes.ChatMessageTypeSystem):
-			msgs = append(msgs, openai.SystemMessage(content))
-
-		case string(llmtypes.ChatMessageTypeHuman):
-			msgs = append(msgs, openai.UserMessage(content))
-
-		case string(llmtypes.ChatMessageTypeAI):
-			if len(toolCalls) > 0 {
-				openaiToolCalls := make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(toolCalls))
-				for _, tc := range toolCalls {
-					openaiToolCalls = append(openaiToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-							ID:   tc.ID,
-							Type: "function",
-							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-								Name:      tc.FunctionCall.Name,
-								Arguments: tc.FunctionCall.Arguments,
-							},
-						},
-					})
-				}
-				assistantMsg := openai.ChatCompletionAssistantMessageParam{
-					ToolCalls: openaiToolCalls,
-				}
-				if content != "" {
-					assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-						OfString: param.NewOpt(content),
-					}
-				}
-				msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistantMsg})
-			} else {
-				msgs = append(msgs, openai.AssistantMessage(content))
+			if len(contentParts) > 0 {
+				systemMessage = strings.Join(contentParts, "\n")
 			}
-
+		case string(llmtypes.ChatMessageTypeHuman):
+			contentBlocks := []anthropic.ContentBlockParamUnion{}
+			if len(contentParts) > 0 {
+				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(strings.Join(contentParts, "\n")))
+			}
+			for _, img := range imageParts {
+				if block := createImageBlock(img); block != nil {
+					contentBlocks = append(contentBlocks, *block)
+				}
+			}
+			if len(contentBlocks) > 0 {
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role:    anthropic.MessageParamRoleUser,
+					Content: contentBlocks,
+				})
+			}
+		case string(llmtypes.ChatMessageTypeAI):
+			contentBlocks := []anthropic.ContentBlockParamUnion{}
+			if len(contentParts) > 0 {
+				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(strings.Join(contentParts, "\n")))
+			}
+			for _, tc := range toolCalls {
+				var args map[string]interface{}
+				if tc.FunctionCall.Arguments != "" {
+					if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &args); err != nil {
+						args = make(map[string]interface{})
+					}
+				} else {
+					args = make(map[string]interface{})
+				}
+				contentBlocks = append(contentBlocks, anthropic.NewToolUseBlock(tc.ID, args, tc.FunctionCall.Name))
+			}
+			if len(contentBlocks) > 0 {
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role:    anthropic.MessageParamRoleAssistant,
+					Content: contentBlocks,
+				})
+			}
 		case string(llmtypes.ChatMessageTypeTool):
 			if toolCallID != "" {
-				msgs = append(msgs, openai.ToolMessage(toolResponseContent, toolCallID))
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role:    anthropic.MessageParamRoleUser,
+					Content: []anthropic.ContentBlockParamUnion{anthropic.NewToolResultBlock(toolCallID, toolResponseContent, false)},
+				})
 			}
-
 		default:
-			msgs = append(msgs, openai.UserMessage(content))
+			contentBlocks := []anthropic.ContentBlockParamUnion{}
+			if len(contentParts) > 0 {
+				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(strings.Join(contentParts, "\n")))
+			}
+			for _, img := range imageParts {
+				if block := createImageBlock(img); block != nil {
+					contentBlocks = append(contentBlocks, *block)
+				}
+			}
+			if len(contentBlocks) > 0 {
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role:    anthropic.MessageParamRoleUser,
+					Content: contentBlocks,
+				})
+			}
 		}
 	}
 
-	return msgs
+	return anthropicMessages, systemMessage
 }
 
-func convertTools(llmTools []llmtypes.Tool) []openai.ChatCompletionToolUnionParam {
-	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(llmTools))
+func createImageBlock(img llmtypes.ImageContent) *anthropic.ContentBlockParamUnion {
+	if img.SourceType == "base64" {
+		block := anthropic.NewImageBlockBase64(img.MediaType, img.Data)
+		return &block
+	} else if img.SourceType == "url" {
+		block := anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: img.Data})
+		return &block
+	}
+	return nil
+}
+
+func convertTools(llmTools []llmtypes.Tool) []anthropic.ToolUnionParam {
+	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(llmTools))
 	for _, tool := range llmTools {
 		if tool.Function == nil {
 			continue
 		}
-		var parameters shared.FunctionParameters
+		var parameters map[string]interface{}
 		if tool.Function.Parameters != nil {
 			if b, err := json.Marshal(tool.Function.Parameters); err == nil {
-				var paramsMap map[string]interface{}
-				if err := json.Unmarshal(b, &paramsMap); err == nil {
-					parameters = shared.FunctionParameters(paramsMap)
+				var m map[string]interface{}
+				if err := json.Unmarshal(b, &m); err == nil {
+					parameters = m
 				}
 			}
 		}
-		tools = append(tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-			Name:        tool.Function.Name,
-			Description: param.NewOpt(tool.Function.Description),
-			Parameters:  parameters,
-		}))
-	}
-	return tools
-}
-
-func convertToolChoice(toolChoice interface{}) *openai.ChatCompletionToolChoiceOptionUnionParam {
-	if toolChoice == nil {
-		return nil
-	}
-	if choiceStr, ok := toolChoice.(string); ok {
-		result := openai.ChatCompletionToolChoiceOptionUnionParam{
-			OfAuto: param.NewOpt(choiceStr),
+		if parameters == nil {
+			parameters = make(map[string]interface{})
 		}
-		return &result
+
+		var required []string
+		if req, ok := parameters["required"].([]interface{}); ok {
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					required = append(required, s)
+				}
+			}
+		}
+		properties := make(map[string]interface{})
+		if props, ok := parameters["properties"].(map[string]interface{}); ok {
+			properties = props
+		}
+
+		anthropicTools = append(anthropicTools, anthropic.ToolUnionParamOfTool(
+			anthropic.ToolInputSchemaParam{Properties: properties, Required: required},
+			tool.Function.Name,
+		))
 	}
-	if tc, ok := toolChoice.(*llmtypes.ToolChoice); ok && tc != nil && tc.Function != nil && tc.Function.Name != "" {
-		result := openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
-			Name: tc.Function.Name,
-		})
-		return &result
-	}
-	result := openai.ChatCompletionToolChoiceOptionUnionParam{
-		OfAuto: param.NewOpt("auto"),
-	}
-	return &result
+	return anthropicTools
 }
 
-func convertResponse(result *openai.ChatCompletion) *llmtypes.ContentResponse {
-	if result == nil || len(result.Choices) == 0 {
+func convertToolChoice(toolChoice interface{}) anthropic.ToolChoiceUnionParam {
+	if choiceStr, ok := toolChoice.(string); ok {
+		switch choiceStr {
+		case "none":
+			return anthropic.ToolChoiceUnionParam{OfNone: &anthropic.ToolChoiceNoneParam{}}
+		case "required", "any":
+			return anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+		default:
+			return anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
+		}
+	}
+	if tc, ok := toolChoice.(*llmtypes.ToolChoice); ok && tc != nil {
+		if tc.Function != nil && tc.Function.Name != "" {
+			return anthropic.ToolChoiceParamOfTool(tc.Function.Name)
+		}
+		switch tc.Type {
+		case "none":
+			return anthropic.ToolChoiceUnionParam{OfNone: &anthropic.ToolChoiceNoneParam{}}
+		case "required", "any":
+			return anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+		}
+	}
+	return anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
+}
+
+func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
+	if result == nil {
 		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{}}
 	}
 
-	choice := result.Choices[0]
-	llmChoice := &llmtypes.ContentChoice{
-		Content:    choice.Message.Content,
-		StopReason: string(choice.FinishReason),
-	}
+	choice := &llmtypes.ContentChoice{}
+	var textParts []string
+	var toolCalls []llmtypes.ToolCall
 
-	if len(choice.Message.ToolCalls) > 0 {
-		toolCalls := make([]llmtypes.ToolCall, 0, len(choice.Message.ToolCalls))
-		for _, tc := range choice.Message.ToolCalls {
+	for _, block := range result.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				textParts = append(textParts, block.Text)
+			}
+		case "tool_use":
+			argsJSON := []byte("{}")
+			if len(block.Input) > 0 {
+				argsJSON = block.Input
+			}
 			toolCalls = append(toolCalls, llmtypes.ToolCall{
-				ID:   tc.ID,
+				ID:   block.ID,
 				Type: "function",
 				FunctionCall: &llmtypes.FunctionCall{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
+					Name:      block.Name,
+					Arguments: string(argsJSON),
 				},
 			})
 		}
-		llmChoice.ToolCalls = toolCalls
 	}
 
-	inputTokens := int(result.Usage.PromptTokens)
-	outputTokens := int(result.Usage.CompletionTokens)
-	totalTokens := int(result.Usage.TotalTokens)
+	if len(textParts) > 0 {
+		choice.Content = strings.Join(textParts, "\n")
+	}
+	if len(toolCalls) > 0 {
+		choice.ToolCalls = toolCalls
+	}
+	if result.StopReason != "" {
+		choice.StopReason = string(result.StopReason)
+	}
+
+	inputTokens := int(result.Usage.InputTokens)
+	outputTokens := int(result.Usage.OutputTokens)
+	totalTokens := inputTokens + outputTokens
 	genInfo := &llmtypes.GenerationInfo{
-		InputTokens:     &inputTokens,
-		OutputTokens:    &outputTokens,
-		TotalTokens:     &totalTokens,
-		InputTokensCap:  &inputTokens,
-		OutputTokensCap: &outputTokens,
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
 	}
-	if result.Usage.PromptTokensDetails.CachedTokens > 0 {
-		cachedTokens := int(result.Usage.PromptTokensDetails.CachedTokens)
-		genInfo.CachedContentTokens = &cachedTokens
-	}
-	llmChoice.GenerationInfo = genInfo
 
-	usageInfo := llmtypes.ExtractUsageFromGenerationInfo(genInfo)
+	choice.GenerationInfo = genInfo
+	usage := llmtypes.ExtractUsageFromGenerationInfo(genInfo)
 	return &llmtypes.ContentResponse{
-		Choices: []*llmtypes.ContentChoice{llmChoice},
-		Usage:   usageInfo,
+		Choices: []*llmtypes.ContentChoice{choice},
+		Usage:   usage,
 	}
 }

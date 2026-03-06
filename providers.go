@@ -1468,10 +1468,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderMiniMax:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, minimax", provider)
 	}
 }
 
@@ -2138,6 +2138,7 @@ type LLMDefaultsResponse struct {
 	OpenaiConfig     map[string]interface{} `json:"openai_config"`
 	AnthropicConfig  map[string]interface{} `json:"anthropic_config"`
 	AzureConfig      map[string]interface{} `json:"azure_config"`
+	MinimaxConfig    map[string]interface{} `json:"minimax_config"`
 	AvailableModels  map[string][]string    `json:"available_models"`
 }
 
@@ -2325,6 +2326,13 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	azureAPIKey := os.Getenv("AZURE_AI_API_KEY")
 	azureEndpoint := os.Getenv("AZURE_AI_ENDPOINT")
 
+	// MiniMax configuration
+	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
+	if minimaxModel == "" {
+		minimaxModel = "MiniMax-M2.5"
+	}
+	minimaxAPIKey := os.Getenv("MINIMAX_API_KEY")
+
 	// Build response
 	return LLMDefaultsResponse{
 		PrimaryConfig: map[string]interface{}{
@@ -2367,12 +2375,19 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"api_key":         azureAPIKey,
 			"endpoint":        azureEndpoint,
 		},
+		MinimaxConfig: map[string]interface{}{
+			"provider":        "minimax",
+			"model_id":        minimaxModel,
+			"fallback_models": []string{},
+			"api_key":         minimaxAPIKey,
+		},
 		AvailableModels: map[string][]string{
 			"bedrock":    getBedrockAvailableModels(),
 			"openrouter": getOpenRouterAvailableModels(),
 			"openai":     getOpenAIAvailableModels(),
 			"anthropic":  getAnthropicAvailableModels(),
 			"azure":      getAzureAvailableModels(),
+			"minimax":    getMiniMaxAvailableModels(),
 		},
 	}
 }
@@ -2412,6 +2427,10 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		// Anthropic validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Anthropic API key\n")
 		isValid, message, err = validateAnthropicAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "minimax":
+		// MiniMax validation with real GenerateContent call
+		fmt.Printf("[API KEY VALIDATION] Testing MiniMax API key\n")
+		isValid, message, err = validateMinimaxAPIKey(req.APIKey, req.ModelID, req.Options)
 	case "azure":
 		// Azure AI validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Azure AI API key\n")
@@ -2693,6 +2712,78 @@ func validateAnthropicAPIKey(apiKey string, modelID string, options map[string]i
 
 	fmt.Printf("[ANTHROPIC VALIDATION SUCCESS] Anthropic API key is valid\n")
 	return true, fmt.Sprintf("Anthropic API key is valid for model %s", modelID), nil
+}
+
+// validateMinimaxAPIKey validates a MiniMax API key by making a real GenerateContent call
+func validateMinimaxAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[MINIMAX VALIDATION] Starting API key validation\n")
+
+	if apiKey == "" {
+		return false, "MiniMax API key is required", nil
+	}
+
+	// Use a default model if none provided
+	if modelID == "" {
+		modelID = "MiniMax-M2.5"
+		fmt.Printf("[MINIMAX VALIDATION] Using default model: %s\n", modelID)
+	}
+
+	// Set API key in environment temporarily for initialization
+	originalKey := os.Getenv("MINIMAX_API_KEY")
+	os.Setenv("MINIMAX_API_KEY", apiKey)
+	defer func() {
+		if originalKey != "" {
+			os.Setenv("MINIMAX_API_KEY", originalKey)
+		} else {
+			os.Unsetenv("MINIMAX_API_KEY")
+		}
+	}()
+
+	noopLog := &noopLoggerImpl{}
+	temperature := extractTemperatureFromOptions(options)
+
+	config := Config{
+		Provider:    ProviderMiniMax,
+		ModelID:     modelID,
+		Temperature: temperature,
+		Logger:      noopLog,
+		Context:     context.Background(),
+	}
+
+	llm, err := initializeMiniMax(config)
+	if err != nil {
+		fmt.Printf("[MINIMAX VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
+		return false, fmt.Sprintf("Failed to create MiniMax LLM instance: %v", err), nil
+	}
+
+	callOptions := createCallOptionsFromMap(options)
+
+	fmt.Printf("[MINIMAX VALIDATION] Making test generation call\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Hi"}},
+		},
+	}, callOptions...)
+	if err != nil {
+		fmt.Printf("[MINIMAX VALIDATION ERROR] MiniMax test generation failed: %v\n", err)
+		if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "1004") {
+			return false, "Invalid MiniMax API key", nil
+		}
+		if strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "429") {
+			return false, "MiniMax API rate limit exceeded", nil
+		}
+		if strings.Contains(err.Error(), "timeout") {
+			return false, "MiniMax service timeout - check network connectivity", nil
+		}
+		return false, fmt.Sprintf("MiniMax test generation failed: %v", err), nil
+	}
+
+	fmt.Printf("[MINIMAX VALIDATION SUCCESS] MiniMax API key is valid\n")
+	return true, fmt.Sprintf("MiniMax API key is valid for model %s", modelID), nil
 }
 
 // validateAzureAPIKey validates an Azure AI API key by making a real GenerateContent call
@@ -3371,6 +3462,22 @@ func getAzureAvailableModels() []string {
 	}
 
 	// Parse comma-separated models
+	models := strings.Split(modelsStr, ",")
+	for i, model := range models {
+		models[i] = strings.TrimSpace(model)
+	}
+	return models
+}
+
+// getMiniMaxAvailableModels returns available MiniMax models from environment variables
+func getMiniMaxAvailableModels() []string {
+	modelsStr := os.Getenv("MINIMAX_AVAILABLE_MODELS")
+	if modelsStr == "" {
+		modelsStr = os.Getenv("MINIMAX_MODELS")
+	}
+	if modelsStr == "" {
+		return []string{}
+	}
 	models := strings.Split(modelsStr, ",")
 	for i, model := range models {
 		models[i] = strings.TrimSpace(model)

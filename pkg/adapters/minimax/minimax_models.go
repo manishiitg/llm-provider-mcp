@@ -71,12 +71,21 @@ func getMiniMaxModels() map[string]*llmtypes.ModelMetadata {
 	}
 }
 
-// GetAllMiniMaxModels returns a list of all available MiniMax models
+// GetAllMiniMaxModels returns a list of all available MiniMax models in display order
 func GetAllMiniMaxModels() []*llmtypes.ModelMetadata {
 	models := getMiniMaxModels()
-	result := make([]*llmtypes.ModelMetadata, 0, len(models))
-	for _, m := range models {
-		result = append(result, m)
+	order := []string{
+		ModelMiniMaxM25,
+		ModelMiniMaxM25HighSpeed,
+		ModelMiniMaxM21,
+		ModelMiniMaxM21HighSpeed,
+		ModelMiniMaxM2,
+	}
+	result := make([]*llmtypes.ModelMetadata, 0, len(order))
+	for _, id := range order {
+		if m, ok := models[id]; ok {
+			result = append(result, m)
+		}
 	}
 	return result
 }

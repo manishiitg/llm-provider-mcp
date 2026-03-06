@@ -60,15 +60,16 @@ func TestConvertMessages_SystemAndUser(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(result))
+	result, systemMessage := convertMessages(messages)
+	if systemMessage != "You are helpful." {
+		t.Errorf("expected system message 'You are helpful.', got %q", systemMessage)
 	}
-	if result[0].OfSystem == nil {
-		t.Error("expected first message to be system")
+	// System messages are extracted; only the user message remains
+	if len(result) != 1 {
+		t.Fatalf("expected 1 anthropic message, got %d", len(result))
 	}
-	if result[1].OfUser == nil {
-		t.Error("expected second message to be user")
+	if result[0].Role != "user" {
+		t.Errorf("expected user role, got %q", result[0].Role)
 	}
 }
 
@@ -89,15 +90,19 @@ func TestConvertMessages_AssistantWithToolCalls(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages)
+	result, systemMessage := convertMessages(messages)
+	if systemMessage != "" {
+		t.Errorf("expected empty system message, got %q", systemMessage)
+	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	if result[0].OfAssistant == nil {
-		t.Error("expected assistant message")
+	if result[0].Role != "assistant" {
+		t.Errorf("expected assistant role, got %q", result[0].Role)
 	}
-	if len(result[0].OfAssistant.ToolCalls) != 1 {
-		t.Errorf("expected 1 tool call, got %d", len(result[0].OfAssistant.ToolCalls))
+	// Content should contain a tool_use block
+	if len(result[0].Content) != 1 {
+		t.Errorf("expected 1 content block, got %d", len(result[0].Content))
 	}
 }
 
@@ -114,12 +119,16 @@ func TestConvertMessages_ToolResponse(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages)
+	result, _ := convertMessages(messages)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	if result[0].OfTool == nil {
-		t.Error("expected tool message")
+	// Tool responses become user messages with tool_result content blocks in Anthropic format
+	if result[0].Role != "user" {
+		t.Errorf("expected user role for tool response, got %q", result[0].Role)
+	}
+	if len(result[0].Content) != 1 {
+		t.Errorf("expected 1 content block, got %d", len(result[0].Content))
 	}
 }
 
@@ -134,12 +143,12 @@ func TestConvertMessages_MultiPartText(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages)
+	result, _ := convertMessages(messages)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	if result[0].OfUser == nil {
-		t.Error("expected user message")
+	if result[0].Role != "user" {
+		t.Errorf("expected user role, got %q", result[0].Role)
 	}
 }
 
@@ -248,6 +257,102 @@ func TestMiniMaxIntegration_Streaming(t *testing.T) {
 	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
 		gi := resp.Choices[0].GenerationInfo
 		t.Logf("Streamed: %s", streamed)
+		if gi.InputTokens != nil {
+			t.Logf("Tokens: input=%d output=%d total=%d", *gi.InputTokens, *gi.OutputTokens, *gi.TotalTokens)
+		}
+	}
+}
+
+func TestMiniMaxIntegration_StreamingWithTools(t *testing.T) {
+	apiKey := os.Getenv("MINIMAX_API_KEY")
+	if apiKey == "" {
+		t.Skip("Skipping integration test: MINIMAX_API_KEY not set")
+	}
+
+	adapter := NewMiniMaxAdapter(apiKey, ModelMiniMaxM25, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tools := []llmtypes.Tool{
+		{
+			Function: &llmtypes.FunctionDefinition{
+				Name:        "get_weather",
+				Description: "Get current weather for a city",
+				Parameters: llmtypes.NewParameters(map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"city": map[string]interface{}{"type": "string", "description": "City name"},
+					},
+					"required": []string{"city"},
+				}),
+			},
+		},
+		{
+			Function: &llmtypes.FunctionDefinition{
+				Name:        "get_population",
+				Description: "Get population of a city",
+				Parameters: llmtypes.NewParameters(map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"city": map[string]interface{}{"type": "string", "description": "City name"},
+					},
+					"required": []string{"city"},
+				}),
+			},
+		},
+	}
+
+	messages := []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What is the weather and population of Paris?"}},
+		},
+	}
+
+	streamChan := make(chan llmtypes.StreamChunk, 100)
+	var resp *llmtypes.ContentResponse
+	errChan := make(chan error, 1)
+	go func() {
+		var err error
+		resp, err = adapter.GenerateContent(ctx, messages,
+			llmtypes.WithStreamingChan(streamChan),
+			llmtypes.WithTools(tools),
+		)
+		errChan <- err
+	}()
+
+	var streamedText string
+	var streamedToolCalls []llmtypes.ToolCall
+	for chunk := range streamChan {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeContent:
+			streamedText += chunk.Content
+		case llmtypes.StreamChunkTypeToolCall:
+			if chunk.ToolCall != nil {
+				streamedToolCalls = append(streamedToolCalls, *chunk.ToolCall)
+			}
+		}
+	}
+	if err := <-errChan; err != nil {
+		t.Fatalf("streaming with tools failed: %v", err)
+	}
+
+	// Should have at least one tool call (weather or population or both)
+	if len(streamedToolCalls) == 0 && (resp == nil || len(resp.Choices) == 0 || len(resp.Choices[0].ToolCalls) == 0) {
+		t.Error("expected at least one tool call in streamed output or response")
+	}
+
+	totalToolCalls := len(streamedToolCalls)
+	if resp != nil && len(resp.Choices) > 0 {
+		totalToolCalls = len(resp.Choices[0].ToolCalls)
+	}
+	t.Logf("Streamed text: %q", streamedText)
+	t.Logf("Tool calls received: %d", totalToolCalls)
+	for i, tc := range streamedToolCalls {
+		t.Logf("  [%d] %s(%s)", i, tc.FunctionCall.Name, tc.FunctionCall.Arguments)
+	}
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
+		gi := resp.Choices[0].GenerationInfo
 		if gi.InputTokens != nil {
 			t.Logf("Tokens: input=%d output=%d total=%d", *gi.InputTokens, *gi.OutputTokens, *gi.TotalTokens)
 		}
