@@ -3,7 +3,8 @@
     "allow": [
       "WebSearch",
       "Bash(go build:*)",
-      "Bash(claude:*)"
+      "Bash(claude:*)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }
