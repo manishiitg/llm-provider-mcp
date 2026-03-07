@@ -36,3 +36,4 @@ Thumbs.db
 .secrets
 
 .cursor/
+.claude/settings.local.json
