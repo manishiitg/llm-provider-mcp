@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 const (
@@ -115,12 +116,32 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 
 	message := anthropic.Message{}
 	var contentChunksSent int
+	// Track usage from MessageDeltaEvent since the Anthropic SDK's Accumulate
+	// only copies OutputTokens from delta events, not InputTokens.
+	// MiniMax may report input_tokens in the message_delta event rather than
+	// (or in addition to) the message_start event.
+	var deltaInputTokens int64
+	var deltaCacheCreationInputTokens int64
+	var deltaCacheReadInputTokens int64
 	for stream.Next() {
 		event := stream.Current()
 
 		if err := message.Accumulate(event); err != nil {
 			stream.Close()
 			return nil, fmt.Errorf("minimax streaming accumulate error: %w", err)
+		}
+
+		// Capture usage from MessageDeltaEvent that Accumulate doesn't copy
+		if deltaEvent, ok := event.AsAny().(anthropic.MessageDeltaEvent); ok {
+			if deltaEvent.Usage.InputTokens > 0 {
+				deltaInputTokens = deltaEvent.Usage.InputTokens
+			}
+			if deltaEvent.Usage.CacheCreationInputTokens > 0 {
+				deltaCacheCreationInputTokens = deltaEvent.Usage.CacheCreationInputTokens
+			}
+			if deltaEvent.Usage.CacheReadInputTokens > 0 {
+				deltaCacheReadInputTokens = deltaEvent.Usage.CacheReadInputTokens
+			}
 		}
 
 		if opts.StreamChan != nil {
@@ -144,6 +165,18 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		}
 	}
 
+	// Patch accumulated message with usage data from delta events that
+	// the SDK's Accumulate doesn't copy (it only copies OutputTokens).
+	if deltaInputTokens > 0 && message.Usage.InputTokens == 0 {
+		message.Usage.InputTokens = deltaInputTokens
+	}
+	if deltaCacheCreationInputTokens > 0 && message.Usage.CacheCreationInputTokens == 0 {
+		message.Usage.CacheCreationInputTokens = deltaCacheCreationInputTokens
+	}
+	if deltaCacheReadInputTokens > 0 && message.Usage.CacheReadInputTokens == 0 {
+		message.Usage.CacheReadInputTokens = deltaCacheReadInputTokens
+	}
+
 	if err := stream.Err(); err != nil {
 		if m.logger != nil {
 			m.logger.Errorf("[MINIMAX] Streaming error: %v", err)
@@ -153,7 +186,11 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	stream.Close()
 
 	if m.logger != nil {
-		m.logger.Debugf("[MINIMAX] Stream complete: content_chunks=%d stop_reason=%s", contentChunksSent, message.StopReason)
+		m.logger.Debugf("[MINIMAX] Stream complete: content_chunks=%d stop_reason=%s input_tokens=%d output_tokens=%d cache_read=%d cache_creation=%d delta_input=%d delta_cache_read=%d delta_cache_creation=%d",
+			contentChunksSent, message.StopReason,
+			message.Usage.InputTokens, message.Usage.OutputTokens,
+			message.Usage.CacheReadInputTokens, message.Usage.CacheCreationInputTokens,
+			deltaInputTokens, deltaCacheReadInputTokens, deltaCacheCreationInputTokens)
 	}
 
 	// Fallback: if no chunks sent during streaming but message has text, emit it now
@@ -368,10 +405,14 @@ func convertTools(llmTools []llmtypes.Tool) []anthropic.ToolUnionParam {
 			properties = props
 		}
 
-		anthropicTools = append(anthropicTools, anthropic.ToolUnionParamOfTool(
-			anthropic.ToolInputSchemaParam{Properties: properties, Required: required},
-			tool.Function.Name,
-		))
+		toolParam := anthropic.ToolParam{
+			Name:        tool.Function.Name,
+			InputSchema: anthropic.ToolInputSchemaParam{Properties: properties, Required: required},
+		}
+		if tool.Function.Description != "" {
+			toolParam.Description = param.NewOpt(tool.Function.Description)
+		}
+		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{OfTool: &toolParam})
 	}
 	return anthropicTools
 }
@@ -442,14 +483,32 @@ func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
 		choice.StopReason = string(result.StopReason)
 	}
 
-	inputTokens := int(result.Usage.InputTokens)
+	// MiniMax uses automatic prompt caching. When cached, input_tokens only
+	// reports non-cached tokens. The true context size includes cached tokens:
+	//   total_context = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+	cacheReadTokens := int(result.Usage.CacheReadInputTokens)
+	cacheCreationTokens := int(result.Usage.CacheCreationInputTokens)
+	// InputTokens represents the full context window size (including cached tokens)
+	// This is critical for context window tracking / summarization thresholds.
+	inputTokens := int(result.Usage.InputTokens) + cacheReadTokens + cacheCreationTokens
 	outputTokens := int(result.Usage.OutputTokens)
 	totalTokens := inputTokens + outputTokens
+
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  &inputTokens,
 		OutputTokens: &outputTokens,
 		TotalTokens:  &totalTokens,
+		Additional:   make(map[string]interface{}),
 	}
+	// Store cache breakdown in Additional for proper cost calculation
+	if cacheReadTokens > 0 {
+		genInfo.Additional["CacheReadInputTokens"] = cacheReadTokens
+	}
+	if cacheCreationTokens > 0 {
+		genInfo.Additional["CacheCreationInputTokens"] = cacheCreationTokens
+	}
+	// Store the raw (non-cached) input tokens for reference
+	genInfo.Additional["RawInputTokens"] = int(result.Usage.InputTokens)
 
 	choice.GenerationInfo = genInfo
 	usage := llmtypes.ExtractUsageFromGenerationInfo(genInfo)

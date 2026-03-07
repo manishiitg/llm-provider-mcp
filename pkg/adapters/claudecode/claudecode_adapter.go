@@ -594,12 +594,14 @@ func (c *ClaudeCodeAdapter) GetModelID() string {
 
 // GetModelMetadata returns metadata for the model.
 func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	// Claude Code CLI abstracts the underlying model, but typically uses Sonnet 3.5 or Opus.
-	// We return generic metadata.
+	// Default context window for Claude models used via Claude Code CLI.
+	// The actual context window is reported per-call in modelUsage and used
+	// to update the agent's context window tracking dynamically.
 	return &llmtypes.ModelMetadata{
-		ModelID:   modelID,
-		Provider:  "claude-code",
-		ModelName: "Claude Code CLI",
+		ModelID:       modelID,
+		Provider:      "claude-code",
+		ModelName:     "Claude Code CLI",
+		ContextWindow: 200000, // Default for Claude Sonnet/Opus models
 	}, nil
 }
 
@@ -721,9 +723,13 @@ type PermissionDenial struct {
 }
 
 func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeResponse) (*llmtypes.ContentResponse, error) {
-	// In the Anthropic API, input_tokens = non-cached input only.
-	// Total input context = input_tokens + cache_read_input_tokens.
-	totalInputTokens := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens
+	// Claude Code CLI reports CUMULATIVE usage across all internal turns.
+	// input_tokens = cumulative non-cached tokens, cache_read = cumulative cached tokens.
+	// For context window tracking, use input_tokens + cache_read as the total prompt size
+	// (this is cumulative, but allows meaningful percentage tracking).
+	cacheReadTokens := resp.Usage.CacheReadInputTokens
+	cacheCreationTokens := resp.Usage.CacheCreationInputTokens
+	totalInputTokens := resp.Usage.InputTokens + cacheReadTokens + cacheCreationTokens
 	totalTokens := totalInputTokens + resp.Usage.OutputTokens
 
 	// Map Usage
@@ -739,12 +745,18 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 		InputTokens:         &totalInputTokens,
 		OutputTokens:        &resp.Usage.OutputTokens,
 		TotalTokens:         &totalTokens,
-		CachedContentTokens: &resp.Usage.CacheReadInputTokens,
+		CachedContentTokens: &cacheReadTokens,
 		Additional: map[string]interface{}{
 			"cost_usd":               resp.TotalCostUSD,
-			"cache_creation_tokens":  resp.Usage.CacheCreationInputTokens,
 			"claude_code_session_id": resp.SessionID,
+			"RawInputTokens":         resp.Usage.InputTokens,
 		},
+	}
+	if cacheReadTokens > 0 {
+		genInfo.Additional["CacheReadInputTokens"] = cacheReadTokens
+	}
+	if cacheCreationTokens > 0 {
+		genInfo.Additional["CacheCreationInputTokens"] = cacheCreationTokens
 	}
 
 	// Add duration and turn count from result event
@@ -761,9 +773,12 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 	// Add per-model usage breakdown (includes resolved model name, context window, cost)
 	if len(resp.ModelUsage) > 0 {
 		genInfo.Additional["claude_code_model_usage"] = resp.ModelUsage
-		// Extract the resolved model name (first key in modelUsage)
-		for modelName := range resp.ModelUsage {
+		// Extract the resolved model name and context window from modelUsage
+		for modelName, modelEntry := range resp.ModelUsage {
 			genInfo.Additional["claude_code_model"] = modelName
+			if modelEntry.ContextWindow > 0 {
+				genInfo.Additional["model_context_window"] = modelEntry.ContextWindow
+			}
 			break
 		}
 	}
