@@ -71,7 +71,7 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(modelID),
 		Messages:  anthropicMessages,
-		MaxTokens: 8192,
+		MaxTokens: 40960,
 	}
 
 	if systemMessage != "" {
@@ -126,9 +126,72 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	for stream.Next() {
 		event := stream.Current()
 
+		// Log every event at debug level to trace MiniMax streaming sequence
+		if m.logger != nil {
+			switch ev := event.AsAny().(type) {
+			case anthropic.ContentBlockStartEvent:
+				m.logger.Debugf("[MINIMAX] EVENT content_block_start: index=%d block_type=%s raw=%s",
+					ev.Index, ev.ContentBlock.Type, truncate(ev.ContentBlock.RawJSON(), 500))
+			case anthropic.ContentBlockDeltaEvent:
+				switch d := ev.Delta.AsAny().(type) {
+				case anthropic.TextDelta:
+					m.logger.Debugf("[MINIMAX] EVENT content_block_delta: index=%d delta_type=text_delta text_len=%d",
+						ev.Index, len(d.Text))
+				case anthropic.InputJSONDelta:
+					m.logger.Debugf("[MINIMAX] EVENT content_block_delta: index=%d delta_type=input_json_delta partial_json=%s",
+						ev.Index, truncate(d.PartialJSON, 200))
+				default:
+					m.logger.Debugf("[MINIMAX] EVENT content_block_delta: index=%d delta_type=%s raw=%s",
+						ev.Index, ev.Delta.Type, truncate(ev.Delta.RawJSON(), 200))
+				}
+			case anthropic.ContentBlockStopEvent:
+				// Log the state of the block being closed before Accumulate processes it
+				if int(ev.Index) < len(message.Content) {
+					cb := message.Content[ev.Index]
+					m.logger.Debugf("[MINIMAX] EVENT content_block_stop: index=%d block_type=%s text_len=%d input_len=%d input_bytes=%s",
+						ev.Index, cb.Type, len(cb.Text), len(cb.Input), truncate(string(cb.Input), 500))
+				} else {
+					m.logger.Debugf("[MINIMAX] EVENT content_block_stop: index=%d (block not yet in accumulator)", ev.Index)
+				}
+			case anthropic.MessageDeltaEvent:
+				m.logger.Debugf("[MINIMAX] EVENT message_delta: stop_reason=%s", ev.Delta.StopReason)
+			case anthropic.MessageStopEvent:
+				m.logger.Debugf("[MINIMAX] EVENT message_stop")
+			case anthropic.MessageStartEvent:
+				m.logger.Debugf("[MINIMAX] EVENT message_start: model=%s", ev.Message.Model)
+			}
+		}
+
 		if err := message.Accumulate(event); err != nil {
-			stream.Close()
-			return nil, fmt.Errorf("minimax streaming accumulate error: %w", err)
+			// "error converting content block to JSON" happens on ContentBlockStopEvent
+			// or MessageStopEvent when the SDK tries to cache JSON.raw from the
+			// accumulated struct. MiniMax sometimes sends malformed/incomplete JSON
+			// in content block fields. The actual struct data (Text, Input, etc.) is
+			// already accumulated and intact — only the JSON.raw cache step fails.
+			// Log all block details and continue rather than aborting the entire stream.
+			if strings.Contains(err.Error(), "error converting content block to JSON") {
+				if m.logger != nil {
+					m.logger.Errorf("[MINIMAX] JSON cache error on %s (data intact), dumping all %d blocks:",
+						event.Type, len(message.Content))
+					for i, cb := range message.Content {
+						m.logger.Errorf("[MINIMAX]   block[%d]: type=%s text_len=%d input_len=%d input_bytes=%s",
+							i, cb.Type, len(cb.Text), len(cb.Input), truncate(string(cb.Input), 1000))
+					}
+				}
+			} else {
+				stream.Close()
+				if m.logger != nil {
+					var accumulated strings.Builder
+					for _, block := range message.Content {
+						if tb, ok := block.AsAny().(anthropic.TextBlock); ok {
+							accumulated.WriteString(tb.Text)
+						}
+					}
+					m.logger.Errorf("[MINIMAX] Accumulate error after %d chunks, stop_reason=%s, accumulated_text_len=%d, accumulated_content_blocks=%d, event_type=%s, raw_event=%s, partial_text=%q, error=%v",
+						contentChunksSent, message.StopReason, accumulated.Len(), len(message.Content), event.Type, truncate(event.RawJSON(), 1000), truncate(accumulated.String(), 500), err)
+				}
+				return nil, fmt.Errorf("minimax streaming accumulate error: %w", err)
+			}
 		}
 
 		// Capture usage from MessageDeltaEvent that Accumulate doesn't copy
@@ -191,6 +254,28 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 			message.Usage.InputTokens, message.Usage.OutputTokens,
 			message.Usage.CacheReadInputTokens, message.Usage.CacheCreationInputTokens,
 			deltaInputTokens, deltaCacheReadInputTokens, deltaCacheCreationInputTokens)
+		m.logger.Debugf("[MINIMAX] Accumulated message has %d content blocks:", len(message.Content))
+		for i, cb := range message.Content {
+			m.logger.Debugf("[MINIMAX]   block[%d]: type=%s id=%s name=%s text_len=%d input_len=%d input_bytes=%s",
+				i, cb.Type, cb.ID, cb.Name, len(cb.Text), len(cb.Input), truncate(string(cb.Input), 500))
+		}
+	}
+
+	// If MiniMax hit max_tokens while generating a tool call, the Input JSON will be
+	// truncated. Detect this and return an error so the retry/fallback fires instead
+	// of passing broken JSON downstream to tool execution.
+	if message.StopReason == "max_tokens" {
+		for _, block := range message.Content {
+			if block.Type == "tool_use" && len(block.Input) > 0 {
+				if !json.Valid(block.Input) {
+					if m.logger != nil {
+						m.logger.Errorf("[MINIMAX] Tool call truncated at max_tokens: tool=%s input_len=%d input_tail=%s",
+							block.Name, len(block.Input), truncate(string(block.Input[max(0, len(block.Input)-200):]), 200))
+					}
+					return nil, fmt.Errorf("minimax output truncated: max_tokens reached with incomplete tool call arguments for %q (input_len=%d)", block.Name, len(block.Input))
+				}
+			}
+		}
 	}
 
 	// Fallback: if no chunks sent during streaming but message has text, emit it now
@@ -516,4 +601,11 @@ func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
 		Choices: []*llmtypes.ContentChoice{choice},
 		Usage:   usage,
 	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
