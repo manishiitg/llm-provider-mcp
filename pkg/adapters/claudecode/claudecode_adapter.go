@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -246,6 +247,8 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	c.logger.Debugf("Input stream: %s", inputStream.String())
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = &inputStream
+	// Run in its own process group so we can kill the entire tree (CLI + children) on cancel
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Filter out CLAUDECODE env var to allow nested invocation (e.g., when
 	// this adapter is called from within a Claude Code session during testing)
@@ -526,9 +529,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	select {
 	case <-ctx.Done():
 		c.logger.Errorf("Context cancelled/timed out: %v", ctx.Err())
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
+		killProcessGroup(cmd)
 		cmdErr = ctx.Err()
 	case <-decodeDone:
 		cmdErr = cmd.Wait()
@@ -585,6 +586,23 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 
 	return finalResponse, nil
+}
+
+// killProcessGroup kills the entire process group of cmd to ensure all child
+// processes (HTTP workers, shell children, etc.) are terminated, not just the
+// direct subprocess.  Falls back to cmd.Process.Kill() if the process group
+// cannot be determined.
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil {
+		// Negative pgid kills all processes in the group
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	} else {
+		_ = cmd.Process.Kill()
+	}
 }
 
 // GetModelID returns the model ID.
@@ -872,6 +890,8 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	c.logger.Infof("Retry: executing Claude Code CLI: claude %v", args)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = &inputStream
+	// Run in its own process group so we can kill the entire tree on cancel
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Filter out CLAUDECODE env var (same as main call)
 	var filteredEnv []string
@@ -967,9 +987,7 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	var cmdErr error
 	select {
 	case <-ctx.Done():
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
+		killProcessGroup(cmd)
 		cmdErr = ctx.Err()
 	case <-decodeDone:
 		cmdErr = cmd.Wait()
