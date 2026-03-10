@@ -111,6 +111,8 @@ func main() {
 	rootCmd.AddCommand(minimaxcmd.MiniMaxStructuredOutputTestCmd)
 	rootCmd.AddCommand(minimaxcmd.MiniMaxTokenUsageTestCmd)
 	rootCmd.AddCommand(minimaxcmd.MiniMaxImageGenerateTestCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxCodingPlanCmd)
+	rootCmd.AddCommand(minimaxcmd.MiniMaxCodingPlanStreamingTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingContentTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingMultiTurnTestCmd)

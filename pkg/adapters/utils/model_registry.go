@@ -29,6 +29,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 	// MiniMax
 	allModels = append(allModels, minimax.GetAllMiniMaxModels()...)
 
+	// MiniMax Coding Plan (uses Anthropic model names)
+	allModels = append(allModels, minimax.GetAllMiniMaxCodingPlanModels()...)
+
 	// Azure - static models (dynamic API requires endpoint/key at runtime)
 	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
 

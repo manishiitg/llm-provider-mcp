@@ -44,7 +44,8 @@ const (
 	ProviderAzure      Provider = "azure"
 	ProviderClaudeCode Provider = "claude-code"
 	ProviderGeminiCLI  Provider = "gemini-cli"
-	ProviderMiniMax    Provider = "minimax"
+	ProviderMiniMax            Provider = "minimax"
+	ProviderMiniMaxCodingPlan  Provider = "minimax-coding-plan"
 )
 
 // Config holds configuration for LLM initialization
@@ -73,9 +74,10 @@ type ProviderAPIKeys struct {
 	Anthropic  *string
 	Vertex     *string
 	GeminiCLI  *string
-	MiniMax    *string
-	Bedrock    *BedrockConfig
-	Azure      *AzureAPIConfig
+	MiniMax            *string
+	MiniMaxCodingPlan  *string
+	Bedrock            *BedrockConfig
+	Azure              *AzureAPIConfig
 }
 
 // AzureAPIConfig holds Azure-specific configuration
@@ -115,6 +117,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeGeminiCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
+	case ProviderMiniMaxCodingPlan:
+		llm, err = initializeMiniMaxCodingPlan(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -810,6 +814,38 @@ func initializeMiniMax(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeMiniMaxCodingPlan creates a MiniMax coding plan adapter using Anthropic model names.
+// The coding plan uses the same Anthropic-compatible endpoint but authenticates with a
+// coding-plan-specific API key (MINIMAX_CODING_PLAN_API_KEY) and accepts Anthropic model names
+// (e.g. claude-sonnet-4-5) which MiniMax maps to their equivalent models.
+func initializeMiniMaxCodingPlan(config Config) (llmtypes.Model, error) {
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MiniMaxCodingPlan != nil && *config.APIKeys.MiniMaxCodingPlan != "" {
+		apiKey = *config.APIKeys.MiniMaxCodingPlan
+	} else {
+		apiKey = os.Getenv("MINIMAX_CODING_PLAN_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("MINIMAX_CODING_PLAN_API_KEY is required for MiniMax coding plan provider")
+	}
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "claude-sonnet-4-5"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing MiniMax Coding Plan LLM with model: %s", modelID)
+
+	llm := minimaxadapter.NewMiniMaxCodingPlanAdapter(apiKey, modelID, logger)
+
+	logger.Infof("Initialized MiniMax Coding Plan LLM - model_id: %s", modelID)
+	return llm, nil
+}
+
 // initializeAzureWithFallback creates an Azure LLM with fallback models for rate limiting
 func initializeAzureWithFallback(config Config) (llmtypes.Model, error) {
 	// Try primary model first
@@ -1468,10 +1504,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderMiniMax:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, minimax", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -2138,8 +2174,9 @@ type LLMDefaultsResponse struct {
 	OpenaiConfig     map[string]interface{} `json:"openai_config"`
 	AnthropicConfig  map[string]interface{} `json:"anthropic_config"`
 	AzureConfig      map[string]interface{} `json:"azure_config"`
-	MinimaxConfig    map[string]interface{} `json:"minimax_config"`
-	AvailableModels  map[string][]string    `json:"available_models"`
+	MinimaxConfig            map[string]interface{} `json:"minimax_config"`
+	MinimaxCodingPlanConfig  map[string]interface{} `json:"minimax_coding_plan_config"`
+	AvailableModels          map[string][]string    `json:"available_models"`
 }
 
 // APIKeyValidationRequest represents a request to validate an API key
@@ -2333,6 +2370,13 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	minimaxAPIKey := os.Getenv("MINIMAX_API_KEY")
 
+	// MiniMax Coding Plan configuration (uses Anthropic model names)
+	minimaxCodingPlanModel := os.Getenv("MINIMAX_CODING_PLAN_PRIMARY_MODEL")
+	if minimaxCodingPlanModel == "" {
+		minimaxCodingPlanModel = "claude-sonnet-4-5"
+	}
+	minimaxCodingPlanAPIKey := os.Getenv("MINIMAX_CODING_PLAN_API_KEY")
+
 	// Build response
 	return LLMDefaultsResponse{
 		PrimaryConfig: map[string]interface{}{
@@ -2381,14 +2425,43 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"fallback_models": []string{},
 			"api_key":         minimaxAPIKey,
 		},
-		AvailableModels: map[string][]string{
-			"bedrock":    getBedrockAvailableModels(),
-			"openrouter": getOpenRouterAvailableModels(),
-			"openai":     getOpenAIAvailableModels(),
-			"anthropic":  getAnthropicAvailableModels(),
-			"azure":      getAzureAvailableModels(),
-			"minimax":    getMiniMaxAvailableModels(),
+		MinimaxCodingPlanConfig: map[string]interface{}{
+			"provider":        "minimax-coding-plan",
+			"model_id":        minimaxCodingPlanModel,
+			"fallback_models": []string{},
+			"api_key":         minimaxCodingPlanAPIKey,
 		},
+		AvailableModels: map[string][]string{
+			"bedrock":              getBedrockAvailableModels(),
+			"openrouter":           getOpenRouterAvailableModels(),
+			"openai":               getOpenAIAvailableModels(),
+			"anthropic":            getAnthropicAvailableModels(),
+			"azure":                getAzureAvailableModels(),
+			"minimax":              getMiniMaxAvailableModels(),
+			"minimax-coding-plan":  getMiniMaxCodingPlanAvailableModels(),
+		},
+	}
+}
+
+// getMiniMaxCodingPlanAvailableModels returns Anthropic model names available via MiniMax coding plan
+func getMiniMaxCodingPlanAvailableModels() []string {
+	modelsStr := os.Getenv("MINIMAX_CODING_PLAN_AVAILABLE_MODELS")
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	// Default: Anthropic model names that MiniMax coding plan supports
+	return []string{
+		"claude-sonnet-4-5",
+		"claude-opus-4-6",
+		"claude-haiku-4-5-20251001",
 	}
 }
 
@@ -2431,6 +2504,10 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		// MiniMax validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing MiniMax API key\n")
 		isValid, message, err = validateMinimaxAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "minimax-coding-plan":
+		// MiniMax Coding Plan validation — uses Anthropic model names
+		fmt.Printf("[API KEY VALIDATION] Testing MiniMax Coding Plan API key\n")
+		isValid, message, err = validateMinimaxCodingPlanAPIKey(req.APIKey, req.ModelID, req.Options)
 	case "azure":
 		// Azure AI validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Azure AI API key\n")
@@ -2784,6 +2861,55 @@ func validateMinimaxAPIKey(apiKey string, modelID string, options map[string]int
 
 	fmt.Printf("[MINIMAX VALIDATION SUCCESS] MiniMax API key is valid\n")
 	return true, fmt.Sprintf("MiniMax API key is valid for model %s", modelID), nil
+}
+
+// validateMinimaxCodingPlanAPIKey validates a MiniMax coding plan API key using an Anthropic model name.
+func validateMinimaxCodingPlanAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[MINIMAX-CP VALIDATION] Starting coding plan API key validation\n")
+
+	if apiKey == "" {
+		return false, "MiniMax Coding Plan API key is required", nil
+	}
+
+	if modelID == "" {
+		modelID = "claude-sonnet-4-5"
+		fmt.Printf("[MINIMAX-CP VALIDATION] Using default model: %s\n", modelID)
+	}
+
+	noopLog := &noopLoggerImpl{}
+	temperature := extractTemperatureFromOptions(options)
+
+	config := Config{
+		Provider:    ProviderMiniMaxCodingPlan,
+		ModelID:     modelID,
+		Temperature: temperature,
+		Logger:      noopLog,
+		Context:     context.Background(),
+	}
+
+	os.Setenv("MINIMAX_CODING_PLAN_API_KEY", apiKey)
+	llm, err := initializeMiniMaxCodingPlan(config)
+	if err != nil {
+		return false, fmt.Sprintf("Failed to create MiniMax Coding Plan LLM instance: %v", err), nil
+	}
+
+	callOptions := createCallOptionsFromMap(options)
+	_, err = llm.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say hello in one word."}},
+		},
+	}, callOptions...)
+	if err != nil {
+		fmt.Printf("[MINIMAX-CP VALIDATION ERROR] %v\n", err)
+		if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "401") {
+			return false, "Invalid MiniMax Coding Plan API key", nil
+		}
+		return false, fmt.Sprintf("MiniMax Coding Plan test generation failed: %v", err), nil
+	}
+
+	fmt.Printf("[MINIMAX-CP VALIDATION SUCCESS] MiniMax Coding Plan API key is valid\n")
+	return true, fmt.Sprintf("MiniMax Coding Plan API key is valid for model %s", modelID), nil
 }
 
 // validateAzureAPIKey validates an Azure AI API key by making a real GenerateContent call
