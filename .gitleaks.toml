@@ -44,6 +44,13 @@ verbose = true
 # Allowlist configuration - files and patterns to ignore
 [allowlist]
 description = "Files and directories to ignore"
+# Commits containing a Google API key that was in .claude/settings.local.json
+# The key has been rotated and is no longer valid.
+commits = [
+  "dc26674c23eea2eeddfbcdef767566ff6e0ee074",
+  "ba23d27c1b2f58f67f6a9bd3d8c46be097674d76",
+  "2c3682bb81df008e7c44afd6c1f9400de5200dbc",
+]
 paths = [
   '''^go\.sum$''', # Ignore go.sum due to many false positives from module hashes
   '''^testdata/''', # Ignore test data files

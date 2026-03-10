@@ -44,6 +44,22 @@ func NewMiniMaxAdapter(apiKey, modelID string, logger interfaces.Logger) *MiniMa
 	}
 }
 
+// NewMiniMaxCodingPlanAdapter creates a MiniMax adapter for the coding plan.
+// It sets a claude-code User-Agent header so MiniMax routes the request correctly
+// through the coding plan endpoint and applies the appropriate billing.
+func NewMiniMaxCodingPlanAdapter(apiKey, modelID string, logger interfaces.Logger) *MiniMaxAdapter {
+	client := anthropic.NewClient(
+		anthropicoption.WithAPIKey(apiKey),
+		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
+		anthropicoption.WithHeader("User-Agent", "claude-code/2.1.71"),
+	)
+	return &MiniMaxAdapter{
+		client:  client,
+		modelID: modelID,
+		logger:  logger,
+	}
+}
+
 // GetModelID implements the llmtypes.Model interface
 func (m *MiniMaxAdapter) GetModelID() string {
 	return m.modelID
@@ -51,6 +67,11 @@ func (m *MiniMaxAdapter) GetModelID() string {
 
 // GetModelMetadata implements the llmtypes.Model interface
 func (m *MiniMaxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	// Try coding plan models first (Anthropic model names)
+	if meta, err := GetMiniMaxCodingPlanModelMetadata(modelID); err == nil {
+		return meta, nil
+	}
+	// Fall back to standard MiniMax model names
 	return GetMiniMaxModelMetadata(modelID)
 }
 
