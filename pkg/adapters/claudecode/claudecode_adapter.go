@@ -32,6 +32,7 @@ const (
 	MetadataKeySettings                  = "claude_code_settings"
 	MetadataKeyMaxTurns                  = "claude_code_max_turns"
 	MetadataKeyResumeSessionID           = "claude_code_resume_session_id"
+	MetadataKeyEffort                    = "claude_code_effort"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -100,6 +101,15 @@ func WithMaxTurns(maxTurns int) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMaxTurns] = maxTurns
+	}
+}
+
+// WithEffort sets the --effort flag for the Claude Code CLI session.
+// Values: "low", "medium", "high", "max"
+func WithEffort(level string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyEffort] = level
 	}
 }
 
@@ -195,6 +205,9 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		}
 		if resumeID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && resumeID != "" {
 			args = append(args, "--resume", resumeID)
+		}
+		if effort, ok := opts.Metadata.Custom[MetadataKeyEffort].(string); ok && effort != "" {
+			args = append(args, "--effort", effort)
 		}
 	}
 

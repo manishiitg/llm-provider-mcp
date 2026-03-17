@@ -1,0 +1,162 @@
+package codexcli
+
+import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+
+// Constants for custom metadata keys
+const (
+	MetadataKeyCodexModel        = "codex_model"
+	MetadataKeyResumeSessionID   = "codex_resume_session_id"
+	MetadataKeyApprovalMode      = "codex_approval_mode"
+	MetadataKeySandbox           = "codex_sandbox"
+	MetadataKeyFullAuto          = "codex_full_auto"
+	MetadataKeyProjectDirID      = "codex_project_dir_id"
+	MetadataKeyConfigProfile     = "codex_config_profile"
+	MetadataKeyOutputSchema      = "codex_output_schema"
+	MetadataKeyAdditionalDirs    = "codex_additional_dirs"
+	MetadataKeyDisableFeatures   = "codex_disable_features"
+	MetadataKeyEnableFeatures    = "codex_enable_features"
+	MetadataKeyReasoningEffort   = "codex_reasoning_effort"
+	MetadataKeyReasoningSummary  = "codex_reasoning_summary"
+	MetadataKeyDisableShellTool  = "codex_disable_shell_tool"
+	MetadataKeyMCPServers        = "codex_mcp_servers"
+	MetadataKeyConfigOverrides   = "codex_config_overrides"
+	MetadataKeyApprovalPolicy    = "codex_approval_policy"
+)
+
+// WithCodexModel sets the --model flag for the Codex CLI.
+func WithCodexModel(model string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyCodexModel] = model
+	}
+}
+
+// WithResumeSessionID sets the session ID to resume via `codex exec resume <id>`.
+func WithResumeSessionID(sessionID string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyResumeSessionID] = sessionID
+	}
+}
+
+// WithApprovalMode sets the --ask-for-approval flag for the Codex CLI.
+// Values: "untrusted", "on-request", "never"
+func WithApprovalMode(mode string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyApprovalMode] = mode
+	}
+}
+
+// WithSandbox sets the --sandbox flag for the Codex CLI.
+// Values: "read-only", "workspace-write", "danger-full-access"
+func WithSandbox(sandbox string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeySandbox] = sandbox
+	}
+}
+
+// WithFullAuto enables --full-auto mode (shortcut for low-friction local work).
+func WithFullAuto() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyFullAuto] = true
+	}
+}
+
+// WithProjectDirID sets a working directory for the Codex CLI via --cd flag.
+func WithProjectDirID(dir string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectDirID] = dir
+	}
+}
+
+// WithConfigProfile sets the --profile flag to load a configuration profile.
+func WithConfigProfile(profile string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyConfigProfile] = profile
+	}
+}
+
+// WithOutputSchema sets the --output-schema flag for structured output.
+func WithOutputSchema(schemaPath string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyOutputSchema] = schemaPath
+	}
+}
+
+// WithAdditionalDirs sets the --add-dir flag to grant additional directory write access.
+func WithAdditionalDirs(dirs string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyAdditionalDirs] = dirs
+	}
+}
+
+// WithReasoningEffort sets the model_reasoning_effort config override.
+// Values: "none", "minimal", "low", "medium", "high", "xhigh"
+func WithReasoningEffort(effort string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyReasoningEffort] = effort
+	}
+}
+
+// WithReasoningSummary sets the model_reasoning_summary config override.
+// Values: "auto", "concise", "detailed", "none"
+func WithReasoningSummary(summary string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyReasoningSummary] = summary
+	}
+}
+
+// WithDisableShellTool disables the built-in shell tool so only MCP tools are available.
+func WithDisableShellTool() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDisableShellTool] = true
+	}
+}
+
+// WithMCPServers passes MCP server configuration as a JSON string.
+// This is written to a temp config.toml that is loaded via --config overrides.
+// Example JSON: {"api-bridge":{"command":"/path/to/mcpbridge","env":{"MCP_API_URL":"..."}}}
+func WithMCPServers(mcpJSON string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMCPServers] = mcpJSON
+	}
+}
+
+// WithConfigOverrides passes arbitrary config overrides as key=value pairs.
+// Each entry is passed as a separate -c flag.
+// Example: []string{"model_reasoning_effort=high", "features.shell_tool=false"}
+func WithConfigOverrides(overrides []string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyConfigOverrides] = overrides
+	}
+}
+
+// WithApprovalPolicy sets the approval_policy config override.
+// Values: "never" (auto-approve all), "on-request" (model decides), "untrusted" (most restrictive)
+func WithApprovalPolicy(policy string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyApprovalPolicy] = policy
+	}
+}
+
+func ensureMetadata(opts *llmtypes.CallOptions) {
+	if opts.Metadata == nil {
+		opts.Metadata = &llmtypes.Metadata{Custom: make(map[string]interface{})}
+	}
+	if opts.Metadata.Custom == nil {
+		opts.Metadata.Custom = make(map[string]interface{})
+	}
+}

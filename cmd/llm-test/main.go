@@ -9,6 +9,7 @@ import (
 	azurecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/azure"
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
 	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
+	codexclicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/codexcli"
 	geminiclichmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/geminicli"
 	minimaxcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/minimax"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
@@ -120,6 +121,9 @@ func main() {
 	rootCmd.AddCommand(geminiclichmd.GeminiCLICmd)
 	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingContentTestCmd)
 	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(codexclicmd.CodexCLICmd)
+	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingContentTestCmd)
+	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

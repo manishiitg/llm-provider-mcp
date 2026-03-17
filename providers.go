@@ -15,6 +15,7 @@ import (
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
@@ -44,6 +45,7 @@ const (
 	ProviderAzure      Provider = "azure"
 	ProviderClaudeCode Provider = "claude-code"
 	ProviderGeminiCLI  Provider = "gemini-cli"
+	ProviderCodexCLI   Provider = "codex-cli"
 	ProviderMiniMax            Provider = "minimax"
 	ProviderMiniMaxCodingPlan  Provider = "minimax-coding-plan"
 )
@@ -74,6 +76,7 @@ type ProviderAPIKeys struct {
 	Anthropic  *string
 	Vertex     *string
 	GeminiCLI  *string
+	CodexCLI   *string
 	MiniMax            *string
 	MiniMaxCodingPlan  *string
 	Bedrock            *BedrockConfig
@@ -115,6 +118,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeClaudeCode(config)
 	case ProviderGeminiCLI:
 		llm, err = initializeGeminiCLI(config)
+	case ProviderCodexCLI:
+		llm, err = initializeCodexCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:
@@ -1320,6 +1325,69 @@ func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeCodexCLI creates and configures an OpenAI Codex CLI adapter instance
+func initializeCodexCLI(config Config) (llmtypes.Model, error) {
+	// LLM Initialization event data
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "codex_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "codex-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	// Emit LLM initialization start event
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	// Set default model if not specified
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "codex-cli"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Codex CLI adapter - model_id: %s", modelID)
+
+	// Resolve API key: explicit config > CODEX_API_KEY > OPENAI_API_KEY
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.CodexCLI != nil {
+		apiKey = *config.APIKeys.CodexCLI
+		logger.Infof("Codex CLI: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("CODEX_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Codex CLI: using API key from CODEX_API_KEY env var (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Codex CLI: using API key from OPENAI_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Codex CLI: no API key found in config or environment")
+	}
+
+	// Create Codex CLI adapter
+	llm := codexcli.NewCodexCLIAdapter(apiKey, modelID, logger)
+
+	// Emit LLM initialization success event
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "codex_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "codex-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Codex CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // GetDefaultModel returns the default model for each provider from environment variables
 func GetDefaultModel(provider Provider) string {
 	switch provider {
@@ -1373,6 +1441,12 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "auto"
+	case ProviderCodexCLI:
+		// Get primary model from environment variable
+		if primaryModel := os.Getenv("CODEX_CLI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return "codex-cli"
 	default:
 		return ""
 	}
@@ -1504,10 +1578,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -2122,6 +2196,12 @@ func WithResumeSessionID(id string) llmtypes.CallOption {
 	return claudecodeadapter.WithResumeSessionID(id)
 }
 
+// WithClaudeCodeEffort sets the --effort flag for the Claude Code CLI.
+// Values: "low", "medium", "high", "max"
+func WithClaudeCodeEffort(level string) llmtypes.CallOption {
+	return claudecodeadapter.WithEffort(level)
+}
+
 // --- Gemini CLI Wrapper Functions ---
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -2162,6 +2242,51 @@ func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
 // This ensures resume calls use the same isolated project directory as the original invocation.
 func WithGeminiProjectDirID(id string) llmtypes.CallOption {
 	return geminicli.WithProjectDirID(id)
+}
+
+// --- Codex CLI Wrapper Functions ---
+
+// WithCodexResumeSessionID sets the session ID to resume via `codex exec resume`.
+func WithCodexResumeSessionID(id string) llmtypes.CallOption {
+	return codexcli.WithResumeSessionID(id)
+}
+
+// WithCodexApprovalPolicy sets the approval_policy config override for the Codex CLI.
+// Values: "never" (auto-approve all), "on-request" (model decides), "untrusted" (most restrictive)
+func WithCodexApprovalPolicy(policy string) llmtypes.CallOption {
+	return codexcli.WithApprovalPolicy(policy)
+}
+
+// WithCodexReasoningEffort sets the model_reasoning_effort for the Codex CLI.
+// Values: "none", "minimal", "low", "medium", "high", "xhigh"
+func WithCodexReasoningEffort(effort string) llmtypes.CallOption {
+	return codexcli.WithReasoningEffort(effort)
+}
+
+// WithCodexDisableShellTool disables the built-in shell tool in Codex CLI.
+func WithCodexDisableShellTool() llmtypes.CallOption {
+	return codexcli.WithDisableShellTool()
+}
+
+// WithCodexFullAuto enables --full-auto mode for the Codex CLI.
+func WithCodexFullAuto() llmtypes.CallOption {
+	return codexcli.WithFullAuto()
+}
+
+// WithCodexSandbox sets the --sandbox flag for the Codex CLI.
+// Values: "read-only", "workspace-write", "danger-full-access"
+func WithCodexSandbox(sandbox string) llmtypes.CallOption {
+	return codexcli.WithSandbox(sandbox)
+}
+
+// WithCodexConfigOverrides passes arbitrary -c key=value overrides to the Codex CLI.
+func WithCodexConfigOverrides(overrides []string) llmtypes.CallOption {
+	return codexcli.WithConfigOverrides(overrides)
+}
+
+// WithCodexProjectDirID sets the --cd flag for the Codex CLI working directory.
+func WithCodexProjectDirID(dir string) llmtypes.CallOption {
+	return codexcli.WithProjectDirID(dir)
 }
 
 // LLM Configuration Management Functions
