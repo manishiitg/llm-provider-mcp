@@ -908,12 +908,27 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	// Known model metadata
 	switch {
+	case strings.Contains(modelID, "gpt-5.4-mini"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                    modelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-5.4 Mini",
+			ContextWindow:              400000,
+			InputCostPer1MTokens:       0.75,
+			OutputCostPer1MTokens:      4.50,
+			CachedInputCostPer1MTokens: 0.075,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"low", "medium", "high", "xhigh"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-5.4"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                         modelID,
 			Provider:                        "codex-cli",
 			ModelName:                       "GPT-5.4",
-			ContextWindow:                   1050000,
+			ContextWindow:                   1100000,
 			InputCostPer1MTokens:            2.50,
 			OutputCostPer1MTokens:           15.00,
 			CachedInputCostPer1MTokens:      0.25,

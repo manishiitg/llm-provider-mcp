@@ -10,163 +10,23 @@ import (
 
 // OpenAI model name constants
 const (
-	ModelGPT4o     = "gpt-4o"
-	ModelGPT4oMini = "gpt-4o-mini"
-	ModelO1Pro     = "o1-pro"
-	ModelO3Mini        = "o3-mini"
-	ModelO3Pro         = "o3-pro"
-	ModelO4Mini        = "o4-mini"
-	ModelGPT5          = "gpt-5"
-	ModelGPT5Mini      = "gpt-5-mini"
-	ModelGPT5Nano      = "gpt-5-nano"
-	ModelGPT5Pro       = "gpt-5-pro"
-	ModelGPT51         = "gpt-5.1"
-	ModelGPT51Mini     = "gpt-5.1-mini"
-	ModelGPT51Nano     = "gpt-5.1-nano"
-	// GPT-5.2 family: base and Pro (plus specialized Instant/Thinking variants)
+	// GPT-5.2 family
 	ModelGPT52    = "gpt-5.2"
-	ModelGPT52Pro = "gpt-5.2-pro"
 	// GPT-5.2 specialized variants
 	ModelGPT52Instant  = "gpt-5.2-instant"
 	ModelGPT52Thinking = "gpt-5.2-thinking"
-	ModelGPT41         = "gpt-4.1"
-	ModelGPT41Mini     = "gpt-4.1-mini"
-	ModelGPT41Nano     = "gpt-4.1-nano"
+	// GPT-5.4 family
+	ModelGPT54     = "gpt-5.4"
+	ModelGPT54Mini = "gpt-5.4-mini"
+	// GPT-4.1 family
+	ModelGPT41     = "gpt-4.1"
+	ModelGPT41Mini = "gpt-4.1-mini"
+	ModelGPT41Nano = "gpt-4.1-nano"
 )
 
 // getOpenAIModels returns the map of OpenAI model metadata
 func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
-		ModelGPT4o: {
-			ModelID:                    ModelGPT4o,
-			ModelName:                  "GPT-4o",
-			ContextWindow:              128000, // 128k tokens
-			InputCostPer1MTokens:       2.50,
-			OutputCostPer1MTokens:      10.00,
-			ReasoningCostPer1MTokens:   0.0,   // No separate reasoning tokens
-			CachedInputCostPer1MTokens: 0.125, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelGPT4oMini: {
-			ModelID:                    ModelGPT4oMini,
-			ModelName:                  "GPT-4o Mini",
-			ContextWindow:              128000, // 128k tokens
-			InputCostPer1MTokens:       0.15,
-			OutputCostPer1MTokens:      0.60,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.075, // 50% discount
-			Provider:                   "openai",
-		},
-		ModelO1Pro: {
-			ModelID:                    ModelO1Pro,
-			ModelName:                  "O1 Pro",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       150.00,
-			OutputCostPer1MTokens:      600.00,
-			ReasoningCostPer1MTokens:   30.00, // Reasoning tokens are charged separately (estimated ~5% of output cost)
-			CachedInputCostPer1MTokens: 7.50,  // 95% discount
-			Provider:                   "openai",
-		},
-		ModelO3Mini: {
-			ModelID:                    ModelO3Mini,
-			ModelName:                  "O3 Mini",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       3.00,
-			OutputCostPer1MTokens:      12.00,
-			ReasoningCostPer1MTokens:   0.60, // Reasoning tokens are charged separately
-			CachedInputCostPer1MTokens: 0.15, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelO3Pro: {
-			ModelID:                    ModelO3Pro,
-			ModelName:                  "O3 Pro",
-			ContextWindow:              200000, // 200k tokens (estimated, same as o3-mini)
-			InputCostPer1MTokens:       20.00,
-			OutputCostPer1MTokens:      80.00,
-			ReasoningCostPer1MTokens:   4.00, // Reasoning tokens are charged separately (estimated ~5% of output cost)
-			CachedInputCostPer1MTokens: 1.00, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelO4Mini: {
-			ModelID:                    ModelO4Mini,
-			ModelName:                  "O4 Mini",
-			ContextWindow:              200000, // 200k tokens
-			InputCostPer1MTokens:       1.10,
-			OutputCostPer1MTokens:      4.40,
-			ReasoningCostPer1MTokens:   0.22,  // Reasoning tokens are charged separately (estimated ~20% of output cost)
-			CachedInputCostPer1MTokens: 0.055, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelGPT5: {
-			ModelID:                    ModelGPT5,
-			ModelName:                  "GPT-5",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       1.25,
-			OutputCostPer1MTokens:      10.00,
-			ReasoningCostPer1MTokens:   0.0,   // Check if reasoning tokens apply
-			CachedInputCostPer1MTokens: 0.125, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT5Mini: {
-			ModelID:                    ModelGPT5Mini,
-			ModelName:                  "GPT-5 Mini",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       0.25,
-			OutputCostPer1MTokens:      2.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.025, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT5Nano: {
-			ModelID:                    ModelGPT5Nano,
-			ModelName:                  "GPT-5 Nano",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       0.05,
-			OutputCostPer1MTokens:      0.40,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.005, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT5Pro: {
-			ModelID:                    ModelGPT5Pro,
-			ModelName:                  "GPT-5 Pro",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       15.00,
-			OutputCostPer1MTokens:      120.00,
-			ReasoningCostPer1MTokens:   6.00, // Reasoning tokens for high reasoning effort (estimated ~5% of output cost)
-			CachedInputCostPer1MTokens: 0.75, // 95% discount
-			Provider:                   "openai",
-		},
-		ModelGPT51: {
-			ModelID:                    ModelGPT51,
-			ModelName:                  "GPT-5.1",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       1.25,
-			OutputCostPer1MTokens:      10.00,
-			ReasoningCostPer1MTokens:   1.00,  // Reasoning tokens for reasoning effort
-			CachedInputCostPer1MTokens: 0.125, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT51Mini: {
-			ModelID:                    ModelGPT51Mini,
-			ModelName:                  "GPT-5.1 Mini",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       0.25,
-			OutputCostPer1MTokens:      2.00,
-			ReasoningCostPer1MTokens:   0.20,  // Reasoning tokens (estimated ~20% of base)
-			CachedInputCostPer1MTokens: 0.025, // 90% discount
-			Provider:                   "openai",
-		},
-		ModelGPT51Nano: {
-			ModelID:                    ModelGPT51Nano,
-			ModelName:                  "GPT-5.1 Nano",
-			ContextWindow:              400000, // 400k tokens
-			InputCostPer1MTokens:       0.05,
-			OutputCostPer1MTokens:      0.40,
-			ReasoningCostPer1MTokens:   0.05,  // Reasoning tokens (estimated ~5% of base)
-			CachedInputCostPer1MTokens: 0.005, // 90% discount
-			Provider:                   "openai",
-		},
 		// GPT-5.2 base (same pricing as Instant/Thinking family; standard capabilities)
 		ModelGPT52: {
 			ModelID:                    ModelGPT52,
@@ -181,22 +41,6 @@ func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 			SupportsToolCalls:     true,
 			SupportsJSONMode:      true,
 			SupportsThinkingLevel: false,
-		},
-		// GPT-5.2 Pro - higher pricing, reasoning-focused
-		ModelGPT52Pro: {
-			ModelID:                    ModelGPT52Pro,
-			ModelName:                  "GPT-5.2 Pro",
-			ContextWindow:              400000, // 400k tokens (input context)
-			InputCostPer1MTokens:       21.00,
-			OutputCostPer1MTokens:      168.00,
-			ReasoningCostPer1MTokens:   8.40, // Reasoning tokens (estimated ~5% of output cost)
-			CachedInputCostPer1MTokens: 1.05, // 95% discount
-			Provider:                   "openai",
-			// Capabilities
-			SupportsToolCalls:       true,
-			SupportsJSONMode:        true,
-			SupportsReasoningEffort: true,
-			ReasoningEffortLevels:   []string{"low", "medium", "high"},
 		},
 		// GPT-5.2 Instant - fast, same pricing as base, no explicit reasoning-effort knob
 		ModelGPT52Instant: {
@@ -229,24 +73,54 @@ func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 			SupportsReasoningEffort: true,
 			ReasoningEffortLevels:   []string{"low", "medium", "high"},
 		},
+		// GPT-5.4 flagship — 1.1M context, strongest reasoning
+		ModelGPT54: {
+			ModelID:                    ModelGPT54,
+			ModelName:                  "GPT-5.4",
+			ContextWindow:              1100000, // 1.1M tokens
+			InputCostPer1MTokens:       2.50,
+			OutputCostPer1MTokens:      15.00,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.25, // 90% discount
+			Provider:                   "openai",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
+		},
+		// GPT-5.4 Mini — 400K context, fast and affordable
+		ModelGPT54Mini: {
+			ModelID:                    ModelGPT54Mini,
+			ModelName:                  "GPT-5.4 Mini",
+			ContextWindow:              400000, // 400K tokens
+			InputCostPer1MTokens:       0.75,
+			OutputCostPer1MTokens:      4.50,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.075, // 90% discount
+			Provider:                   "openai",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"low", "medium", "high", "xhigh"},
+		},
 		ModelGPT41: {
 			ModelID:                    ModelGPT41,
 			ModelName:                  "GPT-4.1",
 			ContextWindow:              1047576, // ~1M tokens (1,047,576 tokens)
-			InputCostPer1MTokens:       2.00,
-			OutputCostPer1MTokens:      8.00,
+			InputCostPer1MTokens:       3.00,
+			OutputCostPer1MTokens:      12.00,
 			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.50, // 75% discount
+			CachedInputCostPer1MTokens: 0.75, // 75% discount
 			Provider:                   "openai",
 		},
 		ModelGPT41Mini: {
 			ModelID:                    ModelGPT41Mini,
 			ModelName:                  "GPT-4.1 Mini",
 			ContextWindow:              1047576, // ~1M tokens (1,047,576 tokens)
-			InputCostPer1MTokens:       0.40,
-			OutputCostPer1MTokens:      1.60,
+			InputCostPer1MTokens:       0.80,
+			OutputCostPer1MTokens:      3.20,
 			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.10, // 75% discount
+			CachedInputCostPer1MTokens: 0.20, // 75% discount
 			Provider:                   "openai",
 		},
 		ModelGPT41Nano: {
