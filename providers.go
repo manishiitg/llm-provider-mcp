@@ -1354,7 +1354,9 @@ func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Codex CLI adapter - model_id: %s", modelID)
 
-	// Resolve API key: explicit config > CODEX_API_KEY > OPENAI_API_KEY
+	// Resolve API key: explicit config > CODEX_API_KEY only.
+	// Do NOT fall back to OPENAI_API_KEY — Codex CLI has its own auth
+	// (via `codex login` stored in ~/.codex/auth.json) which should be preferred.
 	apiKey := ""
 	if config.APIKeys != nil && config.APIKeys.CodexCLI != nil {
 		apiKey = *config.APIKeys.CodexCLI
@@ -1362,11 +1364,8 @@ func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 	} else if envKey := os.Getenv("CODEX_API_KEY"); envKey != "" {
 		apiKey = envKey
 		logger.Infof("Codex CLI: using API key from CODEX_API_KEY env var (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("OPENAI_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Codex CLI: using API key from OPENAI_API_KEY env var (length=%d)", len(apiKey))
 	} else {
-		logger.Infof("Codex CLI: no API key found in config or environment")
+		logger.Infof("Codex CLI: no explicit API key — will use Codex CLI's own stored auth")
 	}
 
 	// Create Codex CLI adapter

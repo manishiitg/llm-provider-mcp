@@ -338,6 +338,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	var threadID string
 	var accumulatedText strings.Builder
 	var totalInputTokens, totalOutputTokens, totalCachedInputTokens int
+	var lastCLIErrorMessage atomic.Value
 
 	// Inactivity watchdog
 	var lastActivity atomic.Int64
@@ -755,12 +756,18 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 				if errMsg == "" {
 					errMsg, _ = raw["error"].(string)
 				}
+				if strings.TrimSpace(errMsg) != "" {
+					lastCLIErrorMessage.Store(strings.TrimSpace(errMsg))
+				}
 				c.logger.Errorf("Codex CLI error event: %s", errMsg)
 
 			case "turn.failed":
 				// Turn failed — extract error details
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
 					errMsg, _ := errObj["message"].(string)
+					if strings.TrimSpace(errMsg) != "" {
+						lastCLIErrorMessage.Store(strings.TrimSpace(errMsg))
+					}
 					c.logger.Errorf("Codex CLI turn failed: %s", errMsg)
 				}
 
@@ -873,6 +880,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 			if detectedRateLimit.Load() {
 				return nil, fmt.Errorf("codex cli rate limited: model is experiencing high demand. Please try again later")
 			}
+			if errMsg, ok := lastCLIErrorMessage.Load().(string); ok && errMsg != "" {
+				return nil, fmt.Errorf("codex cli execution failed: %s", errMsg)
+			}
+			if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+				return nil, fmt.Errorf("codex cli execution failed: %s", stderrOutput)
+			}
 			return nil, fmt.Errorf("codex cli execution failed: %w", cmdErr)
 		}
 	}
@@ -925,32 +938,32 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	case strings.Contains(modelID, "gpt-5.4"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                         modelID,
-			Provider:                        "codex-cli",
-			ModelName:                       "GPT-5.4",
-			ContextWindow:                   1100000,
-			InputCostPer1MTokens:            2.50,
-			OutputCostPer1MTokens:           15.00,
-			CachedInputCostPer1MTokens:      0.25,
-			SupportsToolCalls:               true,
-			SupportsJSONMode:                true,
-			SupportsReasoningEffort:         true,
-			ReasoningEffortLevels:           []string{"none", "low", "medium", "high", "xhigh"},
+			ModelID:                    modelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-5.4",
+			ContextWindow:              1100000,
+			InputCostPer1MTokens:       2.50,
+			OutputCostPer1MTokens:      15.00,
+			CachedInputCostPer1MTokens: 0.25,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
 		}, nil
 
 	case strings.Contains(modelID, "gpt-5.3-codex"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                         modelID,
-			Provider:                        "codex-cli",
-			ModelName:                       "GPT-5.3-Codex",
-			ContextWindow:                   400000,
-			InputCostPer1MTokens:            1.75,
-			OutputCostPer1MTokens:           14.00,
-			CachedInputCostPer1MTokens:      0.175,
-			SupportsToolCalls:               true,
-			SupportsJSONMode:                true,
-			SupportsReasoningEffort:         true,
-			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh"},
+			ModelID:                    modelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-5.3-Codex",
+			ContextWindow:              400000,
+			InputCostPer1MTokens:       1.75,
+			OutputCostPer1MTokens:      14.00,
+			CachedInputCostPer1MTokens: 0.175,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"low", "medium", "high", "xhigh"},
 		}, nil
 
 	default:
@@ -1030,6 +1043,7 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 
 	var retryAccumulatedText strings.Builder
 	var retryInputTokens, retryOutputTokens int
+	var retryLastCLIErrorMessage atomic.Value
 	decodeDone := make(chan struct{})
 
 	scanner := bufio.NewScanner(stdoutPipe)
@@ -1120,6 +1134,20 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 						retryOutputTokens += int(v)
 					}
 				}
+
+			case "error":
+				if msg, ok := raw["message"].(string); ok && strings.TrimSpace(msg) != "" {
+					retryLastCLIErrorMessage.Store(strings.TrimSpace(msg))
+					c.logger.Errorf("Retry: Codex CLI error event: %s", msg)
+				}
+
+			case "turn.failed":
+				if errObj, ok := raw["error"].(map[string]interface{}); ok {
+					if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+						retryLastCLIErrorMessage.Store(strings.TrimSpace(msg))
+						c.logger.Errorf("Retry: Codex CLI turn failed: %s", msg)
+					}
+				}
 			}
 		}
 		close(decodeDone)
@@ -1147,6 +1175,12 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 	if cmdErr != nil {
 		c.logger.Errorf("Retry: Codex CLI failed: %v", cmdErr)
 		if retryAccumulatedText.Len() == 0 {
+			if errMsg, ok := retryLastCLIErrorMessage.Load().(string); ok && errMsg != "" {
+				return nil, fmt.Errorf("retry: codex cli execution failed: %s", errMsg)
+			}
+			if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+				return nil, fmt.Errorf("retry: codex cli execution failed: %s", stderrOutput)
+			}
 			return nil, fmt.Errorf("retry: codex cli execution failed: %w", cmdErr)
 		}
 	}
