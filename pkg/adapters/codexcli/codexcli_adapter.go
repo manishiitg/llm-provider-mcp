@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -15,6 +16,63 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+// quotaExhaustedEntry records when a model's usage quota was exhausted.
+type quotaExhaustedEntry struct {
+	message   string    // original error message from Codex
+	expiresAt time.Time // when the quota resets (parsed from error, or +1h default)
+}
+
+// globalQuotaCache is a process-wide cache of quota-exhausted Codex models.
+// Keyed by modelID. Survives Agent recreation between workflow turns.
+var (
+	globalQuotaMu    sync.RWMutex
+	globalQuotaCache = map[string]quotaExhaustedEntry{}
+)
+
+// markQuotaExhausted records a quota exhaustion for modelID.
+// It tries to parse "try again at HH:MM AM/PM" from msg to set an accurate expiry.
+func markQuotaExhausted(modelID, msg string) {
+	expiry := time.Now().Add(1 * time.Hour) // safe default
+
+	// Try to parse "try again at HH:MM AM" or "try again at HH:MM PM"
+	lower := strings.ToLower(msg)
+	if idx := strings.Index(lower, "try again at "); idx >= 0 {
+		rest := msg[idx+len("try again at "):]
+		// rest looks like "8:32 PM." — parse it
+		rest = strings.TrimRight(rest, ". ")
+		if t, err := time.ParseInLocation("3:04 PM", rest, time.Local); err == nil {
+			now := time.Now()
+			candidate := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
+			if candidate.Before(now) {
+				candidate = candidate.Add(24 * time.Hour) // next day
+			}
+			expiry = candidate.Add(2 * time.Minute) // small buffer
+		}
+	}
+
+	globalQuotaMu.Lock()
+	globalQuotaCache[modelID] = quotaExhaustedEntry{message: msg, expiresAt: expiry}
+	globalQuotaMu.Unlock()
+}
+
+// checkQuotaExhausted returns the cached error message if the model is still exhausted.
+func checkQuotaExhausted(modelID string) (string, bool) {
+	globalQuotaMu.RLock()
+	entry, ok := globalQuotaCache[modelID]
+	globalQuotaMu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(entry.expiresAt) {
+		// Expired — evict
+		globalQuotaMu.Lock()
+		delete(globalQuotaCache, modelID)
+		globalQuotaMu.Unlock()
+		return "", false
+	}
+	return entry.message, true
+}
 
 // pendingToolCall tracks a tool call that has started but hasn't received its result yet
 type pendingToolCall struct {
@@ -46,7 +104,13 @@ const inactivityTimeout = 10 * time.Minute
 
 // GenerateContent generates content using the OpenAI Codex CLI.
 func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
-	// 0. Check for 'codex' binary
+	// 0a. Check process-wide quota cache — skip the CLI entirely if quota is known exhausted.
+	if cachedMsg, exhausted := checkQuotaExhausted(c.modelID); exhausted {
+		c.logger.Errorf("Codex CLI quota still exhausted for model %s (cached): %s", c.modelID, cachedMsg)
+		return nil, fmt.Errorf("codex cli execution failed: usage limit still active for %s: %s", c.modelID, cachedMsg)
+	}
+
+	// 0b. Check for 'codex' binary
 	if _, err := exec.LookPath("codex"); err != nil {
 		return nil, fmt.Errorf("codex cli not found in PATH. Please install it first (npm install -g @openai/codex)")
 	}
@@ -597,13 +661,16 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 				case "agent_message":
 					// Codex uses "text" field for agent messages (not "content")
 					if text, ok := item["text"].(string); ok && text != "" {
+						if accumulatedText.Len() > 0 {
+							accumulatedText.WriteString("\n")
+						}
 						accumulatedText.WriteString(text)
 						lastContentTime.Store(time.Now().UnixNano())
 						heartbeatSent.Store(false)
 						if opts.StreamChan != nil {
 							opts.StreamChan <- llmtypes.StreamChunk{
 								Type:    llmtypes.StreamChunkTypeContent,
-								Content: text,
+								Content: "\n" + text,
 							}
 						}
 					}
@@ -881,6 +948,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 				return nil, fmt.Errorf("codex cli rate limited: model is experiencing high demand. Please try again later")
 			}
 			if errMsg, ok := lastCLIErrorMessage.Load().(string); ok && errMsg != "" {
+				// Cache quota exhaustion globally so future agent instances skip the CLI immediately.
+				if strings.Contains(strings.ToLower(errMsg), "usage limit") ||
+					strings.Contains(strings.ToLower(errMsg), "hit your usage") {
+					markQuotaExhausted(c.modelID, errMsg)
+					c.logger.Errorf("Codex CLI usage quota exhausted for %s — cached until reset time", c.modelID)
+				}
 				return nil, fmt.Errorf("codex cli execution failed: %s", errMsg)
 			}
 			if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
