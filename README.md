@@ -33,7 +33,7 @@ go get github.com/manishiitg/multi-llm-provider-go@v0.1.0
 - **Vertex AI** - Google Gemini models and Anthropic Claude via Vertex AI
 - **Azure AI** - OpenAI models via Azure AI Services/Foundry
 - **Claude Code CLI** - Local agentic CLI integration (`claude`)
-- **MiniMax** - MiniMax-M2.5/M2.1/M2 text models + image-01 image generation
+- **MiniMax** - MiniMax-M2.7/M2.5/M2.1/M2 text models + image-01 image generation
 
 ## Quick Start
 
@@ -243,6 +243,7 @@ The **Claude Code adapter** is unique because it integrates with a local **Agent
 
 | Model | Input | Output | Cache Read | Cache Write | Context |
 |-------|-------|--------|------------|-------------|---------|
+| MiniMax-M2.7 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |
 | MiniMax-M2.5 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |
 | MiniMax-M2.5-highspeed | $0.60/M | $2.40/M | $0.03/M | $0.375/M | 1M tokens |
 | MiniMax-M2.1 | $0.30/M | $1.20/M | $0.03/M | $0.375/M | 1M tokens |

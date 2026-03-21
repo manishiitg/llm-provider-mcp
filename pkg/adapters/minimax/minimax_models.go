@@ -8,6 +8,7 @@ import (
 
 // MiniMax model name constants
 const (
+	ModelMiniMaxM27          = "MiniMax-M2.7"
 	ModelMiniMaxM25          = "MiniMax-M2.5"
 	ModelMiniMaxM25HighSpeed = "MiniMax-M2.5-highspeed"
 	ModelMiniMaxM21          = "MiniMax-M2.1"
@@ -18,6 +19,16 @@ const (
 // getMiniMaxModels returns the map of MiniMax model metadata
 func getMiniMaxModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
+		ModelMiniMaxM27: {
+			ModelID:                         ModelMiniMaxM27,
+			ModelName:                       "MiniMax M2.7",
+			ContextWindow:                   1000000,
+			InputCostPer1MTokens:            0.30,
+			OutputCostPer1MTokens:           1.20,
+			CachedInputCostPer1MTokens:      0.03,
+			CachedInputCostWritePer1MTokens: 0.375,
+			Provider:                        "minimax",
+		},
 		ModelMiniMaxM25: {
 			ModelID:                         ModelMiniMaxM25,
 			ModelName:                       "MiniMax M2.5",
@@ -75,6 +86,7 @@ func getMiniMaxModels() map[string]*llmtypes.ModelMetadata {
 func GetAllMiniMaxModels() []*llmtypes.ModelMetadata {
 	models := getMiniMaxModels()
 	order := []string{
+		ModelMiniMaxM27,
 		ModelMiniMaxM25,
 		ModelMiniMaxM25HighSpeed,
 		ModelMiniMaxM21,

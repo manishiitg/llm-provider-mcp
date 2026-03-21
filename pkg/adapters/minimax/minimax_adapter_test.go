@@ -154,8 +154,8 @@ func TestConvertMessages_MultiPartText(t *testing.T) {
 
 func TestGetAllMiniMaxModels(t *testing.T) {
 	models := GetAllMiniMaxModels()
-	if len(models) != 5 {
-		t.Errorf("expected 5 models, got %d", len(models))
+	if len(models) != 6 {
+		t.Errorf("expected 6 models, got %d", len(models))
 	}
 	for _, m := range models {
 		if m.Provider != "minimax" {

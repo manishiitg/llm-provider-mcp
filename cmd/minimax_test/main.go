@@ -16,7 +16,7 @@ func main() {
 		log.Fatal("MINIMAX_API_KEY not set")
 	}
 
-	modelID := "MiniMax-M2.5"
+	modelID := "MiniMax-M2.7"
 	if len(os.Args) > 1 {
 		modelID = os.Args[1]
 	}

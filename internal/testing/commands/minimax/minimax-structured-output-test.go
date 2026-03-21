@@ -26,7 +26,7 @@ var (
 )
 
 func init() {
-	MiniMaxStructuredOutputTestCmd.Flags().StringVar(&minimaxStructuredModel, "model", "MiniMax-M2.5", "MiniMax model to test")
+	MiniMaxStructuredOutputTestCmd.Flags().StringVar(&minimaxStructuredModel, "model", "MiniMax-M2.7", "MiniMax model to test")
 	MiniMaxStructuredOutputTestCmd.Flags().BoolVar(&minimaxStructuredUseJSONMode, "json-mode", true, "Use JSON mode")
 	MiniMaxStructuredOutputTestCmd.Flags().BoolVar(&minimaxStructuredUseSchema, "json-schema", false, "Use JSON schema")
 	MiniMaxStructuredOutputTestCmd.Flags().BoolVar(&minimaxStructuredUseToolBased, "tool-based", false, "Use tool-based extraction")
@@ -36,7 +36,7 @@ func runMiniMaxStructuredOutputTest(cmd *cobra.Command, args []string) {
 	_ = godotenv.Load(".env")
 	modelID := minimaxStructuredModel
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 	}
 	log.Printf("🚀 Testing MiniMax Structured Output with %s", modelID)
 	if os.Getenv("MINIMAX_API_KEY") == "" {

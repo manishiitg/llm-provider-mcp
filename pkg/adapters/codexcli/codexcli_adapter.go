@@ -662,7 +662,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 					// Codex uses "text" field for agent messages (not "content")
 					if text, ok := item["text"].(string); ok && text != "" {
 						if accumulatedText.Len() > 0 {
-							accumulatedText.WriteString("\n")
+							accumulatedText.WriteString("\n\n")
 						}
 						accumulatedText.WriteString(text)
 						lastContentTime.Store(time.Now().UnixNano())
@@ -670,7 +670,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 						if opts.StreamChan != nil {
 							opts.StreamChan <- llmtypes.StreamChunk{
 								Type:    llmtypes.StreamChunkTypeContent,
-								Content: "\n" + text,
+								Content: "\n\n" + text,
 							}
 						}
 					}

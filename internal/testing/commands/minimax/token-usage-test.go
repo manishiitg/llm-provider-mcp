@@ -25,7 +25,7 @@ var minimaxTokenTestModel string
 var minimaxTokenTestPrompt string
 
 func init() {
-	MiniMaxTokenUsageTestCmd.Flags().StringVar(&minimaxTokenTestModel, "model", "MiniMax-M2.5", "MiniMax model to test")
+	MiniMaxTokenUsageTestCmd.Flags().StringVar(&minimaxTokenTestModel, "model", "MiniMax-M2.7", "MiniMax model to test")
 	MiniMaxTokenUsageTestCmd.Flags().StringVar(&minimaxTokenTestPrompt, "prompt", "Hello world", "Test prompt")
 }
 
@@ -42,7 +42,7 @@ func runMiniMaxTokenUsageTest(cmd *cobra.Command, args []string) {
 
 	modelID := minimaxTokenTestModel
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 	}
 
 	logger := testing.GetTestLogger()

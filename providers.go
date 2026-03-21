@@ -783,7 +783,7 @@ func initializeMiniMax(config Config) (llmtypes.Model, error) {
 
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = minimaxadapter.ModelMiniMaxM25
+		modelID = minimaxadapter.ModelMiniMaxM27
 	}
 
 	logger := config.Logger
@@ -2490,7 +2490,7 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	// MiniMax configuration
 	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
 	if minimaxModel == "" {
-		minimaxModel = "MiniMax-M2.5"
+		minimaxModel = "MiniMax-M2.7"
 	}
 	minimaxAPIKey := os.Getenv("MINIMAX_API_KEY")
 
@@ -2925,7 +2925,7 @@ func validateMinimaxAPIKey(apiKey string, modelID string, options map[string]int
 
 	// Use a default model if none provided
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 		fmt.Printf("[MINIMAX VALIDATION] Using default model: %s\n", modelID)
 	}
 

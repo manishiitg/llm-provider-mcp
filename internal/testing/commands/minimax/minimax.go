@@ -27,7 +27,7 @@ type minimaxTestFlags struct {
 var minimaxFlags minimaxTestFlags
 
 func init() {
-	MiniMaxCmd.Flags().StringVar(&minimaxFlags.model, "model", "MiniMax-M2.5", "MiniMax model to test")
+	MiniMaxCmd.Flags().StringVar(&minimaxFlags.model, "model", "MiniMax-M2.7", "MiniMax model to test")
 	MiniMaxCmd.Flags().StringVar(&minimaxFlags.apiKey, "api-key", "", "MiniMax API key (or set MINIMAX_API_KEY env var)")
 }
 
@@ -50,7 +50,7 @@ func runMiniMax(cmd *cobra.Command, args []string) {
 
 	modelID := minimaxFlags.model
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{
