@@ -538,14 +538,17 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}()
 
 	// Wait for command completion or context cancellation
+	c.logger.Infof("[CLI_LIFECYCLE] Waiting for CLI process to complete (pid=%d)", cmd.Process.Pid)
 	var cmdErr error
 	select {
 	case <-ctx.Done():
-		c.logger.Errorf("Context cancelled/timed out: %v", ctx.Err())
+		c.logger.Errorf("[CLI_LIFECYCLE] Context cancelled/timed out: %v (pid=%d)", ctx.Err(), cmd.Process.Pid)
 		killProcessGroup(cmd)
 		cmdErr = ctx.Err()
 	case <-decodeDone:
+		c.logger.Infof("[CLI_LIFECYCLE] CLI stdout closed, waiting for process exit (pid=%d)", cmd.Process.Pid)
 		cmdErr = cmd.Wait()
+		c.logger.Infof("[CLI_LIFECYCLE] CLI process exited (pid=%d, err=%v)", cmd.Process.Pid, cmdErr)
 	}
 
 	// Log stderr output from Claude CLI (captures permission prompts, errors, debug info)
