@@ -21,14 +21,14 @@ var MiniMaxStreamingMultiTurnTestCmd = &cobra.Command{
 var minimaxStreamingMultiTurnModel string
 
 func init() {
-	MiniMaxStreamingMultiTurnTestCmd.Flags().StringVar(&minimaxStreamingMultiTurnModel, "model", "MiniMax-M2.5", "MiniMax model to test")
+	MiniMaxStreamingMultiTurnTestCmd.Flags().StringVar(&minimaxStreamingMultiTurnModel, "model", "MiniMax-M2.7", "MiniMax model to test")
 }
 
 func runMiniMaxStreamingMultiTurnTest(cmd *cobra.Command, args []string) {
 	_ = godotenv.Load(".env")
 	modelID := minimaxStreamingMultiTurnModel
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 	}
 	log.Printf("🚀 Testing MiniMax Streaming Multi-Turn with %s", modelID)
 	if os.Getenv("MINIMAX_API_KEY") == "" {

@@ -25,7 +25,7 @@ type minimaxToolCallTestFlags struct {
 var minimaxToolCallFlags minimaxToolCallTestFlags
 
 func init() {
-	MiniMaxToolCallTestCmd.Flags().StringVar(&minimaxToolCallFlags.model, "model", "MiniMax-M2.5", "MiniMax model to test")
+	MiniMaxToolCallTestCmd.Flags().StringVar(&minimaxToolCallFlags.model, "model", "MiniMax-M2.7", "MiniMax model to test")
 }
 
 func runMiniMaxToolCallTest(cmd *cobra.Command, args []string) {
@@ -33,7 +33,7 @@ func runMiniMaxToolCallTest(cmd *cobra.Command, args []string) {
 
 	modelID := minimaxToolCallFlags.model
 	if modelID == "" {
-		modelID = "MiniMax-M2.5"
+		modelID = "MiniMax-M2.7"
 	}
 
 	log.Printf("🚀 Testing MiniMax Tool Calling with %s", modelID)
