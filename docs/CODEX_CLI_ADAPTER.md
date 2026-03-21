@@ -78,13 +78,14 @@ No `item.started` — goes directly to `item.completed`:
 ## Options & Metadata Keys
 
 ### Model Selection
-- `WithCodexModel(model)` — `--model` flag. Values: `gpt-5.4`, `gpt-5.3-codex`, etc.
+- `WithCodexModel(model)` — `--model` flag. Values: `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, etc.
 - Default model sentinel: `codex-cli` (lets CLI use its configured default)
 
 ### Reasoning Effort
 - `WithReasoningEffort(effort)` — `-c model_reasoning_effort="<level>"`
 - **gpt-5.4**: `none`, `low`, `medium`, `high`, `xhigh`
 - **gpt-5.3-codex**: `low`, `medium`, `high`, `xhigh`
+- **gpt-5.3-codex-spark**: `low`, `medium`, `high`, `xhigh`
 - `WithReasoningSummary(summary)` — `auto`, `concise`, `detailed`, `none`
 
 ### Approval Policy
@@ -130,6 +131,7 @@ Priority order:
 |-------|---------------|------------|-------------|-------------|-----------------|
 | gpt-5.4 | 1,050,000 | $2.50 | $15.00 | $0.25 | none, low, medium, high, xhigh |
 | gpt-5.3-codex | 400,000 | $1.75 | $14.00 | $0.175 | low, medium, high, xhigh |
+| gpt-5.3-codex-spark | 400,000 | $1.75 | $14.00 | $0.175 | low, medium, high, xhigh |
 
 Note: gpt-5.4 prompts exceeding 272K input tokens incur 2x input and 1.5x output pricing.
 

@@ -1024,6 +1024,21 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
 		}, nil
 
+	case strings.Contains(modelID, "gpt-5.3-codex-spark"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                    modelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-5.3-Codex-Spark",
+			ContextWindow:              400000,
+			InputCostPer1MTokens:       1.75,
+			OutputCostPer1MTokens:      14.00,
+			CachedInputCostPer1MTokens: 0.175,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"low", "medium", "high", "xhigh"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-5.3-codex"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                    modelID,
