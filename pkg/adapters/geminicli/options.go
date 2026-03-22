@@ -82,9 +82,8 @@ func WithProjectDirID(id string) llmtypes.CallOption {
 	}
 }
 
-// WithAllowedTools sets the --allowed-tools flag for the Gemini CLI.
-// These tools bypass the confirmation dialog.
-// Example: "mcp__api-bridge__*" to allow all tools from the bridge.
+// WithAllowedTools sets the deprecated --allowed-tools flag for the Gemini CLI.
+// Prefer WithProjectSettings plus Policy Engine rules instead.
 func WithAllowedTools(tools string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
