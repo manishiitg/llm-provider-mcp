@@ -583,20 +583,24 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 				}
 
 				// Parse the final result, passing accumulated text since result event
-				// doesn't contain the response text itself
-				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, accumulatedText.String())
+				// doesn't contain the response text itself.
+				// When status=error, capture the API error message so providers.go can
+				// include it in the "choice.Content is empty" error for better diagnostics.
+				resultStatus, _ := raw["status"].(string)
+				var apiErrMsg string
+				if resultStatus == "error" {
+					errObj, _ := raw["error"].(map[string]interface{})
+					apiErrMsg, _ = errObj["message"].(string)
+					g.logger.Errorf("Gemini CLI result error (status=error), skipping retry: %s", apiErrMsg)
+				}
+				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, accumulatedText.String(), apiErrMsg)
 
 				// Detect empty result: only retry if status is "success" and text is empty.
 				// If status is "error" (e.g. 503 API failure), retrying with a finalization
 				// prompt is pointless — there's no session content to summarize.
-				resultStatus, _ := raw["status"].(string)
 				if accumulatedText.String() == "" && sessionID != "" && resultStatus != "error" {
 					emptyResultSessionID = sessionID
 					g.logger.Infof("Detected empty result with sessionID=%s (status=%s), may need retry", emptyResultSessionID, resultStatus)
-				} else if resultStatus == "error" {
-					errObj, _ := raw["error"].(map[string]interface{})
-					errMsg, _ := errObj["message"].(string)
-					g.logger.Errorf("Gemini CLI result error (status=error), skipping retry: %s", errMsg)
 				}
 				// Send SIGTERM to let the CLI write session files before exiting.
 				// SIGKILL would destroy session state and break --resume on next call.
@@ -733,7 +737,7 @@ func extractTextFromMessage(msg llmtypes.MessageContent) string {
 	return strings.Join(parts, "\n")
 }
 
-func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}, sessionID string, resolvedModel string, accumulatedText string) *llmtypes.ContentResponse {
+func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}, sessionID string, resolvedModel string, accumulatedText string, apiErrMsg string) *llmtypes.ContentResponse {
 	// The result event doesn't contain response text — use accumulated text from message events
 	resultText := accumulatedText
 
@@ -798,6 +802,9 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	}
 	if toolCalls > 0 {
 		additional["gemini_tool_calls"] = toolCalls
+	}
+	if apiErrMsg != "" {
+		additional["gemini_api_error"] = apiErrMsg
 	}
 
 	genInfo := &llmtypes.GenerationInfo{
@@ -979,7 +986,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 				if sid, ok := raw["session_id"].(string); ok && sid != "" {
 					retrySessionID = sid
 				}
-				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, retryAccumulatedText.String())
+				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, retryAccumulatedText.String(), "")
 				// Send SIGTERM to let the CLI write session files before exiting.
 				g.logger.Infof("Retry: Gemini CLI result received, sending SIGTERM for graceful shutdown")
 				if cmd.Process != nil {

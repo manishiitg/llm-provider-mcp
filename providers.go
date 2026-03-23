@@ -37,17 +37,17 @@ import (
 type Provider string
 
 const (
-	ProviderBedrock    Provider = "bedrock"
-	ProviderOpenAI     Provider = "openai"
-	ProviderAnthropic  Provider = "anthropic"
-	ProviderOpenRouter Provider = "openrouter"
-	ProviderVertex     Provider = "vertex"
-	ProviderAzure      Provider = "azure"
-	ProviderClaudeCode Provider = "claude-code"
-	ProviderGeminiCLI  Provider = "gemini-cli"
-	ProviderCodexCLI   Provider = "codex-cli"
-	ProviderMiniMax            Provider = "minimax"
-	ProviderMiniMaxCodingPlan  Provider = "minimax-coding-plan"
+	ProviderBedrock           Provider = "bedrock"
+	ProviderOpenAI            Provider = "openai"
+	ProviderAnthropic         Provider = "anthropic"
+	ProviderOpenRouter        Provider = "openrouter"
+	ProviderVertex            Provider = "vertex"
+	ProviderAzure             Provider = "azure"
+	ProviderClaudeCode        Provider = "claude-code"
+	ProviderGeminiCLI         Provider = "gemini-cli"
+	ProviderCodexCLI          Provider = "codex-cli"
+	ProviderMiniMax           Provider = "minimax"
+	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 )
 
 // Config holds configuration for LLM initialization
@@ -71,16 +71,16 @@ type Config struct {
 
 // ProviderAPIKeys holds API keys for different providers
 type ProviderAPIKeys struct {
-	OpenRouter *string
-	OpenAI     *string
-	Anthropic  *string
-	Vertex     *string
-	GeminiCLI  *string
-	CodexCLI   *string
-	MiniMax            *string
-	MiniMaxCodingPlan  *string
-	Bedrock            *BedrockConfig
-	Azure              *AzureAPIConfig
+	OpenRouter        *string
+	OpenAI            *string
+	Anthropic         *string
+	Vertex            *string
+	GeminiCLI         *string
+	CodexCLI          *string
+	MiniMax           *string
+	MiniMaxCodingPlan *string
+	Bedrock           *BedrockConfig
+	Azure             *AzureAPIConfig
 }
 
 // AzureAPIConfig holds Azure-specific configuration
@@ -1451,6 +1451,46 @@ func GetDefaultModel(provider Provider) string {
 	}
 }
 
+func parseFallbackModelsEnv(modelsEnv string) []string {
+	if modelsEnv == "" {
+		return []string{}
+	}
+
+	models := strings.Split(modelsEnv, ",")
+	parsed := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		parsed = append(parsed, model)
+	}
+	return parsed
+}
+
+func prefixModelsWithProvider(models []string, provider string) []string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return models
+	}
+
+	// Ignore invalid provider values and return models as-is.
+	if _, err := ValidateProvider(provider); err != nil {
+		return models
+	}
+
+	prefixed := make([]string, len(models))
+	for i, model := range models {
+		// Preserve already provider-qualified references (provider/model).
+		if strings.Contains(model, "/") {
+			prefixed[i] = model
+			continue
+		}
+		prefixed[i] = provider + "/" + model
+	}
+	return prefixed
+}
+
 // GetDefaultFallbackModels returns fallback models for each provider from environment variables
 func GetDefaultFallbackModels(provider Provider) []string {
 	switch provider {
@@ -1509,12 +1549,44 @@ func GetDefaultFallbackModels(provider Provider) []string {
 	case ProviderAzure:
 		// Get fallback models from environment variable
 		fallbackModelsEnv := os.Getenv("AZURE_FALLBACK_MODELS")
-		if fallbackModelsEnv != "" {
-			// Split by comma and trim whitespace
-			models := strings.Split(fallbackModelsEnv, ",")
-			for i, model := range models {
-				models[i] = strings.TrimSpace(model)
-			}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		// No fallback models if environment variable is not set
+		return []string{}
+	case ProviderClaudeCode:
+		// Get fallback models from environment variable
+		fallbackModelsEnv := os.Getenv("CLAUDE_CODE_FALLBACK_MODELS")
+		if fallbackModelsEnv == "" {
+			fallbackModelsEnv = os.Getenv("CLAUDECODE_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		// No fallback models if environment variable is not set
+		return []string{}
+	case ProviderGeminiCLI:
+		// Get fallback models from environment variable
+		fallbackModelsEnv := os.Getenv("GEMINI_CLI_FALLBACK_MODELS")
+		if fallbackModelsEnv == "" {
+			fallbackModelsEnv = os.Getenv("GEMINICLI_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		// No fallback models if environment variable is not set
+		return []string{}
+	case ProviderCodexCLI:
+		// Get fallback models from environment variable
+		fallbackModelsEnv := os.Getenv("CODEX_CLI_FALLBACK_MODELS")
+		if fallbackModelsEnv == "" {
+			fallbackModelsEnv = os.Getenv("CODEXCLI_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
 			return models
 		}
 		// No fallback models if environment variable is not set
@@ -1559,16 +1631,57 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 	case ProviderVertex:
 		// Get Anthropic cross-provider fallback models for Vertex
 		anthropicFallbackEnv := os.Getenv("VERTEX_ANTHROPIC_FALLBACK_MODELS")
-		if anthropicFallbackEnv != "" {
-			// Split by comma and trim whitespace
-			models := strings.Split(anthropicFallbackEnv, ",")
-			for i, model := range models {
-				models[i] = strings.TrimSpace(model)
-			}
+		models := parseFallbackModelsEnv(anthropicFallbackEnv)
+		if len(models) > 0 {
 			return models
 		}
 		// No cross-provider fallbacks if environment variable is not set
 		return []string{}
+	case ProviderClaudeCode:
+		// Get cross-provider fallback models for Claude Code
+		crossFallbackEnv := os.Getenv("CLAUDE_CODE_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("CLAUDECODE_CROSS_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("CLAUDE_CODE_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("CLAUDECODE_CROSS_FALLBACK_PROVIDER") // Legacy naming
+		}
+		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderGeminiCLI:
+		// Get cross-provider fallback models for Gemini CLI
+		crossFallbackEnv := os.Getenv("GEMINI_CLI_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("GEMINICLI_CROSS_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("GEMINI_CLI_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("GEMINICLI_CROSS_FALLBACK_PROVIDER") // Legacy naming
+		}
+		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderCodexCLI:
+		// Get cross-provider fallback models for Codex CLI
+		crossFallbackEnv := os.Getenv("CODEX_CLI_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("CODEXCLI_CROSS_FALLBACK_MODELS") // Legacy naming
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("CODEX_CLI_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("CODEXCLI_CROSS_FALLBACK_PROVIDER") // Legacy naming
+		}
+		return prefixModelsWithProvider(models, crossProvider)
 	default:
 		return []string{}
 	}
@@ -1946,7 +2059,14 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 			}
 			emitLLMGenerationError(p.eventEmitter, string(p.provider), p.modelID, OperationLLMGeneration, len(messages), getTemperatureFromOptions(options), extractMessageContentAsString(messages), fmt.Errorf("choice.Content is empty"), p.traceID, errorMetadata)
 
-			return nil, fmt.Errorf("choice.Content is empty")
+			// Include provider-specific API error if available (e.g. gemini_api_error from gemini-cli)
+			emptyContentErr := "choice.Content is empty"
+			if firstChoice.GenerationInfo != nil && firstChoice.GenerationInfo.Additional != nil {
+				if apiErr, ok := firstChoice.GenerationInfo.Additional["gemini_api_error"].(string); ok && apiErr != "" {
+					emptyContentErr = fmt.Sprintf("choice.Content is empty: %s", apiErr)
+				}
+			}
+			return nil, fmt.Errorf("%s", emptyContentErr)
 		}
 	}
 
@@ -2292,15 +2412,15 @@ func WithCodexProjectDirID(dir string) llmtypes.CallOption {
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
 type LLMDefaultsResponse struct {
-	PrimaryConfig    map[string]interface{} `json:"primary_config"`
-	OpenrouterConfig map[string]interface{} `json:"openrouter_config"`
-	BedrockConfig    map[string]interface{} `json:"bedrock_config"`
-	OpenaiConfig     map[string]interface{} `json:"openai_config"`
-	AnthropicConfig  map[string]interface{} `json:"anthropic_config"`
-	AzureConfig      map[string]interface{} `json:"azure_config"`
-	MinimaxConfig            map[string]interface{} `json:"minimax_config"`
-	MinimaxCodingPlanConfig  map[string]interface{} `json:"minimax_coding_plan_config"`
-	AvailableModels          map[string][]string    `json:"available_models"`
+	PrimaryConfig           map[string]interface{} `json:"primary_config"`
+	OpenrouterConfig        map[string]interface{} `json:"openrouter_config"`
+	BedrockConfig           map[string]interface{} `json:"bedrock_config"`
+	OpenaiConfig            map[string]interface{} `json:"openai_config"`
+	AnthropicConfig         map[string]interface{} `json:"anthropic_config"`
+	AzureConfig             map[string]interface{} `json:"azure_config"`
+	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
+	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
+	AvailableModels         map[string][]string    `json:"available_models"`
 }
 
 // APIKeyValidationRequest represents a request to validate an API key
@@ -2556,13 +2676,13 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"api_key":         minimaxCodingPlanAPIKey,
 		},
 		AvailableModels: map[string][]string{
-			"bedrock":              getBedrockAvailableModels(),
-			"openrouter":           getOpenRouterAvailableModels(),
-			"openai":               getOpenAIAvailableModels(),
-			"anthropic":            getAnthropicAvailableModels(),
-			"azure":                getAzureAvailableModels(),
-			"minimax":              getMiniMaxAvailableModels(),
-			"minimax-coding-plan":  getMiniMaxCodingPlanAvailableModels(),
+			"bedrock":             getBedrockAvailableModels(),
+			"openrouter":          getOpenRouterAvailableModels(),
+			"openai":              getOpenAIAvailableModels(),
+			"anthropic":           getAnthropicAvailableModels(),
+			"azure":               getAzureAvailableModels(),
+			"minimax":             getMiniMaxAvailableModels(),
+			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
 		},
 	}
 }
@@ -3185,7 +3305,7 @@ func validateAzureAPIKey(apiKey string, modelID string, options map[string]inter
 
 	// Try combinations
 	endpoints := []string{endpoint}
-	
+
 	// Case 1: services.ai.azure.com -> cognitiveservices.azure.com
 	if strings.Contains(endpoint, "services.ai.azure.com") {
 		parts := strings.Split(endpoint, "services.ai.azure.com")
@@ -3221,7 +3341,7 @@ func validateAzureAPIKey(apiKey string, modelID string, options map[string]inter
 						correctedOptions[k] = v
 					}
 				}
-				
+
 				isCorrected := false
 				if testEndpoint != endpoint {
 					correctedOptions["endpoint"] = testEndpoint

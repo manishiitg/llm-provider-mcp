@@ -74,7 +74,7 @@ func TestMapResultToContentResponse(t *testing.T) {
 		},
 	}
 
-	resp := adapter.mapResultToContentResponse(raw, "test-session-123", "", "Hello world")
+	resp := adapter.mapResultToContentResponse(raw, "test-session-123", "", "Hello world", "")
 
 	// Verify Content
 	if len(resp.Choices) != 1 {
@@ -118,7 +118,7 @@ func TestMapResultToContentResponse_UsageField(t *testing.T) {
 		},
 	}
 
-	resp := adapter.mapResultToContentResponse(raw, "session-456", "", "Test response")
+	resp := adapter.mapResultToContentResponse(raw, "session-456", "", "Test response", "")
 
 	if resp.Usage.InputTokens != 200 {
 		t.Errorf("Expected 200 input tokens, got %d", resp.Usage.InputTokens)
@@ -140,7 +140,7 @@ func TestMapResultToContentResponse_EmptyResult(t *testing.T) {
 		"response": "Fallback response text",
 	}
 
-	resp := adapter.mapResultToContentResponse(raw, "", "", "Fallback response text")
+	resp := adapter.mapResultToContentResponse(raw, "", "", "Fallback response text", "")
 
 	if resp.Choices[0].Content != "Fallback response text" {
 		t.Errorf("Expected fallback to 'response' field, got '%s'", resp.Choices[0].Content)
