@@ -123,6 +123,15 @@ func WithDisableShellTool() llmtypes.CallOption {
 	}
 }
 
+// WithEnableFeatures enables one or more Codex CLI features (comma-separated).
+// Each feature translates to --enable <feature> on the CLI.
+func WithEnableFeatures(features string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyEnableFeatures] = features
+	}
+}
+
 // WithMCPServers passes MCP server configuration as a JSON string.
 // This is written to a temp config.toml that is loaded via --config overrides.
 // Example JSON: {"api-bridge":{"command":"/path/to/mcpbridge","env":{"MCP_API_URL":"..."}}}

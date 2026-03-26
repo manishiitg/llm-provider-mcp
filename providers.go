@@ -2408,6 +2408,11 @@ func WithCodexProjectDirID(dir string) llmtypes.CallOption {
 	return codexcli.WithProjectDirID(dir)
 }
 
+// WithCodexEnableFeatures enables one or more Codex CLI features (comma-separated).
+func WithCodexEnableFeatures(features string) llmtypes.CallOption {
+	return codexcli.WithEnableFeatures(features)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults

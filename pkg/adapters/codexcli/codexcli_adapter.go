@@ -276,6 +276,14 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		}
 	}
 
+	// Pass system prompt via developer_instructions config instead of
+	// prepending to the user message. This lets codex treat it as a proper
+	// system-level instruction rather than part of the user prompt.
+	if len(systemPrompts) > 0 {
+		combined := strings.Join(systemPrompts, "\n\n")
+		args = append(args, "-c", fmt.Sprintf("developer_instructions=%q", combined))
+	}
+
 	// 2. Build the prompt text
 	// Codex CLI takes the prompt as a positional argument
 	var promptText string
@@ -299,11 +307,8 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 			}
 		}
 	} else if len(convoMessages) > 1 {
-		// Multiple messages: build a conversation transcript with system prompt prefix
+		// Multiple messages: build a conversation transcript (system prompt handled via developer_instructions)
 		var parts []string
-		if len(systemPrompts) > 0 {
-			parts = append(parts, "System Instructions:\n"+strings.Join(systemPrompts, "\n\n"))
-		}
 		for _, msg := range convoMessages {
 			role := "User"
 			if msg.Role == llmtypes.ChatMessageTypeAI {
@@ -316,15 +321,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		}
 		promptText = strings.Join(parts, "\n\n")
 	} else {
-		// Single message: prepend system prompt if any
+		// Single message: extract user prompt (system prompt handled via developer_instructions)
 		for i := len(convoMessages) - 1; i >= 0; i-- {
 			if convoMessages[i].Role == llmtypes.ChatMessageTypeHuman {
 				promptText = extractTextFromMessage(convoMessages[i])
 				break
 			}
-		}
-		if len(systemPrompts) > 0 {
-			promptText = "System Instructions:\n" + strings.Join(systemPrompts, "\n\n") + "\n\n" + promptText
 		}
 	}
 
