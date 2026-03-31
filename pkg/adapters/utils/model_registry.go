@@ -5,6 +5,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -34,6 +37,15 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Azure - static models (dynamic API requires endpoint/key at runtime)
 	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
+
+	// Claude Code CLI
+	allModels = append(allModels, claudecode.GetAllClaudeCodeModels()...)
+
+	// Gemini CLI
+	allModels = append(allModels, geminicli.GetAllGeminiCLIModels()...)
+
+	// Codex CLI
+	allModels = append(allModels, codexcli.GetAllCodexCLIModels()...)
 
 	// OpenRouter - fetch dynamically from API (cached for 24 hours)
 	openRouterModels := openai.GetAllOpenRouterModels()

@@ -1,0 +1,40 @@
+package claudecode
+
+import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+
+var knownClaudeCodeModels = []string{
+	"claude-code",
+	"claude-opus-4-6",
+	"claude-sonnet-4-6",
+	"claude-haiku-4-5-20251001",
+}
+
+// GetAllClaudeCodeModels returns the frontend-visible Claude Code CLI models.
+func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
+	models := make([]*llmtypes.ModelMetadata, 0, len(knownClaudeCodeModels))
+	adapter := &ClaudeCodeAdapter{}
+
+	for _, modelID := range knownClaudeCodeModels {
+		meta, err := adapter.GetModelMetadata(modelID)
+		if err != nil || meta == nil {
+			continue
+		}
+
+		switch modelID {
+		case "claude-code":
+			meta.ModelName = "Auto (default, pricing varies)"
+		case "claude-opus-4-6":
+			meta.ModelName = "Opus 4.6"
+		case "claude-sonnet-4-6":
+			meta.ModelName = "Sonnet 4.6"
+		case "claude-haiku-4-5-20251001":
+			meta.ModelName = "Haiku 4.5"
+		}
+
+		meta.SupportsReasoningEffort = true
+		meta.ReasoningEffortLevels = []string{"low", "medium", "high", "max"}
+		models = append(models, meta)
+	}
+
+	return models
+}

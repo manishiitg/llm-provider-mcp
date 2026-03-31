@@ -1061,7 +1061,7 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 		return &llmtypes.ModelMetadata{
 			ModelID:                 modelID,
 			Provider:                "codex-cli",
-			ModelName:               "OpenAI Codex CLI",
+			ModelName:               "OpenAI Codex CLI (pricing varies)",
 			ContextWindow:           200000,
 			SupportsToolCalls:       true,
 			SupportsReasoningEffort: true,

@@ -25,14 +25,14 @@ type pendingToolCall struct {
 
 // Constants for custom metadata keys
 const (
-	MetadataKeyMCPConfig                 = "mcp_config"
+	MetadataKeyMCPConfig                  = "mcp_config"
 	MetadataKeyDangerouslySkipPermissions = "dangerously_skip_permissions"
-	MetadataKeyTools                     = "claude_code_tools"
-	MetadataKeyAllowedTools              = "claude_code_allowed_tools"
-	MetadataKeySettings                  = "claude_code_settings"
-	MetadataKeyMaxTurns                  = "claude_code_max_turns"
-	MetadataKeyResumeSessionID           = "claude_code_resume_session_id"
-	MetadataKeyEffort                    = "claude_code_effort"
+	MetadataKeyTools                      = "claude_code_tools"
+	MetadataKeyAllowedTools               = "claude_code_allowed_tools"
+	MetadataKeySettings                   = "claude_code_settings"
+	MetadataKeyMaxTurns                   = "claude_code_max_turns"
+	MetadataKeyResumeSessionID            = "claude_code_resume_session_id"
+	MetadataKeyEffort                     = "claude_code_effort"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -291,7 +291,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	var finalResponse *llmtypes.ContentResponse
 	var maxTurnsSessionID string
 	decoder := json.NewDecoder(stdoutPipe)
-	
+
 	// Count AI messages in history to skip them during playback streaming
 	// When resuming, we only sent the new user message so there's no history to skip
 	aiHistoryCount := 0
@@ -312,7 +312,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	var currentToolInput strings.Builder
 	var inToolBlock bool
 	hasStreamEvents := false
-	var resultIsError bool   // tracks is_error from the CLI result event
+	var resultIsError bool     // tracks is_error from the CLI result event
 	var resultErrorText string // the error text from the result when is_error=true
 	// Buffer pending tool calls to match with tool_result for complete events
 	pendingTools := make(map[string]*pendingToolCall)
@@ -350,7 +350,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 						currentToolID, _ = cb["id"].(string)
 						currentToolInput.Reset()
 						inToolBlock = true
-						
+
 						// Track start time for duration calculation
 						pendingTools[currentToolID] = &pendingToolCall{
 							toolName:  currentToolName,
@@ -388,7 +388,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 							c.logger.Infof("Captured StructuredOutput tool call: %s", toolArgs)
 							capturedStructuredOutput = toolArgs
 						}
-						
+
 						// Emit ToolCallStart now that we have the full arguments
 						if opts.StreamChan != nil {
 							opts.StreamChan <- llmtypes.StreamChunk{
@@ -628,15 +628,49 @@ func (c *ClaudeCodeAdapter) GetModelID() string {
 
 // GetModelMetadata returns metadata for the model.
 func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	if modelID == "" {
+		modelID = c.modelID
+	}
+
 	// Default context window for Claude models used via Claude Code CLI.
 	// The actual context window is reported per-call in modelUsage and used
 	// to update the agent's context window tracking dynamically.
-	return &llmtypes.ModelMetadata{
-		ModelID:       modelID,
-		Provider:      "claude-code",
-		ModelName:     "Claude Code CLI",
-		ContextWindow: 200000, // Default for Claude Sonnet/Opus models
-	}, nil
+	switch modelID {
+	case "claude-opus-4-6":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "claude-code",
+			ModelName:             "Claude Opus 4.6",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  5.00,
+			OutputCostPer1MTokens: 25.00,
+		}, nil
+	case "claude-sonnet-4-6":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "claude-code",
+			ModelName:             "Claude Sonnet 4.6",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  3.00,
+			OutputCostPer1MTokens: 15.00,
+		}, nil
+	case "claude-haiku-4-5-20251001":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "claude-code",
+			ModelName:             "Claude Haiku 4.5",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  1.00,
+			OutputCostPer1MTokens: 5.00,
+		}, nil
+	default:
+		return &llmtypes.ModelMetadata{
+			ModelID:       modelID,
+			Provider:      "claude-code",
+			ModelName:     "Claude Code CLI",
+			ContextWindow: 200000, // Default for Claude Sonnet/Opus models
+		}, nil
+	}
 }
 
 // --- Helper Functions & Structs ---
@@ -657,8 +691,8 @@ type TextContentBlock struct {
 }
 
 type ImageContentBlock struct {
-	Type   string            `json:"type"`
-	Source ImageSourceBlock  `json:"source"`
+	Type   string           `json:"type"`
+	Source ImageSourceBlock `json:"source"`
 }
 
 type ImageSourceBlock struct {
@@ -711,27 +745,27 @@ func convertMessageToStreamJSON(msg llmtypes.MessageContent) (*StreamJSONMessage
 
 // ClaudeCodeResponse mirrors the JSON output from `claude -p --output-format json`
 type ClaudeCodeResponse struct {
-	Type              string             `json:"type"`
-	Subtype           string             `json:"subtype,omitempty"`
-	IsError           bool               `json:"is_error,omitempty"`
-	SessionID         string             `json:"session_id"`
-	Result            string             `json:"result"`
-	Usage             ClaudeUsage        `json:"usage"`
-	TotalCostUSD      float64            `json:"total_cost_usd"`
-	DurationMs        float64            `json:"duration_ms"`
-	DurationAPIMs     float64            `json:"duration_api_ms"`
-	NumTurns          int                `json:"num_turns"`
+	Type              string                     `json:"type"`
+	Subtype           string                     `json:"subtype,omitempty"`
+	IsError           bool                       `json:"is_error,omitempty"`
+	SessionID         string                     `json:"session_id"`
+	Result            string                     `json:"result"`
+	Usage             ClaudeUsage                `json:"usage"`
+	TotalCostUSD      float64                    `json:"total_cost_usd"`
+	DurationMs        float64                    `json:"duration_ms"`
+	DurationAPIMs     float64                    `json:"duration_api_ms"`
+	NumTurns          int                        `json:"num_turns"`
 	ModelUsage        map[string]ModelUsageEntry `json:"modelUsage,omitempty"`
-	PermissionDenials []PermissionDenial `json:"permission_denials,omitempty"`
+	PermissionDenials []PermissionDenial         `json:"permission_denials,omitempty"`
 }
 
 type ClaudeUsage struct {
-	InputTokens              int              `json:"input_tokens"`
-	OutputTokens             int              `json:"output_tokens"`
-	CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int              `json:"cache_creation_input_tokens"`
-	ServiceTier              string           `json:"service_tier,omitempty"`
-	ServerToolUse            *ServerToolUse   `json:"server_tool_use,omitempty"`
+	InputTokens              int            `json:"input_tokens"`
+	OutputTokens             int            `json:"output_tokens"`
+	CacheReadInputTokens     int            `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int            `json:"cache_creation_input_tokens"`
+	ServiceTier              string         `json:"service_tier,omitempty"`
+	ServerToolUse            *ServerToolUse `json:"server_tool_use,omitempty"`
 }
 
 type ServerToolUse struct {
@@ -740,14 +774,14 @@ type ServerToolUse struct {
 }
 
 type ModelUsageEntry struct {
-	InputTokens           int     `json:"inputTokens"`
-	OutputTokens          int     `json:"outputTokens"`
-	CacheReadInputTokens  int     `json:"cacheReadInputTokens"`
-	CacheCreationTokens   int     `json:"cacheCreationInputTokens"`
-	WebSearchRequests     int     `json:"webSearchRequests"`
-	CostUSD               float64 `json:"costUSD"`
-	ContextWindow         int     `json:"contextWindow"`
-	MaxOutputTokens       int     `json:"maxOutputTokens"`
+	InputTokens          int     `json:"inputTokens"`
+	OutputTokens         int     `json:"outputTokens"`
+	CacheReadInputTokens int     `json:"cacheReadInputTokens"`
+	CacheCreationTokens  int     `json:"cacheCreationInputTokens"`
+	WebSearchRequests    int     `json:"webSearchRequests"`
+	CostUSD              float64 `json:"costUSD"`
+	ContextWindow        int     `json:"contextWindow"`
+	MaxOutputTokens      int     `json:"maxOutputTokens"`
 }
 
 type PermissionDenial struct {

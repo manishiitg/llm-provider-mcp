@@ -538,7 +538,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					resultContent, _ = raw["content"].(string)
 				}
 
-			lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
+				lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
 				if pt, ok := pendingTools[toolID]; ok {
 					duration := time.Since(pt.startTime)
 					if opts.StreamChan != nil {
@@ -715,14 +715,46 @@ func (g *GeminiCLIAdapter) GetModelID() string {
 
 // GetModelMetadata returns metadata for the model.
 func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
-	return &llmtypes.ModelMetadata{
-		ModelID:   modelID,
-		Provider:  "gemini-cli",
-		ModelName: "Gemini CLI",
-		// Gemini CLI is free tier — zero pricing
-		InputCostPer1MTokens:  0,
-		OutputCostPer1MTokens: 0,
-	}, nil
+	if modelID == "" {
+		modelID = g.modelID
+	}
+
+	switch modelID {
+	case "pro", "gemini-2.5-pro":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "gemini-cli",
+			ModelName:             "Gemini 2.5 Pro",
+			ContextWindow:         1048576,
+			InputCostPer1MTokens:  1.25,
+			OutputCostPer1MTokens: 10.00,
+		}, nil
+	case "flash", "gemini-2.5-flash":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "gemini-cli",
+			ModelName:             "Gemini 2.5 Flash",
+			ContextWindow:         1048576,
+			InputCostPer1MTokens:  0.30,
+			OutputCostPer1MTokens: 2.50,
+		}, nil
+	case "flash-lite", "gemini-2.5-flash-lite":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "gemini-cli",
+			ModelName:             "Gemini 2.5 Flash-Lite",
+			ContextWindow:         1048576,
+			InputCostPer1MTokens:  0.10,
+			OutputCostPer1MTokens: 0.40,
+		}, nil
+	default:
+		return &llmtypes.ModelMetadata{
+			ModelID:       modelID,
+			Provider:      "gemini-cli",
+			ModelName:     "Gemini CLI (pricing varies)",
+			ContextWindow: 1048576,
+		}, nil
+	}
 }
 
 // --- Helper Functions ---
