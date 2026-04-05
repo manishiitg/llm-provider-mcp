@@ -96,6 +96,47 @@ type BedrockConfig struct {
 	Region string
 }
 
+// SetKeyForProvider sets the API key for a given provider.
+// Use this instead of switch statements to avoid missing new providers.
+func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
+	switch provider {
+	case ProviderOpenRouter:
+		k.OpenRouter = key
+	case ProviderOpenAI:
+		k.OpenAI = key
+	case ProviderAnthropic:
+		k.Anthropic = key
+	case ProviderVertex:
+		k.Vertex = key
+	case ProviderGeminiCLI:
+		k.GeminiCLI = key
+	case ProviderCodexCLI:
+		k.CodexCLI = key
+	case ProviderMiniMax:
+		k.MiniMax = key
+	case ProviderMiniMaxCodingPlan:
+		k.MiniMaxCodingPlan = key
+	}
+}
+
+// Clone returns a deep copy of ProviderAPIKeys.
+// Use this instead of field-by-field copies to avoid missing new fields.
+func (k *ProviderAPIKeys) Clone() *ProviderAPIKeys {
+	if k == nil {
+		return nil
+	}
+	out := *k // shallow copy — all *string fields are immutable, so sharing is safe
+	if k.Bedrock != nil {
+		b := *k.Bedrock
+		out.Bedrock = &b
+	}
+	if k.Azure != nil {
+		a := *k.Azure
+		out.Azure = &a
+	}
+	return &out
+}
+
 // InitializeLLM creates and initializes an LLM based on the provider configuration
 func InitializeLLM(config Config) (llmtypes.Model, error) {
 	var llm llmtypes.Model
