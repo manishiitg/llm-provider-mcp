@@ -267,7 +267,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	// this adapter is called from within a Claude Code session during testing)
 	var filteredEnv []string
 	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "CLAUDECODE=") {
+		if !strings.HasPrefix(env, "CLAUDECODE=") && !strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
 			filteredEnv = append(filteredEnv, env)
 		}
 	}
@@ -946,7 +946,7 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	// Filter out CLAUDECODE env var (same as main call)
 	var filteredEnv []string
 	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "CLAUDECODE=") {
+		if !strings.HasPrefix(env, "CLAUDECODE=") && !strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
 			filteredEnv = append(filteredEnv, env)
 		}
 	}
