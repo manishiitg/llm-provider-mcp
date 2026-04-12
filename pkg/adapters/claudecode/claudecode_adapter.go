@@ -38,14 +38,15 @@ const (
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
 type ClaudeCodeAdapter struct {
 	modelID string
+	apiKey  string
 	logger  interfaces.Logger
 }
 
 // NewClaudeCodeAdapter creates a new instance of the ClaudeCodeAdapter.
 func NewClaudeCodeAdapter(apiKey string, modelID string, logger interfaces.Logger) *ClaudeCodeAdapter {
-	// apiKey is not used for the CLI adapter as auth is handled by the CLI itself
 	return &ClaudeCodeAdapter{
 		modelID: modelID,
+		apiKey:  strings.TrimSpace(apiKey),
 		logger:  logger,
 	}
 }
@@ -270,6 +271,9 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		if !strings.HasPrefix(env, "CLAUDECODE=") && !strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
 			filteredEnv = append(filteredEnv, env)
 		}
+	}
+	if c.apiKey != "" {
+		filteredEnv = append(filteredEnv, "ANTHROPIC_API_KEY="+c.apiKey)
 	}
 	cmd.Env = filteredEnv
 
@@ -602,6 +606,40 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 
 	return finalResponse, nil
+}
+
+// SearchWeb uses Claude Code's native WebSearch tool and returns the final text response.
+func (c *ClaudeCodeAdapter) SearchWeb(ctx context.Context, query string, options ...llmtypes.CallOption) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	searchPrompt := "Use WebSearch to answer the following query.\n\n" + query
+	searchOptions := append([]llmtypes.CallOption{}, options...)
+	searchOptions = append(searchOptions, WithClaudeCodeTools("WebSearch"))
+	searchOptions = append(searchOptions, WithAllowedTools("WebSearch"))
+
+	resp, err := c.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: searchPrompt},
+			},
+		},
+	}, searchOptions...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("claude code web search returned no response")
+	}
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if content == "" {
+		return "", fmt.Errorf("claude code web search returned empty response")
+	}
+	return content, nil
 }
 
 // killProcessGroup kills the entire process group of cmd to ensure all child

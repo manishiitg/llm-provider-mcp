@@ -12,9 +12,11 @@ import (
 
 type MockLogger struct{}
 
-func (l *MockLogger) Infof(format string, args ...any)          { fmt.Printf("INFO: "+format+"\n", args...) }
-func (l *MockLogger) Errorf(format string, args ...any)         { fmt.Printf("ERROR: "+format+"\n", args...) }
-func (l *MockLogger) Debugf(format string, args ...interface{}) { fmt.Printf("DEBUG: "+format+"\n", args...) }
+func (l *MockLogger) Infof(format string, args ...any)  { fmt.Printf("INFO: "+format+"\n", args...) }
+func (l *MockLogger) Errorf(format string, args ...any) { fmt.Printf("ERROR: "+format+"\n", args...) }
+func (l *MockLogger) Debugf(format string, args ...interface{}) {
+	fmt.Printf("DEBUG: "+format+"\n", args...)
+}
 
 // ---- unit tests (no API calls) ----
 
@@ -45,6 +47,13 @@ func TestGetModelMetadata_Unknown(t *testing.T) {
 	_, err := adapter.GetModelMetadata("unknown-model")
 	if err == nil {
 		t.Error("expected error for unknown model, got nil")
+	}
+}
+
+func TestMiniMaxAdapterImplementsWebSearchModel(t *testing.T) {
+	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
+		t.Fatal("MiniMaxAdapter should implement llmtypes.WebSearchModel")
 	}
 }
 

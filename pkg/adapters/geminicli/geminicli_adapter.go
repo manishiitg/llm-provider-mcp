@@ -708,6 +708,39 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	return finalResponse, nil
 }
 
+// SearchWeb uses Gemini CLI's native Google web search tool and returns the final text response.
+func (g *GeminiCLIAdapter) SearchWeb(ctx context.Context, query string, options ...llmtypes.CallOption) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	searchPrompt := "Use Google web search to answer the following query.\n\n" + query
+	searchOptions := append([]llmtypes.CallOption{}, options...)
+	searchOptions = append(searchOptions, WithProjectSettings(`{"tools":{"core":["google_web_search"]}}`))
+
+	resp, err := g.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: searchPrompt},
+			},
+		},
+	}, searchOptions...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("gemini web search returned no response")
+	}
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if content == "" {
+		return "", fmt.Errorf("gemini web search returned empty response")
+	}
+	return content, nil
+}
+
 // GetModelID returns the model ID.
 func (g *GeminiCLIAdapter) GetModelID() string {
 	return g.modelID

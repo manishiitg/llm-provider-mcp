@@ -11,4 +11,5 @@ var ClaudeCodeCmd = &cobra.Command{
 
 func init() {
 	ClaudeCodeCmd.AddCommand(ClaudeCodeStreamingContentTestCmd)
+	ClaudeCodeCmd.AddCommand(ClaudeCodeSearchWebTestCmd)
 }

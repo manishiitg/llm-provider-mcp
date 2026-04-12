@@ -7,6 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -107,6 +112,22 @@ func (a *MiniMaxImageAdapter) GenerateImages(ctx context.Context, prompt string,
 		opt(opts)
 	}
 
+	// Prefer the official MiniMax CLI whenever we can express the request locally.
+	// Keep the HTTP API path for URL-based subject-reference editing and as a fallback
+	// for plain generation when the CLI path is unavailable.
+	if opts.InputImageURL == "" {
+		if result, err := a.generateImagesViaCLI(ctx, prompt, opts); err == nil {
+			return result, nil
+		} else {
+			if len(opts.InputImage) > 0 {
+				return nil, fmt.Errorf("MiniMax CLI image editing failed: %w", err)
+			}
+			if a.logger != nil {
+				a.logger.Infof("[MINIMAX IMAGE] Falling back to HTTP API after CLI failure: %v", err)
+			}
+		}
+	}
+
 	reqBody := imageGenRequest{
 		Model:           a.modelID,
 		Prompt:          prompt,
@@ -195,6 +216,123 @@ func (a *MiniMaxImageAdapter) GenerateImages(ctx context.Context, prompt string,
 	}
 
 	return result, nil
+}
+
+func (a *MiniMaxImageAdapter) generateImagesViaCLI(ctx context.Context, prompt string, opts *llmtypes.ImageGenerationOptions) (*llmtypes.ImageGenerationResponse, error) {
+	mmxPath, err := exec.LookPath("mmx")
+	if err != nil {
+		return nil, fmt.Errorf("MiniMax CLI (mmx) not found on PATH")
+	}
+
+	outDir, err := os.MkdirTemp("", "minimax-image-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(outDir)
+
+	args := []string{"image", "generate", "--prompt", prompt, "--out-dir", outDir, "--out-prefix", "image"}
+	if opts.NumberOfImages > 0 {
+		args = append(args, "--n", fmt.Sprintf("%d", opts.NumberOfImages))
+	}
+	if strings.TrimSpace(opts.AspectRatio) != "" {
+		args = append(args, "--aspect-ratio", opts.AspectRatio)
+	}
+	if len(opts.InputImage) > 0 {
+		referencePath := filepath.Join(outDir, "subject-reference.png")
+		if err := os.WriteFile(referencePath, opts.InputImage, 0600); err != nil {
+			return nil, fmt.Errorf("write MiniMax subject reference: %w", err)
+		}
+		args = append(args, "--subject-ref", fmt.Sprintf("type=character,image=%s", referencePath))
+	}
+
+	cmd := exec.CommandContext(ctx, mmxPath, args...)
+	cmd.Env = buildMiniMaxSearchEnv(a.apiKey)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	if a.logger != nil {
+		a.logger.Infof("[MINIMAX IMAGE] Generating image via mmx CLI model=%s aspect_ratio=%s n=%d", a.modelID, opts.AspectRatio, opts.NumberOfImages)
+	}
+
+	if err := cmd.Run(); err != nil {
+		if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+			return nil, fmt.Errorf("MiniMax CLI image generation failed: %s", stderrOutput)
+		}
+		return nil, fmt.Errorf("MiniMax CLI image generation failed: %w", err)
+	}
+
+	imagePaths, err := collectGeneratedImagePaths(outDir)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &llmtypes.ImageGenerationResponse{
+		Images: make([]llmtypes.GeneratedImage, 0, len(imagePaths)),
+	}
+	for _, path := range imagePaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if a.logger != nil {
+				a.logger.Errorf("[MINIMAX IMAGE] Failed to read generated image %s: %v", path, err)
+			}
+			continue
+		}
+		result.Images = append(result.Images, llmtypes.GeneratedImage{
+			Data:     data,
+			MimeType: mimeTypeFromPath(path),
+		})
+	}
+
+	if len(result.Images) == 0 {
+		if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+			return nil, fmt.Errorf("MiniMax CLI generated no readable images: %s", stderrOutput)
+		}
+		return nil, fmt.Errorf("MiniMax CLI generated no readable images")
+	}
+
+	if a.logger != nil {
+		a.logger.Infof("[MINIMAX IMAGE] Generated %d image(s) successfully via mmx CLI", len(result.Images))
+	}
+	return result, nil
+}
+
+func collectGeneratedImagePaths(outDir string) ([]string, error) {
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		return nil, fmt.Errorf("read generated image directory: %w", err)
+	}
+
+	var imagePaths []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(outDir, entry.Name())
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".png", ".jpg", ".jpeg", ".webp":
+			imagePaths = append(imagePaths, path)
+		}
+	}
+
+	sort.Strings(imagePaths)
+	if len(imagePaths) == 0 {
+		return nil, fmt.Errorf("MiniMax CLI did not produce any image files")
+	}
+	return imagePaths, nil
+}
+
+func mimeTypeFromPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "image/png"
+	}
 }
 
 // downloadImage fetches image bytes from a URL

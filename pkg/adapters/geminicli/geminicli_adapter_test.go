@@ -2,6 +2,8 @@ package geminicli
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -189,5 +191,21 @@ func TestTruncate(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, result, tt.expected)
 		}
+	}
+}
+
+func TestGeminiCLISearchWebSmoke(t *testing.T) {
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	if apiKey == "" {
+		t.Skip("GEMINI_API_KEY is not set")
+	}
+
+	adapter := NewGeminiCLIAdapter(apiKey, "gemini-2.5-flash", &MockLogger{})
+	result, err := adapter.SearchWeb(t.Context(), "What is the capital of France?")
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if !strings.Contains(strings.ToLower(result), "paris") {
+		t.Fatalf("expected result to mention Paris, got %q", result)
 	}
 }

@@ -12,7 +12,9 @@ type MockLogger struct{}
 
 func (l *MockLogger) Infof(format string, args ...any)  { fmt.Printf("INFO: "+format+"\n", args...) }
 func (l *MockLogger) Errorf(format string, args ...any) { fmt.Printf("ERROR: "+format+"\n", args...) }
-func (l *MockLogger) Debugf(format string, args ...interface{}) { fmt.Printf("DEBUG: "+format+"\n", args...) }
+func (l *MockLogger) Debugf(format string, args ...interface{}) {
+	fmt.Printf("DEBUG: "+format+"\n", args...)
+}
 
 func TestConvertMessageToStreamJSON(t *testing.T) {
 	tests := []struct {
@@ -129,5 +131,12 @@ func TestMapResponseToContentResponse(t *testing.T) {
 	}
 	if denials[0].ToolName != "bash" {
 		t.Errorf("Expected tool name 'bash', got '%s'", denials[0].ToolName)
+	}
+}
+
+func TestClaudeCodeAdapterImplementsWebSearchModel(t *testing.T) {
+	adapter := NewClaudeCodeAdapter("", "test-model", &MockLogger{})
+	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
+		t.Fatal("ClaudeCodeAdapter should implement llmtypes.WebSearchModel")
 	}
 }

@@ -16,7 +16,7 @@ import (
 
 var MiniMaxImageGenerateTestCmd = &cobra.Command{
 	Use:   "minimax-image-generate",
-	Short: "Test MiniMax image generation (and subject-reference editing with --input-image-url)",
+	Short: "Test MiniMax Coding Plan image generation (and subject-reference editing with --input-image-url)",
 	Run:   runMiniMaxImageGenerateTest,
 }
 
@@ -41,8 +41,8 @@ func init() {
 func runMiniMaxImageGenerateTest(cmd *cobra.Command, args []string) {
 	_ = godotenv.Load(".env")
 
-	if os.Getenv("MINIMAX_API_KEY") == "" {
-		log.Fatal("MINIMAX_API_KEY environment variable is required")
+	if os.Getenv("MINIMAX_CODING_PLAN_API_KEY") == "" {
+		log.Fatal("MINIMAX_CODING_PLAN_API_KEY environment variable is required")
 	}
 
 	prompt := minimaxImagePrompt
@@ -50,18 +50,18 @@ func runMiniMaxImageGenerateTest(cmd *cobra.Command, args []string) {
 		prompt = "A photorealistic image of a serene mountain lake at sunset with reflections"
 	}
 
-	log.Printf("Testing MiniMax image generation with model: %s", minimaxImageModel)
+	log.Printf("Testing MiniMax coding plan image generation with model: %s", minimaxImageModel)
 	log.Printf("Prompt: %s", prompt)
 
 	logger := testing.GetTestLogger()
 	imageGen, err := llmproviders.InitializeImageGenerationModel(llmproviders.Config{
-		Provider: llmproviders.ProviderMiniMax,
+		Provider: llmproviders.ProviderMiniMaxCodingPlan,
 		ModelID:  minimaxImageModel,
 		Logger:   logger,
 		Context:  context.Background(),
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize MiniMax image model: %v", err)
+		log.Fatalf("Failed to initialize MiniMax coding plan image model: %v", err)
 	}
 
 	var genOpts []llmproviders.ImageGenerationOption
@@ -90,5 +90,5 @@ func runMiniMaxImageGenerateTest(cmd *cobra.Command, args []string) {
 		log.Printf("Saved image %d (%s, %d bytes) -> %s", i+1, img.MimeType, len(img.Data), filename)
 	}
 
-	log.Printf("MiniMax image generation test completed successfully")
+	log.Printf("MiniMax coding plan image generation test completed successfully")
 }

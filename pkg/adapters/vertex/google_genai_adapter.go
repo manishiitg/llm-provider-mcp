@@ -678,6 +678,67 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 	return g.generateContentStreaming(ctx, modelID, genaiContents, config, opts, hadMixedMessages, requestID, messages)
 }
 
+// SearchWeb uses the Google GenAI SDK's native Google Search tool and returns
+// the final text response. For current Gemini models, Google recommends the
+// google_search tool instead of google_search_retrieval.
+func (g *GoogleGenAIAdapter) SearchWeb(ctx context.Context, query string, options ...llmtypes.CallOption) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	opts := &llmtypes.CallOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	modelID := g.modelID
+	if strings.TrimSpace(opts.Model) != "" {
+		modelID = strings.TrimSpace(opts.Model)
+	}
+
+	searchPrompt := "Use Google Search to answer the following query.\n\n" + query
+	contents := []*genai.Content{
+		{
+			Role: convertRole(string(llmtypes.ChatMessageTypeHuman)),
+			Parts: []*genai.Part{
+				{Text: searchPrompt},
+			},
+		},
+	}
+
+	config := &genai.GenerateContentConfig{
+		Tools: []*genai.Tool{
+			{GoogleSearch: &genai.GoogleSearch{}},
+		},
+	}
+
+	if opts.Temperature > 0 {
+		temp := float32(opts.Temperature)
+		config.Temperature = &temp
+	}
+	if opts.MaxTokens > 0 {
+		config.MaxOutputTokens = int32(opts.MaxTokens)
+	}
+	if opts.JSONMode {
+		config.ResponseMIMEType = "application/json"
+	}
+
+	result, err := g.client.Models.GenerateContent(ctx, modelID, contents, config)
+	if err != nil {
+		return "", err
+	}
+	if result == nil {
+		return "", fmt.Errorf("vertex google search returned no response")
+	}
+
+	content := strings.TrimSpace(result.Text())
+	if content == "" {
+		return "", fmt.Errorf("vertex google search returned empty response")
+	}
+	return content, nil
+}
+
 // generateContentStreaming handles streaming responses from Google GenAI API
 // It works for both streaming (StreamChan != nil) and non-streaming (StreamChan == nil) requests
 // For non-streaming, it accumulates tokens without sending chunks to the channel

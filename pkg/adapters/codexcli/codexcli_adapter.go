@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +29,30 @@ type quotaExhaustedEntry struct {
 var (
 	globalQuotaMu    sync.RWMutex
 	globalQuotaCache = map[string]quotaExhaustedEntry{}
+
+	codexRateLimitPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\b429\b`),
+		regexp.MustCompile(`\b503\b`),
+		regexp.MustCompile(`(?i)\brate[- ]limit(ed|ing)?\b`),
+		regexp.MustCompile(`(?i)\btoo many requests\b`),
+		regexp.MustCompile(`(?i)\bservice unavailable\b`),
+		regexp.MustCompile(`(?i)\busage limit\b`),
+		regexp.MustCompile(`(?i)\boverloaded\b`),
+	}
 )
+
+func looksLikeCodexRateLimit(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	for _, pattern := range codexRateLimitPatterns {
+		if pattern.MatchString(trimmed) {
+			return true
+		}
+	}
+	return false
+}
 
 // markQuotaExhausted records a quota exhaustion for modelID.
 // It tries to parse "try again at HH:MM AM/PM" from msg to set an accurate expiry.
@@ -376,13 +400,9 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 			line := scanner.Text()
 			stderrBuf.WriteString(line + "\n")
 			// Detect rate limiting or API errors
-			if !detectedRateLimit.Load() && (strings.Contains(line, "429") ||
-				strings.Contains(line, "rate limit") ||
-				strings.Contains(line, "Rate limit") ||
-				strings.Contains(line, "503") ||
-				strings.Contains(line, "Service Unavailable")) {
+			if !detectedRateLimit.Load() && looksLikeCodexRateLimit(line) {
 				detectedRateLimit.Store(true)
-				c.logger.Errorf("Codex CLI: rate limit/overload detected in stderr: %s", truncate(line, 300))
+				c.logger.Errorf("Codex CLI: rate limit/API overload detected in stderr: %s", truncate(line, 300))
 				if opts.StreamChan != nil {
 					opts.StreamChan <- llmtypes.StreamChunk{
 						Type:    llmtypes.StreamChunkTypeContent,
@@ -981,6 +1001,36 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	}
 
 	return finalResponse, nil
+}
+
+// SearchWeb uses Codex CLI's native web search capability and returns the final text response.
+func (c *CodexCLIAdapter) SearchWeb(ctx context.Context, query string, options ...llmtypes.CallOption) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	searchPrompt := "Use web search to answer the following query.\n\n" + query
+	resp, err := c.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: searchPrompt},
+			},
+		},
+	}, options...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("codex cli web search returned no response")
+	}
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if content == "" {
+		return "", fmt.Errorf("codex cli web search returned empty response")
+	}
+	return content, nil
 }
 
 // GetModelID returns the model ID.

@@ -208,29 +208,29 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 // Provider must be "vertex". Model selection determines the API path:
 //   - "imagen-*" models use the Imagen GenerateImages API
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
-//
-// Requires GEMINI_API_KEY environment variable.
+//   - "minimax-coding-plan" uses MiniMax image generation with image-01
 func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationModel, error) {
 	switch config.Provider {
 	case ProviderVertex:
 		return initializeVertexImagen(config)
-	case ProviderMiniMax:
-		return initializeMiniMaxImagen(config)
+	case ProviderMiniMaxCodingPlan:
+		return initializeMiniMaxCodingPlanImagen(config)
 	default:
-		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax", config.Provider)
+		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax-coding-plan", config.Provider)
 	}
 }
 
-// initializeMiniMaxImagen creates a MiniMax image generation adapter.
-func initializeMiniMaxImagen(config Config) (llmtypes.ImageGenerationModel, error) {
+// initializeMiniMaxCodingPlanImagen creates a MiniMax image generation adapter using the
+// coding-plan credential, which is the canonical MiniMax non-text auth path.
+func initializeMiniMaxCodingPlanImagen(config Config) (llmtypes.ImageGenerationModel, error) {
 	apiKey := ""
-	if config.APIKeys != nil && config.APIKeys.MiniMax != nil && *config.APIKeys.MiniMax != "" {
-		apiKey = *config.APIKeys.MiniMax
+	if config.APIKeys != nil && config.APIKeys.MiniMaxCodingPlan != nil && *config.APIKeys.MiniMaxCodingPlan != "" {
+		apiKey = *config.APIKeys.MiniMaxCodingPlan
 	} else {
-		apiKey = os.Getenv("MINIMAX_API_KEY")
+		apiKey = os.Getenv("MINIMAX_CODING_PLAN_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("MINIMAX_API_KEY is required for MiniMax image generation")
+		return nil, fmt.Errorf("MINIMAX_CODING_PLAN_API_KEY is required for MiniMax coding plan image generation")
 	}
 
 	modelID := config.ModelID
@@ -243,7 +243,7 @@ func initializeMiniMaxImagen(config Config) (llmtypes.ImageGenerationModel, erro
 		logger = &noopLoggerImpl{}
 	}
 
-	logger.Infof("Initializing MiniMax Image Generation with model: %s", modelID)
+	logger.Infof("Initializing MiniMax Coding Plan Image Generation with model: %s", modelID)
 	return minimaxadapter.NewMiniMaxImageAdapter(apiKey, modelID, logger), nil
 }
 
@@ -254,7 +254,7 @@ func initializeMiniMaxImagen(config Config) (llmtypes.ImageGenerationModel, erro
 func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error) {
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "gemini-2.5-flash-image"
+		modelID = "gemini-3.1-flash-image-preview"
 	}
 
 	logger := config.Logger
@@ -1285,9 +1285,19 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Claude Code CLI adapter - model_id: %s", modelID)
 
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Anthropic != nil {
+		apiKey = *config.APIKeys.Anthropic
+		logger.Infof("Claude Code: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Claude Code: using API key from ANTHROPIC_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Claude Code: no API key found in config or environment")
+	}
+
 	// Create Claude Code adapter
-	// Note: API key is not used by the CLI adapter as it uses local auth
-	llm := claudecodeadapter.NewClaudeCodeAdapter("", modelID, logger)
+	llm := claudecodeadapter.NewClaudeCodeAdapter(apiKey, modelID, logger)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{

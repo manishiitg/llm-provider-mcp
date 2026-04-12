@@ -4,9 +4,12 @@
 package minimax
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -26,9 +29,11 @@ const (
 // MiniMaxAdapter implements the llmtypes.Model interface using MiniMax's
 // Anthropic-compatible API.
 type MiniMaxAdapter struct {
-	client  anthropic.Client
-	modelID string
-	logger  interfaces.Logger
+	client     anthropic.Client
+	apiKey     string
+	modelID    string
+	logger     interfaces.Logger
+	codingPlan bool
 }
 
 // NewMiniMaxAdapter creates a new MiniMax adapter using the Anthropic SDK.
@@ -37,11 +42,13 @@ func NewMiniMaxAdapter(apiKey, modelID string, logger interfaces.Logger) *MiniMa
 		anthropicoption.WithAPIKey(apiKey),
 		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
 	)
-	return &MiniMaxAdapter{
-		client:  client,
-		modelID: modelID,
-		logger:  logger,
-	}
+		return &MiniMaxAdapter{
+			client:     client,
+			apiKey:     apiKey,
+			modelID:    modelID,
+			logger:     logger,
+			codingPlan: false,
+		}
 }
 
 // NewMiniMaxCodingPlanAdapter creates a MiniMax adapter for the coding plan.
@@ -53,11 +60,13 @@ func NewMiniMaxCodingPlanAdapter(apiKey, modelID string, logger interfaces.Logge
 		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
 		anthropicoption.WithHeader("User-Agent", "claude-code/2.1.71"),
 	)
-	return &MiniMaxAdapter{
-		client:  client,
-		modelID: modelID,
-		logger:  logger,
-	}
+		return &MiniMaxAdapter{
+			client:     client,
+			apiKey:     apiKey,
+			modelID:    modelID,
+			logger:     logger,
+			codingPlan: true,
+		}
 }
 
 // GetModelID implements the llmtypes.Model interface
@@ -77,6 +86,10 @@ func (m *MiniMaxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 
 // GenerateContent implements the llmtypes.Model interface
 func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	if !m.codingPlan && containsImageParts(messages) {
+		return nil, fmt.Errorf("MiniMax image understanding requires provider minimax-coding-plan")
+	}
+
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
@@ -352,6 +365,18 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	return convertResponse(&message), nil
 }
 
+func containsImageParts(messages []llmtypes.MessageContent) bool {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			switch part.(type) {
+			case llmtypes.ImageContent:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Call implements a convenience method for simple text generation
 func (m *MiniMaxAdapter) Call(ctx context.Context, prompt string, options ...llmtypes.CallOption) (string, error) {
 	messages := []llmtypes.MessageContent{
@@ -368,6 +393,62 @@ func (m *MiniMaxAdapter) Call(ctx context.Context, prompt string, options ...llm
 		return "", fmt.Errorf("no choices in response")
 	}
 	return resp.Choices[0].Content, nil
+}
+
+// SearchWeb uses the MiniMax CLI's native web search command and returns the final text response.
+func (m *MiniMaxAdapter) SearchWeb(ctx context.Context, query string, options ...llmtypes.CallOption) (string, error) {
+	if !m.codingPlan {
+		return "", fmt.Errorf("MiniMax web search requires provider minimax-coding-plan")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+
+	mmxPath, err := exec.LookPath("mmx")
+	if err != nil {
+		return "", fmt.Errorf("MiniMax CLI (mmx) is required for MiniMax web search but was not found on PATH")
+	}
+
+	cmd := exec.CommandContext(ctx, mmxPath, "search", "query", "--q", query)
+	cmd.Env = buildMiniMaxSearchEnv(m.apiKey)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Run(); err != nil {
+		if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+			return "", fmt.Errorf("MiniMax CLI web search failed: %s", stderrOutput)
+		}
+		return "", fmt.Errorf("MiniMax CLI web search failed: %w", err)
+	}
+
+	result := strings.TrimSpace(stdoutBuf.String())
+	if result == "" {
+		if stderrOutput := strings.TrimSpace(stderrBuf.String()); stderrOutput != "" {
+			return "", fmt.Errorf("MiniMax CLI web search returned no output: %s", stderrOutput)
+		}
+		return "", fmt.Errorf("MiniMax CLI web search returned no output")
+	}
+
+	return result, nil
+}
+
+func buildMiniMaxSearchEnv(apiKey string) []string {
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "MINIMAX_API_KEY=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+		env = append(env, "MINIMAX_API_KEY="+trimmed)
+	}
+	env = append(env, "NO_COLOR=1")
+	return env
 }
 
 // convertMessages converts llmtypes messages to Anthropic message format
