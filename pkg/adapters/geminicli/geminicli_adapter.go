@@ -26,6 +26,7 @@ type pendingToolCall struct {
 	startTime time.Time
 }
 
+
 // GeminiCLIAdapter implements the LLM interface for the Gemini CLI.
 type GeminiCLIAdapter struct {
 	apiKey  string
@@ -871,7 +872,6 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	if apiErrMsg != "" {
 		additional["gemini_api_error"] = apiErrMsg
 	}
-
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  &inputTokens,
 		OutputTokens: &outputTokens,
