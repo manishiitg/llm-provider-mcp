@@ -101,9 +101,9 @@ func TestMapResponseToContentResponse(t *testing.T) {
 	}
 
 	// Verify Usage
-	// InputTokens = raw input (100) + cache_read (20) = 120
-	if resp.Usage.InputTokens != 120 {
-		t.Errorf("Expected 120 input tokens (100 + 20 cache_read), got %d", resp.Usage.InputTokens)
+	// InputTokens = raw input (100) + cache_read (20) + cache_creation (10) = 130
+	if resp.Usage.InputTokens != 130 {
+		t.Errorf("Expected 130 input tokens (100 + 20 cache_read + 10 cache_creation), got %d", resp.Usage.InputTokens)
 	}
 	if resp.Usage.OutputTokens != 50 {
 		t.Errorf("Expected 50 output tokens, got %d", resp.Usage.OutputTokens)

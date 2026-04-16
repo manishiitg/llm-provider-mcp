@@ -160,11 +160,11 @@ func TestGetModelMetadata(t *testing.T) {
 	if meta.Provider != "gemini-cli" {
 		t.Errorf("Expected provider 'gemini-cli', got '%s'", meta.Provider)
 	}
-	if meta.InputCostPer1MTokens != 0 {
-		t.Errorf("Expected zero input cost, got %f", meta.InputCostPer1MTokens)
+	if meta.InputCostPer1MTokens != 0.30 {
+		t.Errorf("Expected input cost 0.30, got %f", meta.InputCostPer1MTokens)
 	}
-	if meta.OutputCostPer1MTokens != 0 {
-		t.Errorf("Expected zero output cost, got %f", meta.OutputCostPer1MTokens)
+	if meta.OutputCostPer1MTokens != 2.50 {
+		t.Errorf("Expected output cost 2.50, got %f", meta.OutputCostPer1MTokens)
 	}
 }
 
