@@ -1285,16 +1285,13 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Claude Code CLI adapter - model_id: %s", modelID)
 
+	// claude-code provider always uses the claude CLI's OAuth session (via `claude login`).
+	// We intentionally ignore any Anthropic API key from config or env: forwarding one would
+	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
+	// a key that often has low/no credits. Users who want API-key billing should select the
+	// `anthropic` provider instead, which is a separate direct-API adapter.
 	apiKey := ""
-	if config.APIKeys != nil && config.APIKeys.Anthropic != nil {
-		apiKey = *config.APIKeys.Anthropic
-		logger.Infof("Claude Code: using API key from config (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Claude Code: using API key from ANTHROPIC_API_KEY env var (length=%d)", len(apiKey))
-	} else {
-		logger.Infof("Claude Code: no API key found in config or environment")
-	}
+	logger.Infof("Claude Code: using claude CLI OAuth credentials (API key from config/env is intentionally ignored)")
 
 	// Create Claude Code adapter
 	llm := claudecodeadapter.NewClaudeCodeAdapter(apiKey, modelID, logger)
