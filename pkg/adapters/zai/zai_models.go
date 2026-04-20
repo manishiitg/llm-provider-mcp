@@ -205,6 +205,30 @@ func GetAllZAIModels() []*llmtypes.ModelMetadata {
 	return result
 }
 
+// GetDefaultVisibleZAIModelIDs returns the small curated set surfaced in
+// provider defaults and UI catalogs. We keep this intentionally short to avoid
+// exposing every historical GLM variant in selectors.
+func GetDefaultVisibleZAIModelIDs() []string {
+	return []string{
+		ModelGLM51,
+		ModelGLM47,
+	}
+}
+
+// GetDefaultVisibleZAIModels returns metadata only for the curated selector set.
+// Direct metadata lookup still supports the full model catalog via GetZAIModelMetadata.
+func GetDefaultVisibleZAIModels() []*llmtypes.ModelMetadata {
+	models := getZAIModels()
+	ids := GetDefaultVisibleZAIModelIDs()
+	result := make([]*llmtypes.ModelMetadata, 0, len(ids))
+	for _, id := range ids {
+		if metadata, ok := models[id]; ok {
+			result = append(result, metadata)
+		}
+	}
+	return result
+}
+
 func GetZAIModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	normalized := strings.ToLower(strings.TrimSpace(modelID))
 	models := getZAIModels()

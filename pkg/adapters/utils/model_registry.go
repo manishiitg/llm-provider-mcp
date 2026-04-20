@@ -40,7 +40,7 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
 
 	// Z.AI
-	allModels = append(allModels, zai.GetAllZAIModels()...)
+	allModels = append(allModels, zai.GetDefaultVisibleZAIModels()...)
 
 	// Claude Code CLI
 	allModels = append(allModels, claudecode.GetAllClaudeCodeModels()...)

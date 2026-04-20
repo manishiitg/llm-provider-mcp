@@ -1776,6 +1776,36 @@ func GetDefaultFallbackModels(provider Provider) []string {
 	}
 }
 
+// GetDefaultFallbackModelsForModel returns fallback models for a provider, optionally
+// taking the current primary model into account when provider-specific defaults need
+// to preserve capabilities. Environment overrides still take precedence.
+func GetDefaultFallbackModelsForModel(provider Provider, primaryModel string) []string {
+	models := GetDefaultFallbackModels(provider)
+	if len(models) > 0 {
+		return models
+	}
+
+	switch provider {
+	case ProviderZAI:
+		modelID := strings.TrimSpace(primaryModel)
+		if modelID == "" {
+			modelID = GetDefaultModel(provider)
+		}
+
+		switch modelID {
+		case zaiadapter.ModelGLM51:
+			return []string{zaiadapter.ModelGLM47}
+		case zaiadapter.ModelGLM47:
+			return []string{zaiadapter.ModelGLM51}
+		default:
+			// Avoid defaulting vision or niche models to a text-only fallback.
+			return []string{}
+		}
+	default:
+		return models
+	}
+}
+
 // GetCrossProviderFallbackModels returns cross-provider fallback models (e.g., OpenAI for Bedrock)
 func GetCrossProviderFallbackModels(provider Provider) []string {
 	switch provider {
@@ -2901,14 +2931,7 @@ func getZAIAvailableModels() []string {
 		}
 	}
 
-	return []string{
-		zaiadapter.ModelGLM51,
-		zaiadapter.ModelGLM47,
-		zaiadapter.ModelGLM47Flash,
-		zaiadapter.ModelGLM47FlashX,
-		zaiadapter.ModelGLM46V,
-		zaiadapter.ModelGLM5VTurbo,
-	}
+	return zaiadapter.GetDefaultVisibleZAIModelIDs()
 }
 
 // getMiniMaxCodingPlanAvailableModels returns Anthropic model names available via MiniMax coding plan
