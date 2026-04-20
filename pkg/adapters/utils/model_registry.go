@@ -11,6 +11,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 )
 
 // GetAllModelMetadata aggregates model metadata from all supported providers
@@ -37,6 +38,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Azure - static models (dynamic API requires endpoint/key at runtime)
 	allModels = append(allModels, azure.GetAllAzureModelMetadata()...)
+
+	// Z.AI
+	allModels = append(allModels, zai.GetAllZAIModels()...)
 
 	// Claude Code CLI
 	allModels = append(allModels, claudecode.GetAllClaudeCodeModels()...)

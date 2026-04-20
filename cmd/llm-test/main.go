@@ -16,6 +16,7 @@ import (
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
 	sharedcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/shared"
 	vertexcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/vertex"
+	zaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/zai"
 )
 
 func main() {
@@ -105,6 +106,14 @@ func main() {
 	rootCmd.AddCommand(azurecmd.AzureStreamingCancellationTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureModelMetadataTestCmd)
 	rootCmd.AddCommand(azurecmd.AzureResponsesTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAICmd)
+	rootCmd.AddCommand(zaicmd.ZAIToolCallTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAIStreamingContentTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAIStreamingMixedTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAIStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAIStructuredOutputTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAITokenUsageTestCmd)
+	rootCmd.AddCommand(zaicmd.ZAIImageTestCmd)
 	rootCmd.AddCommand(minimaxcmd.MiniMaxCmd)
 	rootCmd.AddCommand(minimaxcmd.MiniMaxToolCallTestCmd)
 	rootCmd.AddCommand(minimaxcmd.MiniMaxStreamingContentTestCmd)

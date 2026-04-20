@@ -68,11 +68,12 @@ var (
 	ImagePart          = llmtypes.ImagePart
 	ImagePartBase64    = llmtypes.ImagePartBase64
 	ImagePartURL       = llmtypes.ImagePartURL
-	WithEmbeddingModel   = llmtypes.WithEmbeddingModel
-	WithDimensions       = llmtypes.WithDimensions
-	WithNumberOfImages   = llmtypes.WithNumberOfImages
-	WithAspectRatio      = llmtypes.WithAspectRatio
-	WithNegativePrompt   = llmtypes.WithNegativePrompt
-	WithInputImage       = llmtypes.WithInputImage
-	WithInputImageURL    = llmtypes.WithInputImageURL
+	WithEmbeddingModel = llmtypes.WithEmbeddingModel
+	WithDimensions     = llmtypes.WithDimensions
+	WithNumberOfImages = llmtypes.WithNumberOfImages
+	WithAspectRatio    = llmtypes.WithAspectRatio
+	WithResolution     = llmtypes.WithResolution
+	WithNegativePrompt = llmtypes.WithNegativePrompt
+	WithInputImage     = llmtypes.WithInputImage
+	WithInputImageURL  = llmtypes.WithInputImageURL
 )

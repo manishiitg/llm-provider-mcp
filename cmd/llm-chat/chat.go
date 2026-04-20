@@ -43,7 +43,8 @@ func SelectProvider() (llmproviders.Provider, error) {
 	fmt.Println("3. Bedrock")
 	fmt.Println("4. Vertex")
 	fmt.Println("5. OpenRouter")
-	fmt.Print("\nEnter choice (1-5): ")
+	fmt.Println("6. Z.AI")
+	fmt.Print("\nEnter choice (1-6): ")
 
 	reader := bufio.NewReader(os.Stdin)
 	input, err := reader.ReadString('\n')
@@ -63,6 +64,8 @@ func SelectProvider() (llmproviders.Provider, error) {
 		return llmproviders.ProviderVertex, nil
 	case "5":
 		return llmproviders.ProviderOpenRouter, nil
+	case "6":
+		return llmproviders.ProviderZAI, nil
 	default:
 		return "", fmt.Errorf("invalid choice: %s", input)
 	}
@@ -190,6 +193,32 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 			return "x-ai/grok-code-fast-1", nil
 		default:
 			return "", fmt.Errorf("invalid choice: %s (must be 1 or 2)", input)
+		}
+	}
+
+	if provider == llmproviders.ProviderZAI {
+		fmt.Println("\nSelect Z.AI Model:")
+		fmt.Println("1. glm-5.1")
+		fmt.Println("2. glm-5")
+		fmt.Println("3. glm-5-turbo")
+		fmt.Print("\nEnter choice (1-3): ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("failed to read input: %w", err)
+		}
+
+		input = strings.TrimSpace(input)
+		switch input {
+		case "1":
+			return "glm-5.1", nil
+		case "2":
+			return "glm-5", nil
+		case "3":
+			return "glm-5-turbo", nil
+		default:
+			return "", fmt.Errorf("invalid choice: %s (must be 1, 2, or 3)", input)
 		}
 	}
 

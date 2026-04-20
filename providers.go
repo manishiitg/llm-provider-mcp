@@ -20,6 +20,7 @@ import (
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
+	zaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
@@ -43,6 +44,7 @@ const (
 	ProviderOpenRouter        Provider = "openrouter"
 	ProviderVertex            Provider = "vertex"
 	ProviderAzure             Provider = "azure"
+	ProviderZAI               Provider = "z-ai"
 	ProviderClaudeCode        Provider = "claude-code"
 	ProviderGeminiCLI         Provider = "gemini-cli"
 	ProviderCodexCLI          Provider = "codex-cli"
@@ -79,6 +81,7 @@ type ProviderAPIKeys struct {
 	CodexCLI          *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
+	ZAI               *string
 	Bedrock           *BedrockConfig
 	Azure             *AzureAPIConfig
 }
@@ -116,6 +119,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
 		k.MiniMaxCodingPlan = key
+	case ProviderZAI:
+		k.ZAI = key
 	}
 }
 
@@ -155,6 +160,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeVertexWithFallback(config)
 	case ProviderAzure:
 		llm, err = initializeAzureWithFallback(config)
+	case ProviderZAI:
+		llm, err = initializeZAIWithFallback(config)
 	case ProviderClaudeCode:
 		llm, err = initializeClaudeCode(config)
 	case ProviderGeminiCLI:
@@ -205,7 +212,7 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 }
 
 // InitializeImageGenerationModel creates and initializes an image generation model.
-// Provider must be "vertex". Model selection determines the API path:
+// Supported providers:
 //   - "imagen-*" models use the Imagen GenerateImages API
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
 //   - "minimax-coding-plan" uses MiniMax image generation with image-01
@@ -474,6 +481,37 @@ func initializeOpenAIWithFallback(config Config) (llmtypes.Model, error) {
 	return nil, fmt.Errorf("all OpenAI models failed: %w", err)
 }
 
+// initializeZAIWithFallback creates a Z.AI LLM with fallback models for rate limiting.
+func initializeZAIWithFallback(config Config) (llmtypes.Model, error) {
+	llm, err := initializeZAI(config)
+	if err == nil {
+		return llm, nil
+	}
+
+	if len(config.FallbackModels) > 0 {
+		logger := config.Logger
+		if logger == nil {
+			logger = &noopLoggerImpl{}
+		}
+		logger.Infof("Primary Z.AI model failed, trying fallback models - primary_model: %s, fallback_models: %v, error: %s", config.ModelID, config.FallbackModels, err.Error())
+
+		for _, fallbackModel := range config.FallbackModels {
+			fallbackConfig := config
+			fallbackConfig.ModelID = fallbackModel
+
+			llm, err := initializeZAI(fallbackConfig)
+			if err == nil {
+				logger.Infof("Successfully initialized fallback Z.AI model - fallback_model: %s", fallbackModel)
+				return llm, nil
+			}
+
+			logger.Infof("Fallback Z.AI model failed - fallback_model: %s, error: %s", fallbackModel, err.Error())
+		}
+	}
+
+	return nil, fmt.Errorf("all Z.AI models failed: %w", err)
+}
+
 // initializeOpenRouterWithFallback creates an OpenRouter LLM with fallback models for rate limiting
 func initializeOpenRouterWithFallback(config Config) (llmtypes.Model, error) {
 	// Try primary model first
@@ -739,6 +777,88 @@ func initializeOpenAI(config Config) (llmtypes.Model, error) {
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
 	logger.Infof("Initialized OpenAI LLM - model_id: %s", modelID)
+	return llm, nil
+}
+
+// initializeZAI creates and configures a Z.AI LLM instance using the OpenAI-compatible
+// Chat Completions API surface exposed at api.z.ai.
+func initializeZAI(config Config) (llmtypes.Model, error) {
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.ZAI != nil && *config.APIKeys.ZAI != "" {
+		apiKey = *config.APIKeys.ZAI
+	} else {
+		apiKey = os.Getenv("ZAI_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("ZAI_API_KEY is required for Z.AI provider (not found in config or environment)")
+	}
+
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "zai_user",
+		CustomFields: map[string]string{
+			"provider":  "z-ai",
+			"operation": "llm_initialization",
+		},
+	}
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = zaiadapter.ModelGLM51
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	baseURL := os.Getenv("ZAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.z.ai/api/coding/paas/v4"
+	}
+
+	client := openaisdk.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	)
+
+	llm := openaiadapter.NewCompatibleOpenAIAdapter(&client, modelID, logger, openaiadapter.OpenAICompatibilityConfig{
+		ProviderName:   "z-ai",
+		MetadataLookup: zaiadapter.GetZAIModelMetadata,
+		RequestExtraFields: func(modelID string, opts *llmtypes.CallOptions) map[string]interface{} {
+			extra := map[string]interface{}{}
+
+			thinkingType := "enabled"
+			if strings.EqualFold(opts.ReasoningEffort, "none") {
+				thinkingType = "disabled"
+			}
+			extra["thinking"] = map[string]interface{}{
+				"type":           thinkingType,
+				"clear_thinking": true,
+			}
+
+			if opts.StreamChan != nil && len(opts.Tools) > 0 {
+				extra["tool_stream"] = true
+			}
+
+			return extra
+		},
+	})
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "zai_user",
+		CustomFields: map[string]string{
+			"provider":     "z-ai",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Z.AI LLM - model_id: %s, base_url: %s", modelID, baseURL)
 	return llm, nil
 }
 
@@ -1474,6 +1594,11 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "gpt-4o"
+	case ProviderZAI:
+		if primaryModel := os.Getenv("ZAI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return zaiadapter.ModelGLM51
 	case ProviderClaudeCode:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("CLAUDE_CODE_PRIMARY_MODEL"); primaryModel != "" {
@@ -1602,6 +1727,13 @@ func GetDefaultFallbackModels(provider Provider) []string {
 			return models
 		}
 		// No fallback models if environment variable is not set
+		return []string{}
+	case ProviderZAI:
+		fallbackModelsEnv := os.Getenv("ZAI_FALLBACK_MODELS")
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
 		return []string{}
 	case ProviderClaudeCode:
 		// Get fallback models from environment variable
@@ -1738,10 +1870,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -2471,6 +2603,7 @@ type LLMDefaultsResponse struct {
 	OpenaiConfig            map[string]interface{} `json:"openai_config"`
 	AnthropicConfig         map[string]interface{} `json:"anthropic_config"`
 	AzureConfig             map[string]interface{} `json:"azure_config"`
+	ZAIConfig               map[string]interface{} `json:"zai_config"`
 	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
 	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
 	AvailableModels         map[string][]string    `json:"available_models"`
@@ -2660,6 +2793,13 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	azureAPIKey := os.Getenv("AZURE_AI_API_KEY")
 	azureEndpoint := os.Getenv("AZURE_AI_ENDPOINT")
 
+	// Z.AI configuration
+	zaiModel := os.Getenv("ZAI_PRIMARY_MODEL")
+	if zaiModel == "" {
+		zaiModel = zaiadapter.ModelGLM51
+	}
+	zaiAPIKey := os.Getenv("ZAI_API_KEY")
+
 	// MiniMax configuration
 	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
 	if minimaxModel == "" {
@@ -2716,6 +2856,12 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"api_key":         azureAPIKey,
 			"endpoint":        azureEndpoint,
 		},
+		ZAIConfig: map[string]interface{}{
+			"provider":        "z-ai",
+			"model_id":        zaiModel,
+			"fallback_models": []string{},
+			"api_key":         zaiAPIKey,
+		},
 		MinimaxConfig: map[string]interface{}{
 			"provider":        "minimax",
 			"model_id":        minimaxModel,
@@ -2734,9 +2880,34 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"openai":              getOpenAIAvailableModels(),
 			"anthropic":           getAnthropicAvailableModels(),
 			"azure":               getAzureAvailableModels(),
+			"z-ai":                getZAIAvailableModels(),
 			"minimax":             getMiniMaxAvailableModels(),
 			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
 		},
+	}
+}
+
+func getZAIAvailableModels() []string {
+	modelsStr := os.Getenv("ZAI_AVAILABLE_MODELS")
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+
+	return []string{
+		zaiadapter.ModelGLM51,
+		zaiadapter.ModelGLM47,
+		zaiadapter.ModelGLM47Flash,
+		zaiadapter.ModelGLM47FlashX,
+		zaiadapter.ModelGLM46V,
+		zaiadapter.ModelGLM5VTurbo,
 	}
 }
 
@@ -2809,6 +2980,9 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		// Azure AI validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Azure AI API key\n")
 		isValid, message, correctedOptions, err = validateAzureAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "z-ai":
+		fmt.Printf("[API KEY VALIDATION] Testing Z.AI API key\n")
+		isValid, message, err = validateZAIAPIKey(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -2838,6 +3012,73 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		Message:          message,
 		CorrectedOptions: correctedOptions,
 	}
+}
+
+func validateZAIAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[ZAI VALIDATION] Starting API key validation\n")
+
+	if apiKey == "" {
+		return false, "Z.AI API key is required", nil
+	}
+
+	if modelID == "" {
+		modelID = zaiadapter.ModelGLM51
+		fmt.Printf("[ZAI VALIDATION] Using default model: %s\n", modelID)
+	}
+
+	originalKey := os.Getenv("ZAI_API_KEY")
+	os.Setenv("ZAI_API_KEY", apiKey)
+	defer func() {
+		if originalKey != "" {
+			os.Setenv("ZAI_API_KEY", originalKey)
+		} else {
+			os.Unsetenv("ZAI_API_KEY")
+		}
+	}()
+
+	noopLog := &noopLoggerImpl{}
+	temperature := extractTemperatureFromOptions(options)
+
+	config := Config{
+		Provider:    ProviderZAI,
+		ModelID:     modelID,
+		Temperature: temperature,
+		Logger:      noopLog,
+		Context:     context.Background(),
+	}
+
+	llm, err := initializeZAI(config)
+	if err != nil {
+		fmt.Printf("[ZAI VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
+		return false, fmt.Sprintf("Failed to create Z.AI LLM instance: %v", err), nil
+	}
+
+	callOptions := createCallOptionsFromMap(options)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say hello in one word."}},
+		},
+	}, callOptions...)
+	if err != nil {
+		fmt.Printf("[ZAI VALIDATION ERROR] %v\n", err)
+		if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "401") {
+			return false, "Invalid Z.AI API key", nil
+		}
+		if strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "429") {
+			return false, "Z.AI API rate limit exceeded", nil
+		}
+		if strings.Contains(err.Error(), "timeout") {
+			return false, "Z.AI service timeout - check network connectivity", nil
+		}
+		return false, fmt.Sprintf("Z.AI test generation failed: %v", err), nil
+	}
+
+	fmt.Printf("[ZAI VALIDATION SUCCESS] Z.AI API key is valid\n")
+	return true, fmt.Sprintf("Z.AI API key is valid for model %s", modelID), nil
 }
 
 // validateOpenRouterAPIKey validates an OpenRouter API key by making a real GenerateContent call

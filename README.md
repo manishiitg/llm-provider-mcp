@@ -1,6 +1,6 @@
 # llm-providers
 
-A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, Azure AI, **Claude Code CLI**, and **MiniMax**.
+A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, Azure AI, **Z.AI**, **Claude Code CLI**, and **MiniMax**.
 
 ## Overview
 
@@ -32,6 +32,7 @@ go get github.com/manishiitg/multi-llm-provider-go@v0.1.0
 - **OpenRouter** - Multi-provider access via OpenRouter API
 - **Vertex AI** - Google Gemini models and Anthropic Claude via Vertex AI
 - **Azure AI** - OpenAI models via Azure AI Services/Foundry
+- **Z.AI** - GLM chat models via `api.z.ai` Coding Plan chat completions API
 - **Claude Code CLI** - Local agentic CLI integration (`claude`)
 - **MiniMax** - MiniMax-M2.7/M2.5/M2.1/M2 text models + image-01 image generation
 
@@ -114,6 +115,7 @@ See `.env.example` for all available environment variables. Key variables:
 - `GOOGLE_API_KEY` or `VERTEX_API_KEY` - Google API key for Vertex AI
 - `OPEN_ROUTER_API_KEY` - OpenRouter API key
 - `AZURE_AI_ENDPOINT`, `AZURE_AI_API_KEY` - Azure AI Services endpoint and API key
+- `ZAI_API_KEY` - Z.AI API key
 - `MINIMAX_API_KEY` - MiniMax API key (for both text and image generation)
 - **Claude Code**: Requires `claude` binary in PATH and authenticated via `claude login`.
 
@@ -154,12 +156,15 @@ All providers have **identical test coverage** using standardized tests, with sp
 | **OpenRouter** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Vertex AI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Azure AI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **Z.AI** | ✅ | ✅ | ✅ | ✅ (`glm-4.6v`) | ✅ | ❌ | ❌ |
 | **MiniMax** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | **Claude Code** | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 
 #### Image Generation
 
 Image generation is a separate interface (`ImageGenerationModel`) initialized via `InitializeImageGenerationModel`.
+
+For Z.AI, image input was verified live with `glm-4.6v` on the Coding Plan endpoint. `glm-5v-turbo` uses the same message format but may require a higher plan tier.
 
 | Provider | Model | Cost | Aspect Ratios | Subject Reference (Editing) |
 |----------|-------|------|---------------|-----------------------------|
@@ -257,6 +262,40 @@ Uses the OpenAI-compatible endpoint (`/v1/text/chatcompletion_v2`) with full sup
 | Model | Price | Notes |
 |-------|-------|-------|
 | image-01 | $0.0035/image | Supports subject-reference editing via URL |
+
+## Z.AI Provider
+
+### Text Models
+
+Z.AI integration uses the chat completions API and defaults to the Coding Plan endpoint for this repo:
+
+- Default base URL: `https://api.z.ai/api/coding/paas/v4`
+- Override when needed with `ZAI_BASE_URL`
+- Default test model: `glm-4.7`
+
+### Vision Model
+
+- `glm-4.6v` works on the Coding Plan access tested in this repo
+- `glm-5v-turbo` is the newer multimodal coding model, but may require a higher Z.AI plan
+
+### Pending
+
+- Web search is intentionally not enabled in the current Z.AI integration
+- Keep this as a TODO for a future release once the Z.AI search surface is stable and returns production-usable results for this package
+
+### Test Commands
+
+```bash
+./bin/llm-test zai --model glm-4.7
+./bin/llm-test zai-tool-call --model glm-4.7
+./bin/llm-test zai-streaming-content --model glm-4.7
+./bin/llm-test zai-streaming-mixed --model glm-4.7
+./bin/llm-test zai-streaming-multiturn --model glm-4.7
+./bin/llm-test zai-structured-output --model glm-4.7
+./bin/llm-test zai-token-usage --model glm-4.7
+./bin/llm-test zai-image --model glm-4.6v
+./bin/llm-test zai-image --model glm-4.6v --image-path /path/to/local-image.webp
+```
 
 ## Code Quality
 

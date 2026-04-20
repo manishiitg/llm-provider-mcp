@@ -41,17 +41,41 @@ type OpenRouterPromptTokensDetails struct {
 // OpenAIAdapter is an adapter that implements llmtypes.Model interface
 // using the OpenAI Go SDK directly
 type OpenAIAdapter struct {
-	client  *openai.Client
-	modelID string
-	logger  interfaces.Logger
+	client        *openai.Client
+	modelID       string
+	logger        interfaces.Logger
+	compatibility OpenAICompatibilityConfig
+}
+
+type ModelMetadataLookupFunc func(string) (*llmtypes.ModelMetadata, error)
+type RequestExtraFieldsFunc func(string, *llmtypes.CallOptions) map[string]interface{}
+
+type OpenAICompatibilityConfig struct {
+	ProviderName       string
+	MetadataLookup     ModelMetadataLookupFunc
+	RequestExtraFields RequestExtraFieldsFunc
+	TreatAsOpenRouter  bool
 }
 
 // NewOpenAIAdapter creates a new adapter instance
 func NewOpenAIAdapter(client *openai.Client, modelID string, logger interfaces.Logger) *OpenAIAdapter {
+	return NewCompatibleOpenAIAdapter(client, modelID, logger, OpenAICompatibilityConfig{
+		ProviderName: "openai",
+	})
+}
+
+// NewCompatibleOpenAIAdapter creates an OpenAI-compatible adapter for providers that
+// expose an OpenAI-style Chat Completions API with provider-specific metadata or
+// request extensions.
+func NewCompatibleOpenAIAdapter(client *openai.Client, modelID string, logger interfaces.Logger, compatibility OpenAICompatibilityConfig) *OpenAIAdapter {
+	if compatibility.ProviderName == "" {
+		compatibility.ProviderName = "openai"
+	}
 	return &OpenAIAdapter{
-		client:  client,
-		modelID: modelID,
-		logger:  logger,
+		client:        client,
+		modelID:       modelID,
+		logger:        logger,
+		compatibility: compatibility,
 	}
 }
 
@@ -67,9 +91,13 @@ func (o *OpenAIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadat
 		modelID = o.modelID
 	}
 
+	if o.compatibility.MetadataLookup != nil {
+		return o.compatibility.MetadataLookup(modelID)
+	}
+
 	// Check if this is an OpenRouter model (contains "/" separator)
 	// OpenRouter model IDs are in format: "provider/model-name"
-	if strings.Contains(modelID, "/") {
+	if o.compatibility.TreatAsOpenRouter || strings.Contains(modelID, "/") {
 		// Fetch metadata from OpenRouter API
 		return GetOpenRouterModelMetadata(modelID)
 	}
@@ -125,6 +153,10 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: schemaParam},
 		}
+	} else if opts.JSONMode {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
+		}
 	}
 
 	// Convert tools if provided
@@ -164,8 +196,8 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 	}
 
 	// Check if we're using OpenRouter and need to add usage parameter
-	isOpenRouter := strings.Contains(modelID, "/")
-	
+	isOpenRouter := o.compatibility.TreatAsOpenRouter || strings.Contains(modelID, "/")
+
 	// Check if this is an agentic model that requires the Responses API
 	if isAgenticModel(modelID) && !isOpenRouter {
 		// Check for recorder in context
@@ -195,24 +227,31 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		return o.runRawResponsesAPI(ctx, modelID, messages, opts)
 	}
 
+	extraFields := map[string]interface{}{}
 	if isOpenRouter && opts.Metadata != nil && opts.Metadata.Usage != nil && opts.Metadata.Usage.Include {
 		// OpenRouter requires usage: {include: true} to get cache token information
 		// Use SetExtraFields to inject this custom parameter
 		if o.logger != nil {
 			o.logger.Debugf("[OPENROUTER] Setting include.usage=true via SetExtraFields")
 		}
-		
+
 		// Create the include map structure
 		includeMap := map[string]interface{}{
 			"usage": true,
 		}
-		
-		// Inject into params using SetExtraFields
-		// Note: params is a struct, but we can call methods on it if we use the pointer or assign back
-		// In openai-go v3, NewParams types often have SetExtraFields method
-		params.SetExtraFields(map[string]interface{}{
-			"include": includeMap,
-		})
+		extraFields["include"] = includeMap
+	}
+
+	if o.compatibility.RequestExtraFields != nil {
+		for k, v := range o.compatibility.RequestExtraFields(modelID, opts) {
+			extraFields[k] = v
+		}
+	}
+
+	if len(extraFields) > 0 {
+		// In openai-go v3, NewParams types support SetExtraFields for provider-specific
+		// extensions that are not modeled in the typed SDK surface.
+		params.SetExtraFields(extraFields)
 	}
 
 	// Log input details if logger is available (for debugging errors)
