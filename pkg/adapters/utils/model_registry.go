@@ -8,6 +8,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -41,6 +42,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Z.AI
 	allModels = append(allModels, zai.GetDefaultVisibleZAIModels()...)
+
+	// Kimi
+	allModels = append(allModels, kimi.GetAllKimiModels()...)
 
 	// Claude Code CLI
 	allModels = append(allModels, claudecode.GetAllClaudeCodeModels()...)

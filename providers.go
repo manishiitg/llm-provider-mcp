@@ -17,6 +17,7 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
+	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -45,6 +46,7 @@ const (
 	ProviderVertex            Provider = "vertex"
 	ProviderAzure             Provider = "azure"
 	ProviderZAI               Provider = "z-ai"
+	ProviderKimi              Provider = "kimi"
 	ProviderClaudeCode        Provider = "claude-code"
 	ProviderGeminiCLI         Provider = "gemini-cli"
 	ProviderCodexCLI          Provider = "codex-cli"
@@ -82,6 +84,7 @@ type ProviderAPIKeys struct {
 	MiniMax           *string
 	MiniMaxCodingPlan *string
 	ZAI               *string
+	Kimi              *string
 	Bedrock           *BedrockConfig
 	Azure             *AzureAPIConfig
 }
@@ -121,6 +124,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.MiniMaxCodingPlan = key
 	case ProviderZAI:
 		k.ZAI = key
+	case ProviderKimi:
+		k.Kimi = key
 	}
 }
 
@@ -162,6 +167,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeAzureWithFallback(config)
 	case ProviderZAI:
 		llm, err = initializeZAIWithFallback(config)
+	case ProviderKimi:
+		llm, err = initializeKimi(config)
 	case ProviderClaudeCode:
 		llm, err = initializeClaudeCode(config)
 	case ProviderGeminiCLI:
@@ -1561,6 +1568,82 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeKimi creates and configures a Kimi provider that runs via the Claude Code CLI.
+func initializeKimi(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "kimi_user",
+		CustomFields: map[string]string{
+			"provider":  "kimi",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := strings.TrimSpace(config.ModelID)
+	if modelID == "" {
+		modelID = kimiadapter.ModelKimiCode
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Kimi != nil {
+		apiKey = strings.TrimSpace(*config.APIKeys.Kimi)
+	}
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("KIMI_API_KEY"))
+	}
+	if apiKey == "" {
+		err := fmt.Errorf("KIMI_API_KEY is required for Kimi provider (not found in config or environment)")
+		errorMetadata := LLMMetadata{
+			ModelVersion: modelID,
+			User:         "kimi_user",
+			CustomFields: map[string]string{
+				"provider":  "kimi",
+				"operation": OperationLLMInitialization,
+				"error":     err.Error(),
+				"status":    StatusLLMFailed,
+			},
+		}
+		emitLLMInitializationError(config.EventEmitter, string(config.Provider), modelID, OperationLLMInitialization, err, config.TraceID, errorMetadata)
+		return nil, err
+	}
+
+	logger.Infof("Initializing Kimi provider via Claude Code CLI - model_id: %s", modelID)
+
+	llm := claudecodeadapter.NewProviderClaudeCodeAdapter(
+		apiKey,
+		modelID,
+		"kimi",
+		map[string]string{
+			"ANTHROPIC_API_KEY":  apiKey,
+			"ANTHROPIC_BASE_URL": "https://api.kimi.com/coding/",
+		},
+		logger,
+	)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "kimi_user",
+		CustomFields: map[string]string{
+			"provider":     "kimi",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Kimi provider via Claude Code CLI - model_id: %s", modelID)
+	return llm, nil
+}
+
 // initializeGeminiCLI creates and configures a Gemini CLI adapter instance
 func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 	// LLM Initialization event data
@@ -1728,6 +1811,11 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return zaiadapter.ModelGLM51
+	case ProviderKimi:
+		if primaryModel := os.Getenv("KIMI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return kimiadapter.ModelKimiCode
 	case ProviderClaudeCode:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("CLAUDE_CODE_PRIMARY_MODEL"); primaryModel != "" {
@@ -1864,6 +1952,13 @@ func GetDefaultFallbackModels(provider Provider) []string {
 			return models
 		}
 		return []string{}
+	case ProviderKimi:
+		fallbackModelsEnv := os.Getenv("KIMI_FALLBACK_MODELS")
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		return []string{}
 	case ProviderClaudeCode:
 		// Get fallback models from environment variable
 		fallbackModelsEnv := os.Getenv("CLAUDE_CODE_FALLBACK_MODELS")
@@ -1991,6 +2086,14 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("CLAUDECODE_CROSS_FALLBACK_PROVIDER") // Legacy naming
 		}
 		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderKimi:
+		crossFallbackEnv := os.Getenv("KIMI_CROSS_FALLBACK_MODELS")
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("KIMI_CROSS_FALLBACK_PROVIDER")
+		return prefixModelsWithProvider(models, crossProvider)
 	case ProviderGeminiCLI:
 		// Get cross-provider fallback models for Gemini CLI
 		crossFallbackEnv := os.Getenv("GEMINI_CLI_CROSS_FALLBACK_MODELS")
@@ -2029,10 +2132,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -2763,6 +2866,7 @@ type LLMDefaultsResponse struct {
 	AnthropicConfig         map[string]interface{} `json:"anthropic_config"`
 	AzureConfig             map[string]interface{} `json:"azure_config"`
 	ZAIConfig               map[string]interface{} `json:"zai_config"`
+	KimiConfig              map[string]interface{} `json:"kimi_config"`
 	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
 	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
 	AvailableModels         map[string][]string    `json:"available_models"`
@@ -2959,6 +3063,13 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	zaiAPIKey := os.Getenv("ZAI_API_KEY")
 
+	// Kimi configuration
+	kimiModel := os.Getenv("KIMI_PRIMARY_MODEL")
+	if kimiModel == "" {
+		kimiModel = kimiadapter.ModelKimiCode
+	}
+	kimiAPIKey := os.Getenv("KIMI_API_KEY")
+
 	// MiniMax configuration
 	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
 	if minimaxModel == "" {
@@ -3021,6 +3132,12 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"fallback_models": []string{},
 			"api_key":         zaiAPIKey,
 		},
+		KimiConfig: map[string]interface{}{
+			"provider":        "kimi",
+			"model_id":        kimiModel,
+			"fallback_models": []string{},
+			"api_key":         kimiAPIKey,
+		},
 		MinimaxConfig: map[string]interface{}{
 			"provider":        "minimax",
 			"model_id":        minimaxModel,
@@ -3040,6 +3157,7 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"anthropic":           getAnthropicAvailableModels(),
 			"azure":               getAzureAvailableModels(),
 			"z-ai":                getZAIAvailableModels(),
+			"kimi":                getKimiAvailableModels(),
 			"minimax":             getMiniMaxAvailableModels(),
 			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
 		},
@@ -3061,6 +3179,23 @@ func getZAIAvailableModels() []string {
 	}
 
 	return zaiadapter.GetDefaultVisibleZAIModelIDs()
+}
+
+func getKimiAvailableModels() []string {
+	modelsStr := os.Getenv("KIMI_AVAILABLE_MODELS")
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+
+	return kimiadapter.GetDefaultVisibleKimiModelIDs()
 }
 
 // getMiniMaxCodingPlanAvailableModels returns Anthropic model names available via MiniMax coding plan
@@ -3135,6 +3270,9 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	case "z-ai":
 		fmt.Printf("[API KEY VALIDATION] Testing Z.AI API key\n")
 		isValid, message, err = validateZAIAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "kimi":
+		fmt.Printf("[API KEY VALIDATION] Testing Kimi API key\n")
+		isValid, message, err = validateKimiAPIKey(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -3231,6 +3369,72 @@ func validateZAIAPIKey(apiKey string, modelID string, options map[string]interfa
 
 	fmt.Printf("[ZAI VALIDATION SUCCESS] Z.AI API key is valid\n")
 	return true, fmt.Sprintf("Z.AI API key is valid for model %s", modelID), nil
+}
+
+func validateKimiAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[KIMI VALIDATION] Starting API key validation\n")
+
+	if apiKey == "" {
+		return false, "Kimi API key is required", nil
+	}
+	if !strings.HasPrefix(apiKey, "sk-kimi-") {
+		return false, "Invalid Kimi API key format", nil
+	}
+
+	if modelID == "" {
+		modelID = kimiadapter.ModelKimiCode
+		fmt.Printf("[KIMI VALIDATION] Using default model: %s\n", modelID)
+	}
+
+	noopLog := &noopLoggerImpl{}
+	temperature := extractTemperatureFromOptions(options)
+
+	config := Config{
+		Provider:    ProviderKimi,
+		ModelID:     modelID,
+		Temperature: temperature,
+		Logger:      noopLog,
+		Context:     context.Background(),
+		APIKeys: &ProviderAPIKeys{
+			Kimi: &apiKey,
+		},
+	}
+
+	llm, err := initializeKimi(config)
+	if err != nil {
+		fmt.Printf("[KIMI VALIDATION ERROR] Failed to create LLM instance: %v\n", err)
+		return false, fmt.Sprintf("Failed to create Kimi LLM instance: %v", err), nil
+	}
+
+	callOptions := createCallOptionsFromMap(options)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly: KIMI_OK"}},
+		},
+	}, callOptions...)
+	if err != nil {
+		fmt.Printf("[KIMI VALIDATION ERROR] %v\n", err)
+		if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "401") {
+			return false, "Invalid Kimi API key", nil
+		}
+		if strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "429") {
+			return false, "Kimi API rate limit exceeded", nil
+		}
+		if strings.Contains(err.Error(), "claude cli not found") {
+			return false, "Claude Code CLI not found. Install it with: npm install -g @anthropic-ai/claude-code", nil
+		}
+		if strings.Contains(err.Error(), "timeout") {
+			return false, "Kimi service timeout - check network connectivity", nil
+		}
+		return false, fmt.Sprintf("Kimi test generation failed: %v", err), nil
+	}
+
+	fmt.Printf("[KIMI VALIDATION SUCCESS] Kimi API key is valid\n")
+	return true, fmt.Sprintf("Kimi API key is valid for model %s", modelID), nil
 }
 
 // validateOpenRouterAPIKey validates an OpenRouter API key by making a real GenerateContent call

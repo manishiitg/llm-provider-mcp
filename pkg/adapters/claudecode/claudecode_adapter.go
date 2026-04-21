@@ -37,18 +37,94 @@ const (
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
 type ClaudeCodeAdapter struct {
-	modelID string
-	apiKey  string
-	logger  interfaces.Logger
+	modelID            string
+	apiKey             string
+	logger             interfaces.Logger
+	providerName       string
+	envOverrides       map[string]string
+	modelFlagSentinels map[string]struct{}
 }
 
 // NewClaudeCodeAdapter creates a new instance of the ClaudeCodeAdapter.
 func NewClaudeCodeAdapter(apiKey string, modelID string, logger interfaces.Logger) *ClaudeCodeAdapter {
-	return &ClaudeCodeAdapter{
-		modelID: modelID,
-		apiKey:  strings.TrimSpace(apiKey),
-		logger:  logger,
+	return NewProviderClaudeCodeAdapter(apiKey, modelID, "claude-code", nil, logger)
+}
+
+// NewProviderClaudeCodeAdapter creates a Claude Code adapter with provider-specific
+// environment overrides. This lets Claude-compatible providers reuse the same CLI path.
+func NewProviderClaudeCodeAdapter(apiKey string, modelID string, providerName string, envOverrides map[string]string, logger interfaces.Logger) *ClaudeCodeAdapter {
+	sentinels := map[string]struct{}{
+		"claude-code": {},
 	}
+	if providerName == "kimi" {
+		sentinels["kimi-code"] = struct{}{}
+	}
+
+	return &ClaudeCodeAdapter{
+		modelID:            modelID,
+		apiKey:             strings.TrimSpace(apiKey),
+		logger:             logger,
+		providerName:       providerName,
+		envOverrides:       cloneEnvOverrides(envOverrides),
+		modelFlagSentinels: sentinels,
+	}
+}
+
+func cloneEnvOverrides(envOverrides map[string]string) map[string]string {
+	if len(envOverrides) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(envOverrides))
+	for key, value := range envOverrides {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (c *ClaudeCodeAdapter) shouldPassModelFlag() bool {
+	modelID := strings.TrimSpace(c.modelID)
+	if modelID == "" {
+		return false
+	}
+	_, isSentinel := c.modelFlagSentinels[modelID]
+	return !isSentinel
+}
+
+func (c *ClaudeCodeAdapter) buildCommandEnv() []string {
+	overrideKeys := map[string]struct{}{
+		"CLAUDECODE":         {},
+		"ANTHROPIC_API_KEY":  {},
+		"ANTHROPIC_BASE_URL": {},
+	}
+	for key := range c.envOverrides {
+		overrideKeys[key] = struct{}{}
+	}
+
+	filteredEnv := make([]string, 0, len(os.Environ())+len(c.envOverrides)+1)
+	for _, env := range os.Environ() {
+		skip := false
+		for key := range overrideKeys {
+			if strings.HasPrefix(env, key+"=") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			filteredEnv = append(filteredEnv, env)
+		}
+	}
+
+	for key, value := range c.envOverrides {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		filteredEnv = append(filteredEnv, key+"="+value)
+	}
+	if _, hasAPIKeyOverride := c.envOverrides["ANTHROPIC_API_KEY"]; !hasAPIKeyOverride && c.apiKey != "" {
+		filteredEnv = append(filteredEnv, "ANTHROPIC_API_KEY="+c.apiKey)
+	}
+
+	return filteredEnv
 }
 
 // WithMCPConfig sets the MCP configuration JSON string for the session.
@@ -149,8 +225,8 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	// Note: --input-format stream-json requires --output-format stream-json and --verbose
 	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages"}
 
-	// Pass --model flag if a specific model was requested (anything other than the generic "claude-code" sentinel)
-	if c.modelID != "" && c.modelID != "claude-code" {
+	// Pass --model only when the configured model is a real Claude CLI model ID.
+	if c.shouldPassModelFlag() {
 		args = append(args, "--model", c.modelID)
 	}
 
@@ -264,18 +340,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	// Run in its own process group so we can kill the entire tree (CLI + children) on cancel
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Filter out CLAUDECODE env var to allow nested invocation (e.g., when
-	// this adapter is called from within a Claude Code session during testing)
-	var filteredEnv []string
-	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "CLAUDECODE=") && !strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
-			filteredEnv = append(filteredEnv, env)
-		}
-	}
-	if c.apiKey != "" {
-		filteredEnv = append(filteredEnv, "ANTHROPIC_API_KEY="+c.apiKey)
-	}
-	cmd.Env = filteredEnv
+	cmd.Env = c.buildCommandEnv()
 
 	// Use Pipe for stdout to parse as a stream
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -670,14 +735,29 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 		modelID = c.modelID
 	}
 
+	providerName := c.providerName
+	if providerName == "" {
+		providerName = "claude-code"
+	}
+
 	// Default context window for Claude models used via Claude Code CLI.
 	// The actual context window is reported per-call in modelUsage and used
 	// to update the agent's context window tracking dynamically.
 	switch modelID {
+	case "kimi-code":
+		return &llmtypes.ModelMetadata{
+			ModelID:                 modelID,
+			Provider:                providerName,
+			ModelName:               "Kimi Code (via Claude Code)",
+			ContextWindow:           262144,
+			SupportsToolCalls:       true,
+			SupportsReasoningEffort: true,
+			ReasoningEffortLevels:   []string{"low", "medium", "high", "max"},
+		}, nil
 	case "claude-opus-4-6":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
-			Provider:              "claude-code",
+			Provider:              providerName,
 			ModelName:             "Claude Opus 4.6",
 			ContextWindow:         200000,
 			InputCostPer1MTokens:  5.00,
@@ -686,7 +766,7 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	case "claude-sonnet-4-6":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
-			Provider:              "claude-code",
+			Provider:              providerName,
 			ModelName:             "Claude Sonnet 4.6",
 			ContextWindow:         200000,
 			InputCostPer1MTokens:  3.00,
@@ -695,7 +775,7 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	case "claude-haiku-4-5-20251001":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
-			Provider:              "claude-code",
+			Provider:              providerName,
 			ModelName:             "Claude Haiku 4.5",
 			ContextWindow:         200000,
 			InputCostPer1MTokens:  1.00,
@@ -704,7 +784,7 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	default:
 		return &llmtypes.ModelMetadata{
 			ModelID:       modelID,
-			Provider:      "claude-code",
+			Provider:      providerName,
 			ModelName:     "Claude Code CLI",
 			ContextWindow: 200000, // Default for Claude Sonnet/Opus models
 		}, nil
@@ -937,8 +1017,8 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 		"--max-turns", "1",
 	}
 
-	// Carry over model override from original invocation
-	if c.modelID != "" && c.modelID != "claude-code" {
+	// Carry over model override from original invocation.
+	if c.shouldPassModelFlag() {
 		args = append(args, "--model", c.modelID)
 	}
 
@@ -981,14 +1061,7 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	// Run in its own process group so we can kill the entire tree on cancel
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Filter out CLAUDECODE env var (same as main call)
-	var filteredEnv []string
-	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "CLAUDECODE=") && !strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
-			filteredEnv = append(filteredEnv, env)
-		}
-	}
-	cmd.Env = filteredEnv
+	cmd.Env = c.buildCommandEnv()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
