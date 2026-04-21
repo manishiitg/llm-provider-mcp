@@ -36,6 +36,13 @@ type GeneratedImage = llmtypes.GeneratedImage
 type ImageGenerationOptions = llmtypes.ImageGenerationOptions
 type ImageGenerationOption = llmtypes.ImageGenerationOption
 
+// Re-export video generation types
+type VideoGenerationModel = llmtypes.VideoGenerationModel
+type VideoGenerationResponse = llmtypes.VideoGenerationResponse
+type GeneratedVideo = llmtypes.GeneratedVideo
+type VideoGenerationOptions = llmtypes.VideoGenerationOptions
+type VideoGenerationOption = llmtypes.VideoGenerationOption
+
 // Re-export embedding types
 type EmbeddingModel = llmtypes.EmbeddingModel
 type Embedding = llmtypes.Embedding
@@ -56,24 +63,33 @@ const (
 
 // Re-export functions
 var (
-	WithModel          = llmtypes.WithModel
-	WithTemperature    = llmtypes.WithTemperature
-	WithMaxTokens      = llmtypes.WithMaxTokens
-	WithJSONMode       = llmtypes.WithJSONMode
-	WithTools          = llmtypes.WithTools
-	WithToolChoice     = llmtypes.WithToolChoice
-	WithStreamingFunc  = llmtypes.WithStreamingFunc
-	TextPart           = llmtypes.TextPart
-	TextParts          = llmtypes.TextParts
-	ImagePart          = llmtypes.ImagePart
-	ImagePartBase64    = llmtypes.ImagePartBase64
-	ImagePartURL       = llmtypes.ImagePartURL
-	WithEmbeddingModel = llmtypes.WithEmbeddingModel
-	WithDimensions     = llmtypes.WithDimensions
-	WithNumberOfImages = llmtypes.WithNumberOfImages
-	WithAspectRatio    = llmtypes.WithAspectRatio
-	WithResolution     = llmtypes.WithResolution
-	WithNegativePrompt = llmtypes.WithNegativePrompt
-	WithInputImage     = llmtypes.WithInputImage
-	WithInputImageURL  = llmtypes.WithInputImageURL
+	WithModel                 = llmtypes.WithModel
+	WithTemperature           = llmtypes.WithTemperature
+	WithMaxTokens             = llmtypes.WithMaxTokens
+	WithJSONMode              = llmtypes.WithJSONMode
+	WithTools                 = llmtypes.WithTools
+	WithToolChoice            = llmtypes.WithToolChoice
+	WithStreamingFunc         = llmtypes.WithStreamingFunc
+	TextPart                  = llmtypes.TextPart
+	TextParts                 = llmtypes.TextParts
+	ImagePart                 = llmtypes.ImagePart
+	ImagePartBase64           = llmtypes.ImagePartBase64
+	ImagePartURL              = llmtypes.ImagePartURL
+	WithEmbeddingModel        = llmtypes.WithEmbeddingModel
+	WithDimensions            = llmtypes.WithDimensions
+	WithNumberOfImages        = llmtypes.WithNumberOfImages
+	WithAspectRatio           = llmtypes.WithAspectRatio
+	WithResolution            = llmtypes.WithResolution
+	WithNegativePrompt        = llmtypes.WithNegativePrompt
+	WithInputImage            = llmtypes.WithInputImage
+	WithInputImageURL         = llmtypes.WithInputImageURL
+	WithVideoNumberOfVideos   = llmtypes.WithVideoNumberOfVideos
+	WithVideoAspectRatio      = llmtypes.WithVideoAspectRatio
+	WithVideoResolution       = llmtypes.WithVideoResolution
+	WithVideoNegativePrompt   = llmtypes.WithVideoNegativePrompt
+	WithVideoDurationSeconds  = llmtypes.WithVideoDurationSeconds
+	WithVideoGenerateAudio    = llmtypes.WithVideoGenerateAudio
+	WithVideoPersonGeneration = llmtypes.WithVideoPersonGeneration
+	WithVideoSeed             = llmtypes.WithVideoSeed
+	WithVideoInputImage       = llmtypes.WithVideoInputImage
 )

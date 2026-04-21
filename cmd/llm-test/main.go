@@ -88,6 +88,7 @@ func main() {
 	rootCmd.AddCommand(vertexcmd.VertexImageTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexEmbeddingTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexImagenGenerateTestCmd)
+	rootCmd.AddCommand(vertexcmd.VertexVeoGenerateTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexGeminiThinkingLevelTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexNestedArrayTestCmd)
 	rootCmd.AddCommand(vertexcmd.VertexSchemaValidationTestCmd)

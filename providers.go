@@ -227,6 +227,18 @@ func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationMode
 	}
 }
 
+// InitializeVideoGenerationModel creates and initializes a video generation model.
+// Supported providers:
+//   - "veo-*" models use Google's GenerateVideos API
+func InitializeVideoGenerationModel(config Config) (llmtypes.VideoGenerationModel, error) {
+	switch config.Provider {
+	case ProviderVertex:
+		return initializeVertexVeo(config)
+	default:
+		return nil, fmt.Errorf("video generation not supported for provider: %s. Supported providers: vertex", config.Provider)
+	}
+}
+
 // initializeMiniMaxCodingPlanImagen creates a MiniMax image generation adapter using the
 // coding-plan credential, which is the canonical MiniMax non-text auth path.
 func initializeMiniMaxCodingPlanImagen(config Config) (llmtypes.ImageGenerationModel, error) {
@@ -302,6 +314,123 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 
 	logger.Infof("Initialized Gemini image model - model_id: %s", modelID)
 	return vertexadapter.NewGeminiImageAdapter(client, modelID, logger), nil
+}
+
+const (
+	defaultGeminiVeoModelID = "veo-3.1-generate-preview"
+	defaultVertexVeoModelID = "veo-3.1-generate-001"
+	defaultVertexLocation   = "us-central1"
+)
+
+var vertexOnlyVeoModels = map[string]struct{}{
+	"veo-3.1-generate-001":      {},
+	"veo-3.1-fast-generate-001": {},
+	"veo-3.1-lite-generate-001": {},
+}
+
+// initializeVertexVeo creates a video generation adapter using Google's GenerateVideos API.
+// It supports both:
+//   - Gemini Developer API with API-key auth for preview Veo models
+//   - Vertex AI with ADC/OAuth for GA Vertex Veo models such as veo-3.1-generate-001
+func initializeVertexVeo(config Config) (llmtypes.VideoGenerationModel, error) {
+	modelID := config.ModelID
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Vertex != nil && *config.APIKeys.Vertex != "" {
+		apiKey = *config.APIKeys.Vertex
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("VERTEX_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+
+	ctx := config.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	projectID := firstNonEmpty(
+		os.Getenv("GOOGLE_CLOUD_PROJECT"),
+		os.Getenv("VERTEX_PROJECT_ID"),
+	)
+	locationID := firstNonEmpty(
+		os.Getenv("GOOGLE_CLOUD_LOCATION"),
+		os.Getenv("GOOGLE_CLOUD_REGION"),
+		os.Getenv("VERTEX_LOCATION_ID"),
+	)
+	if locationID == "" {
+		locationID = defaultVertexLocation
+	}
+
+	if modelID == "" {
+		if apiKey != "" {
+			modelID = defaultGeminiVeoModelID
+		} else if projectID != "" {
+			modelID = defaultVertexVeoModelID
+		} else {
+			modelID = defaultGeminiVeoModelID
+		}
+	}
+
+	clientConfig := &genai.ClientConfig{}
+	backendLabel := "Gemini API"
+
+	if requiresVertexVeoBackend(modelID) {
+		if projectID == "" {
+			return nil, fmt.Errorf(
+				"model %q requires the Vertex AI backend. Set GOOGLE_CLOUD_PROJECT or VERTEX_PROJECT_ID, optionally GOOGLE_CLOUD_LOCATION or VERTEX_LOCATION_ID, and authenticate with Application Default Credentials. For API-key auth, use %q or %q instead",
+				modelID,
+				defaultGeminiVeoModelID,
+				"veo-3.1-fast-generate-preview",
+			)
+		}
+		clientConfig.Backend = genai.BackendVertexAI
+		clientConfig.Project = projectID
+		clientConfig.Location = locationID
+		backendLabel = "Vertex AI"
+	} else if apiKey != "" {
+		clientConfig.APIKey = apiKey
+		clientConfig.Backend = genai.BackendGeminiAPI
+	} else if projectID != "" {
+		clientConfig.Backend = genai.BackendVertexAI
+		clientConfig.Project = projectID
+		clientConfig.Location = locationID
+		backendLabel = "Vertex AI"
+	} else {
+		return nil, fmt.Errorf("Veo video generation requires either GEMINI_API_KEY / VERTEX_API_KEY / GOOGLE_API_KEY for Gemini API preview models, or GOOGLE_CLOUD_PROJECT / VERTEX_PROJECT_ID plus ADC for Vertex AI models")
+	}
+
+	client, err := genai.NewClient(ctx, clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GenAI client for Veo: %w", err)
+	}
+
+	logger.Infof("Initialized Veo video model - backend: %s, model_id: %s", backendLabel, modelID)
+	return vertexadapter.NewVertexVeoAdapter(client, modelID, logger), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func requiresVertexVeoBackend(modelID string) bool {
+	_, ok := vertexOnlyVeoModels[strings.TrimSpace(modelID)]
+	return ok
 }
 
 // initializeOpenAIEmbedding creates and configures an OpenAI embedding model instance
