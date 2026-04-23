@@ -138,6 +138,7 @@ func main() {
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingContentTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLISearchWebTestCmd)
+	rootCmd.AddCommand(codexclicmd.CodexCLIImageGenerateTestCmd)
 	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
 	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 

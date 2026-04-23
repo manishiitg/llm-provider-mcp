@@ -223,14 +223,17 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 //   - "imagen-*" models use the Imagen GenerateImages API
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
 //   - "minimax-coding-plan" uses MiniMax image generation with image-01
+//   - "codex-cli" uses the native Codex CLI image generation flow
 func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationModel, error) {
 	switch config.Provider {
 	case ProviderVertex:
 		return initializeVertexImagen(config)
 	case ProviderMiniMaxCodingPlan:
 		return initializeMiniMaxCodingPlanImagen(config)
+	case ProviderCodexCLI:
+		return initializeCodexCLIImage(config)
 	default:
-		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax-coding-plan", config.Provider)
+		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax-coding-plan, codex-cli", config.Provider)
 	}
 }
 
@@ -271,6 +274,32 @@ func initializeMiniMaxCodingPlanImagen(config Config) (llmtypes.ImageGenerationM
 
 	logger.Infof("Initializing MiniMax Coding Plan Image Generation with model: %s", modelID)
 	return minimaxadapter.NewMiniMaxImageAdapter(apiKey, modelID, logger), nil
+}
+
+func initializeCodexCLIImage(config Config) (llmtypes.ImageGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "codex-cli"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.CodexCLI != nil && *config.APIKeys.CodexCLI != "" {
+		apiKey = *config.APIKeys.CodexCLI
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("CODEX_API_KEY")
+	}
+
+	logger.Infof("Initializing Codex CLI Image Generation with model: %s", modelID)
+	if apiKey == "" {
+		logger.Infof("Codex CLI image generation: using Codex CLI local auth/session (CODEX_API_KEY not provided)")
+	}
+	return codexcli.NewCodexCLIImageAdapter(apiKey, modelID, logger), nil
 }
 
 // initializeVertexImagen creates an image generation adapter using the Gemini API.

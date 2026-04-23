@@ -12,4 +12,5 @@ var CodexCLICmd = &cobra.Command{
 func init() {
 	CodexCLICmd.AddCommand(CodexCLIStreamingContentTestCmd)
 	CodexCLICmd.AddCommand(CodexCLISearchWebTestCmd)
+	CodexCLICmd.AddCommand(CodexCLIImageGenerateTestCmd)
 }

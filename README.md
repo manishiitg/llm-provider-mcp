@@ -158,6 +158,7 @@ All providers have **identical test coverage** using standardized tests, with sp
 | **Azure AI** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Z.AI** | ✅ | ✅ | ✅ | ✅ (`glm-4.6v`) | ✅ | ❌ | ❌ |
 | **MiniMax** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Codex CLI** | ✅ | ✅ (native agent tools) | ❌ | ❌ | ✅ | ✅ | ✅ |
 | **Claude Code** | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 
 #### Image Generation
@@ -172,6 +173,11 @@ For Z.AI, image input was verified live with `glm-4.6v` on the Coding Plan endpo
 | **Vertex AI** | imagen-4.0-fast-generate-001 | $0.02/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
 | **Vertex AI** | imagen-4.0-ultra-generate-001 | $0.06/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
 | **MiniMax** | image-01 | $0.0035/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ✅ (URL) |
+| **Codex CLI** | codex-cli / gpt-5.4 / gpt-5.3-codex | token-priced | Prompt-driven | local input image (implemented) |
+
+**Codex CLI image generation**
+
+Codex image generation is implemented through the native Codex CLI image workflow. The adapter asks Codex to save the generated asset to a temporary local path, then reads the resulting file bytes back into `ImageGenerationResponse`, so higher layers can keep using the standard `GenerateImages()` interface.
 
 **MiniMax image generation example:**
 
@@ -204,6 +210,12 @@ resp, err := imageGen.GenerateImages(ctx, "Same person in a library",
 ./bin/llm-test minimax-image-generate \
   --prompt "Same person in a library" \
   --input-image-url "https://example.com/reference.jpg" \
+  --aspect-ratio 16:9
+
+# Codex native image generation
+./bin/llm-test codex-cli-image-generate \
+  --model codex-cli \
+  --prompt "A complex infographic about the modern LLM stack" \
   --aspect-ratio 16:9
 ```
 
