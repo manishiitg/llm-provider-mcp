@@ -1645,6 +1645,37 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 		return nil, err
 	}
 
+	if modelID != kimiadapter.ModelKimiCode {
+		baseURL := os.Getenv("KIMI_BASE_URL")
+		if baseURL == "" {
+			baseURL = "https://api.moonshot.ai/v1"
+		}
+
+		client := openaisdk.NewClient(
+			option.WithAPIKey(apiKey),
+			option.WithBaseURL(baseURL),
+		)
+
+		llm := openaiadapter.NewCompatibleOpenAIAdapter(&client, modelID, logger, openaiadapter.OpenAICompatibilityConfig{
+			ProviderName:   "kimi",
+			MetadataLookup: kimiadapter.GetKimiModelMetadata,
+		})
+
+		successMetadata := LLMMetadata{
+			ModelVersion: modelID,
+			User:         "kimi_user",
+			CustomFields: map[string]string{
+				"provider":     "kimi",
+				"status":       StatusLLMInitialized,
+				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+			},
+		}
+		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+		logger.Infof("Initialized Kimi API provider - model_id: %s, base_url: %s", modelID, baseURL)
+		return llm, nil
+	}
+
 	logger.Infof("Initializing Kimi provider via Claude Code CLI - model_id: %s", modelID)
 
 	llm := claudecodeadapter.NewProviderClaudeCodeAdapter(
@@ -3406,7 +3437,7 @@ func validateKimiAPIKey(apiKey string, modelID string, options map[string]interf
 	if apiKey == "" {
 		return false, "Kimi API key is required", nil
 	}
-	if !strings.HasPrefix(apiKey, "sk-kimi-") {
+	if !strings.HasPrefix(apiKey, "sk-kimi-") && !strings.HasPrefix(apiKey, "sk-") {
 		return false, "Invalid Kimi API key format", nil
 	}
 
