@@ -57,6 +57,30 @@ func TestMiniMaxAdapterImplementsWebSearchModel(t *testing.T) {
 	}
 }
 
+func TestMiniMaxAdapterRejectsImagesOutsideCodingPlan(t *testing.T) {
+	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+
+	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What is in this image?"},
+				llmtypes.ImageContent{
+					SourceType: "base64",
+					MediaType:  "image/png",
+					Data:       "iVBORw0KGgo=",
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected plain MiniMax provider to reject image input")
+	}
+	if err.Error() != "MiniMax image understanding requires provider minimax-coding-plan" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestConvertMessages_SystemAndUser(t *testing.T) {
 	messages := []llmtypes.MessageContent{
 		{
