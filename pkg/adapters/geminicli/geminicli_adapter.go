@@ -233,6 +233,8 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 
 	// Build environment: inherit current env + add custom vars
 	env := os.Environ()
+	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
+	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
 	if g.apiKey != "" {
 		env = append(env, "GEMINI_API_KEY="+g.apiKey)
 	}
@@ -927,6 +929,8 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 
 	// Build environment
 	env := os.Environ()
+	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
+	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
 	if g.apiKey != "" {
 		env = append(env, "GEMINI_API_KEY="+g.apiKey)
 	}
