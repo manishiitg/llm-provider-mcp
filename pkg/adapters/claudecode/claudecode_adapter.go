@@ -56,9 +56,6 @@ func NewProviderClaudeCodeAdapter(apiKey string, modelID string, providerName st
 	sentinels := map[string]struct{}{
 		"claude-code": {},
 	}
-	if providerName == "kimi" {
-		sentinels["kimi-code"] = struct{}{}
-	}
 
 	return &ClaudeCodeAdapter{
 		modelID:            modelID,
@@ -744,16 +741,6 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	// The actual context window is reported per-call in modelUsage and used
 	// to update the agent's context window tracking dynamically.
 	switch modelID {
-	case "kimi-code":
-		return &llmtypes.ModelMetadata{
-			ModelID:                 modelID,
-			Provider:                providerName,
-			ModelName:               "Kimi Code (via Claude Code)",
-			ContextWindow:           262144,
-			SupportsToolCalls:       true,
-			SupportsReasoningEffort: true,
-			ReasoningEffortLevels:   []string{"low", "medium", "high", "max"},
-		}, nil
 	case "claude-opus-4-6":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,

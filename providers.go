@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	deepgramadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/deepgram"
+	elevenlabsadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/elevenlabs"
 	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
@@ -52,6 +56,8 @@ const (
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
+	ProviderElevenLabs        Provider = "elevenlabs"
+	ProviderDeepgram          Provider = "deepgram"
 )
 
 // Config holds configuration for LLM initialization
@@ -83,6 +89,8 @@ type ProviderAPIKeys struct {
 	CodexCLI          *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
+	ElevenLabs        *string
+	Deepgram          *string
 	ZAI               *string
 	Kimi              *string
 	Bedrock           *BedrockConfig
@@ -122,6 +130,10 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
 		k.MiniMaxCodingPlan = key
+	case ProviderElevenLabs:
+		k.ElevenLabs = key
+	case ProviderDeepgram:
+		k.Deepgram = key
 	case ProviderZAI:
 		k.ZAI = key
 	case ProviderKimi:
@@ -249,6 +261,51 @@ func InitializeVideoGenerationModel(config Config) (llmtypes.VideoGenerationMode
 	}
 }
 
+// InitializeAudioGenerationModel creates and initializes an audio generation model.
+// Supported providers:
+//   - "gemini-*" models use GenerateContent with AUDIO response modality
+func InitializeAudioGenerationModel(config Config) (llmtypes.AudioGenerationModel, error) {
+	switch config.Provider {
+	case ProviderVertex:
+		return initializeVertexTTS(config)
+	case ProviderMiniMax:
+		return initializeMiniMaxTTS(config)
+	case ProviderElevenLabs:
+		return initializeElevenLabsTTS(config)
+	case ProviderDeepgram:
+		return initializeDeepgramTTS(config)
+	default:
+		return nil, fmt.Errorf("audio generation not supported for provider: %s. Supported providers: vertex, minimax, elevenlabs, deepgram", config.Provider)
+	}
+}
+
+// InitializeAudioTranscriptionModel creates and initializes a speech-to-text model.
+// Supported providers:
+//   - "deepgram" models use Deepgram prerecorded transcription
+func InitializeAudioTranscriptionModel(config Config) (llmtypes.AudioTranscriptionModel, error) {
+	switch config.Provider {
+	case ProviderDeepgram:
+		return initializeDeepgramSTT(config)
+	default:
+		return nil, fmt.Errorf("audio transcription not supported for provider: %s. Supported providers: deepgram", config.Provider)
+	}
+}
+
+// InitializeMusicGenerationModel creates and initializes a music generation model.
+// Supported providers:
+//   - "elevenlabs" models use the ElevenLabs Music API
+//   - "minimax" models use the MiniMax Music Generation API
+func InitializeMusicGenerationModel(config Config) (llmtypes.MusicGenerationModel, error) {
+	switch config.Provider {
+	case ProviderElevenLabs:
+		return initializeElevenLabsMusic(config)
+	case ProviderMiniMax:
+		return initializeMiniMaxMusic(config)
+	default:
+		return nil, fmt.Errorf("music generation not supported for provider: %s. Supported providers: elevenlabs, minimax", config.Provider)
+	}
+}
+
 // initializeMiniMaxCodingPlanImagen creates a MiniMax image generation adapter using the
 // coding-plan credential, which is the canonical MiniMax non-text auth path.
 func initializeMiniMaxCodingPlanImagen(config Config) (llmtypes.ImageGenerationModel, error) {
@@ -350,6 +407,216 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 
 	logger.Infof("Initialized Gemini image model - model_id: %s", modelID)
 	return vertexadapter.NewGeminiImageAdapter(client, modelID, logger), nil
+}
+
+const defaultGeminiTTSModelID = "gemini-3.1-flash-tts-preview"
+
+// initializeVertexTTS creates an audio generation adapter using the Gemini API.
+func initializeVertexTTS(config Config) (llmtypes.AudioGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = defaultGeminiTTSModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Vertex != nil && *config.APIKeys.Vertex != "" {
+		apiKey = *config.APIKeys.Vertex
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("VERTEX_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Gemini TTS audio generation (or provide api_key in config)")
+	}
+
+	ctx := config.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GenAI client for Gemini TTS: %w", err)
+	}
+
+	logger.Infof("Initialized Gemini TTS audio model - model_id: %s", modelID)
+	return vertexadapter.NewGeminiTTSAdapter(client, modelID, logger), nil
+}
+
+// initializeElevenLabsTTS creates an audio generation adapter using ElevenLabs TTS.
+func initializeElevenLabsTTS(config Config) (llmtypes.AudioGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = elevenlabsadapter.DefaultModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.ElevenLabs != nil && *config.APIKeys.ElevenLabs != "" {
+		apiKey = *config.APIKeys.ElevenLabs
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("ELEVENLABS_API_KEY environment variable is required for ElevenLabs audio generation (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized ElevenLabs TTS audio model - model_id: %s", modelID)
+	return elevenlabsadapter.NewElevenLabsTTSAdapter(apiKey, modelID, elevenlabsadapter.DefaultVoiceID, elevenlabsadapter.DefaultOutputFormat, logger), nil
+}
+
+// initializeMiniMaxTTS creates an audio generation adapter using MiniMax T2A.
+func initializeMiniMaxTTS(config Config) (llmtypes.AudioGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = minimaxadapter.DefaultTTSModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MiniMax != nil && *config.APIKeys.MiniMax != "" {
+		apiKey = *config.APIKeys.MiniMax
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("MINIMAX_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("MINIMAX_API_KEY environment variable is required for MiniMax audio generation (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized MiniMax TTS audio model - model_id: %s", modelID)
+	return minimaxadapter.NewMiniMaxTTSAdapter(apiKey, modelID, minimaxadapter.DefaultTTSVoiceID, logger), nil
+}
+
+// initializeDeepgramTTS creates an audio generation adapter using Deepgram Speak.
+func initializeDeepgramTTS(config Config) (llmtypes.AudioGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = deepgramadapter.DefaultModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Deepgram != nil && *config.APIKeys.Deepgram != "" {
+		apiKey = *config.APIKeys.Deepgram
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("DEEPGRAM_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("DEEPGRAM_API_KEY environment variable is required for Deepgram audio generation (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized Deepgram TTS audio model - model_id: %s", modelID)
+	return deepgramadapter.NewDeepgramTTSAdapter(apiKey, modelID, logger), nil
+}
+
+// initializeDeepgramSTT creates a speech-to-text adapter using Deepgram Listen.
+func initializeDeepgramSTT(config Config) (llmtypes.AudioTranscriptionModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = deepgramadapter.DefaultTranscriptionModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Deepgram != nil && *config.APIKeys.Deepgram != "" {
+		apiKey = *config.APIKeys.Deepgram
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("DEEPGRAM_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("DEEPGRAM_API_KEY environment variable is required for Deepgram audio transcription (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized Deepgram STT audio model - model_id: %s", modelID)
+	return deepgramadapter.NewDeepgramTTSAdapter(apiKey, modelID, logger), nil
+}
+
+// initializeElevenLabsMusic creates a music generation adapter using ElevenLabs Music.
+func initializeElevenLabsMusic(config Config) (llmtypes.MusicGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = elevenlabsadapter.DefaultMusicModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.ElevenLabs != nil && *config.APIKeys.ElevenLabs != "" {
+		apiKey = *config.APIKeys.ElevenLabs
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("ELEVENLABS_API_KEY environment variable is required for ElevenLabs music generation (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized ElevenLabs music model - model_id: %s", modelID)
+	return elevenlabsadapter.NewElevenLabsMusicAdapter(apiKey, modelID, elevenlabsadapter.DefaultMusicOutputFormat, logger), nil
+}
+
+// initializeMiniMaxMusic creates a music generation adapter using MiniMax Music Generation.
+func initializeMiniMaxMusic(config Config) (llmtypes.MusicGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = minimaxadapter.DefaultMusicModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MiniMax != nil && *config.APIKeys.MiniMax != "" {
+		apiKey = *config.APIKeys.MiniMax
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("MINIMAX_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("MINIMAX_API_KEY environment variable is required for MiniMax music generation (or provide api_key in config)")
+	}
+
+	logger.Infof("Initialized MiniMax music model - model_id: %s", modelID)
+	return minimaxadapter.NewMiniMaxMusicAdapter(apiKey, modelID, logger), nil
 }
 
 const (
@@ -1676,18 +1943,9 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 		return llm, nil
 	}
 
-	logger.Infof("Initializing Kimi provider via Claude Code CLI - model_id: %s", modelID)
+	logger.Infof("Initializing Kimi provider via Anthropic-compatible HTTP - model_id: %s", modelID)
 
-	llm := claudecodeadapter.NewProviderClaudeCodeAdapter(
-		apiKey,
-		modelID,
-		"kimi",
-		map[string]string{
-			"ANTHROPIC_API_KEY":  apiKey,
-			"ANTHROPIC_BASE_URL": "https://api.kimi.com/coding/",
-		},
-		logger,
-	)
+	llm := kimiadapter.NewKimiAdapter(apiKey, modelID, logger)
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,
@@ -1700,7 +1958,7 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized Kimi provider via Claude Code CLI - model_id: %s", modelID)
+	logger.Infof("Initialized Kimi provider via Anthropic-compatible HTTP - model_id: %s", modelID)
 	return llm, nil
 }
 
@@ -2929,6 +3187,8 @@ type LLMDefaultsResponse struct {
 	KimiConfig              map[string]interface{} `json:"kimi_config"`
 	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
 	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
+	ElevenLabsConfig        map[string]interface{} `json:"elevenlabs_config"`
+	DeepgramConfig          map[string]interface{} `json:"deepgram_config"`
 	AvailableModels         map[string][]string    `json:"available_models"`
 }
 
@@ -3144,6 +3404,20 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	minimaxCodingPlanAPIKey := os.Getenv("MINIMAX_CODING_PLAN_API_KEY")
 
+	// ElevenLabs configuration for media tools
+	elevenLabsModel := os.Getenv("ELEVENLABS_PRIMARY_MODEL")
+	if elevenLabsModel == "" {
+		elevenLabsModel = elevenlabsadapter.DefaultModelID
+	}
+	elevenLabsAPIKey := os.Getenv("ELEVENLABS_API_KEY")
+
+	// Deepgram configuration for media tools
+	deepgramModel := os.Getenv("DEEPGRAM_PRIMARY_MODEL")
+	if deepgramModel == "" {
+		deepgramModel = deepgramadapter.DefaultTranscriptionModelID
+	}
+	deepgramAPIKey := os.Getenv("DEEPGRAM_API_KEY")
+
 	// Build response
 	return LLMDefaultsResponse{
 		PrimaryConfig: map[string]interface{}{
@@ -3210,6 +3484,18 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"fallback_models": []string{},
 			"api_key":         minimaxCodingPlanAPIKey,
 		},
+		ElevenLabsConfig: map[string]interface{}{
+			"provider":        "elevenlabs",
+			"model_id":        elevenLabsModel,
+			"fallback_models": []string{},
+			"api_key":         elevenLabsAPIKey,
+		},
+		DeepgramConfig: map[string]interface{}{
+			"provider":        "deepgram",
+			"model_id":        deepgramModel,
+			"fallback_models": []string{},
+			"api_key":         deepgramAPIKey,
+		},
 		AvailableModels: map[string][]string{
 			"bedrock":             getBedrockAvailableModels(),
 			"openrouter":          getOpenRouterAvailableModels(),
@@ -3220,6 +3506,8 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"kimi":                getKimiAvailableModels(),
 			"minimax":             getMiniMaxAvailableModels(),
 			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
+			"elevenlabs":          getElevenLabsAvailableModels(),
+			"deepgram":            getDeepgramAvailableModels(),
 		},
 	}
 }
@@ -3280,6 +3568,53 @@ func getMiniMaxCodingPlanAvailableModels() []string {
 	}
 }
 
+func getElevenLabsAvailableModels() []string {
+	modelsStr := os.Getenv("ELEVENLABS_AVAILABLE_MODELS")
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	return []string{
+		elevenlabsadapter.DefaultModelID,
+		"eleven_turbo_v2_5",
+		"eleven_flash_v2_5",
+		"eleven_v3",
+		elevenlabsadapter.DefaultMusicModelID,
+	}
+}
+
+func getDeepgramAvailableModels() []string {
+	modelsStr := os.Getenv("DEEPGRAM_AVAILABLE_MODELS")
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	return []string{
+		deepgramadapter.DefaultTranscriptionModelID,
+		"nova-3-multilingual",
+		"nova-2",
+		"base",
+		deepgramadapter.DefaultModelID,
+		"aura-2-luna-en",
+		"aura-2-asteria-en",
+		"aura-2-apollo-en",
+	}
+}
+
 // ValidateAPIKey validates API keys for OpenRouter, OpenAI, Bedrock, and Vertex
 func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	// Use fmt.Printf for logging in validation functions
@@ -3323,6 +3658,12 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		// MiniMax Coding Plan validation — uses Anthropic model names
 		fmt.Printf("[API KEY VALIDATION] Testing MiniMax Coding Plan API key\n")
 		isValid, message, err = validateMinimaxCodingPlanAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "elevenlabs":
+		fmt.Printf("[API KEY VALIDATION] Testing ElevenLabs API key\n")
+		isValid, message, err = validateElevenLabsAPIKey(req.APIKey)
+	case "deepgram":
+		fmt.Printf("[API KEY VALIDATION] Testing Deepgram API key\n")
+		isValid, message, err = validateDeepgramAPIKey(req.APIKey)
 	case "azure":
 		// Azure AI validation with real GenerateContent call
 		fmt.Printf("[API KEY VALIDATION] Testing Azure AI API key\n")
@@ -3815,6 +4156,84 @@ func validateMinimaxAPIKey(apiKey string, modelID string, options map[string]int
 
 	fmt.Printf("[MINIMAX VALIDATION SUCCESS] MiniMax API key is valid\n")
 	return true, fmt.Sprintf("MiniMax API key is valid for model %s", modelID), nil
+}
+
+func validateElevenLabsAPIKey(apiKey string) (bool, string, error) {
+	fmt.Printf("[ELEVENLABS VALIDATION] Starting API key validation\n")
+	if strings.TrimSpace(apiKey) == "" {
+		return false, "ElevenLabs API key is required", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.elevenlabs.io/v1/user", nil)
+	if err != nil {
+		return false, "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("xi-api-key", strings.TrimSpace(apiKey))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, "ElevenLabs service timeout - check network connectivity", nil
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, "ElevenLabs API key is valid", nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, "Invalid ElevenLabs API key", nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return false, "ElevenLabs API rate limit exceeded", nil
+	}
+	return false, fmt.Sprintf("ElevenLabs validation failed with status %d: %s", resp.StatusCode, truncateValidationBody(data)), nil
+}
+
+func validateDeepgramAPIKey(apiKey string) (bool, string, error) {
+	fmt.Printf("[DEEPGRAM VALIDATION] Starting API key validation\n")
+	if strings.TrimSpace(apiKey) == "" {
+		return false, "Deepgram API key is required", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.deepgram.com/v1/projects", nil)
+	if err != nil {
+		return false, "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Token "+strings.TrimSpace(apiKey))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, "Deepgram service timeout - check network connectivity", nil
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, "Deepgram API key is valid", nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, "Invalid Deepgram API key", nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return false, "Deepgram API rate limit exceeded", nil
+	}
+	return false, fmt.Sprintf("Deepgram validation failed with status %d: %s", resp.StatusCode, truncateValidationBody(data)), nil
+}
+
+func truncateValidationBody(data []byte) string {
+	msg := strings.TrimSpace(string(data))
+	if len(msg) > 300 {
+		return msg[:300] + "..."
+	}
+	return msg
 }
 
 // validateMinimaxCodingPlanAPIKey validates a MiniMax coding plan API key using an Anthropic model name.

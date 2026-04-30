@@ -20,7 +20,7 @@ func GetAllKimiModels() []*llmtypes.ModelMetadata {
 		{
 			Provider:                "kimi",
 			ModelID:                 ModelKimiCode,
-			ModelName:               "Kimi Code (via Claude Code)",
+			ModelName:               "Kimi Code",
 			ContextWindow:           262144,
 			SupportsToolCalls:       true,
 			SupportsReasoningEffort: true,
