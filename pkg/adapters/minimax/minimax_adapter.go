@@ -42,13 +42,13 @@ func NewMiniMaxAdapter(apiKey, modelID string, logger interfaces.Logger) *MiniMa
 		anthropicoption.WithAPIKey(apiKey),
 		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
 	)
-		return &MiniMaxAdapter{
-			client:     client,
-			apiKey:     apiKey,
-			modelID:    modelID,
-			logger:     logger,
-			codingPlan: false,
-		}
+	return &MiniMaxAdapter{
+		client:     client,
+		apiKey:     apiKey,
+		modelID:    modelID,
+		logger:     logger,
+		codingPlan: false,
+	}
 }
 
 // NewMiniMaxCodingPlanAdapter creates a MiniMax adapter for the coding plan.
@@ -60,13 +60,13 @@ func NewMiniMaxCodingPlanAdapter(apiKey, modelID string, logger interfaces.Logge
 		anthropicoption.WithBaseURL(MiniMaxAnthropicBaseURL),
 		anthropicoption.WithHeader("User-Agent", "claude-code/2.1.71"),
 	)
-		return &MiniMaxAdapter{
-			client:     client,
-			apiKey:     apiKey,
-			modelID:    modelID,
-			logger:     logger,
-			codingPlan: true,
-		}
+	return &MiniMaxAdapter{
+		client:     client,
+		apiKey:     apiKey,
+		modelID:    modelID,
+		logger:     logger,
+		codingPlan: true,
+	}
 }
 
 // GetModelID implements the llmtypes.Model interface
@@ -461,6 +461,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 		var imageParts []llmtypes.ImageContent
 		var toolCallID string
 		var toolResponseContent string
+		var toolResponseIsError bool
 		var toolCalls []llmtypes.ToolCall
 
 		for _, part := range msg.Parts {
@@ -472,6 +473,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			case llmtypes.ToolCallResponse:
 				toolCallID = p.ToolCallID
 				toolResponseContent = p.Content
+				toolResponseIsError = p.IsError
 			case llmtypes.ToolCall:
 				toolCalls = append(toolCalls, p)
 			}
@@ -524,7 +526,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			if toolCallID != "" {
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
 					Role:    anthropic.MessageParamRoleUser,
-					Content: []anthropic.ContentBlockParamUnion{anthropic.NewToolResultBlock(toolCallID, toolResponseContent, false)},
+					Content: []anthropic.ContentBlockParamUnion{anthropic.NewToolResultBlock(toolCallID, toolResponseContent, toolResponseIsError)},
 				})
 			}
 		default:

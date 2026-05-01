@@ -94,6 +94,7 @@ type ToolCallResponse struct {
 	ToolCallID string
 	Name       string // Name of the tool/function that was called
 	Content    string
+	IsError    bool // True when the tool execution failed
 }
 
 // MessageContent represents a message in the conversation

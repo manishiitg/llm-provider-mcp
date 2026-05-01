@@ -1864,7 +1864,7 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
-// initializeKimi creates and configures a Kimi provider that runs via the Claude Code CLI.
+// initializeKimi creates and configures a Kimi provider.
 func initializeKimi(config Config) (llmtypes.Model, error) {
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,
@@ -1887,6 +1887,27 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 	logger := config.Logger
 	if logger == nil {
 		logger = &noopLoggerImpl{}
+	}
+
+	if modelID == kimiadapter.ModelKimiCode && shouldUseKimiCodeCLITransport() {
+		logger.Infof("Initializing Kimi provider via native Kimi Code CLI - model_id: %s", modelID)
+
+		llm := kimiadapter.NewKimiCLIAdapter(modelID, logger)
+
+		successMetadata := LLMMetadata{
+			ModelVersion: modelID,
+			User:         "kimi_user",
+			CustomFields: map[string]string{
+				"provider":     "kimi",
+				"transport":    "cli",
+				"status":       StatusLLMInitialized,
+				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+			},
+		}
+		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+		logger.Infof("Initialized Kimi provider via native Kimi Code CLI - model_id: %s", modelID)
+		return llm, nil
 	}
 
 	apiKey := ""
@@ -1960,6 +1981,19 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 
 	logger.Infof("Initialized Kimi provider via Anthropic-compatible HTTP - model_id: %s", modelID)
 	return llm, nil
+}
+
+func shouldUseKimiCodeCLITransport() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("KIMI_CODE_TRANSPORT"))) {
+	case "":
+		return true
+	case "cli", "native", "kimi-cli", "kimi-code-cli":
+		return true
+	case "http", "api", "anthropic", "anthropic-http", "off", "false", "0":
+		return false
+	default:
+		return true
+	}
 }
 
 // initializeGeminiCLI creates and configures a Gemini CLI adapter instance

@@ -325,6 +325,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 		var imageParts []llmtypes.ImageContent
 		var toolCallID string
 		var toolResponseContent string
+		var toolResponseIsError bool
 		var toolCalls []llmtypes.ToolCall
 
 		for _, part := range msg.Parts {
@@ -337,6 +338,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 				// Tool response - extract tool call ID and content
 				toolCallID = p.ToolCallID
 				toolResponseContent = p.Content
+				toolResponseIsError = p.IsError
 			case llmtypes.ToolCall:
 				// Tool call in assistant message
 				toolCalls = append(toolCalls, p)
@@ -460,9 +462,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			// Mark that we've seen tool interactions (tool responses are dynamic)
 			if toolCallID != "" {
 				hasSeenToolInteraction = true
-				// Create tool result content block using helper
-				// isError is false - we could enhance this to detect errors
-				contentBlock := anthropic.NewToolResultBlock(toolCallID, toolResponseContent, false)
+				contentBlock := anthropic.NewToolResultBlock(toolCallID, toolResponseContent, toolResponseIsError)
 
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
 					Role:    anthropic.MessageParamRoleUser,
