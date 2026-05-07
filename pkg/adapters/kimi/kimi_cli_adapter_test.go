@@ -575,6 +575,37 @@ exit 7
 	}
 }
 
+func TestGenerateContentReturnsPlainTextStdoutOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeKimiPath := filepath.Join(tmpDir, "kimi")
+	fakeKimi := `#!/bin/sh
+printf '%s\n' 'Error code: 403 - usage limit reached'
+printf '%s\n' 'To resume this session: kimi -r test-session' >&2
+exit 1
+`
+	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
+		t.Fatalf("failed to write fake kimi binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
+	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
+
+	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
+	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
+	})
+	if err == nil {
+		t.Fatal("GenerateContent returned nil error for failing CLI")
+	}
+	if !strings.Contains(err.Error(), "usage limit reached") {
+		t.Fatalf("error = %q, want stdout diagnostic", err.Error())
+	}
+	if !strings.Contains(err.Error(), "To resume this session") {
+		t.Fatalf("error = %q, want stderr diagnostic", err.Error())
+	}
+}
+
 func TestGenerateContentReportsCancellation(t *testing.T) {
 	tmpDir := t.TempDir()
 	fakeKimiPath := filepath.Join(tmpDir, "kimi")

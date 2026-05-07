@@ -115,6 +115,7 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	}()
 
 	var accumulatedText strings.Builder
+	var stdoutDiagnostics strings.Builder
 	var sessionID string
 	var resolvedModel string
 	var usage *llmtypes.Usage
@@ -131,6 +132,7 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			k.logger.Errorf("Failed to decode Kimi CLI stream-json line: %v (line: %s)", err, truncateKimiCLILog(line, 300))
+			stdoutDiagnostics.WriteString(line + "\n")
 			continue
 		}
 
@@ -146,18 +148,18 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("kimi cli cancelled: %w", ctx.Err())
 		}
-		stderrText := strings.TrimSpace(stderrBuilder.String())
-		if stderrText != "" {
-			return nil, fmt.Errorf("kimi cli failed: %w: %s", waitErr, truncateKimiCLILog(stderrText, 2000))
+		diagnosticText := formatKimiCLIDiagnostics(stdoutDiagnostics.String(), stderrBuilder.String())
+		if diagnosticText != "" {
+			return nil, fmt.Errorf("kimi cli failed: %w: %s", waitErr, truncateKimiCLILog(diagnosticText, 2000))
 		}
 		return nil, fmt.Errorf("kimi cli failed: %w", waitErr)
 	}
 
 	content := accumulatedText.String()
 	if strings.TrimSpace(content) == "" {
-		stderrText := strings.TrimSpace(stderrBuilder.String())
-		if stderrText != "" {
-			return nil, fmt.Errorf("kimi cli completed without response content: %s", truncateKimiCLILog(stderrText, 2000))
+		diagnosticText := formatKimiCLIDiagnostics(stdoutDiagnostics.String(), stderrBuilder.String())
+		if diagnosticText != "" {
+			return nil, fmt.Errorf("kimi cli completed without response content: %s", truncateKimiCLILog(diagnosticText, 2000))
 		}
 	}
 
@@ -184,6 +186,17 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		},
 		Usage: usage,
 	}, nil
+}
+
+func formatKimiCLIDiagnostics(stdoutText, stderrText string) string {
+	var parts []string
+	if text := strings.TrimSpace(stdoutText); text != "" {
+		parts = append(parts, text)
+	}
+	if text := strings.TrimSpace(stderrText); text != "" {
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (k *KimiCLIAdapter) GetModelID() string {

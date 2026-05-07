@@ -160,7 +160,11 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		args = append(args, "--model", modelToUse)
 	}
 
-	// Handle --full-auto mode (default for non-interactive use)
+	// Handle full-auto mode (default for non-interactive use).
+	// Codex CLI 0.128 deprecates --full-auto and no longer uses it to approve
+	// non-interactive MCP calls; those calls come back as "user cancelled MCP
+	// tool call". The workflow runtime already provides its own sandbox and
+	// bridge-level guards, so bypass Codex's interactive approval layer here.
 	fullAuto := true // default to full-auto for programmatic use
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if fa, ok := opts.Metadata.Custom[MetadataKeyFullAuto].(bool); ok {
@@ -168,7 +172,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		}
 	}
 	if fullAuto {
-		args = append(args, "--full-auto")
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 
 	// Handle approval mode (overrides full-auto if set)
@@ -312,11 +316,11 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	// Codex CLI takes the prompt as a positional argument
 	var promptText string
 	if resumeID != "" {
-		// Resume mode: `codex exec resume --json --full-auto <session_id> "prompt"`
+		// Resume mode: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox <session_id> "prompt"`
 		// Resume flags go after the `resume` subcommand
 		args = []string{"exec", "resume", "--json"}
 		if fullAuto {
-			args = append(args, "--full-auto")
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 		}
 		if modelToUse != "" && modelToUse != "codex-cli" {
 			args = append(args, "--model", modelToUse)
@@ -754,6 +758,13 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 					} else if result, ok := item["result"].(string); ok {
 						resultContent = result
 					}
+					if resultContent == "" {
+						if errObj, ok := item["error"].(map[string]interface{}); ok {
+							if msg, ok := errObj["message"].(string); ok {
+								resultContent = msg
+							}
+						}
+					}
 
 					lastContentTime.Store(time.Now().UnixNano())
 					if pt, ok := pendingTools[itemID]; ok {
@@ -841,10 +852,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 				c.logger.Debugf("Codex item updated: %s", truncate(line, 200))
 
 			case "error":
-				errMsg, _ := raw["message"].(string)
-				if errMsg == "" {
-					errMsg, _ = raw["error"].(string)
-				}
+				errMsg := extractCodexErrorMessage(raw)
 				if strings.TrimSpace(errMsg) != "" {
 					lastCLIErrorMessage.Store(strings.TrimSpace(errMsg))
 				}
@@ -1122,6 +1130,24 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 // --- Helper Functions ---
 
+func extractCodexErrorMessage(raw map[string]interface{}) string {
+	if msg, ok := raw["message"].(string); ok && strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	switch errVal := raw["error"].(type) {
+	case string:
+		return errVal
+	case map[string]interface{}:
+		if msg, ok := errVal["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return msg
+		}
+		if typ, ok := errVal["type"].(string); ok && strings.TrimSpace(typ) != "" {
+			return typ
+		}
+	}
+	return ""
+}
+
 func extractTextFromMessage(msg llmtypes.MessageContent) string {
 	var parts []string
 	for _, part := range msg.Parts {
@@ -1151,7 +1177,7 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 
 	args := []string{"exec", "resume", "--json"}
 	if fullAuto {
-		args = append(args, "--full-auto")
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if modelID != "" && modelID != "codex-cli" {
 		args = append(args, "--model", modelID)
