@@ -45,6 +45,21 @@ func TestLooksLikeCodexRateLimit(t *testing.T) {
 	}
 }
 
+func TestCodexStringConfigOverrideEscapesDeveloperInstructions(t *testing.T) {
+	got, err := codexStringConfigOverride("developer_instructions", "Line \"one\"\nPath C:\\tmp")
+	if err != nil {
+		t.Fatalf("codexStringConfigOverride returned error: %v", err)
+	}
+
+	want := `developer_instructions="Line \"one\"\nPath C:\\tmp"`
+	if got != want {
+		t.Fatalf("override = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("override contains a raw newline: %q", got)
+	}
+}
+
 func TestGenerateContentReturnsNestedCodexErrorMessage(t *testing.T) {
 	tmpDir := t.TempDir()
 	fakeCodexPath := filepath.Join(tmpDir, "codex")

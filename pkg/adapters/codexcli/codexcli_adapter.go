@@ -309,7 +309,11 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	// system-level instruction rather than part of the user prompt.
 	if len(systemPrompts) > 0 {
 		combined := strings.Join(systemPrompts, "\n\n")
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%q", combined))
+		override, err := codexStringConfigOverride("developer_instructions", combined)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "-c", override)
 	}
 
 	// 2. Build the prompt text
@@ -1156,6 +1160,14 @@ func extractTextFromMessage(msg llmtypes.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func codexStringConfigOverride(key string, value string) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal codex config override %s: %w", key, err)
+	}
+	return key + "=" + string(encoded), nil
 }
 
 func truncate(s string, maxLen int) string {
