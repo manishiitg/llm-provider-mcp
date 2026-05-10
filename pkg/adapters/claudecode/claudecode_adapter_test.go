@@ -3,6 +3,7 @@ package claudecode
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -138,5 +139,26 @@ func TestClaudeCodeAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewClaudeCodeAdapter("", "test-model", &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("ClaudeCodeAdapter should implement llmtypes.WebSearchModel")
+	}
+}
+
+func TestBuildCommandEnvDisablesClaudeAutoMemory(t *testing.T) {
+	t.Setenv(claudeCodeDisableAutoMemoryEnv, "0")
+
+	adapter := NewClaudeCodeAdapter("", "test-model", &MockLogger{})
+	env := adapter.buildCommandEnv()
+
+	count := 0
+	for _, entry := range env {
+		if strings.HasPrefix(entry, claudeCodeDisableAutoMemoryEnv+"=") {
+			count++
+			if entry != claudeCodeDisableAutoMemoryEnv+"=1" {
+				t.Fatalf("%s = %q, want 1", claudeCodeDisableAutoMemoryEnv, entry)
+			}
+		}
+	}
+
+	if count != 1 {
+		t.Fatalf("found %d %s entries, want 1", count, claudeCodeDisableAutoMemoryEnv)
 	}
 }

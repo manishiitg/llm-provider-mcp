@@ -33,6 +33,7 @@ const (
 	MetadataKeyMaxTurns                   = "claude_code_max_turns"
 	MetadataKeyResumeSessionID            = "claude_code_resume_session_id"
 	MetadataKeyEffort                     = "claude_code_effort"
+	claudeCodeDisableAutoMemoryEnv        = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -89,9 +90,10 @@ func (c *ClaudeCodeAdapter) shouldPassModelFlag() bool {
 
 func (c *ClaudeCodeAdapter) buildCommandEnv() []string {
 	overrideKeys := map[string]struct{}{
-		"CLAUDECODE":         {},
-		"ANTHROPIC_API_KEY":  {},
-		"ANTHROPIC_BASE_URL": {},
+		"CLAUDECODE":                   {},
+		"ANTHROPIC_API_KEY":            {},
+		"ANTHROPIC_BASE_URL":           {},
+		claudeCodeDisableAutoMemoryEnv: {},
 	}
 	for key := range c.envOverrides {
 		overrideKeys[key] = struct{}{}
@@ -120,6 +122,7 @@ func (c *ClaudeCodeAdapter) buildCommandEnv() []string {
 	if _, hasAPIKeyOverride := c.envOverrides["ANTHROPIC_API_KEY"]; !hasAPIKeyOverride && c.apiKey != "" {
 		filteredEnv = append(filteredEnv, "ANTHROPIC_API_KEY="+c.apiKey)
 	}
+	filteredEnv = append(filteredEnv, claudeCodeDisableAutoMemoryEnv+"=1")
 
 	return filteredEnv
 }
