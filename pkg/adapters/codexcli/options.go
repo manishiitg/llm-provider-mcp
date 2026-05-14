@@ -4,23 +4,23 @@ import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 // Constants for custom metadata keys
 const (
-	MetadataKeyCodexModel        = "codex_model"
-	MetadataKeyResumeSessionID   = "codex_resume_session_id"
-	MetadataKeyApprovalMode      = "codex_approval_mode"
-	MetadataKeySandbox           = "codex_sandbox"
-	MetadataKeyFullAuto          = "codex_full_auto"
-	MetadataKeyProjectDirID      = "codex_project_dir_id"
-	MetadataKeyConfigProfile     = "codex_config_profile"
-	MetadataKeyOutputSchema      = "codex_output_schema"
-	MetadataKeyAdditionalDirs    = "codex_additional_dirs"
-	MetadataKeyDisableFeatures   = "codex_disable_features"
-	MetadataKeyEnableFeatures    = "codex_enable_features"
-	MetadataKeyReasoningEffort   = "codex_reasoning_effort"
-	MetadataKeyReasoningSummary  = "codex_reasoning_summary"
-	MetadataKeyDisableShellTool  = "codex_disable_shell_tool"
-	MetadataKeyMCPServers        = "codex_mcp_servers"
-	MetadataKeyConfigOverrides   = "codex_config_overrides"
-	MetadataKeyApprovalPolicy    = "codex_approval_policy"
+	MetadataKeyCodexModel       = "codex_model"
+	MetadataKeyResumeSessionID  = "codex_resume_session_id"
+	MetadataKeyApprovalMode     = "codex_approval_mode"
+	MetadataKeySandbox          = "codex_sandbox"
+	MetadataKeyFullAuto         = "codex_full_auto"
+	MetadataKeyProjectDirID     = "codex_project_dir_id"
+	MetadataKeyConfigProfile    = "codex_config_profile"
+	MetadataKeyOutputSchema     = "codex_output_schema"
+	MetadataKeyAdditionalDirs   = "codex_additional_dirs"
+	MetadataKeyDisableFeatures  = "codex_disable_features"
+	MetadataKeyEnableFeatures   = "codex_enable_features"
+	MetadataKeyReasoningEffort  = "codex_reasoning_effort"
+	MetadataKeyReasoningSummary = "codex_reasoning_summary"
+	MetadataKeyDisableShellTool = "codex_disable_shell_tool"
+	MetadataKeyMCPServers       = "codex_mcp_servers"
+	MetadataKeyConfigOverrides  = "codex_config_overrides"
+	MetadataKeyApprovalPolicy   = "codex_approval_policy"
 )
 
 // WithCodexModel sets the --model flag for the Codex CLI.
@@ -57,7 +57,9 @@ func WithSandbox(sandbox string) llmtypes.CallOption {
 	}
 }
 
-// WithFullAuto enables --full-auto mode (shortcut for low-friction local work).
+// WithFullAuto enables low-friction local work. Newer Codex CLI versions map
+// this to --dangerously-bypass-approvals-and-sandbox instead of deprecated
+// --full-auto.
 func WithFullAuto() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

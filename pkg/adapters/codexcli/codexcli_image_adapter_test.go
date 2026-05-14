@@ -3,6 +3,7 @@ package codexcli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,53 @@ func TestMimeTypeForImageFile(t *testing.T) {
 		if got := mimeTypeForImageFile(tt.path, nil); got != tt.want {
 			t.Fatalf("mimeTypeForImageFile(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestCodexImageCommandUsesCurrentBypassFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeCodexPath := filepath.Join(tmpDir, "codex")
+	argsPath := filepath.Join(tmpDir, "args.txt")
+	fakeCodex := `#!/bin/sh
+printf '%s\n' "$@" > "` + argsPath + `"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    printf '%s\n' "` + filepath.Join(tmpDir, "generated.png") + `" > "$1"
+    break
+  fi
+  shift
+done
+exit 0
+`
+	if err := os.WriteFile(fakeCodexPath, []byte(fakeCodex), 0755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+	generatedPath := filepath.Join(tmpDir, "generated.png")
+	if err := os.WriteFile(generatedPath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0600); err != nil {
+		t.Fatalf("write generated image: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter := NewCodexCLIImageAdapter("", "codex-cli", nil)
+	_, err := adapter.GenerateImages(
+		t.Context(),
+		"make an image",
+	)
+	if err != nil {
+		t.Fatalf("GenerateImages returned error: %v", err)
+	}
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake codex args: %v", err)
+	}
+	args := string(argsBytes)
+	if !strings.Contains(args, "--dangerously-bypass-approvals-and-sandbox\n") {
+		t.Fatalf("args = %q, want current Codex bypass flag", args)
+	}
+	if strings.Contains(args, "--full-auto") {
+		t.Fatalf("args = %q, deprecated --full-auto should not be used", args)
 	}
 }

@@ -127,7 +127,7 @@ func (a *CodexCLIImageAdapter) runSingleImageCommand(ctx context.Context, workdi
 		"exec",
 		"--ephemeral",
 		"--skip-git-repo-check",
-		"--full-auto",
+		"--dangerously-bypass-approvals-and-sandbox",
 		"-C", workdir,
 		"-o", lastMessagePath,
 	}
