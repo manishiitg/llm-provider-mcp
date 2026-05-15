@@ -505,6 +505,34 @@ func TestExperimentalTimeoutEnv(t *testing.T) {
 	}
 }
 
+func TestClaudeCallContextIgnoresParentDeadline(t *testing.T) {
+	parent, cancelParent := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelParent()
+
+	callCtx, cancelCall := newClaudeCallContext(parent, time.Second)
+	defer cancelCall()
+
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case <-callCtx.Done():
+		t.Fatalf("call context ended from parent deadline: %v", callCtx.Err())
+	default:
+	}
+}
+
+func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	callCtx, cancelCall := newClaudeCallContext(parent, time.Second)
+	defer cancelCall()
+
+	cancelParent()
+	select {
+	case <-callCtx.Done():
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("call context did not end after explicit parent cancel")
+	}
+}
+
 func TestExperimentalVerboseEnvAddsVerboseFlag(t *testing.T) {
 	t.Setenv(EnvClaudeExperimentalVerbose, "true")
 
@@ -900,6 +928,19 @@ func TestHasReadyInputPromptAcceptsPromptWithDraftText(t *testing.T) {
 `
 	if !hasReadyInputPrompt(pane) {
 		t.Fatal("hasReadyInputPrompt = false for idle prompt with draft text")
+	}
+}
+
+func TestHasReadyInputPromptAcceptsIdlePromptWithEscFooter(t *testing.T) {
+	pane := `
+⏺ Done
+─────────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false for idle prompt with esc footer")
 	}
 }
 

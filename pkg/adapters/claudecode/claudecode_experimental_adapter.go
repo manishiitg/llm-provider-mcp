@@ -40,6 +40,29 @@ var claudeExperimentalSessionRegistry = struct {
 	sessions: map[string]struct{}{},
 }
 
+func newClaudeCallContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	callCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	done := make(chan struct{})
+	var once sync.Once
+
+	go func() {
+		select {
+		case <-parent.Done():
+			if parent.Err() == context.Canceled {
+				cancel()
+			}
+		case <-done:
+		}
+	}()
+
+	return callCtx, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
+}
+
 // ClaudeCodeExperimentalAdapter runs Claude Code in experimental interactive mode.
 // It intentionally does not invoke `claude -p`.
 type ClaudeCodeExperimentalAdapter struct {
@@ -75,7 +98,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		nativeSessionID = newClaudeNativeSessionID()
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, tmuxTimeout())
+	callCtx, cancel := newClaudeCallContext(ctx, tmuxTimeout())
 	defer cancel()
 
 	sessionName := newTmuxSessionName()
@@ -647,21 +670,40 @@ func waitForReadyInputPrompt(ctx context.Context, sessionName string) error {
 
 func hasReadyInputPrompt(captured string) bool {
 	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
-	if strings.Contains(normalized, "esc to interrupt") {
-		return false
-	}
 	lines := strings.Split(normalized, "\n")
 	start := len(lines) - 80
 	if start < 0 {
 		start = 0
 	}
-	for _, line := range lines[start:] {
-		trimmed := strings.TrimSpace(line)
+	promptIndex := -1
+	for i := len(lines) - 1; i >= start; i-- {
+		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ") {
-			return true
+			promptIndex = i
+			break
 		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "⏵") || isClaudeTUIBoundaryLine(trimmed) {
+			continue
+		}
+		return false
 	}
-	return false
+	if promptIndex < 0 {
+		return false
+	}
+	for i := promptIndex - 1; i >= start; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || isClaudeTUIBoundaryLine(trimmed) {
+			continue
+		}
+		cleaned := cleanClaudeTerminalProgressLine(trimmed)
+		if isClaudeRunningProgressLine(trimmed) ||
+			isClaudeRunningProgressLine(cleaned) ||
+			isClaudeToolProgressLine(cleaned) {
+			return false
+		}
+		break
+	}
+	return true
 }
 
 func hasClaudeActivity(captured string) bool {
