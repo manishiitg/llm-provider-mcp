@@ -2,6 +2,7 @@ package llmtypes
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -101,6 +102,137 @@ type ToolCallResponse struct {
 type MessageContent struct {
 	Role  ChatMessageType
 	Parts []ContentPart
+}
+
+// UnmarshalJSON restores concrete content part types when conversations are
+// rehydrated from JSON. Without this, encoding/json decodes []ContentPart into
+// []map[string]interface{}, because ContentPart is intentionally interface{}.
+func (m *MessageContent) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role  ChatMessageType   `json:"Role"`
+		Parts []json.RawMessage `json:"Parts"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	m.Role = raw.Role
+	m.Parts = make([]ContentPart, 0, len(raw.Parts))
+	for _, part := range raw.Parts {
+		m.Parts = append(m.Parts, unmarshalContentPart(part))
+	}
+	return nil
+}
+
+func unmarshalContentPart(data json.RawMessage) ContentPart {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		return TextContent{Text: text}
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		var generic interface{}
+		if json.Unmarshal(data, &generic) == nil {
+			return generic
+		}
+		return string(data)
+	}
+
+	if text, ok := stringField(fields, "Text", "text"); ok {
+		return TextContent{Text: text}
+	}
+	if contentType, ok := stringField(fields, "type", "Type"); ok && contentType == "text" {
+		if text, ok := stringField(fields, "content", "Content"); ok {
+			return TextContent{Text: text}
+		}
+	}
+
+	if _, ok := firstExistingField(fields, "SourceType", "source_type", "sourceType"); ok {
+		return ImageContent{
+			SourceType: stringFieldOrEmpty(fields, "SourceType", "source_type", "sourceType"),
+			MediaType:  stringFieldOrEmpty(fields, "MediaType", "media_type", "mediaType"),
+			Data:       stringFieldOrEmpty(fields, "Data", "data"),
+		}
+	}
+
+	if _, ok := firstExistingField(fields, "ToolCallID", "tool_call_id", "toolCallID"); ok {
+		return ToolCallResponse{
+			ToolCallID: stringFieldOrEmpty(fields, "ToolCallID", "tool_call_id", "toolCallID"),
+			Name:       stringFieldOrEmpty(fields, "Name", "name"),
+			Content:    stringFieldOrEmpty(fields, "Content", "content"),
+			IsError:    boolFieldOrFalse(fields, "IsError", "is_error", "isError"),
+		}
+	}
+
+	if _, ok := firstExistingField(fields, "FunctionCall", "function_call", "functionCall"); ok {
+		return ToolCall{
+			ID:               stringFieldOrEmpty(fields, "ID", "id"),
+			Type:             stringFieldOrEmpty(fields, "Type", "type"),
+			FunctionCall:     functionCallField(fields, "FunctionCall", "function_call", "functionCall"),
+			ThoughtSignature: stringFieldOrEmpty(fields, "ThoughtSignature", "thought_signature", "thoughtSignature"),
+		}
+	}
+
+	var generic map[string]interface{}
+	if json.Unmarshal(data, &generic) == nil {
+		return generic
+	}
+	return string(data)
+}
+
+func stringField(fields map[string]json.RawMessage, keys ...string) (string, bool) {
+	raw, ok := firstExistingField(fields, keys...)
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func stringFieldOrEmpty(fields map[string]json.RawMessage, keys ...string) string {
+	value, _ := stringField(fields, keys...)
+	return value
+}
+
+func boolFieldOrFalse(fields map[string]json.RawMessage, keys ...string) bool {
+	raw, ok := firstExistingField(fields, keys...)
+	if !ok {
+		return false
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value
+}
+
+func functionCallField(fields map[string]json.RawMessage, keys ...string) *FunctionCall {
+	raw, ok := firstExistingField(fields, keys...)
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var fn FunctionCall
+	if err := json.Unmarshal(raw, &fn); err != nil {
+		return nil
+	}
+	return &fn
+}
+
+func firstExistingField(fields map[string]json.RawMessage, keys ...string) (json.RawMessage, bool) {
+	for _, key := range keys {
+		if raw, ok := fields[key]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
 }
 
 // ContentResponse represents the response from an LLM

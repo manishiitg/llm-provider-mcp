@@ -10,9 +10,11 @@ import (
 )
 
 func TestClaudeCodeStreaming(t *testing.T) {
-	// Only run this test if we're in an environment with the claude CLI installed
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping integration test in CI environment")
+	// This exercises the legacy Agent SDK / `claude -p` adapter directly.
+	// The default claude-code provider now uses tmux interactive mode, so keep
+	// this expensive live test opt-in.
+	if os.Getenv("RUN_CLAUDE_CODE_PRINT_INTEGRATION") == "" {
+		t.Skip("set RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 to run legacy claude -p integration test")
 	}
 
 	adapter := NewClaudeCodeAdapter("", "test-model", &MockLogger{})
@@ -52,7 +54,7 @@ func TestClaudeCodeStreaming(t *testing.T) {
 				continue
 			}
 			t.Logf("Received chunk: %s", chunk.Type)
-			
+
 			switch chunk.Type {
 			case llmtypes.StreamChunkTypeToolCallStart:
 				receivedToolStart = true
@@ -67,7 +69,7 @@ func TestClaudeCodeStreaming(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GenerateContent failed: %v", err)
 			}
-			
+
 			// Verify we received the expected chunks
 			if !receivedToolStart {
 				t.Error("Did not receive StreamChunkTypeToolCallStart")
@@ -75,7 +77,7 @@ func TestClaudeCodeStreaming(t *testing.T) {
 			if !receivedToolEnd {
 				t.Error("Did not receive StreamChunkTypeToolCallEnd")
 			}
-			
+
 			t.Log("Test completed successfully")
 			return
 		case <-ctx.Done():

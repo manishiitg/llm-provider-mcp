@@ -60,6 +60,13 @@ const (
 	ProviderDeepgram          Provider = "deepgram"
 )
 
+// CleanupClaudeCodeExperimentalSessions removes tmux sessions created by the
+// Claude Code provider's interactive mode. It is safe to call on startup and
+// shutdown; missing tmux servers or already-closed sessions are ignored.
+func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
+	return claudecodeadapter.CleanupClaudeCodeExperimentalSessions(ctx)
+}
+
 // Config holds configuration for LLM initialization
 type Config struct {
 	Provider    Provider
@@ -1835,18 +1842,17 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	if logger == nil {
 		logger = &noopLoggerImpl{}
 	}
-	logger.Infof("Initializing Claude Code CLI adapter - model_id: %s", modelID)
+	logger.Infof("Initializing Claude Code experimental adapter - model_id: %s", modelID)
 
 	// claude-code provider always uses the claude CLI's OAuth session (via `claude login`).
 	// We intentionally ignore any Anthropic API key from config or env: forwarding one would
 	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
 	// a key that often has low/no credits. Users who want API-key billing should select the
 	// `anthropic` provider instead, which is a separate direct-API adapter.
-	apiKey := ""
-	logger.Infof("Claude Code: using claude CLI OAuth credentials (API key from config/env is intentionally ignored)")
+	logger.Infof("Claude Code: using experimental mode with CLI OAuth credentials (no `claude -p` invocation)")
 
-	// Create Claude Code adapter
-	llm := claudecodeadapter.NewClaudeCodeAdapter(apiKey, modelID, logger)
+	// Create Claude Code experimental adapter.
+	llm := claudecodeadapter.NewClaudeCodeExperimentalAdapter(modelID, logger)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{
@@ -1855,12 +1861,13 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 		CustomFields: map[string]string{
 			"provider":     "claude-code",
 			"status":       StatusLLMInitialized,
-			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling, // CLI has native tools
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+			"mode":         "experimental",
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized Claude Code CLI adapter - model_id: %s", modelID)
+	logger.Infof("Initialized Claude Code experimental adapter - model_id: %s", modelID)
 	return llm, nil
 }
 
