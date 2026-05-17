@@ -391,6 +391,104 @@ Some junk after the prompt boundary`,
 	}
 }
 
+func TestParseCursorMultiTurnExtractsOnlyLatestResponse(t *testing.T) {
+	// Baseline: pane state after turn 2 completed (before turn 3 prompt)
+	baseline := `  Cursor Agent
+  v2026.05.16-0338208
+  Use /auto-run to skip all approvals.
+
+
+  what is 2+2
+
+
+
+  2 + 2 = 4
+
+
+  now multiply that by 3
+
+
+
+
+  From before, \(2 + 2 = 4\). Multiplying by 3:
+
+  \(4 \times 3 = 12\)
+
+
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.5%
+  ~/ai-work/multi-llm-provider-go · main`
+
+	// Captured: pane after turn 3 response
+	captured := `  Cursor Agent
+  v2026.05.16-0338208
+  Use /auto-run to skip all approvals.
+
+
+  what is 2+2
+
+
+
+  2 + 2 = 4
+
+
+  now multiply that by 3
+
+
+
+
+  From before, \(2 + 2 = 4\). Multiplying by 3:
+
+  \(4 \times 3 = 12\)
+
+
+  now add 100 to it and explain step by step
+
+
+
+
+  Here's the chain, step by step.
+  Step 1 — Start from the last number
+  We left off with 12 (that was \(4 \times 3\)).
+  Step 2 — Do the addition
+  12 + 100 = 112
+  Final answer: 112
+
+
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.6%
+  ~/ai-work/multi-llm-provider-go · main`
+
+	prompt := "now add 100 to it and explain step by step"
+	historicalResponses := []string{
+		"2 + 2 = 4",
+		`From before, \(2 + 2 = 4\). Multiplying by 3:
+\(4 \times 3 = 12\)`,
+	}
+
+	got := parseCursorInteractiveResponse(captured, baseline, prompt, historicalResponses)
+	if !strings.Contains(got, "Here's the chain, step by step.") {
+		t.Fatalf("turn 3 response missing expected content, got:\n%s", got)
+	}
+	if strings.Contains(got, "2 + 2 = 4") {
+		t.Fatalf("turn 3 response contains turn 1 historical text:\n%s", got)
+	}
+	if strings.Contains(got, "Multiplying by 3") {
+		t.Fatalf("turn 3 response contains turn 2 historical text:\n%s", got)
+	}
+	if strings.Contains(got, "now add 100") {
+		t.Fatalf("turn 3 response contains echoed user prompt:\n%s", got)
+	}
+}
+
 func TestStripCursorHistoricalAssistantTextRemovesPaneReplay(t *testing.T) {
 	previous := "The first turn answer.\nIt has two lines."
 	text := previous + "\nThe second turn answer."

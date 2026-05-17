@@ -1198,10 +1198,32 @@ func captureCursorPane(ctx context.Context, sessionName string) (string, error) 
 }
 
 func cursorCapturedAfterBaseline(captured, baseline string) string {
-	if baseline != "" {
-		if idx := strings.LastIndex(captured, baseline); idx >= 0 {
-			return captured[idx+len(baseline):]
+	if baseline == "" {
+		return captured
+	}
+	// Exact substring match (original fast path).
+	if idx := strings.LastIndex(captured, baseline); idx >= 0 {
+		return captured[idx+len(baseline):]
+	}
+	// The pane content diverges mid-way on multi-turn: the baseline ends
+	// with the previous ready-prompt ("→ Add a follow-up ...") while the
+	// captured pane replaces that section with the new turn's content.
+	// Find the longest common prefix and return everything after it.
+	minLen := len(captured)
+	if len(baseline) < minLen {
+		minLen = len(baseline)
+	}
+	commonLen := 0
+	for i := 0; i < minLen; i++ {
+		if captured[i] != baseline[i] {
+			break
 		}
+		commonLen = i + 1
+	}
+	// Only trust the prefix if it covers a meaningful portion of the
+	// baseline (at least 30%) to avoid false positives on short matches.
+	if commonLen > 0 && commonLen*100/len(baseline) >= 30 {
+		return captured[commonLen:]
 	}
 	return captured
 }
