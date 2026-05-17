@@ -9,6 +9,7 @@ Covered providers:
 - `codex-cli`
 - `cursor-cli`
 - `gemini-cli`
+- `opencode-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -92,6 +93,16 @@ Gemini CLI:
 - Workflow and chat both use the tmux transport when an owner session id is
   available.
 
+OpenCode CLI:
+
+- Interactive transport: `opencode <project>` TUI inside tmux.
+- The adapter must not use `opencode run --format json` for the product path.
+- Default model selector: `opencode-cli`, which means "do not pass --model; let
+  OpenCode use its configured/account default".
+- Model overrides are passed as OpenCode provider/model selectors through
+  `--model <provider/model>`.
+- Workflow and chat both use the tmux transport.
+
 ## Image Input Contract
 
 `llmtypes.ImageContent` must never be silently dropped.
@@ -109,6 +120,9 @@ Gemini CLI:
   implemented for the TUI session.
 - Gemini CLI: rejects image input in the current adapter because the supported
   headless/tmux transport has no image attachment flag.
+- OpenCode CLI tmux: rejects `llmtypes.ImageContent` until live image
+  attachment is implemented for the TUI session. Workspace image tools may still
+  pass local file paths in a text prompt.
 
 ## Launch Contract
 
@@ -170,6 +184,16 @@ Provider-specific launch requirements:
     turns; Gemini receives a bounded prior-turn transcript with the current
     message so the final answer remains correct even when native TUI context is
     not sufficient
+- OpenCode CLI:
+  - launch `opencode <workspace>` in tmux from the caller-provided workspace
+    directory
+  - pass model with `--model` only when the model selector is not
+    `opencode-cli` or `auto`
+  - pass system/developer instructions through a temporary/restored
+    `AGENTS.md`
+  - pass MCP bridge servers through temporary/restored `opencode.jsonc` config
+    when an MCP config is provided
+  - never use `opencode run --format json` for normal chat/workflow execution
 
 ## Input Contract
 
@@ -323,6 +347,9 @@ Provider hints:
   active thinking/running/editing/tool status is visible.
 - Gemini CLI: idle means the TUI is ready for input, commonly including
   `Type your message`, with no active running state.
+- OpenCode CLI: idle means the OpenCode input/footer is ready, commonly
+  including `Ask anything` or `ctrl+p commands`, with no active
+  thinking/running/tool status visible.
 
 Never inject a final-answer marker into the prompt just to detect completion.
 
@@ -337,6 +364,9 @@ Final text extraction must use provider-native TUI structure when available:
   TUI chrome, tool/status lines, echoed user input, and old assistant replay.
 - Gemini CLI: prefer the latest marked assistant block beginning with `✦`, `→`,
   or `->`; otherwise fall back to filtered visible assistant text.
+- OpenCode CLI: prefer the assistant block after the TUI `Thought for ...`
+  marker and before the model/status footer; otherwise fall back to filtered
+  visible assistant text.
 
 The extracted final text must not include tool panels, shell output, footer
 chrome, ready prompts, old assistant replay, or echoed user input.
@@ -410,6 +440,8 @@ Native resume metadata:
   state, resumed with `cursor-agent --resume <chatId>` from the same workspace.
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project dir.
+- OpenCode CLI: `opencode_session_id` when available, resumed with
+  `opencode --session <session_id>` from the same workspace.
 
 On native resume, prefer sending only the latest user message when the provider
 session/thread is proven to retain context. If a provider does not reliably

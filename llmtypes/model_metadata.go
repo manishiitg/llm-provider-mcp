@@ -62,6 +62,12 @@ type ModelMetadata struct {
 	// (e.g., Gemini 2.5 Pro's thinkingBudget, which controls reasoning token budget).
 	// Specific ranges/units are provider-specific and documented externally.
 	SupportsThinkingBudget bool `json:"supports_thinking_budget"`
+
+	// ModelSelectionMode tells the frontend how to present model selection for
+	// this provider. "fixed_tier" (default) means a small set of curated
+	// tiers/models shown as cards. "dynamic" means the provider supports many
+	// models that should be fetched on demand via a CLI command or API.
+	ModelSelectionMode string `json:"model_selection_mode,omitempty"`
 }
 
 // ModelMetadataProvider is an optional interface that models can implement

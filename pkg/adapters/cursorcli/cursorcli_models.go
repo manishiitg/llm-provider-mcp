@@ -8,9 +8,6 @@ import (
 
 var knownCursorCLIModels = []string{
 	"cursor-cli",
-	"gpt-5",
-	"sonnet-4",
-	"sonnet-4-thinking",
 }
 
 // GetAllCursorCLIModels returns the frontend-visible Cursor Agent CLI models.
@@ -23,6 +20,7 @@ func GetAllCursorCLIModels() []*llmtypes.ModelMetadata {
 		if err != nil || meta == nil {
 			continue
 		}
+		meta.ModelSelectionMode = "dynamic"
 		models = append(models, meta)
 	}
 

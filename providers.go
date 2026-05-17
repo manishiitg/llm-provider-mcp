@@ -25,6 +25,7 @@ import (
 	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
+	opencodecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/opencodecli"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 	zaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 
@@ -56,6 +57,7 @@ const (
 	ProviderGeminiCLI         Provider = "gemini-cli"
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderCursorCLI         Provider = "cursor-cli"
+	ProviderOpenCodeCLI       Provider = "opencode-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
@@ -63,6 +65,7 @@ const (
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "cursor-cli"
+	DefaultOpenCodeModel  = "opencode-cli"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported normal value: "experimental" for tmux TUI mode.
@@ -97,6 +100,12 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
 }
 
+// CleanupOpenCodeCLIInteractiveSessions removes tmux sessions created by the
+// OpenCode CLI interactive chat mode.
+func CleanupOpenCodeCLIInteractiveSessions(ctx context.Context) error {
+	return opencodecli.CleanupOpenCodeCLIInteractiveSessions(ctx)
+}
+
 // CleanupGeminiCLIInteractiveSessions removes Gemini CLI tmux sessions
 // registered by this process.
 func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
@@ -119,6 +128,12 @@ func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string
 // interactive tmux session registered for the owning application session.
 func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
+}
+
+// SendOpenCodeCLIInteractiveInput sends user input to a live OpenCode CLI
+// interactive tmux session registered for the owning application session.
+func SendOpenCodeCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return opencodecli.SendOpenCodeInteractiveInput(ctx, sessionID, message)
 }
 
 // SendGeminiCLIInteractiveInput sends user input to a live Gemini CLI
@@ -160,6 +175,7 @@ type ProviderAPIKeys struct {
 	GeminiCLI         *string
 	CodexCLI          *string
 	CursorCLI         *string
+	OpenCodeCLI       *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
 	ElevenLabs        *string
@@ -201,6 +217,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.CodexCLI = key
 	case ProviderCursorCLI:
 		k.CursorCLI = key
+	case ProviderOpenCodeCLI:
+		k.OpenCodeCLI = key
 	case ProviderMiniMax:
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
@@ -264,6 +282,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCodexCLI(config)
 	case ProviderCursorCLI:
 		llm, err = initializeCursorCLI(config)
+	case ProviderOpenCodeCLI:
+		llm, err = initializeOpenCodeCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:
@@ -2274,6 +2294,60 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeOpenCodeCLI creates and configures an OpenCode CLI adapter instance.
+func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "opencode_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "opencode-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = DefaultOpenCodeModel
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing OpenCode CLI adapter - model_id: %s", modelID)
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.OpenCodeCLI != nil {
+		apiKey = *config.APIKeys.OpenCodeCLI
+		logger.Infof("OpenCode CLI: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("OPENCODE_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("OpenCode CLI: using API key from OPENCODE_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("OpenCode CLI: no explicit API key — will use OpenCode's own provider auth")
+	}
+
+	llm := opencodecli.NewOpenCodeCLIAdapter(apiKey, modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "opencode_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "opencode-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized OpenCode CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // GetDefaultModel returns the default model for each provider from environment variables
 func GetDefaultModel(provider Provider) string {
 	switch provider {
@@ -2348,6 +2422,14 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return DefaultCursorCLIModel
+	case ProviderOpenCodeCLI:
+		if primaryModel := os.Getenv("OPENCODE_CLI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		if primaryModel := os.Getenv("OPENCODE_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return DefaultOpenCodeModel
 	default:
 		return ""
 	}
@@ -2517,6 +2599,16 @@ func GetDefaultFallbackModels(provider Provider) []string {
 			return models
 		}
 		return []string{}
+	case ProviderOpenCodeCLI:
+		fallbackModelsEnv := os.Getenv("OPENCODE_CLI_FALLBACK_MODELS")
+		if fallbackModelsEnv == "" {
+			fallbackModelsEnv = os.Getenv("OPENCODE_FALLBACK_MODELS")
+		}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		return []string{}
 	default:
 		return []string{}
 	}
@@ -2660,6 +2752,20 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("CURSORCLI_CROSS_FALLBACK_PROVIDER")
 		}
 		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderOpenCodeCLI:
+		crossFallbackEnv := os.Getenv("OPENCODE_CLI_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("OPENCODE_CROSS_FALLBACK_MODELS")
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("OPENCODE_CLI_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("OPENCODE_CROSS_FALLBACK_PROVIDER")
+		}
+		return prefixModelsWithProvider(models, crossProvider)
 	default:
 		return []string{}
 	}
@@ -2668,10 +2774,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -3487,6 +3593,38 @@ func WithCursorApproveMCPs() llmtypes.CallOption {
 	return cursorcli.WithApproveMCPs()
 }
 
+// WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd for tmux launch.
+func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
+	return opencodecli.WithWorkingDir(dir)
+}
+
+// WithOpenCodeInteractiveSessionID links an OpenCode CLI tmux run to the
+// owning application session for live follow-up input.
+func WithOpenCodeInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return opencodecli.WithInteractiveSessionID(sessionID)
+}
+
+// WithOpenCodePersistentInteractiveSession keeps the OpenCode CLI tmux session
+// alive across turns.
+func WithOpenCodePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return opencodecli.WithPersistentInteractiveSession(enabled)
+}
+
+// WithOpenCodeMCPConfig writes a temporary/restored opencode.jsonc MCP config.
+func WithOpenCodeMCPConfig(config string) llmtypes.CallOption {
+	return opencodecli.WithMCPConfig(config)
+}
+
+// WithOpenCodeProjectConfig writes a temporary/restored opencode.jsonc config.
+func WithOpenCodeProjectConfig(config string) llmtypes.CallOption {
+	return opencodecli.WithProjectConfig(config)
+}
+
+// WithOpenCodeAgent sets the OpenCode --agent flag.
+func WithOpenCodeAgent(agent string) llmtypes.CallOption {
+	return opencodecli.WithAgent(agent)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
@@ -3499,6 +3637,7 @@ type LLMDefaultsResponse struct {
 	AzureConfig             map[string]interface{} `json:"azure_config"`
 	ZAIConfig               map[string]interface{} `json:"zai_config"`
 	KimiConfig              map[string]interface{} `json:"kimi_config"`
+	OpenCodeConfig          map[string]interface{} `json:"opencode_cli_config"`
 	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
 	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
 	ElevenLabsConfig        map[string]interface{} `json:"elevenlabs_config"`
@@ -3704,6 +3843,16 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	kimiAPIKey := os.Getenv("KIMI_API_KEY")
 
+	// OpenCode CLI configuration
+	opencodeModel := os.Getenv("OPENCODE_CLI_PRIMARY_MODEL")
+	if opencodeModel == "" {
+		opencodeModel = os.Getenv("OPENCODE_PRIMARY_MODEL")
+	}
+	if opencodeModel == "" {
+		opencodeModel = DefaultOpenCodeModel
+	}
+	opencodeAPIKey := os.Getenv("OPENCODE_API_KEY")
+
 	// MiniMax configuration
 	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
 	if minimaxModel == "" {
@@ -3786,6 +3935,12 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"fallback_models": []string{},
 			"api_key":         kimiAPIKey,
 		},
+		OpenCodeConfig: map[string]interface{}{
+			"provider":        "opencode-cli",
+			"model_id":        opencodeModel,
+			"fallback_models": []string{},
+			"api_key":         opencodeAPIKey,
+		},
 		MinimaxConfig: map[string]interface{}{
 			"provider":        "minimax",
 			"model_id":        minimaxModel,
@@ -3818,6 +3973,7 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"azure":               getAzureAvailableModels(),
 			"z-ai":                getZAIAvailableModels(),
 			"kimi":                getKimiAvailableModels(),
+			"opencode-cli":        getOpenCodeAvailableModels(),
 			"minimax":             getMiniMaxAvailableModels(),
 			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
 			"elevenlabs":          getElevenLabsAvailableModels(),
@@ -3858,6 +4014,25 @@ func getKimiAvailableModels() []string {
 	}
 
 	return kimiadapter.GetDefaultVisibleKimiModelIDs()
+}
+
+func getOpenCodeAvailableModels() []string {
+	modelsStr := os.Getenv("OPENCODE_CLI_AVAILABLE_MODELS")
+	if modelsStr == "" {
+		modelsStr = os.Getenv("OPENCODE_AVAILABLE_MODELS")
+	}
+	if modelsStr != "" {
+		var models []string
+		for _, m := range strings.Split(modelsStr, ",") {
+			if t := strings.TrimSpace(m); t != "" {
+				models = append(models, t)
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	return []string{DefaultOpenCodeModel, "openai/gpt-5.1", "anthropic/claude-sonnet-4-5"}
 }
 
 // getMiniMaxCodingPlanAvailableModels returns Anthropic model names available via MiniMax coding plan
@@ -3988,6 +4163,9 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	case "kimi":
 		fmt.Printf("[API KEY VALIDATION] Testing Kimi API key\n")
 		isValid, message, err = validateKimiAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "opencode-cli":
+		fmt.Printf("[API KEY VALIDATION] Testing OpenCode CLI runtime\n")
+		isValid, message, err = validateOpenCodeCLI(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -4017,6 +4195,52 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		Message:          message,
 		CorrectedOptions: correctedOptions,
 	}
+}
+
+func validateOpenCodeCLI(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[OPENCODE VALIDATION] Starting OpenCode CLI validation\n")
+
+	if modelID == "" {
+		modelID = DefaultOpenCodeModel
+	}
+
+	noopLog := &noopLoggerImpl{}
+	temperature := extractTemperatureFromOptions(options)
+
+	config := Config{
+		Provider:    ProviderOpenCodeCLI,
+		ModelID:     modelID,
+		Temperature: temperature,
+		Logger:      noopLog,
+		Context:     context.Background(),
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		config.APIKeys = &ProviderAPIKeys{OpenCodeCLI: &apiKey}
+	}
+
+	llm, err := initializeOpenCodeCLI(config)
+	if err != nil {
+		return false, fmt.Sprintf("Failed to create OpenCode CLI instance: %v", err), nil
+	}
+
+	callOptions := createCallOptionsFromMap(options)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	resp, err := llm.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly: OPENCODE_OK"}},
+		},
+	}, callOptions...)
+	if err != nil {
+		return false, fmt.Sprintf("OpenCode CLI test generation failed: %v", err), nil
+	}
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "OPENCODE_OK") {
+		return false, "OpenCode CLI returned an unexpected validation response", nil
+	}
+
+	return true, fmt.Sprintf("OpenCode CLI is working for model %s", modelID), nil
 }
 
 func validateZAIAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
