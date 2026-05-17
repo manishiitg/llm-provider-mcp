@@ -278,26 +278,26 @@ func RunVertexAnthropicTestWithModel(modelID string) error {
 					})
 				}
 
-				// Step 2: Add dummy tool responses for each tool call
+				// Step 2: Add synthetic tool responses for each tool call
 				// Anthropic requires ALL tool_result blocks in a single user message when there are multiple tool_use blocks
 				// So we combine all tool responses into one message (the adapter will convert this correctly)
 				toolResponseParts := make([]llmtypes.ContentPart, 0, len(response3.Choices[0].ToolCalls))
 				for i, tc := range response3.Choices[0].ToolCalls {
-					var dummyResult string
+					var syntheticResult string
 					if tc.FunctionCall.Name == "get_weather" {
-						dummyResult = `{"temperature": 72, "condition": "sunny", "location": "San Francisco, CA"}`
+						syntheticResult = `{"temperature": 72, "condition": "sunny", "location": "San Francisco, CA"}`
 					} else if tc.FunctionCall.Name == "calculate" {
-						dummyResult = `{"result": 345}`
+						syntheticResult = `{"result": 345}`
 					} else {
-						dummyResult = `{"status": "success", "message": "Tool executed successfully"}`
+						syntheticResult = `{"status": "success", "message": "Tool executed successfully"}`
 					}
 
 					toolResponseParts = append(toolResponseParts, llmtypes.ToolCallResponse{
 						ToolCallID: tc.ID,
 						Name:       tc.FunctionCall.Name,
-						Content:    dummyResult,
+						Content:    syntheticResult,
 					})
-					logger.Infof("  Added dummy response for tool call %d (%s): %s", i+1, tc.FunctionCall.Name, dummyResult)
+					logger.Infof("  Added synthetic response for tool call %d (%s): %s", i+1, tc.FunctionCall.Name, syntheticResult)
 				}
 
 				// Combine all tool responses into a single tool message

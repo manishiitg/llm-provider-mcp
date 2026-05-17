@@ -61,6 +61,7 @@ const (
 	StreamChunkTypeToolCall      StreamChunkType = "tool_call" // Complete tool call
 	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
+	StreamChunkTypeTerminal      StreamChunkType = "terminal" // Live terminal/screen snapshot
 )
 
 // StreamChunk represents a single chunk in a streaming response

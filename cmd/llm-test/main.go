@@ -134,6 +134,7 @@ func main() {
 	rootCmd.AddCommand(geminiclichmd.GeminiCLICmd)
 	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingContentTestCmd)
 	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingMultiTurnTestCmd)
+	rootCmd.AddCommand(geminiclichmd.GeminiCLISearchWebTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLICmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingContentTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingMultiTurnTestCmd)

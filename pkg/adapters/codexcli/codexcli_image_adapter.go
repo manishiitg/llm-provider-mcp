@@ -132,8 +132,9 @@ func (a *CodexCLIImageAdapter) runSingleImageCommand(ctx context.Context, workdi
 		"-o", lastMessagePath,
 	}
 
-	if a.modelID != "" && a.modelID != "codex-cli" {
-		args = append(args, "--model", a.modelID)
+	modelToUse := resolveCodexCLIModelID(a.modelID)
+	if modelToUse != "" && modelToUse != "codex-cli" {
+		args = append(args, "--model", modelToUse)
 	}
 	if inputImagePath != "" {
 		args = append(args, "--image", inputImagePath)

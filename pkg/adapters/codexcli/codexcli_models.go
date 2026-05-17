@@ -1,13 +1,16 @@
 package codexcli
 
-import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+import (
+	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
 
 var knownCodexCLIModels = []string{
 	"codex-cli",
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.3-codex",
-	"gpt-5.3-codex-spark",
+	"high",
+	"medium",
+	"low",
 }
 
 // GetAllCodexCLIModels returns the frontend-visible Codex CLI models.
@@ -21,12 +24,32 @@ func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
 			continue
 		}
 
-		if modelID == "codex-cli" {
+		switch modelID {
+		case "codex-cli":
 			meta.ModelName = "Auto (default, pricing varies)"
+		case "high":
+			meta.ModelName = "High (GPT-5.5)"
+		case "medium":
+			meta.ModelName = "Medium (GPT-5.4)"
+		case "low":
+			meta.ModelName = "Low (GPT-5.4 Mini)"
 		}
 
 		models = append(models, meta)
 	}
 
 	return models
+}
+
+func resolveCodexCLIModelID(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "high":
+		return "gpt-5.5"
+	case "medium":
+		return "gpt-5.4"
+	case "low":
+		return "gpt-5.4-mini"
+	default:
+		return strings.TrimSpace(modelID)
+	}
 }

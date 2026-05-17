@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -11,8 +12,10 @@ import (
 )
 
 const (
-	runClaudeExperimentalIntegrationEnv = "RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION"
-	defaultClaudeExperimentalTestModel  = "claude-haiku-4-5-20251001"
+	runClaudeExperimentalIntegrationEnv   = "RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION"
+	runClaudeExperimentalLiveE2EEnv       = "RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E"
+	runClaudeExperimentalPersistentE2EEnv = "RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E"
+	defaultClaudeExperimentalTestModel    = "claude-haiku-4-5-20251001"
 )
 
 func TestClaudeCodeExperimentalIntegrationNoInternalTools(t *testing.T) {
@@ -290,10 +293,141 @@ func TestClaudeCodeExperimentalIntegrationHaikuExtendedResumeIsolation(t *testin
 	assertClaudeExperimentalHaikuMetadata(t, secondB)
 }
 
+func TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape(t *testing.T) {
+	skipClaudeExperimentalLiveE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	ownerSessionID := "claude-live-e2e-" + randomHex(4)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := adapter.GenerateContent(
+			parentCtx,
+			[]llmtypes.MessageContent{
+				{
+					Role: llmtypes.ChatMessageTypeSystem,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep running until interrupted if the user asks for a long response."},
+					},
+				},
+				{
+					Role: llmtypes.ChatMessageTypeHuman,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: "Write 2000 numbered lines about reliable terminal transports. Use one short sentence per line. Do not summarize."},
+					},
+				},
+			},
+			WithInteractiveSessionID(ownerSessionID),
+			WithEffort("low"),
+		)
+		errCh <- err
+	}()
+
+	waitForIntegrationInteractiveSession(t, ownerSessionID, 30*time.Second, errCh)
+	waitForIntegrationClaudeActivity(t, ownerSessionID, 30*time.Second, errCh)
+
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	liveErr := SendClaudeCodeExperimentalInput(sendCtx, ownerSessionID, "LIVE_HAIKU_E2E_FOLLOWUP: acknowledge this after your current work if not interrupted.")
+	sendCancel()
+	if liveErr != nil {
+		cancel()
+		t.Fatalf("SendClaudeCodeExperimentalInput error = %v", liveErr)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatalf("GenerateContent completed normally; want cancellation after Escape path")
+		}
+		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("GenerateContent error = %v, want context canceled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for Claude Code live E2E cancellation")
+	}
+}
+
+func TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	ownerSessionID := "claude-persistent-e2e-" + randomHex(4)
+	codeword := "persistent-haiku-token-4821"
+	options := []llmtypes.CallOption{
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithEffort("low"),
+	}
+
+	first, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep answers short."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Remember this exact token: " + codeword + ". Reply exactly: saved " + codeword},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("first GenerateContent error = %v", err)
+	}
+	if got := firstChoiceText(first); !containsFold(got, codeword) {
+		t.Fatalf("first content = %q, want token %q", got, codeword)
+	}
+
+	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only the token."},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("second GenerateContent error = %v", err)
+	}
+	if got := strings.TrimSpace(firstChoiceText(second)); !containsFold(got, codeword) {
+		t.Fatalf("second content = %q, want token %q from same persistent tmux session", got, codeword)
+	}
+	if persistent, _ := second.Choices[0].GenerationInfo.Additional["claude_code_persistent_interactive"].(bool); !persistent {
+		t.Fatalf("persistent metadata = %#v, want true", second.Choices[0].GenerationInfo.Additional["claude_code_persistent_interactive"])
+	}
+	if _, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); !ok {
+		t.Fatalf("persistent interactive session not registered after completed turn")
+	}
+}
+
 func skipClaudeExperimentalIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv(runClaudeExperimentalIntegrationEnv) == "" {
 		t.Skip("set " + runClaudeExperimentalIntegrationEnv + "=1 to run real Claude Code experimental integration tests")
+	}
+}
+
+func skipClaudeExperimentalLiveE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv(runClaudeExperimentalLiveE2EEnv) == "" {
+		t.Skip("set " + runClaudeExperimentalLiveE2EEnv + "=1 to run real Claude Code Haiku live-input/Escape E2E")
+	}
+}
+
+func skipClaudeExperimentalPersistentE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv(runClaudeExperimentalPersistentE2EEnv) == "" {
+		t.Skip("set " + runClaudeExperimentalPersistentE2EEnv + "=1 to run real Claude Code Haiku persistent multi-turn E2E")
 	}
 }
 
@@ -326,6 +460,51 @@ func firstChoiceText(resp *llmtypes.ContentResponse) string {
 		return ""
 	}
 	return strings.TrimSpace(resp.Choices[0].Content)
+}
+
+func waitForIntegrationInteractiveSession(t *testing.T, ownerSessionID string, timeout time.Duration, errCh <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-errCh:
+			t.Fatalf("Claude Code exited before interactive session registration: %v", err)
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for Claude Code interactive session %q", ownerSessionID)
+		case <-ticker.C:
+			if _, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+				return
+			}
+		}
+	}
+}
+
+func waitForIntegrationClaudeActivity(t *testing.T, ownerSessionID string, timeout time.Duration, errCh <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-errCh:
+			t.Fatalf("Claude Code exited before activity was visible: %v", err)
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for Claude Code activity in interactive session %q", ownerSessionID)
+		case <-ticker.C:
+			sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+			if !ok {
+				continue
+			}
+			captured, err := captureTmuxPane(context.Background(), sessionName)
+			if err == nil && hasClaudeActivity(captured) {
+				return
+			}
+		}
+	}
 }
 
 func experimentalClaudeResumedSessionID(resp *llmtypes.ContentResponse) string {

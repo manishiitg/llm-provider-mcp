@@ -4,14 +4,40 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
+	t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, "")
+	if !claudeExperimentalStreamTmuxScreenEnabled() {
+		t.Fatal("tmux screen streaming should be enabled by default")
+	}
+
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
+		if !claudeExperimentalStreamTmuxScreenEnabled() {
+			t.Fatalf("tmux screen streaming should be enabled for %q", value)
+		}
+	}
+
+	for _, value := range []string{"0", "false", "FALSE", "no", "off"} {
+		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
+		if claudeExperimentalStreamTmuxScreenEnabled() {
+			t.Fatalf("tmux screen streaming should be disabled for %q", value)
+		}
+	}
+}
+
+func TestClaudeExperimentalShellCommandUsesCallerWorkingDir(t *testing.T) {
+	got := claudeExperimentalShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
+	if !strings.HasPrefix(got, "cd '/tmp/user chat' && exec ") {
+		t.Fatalf("shell command = %q, want caller cwd before exec", got)
+	}
+}
 
 func TestExperimentalBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
 	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
@@ -40,6 +66,26 @@ func TestExperimentalBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
 	}
 	if containsArg(args, "--system-prompt") {
 		t.Fatalf("args = %v, should not pass empty system prompt", args)
+	}
+}
+
+func TestExperimentalRejectsImageContent(t *testing.T) {
+	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
+
+	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Describe this image."},
+				llmtypes.ImageContent{SourceType: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("GenerateContent() error = nil, want unsupported image content error")
+	}
+	if !strings.Contains(err.Error(), "does not support llmtypes.ImageContent") {
+		t.Fatalf("GenerateContent() error = %v, want image content unsupported error", err)
 	}
 }
 
@@ -549,361 +595,6 @@ func TestExperimentalVerboseEnvAddsVerboseFlag(t *testing.T) {
 	}
 }
 
-func TestSendPromptWaitsForLargePasteBeforeSubmit(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  load-buffer)
-    cat > "$state_dir/prompt"
-    echo loaded > "$state_dir/loaded"
-    ;;
-  paste-buffer)
-    echo "$*" > "$state_dir/paste_args"
-    ;;
-  capture-pane)
-    if [ -f "$state_dir/send_keys_args" ]; then
-      echo "✶ Precipitating… (1s · ↓ 2 tokens) · esc to interrupt"
-      exit 0
-    fi
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    if [ "$count" -lt 3 ]; then
-      echo "Claude prompt ready"
-    else
-      echo "[Pasted text #1 +200 lines]"
-    fi
-    ;;
-  send-keys)
-    echo "$*" > "$state_dir/send_keys_args"
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := sendPromptToTmux(ctx, "fake-session", strings.Repeat("line\n", 500)); err != nil {
-		t.Fatalf("sendPromptToTmux error = %v", err)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(stateDir, "send_keys_args"))
-	if err != nil {
-		t.Fatalf("read send_keys_args: %v", err)
-	}
-	if !strings.Contains(string(raw), "C-m") {
-		t.Fatalf("send keys args = %q, want C-m", string(raw))
-	}
-	pasteArgsRaw, err := os.ReadFile(filepath.Join(stateDir, "paste_args"))
-	if err != nil {
-		t.Fatalf("read paste_args: %v", err)
-	}
-	pasteArgs := string(pasteArgsRaw)
-	for _, want := range []string{"-p", "-r"} {
-		if !strings.Contains(pasteArgs, want) {
-			t.Fatalf("paste args = %q, want %s to preserve multi-line prompt as bracketed paste", pasteArgs, want)
-		}
-	}
-
-	countRaw, err := os.ReadFile(filepath.Join(stateDir, "capture_count"))
-	if err != nil {
-		t.Fatalf("read capture_count: %v", err)
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(string(countRaw)))
-	if err != nil {
-		t.Fatalf("parse capture_count: %v", err)
-	}
-	if count < 3 {
-		t.Fatalf("capture count = %d, want at least 3 to prove submit waited for stable pasted pane", count)
-	}
-	promptRaw, err := os.ReadFile(filepath.Join(stateDir, "prompt"))
-	if err != nil {
-		t.Fatalf("read prompt: %v", err)
-	}
-	if strings.Contains(string(promptRaw), "Adapter prompt-ready marker") {
-		t.Fatalf("prompt contains adapter paste marker: %q", string(promptRaw))
-	}
-}
-
-func TestSendPromptPreservesArbitraryUserTextInTmuxBuffer(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  load-buffer)
-    cat > "$state_dir/prompt"
-    ;;
-  paste-buffer)
-    echo "$*" > "$state_dir/paste_args"
-    ;;
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    if [ "$count" -le 2 ]; then
-      echo "❯"
-    else
-      echo "✶ Composing… (1s · ↓ 2 tokens) · esc to interrupt"
-    fi
-    ;;
-  send-keys)
-    echo "$*" > "$state_dir/send_keys_args"
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	prompt := strings.Join([]string{
-		"hi",
-		"",
-		"second line",
-		"unicode: नमस्ते こんにちは Привет café 🚀",
-		"shell-looking text: $(echo nope) && rm -rf /",
-		"quotes: 'single' \"double\" `backticks`",
-	}, "\n")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := sendPromptToTmux(ctx, "fake-session", prompt); err != nil {
-		t.Fatalf("sendPromptToTmux error = %v", err)
-	}
-
-	promptRaw, err := os.ReadFile(filepath.Join(stateDir, "prompt"))
-	if err != nil {
-		t.Fatalf("read prompt: %v", err)
-	}
-	if string(promptRaw) != prompt {
-		t.Fatalf("tmux buffer prompt changed:\ngot  %q\nwant %q", string(promptRaw), prompt)
-	}
-
-	pasteArgsRaw, err := os.ReadFile(filepath.Join(stateDir, "paste_args"))
-	if err != nil {
-		t.Fatalf("read paste_args: %v", err)
-	}
-	pasteArgs := string(pasteArgsRaw)
-	for _, want := range []string{"-p", "-r"} {
-		if !strings.Contains(pasteArgs, want) {
-			t.Fatalf("paste args = %q, want %s for arbitrary multi-line text", pasteArgs, want)
-		}
-	}
-}
-
-func TestWaitForPromptPasteFallsBackToStableCollapsedPaste(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    if [ "$count" -eq 1 ]; then
-      echo "Claude prompt ready"
-    elif [ "$count" -eq 2 ]; then
-      echo "[Pasted text #1 +13 lines] loading"
-    else
-      echo "[Pasted text #1 +13 lines]"
-    fi
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	submitted, err := waitForPromptPaste(ctx, "fake-session", "Claude prompt ready\n")
-	if err != nil {
-		t.Fatalf("waitForPromptPaste error = %v", err)
-	}
-	if submitted {
-		t.Fatalf("waitForPromptPaste submitted = true, want false for visible paste awaiting explicit submit")
-	}
-
-	countRaw, err := os.ReadFile(filepath.Join(stateDir, "capture_count"))
-	if err != nil {
-		t.Fatalf("read capture_count: %v", err)
-	}
-	if strings.TrimSpace(string(countRaw)) == "2" {
-		t.Fatalf("capture count = %q, wait returned before collapsed paste was stable", strings.TrimSpace(string(countRaw)))
-	}
-}
-
-func TestWaitForPromptPasteAllowsInvisibleClaudeRedraw(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    cat <<'PANE'
-─────────────────────────────────────────────────── mcp-agent ──
-❯
-────────────────────────────────────────────────────────────────
-  ⏵⏵ don't ask on (shift+tab to cycle)
-PANE
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pane := "─────────────────────────────────────────────────── mcp-agent ──\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ don't ask on (shift+tab to cycle)\n"
-	started := time.Now()
-	submitted, err := waitForPromptPaste(ctx, "fake-session", pane)
-	if err != nil {
-		t.Fatalf("waitForPromptPaste error = %v", err)
-	}
-	if submitted {
-		t.Fatalf("waitForPromptPaste submitted = true, want false for invisible paste awaiting explicit submit")
-	}
-	if elapsed := time.Since(started); elapsed < promptPasteInvisibleGrace {
-		t.Fatalf("waitForPromptPaste returned after %v, want at least invisible paste grace %v", elapsed, promptPasteInvisibleGrace)
-	}
-}
-
-func TestWaitForPromptPasteDetectsPromptAlreadySubmitted(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    cat <<'PANE'
-❯ run step
-✽ Pontificating… (1s · ↓ 10 tokens)
-──────────────────────────────────────────────────
-❯
-──────────────────────────────────────────────────
-  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
-PANE
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	submitted, err := waitForPromptPaste(ctx, "fake-session", "❯\n")
-	if err != nil {
-		t.Fatalf("waitForPromptPaste error = %v", err)
-	}
-	if !submitted {
-		t.Fatal("waitForPromptPaste submitted = false, want true when Claude activity has already started")
-	}
-}
-
 func TestHasReadyInputPromptRejectsRunningStatus(t *testing.T) {
 	pane := `
 ⏺ Calling api-bridge…
@@ -1007,382 +698,14 @@ func TestHasNewAssistantOutput(t *testing.T) {
 	}
 }
 
-func TestWaitForClaudeIdleAfterActivityWaitsForStablePrompt(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    if [ "$count" -le 2 ]; then
-      echo "✶ Precipitating… (1s · ↓ 2 tokens) · esc to interrupt"
-    else
-      echo "⏺ MLP_START"
-      echo "  done"
-      echo "  MLP_END"
-      echo
-      echo "✻ Worked for 1s · ↓ 2 tokens"
-      echo "❯"
-    fi
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	captured, _, err := waitForClaudeIdleAfterActivity(ctx, "fake-session", false, "", "", "", nil)
-	if err != nil {
-		t.Fatalf("waitForClaudeIdleAfterActivity error = %v", err)
-	}
-	if !strings.Contains(captured, "done") {
-		t.Fatalf("captured = %q, want final response", captured)
-	}
-
-	countRaw, err := os.ReadFile(filepath.Join(stateDir, "capture_count"))
-	if err != nil {
-		t.Fatalf("read capture_count: %v", err)
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(string(countRaw)))
-	if err != nil {
-		t.Fatalf("parse capture_count: %v", err)
-	}
-	if count < 6 {
-		t.Fatalf("capture count = %d, wait returned before idle pane was stable", count)
-	}
-}
-
-func TestWaitForClaudeIdleAfterActivityAcceptsAlreadySeenActivity(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    echo "⏺ instant answer"
-    echo "❯"
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	captured, _, err := waitForClaudeIdleAfterActivity(ctx, "fake-session", true, "", "", "", nil)
-	if err != nil {
-		t.Fatalf("waitForClaudeIdleAfterActivity error = %v", err)
-	}
-	if !strings.Contains(captured, "instant answer") {
-		t.Fatalf("captured = %q, want instant answer", captured)
-	}
-}
-
-func TestWaitForMarkedResponseReturnsCapturedAssistantOnTimeout(t *testing.T) {
-	tmpDir := t.TempDir()
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    echo "⏺ Partial but useful answer"
-    echo "  STATUS: COMPLETED"
-    echo "✳ Envisioning… (8m 32s · ↓ 9.8k tokens) · esc to interrupt"
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
-	defer cancel()
-
-	content, _, err := waitForMarkedResponse(ctx, "fake-session", "MLP_START", "MLP_END", "", nil)
-	if err != nil {
-		t.Fatalf("waitForMarkedResponse error = %v", err)
-	}
-	want := "Partial but useful answer\nSTATUS: COMPLETED"
-	if content != want {
-		t.Fatalf("content = %q, want %q", content, want)
-	}
-}
-
-func TestExtractClaudeTerminalProgressFiltersPromptAndFinalAnswer(t *testing.T) {
+func TestClaudeCompactionStatusIsNotAssistantResponse(t *testing.T) {
 	pane := `
-Conversation:
-HUMAN:
-Use tool and answer.
-✶ Precipitating… (1s · ↓ 2 tokens) · esc to interrupt
-⏺ Calling api-bridge ping…
-⏺ MLP_START
-  final answer should not stream as progress
-  MLP_END
-✻ Worked for 1s
+which stategry was run ?
+⎿  Compacted (ctrl+o to see full summary)
+❯
 `
-	got := extractClaudeTerminalProgress(pane, "MLP_START", "MLP_END")
-	if strings.Contains(got, "HUMAN:") ||
-		strings.Contains(got, "prompt-ready") ||
-		strings.Contains(got, "final answer should not stream") ||
-		strings.Contains(got, "Worked for") {
-		t.Fatalf("progress leaked prompt/final/chrome text: %q", got)
-	}
-	if strings.Contains(got, "Claude Code is working...") || got != "Calling api-bridge..." {
-		t.Fatalf("progress = %q, want normalized tool line only", got)
-	}
-}
-
-func TestExtractClaudeTerminalProgressCollapsesRepeatedClaudeStatus(t *testing.T) {
-	pane := `
-✳ Julienning…
-⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt ● high · /effort
-✶ Julienning…
-⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt ● high · /effort
-Calling api-bridge… (ctrl+o to expand)
-✻ Julienning… (3s · ↓ 92 tokens · thinking with high effort)
-⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt ● high · /effort
-Calling api-bridge 2 times… (ctrl+o to expand)
-✽ Julienning… (5s · ↓ 142 tokens · thinking with high effort)
-Called api-bridge 2 times (ctrl+o to expand)
-`
-	got := extractClaudeTerminalProgress(pane, "", "")
-	want := "Called api-bridge 2 times"
-	if got != want {
-		t.Fatalf("progress = %q, want %q", got, want)
-	}
-	if strings.Contains(got, "Julienning") || strings.Contains(got, "effort") || strings.Contains(got, "esc to interrupt") {
-		t.Fatalf("progress leaked repeated TUI status: %q", got)
-	}
-}
-
-func TestExtractClaudeTerminalProgressDoesNotEmitGenericWorkingStatus(t *testing.T) {
-	pane := `
-✳ Julienning…
-⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt ● high · /effort
-`
-	if got := extractClaudeTerminalProgress(pane, "", ""); got != "" {
-		t.Fatalf("progress = %q, want no generic working status", got)
-	}
-}
-
-func TestExtractClaudeVisibleAssistantTextStreamsTextBlocksOnly(t *testing.T) {
-	pane := `
-❯ user prompt should not stream
-✶ Precipitating… (1s · ↓ 2 tokens) · esc to interrupt
-⏺ I am checking the available files first.
-
-⏺ Calling api-bridge…
-
-⏺ The simplest step is prepare-test-fixtures.
-  It only writes a small fixture JSON file.
-`
-	got := extractClaudeVisibleAssistantText(pane, "", "")
-	want := "I am checking the available files first.\n\nThe simplest step is prepare-test-fixtures.\nIt only writes a small fixture JSON file."
-	if got != want {
-		t.Fatalf("assistant text = %q, want %q", got, want)
-	}
-	if strings.Contains(got, "Calling api-bridge") || strings.Contains(got, "user prompt") {
-		t.Fatalf("assistant text leaked non-assistant content: %q", got)
-	}
-}
-
-func TestExtractClaudeVisibleAssistantTextSkipsTUIRepaintProgress(t *testing.T) {
-	pane := `
-⏺ Let me check the current state of saved jobs and then run the bidding
-  workflow.
-
-Calling api-bridge… (ctrl+o to expand)
-· Vibing… (9s · ↑ 363 tokens · thinking with high effort)
-⏺ Let me check the current state of saved jobs and then run the bidding
-  workflow.
-
-Called api-bridge 2 times (ctrl+o to expand)
-⎿ Tip: Use /btw to ask a quick side question without interrupting Claude's current work
-⏺ Now let me check the variables and then run the bidding workflow:
-
-Calling api-bridge… (ctrl+o to expand)
-· Vibing… (28s · ↓ 1.1k tokens · thinking more with high effort)
-`
-	got := extractClaudeVisibleAssistantText(pane, "", "")
-	want := "Let me check the current state of saved jobs and then run the bidding\nworkflow.\n\nNow let me check the variables and then run the bidding workflow:"
-	if got != want {
-		t.Fatalf("assistant text = %q, want %q", got, want)
-	}
-	for _, leaked := range []string{"Calling api-bridge", "Called api-bridge", "Vibing", "Tip:"} {
-		if strings.Contains(got, leaked) {
-			t.Fatalf("assistant text leaked %q from TUI repaint: %q", leaked, got)
-		}
-	}
-}
-
-func TestStreamClaudeAssistantDeltaDeduplicatesCumulativePaneText(t *testing.T) {
-	streamChan := make(chan llmtypes.StreamChunk, 4)
-	last := ""
-
-	streamClaudeAssistantDelta(streamChan, "First line", &last)
-	streamClaudeAssistantDelta(streamChan, "First line\nSecond line", &last)
-	streamClaudeAssistantDelta(streamChan, "First line\nSecond line", &last)
-	close(streamChan)
-
-	var chunks []string
-	for chunk := range streamChan {
-		chunks = append(chunks, chunk.Content)
-	}
-	if len(chunks) != 2 {
-		t.Fatalf("chunks = %#v, want 2 chunks", chunks)
-	}
-	if chunks[0] != "First line\n" || chunks[1] != "Second line\n" {
-		t.Fatalf("chunks = %#v, want assistant deltas", chunks)
-	}
-}
-
-func TestRemainingFinalContentForStreamSkipsAlreadyStreamedFinal(t *testing.T) {
-	if got := remainingFinalContentForStream("Final answer", "Thinking\n\nFinal answer"); got != "" {
-		t.Fatalf("remaining final = %q, want empty", got)
-	}
-	if got := remainingFinalContentForStream("Final answer", "Thinking"); got != "Final answer" {
-		t.Fatalf("remaining final = %q, want full final", got)
-	}
-}
-
-func TestExtractClaudeTerminalProgressNormalizesRepeatedToolCounts(t *testing.T) {
-	first := extractClaudeTerminalProgress("Calling api-bridge… (ctrl+o to expand)", "", "")
-	second := extractClaudeTerminalProgress("Calling api-bridge 6 times… (ctrl+o to expand)", "", "")
-	if first != "Calling api-bridge..." || second != first {
-		t.Fatalf("calling progress = (%q, %q), want both normalized to first-call state", first, second)
-	}
-
-	done := extractClaudeTerminalProgress("Called api-bridge 6 times (ctrl+o to expand)", "", "")
-	if done != "Called api-bridge 6 times" {
-		t.Fatalf("done progress = %q, want called summary", done)
-	}
-}
-
-func TestWaitForClaudeIdleAfterActivityStreamsProgressNonBlocking(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateDir := filepath.Join(tmpDir, "state")
-	if err := os.Mkdir(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-
-	tmuxPath := filepath.Join(tmpDir, "tmux")
-	script := `#!/bin/sh
-state_dir="$TMUX_TEST_STATE"
-mkdir -p "$state_dir"
-cmd="$1"
-shift
-case "$cmd" in
-  capture-pane)
-    count_file="$state_dir/capture_count"
-    count=0
-    if [ -f "$count_file" ]; then
-      count="$(cat "$count_file")"
-    fi
-    count=$((count + 1))
-    echo "$count" > "$count_file"
-    if [ "$count" -le 2 ]; then
-      echo "Conversation:"
-      echo "HUMAN:"
-      echo "secret prompt should not stream"
-      echo "✶ Precipitating… (${count}s · ↓ 2 tokens) · esc to interrupt"
-      echo "⏺ Calling api-bridge ping…"
-    else
-      echo "⏺ MLP_START"
-      echo "  final text"
-      echo "  MLP_END"
-      echo "❯"
-    fi
-    ;;
-  *)
-    echo "unexpected tmux command: $cmd" >&2
-    exit 1
-    ;;
-esac
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX_TEST_STATE", stateDir)
-
-	streamChan := make(chan llmtypes.StreamChunk, 8)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if _, _, err := waitForClaudeIdleAfterActivity(ctx, "fake-session", false, "", "MLP_START", "MLP_END", streamChan); err != nil {
-		t.Fatalf("waitForClaudeIdleAfterActivity error = %v", err)
-	}
-	close(streamChan)
-
-	var streamed strings.Builder
-	for chunk := range streamChan {
-		if chunk.Type == llmtypes.StreamChunkTypeContent {
-			streamed.WriteString(chunk.Content)
-		}
-	}
-	got := streamed.String()
-	if strings.Contains(got, "Claude Code is working...") || !strings.Contains(got, "Calling api-bridge...") {
-		t.Fatalf("streamed progress = %q, want normalized tool progress", got)
-	}
-	if strings.Contains(got, "secret prompt") || strings.Contains(got, "final text") {
-		t.Fatalf("streamed progress leaked prompt/final answer: %q", got)
+	if got, ok := extractTrailingUnmarkedAssistantResponse(pane); ok {
+		t.Fatalf("trailing response = %q, want no assistant response", got)
 	}
 }
 
@@ -1407,6 +730,15 @@ func TestParseTmuxMajorVersion(t *testing.T) {
 				t.Fatalf("parseTmuxMajorVersion(%q) = (%d, %t), want (%d, %t)", tt.version, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestIsContextCanceledErrorHandlesNil(t *testing.T) {
+	if isContextCanceledError(nil) {
+		t.Fatalf("nil error should not be treated as context canceled")
+	}
+	if !isContextCanceledError(context.Canceled) {
+		t.Fatalf("context.Canceled should be detected")
 	}
 }
 

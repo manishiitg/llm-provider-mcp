@@ -21,14 +21,14 @@ func (l *MockLogger) Debugf(format string, args ...interface{}) {
 // ---- unit tests (no API calls) ----
 
 func TestGetModelID(t *testing.T) {
-	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	adapter := NewMiniMaxAdapter("test-key", ModelMiniMaxM25, &MockLogger{})
 	if adapter.GetModelID() != ModelMiniMaxM25 {
 		t.Errorf("expected %s, got %s", ModelMiniMaxM25, adapter.GetModelID())
 	}
 }
 
 func TestGetModelMetadata(t *testing.T) {
-	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	adapter := NewMiniMaxAdapter("test-key", ModelMiniMaxM25, &MockLogger{})
 
 	meta, err := adapter.GetModelMetadata(ModelMiniMaxM25)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestGetModelMetadata(t *testing.T) {
 }
 
 func TestGetModelMetadata_Unknown(t *testing.T) {
-	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	adapter := NewMiniMaxAdapter("test-key", ModelMiniMaxM25, &MockLogger{})
 	_, err := adapter.GetModelMetadata("unknown-model")
 	if err == nil {
 		t.Error("expected error for unknown model, got nil")
@@ -51,14 +51,14 @@ func TestGetModelMetadata_Unknown(t *testing.T) {
 }
 
 func TestMiniMaxAdapterImplementsWebSearchModel(t *testing.T) {
-	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	adapter := NewMiniMaxAdapter("test-key", ModelMiniMaxM25, &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("MiniMaxAdapter should implement llmtypes.WebSearchModel")
 	}
 }
 
 func TestMiniMaxAdapterRejectsImagesOutsideCodingPlan(t *testing.T) {
-	adapter := NewMiniMaxAdapter("fake-key", ModelMiniMaxM25, &MockLogger{})
+	adapter := NewMiniMaxAdapter("test-key", ModelMiniMaxM25, &MockLogger{})
 
 	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
 		{

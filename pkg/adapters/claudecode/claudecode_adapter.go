@@ -33,6 +33,9 @@ const (
 	MetadataKeyMaxTurns                   = "claude_code_max_turns"
 	MetadataKeyResumeSessionID            = "claude_code_resume_session_id"
 	MetadataKeyEffort                     = "claude_code_effort"
+	MetadataKeyInteractiveSessionID       = "claude_code_interactive_session_id"
+	MetadataKeyPersistentInteractive      = "claude_code_persistent_interactive"
+	MetadataKeyWorkingDir                 = "claude_code_working_dir"
 	claudeCodeDisableAutoMemoryEnv        = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 )
 
@@ -199,6 +202,33 @@ func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
+// WithInteractiveSessionID links an interactive Claude Code run to the owning
+// application session so follow-up user input can be sent directly to the TUI.
+func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyInteractiveSessionID] = sessionID
+	}
+}
+
+// WithWorkingDir sets the directory used to launch the Claude Code CLI process.
+func WithWorkingDir(dir string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWorkingDir] = dir
+	}
+}
+
+// WithPersistentInteractiveSession keeps the tmux-backed Claude Code TUI alive
+// across completed turns. It should only be used for interactive chat sessions;
+// deterministic workflow runs should keep the default per-turn lifecycle.
+func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
 func ensureMetadata(opts *llmtypes.CallOptions) {
 	if opts.Metadata == nil {
 		opts.Metadata = &llmtypes.Metadata{Custom: make(map[string]interface{})}
@@ -220,6 +250,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	for _, opt := range options {
 		opt(opts)
 	}
+	workingDir := claudeWorkingDirFromOptions(opts)
 
 	// 1. Prepare Command Arguments
 	// Note: --input-format stream-json requires --output-format stream-json and --verbose
@@ -336,6 +367,9 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	c.logger.Infof("Executing Claude Code CLI: claude %v", args)
 	c.logger.Debugf("Input stream: %s", inputStream.String())
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	cmd.Stdin = &inputStream
 	// Run in its own process group so we can kill the entire tree (CLI + children) on cancel
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

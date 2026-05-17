@@ -11,4 +11,5 @@ var GeminiCLICmd = &cobra.Command{
 
 func init() {
 	GeminiCLICmd.AddCommand(GeminiCLIStreamingContentTestCmd)
+	GeminiCLICmd.AddCommand(GeminiCLISearchWebTestCmd)
 }

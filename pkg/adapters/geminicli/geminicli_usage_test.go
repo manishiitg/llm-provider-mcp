@@ -3,6 +3,7 @@ package geminicli
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,11 +11,14 @@ import (
 )
 
 func TestGeminiCLIUsageAndCost(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping integration test in CI environment")
+	if os.Getenv("RUN_GEMINI_CLI_REAL_E2E") == "" && os.Getenv("RUN_GEMINI_CLI_STREAM_JSON_E2E") == "" {
+		t.Skip("set RUN_GEMINI_CLI_STREAM_JSON_E2E=1 to run real Gemini CLI usage/cost test")
+	}
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
+		t.Skip("Skipping integration test because GEMINI_API_KEY is not set")
 	}
 
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGeminiCLIAdapter(strings.TrimSpace(os.Getenv("GEMINI_API_KEY")), geminiCLIContractModel, &MockLogger{})
 
 	streamChan := make(chan llmtypes.StreamChunk, 100)
 
@@ -32,7 +36,8 @@ func TestGeminiCLIUsageAndCost(t *testing.T) {
 
 	// Drain stream in background
 	go func() {
-		for range streamChan {}
+		for range streamChan {
+		}
 	}()
 
 	resp, err := adapter.GenerateContent(ctx, messages, llmtypes.WithStreamingChan(streamChan), WithApprovalMode("yolo"))

@@ -3,10 +3,12 @@ package codexcli
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -128,10 +130,33 @@ const inactivityTimeout = 10 * time.Minute
 
 // GenerateContent generates content using the OpenAI Codex CLI.
 func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	// Parse options
+	opts := &llmtypes.CallOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	if codexPersistentInteractiveFromOptions(opts) && codexInteractiveSessionIDFromOptions(opts) != "" {
+		if len(collectCodexImageContent(messages)) > 0 {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("codex-cli persistent interactive transport does not support llmtypes.ImageContent; use codex exec transport for image input")
+		}
+		return c.generateContentInteractive(ctx, messages, opts)
+	}
+
+	modelToUse := resolveCodexCLIModelID(c.modelID)
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if model, ok := opts.Metadata.Custom[MetadataKeyCodexModel].(string); ok && model != "" {
+			modelToUse = resolveCodexCLIModelID(model)
+		}
+	}
+
 	// 0a. Check process-wide quota cache — skip the CLI entirely if quota is known exhausted.
-	if cachedMsg, exhausted := checkQuotaExhausted(c.modelID); exhausted {
-		c.logger.Errorf("Codex CLI quota still exhausted for model %s (cached): %s", c.modelID, cachedMsg)
-		return nil, fmt.Errorf("codex cli execution failed: usage limit still active for %s: %s", c.modelID, cachedMsg)
+	if cachedMsg, exhausted := checkQuotaExhausted(modelToUse); exhausted {
+		c.logger.Errorf("Codex CLI quota still exhausted for model %s (cached): %s", modelToUse, cachedMsg)
+		return nil, fmt.Errorf("codex cli execution failed: usage limit still active for %s: %s", modelToUse, cachedMsg)
 	}
 
 	// 0b. Check for 'codex' binary
@@ -139,23 +164,10 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("codex cli not found in PATH. Please install it first (npm install -g @openai/codex)")
 	}
 
-	// Parse options
-	opts := &llmtypes.CallOptions{}
-	for _, opt := range options {
-		opt(opts)
-	}
-
 	// 1. Prepare Command Arguments
 	// Use exec subcommand for non-interactive mode with JSON output
 	args := []string{"exec", "--json"}
 
-	// Set model if specified via metadata or adapter default
-	modelToUse := c.modelID
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if model, ok := opts.Metadata.Custom[MetadataKeyCodexModel].(string); ok && model != "" {
-			modelToUse = model
-		}
-	}
 	if modelToUse != "" && modelToUse != "codex-cli" {
 		args = append(args, "--model", modelToUse)
 	}
@@ -224,31 +236,23 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		}
 	}
 
-	// Handle disable shell tool (to only use MCP tools)
-	// Uses --disable flag which is equivalent to -c features.shell_tool=false
+	// Handle bridge-only mode. Disabling only shell_tool is not enough for
+	// Codex because other built-in tools can still emit TUI status and bypass
+	// the MCP bridge contract.
+	disabledFeatures := map[string]bool{}
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if disable, ok := opts.Metadata.Custom[MetadataKeyDisableShellTool].(bool); ok && disable {
-			args = append(args, "--disable", "shell_tool")
+			args = appendCodexDisabledFeatureArgs(args, disabledFeatures, codexBridgeOnlyDisabledFeatures...)
 		}
 	}
 
 	// Handle feature enable/disable flags
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if features, ok := opts.Metadata.Custom[MetadataKeyDisableFeatures].(string); ok && features != "" {
-			for _, f := range strings.Split(features, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					args = append(args, "--disable", f)
-				}
-			}
+			args = appendCodexDisabledFeatureArgs(args, disabledFeatures, strings.Split(features, ",")...)
 		}
 		if features, ok := opts.Metadata.Custom[MetadataKeyEnableFeatures].(string); ok && features != "" {
-			for _, f := range strings.Split(features, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					args = append(args, "--enable", f)
-				}
-			}
+			args = appendCodexFeatureCSV(args, "--enable", features)
 		}
 	}
 
@@ -319,6 +323,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	// 2. Build the prompt text
 	// Codex CLI takes the prompt as a positional argument
 	var promptText string
+	var imageMessages []llmtypes.MessageContent
 	if resumeID != "" {
 		// Resume mode: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox <session_id> "prompt"`
 		// Resume flags go after the `resume` subcommand
@@ -329,12 +334,11 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		if modelToUse != "" && modelToUse != "codex-cli" {
 			args = append(args, "--model", modelToUse)
 		}
-		args = append(args, resumeID)
-
 		// Only send the last user message
 		for i := len(convoMessages) - 1; i >= 0; i-- {
 			if convoMessages[i].Role == llmtypes.ChatMessageTypeHuman {
 				promptText = extractTextFromMessage(convoMessages[i])
+				imageMessages = []llmtypes.MessageContent{convoMessages[i]}
 				break
 			}
 		}
@@ -352,24 +356,52 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 			}
 		}
 		promptText = strings.Join(parts, "\n\n")
+		imageMessages = convoMessages
 	} else {
 		// Single message: extract user prompt (system prompt handled via developer_instructions)
 		for i := len(convoMessages) - 1; i >= 0; i-- {
 			if convoMessages[i].Role == llmtypes.ChatMessageTypeHuman {
 				promptText = extractTextFromMessage(convoMessages[i])
+				imageMessages = []llmtypes.MessageContent{convoMessages[i]}
 				break
 			}
 		}
 	}
 
-	// Add prompt as positional argument
-	if promptText != "" {
+	imageTempDir, imagePaths, err := writeCodexImageContentFiles(collectCodexImageContent(imageMessages))
+	if err != nil {
+		return nil, err
+	}
+	if imageTempDir != "" {
+		defer os.RemoveAll(imageTempDir)
+	}
+	for _, imagePath := range imagePaths {
+		args = append(args, "--image", imagePath)
+	}
+	if resumeID != "" {
+		args = append(args, resumeID)
+	}
+	if strings.TrimSpace(promptText) == "" && len(imagePaths) > 0 {
+		promptText = "Describe the attached image."
+	}
+
+	promptStdin := ""
+	if len(imagePaths) > 0 {
+		// Codex CLI help documents stdin prompts for `exec -` and `exec resume
+		// <session> -`. Use the explicit sentinel when images are attached so the
+		// prompt is never mistaken for another positional argument.
+		args = append(args, "-")
+		promptStdin = promptText
+	} else if promptText != "" {
 		args = append(args, promptText)
 	}
 
 	// 3. Execute Command
 	c.logger.Infof("Executing Codex CLI: codex %v", args)
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	if promptStdin != "" {
+		cmd.Stdin = strings.NewReader(promptStdin)
+	}
 
 	// Build environment
 	env := os.Environ()
@@ -985,8 +1017,8 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 				// Cache quota exhaustion globally so future agent instances skip the CLI immediately.
 				if strings.Contains(strings.ToLower(errMsg), "usage limit") ||
 					strings.Contains(strings.ToLower(errMsg), "hit your usage") {
-					markQuotaExhausted(c.modelID, errMsg)
-					c.logger.Errorf("Codex CLI usage quota exhausted for %s — cached until reset time", c.modelID)
+					markQuotaExhausted(modelToUse, errMsg)
+					c.logger.Errorf("Codex CLI usage quota exhausted for %s — cached until reset time", modelToUse)
 				}
 				return nil, fmt.Errorf("codex cli execution failed: %s", errMsg)
 			}
@@ -1055,12 +1087,30 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 	if modelID == "" {
 		modelID = c.modelID
 	}
+	originalModelID := modelID
+	modelID = resolveCodexCLIModelID(modelID)
+	metadataModelID := strings.TrimSpace(originalModelID)
+	if metadataModelID == "" {
+		metadataModelID = modelID
+	}
 
 	// Known model metadata
 	switch {
+	case strings.Contains(modelID, "gpt-5.5"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                 metadataModelID,
+			Provider:                "codex-cli",
+			ModelName:               "GPT-5.5",
+			ContextWindow:           1100000,
+			SupportsToolCalls:       true,
+			SupportsJSONMode:        true,
+			SupportsReasoningEffort: true,
+			ReasoningEffortLevels:   []string{"none", "low", "medium", "high", "xhigh"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-5.4-mini"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                    modelID,
+			ModelID:                    metadataModelID,
 			Provider:                   "codex-cli",
 			ModelName:                  "GPT-5.4 Mini",
 			ContextWindow:              400000,
@@ -1075,7 +1125,7 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	case strings.Contains(modelID, "gpt-5.4"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                    modelID,
+			ModelID:                    metadataModelID,
 			Provider:                   "codex-cli",
 			ModelName:                  "GPT-5.4",
 			ContextWindow:              1100000,
@@ -1090,7 +1140,7 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	case strings.Contains(modelID, "gpt-5.3-codex-spark"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                    modelID,
+			ModelID:                    metadataModelID,
 			Provider:                   "codex-cli",
 			ModelName:                  "GPT-5.3-Codex-Spark",
 			ContextWindow:              400000,
@@ -1105,7 +1155,7 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	case strings.Contains(modelID, "gpt-5.3-codex"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                    modelID,
+			ModelID:                    metadataModelID,
 			Provider:                   "codex-cli",
 			ModelName:                  "GPT-5.3-Codex",
 			ContextWindow:              400000,
@@ -1121,7 +1171,7 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 	default:
 		// Generic fallback for unknown models
 		return &llmtypes.ModelMetadata{
-			ModelID:                 modelID,
+			ModelID:                 metadataModelID,
 			Provider:                "codex-cli",
 			ModelName:               "OpenAI Codex CLI (pricing varies)",
 			ContextWindow:           200000,
@@ -1160,6 +1210,75 @@ func extractTextFromMessage(msg llmtypes.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func collectCodexImageContent(messages []llmtypes.MessageContent) []llmtypes.ImageContent {
+	var images []llmtypes.ImageContent
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llmtypes.ImageContent:
+				images = append(images, p)
+			case *llmtypes.ImageContent:
+				if p != nil {
+					images = append(images, *p)
+				}
+			}
+		}
+	}
+	return images
+}
+
+func writeCodexImageContentFiles(images []llmtypes.ImageContent) (string, []string, error) {
+	if len(images) == 0 {
+		return "", nil, nil
+	}
+
+	tempDir, err := os.MkdirTemp("", "codex-cli-images-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create codex image temp dir: %w", err)
+	}
+
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	paths := make([]string, 0, len(images))
+	for i, image := range images {
+		if strings.EqualFold(strings.TrimSpace(image.SourceType), "url") {
+			return "", nil, fmt.Errorf("codex cli image input requires base64 image data; image URLs are not supported by this adapter")
+		}
+		if sourceType := strings.TrimSpace(image.SourceType); sourceType != "" && !strings.EqualFold(sourceType, "base64") {
+			return "", nil, fmt.Errorf("unsupported codex cli image source type %q", image.SourceType)
+		}
+		if strings.TrimSpace(image.MediaType) == "" {
+			return "", nil, fmt.Errorf("codex cli base64 image input requires media type")
+		}
+
+		data := strings.TrimSpace(image.Data)
+		if idx := strings.Index(data, ","); strings.HasPrefix(data, "data:") && idx >= 0 {
+			data = data[idx+1:]
+		}
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			return "", nil, fmt.Errorf("decode codex cli image %d: %w", i+1, err)
+		}
+		if len(decoded) == 0 {
+			return "", nil, fmt.Errorf("codex cli image %d is empty", i+1)
+		}
+
+		imagePath := filepath.Join(tempDir, fmt.Sprintf("image-%02d%s", i+1, extensionForImageMIMEType(image.MediaType)))
+		if err := os.WriteFile(imagePath, decoded, 0600); err != nil {
+			return "", nil, fmt.Errorf("write codex cli image %d: %w", i+1, err)
+		}
+		paths = append(paths, imagePath)
+	}
+
+	cleanupOnError = false
+	return tempDir, paths, nil
 }
 
 func codexStringConfigOverride(key string, value string) (string, error) {

@@ -99,7 +99,7 @@ test-ci: install-act
 	@if [ ! -f .secrets ]; then \
 		echo "⚠️  .secrets file not found. Creating from example..."; \
 		cp .secrets.example .secrets; \
-		echo "✓ Created .secrets file with dummy values"; \
+		echo "✓ Created .secrets file with placeholder values"; \
 	fi
 	@act push --container-architecture linux/amd64 --secret-file .secrets
 
@@ -117,7 +117,7 @@ test-ci-job: install-act
 	@if [ ! -f .secrets ]; then \
 		echo "⚠️  .secrets file not found. Creating from example..."; \
 		cp .secrets.example .secrets; \
-		echo "✓ Created .secrets file with dummy values"; \
+		echo "✓ Created .secrets file with placeholder values"; \
 	fi
 	@act push -j $(JOB) --container-architecture linux/amd64 --secret-file .secrets
 
@@ -125,4 +125,3 @@ test-ci-job: install-act
 list-ci-jobs: install-act
 	@echo "Available CI workflows and jobs:"
 	@act -l
-

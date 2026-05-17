@@ -58,6 +58,18 @@ const (
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
 	ProviderDeepgram          Provider = "deepgram"
+
+	DefaultCodexCLIModel = "high"
+
+	// EnvClaudeCodeTransport selects the Claude Code provider transport.
+	// Supported values: "experimental" for tmux TUI mode and "print" for the
+	// legacy `claude -p` stream-json mode.
+	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
+	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
+	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
+
+	ClaudeCodeTransportExperimental = "experimental"
+	ClaudeCodeTransportPrint        = "print"
 )
 
 // CleanupClaudeCodeExperimentalSessions removes tmux sessions created by the
@@ -65,6 +77,36 @@ const (
 // shutdown; missing tmux servers or already-closed sessions are ignored.
 func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
 	return claudecodeadapter.CleanupClaudeCodeExperimentalSessions(ctx)
+}
+
+// CleanupCodexCLIInteractiveSessions removes tmux sessions created by the Codex
+// CLI interactive chat mode.
+func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
+	return codexcli.CleanupCodexCLIInteractiveSessions(ctx)
+}
+
+// CleanupGeminiCLIInteractiveSessions removes tmux sessions created by the
+// Gemini CLI interactive chat mode.
+func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
+	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
+}
+
+// SendClaudeCodeExperimentalInput sends user input to a live Claude Code
+// experimental session registered for the owning application session.
+func SendClaudeCodeExperimentalInput(ctx context.Context, sessionID, message string) error {
+	return claudecodeadapter.SendClaudeCodeExperimentalInput(ctx, sessionID, message)
+}
+
+// SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
+// tmux session registered for the owning application session.
+func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return codexcli.SendCodexInteractiveInput(ctx, sessionID, message)
+}
+
+// SendGeminiCLIInteractiveInput sends user input to a live Gemini CLI
+// interactive tmux session registered for the owning application session.
+func SendGeminiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return geminicli.SendGeminiInteractiveInput(ctx, sessionID, message)
 }
 
 // Config holds configuration for LLM initialization
@@ -84,6 +126,10 @@ type Config struct {
 	Context context.Context
 	// API keys for providers (optional, falls back to environment variables if not provided)
 	APIKeys *ProviderAPIKeys
+	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
+	// initialized Claude Code model. Use "experimental" for tmux/no -p, or
+	// "print" for the legacy claude -p stream-json path.
+	ClaudeCodeTransport string
 }
 
 // ProviderAPIKeys holds API keys for different providers
@@ -1842,13 +1888,49 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	if logger == nil {
 		logger = &noopLoggerImpl{}
 	}
-	logger.Infof("Initializing Claude Code experimental adapter - model_id: %s", modelID)
+
+	transport, err := resolveClaudeCodeTransport(config.ClaudeCodeTransport)
+	if err != nil {
+		errorMetadata := LLMMetadata{
+			ModelVersion: modelID,
+			CustomFields: map[string]string{
+				"provider":  "claude-code",
+				"operation": OperationLLMInitialization,
+			},
+		}
+		emitLLMInitializationError(config.EventEmitter, string(config.Provider), modelID, OperationLLMInitialization, err, config.TraceID, errorMetadata)
+		return nil, err
+	}
+
+	logger.Infof("Initializing Claude Code %s adapter - model_id: %s", transport, modelID)
 
 	// claude-code provider always uses the claude CLI's OAuth session (via `claude login`).
 	// We intentionally ignore any Anthropic API key from config or env: forwarding one would
 	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
 	// a key that often has low/no credits. Users who want API-key billing should select the
 	// `anthropic` provider instead, which is a separate direct-API adapter.
+	if transport == ClaudeCodeTransportPrint {
+		logger.Infof("Claude Code: using legacy print transport with CLI OAuth credentials (`claude -p` stream-json)")
+
+		llm := claudecodeadapter.NewClaudeCodeAdapter("", modelID, logger)
+
+		successMetadata := LLMMetadata{
+			ModelVersion: modelID,
+			User:         "claude_code_user",
+			CustomFields: map[string]string{
+				"provider":     "claude-code",
+				"status":       StatusLLMInitialized,
+				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+				"mode":         ClaudeCodeTransportPrint,
+				"transport":    ClaudeCodeTransportPrint,
+			},
+		}
+		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+		logger.Infof("Initialized Claude Code print adapter - model_id: %s", modelID)
+		return llm, nil
+	}
+
 	logger.Infof("Claude Code: using experimental mode with CLI OAuth credentials (no `claude -p` invocation)")
 
 	// Create Claude Code experimental adapter.
@@ -1862,13 +1944,36 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 			"provider":     "claude-code",
 			"status":       StatusLLMInitialized,
 			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-			"mode":         "experimental",
+			"mode":         ClaudeCodeTransportExperimental,
+			"transport":    ClaudeCodeTransportExperimental,
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
 	logger.Infof("Initialized Claude Code experimental adapter - model_id: %s", modelID)
 	return llm, nil
+}
+
+func resolveClaudeCodeTransport(configured string) (string, error) {
+	if strings.TrimSpace(configured) != "" {
+		return normalizeClaudeCodeTransport(configured)
+	}
+	raw := strings.TrimSpace(os.Getenv(EnvClaudeCodeTransport))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv(EnvClaudeCodeMode))
+	}
+	return normalizeClaudeCodeTransport(raw)
+}
+
+func normalizeClaudeCodeTransport(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", ClaudeCodeTransportExperimental, "tmux", "interactive":
+		return ClaudeCodeTransportExperimental, nil
+	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
+		return ClaudeCodeTransportPrint, nil
+	default:
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q or %q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportExperimental, ClaudeCodeTransportPrint)
+	}
 }
 
 // initializeKimi creates and configures a Kimi provider.
@@ -2084,7 +2189,7 @@ func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 	// Set default model if not specified
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "codex-cli"
+		modelID = DefaultCodexCLIModel
 	}
 
 	logger := config.Logger
@@ -2194,7 +2299,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("CODEX_CLI_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return "codex-cli"
+		return DefaultCodexCLIModel
 	default:
 		return ""
 	}
@@ -3080,6 +3185,11 @@ func WithMCPConfig(config string) llmtypes.CallOption {
 	return claudecodeadapter.WithMCPConfig(config)
 }
 
+// WithKimiWorkingDir sets the process working directory for Kimi Code CLI.
+func WithKimiWorkingDir(dir string) llmtypes.CallOption {
+	return kimiadapter.WithWorkingDir(dir)
+}
+
 // WithDangerouslySkipPermissions enables the --dangerously-skip-permissions flag for the Claude Code CLI.
 // CAUTION: This allows the agent to execute any tool without user confirmation.
 func WithDangerouslySkipPermissions() llmtypes.CallOption {
@@ -3114,6 +3224,24 @@ func WithMaxTurns(maxTurns int) llmtypes.CallOption {
 // an existing session instead of starting a new one.
 func WithResumeSessionID(id string) llmtypes.CallOption {
 	return claudecodeadapter.WithResumeSessionID(id)
+}
+
+// WithClaudeCodeInteractiveSessionID links a Claude Code experimental run to
+// the owning application session so live follow-up input can be sent to it.
+func WithClaudeCodeInteractiveSessionID(id string) llmtypes.CallOption {
+	return claudecodeadapter.WithInteractiveSessionID(id)
+}
+
+// WithClaudeCodePersistentInteractiveSession keeps an interactive Claude Code
+// tmux session alive across completed turns for normal chat. Workflow runs
+// should keep the default per-turn lifecycle.
+func WithClaudeCodePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return claudecodeadapter.WithPersistentInteractiveSession(enabled)
+}
+
+// WithClaudeCodeWorkingDir sets the process working directory for Claude Code.
+func WithClaudeCodeWorkingDir(dir string) llmtypes.CallOption {
+	return claudecodeadapter.WithWorkingDir(dir)
 }
 
 // WithClaudeCodeEffort sets the --effort flag for the Claude Code CLI.
@@ -3152,6 +3280,21 @@ func WithGeminiProjectSettings(settingsJSON string) llmtypes.CallOption {
 	return geminicli.WithProjectSettings(settingsJSON)
 }
 
+// WithGeminiPolicyPath passes --policy to the Gemini CLI.
+func WithGeminiPolicyPath(path string) llmtypes.CallOption {
+	return geminicli.WithPolicyPath(path)
+}
+
+// WithGeminiAdminPolicyPath passes --admin-policy to the Gemini CLI.
+func WithGeminiAdminPolicyPath(path string) llmtypes.CallOption {
+	return geminicli.WithAdminPolicyPath(path)
+}
+
+// WithGeminiWorkingDir sets the Gemini CLI process working directory.
+func WithGeminiWorkingDir(dir string) llmtypes.CallOption {
+	return geminicli.WithWorkingDir(dir)
+}
+
 // WithGeminiAllowedTools sets the deprecated --allowed-tools flag for the Gemini CLI.
 // Prefer WithGeminiProjectSettings plus Policy Engine rules instead.
 func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
@@ -3164,11 +3307,35 @@ func WithGeminiProjectDirID(id string) llmtypes.CallOption {
 	return geminicli.WithProjectDirID(id)
 }
 
+// WithGeminiInteractiveSessionID links a Gemini CLI interactive run to the
+// owning application session so live follow-up input can be sent to it.
+func WithGeminiInteractiveSessionID(id string) llmtypes.CallOption {
+	return geminicli.WithInteractiveSessionID(id)
+}
+
+// WithGeminiPersistentInteractiveSession keeps a Gemini CLI tmux TUI alive
+// across completed interactive chat turns.
+func WithGeminiPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return geminicli.WithPersistentInteractiveSession(enabled)
+}
+
 // --- Codex CLI Wrapper Functions ---
 
 // WithCodexResumeSessionID sets the session ID to resume via `codex exec resume`.
 func WithCodexResumeSessionID(id string) llmtypes.CallOption {
 	return codexcli.WithResumeSessionID(id)
+}
+
+// WithCodexInteractiveSessionID links a Codex CLI interactive run to the
+// owning application session so live follow-up input can be sent to it.
+func WithCodexInteractiveSessionID(id string) llmtypes.CallOption {
+	return codexcli.WithInteractiveSessionID(id)
+}
+
+// WithCodexPersistentInteractiveSession keeps a Codex CLI tmux TUI alive across
+// completed interactive chat turns.
+func WithCodexPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return codexcli.WithPersistentInteractiveSession(enabled)
 }
 
 // WithCodexApprovalPolicy sets the approval_policy config override for the Codex CLI.

@@ -13,11 +13,17 @@ const (
 	// in a temp working directory. This controls tools.core (tool restriction),
 	// mcpServers (MCP bridge), and other Gemini CLI project settings.
 	MetadataKeyProjectSettings = "gemini_project_settings"
+	MetadataKeyPolicyPath      = "gemini_policy_path"
+	MetadataKeyAdminPolicyPath = "gemini_admin_policy_path"
+	MetadataKeyWorkingDir      = "gemini_working_dir"
 
 	// MetadataKeyProjectDirID controls which per-invocation project directory to use.
 	// When set, the adapter uses /tmp/gemini-cli-project-{id} instead of generating a new one.
 	// This is used to ensure resume calls use the same directory as the original invocation.
 	MetadataKeyProjectDirID = "gemini_project_dir_id"
+
+	MetadataKeyInteractiveSessionID  = "gemini_interactive_session_id"
+	MetadataKeyPersistentInteractive = "gemini_persistent_interactive"
 )
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -72,6 +78,32 @@ func WithProjectSettings(settingsJSON string) llmtypes.CallOption {
 	}
 }
 
+// WithPolicyPath adds a Gemini CLI --policy file or directory.
+func WithPolicyPath(path string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyPolicyPath] = path
+	}
+}
+
+// WithAdminPolicyPath adds a Gemini CLI --admin-policy file or directory.
+func WithAdminPolicyPath(path string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyAdminPolicyPath] = path
+	}
+}
+
+// WithWorkingDir sets the Gemini CLI process working directory. When project
+// settings are also provided, .gemini/settings.json is written under this
+// directory so Gemini's displayed workspace and MCP shell cwd stay aligned.
+func WithWorkingDir(dir string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWorkingDir] = dir
+	}
+}
+
 // WithProjectDirID sets an explicit project directory ID so the Gemini CLI uses
 // /tmp/gemini-cli-project-{id}. This ensures resume calls and retries use the
 // same isolated project directory as the original invocation.
@@ -79,6 +111,24 @@ func WithProjectDirID(id string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyProjectDirID] = id
+	}
+}
+
+// WithInteractiveSessionID links an interactive Gemini CLI TUI run to the
+// owning application session so follow-up input can be sent directly to tmux.
+func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyInteractiveSessionID] = sessionID
+	}
+}
+
+// WithPersistentInteractiveSession keeps the tmux-backed Gemini CLI TUI alive
+// across completed chat turns. Workflow runs should keep stream-json mode.
+func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
 	}
 }
 

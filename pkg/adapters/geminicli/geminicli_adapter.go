@@ -26,7 +26,6 @@ type pendingToolCall struct {
 	startTime time.Time
 }
 
-
 // GeminiCLIAdapter implements the LLM interface for the Gemini CLI.
 type GeminiCLIAdapter struct {
 	apiKey  string
@@ -54,6 +53,10 @@ const inactivityTimeout = 10 * time.Minute
 // Priority: explicit dirID from metadata > resumeID-based > generate new unique ID.
 // Returns the project directory path and the directory ID (for storing in response metadata).
 func resolveProjectDir(opts *llmtypes.CallOptions, resumeID string) (projectDir string, dirID string) {
+	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
+		return workingDir, ""
+	}
+
 	// 1. Check for explicit project dir ID from metadata (highest priority)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if id, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && id != "" {
@@ -76,17 +79,40 @@ func resolveProjectDir(opts *llmtypes.CallOptions, resumeID string) (projectDir 
 	return
 }
 
+func geminiWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if dir, ok := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); ok {
+		if trimmed := strings.TrimSpace(dir); trimmed != "" {
+			return filepath.Clean(trimmed)
+		}
+	}
+	return ""
+}
+
 // GenerateContent generates content using the Gemini CLI.
 func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
-	// 0. Check for 'gemini' binary
-	if _, err := exec.LookPath("gemini"); err != nil {
-		return nil, fmt.Errorf("gemini cli not found in PATH. Please install it first (npm install -g @anthropic-ai/gemini-cli or see https://github.com/google-gemini/gemini-cli)")
-	}
-
 	// Parse options
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
+	}
+
+	if containsGeminiImageContent(messages) {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("gemini-cli adapter does not support llmtypes.ImageContent; Gemini CLI has no image attachment flag in the supported headless/tmux transports")
+	}
+
+	if geminiPersistentInteractiveFromOptions(opts) && geminiInteractiveSessionIDFromOptions(opts) != "" {
+		return g.generateContentInteractive(ctx, messages, opts)
+	}
+
+	// 0. Check for 'gemini' binary
+	if _, err := exec.LookPath("gemini"); err != nil {
+		return nil, fmt.Errorf("gemini cli not found in PATH. Please install it first (npm install -g @anthropic-ai/gemini-cli or see https://github.com/google-gemini/gemini-cli)")
 	}
 
 	// 1. Prepare Command Arguments
@@ -100,20 +126,22 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	}
 
 	// Set model if specified via metadata or adapter default
-	modelToUse := g.modelID
+	modelToUse := resolveGeminiCLIModelID(g.modelID)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyGeminiModel].(string); ok && model != "" {
-			modelToUse = model
+			modelToUse = resolveGeminiCLIModelID(model)
 		}
 	}
-	// Pass --model explicitly. Gemini CLI supports aliases: "pro", "flash", "flash-lite"
-	// as well as full model names like "gemini-2.5-flash", "gemini-2.5-pro".
+	// Pass --model explicitly. Gemini CLI supports aliases such as "pro",
+	// "flash", and "flash-lite", as well as full model names such as
+	// "gemini-3.1-flash-lite" and "gemini-2.5-pro".
 	// Default to "auto" — lets Gemini CLI pick the best model automatically.
-	// Frontend can pass specific models: "pro", "flash", "flash-lite", or full names.
+	// Frontend can pass specific models: aliases or full model names.
 	if modelToUse == "" || modelToUse == "gemini-cli" {
 		modelToUse = "auto"
 	}
 	args = append(args, "--model", modelToUse)
+	appendGeminiPolicyArgs(&args, opts)
 
 	// Handle --allowed-tools (deprecated in Gemini CLI 0.30+, use Policy Engine instead).
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -241,7 +269,18 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
+	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
+		env = append(env, "GEMINI_PROJECT_DIR="+workingDir)
+	}
 	cmd.Env = env
+
+	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
+		if err := os.MkdirAll(workingDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create Gemini CLI working directory: %w", err)
+		}
+		cmd.Dir = workingDir
+		g.logger.Infof("Using Gemini CLI working dir: %s", workingDir)
+	}
 
 	// If project settings JSON is provided, create a per-invocation project directory with
 	// .gemini/settings.json and run the CLI from there. Each invocation gets its own
@@ -450,6 +489,10 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					continue
 				}
 				if content, ok := raw["content"].(string); ok && content != "" {
+					content = sanitizeGeminiStreamJSONContent(content)
+					if content == "" {
+						continue
+					}
 					accumulatedText.WriteString(content)
 					lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer
 					heartbeatSent.Store(false)                   // allow one more heartbeat if Gemini goes quiet again
@@ -465,6 +508,10 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					for _, part := range contentArr {
 						if partMap, ok := part.(map[string]interface{}); ok {
 							if text, ok := partMap["text"].(string); ok && text != "" {
+								text = sanitizeGeminiStreamJSONContent(text)
+								if text == "" {
+									continue
+								}
 								accumulatedText.WriteString(text)
 								if opts.StreamChan != nil {
 									opts.StreamChan <- llmtypes.StreamChunk{
@@ -596,7 +643,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 					apiErrMsg, _ = errObj["message"].(string)
 					g.logger.Errorf("Gemini CLI result error (status=error), skipping retry: %s", apiErrMsg)
 				}
-				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, accumulatedText.String(), apiErrMsg)
+				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, sanitizeGeminiStreamJSONContent(accumulatedText.String()), apiErrMsg)
 
 				// Detect empty result: only retry if status is "success" and text is empty.
 				// If status is "error" (e.g. 503 API failure), retrying with a finalization
@@ -754,11 +801,17 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 	if modelID == "" {
 		modelID = g.modelID
 	}
+	originalModelID := strings.TrimSpace(modelID)
+	modelID = resolveGeminiCLIModelID(modelID)
+	metadataModelID := originalModelID
+	if metadataModelID == "" {
+		metadataModelID = modelID
+	}
 
 	switch modelID {
 	case "pro", "gemini-2.5-pro":
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
+			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
 			ModelName:             "Gemini 2.5 Pro",
 			ContextWindow:         1048576,
@@ -767,7 +820,7 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 		}, nil
 	case "flash", "gemini-2.5-flash":
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
+			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
 			ModelName:             "Gemini 2.5 Flash",
 			ContextWindow:         1048576,
@@ -776,7 +829,7 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 		}, nil
 	case "flash-lite", "gemini-2.5-flash-lite":
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
+			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
 			ModelName:             "Gemini 2.5 Flash-Lite",
 			ContextWindow:         1048576,
@@ -785,7 +838,7 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 		}, nil
 	default:
 		return &llmtypes.ModelMetadata{
-			ModelID:       modelID,
+			ModelID:       metadataModelID,
 			Provider:      "gemini-cli",
 			ModelName:     "Gemini CLI (pricing varies)",
 			ContextWindow: 1048576,
@@ -803,6 +856,18 @@ func extractTextFromMessage(msg llmtypes.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func containsGeminiImageContent(messages []llmtypes.MessageContent) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.(type) {
+			case llmtypes.ImageContent, *llmtypes.ImageContent:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}, sessionID string, resolvedModel string, accumulatedText string, apiErrMsg string) *llmtypes.ContentResponse {
@@ -913,6 +978,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 		"--output-format", "stream-json",
 		"--resume", sessionID,
 	}
+	appendGeminiPolicyArgs(&args, opts)
 
 	// Set approval mode only if explicitly provided (Policy Engine handles tool approval via TOML rules)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -1027,6 +1093,10 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 					continue
 				}
 				if content, ok := raw["content"].(string); ok && content != "" {
+					content = sanitizeGeminiStreamJSONContent(content)
+					if content == "" {
+						continue
+					}
 					retryAccumulatedText.WriteString(content)
 					if opts.StreamChan != nil {
 						opts.StreamChan <- llmtypes.StreamChunk{
@@ -1039,6 +1109,10 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 					for _, part := range contentArr {
 						if partMap, ok := part.(map[string]interface{}); ok {
 							if text, ok := partMap["text"].(string); ok && text != "" {
+								text = sanitizeGeminiStreamJSONContent(text)
+								if text == "" {
+									continue
+								}
 								retryAccumulatedText.WriteString(text)
 								if opts.StreamChan != nil {
 									opts.StreamChan <- llmtypes.StreamChunk{
@@ -1055,7 +1129,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 				if sid, ok := raw["session_id"].(string); ok && sid != "" {
 					retrySessionID = sid
 				}
-				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, retryAccumulatedText.String(), "")
+				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, sanitizeGeminiStreamJSONContent(retryAccumulatedText.String()), "")
 				// Send SIGTERM to let the CLI write session files before exiting.
 				g.logger.Infof("Retry: Gemini CLI result received, sending SIGTERM for graceful shutdown")
 				if cmd.Process != nil {

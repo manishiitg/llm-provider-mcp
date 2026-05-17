@@ -1,4 +1,4 @@
-package geminicli
+package codexcli
 
 import (
 	"context"
@@ -12,15 +12,15 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-func TestGeminiCLIRealStreamJSONContract(t *testing.T) {
-	requireRealGeminiCLIStreamJSONE2E(t)
+func TestCodexCLIRealExecJSONContract(t *testing.T) {
+	requireRealCodexCLIStreamJSONE2E(t)
 
-	adapter := NewGeminiCLIAdapter(strings.TrimSpace(os.Getenv("GEMINI_API_KEY")), geminiCLIContractModel, quietGeminiStreamLogger{})
-	token := "GEMINI_STREAM_JSON_" + geminiRandomHex(4)
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, quietCodexStreamLogger{})
+	token := "CODEX_EXEC_JSON_" + codexRandomHex(4)
 	firstWant := "saved " + token
 
-	largeSystemPrompt := strings.Repeat("You are testing the Gemini CLI stream-json transport. Do not use tools. Keep exact-token replies concise.\n", 80)
-	firstPrompt := fmt.Sprintf(`This is a real Gemini CLI stream-json contract test.
+	largeSystemPrompt := strings.Repeat("You are testing the Codex CLI exec-json transport. Do not use tools. Keep exact-token replies concise.\n", 80)
+	firstPrompt := fmt.Sprintf(`This is a real Codex CLI exec-json contract test.
 
 Preserve input safely:
 
@@ -33,7 +33,7 @@ Reply exactly:
 %s`, token, firstWant)
 
 	firstStream := make(chan llmtypes.StreamChunk, 128)
-	firstCapture := collectGeminiStream(firstStream)
+	firstCapture := collectCodexStream(firstStream)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -41,8 +41,9 @@ Reply exactly:
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: largeSystemPrompt}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: firstPrompt}}},
 	},
-		WithProjectSettings(`{}`),
-		WithApprovalMode("yolo"),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
 		llmtypes.WithStreamingChan(firstStream),
 	)
 	if err != nil {
@@ -53,33 +54,25 @@ Reply exactly:
 		t.Fatalf("first content = %q, want %q", firstContent, firstWant)
 	}
 	firstStreamed := (<-firstCapture).content
-	assertGeminiStreamQuality(t, firstStreamed, firstWant)
-	assertGeminiDoesNotContainAny(t, "first stream", firstStreamed, "SHOULD_NOT_RUN", "GEMINI_SYSTEM_MD", "stdout", "stderr", "exit_code", "Policy file warning")
+	assertCodexStreamQuality(t, firstStreamed, firstWant)
+	assertCodexDoesNotContainAny(t, "first stream", firstStreamed, "SHOULD_NOT_RUN", "developer_instructions", "stdout", "stderr", "exit_code")
 
-	genInfo := first.Choices[0].GenerationInfo
-	if genInfo == nil || genInfo.Additional == nil {
-		t.Fatalf("missing generation info: %#v", first.Choices[0].GenerationInfo)
-	}
-	sessionID, ok := genInfo.Additional["gemini_session_id"].(string)
-	if !ok || strings.TrimSpace(sessionID) == "" {
-		t.Fatalf("missing gemini_session_id in generation info: %#v", genInfo.Additional)
-	}
-	projectDirID, ok := genInfo.Additional["gemini_project_dir_id"].(string)
-	if !ok || strings.TrimSpace(projectDirID) == "" {
-		t.Fatalf("missing gemini_project_dir_id in generation info: %#v", genInfo.Additional)
+	threadID, ok := first.Choices[0].GenerationInfo.Additional["codex_thread_id"].(string)
+	if !ok || strings.TrimSpace(threadID) == "" {
+		t.Fatalf("missing codex_thread_id in generation info: %#v", first.Choices[0].GenerationInfo.Additional)
 	}
 
-	secondWant := "GEMINI_STREAM_JSON_RESUME_" + geminiRandomHex(4)
+	secondWant := "CODEX_EXEC_JSON_RESUME_" + codexRandomHex(4)
 	secondStream := make(chan llmtypes.StreamChunk, 128)
-	secondCapture := collectGeminiStream(secondStream)
+	secondCapture := collectCodexStream(secondStream)
 	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: largeSystemPrompt}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: " + secondWant + ". Do not mention the previous token."}}},
 	},
-		WithResumeSessionID(sessionID),
-		WithProjectDirID(projectDirID),
-		WithProjectSettings(`{}`),
-		WithApprovalMode("yolo"),
+		WithResumeSessionID(threadID),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
 		llmtypes.WithStreamingChan(secondStream),
 	)
 	if err != nil {
@@ -93,33 +86,23 @@ Reply exactly:
 		t.Fatalf("second content replayed first answer: %q", secondContent)
 	}
 	secondStreamed := (<-secondCapture).content
-	assertGeminiStreamQuality(t, secondStreamed, secondWant)
-	assertGeminiDoesNotContainAny(t, "second stream", secondStreamed, firstWant, "GEMINI_SYSTEM_MD", "stdout", "stderr", "exit_code", "Policy file warning")
+	assertCodexStreamQuality(t, secondStreamed, secondWant)
+	assertCodexDoesNotContainAny(t, "second stream", secondStreamed, firstWant, "developer_instructions", "stdout", "stderr", "exit_code")
 }
 
-func TestGeminiCLIRealStreamJSONMCPBridgeContract(t *testing.T) {
-	requireRealGeminiCLIStreamJSONE2E(t)
+func TestCodexCLIRealExecJSONMCPBridgeContract(t *testing.T) {
+	requireRealCodexCLIStreamJSONE2E(t)
 
-	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
-	bridgeToken := "GEMINI_STREAM_JSON_BRIDGE_" + geminiRandomHex(4)
-
-	mcpServerPath := writeGeminiContractMCPServer(t)
-	settings := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
-	policyPath := writeGeminiRealPolicy(t, `[[rule]]
-toolName = "mcp_api-bridge_echo_contract"
-decision = "allow"
-priority = 999
-
-[[rule]]
-toolName = "*"
-decision = "deny"
-priority = 998
-deny_message = "Use only the api-bridge echo_contract MCP tool for this contract test."
-`)
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, quietCodexStreamLogger{})
+	bridgeToken := "CODEX_EXEC_JSON_BRIDGE_" + codexRandomHex(4)
+	mcpServerPath := writeCodexContractMCPServer(t)
+	mcpCommandOverride, err := codexStringConfigOverride("mcp_servers.api-bridge.command", mcpServerPath)
+	if err != nil {
+		t.Fatalf("build MCP command override: %v", err)
+	}
 
 	streamChan := make(chan llmtypes.StreamChunk, 128)
-	captureDone := collectGeminiStream(streamChan)
+	captureDone := collectCodexStream(streamChan)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -127,9 +110,10 @@ deny_message = "Use only the api-bridge echo_contract MCP tool for this contract
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge echo_contract MCP tool with token %s. Then reply exactly with the tool result text.", bridgeToken)}}},
 	},
-		WithProjectSettings(settings),
-		WithAdminPolicyPath(policyPath),
-		WithApprovalMode("yolo"),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
+		WithConfigOverrides([]string{mcpCommandOverride}),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {
@@ -148,43 +132,39 @@ deny_message = "Use only the api-bridge echo_contract MCP tool for this contract
 	if capture.toolStarts == 0 || capture.toolEnds == 0 {
 		t.Fatalf("expected structured MCP tool start/end chunks, got starts=%d ends=%d content=%q", capture.toolStarts, capture.toolEnds, capture.content)
 	}
-	assertGeminiDoesNotContainAny(t, "MCP bridge stream", capture.content,
-		"stdout", "stderr", "exit_code", "execution_time_ms",
-		"Policy file warning", "Unrecognized tool name", "mcp_server_tool",
+	assertCodexDoesNotContainAny(t, "MCP bridge stream", capture.content,
+		"stdout", "stderr", "exit_code", "execution_time_ms", "developer_instructions",
 	)
 }
 
-func requireRealGeminiCLIStreamJSONE2E(t *testing.T) {
+func requireRealCodexCLIStreamJSONE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_GEMINI_CLI_REAL_E2E") == "" && os.Getenv("RUN_GEMINI_CLI_STREAM_JSON_E2E") == "" {
-		t.Skip("set RUN_GEMINI_CLI_STREAM_JSON_E2E=1 to run real Gemini CLI stream-json contract tests")
+	if os.Getenv("RUN_CODEX_CLI_REAL_E2E") == "" && os.Getenv("RUN_CODEX_CLI_STREAM_JSON_E2E") == "" {
+		t.Skip("set RUN_CODEX_CLI_STREAM_JSON_E2E=1 to run real Codex CLI exec-json contract tests")
 	}
-	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
-		t.Fatal("real Gemini CLI stream-json tests require GEMINI_API_KEY")
-	}
-	for _, bin := range []string{"gemini", "node"} {
+	for _, bin := range []string{"codex", "node"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Fatalf("real Gemini CLI stream-json tests require %s in PATH: %v", bin, err)
+			t.Fatalf("real Codex CLI exec-json tests require %s in PATH: %v", bin, err)
 		}
 	}
 }
 
-type quietGeminiStreamLogger struct{}
+type quietCodexStreamLogger struct{}
 
-func (quietGeminiStreamLogger) Debugf(string, ...interface{}) {}
-func (quietGeminiStreamLogger) Infof(string, ...any)          {}
-func (quietGeminiStreamLogger) Errorf(string, ...any)         {}
+func (quietCodexStreamLogger) Debugf(string, ...interface{}) {}
+func (quietCodexStreamLogger) Infof(string, ...any)          {}
+func (quietCodexStreamLogger) Errorf(string, ...any)         {}
 
-type geminiStreamCapture struct {
+type codexStreamCapture struct {
 	content    string
 	toolStarts int
 	toolEnds   int
 }
 
-func collectGeminiStream(streamChan <-chan llmtypes.StreamChunk) <-chan geminiStreamCapture {
-	done := make(chan geminiStreamCapture, 1)
+func collectCodexStream(streamChan <-chan llmtypes.StreamChunk) <-chan codexStreamCapture {
+	done := make(chan codexStreamCapture, 1)
 	go func() {
-		var capture geminiStreamCapture
+		var capture codexStreamCapture
 		var content strings.Builder
 		for chunk := range streamChan {
 			switch chunk.Type {

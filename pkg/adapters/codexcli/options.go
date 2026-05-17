@@ -1,27 +1,71 @@
 package codexcli
 
-import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+import (
+	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
 
 // Constants for custom metadata keys
 const (
-	MetadataKeyCodexModel       = "codex_model"
-	MetadataKeyResumeSessionID  = "codex_resume_session_id"
-	MetadataKeyApprovalMode     = "codex_approval_mode"
-	MetadataKeySandbox          = "codex_sandbox"
-	MetadataKeyFullAuto         = "codex_full_auto"
-	MetadataKeyProjectDirID     = "codex_project_dir_id"
-	MetadataKeyConfigProfile    = "codex_config_profile"
-	MetadataKeyOutputSchema     = "codex_output_schema"
-	MetadataKeyAdditionalDirs   = "codex_additional_dirs"
-	MetadataKeyDisableFeatures  = "codex_disable_features"
-	MetadataKeyEnableFeatures   = "codex_enable_features"
-	MetadataKeyReasoningEffort  = "codex_reasoning_effort"
-	MetadataKeyReasoningSummary = "codex_reasoning_summary"
-	MetadataKeyDisableShellTool = "codex_disable_shell_tool"
-	MetadataKeyMCPServers       = "codex_mcp_servers"
-	MetadataKeyConfigOverrides  = "codex_config_overrides"
-	MetadataKeyApprovalPolicy   = "codex_approval_policy"
+	MetadataKeyCodexModel            = "codex_model"
+	MetadataKeyResumeSessionID       = "codex_resume_session_id"
+	MetadataKeyApprovalMode          = "codex_approval_mode"
+	MetadataKeySandbox               = "codex_sandbox"
+	MetadataKeyFullAuto              = "codex_full_auto"
+	MetadataKeyProjectDirID          = "codex_project_dir_id"
+	MetadataKeyConfigProfile         = "codex_config_profile"
+	MetadataKeyOutputSchema          = "codex_output_schema"
+	MetadataKeyAdditionalDirs        = "codex_additional_dirs"
+	MetadataKeyDisableFeatures       = "codex_disable_features"
+	MetadataKeyEnableFeatures        = "codex_enable_features"
+	MetadataKeyReasoningEffort       = "codex_reasoning_effort"
+	MetadataKeyReasoningSummary      = "codex_reasoning_summary"
+	MetadataKeyDisableShellTool      = "codex_disable_shell_tool"
+	MetadataKeyMCPServers            = "codex_mcp_servers"
+	MetadataKeyConfigOverrides       = "codex_config_overrides"
+	MetadataKeyApprovalPolicy        = "codex_approval_policy"
+	MetadataKeyInteractiveSessionID  = "codex_interactive_session_id"
+	MetadataKeyPersistentInteractive = "codex_persistent_interactive"
 )
+
+var codexBridgeOnlyDisabledFeatures = []string{
+	"shell_tool",
+	"unified_exec",
+	"tool_search",
+	"multi_agent",
+	"apps",
+	"browser_use",
+	"browser_use_external",
+	"computer_use",
+	"image_generation",
+	"workspace_dependencies",
+	"hooks",
+	"plugins",
+	"unavailable_dummy_tools",
+}
+
+func appendCodexDisabledFeatureArgs(args []string, seen map[string]bool, features ...string) []string {
+	for _, feature := range features {
+		feature = strings.TrimSpace(feature)
+		if feature == "" || seen[feature] {
+			continue
+		}
+		args = append(args, "--disable", feature)
+		seen[feature] = true
+	}
+	return args
+}
+
+func appendCodexFeatureCSV(args []string, flag string, features string) []string {
+	for _, feature := range strings.Split(features, ",") {
+		feature = strings.TrimSpace(feature)
+		if feature != "" {
+			args = append(args, flag, feature)
+		}
+	}
+	return args
+}
 
 // WithCodexModel sets the --model flag for the Codex CLI.
 func WithCodexModel(model string) llmtypes.CallOption {
@@ -125,6 +169,15 @@ func WithDisableShellTool() llmtypes.CallOption {
 	}
 }
 
+// WithDisableFeatures disables one or more Codex CLI features (comma-separated).
+// Each feature translates to --disable <feature> on the CLI.
+func WithDisableFeatures(features string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDisableFeatures] = features
+	}
+}
+
 // WithEnableFeatures enables one or more Codex CLI features (comma-separated).
 // Each feature translates to --enable <feature> on the CLI.
 func WithEnableFeatures(features string) llmtypes.CallOption {
@@ -160,6 +213,24 @@ func WithApprovalPolicy(policy string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyApprovalPolicy] = policy
+	}
+}
+
+// WithInteractiveSessionID links an interactive Codex TUI run to the owning
+// application session so follow-up user input can be sent directly to tmux.
+func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyInteractiveSessionID] = sessionID
+	}
+}
+
+// WithPersistentInteractiveSession keeps the tmux-backed Codex TUI alive across
+// completed chat turns. Workflow runs should use the default exec-json path.
+func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
 	}
 }
 

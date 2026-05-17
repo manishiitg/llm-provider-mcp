@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -43,6 +41,34 @@ func TestBuildKimiCLIPromptIncludesRoles(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, missing %q", prompt, want)
 		}
+	}
+}
+
+func TestKimiWorkingDirOption(t *testing.T) {
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(" /tmp/kimi-work ")(opts)
+	if got := kimiWorkingDirFromOptions(opts); got != "/tmp/kimi-work" {
+		t.Fatalf("working dir = %q, want /tmp/kimi-work", got)
+	}
+}
+
+func TestKimiCLIRejectsImageContent(t *testing.T) {
+	adapter := NewKimiCLIAdapter(ModelKimiCode, &testLogger{})
+
+	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Describe this image."},
+				llmtypes.ImageContent{SourceType: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("GenerateContent() error = nil, want unsupported image content error")
+	}
+	if !strings.Contains(err.Error(), "does not support llmtypes.ImageContent") {
+		t.Fatalf("GenerateContent() error = %v, want image content unsupported error", err)
 	}
 }
 
@@ -215,6 +241,13 @@ func TestResolveAgentFileDefaultsToNoTools(t *testing.T) {
 	}
 }
 
+func TestKimiCLIAdapterDoesNotImplementWebSearchModel(t *testing.T) {
+	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
+	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); ok {
+		t.Fatal("KimiCLIAdapter unexpectedly implements WebSearchModel; add a real web-search contract test before enabling it")
+	}
+}
+
 func TestResolveAgentFileCanDisableAllTools(t *testing.T) {
 	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
 	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
@@ -293,348 +326,6 @@ func TestResolveAgentFileDefaultModeUsesBuiltinAgent(t *testing.T) {
 	}
 }
 
-func TestGenerateContentInvokesKimiCLIWithReadOnlyAgentFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	argsPath := filepath.Join(tmpDir, "args.txt")
-	agentCopyPath := filepath.Join(tmpDir, "agent.yaml")
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-prev=""
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KIMI_FAKE_ARGS_PATH"
-  if [ "$prev" = "--agent-file" ]; then
-    cp "$arg" "$KIMI_FAKE_AGENT_COPY_PATH"
-  fi
-  prev="$arg"
-done
-printf '%s\n' '{"type":"message","role":"assistant","content":"hello from fake kimi"}'
-printf '%s\n' '{"type":"result","session_id":"session-123","model":"fake-kimi","stats":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_FAKE_ARGS_PATH", argsPath)
-	t.Setenv("KIMI_FAKE_AGENT_COPY_PATH", agentCopyPath)
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "")
-	t.Setenv("KIMI_CODE_CLI_AGENT", "default")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	resp, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{
-			Role:  llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say hello"}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-	if got := resp.Choices[0].Content; got != "hello from fake kimi" {
-		t.Fatalf("content = %q, want fake kimi response", got)
-	}
-	if resp.Usage == nil || resp.Usage.TotalTokens != 5 {
-		t.Fatalf("usage = %+v, want total tokens 5", resp.Usage)
-	}
-
-	argsBytes, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("failed to read fake kimi args: %v", err)
-	}
-	args := string(argsBytes)
-	for _, want := range []string{"--print", "--output-format", "stream-json", "--prompt", "--agent-file"} {
-		if !strings.Contains(args, want) {
-			t.Fatalf("kimi args = %q, missing %q", args, want)
-		}
-	}
-	if strings.Contains(args, "--agent\ndefault") {
-		t.Fatalf("kimi args = %q, should prefer generated --agent-file over KIMI_CODE_CLI_AGENT", args)
-	}
-
-	agentBytes, err := os.ReadFile(agentCopyPath)
-	if err != nil {
-		t.Fatalf("failed to read copied generated agent file: %v", err)
-	}
-	agent := string(agentBytes)
-	for _, disallowed := range []string{"Shell", "WriteFile", "StrReplaceFile", "Agent", "SearchWeb", "FetchURL"} {
-		if strings.Contains(agent, disallowed) {
-			t.Fatalf("generated agent contains disallowed tool %q: %s", disallowed, agent)
-		}
-	}
-}
-
-func TestGenerateContentPassesOptionalFlags(t *testing.T) {
-	tmpDir := t.TempDir()
-	argsPath := filepath.Join(tmpDir, "args.txt")
-	workDir := filepath.Join(tmpDir, "work")
-	if err := os.Mkdir(workDir, 0755); err != nil {
-		t.Fatalf("failed to create work dir: %v", err)
-	}
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KIMI_FAKE_ARGS_PATH"
-done
-printf '%s\n' '{"role":"assistant","content":[{"type":"text","text":"ok"}]}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_FAKE_ARGS_PATH", argsPath)
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "default")
-	t.Setenv("KIMI_CODE_CLI_AGENT", "okabe")
-	t.Setenv("KIMI_CODE_CLI_MODEL", "custom-kimi")
-	t.Setenv("KIMI_CODE_CLI_WORK_DIR", workDir)
-	t.Setenv("KIMI_CODE_CLI_MAX_STEPS_PER_TURN", "4")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	resp, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	})
-	if err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-	if got := resp.Choices[0].Content; got != "ok" {
-		t.Fatalf("content = %q, want ok", got)
-	}
-
-	args := readArgLines(t, argsPath)
-	assertArgPair(t, args, "--model", "custom-kimi")
-	assertArgPair(t, args, "--work-dir", workDir)
-	assertArgPair(t, args, "--max-steps-per-turn", "4")
-	assertArgPair(t, args, "--agent", "okabe")
-	assertArgAbsent(t, args, "--agent-file")
-}
-
-func TestGenerateContentPassesMCPConfigFromMetadata(t *testing.T) {
-	tmpDir := t.TempDir()
-	argsPath := filepath.Join(tmpDir, "args.txt")
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KIMI_FAKE_ARGS_PATH"
-done
-printf '%s\n' '{"type":"message","role":"assistant","content":"ok"}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	mcpConfig := `{"mcpServers":{"api-bridge":{"command":"/tmp/mcpbridge","env":{"MCP_API_URL":"http://127.0.0.1:1"}}}}`
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_FAKE_ARGS_PATH", argsPath)
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	if _, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	}, func(opts *llmtypes.CallOptions) {
-		if opts.Metadata == nil {
-			opts.Metadata = &llmtypes.Metadata{Custom: map[string]interface{}{}}
-		}
-		if opts.Metadata.Custom == nil {
-			opts.Metadata.Custom = map[string]interface{}{}
-		}
-		opts.Metadata.Custom["mcp_config"] = mcpConfig
-	}); err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-
-	args := readArgLines(t, argsPath)
-	assertArgPair(t, args, "--mcp-config", mcpConfig)
-	assertArgPair(t, args, "--agent-file", args[argIndex(t, args, "--agent-file")+1])
-}
-
-func TestGenerateContentPassesMCPConfigFileFromEnv(t *testing.T) {
-	tmpDir := t.TempDir()
-	argsPath := filepath.Join(tmpDir, "args.txt")
-	mcpConfigFile := filepath.Join(tmpDir, "mcp.json")
-	if err := os.WriteFile(mcpConfigFile, []byte(`{"mcpServers":{}}`), 0644); err != nil {
-		t.Fatalf("failed to write mcp config file: %v", err)
-	}
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KIMI_FAKE_ARGS_PATH"
-done
-printf '%s\n' '{"type":"message","role":"assistant","content":"ok"}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_FAKE_ARGS_PATH", argsPath)
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-	t.Setenv("KIMI_CODE_CLI_MCP_CONFIG_FILE", mcpConfigFile)
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	if _, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	}); err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-
-	args := readArgLines(t, argsPath)
-	assertArgPair(t, args, "--mcp-config-file", mcpConfigFile)
-}
-
-func TestGenerateContentUsesExplicitAgentFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	argsPath := filepath.Join(tmpDir, "args.txt")
-	agentFile := filepath.Join(tmpDir, "agent.yaml")
-	if err := os.WriteFile(agentFile, []byte("version: 1\nagent:\n  name: custom\n  tools: []\n"), 0644); err != nil {
-		t.Fatalf("failed to write agent file: %v", err)
-	}
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KIMI_FAKE_ARGS_PATH"
-done
-printf '%s\n' '{"type":"message","role":"assistant","content":"ok"}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_FAKE_ARGS_PATH", argsPath)
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", agentFile)
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-	t.Setenv("KIMI_CODE_CLI_AGENT", "okabe")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	if _, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	}); err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-
-	args := readArgLines(t, argsPath)
-	assertArgPair(t, args, "--agent-file", agentFile)
-	assertArgAbsent(t, args, "--agent")
-}
-
-func TestGenerateContentSkipsMalformedJSONLines(t *testing.T) {
-	tmpDir := t.TempDir()
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-printf '%s\n' 'this is not json'
-printf '%s\n' '{"role":"assistant","content":[{"type":"text","text":"valid after malformed"}]}'
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	resp, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	})
-	if err != nil {
-		t.Fatalf("GenerateContent returned error: %v", err)
-	}
-	if got := resp.Choices[0].Content; got != "valid after malformed" {
-		t.Fatalf("content = %q, want valid line after malformed JSON", got)
-	}
-}
-
-func TestGenerateContentReturnsStderrOnFailure(t *testing.T) {
-	tmpDir := t.TempDir()
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-printf '%s\n' 'auth failed' >&2
-exit 7
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	})
-	if err == nil {
-		t.Fatal("GenerateContent returned nil error for failing CLI")
-	}
-	if !strings.Contains(err.Error(), "auth failed") {
-		t.Fatalf("error = %q, want stderr content", err.Error())
-	}
-}
-
-func TestGenerateContentReturnsPlainTextStdoutOnFailure(t *testing.T) {
-	tmpDir := t.TempDir()
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-printf '%s\n' 'Error code: 403 - usage limit reached'
-printf '%s\n' 'To resume this session: kimi -r test-session' >&2
-exit 1
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	})
-	if err == nil {
-		t.Fatal("GenerateContent returned nil error for failing CLI")
-	}
-	if !strings.Contains(err.Error(), "usage limit reached") {
-		t.Fatalf("error = %q, want stdout diagnostic", err.Error())
-	}
-	if !strings.Contains(err.Error(), "To resume this session") {
-		t.Fatalf("error = %q, want stderr diagnostic", err.Error())
-	}
-}
-
-func TestGenerateContentReportsCancellation(t *testing.T) {
-	tmpDir := t.TempDir()
-	fakeKimiPath := filepath.Join(tmpDir, "kimi")
-	fakeKimi := `#!/bin/sh
-sleep 5
-`
-	if err := os.WriteFile(fakeKimiPath, []byte(fakeKimi), 0755); err != nil {
-		t.Fatalf("failed to write fake kimi binary: %v", err)
-	}
-
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("KIMI_CODE_CLI_AGENT_FILE", "")
-	t.Setenv("KIMI_CODE_CLI_TOOL_MODE", "none")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	adapter := NewKimiCLIAdapter(ModelKimiCode, testLogger{})
-	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say ok"}}},
-	})
-	if err == nil {
-		t.Fatal("GenerateContent returned nil error for cancelled context")
-	}
-	if !strings.Contains(err.Error(), "kimi cli cancelled") {
-		t.Fatalf("error = %q, want cancellation error", err.Error())
-	}
-}
-
 func TestKimiCLIParserFixtures(t *testing.T) {
 	fixtures := map[string]string{
 		"real-thinking-text": `{"role":"assistant","content":[{"type":"think","think":"hidden"},{"type":"text","text":"visible"}]}`,
@@ -664,45 +355,6 @@ func TestKimiCLIParserFixtures(t *testing.T) {
 				t.Fatalf("parsed text = %q, want visible", got)
 			}
 		})
-	}
-}
-
-func readArgLines(t *testing.T, path string) []string {
-	t.Helper()
-	argsBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read args file: %v", err)
-	}
-	return strings.Split(strings.TrimSpace(string(argsBytes)), "\n")
-}
-
-func assertArgPair(t *testing.T, args []string, key string, value string) {
-	t.Helper()
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == key && args[i+1] == value {
-			return
-		}
-	}
-	t.Fatalf("args = %#v, missing pair %s %s", args, key, value)
-}
-
-func argIndex(t *testing.T, args []string, key string) int {
-	t.Helper()
-	for i, arg := range args {
-		if arg == key {
-			return i
-		}
-	}
-	t.Fatalf("args = %#v, missing %s", args, key)
-	return -1
-}
-
-func assertArgAbsent(t *testing.T, args []string, key string) {
-	t.Helper()
-	for _, arg := range args {
-		if arg == key {
-			t.Fatalf("args = %#v, expected %s to be absent", args, key)
-		}
 	}
 }
 

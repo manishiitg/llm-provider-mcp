@@ -16,8 +16,24 @@ import (
 )
 
 const (
-	defaultKimiCLIBinary = "kimi"
+	defaultKimiCLIBinary  = "kimi"
+	MetadataKeyWorkingDir = "kimi_working_dir"
 )
+
+// WithWorkingDir sets the Kimi Code CLI working directory. The adapter applies
+// it both as the process cwd and the CLI's --work-dir value so shell-relative
+// behavior is consistent across providers.
+func WithWorkingDir(dir string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		if opts.Metadata == nil {
+			opts.Metadata = &llmtypes.Metadata{}
+		}
+		if opts.Metadata.Custom == nil {
+			opts.Metadata.Custom = make(map[string]interface{})
+		}
+		opts.Metadata.Custom[MetadataKeyWorkingDir] = dir
+	}
+}
 
 // KimiCLIAdapter runs the native Kimi Code CLI instead of Kimi's
 // Anthropic-compatible HTTP endpoint. This is intentionally hidden behind an
@@ -38,6 +54,17 @@ func NewKimiCLIAdapter(modelID string, logger interfaces.Logger) *KimiCLIAdapter
 }
 
 func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	opts := &llmtypes.CallOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+	if containsKimiImageContent(messages) {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("kimi cli adapter does not support llmtypes.ImageContent; Kimi Code CLI has no image attachment flag in the supported print transport")
+	}
+
 	binary := strings.TrimSpace(os.Getenv("KIMI_CODE_CLI_BINARY"))
 	if binary == "" {
 		binary = defaultKimiCLIBinary
@@ -46,9 +73,8 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		return nil, fmt.Errorf("kimi cli not found in PATH. Install Kimi Code CLI and run `kimi login` before enabling KIMI_CODE_TRANSPORT=cli")
 	}
 
-	opts := &llmtypes.CallOptions{}
-	for _, opt := range options {
-		opt(opts)
+	if opts.StreamChan != nil {
+		defer close(opts.StreamChan)
 	}
 
 	promptText := buildKimiCLIPrompt(messages)
@@ -75,13 +101,23 @@ func (k *KimiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	} else if agent := strings.TrimSpace(os.Getenv("KIMI_CODE_CLI_AGENT")); agent != "" {
 		args = append(args, "--agent", agent)
 	}
-	if workDir := strings.TrimSpace(os.Getenv("KIMI_CODE_CLI_WORK_DIR")); workDir != "" {
+	workDir := kimiWorkingDirFromOptions(opts)
+	if workDir == "" {
+		workDir = strings.TrimSpace(os.Getenv("KIMI_CODE_CLI_WORK_DIR"))
+	}
+	if workDir != "" {
 		args = append(args, "--work-dir", workDir)
 	}
 
 	k.logger.Infof("Executing Kimi Code CLI: %s %v", binary, args)
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = os.Environ()
+	if workDir != "" {
+		if err := os.MkdirAll(workDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create kimi cli working directory: %w", err)
+		}
+		cmd.Dir = workDir
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	defer func() {
 		if ctx.Err() != nil && cmd.Process != nil {
@@ -236,6 +272,16 @@ func (k *KimiCLIAdapter) resolveMCPArgs(opts *llmtypes.CallOptions) []string {
 	return args
 }
 
+func kimiWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if dir, ok := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); ok {
+		return strings.TrimSpace(dir)
+	}
+	return ""
+}
+
 func (k *KimiCLIAdapter) resolveAgentFile() (string, func(), error) {
 	if agentFile := strings.TrimSpace(os.Getenv("KIMI_CODE_CLI_AGENT_FILE")); agentFile != "" {
 		return agentFile, func() {}, nil
@@ -347,6 +393,18 @@ func extractKimiCLIText(msg llmtypes.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func containsKimiImageContent(messages []llmtypes.MessageContent) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.(type) {
+			case llmtypes.ImageContent, *llmtypes.ImageContent:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (k *KimiCLIAdapter) handleKimiCLIEvent(

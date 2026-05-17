@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,11 +17,13 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 const (
 	defaultTmuxTimeout             = 30 * time.Minute
+	defaultPersistentIdleTimeout   = 20 * time.Minute
 	defaultTmuxPollInterval        = 750 * time.Millisecond
 	defaultTmuxCaptureLines        = "3000"
 	minTmuxMajorVersion            = 3
@@ -28,9 +31,11 @@ const (
 	promptPasteVisibleStableWindow = 900 * time.Millisecond
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 
-	EnvClaudeExperimentalSessionPrefix  = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
-	EnvClaudeExperimentalTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalVerbose        = "CLAUDE_CODE_EXPERIMENTAL_VERBOSE"
+	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
+	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
+	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
+	EnvClaudeExperimentalVerbose            = "CLAUDE_CODE_EXPERIMENTAL_VERBOSE"
+	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
 )
 
 var claudeExperimentalSessionRegistry = struct {
@@ -38,6 +43,33 @@ var claudeExperimentalSessionRegistry = struct {
 	sessions map[string]struct{}
 }{
 	sessions: map[string]struct{}{},
+}
+
+var claudeExperimentalInteractiveRegistry = struct {
+	sync.RWMutex
+	sessions map[string]string
+}{
+	sessions: map[string]string{},
+}
+
+type claudeExperimentalPersistentSession struct {
+	ownerSessionID  string
+	tmuxSessionName string
+	nativeSessionID string
+	workingDir      string
+	tempFiles       []string
+	idleTimer       *time.Timer
+	initErr         error
+	createdAt       time.Time
+	lastUsed        time.Time
+	mu              sync.Mutex
+}
+
+var claudeExperimentalPersistentRegistry = struct {
+	sync.Mutex
+	sessions map[string]*claudeExperimentalPersistentSession
+}{
+	sessions: map[string]*claudeExperimentalPersistentSession{},
 }
 
 func newClaudeCallContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -81,6 +113,16 @@ func NewClaudeCodeExperimentalAdapter(modelID string, logger interfaces.Logger) 
 }
 
 func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	opts := &llmtypes.CallOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+	if containsClaudeImageContent(messages) {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("claude-code experimental tmux transport does not support llmtypes.ImageContent; use CLAUDE_CODE_TRANSPORT=print for image input")
+	}
 	if err := ensureTmuxAvailable(ctx); err != nil {
 		return nil, err
 	}
@@ -88,50 +130,81 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		return nil, fmt.Errorf("claude cli not found in PATH; install and authenticate Claude Code first")
 	}
 
-	opts := &llmtypes.CallOptions{}
-	for _, opt := range options {
-		opt(opts)
-	}
 	resumeID := claudeResumeIDFromOptions(opts)
+	interactiveSessionID := claudeInteractiveSessionIDFromOptions(opts)
+	persistentInteractive := claudePersistentInteractiveFromOptions(opts) && interactiveSessionID != ""
 	nativeSessionID := resumeID
 	if nativeSessionID == "" {
 		nativeSessionID = newClaudeNativeSessionID()
 	}
+	workingDir := claudeWorkingDirFromOptions(opts)
 
 	callCtx, cancel := newClaudeCallContext(ctx, tmuxTimeout())
 	defer cancel()
 
-	sessionName := newTmuxSessionName()
 	runID := "mlp-claude-run-" + randomHex(8)
 
 	systemPrompt, conversationMessages := splitSystemPrompt(messages)
-	args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
-	if err != nil {
-		return nil, err
-	}
-	defer removeFiles(tempFiles)
 
-	if err := c.startSession(callCtx, sessionName, args); err != nil {
-		return nil, err
-	}
-	registerClaudeExperimentalSession(sessionName)
-	cleanupSession := cleanupClaudeExperimentalSessionOnce(sessionName)
-	defer cleanupSession()
-	cleanupDone := make(chan struct{})
-	defer close(cleanupDone)
-	go func() {
-		select {
-		case <-callCtx.Done():
-			cleanupSession()
-		case <-cleanupDone:
+	var sessionName string
+	var persistentSession *claudeExperimentalPersistentSession
+	releasePersistentSession := false
+	defer func() {
+		if releasePersistentSession && persistentSession != nil {
+			releaseClaudePersistentInteractiveSession(persistentSession, c.logger)
 		}
 	}()
 
+	if persistentInteractive {
+		var err error
+		persistentSession, err = c.acquirePersistentInteractiveSession(callCtx, interactiveSessionID, nativeSessionID, opts, systemPrompt, workingDir)
+		if err != nil {
+			return nil, err
+		}
+		releasePersistentSession = true
+		sessionName = persistentSession.tmuxSessionName
+		nativeSessionID = persistentSession.nativeSessionID
+	} else {
+		sessionName = newTmuxSessionName()
+		args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
+		if err != nil {
+			return nil, err
+		}
+		defer removeFiles(tempFiles)
+
+		if err := c.startSession(callCtx, sessionName, args, workingDir); err != nil {
+			return nil, err
+		}
+		registerClaudeExperimentalSession(sessionName)
+		cleanupSession := cleanupClaudeExperimentalSessionOnce(sessionName)
+		defer cleanupSession()
+		if interactiveSessionID != "" {
+			registerClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
+			defer unregisterClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
+		}
+	}
+
 	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
+		if persistentInteractive && persistentSession != nil {
+			markClaudePersistentInteractiveSessionFailedLocked(persistentSession, err, c.logger)
+			releasePersistentSession = false
+			failedSession := persistentSession
+			persistentSession.mu.Unlock()
+			persistentSession = nil
+			cleanupFailedClaudePersistentInteractiveSession(failedSession)
+		}
 		return nil, err
 	}
 	resetTmuxPaneForTurn(callCtx, sessionName)
 	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
+		if persistentInteractive && persistentSession != nil {
+			markClaudePersistentInteractiveSessionFailedLocked(persistentSession, err, c.logger)
+			releasePersistentSession = false
+			failedSession := persistentSession
+			persistentSession.mu.Unlock()
+			persistentSession = nil
+			cleanupFailedClaudePersistentInteractiveSession(failedSession)
+		}
 		return nil, err
 	}
 
@@ -146,23 +219,26 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		return nil, err
 	}
 
-	content, streamedAssistant, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan)
+	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan)
 	if err != nil {
+		if isContextCanceledError(err) {
+			interruptClaudeExperimentalSession(sessionName, c.logger)
+		}
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
 		return nil, err
 	}
-	closeResumeRef := closeClaudeSessionForResume(sessionName, c.logger)
+	closeResumeRef := ""
 	responseSessionID := nativeSessionID
-	if isUUIDLike(strings.TrimSpace(closeResumeRef)) {
-		responseSessionID = closeResumeRef
+	if !persistentInteractive {
+		closeResumeRef = closeClaudeSessionForResume(sessionName, c.logger)
+		if isUUIDLike(strings.TrimSpace(closeResumeRef)) {
+			responseSessionID = closeResumeRef
+		}
 	}
 
 	if opts.StreamChan != nil {
-		if finalChunk := remainingFinalContentForStream(content, streamedAssistant); finalChunk != "" {
-			opts.StreamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: finalChunk}
-		}
 		close(opts.StreamChan)
 	}
 
@@ -173,21 +249,34 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 				StopReason: "stop",
 				GenerationInfo: &llmtypes.GenerationInfo{
 					Additional: map[string]interface{}{
-						"provider":                         "claude-code",
-						"claude_code_mode":                 "experimental",
-						"claude_code_run_id":               runID,
-						"claude_code_session":              sessionName,
-						"claude_code_session_id":           responseSessionID,
-						"claude_code_native_session_id":    nativeSessionID,
-						"claude_code_resumed_session_id":   resumeID,
-						"claude_code_close_resume_ref":     closeResumeRef,
-						"claude_code_uses_print_flag":      false,
-						"claude_code_structured_streaming": false,
+						"provider":                           "claude-code",
+						"claude_code_mode":                   "experimental",
+						"claude_code_run_id":                 runID,
+						"claude_code_session":                sessionName,
+						"claude_code_session_id":             responseSessionID,
+						"claude_code_native_session_id":      nativeSessionID,
+						"claude_code_resumed_session_id":     resumeID,
+						"claude_code_close_resume_ref":       closeResumeRef,
+						"claude_code_uses_print_flag":        false,
+						"claude_code_structured_streaming":   false,
+						"claude_code_persistent_interactive": persistentInteractive,
 					},
 				},
 			},
 		},
 	}, nil
+}
+
+func containsClaudeImageContent(messages []llmtypes.MessageContent) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.(type) {
+			case llmtypes.ImageContent, *llmtypes.ImageContent:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *ClaudeCodeExperimentalAdapter) GetModelID() string {
@@ -306,15 +395,26 @@ func (c *ClaudeCodeExperimentalAdapter) shouldPassModelFlag() bool {
 	return modelID != "" && modelID != "claude-code"
 }
 
-func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessionName string, args []string) error {
-	shellCommand := "cd " + shellQuote(mustGetwd()) + " && " + shellJoin(args)
-	if err := runCommand(ctx, nil, "tmux", "new-session", "-d", "-s", sessionName, shellCommand); err != nil {
+func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+	shellCommand := claudeExperimentalShellCommand(args, workingDir)
+	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
+	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
+	tmuxArgs = append(tmuxArgs, shellCommand)
+	if err := runCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
 		return fmt.Errorf("failed to start Claude Code experimental session %q: %w", sessionName, err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("failed to configure Claude Code experimental session %q: %w", sessionName, err)
 	}
 	return nil
+}
+
+func claudeExperimentalShellCommand(args []string, workingDir string) string {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		workingDir = mustGetwd()
+	}
+	return "cd " + shellQuote(workingDir) + " && exec " + shellJoin(args)
 }
 
 func buildTmuxPrompt(messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, resumeID string) (string, error) {
@@ -512,6 +612,17 @@ func claudeExperimentalVerboseEnabled() bool {
 	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
+func claudeExperimentalStreamTmuxScreenEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvClaudeExperimentalStreamTmuxScreen))) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
 func waitForTmuxPrompt(ctx context.Context, sessionName string) error {
 	deadline, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -595,6 +706,28 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 	return fmt.Errorf("Claude Code experimental prompt did not start after submit retries: %w", lastErr)
 }
 
+func sendInputToActiveTmux(ctx context.Context, sessionName, message string) error {
+	bufferName := "mlp-claude-steer-" + randomHex(6)
+	message = strings.TrimRight(message, "\r\n")
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("Claude Code experimental input is empty")
+	}
+	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
+	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
+		return fmt.Errorf("failed to load Claude Code experimental input into tmux buffer: %w", err)
+	}
+	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+		return fmt.Errorf("failed to paste input into Claude Code experimental session: %w", err)
+	}
+	if _, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste); err != nil {
+		return err
+	}
+	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
+	}
+	return nil
+}
+
 func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) string {
 	closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -643,6 +776,25 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 	}
 }
 
+func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Logger) {
+	interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := runCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+		if logger != nil {
+			logger.Debugf("Failed to send Escape to Claude Code experimental session %s: %v", sessionName, err)
+		}
+		return
+	}
+	if err := waitForReadyInputPrompt(interruptCtx, sessionName); err != nil && logger != nil {
+		logger.Debugf("Claude Code experimental session %s did not return to prompt after Escape: %v", sessionName, err)
+	}
+}
+
+func isContextCanceledError(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
+}
+
 func resetTmuxPaneForTurn(ctx context.Context, sessionName string) {
 	_ = runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
 	_ = runCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
@@ -682,7 +834,7 @@ func hasReadyInputPrompt(captured string) bool {
 			promptIndex = i
 			break
 		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "⏵") || isClaudeTUIBoundaryLine(trimmed) {
+		if trimmed == "" || isIgnorableClaudePromptFooterLine(trimmed) || isClaudeTUIBoundaryLine(trimmed) {
 			continue
 		}
 		return false
@@ -704,6 +856,12 @@ func hasReadyInputPrompt(captured string) bool {
 		break
 	}
 	return true
+}
+
+func isIgnorableClaudePromptFooterLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "⏵") ||
+		strings.Contains(trimmed, "tmux focus-events") ||
+		strings.Contains(trimmed, "set -g focus-events")
 }
 
 func hasClaudeActivity(captured string) bool {
@@ -755,6 +913,7 @@ func waitForPromptPaste(ctx context.Context, sessionName, paneBeforePaste string
 	defer ticker.Stop()
 
 	started := time.Now()
+	baselineActive := hasClaudeActivity(paneBeforePaste)
 	var sawPaste bool
 	var lastCaptured string
 	var stableSince time.Time
@@ -772,7 +931,7 @@ func waitForPromptPaste(ctx context.Context, sessionName, paneBeforePaste string
 			if err != nil {
 				continue
 			}
-			if hasClaudeActivity(captured) {
+			if hasClaudeActivity(captured) && (!baselineActive || captured != paneBeforePaste || sawPaste) {
 				return true, nil
 			}
 			if captured != paneBeforePaste || strings.Contains(captured, "[Pasted text") {
@@ -836,84 +995,77 @@ func hasNewAssistantOutput(delta string) bool {
 	return false
 }
 
-func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk) (string, string, error) {
-	captured, streamedAssistant, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, startMarker, endMarker, streamChan)
+func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan)
 	if err != nil {
-		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker, streamedAssistant); ok {
-			return content, streamedAssistant, nil
+		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
+			return content, nil
 		}
-		return "", streamedAssistant, fmt.Errorf("timed out waiting for Claude Code experimental response: %w", err)
+		return "", fmt.Errorf("timed out waiting for Claude Code experimental response: %w", err)
 	}
 
-	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker, streamedAssistant); ok {
-		return content, streamedAssistant, nil
+	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
+		return content, nil
 	}
-	return "", streamedAssistant, fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", captured)
+	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", captured)
 }
 
-func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker, streamedAssistant string) (string, bool) {
+func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
 	newOutput := capturedAfterPaneBaseline(captured, paneBaseline)
 	if content, ok := extractBetweenLastMarkers(newOutput, startMarker, endMarker); ok {
 		return strings.TrimSpace(content), true
 	}
-	if content, ok := extractLatestUnmarkedAssistantResponse(newOutput); ok {
-		if markedContent, markedOK := extractBetweenLastMarkers(content, startMarker, endMarker); markedOK {
-			return strings.TrimSpace(markedContent), true
+	if !hasTrailingClaudeTUIStatus(newOutput) {
+		if content, ok := extractLatestUnmarkedAssistantResponse(newOutput); ok {
+			if markedContent, markedOK := extractBetweenLastMarkers(content, startMarker, endMarker); markedOK {
+				return strings.TrimSpace(markedContent), true
+			}
+			return strings.TrimSpace(content), true
 		}
-		return strings.TrimSpace(content), true
-	}
-	if content, ok := extractTrailingUnmarkedAssistantResponse(newOutput); ok {
-		return strings.TrimSpace(content), true
-	}
-	if strings.TrimSpace(streamedAssistant) != "" {
-		return strings.TrimSpace(streamedAssistant), true
+		if content, ok := extractTrailingUnmarkedAssistantResponse(newOutput); ok {
+			return strings.TrimSpace(content), true
+		}
 	}
 	return "", false
 }
 
-func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, startMarker, endMarker string, streamChan chan<- llmtypes.StreamChunk) (string, string, error) {
+func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
 	sawActivity := activityAlreadySeen
 	var idleSince time.Time
 	var lastCaptured string
-	var lastProgress string
-	var lastProgressSent time.Time
-	var lastAssistantStream string
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
 
 	for {
 		select {
 		case <-ctx.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return captured, lastAssistantStream, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), captured)
+				return captured, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), captured)
 			}
-			return "", lastAssistantStream, ctx.Err()
+			return "", ctx.Err()
 		case <-ticker.C:
 			captured, err := captureTmuxPane(ctx, sessionName)
 			if err != nil {
 				if ctx.Err() != nil {
 					latest, _ := captureTmuxPane(context.Background(), sessionName)
 					if strings.TrimSpace(latest) != "" {
-						return latest, lastAssistantStream, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), latest)
+						return latest, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), latest)
 					}
 				}
-				return "", lastAssistantStream, err
+				return "", err
 			}
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
-				return "", lastAssistantStream, fmt.Errorf("claude code experimental session failed: %s", errText)
+				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
 			}
-			if streamChan != nil {
-				progress := extractClaudeTerminalProgress(delta, startMarker, endMarker)
-				if progress != "" && progress != lastProgress && time.Since(lastProgressSent) >= 750*time.Millisecond {
-					sendClaudeProgressChunk(streamChan, progress)
-					lastProgress = progress
-					lastProgressSent = time.Now()
-				}
-				if assistantText := extractClaudeVisibleAssistantText(delta, startMarker, endMarker); assistantText != "" {
-					streamClaudeAssistantDelta(streamChan, assistantText, &lastAssistantStream)
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
 				}
 			}
 			if hasClaudeActivity(captured) {
@@ -940,70 +1092,28 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				continue
 			}
 			if time.Since(idleSince) >= claudeIdleStableWindow {
-				return captured, lastAssistantStream, nil
+				return captured, nil
 			}
 		}
 	}
 }
 
-func sendClaudeProgressChunk(streamChan chan<- llmtypes.StreamChunk, content string) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return
+func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	snapshot, err := captureTmuxPane(ctx, sessionName)
+	if err != nil {
+		return false
+	}
+	snapshot = strings.TrimRight(snapshot, "\n")
+	if strings.TrimSpace(snapshot) == "" || snapshot == *lastTerminalSnapshot {
+		return false
 	}
 	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: content + "\n"}:
+	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeTerminal, Content: snapshot}:
+		*lastTerminalSnapshot = snapshot
+		return true
 	default:
+		return false
 	}
-}
-
-func streamClaudeAssistantDelta(streamChan chan<- llmtypes.StreamChunk, assistantText string, lastAssistantStream *string) {
-	assistantText = strings.TrimSpace(assistantText)
-	if assistantText == "" {
-		return
-	}
-
-	last := strings.TrimSpace(*lastAssistantStream)
-	if assistantText == last {
-		return
-	}
-
-	delta := assistantText
-	if last != "" {
-		if strings.HasPrefix(assistantText, last) {
-			delta = strings.TrimSpace(assistantText[len(last):])
-		} else if idx := strings.LastIndex(assistantText, last); idx >= 0 {
-			delta = strings.TrimSpace(assistantText[idx+len(last):])
-		}
-	}
-	if delta == "" {
-		*lastAssistantStream = assistantText
-		return
-	}
-
-	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: delta + "\n"}:
-		*lastAssistantStream = assistantText
-	default:
-	}
-}
-
-func remainingFinalContentForStream(finalContent, streamedAssistant string) string {
-	finalContent = strings.TrimSpace(finalContent)
-	streamedAssistant = strings.TrimSpace(streamedAssistant)
-	if finalContent == "" {
-		return ""
-	}
-	if streamedAssistant == "" {
-		return finalContent
-	}
-	if streamedAssistant == finalContent || strings.HasSuffix(streamedAssistant, finalContent) {
-		return ""
-	}
-	if strings.HasPrefix(finalContent, streamedAssistant) {
-		return strings.TrimSpace(finalContent[len(streamedAssistant):])
-	}
-	return finalContent
 }
 
 func capturedAfterPaneBaseline(captured, baseline string) string {
@@ -1062,127 +1172,6 @@ func detectTmuxFatalStatus(captured string) string {
 	}
 }
 
-func extractClaudeTerminalProgress(text, startMarker, endMarker string) string {
-	normalized := strings.ReplaceAll(text, "\u00a0", " ")
-	lines := strings.Split(normalized, "\n")
-	inFinalAnswer := false
-	toolLine := ""
-	fatalLine := ""
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if startMarker != "" && strings.Contains(trimmed, startMarker) {
-			inFinalAnswer = true
-			continue
-		}
-		if endMarker != "" && strings.Contains(trimmed, endMarker) {
-			inFinalAnswer = false
-			continue
-		}
-		if inFinalAnswer || isClaudePromptEchoLine(trimmed) {
-			continue
-		}
-		cleaned := cleanClaudeTerminalProgressLine(trimmed)
-		switch {
-		case cleaned == "":
-			continue
-		case isClaudeFatalProgressLine(cleaned):
-			fatalLine = cleaned
-		case isClaudeToolProgressLine(cleaned):
-			toolLine = cleaned
-		}
-	}
-
-	progressLines := make([]string, 0, 3)
-	if toolLine != "" {
-		progressLines = append(progressLines, toolLine)
-	}
-	if fatalLine != "" {
-		progressLines = append(progressLines, fatalLine)
-	}
-	if len(progressLines) == 0 {
-		return ""
-	}
-	return strings.Join(progressLines, "\n")
-}
-
-func extractClaudeVisibleAssistantText(text, startMarker, endMarker string) string {
-	normalized := strings.ReplaceAll(text, "\u00a0", " ")
-	lines := strings.Split(normalized, "\n")
-
-	var blocks []string
-	var current []string
-	inAssistantBlock := false
-	inFinalAnswer := false
-
-	flush := func() {
-		if len(current) == 0 {
-			inAssistantBlock = false
-			return
-		}
-		content := normalizeCapturedAssistantText(strings.Join(current, "\n"))
-		current = nil
-		inAssistantBlock = false
-		if content == "" || isClaudeTUIArtifact(content) || isClaudeNonTextAssistantBlock(content) {
-			return
-		}
-		if len(blocks) > 0 && strings.TrimSpace(blocks[len(blocks)-1]) == content {
-			return
-		}
-		blocks = append(blocks, content)
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			if inAssistantBlock {
-				current = append(current, line)
-			}
-			continue
-		}
-		if startMarker != "" && strings.Contains(trimmed, startMarker) {
-			flush()
-			inFinalAnswer = true
-			continue
-		}
-		if endMarker != "" && strings.Contains(trimmed, endMarker) {
-			inFinalAnswer = false
-			continue
-		}
-		if inFinalAnswer {
-			continue
-		}
-		cleanedProgress := cleanClaudeTerminalProgressLine(trimmed)
-		if isClaudePromptEchoLine(trimmed) ||
-			isClaudeTUIBoundaryLine(trimmed) ||
-			cleanedProgress == "" ||
-			isClaudeToolProgressLine(cleanedProgress) ||
-			isClaudeFatalProgressLine(cleanedProgress) ||
-			isClaudeRunningProgressLine(cleanedProgress) {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(trimmed, "⏺ ") {
-			flush()
-			current = append(current, line)
-			inAssistantBlock = true
-			continue
-		}
-		if inAssistantBlock {
-			current = append(current, line)
-		}
-	}
-	flush()
-
-	if len(blocks) == 0 {
-		return ""
-	}
-	return strings.Join(blocks, "\n\n")
-}
-
 func isClaudeNonTextAssistantBlock(content string) bool {
 	firstLine := content
 	if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
@@ -1235,6 +1224,7 @@ func cleanClaudeTerminalProgressLine(trimmed string) string {
 	if strings.HasPrefix(trimmed, "✻ Worked for ") ||
 		strings.HasPrefix(trimmed, "· ") ||
 		strings.HasPrefix(trimmed, "⎿ Tip:") ||
+		isClaudeTUIStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "⏵") ||
 		strings.Contains(trimmed, "/effort") ||
 		strings.Contains(trimmed, "don't ask on") {
@@ -1310,9 +1300,39 @@ func isClaudeTUIArtifact(content string) bool {
 	if trimmed == "" || trimmed == "<final answer>" {
 		return true
 	}
+	if isClaudeTUIStatusLine(trimmed) {
+		return true
+	}
 	if strings.Contains(trimmed, "<final answer>") &&
 		(strings.Contains(trimmed, "✶ Composing") || strings.Contains(trimmed, "❯")) {
 		return true
+	}
+	return false
+}
+
+func isClaudeTUIStatusLine(trimmed string) bool {
+	trimmed = strings.TrimSpace(trimmed)
+	trimmed = strings.TrimPrefix(trimmed, "⎿")
+	trimmed = strings.TrimSpace(trimmed)
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "compacted") &&
+		(strings.Contains(lower, "ctrl+o") || strings.Contains(lower, "full summary") || strings.Contains(lower, "history"))
+}
+
+func hasTrailingClaudeTUIStatus(text string) bool {
+	lines := strings.Split(strings.ReplaceAll(text, "\u00a0", " "), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if isClaudeTUIStatusLine(trimmed) {
+			return true
+		}
+		if isClaudeTUIBoundaryLine(trimmed) {
+			continue
+		}
+		return false
 	}
 	return false
 }
@@ -1348,6 +1368,9 @@ func extractLatestUnmarkedAssistantResponse(text string) (string, bool) {
 }
 
 func extractTrailingUnmarkedAssistantResponse(text string) (string, bool) {
+	if hasTrailingClaudeTUIStatus(text) {
+		return "", false
+	}
 	normalized := strings.ReplaceAll(text, "\u00a0", " ")
 	lines := strings.Split(normalized, "\n")
 
@@ -1422,6 +1445,7 @@ func isClaudeTUIBoundaryLine(trimmed string) bool {
 		strings.HasPrefix(trimmed, "✳ ") ||
 		strings.HasPrefix(trimmed, "✢ ") ||
 		strings.HasPrefix(trimmed, "────────────────") ||
+		isClaudeTUIStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "❯") ||
 		strings.HasPrefix(trimmed, "⏵")
 }
@@ -1446,6 +1470,18 @@ func tmuxTimeout() time.Duration {
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
 		return defaultTmuxTimeout
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func persistentInteractiveIdleTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalIdleTimeoutSeconds))
+	if raw == "" {
+		return defaultPersistentIdleTimeout
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return defaultPersistentIdleTimeout
 	}
 	return time.Duration(seconds) * time.Second
 }
@@ -1508,6 +1544,12 @@ func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
 		return err
 	}
 	sessions = appendUniqueStrings(sessions, activeClaudeExperimentalSessions()...)
+	persistentSessions := drainClaudePersistentInteractiveSessions()
+	for _, session := range persistentSessions {
+		sessions = appendUniqueStrings(sessions, session.tmuxSessionName)
+		unregisterClaudeExperimentalInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		removeFiles(session.tempFiles)
+	}
 
 	var failures []string
 	for _, sessionName := range sessions {
@@ -1571,6 +1613,245 @@ func unregisterClaudeExperimentalSession(sessionName string) {
 	claudeExperimentalSessionRegistry.Lock()
 	defer claudeExperimentalSessionRegistry.Unlock()
 	delete(claudeExperimentalSessionRegistry.sessions, sessionName)
+}
+
+func registerClaudeExperimentalInteractiveSession(ownerSessionID, tmuxSessionName string) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if ownerSessionID == "" || tmuxSessionName == "" {
+		return
+	}
+	claudeExperimentalInteractiveRegistry.Lock()
+	defer claudeExperimentalInteractiveRegistry.Unlock()
+	claudeExperimentalInteractiveRegistry.sessions[ownerSessionID] = tmuxSessionName
+}
+
+func unregisterClaudeExperimentalInteractiveSession(ownerSessionID, tmuxSessionName string) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return
+	}
+	claudeExperimentalInteractiveRegistry.Lock()
+	defer claudeExperimentalInteractiveRegistry.Unlock()
+	if current := claudeExperimentalInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
+		delete(claudeExperimentalInteractiveRegistry.sessions, ownerSessionID)
+	}
+}
+
+func activeClaudeExperimentalInteractiveSession(ownerSessionID string) (string, bool) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return "", false
+	}
+	claudeExperimentalInteractiveRegistry.RLock()
+	defer claudeExperimentalInteractiveRegistry.RUnlock()
+	sessionName, ok := claudeExperimentalInteractiveRegistry.sessions[ownerSessionID]
+	return sessionName, ok && strings.TrimSpace(sessionName) != ""
+}
+
+func claudeInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if sessionID, ok := opts.Metadata.Custom[MetadataKeyInteractiveSessionID].(string); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
+}
+
+func claudePersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, ok := opts.Metadata.Custom[MetadataKeyPersistentInteractive].(bool)
+	return ok && enabled
+}
+
+func claudeWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if dir, ok := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); ok {
+		return strings.TrimSpace(dir)
+	}
+	return ""
+}
+
+// acquirePersistentInteractiveSession returns with session.mu held. The caller
+// must releaseClaudePersistentInteractiveSession on normal completion, or mark,
+// unlock, and clean up the session on a ready-prompt failure.
+func (c *ClaudeCodeExperimentalAdapter) acquirePersistentInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID string, opts *llmtypes.CallOptions, systemPrompt string, workingDir string) (*claudeExperimentalPersistentSession, error) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return nil, fmt.Errorf("persistent Claude Code experimental session requires an owner session ID")
+	}
+
+	claudeExperimentalPersistentRegistry.Lock()
+	if existing := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+		existing.mu.Lock()
+		if existing.initErr != nil {
+			err := existing.initErr
+			existing.mu.Unlock()
+			claudeExperimentalPersistentRegistry.Unlock()
+			return nil, err
+		}
+		if existing.idleTimer != nil {
+			existing.idleTimer.Stop()
+			existing.idleTimer = nil
+		}
+		existing.lastUsed = time.Now()
+		claudeExperimentalPersistentRegistry.Unlock()
+		return existing, nil
+	}
+
+	now := time.Now()
+	sessionName := newTmuxSessionName()
+	session := &claudeExperimentalPersistentSession{
+		ownerSessionID:  ownerSessionID,
+		tmuxSessionName: sessionName,
+		nativeSessionID: nativeSessionID,
+		workingDir:      strings.TrimSpace(workingDir),
+		createdAt:       now,
+		lastUsed:        now,
+	}
+	session.mu.Lock()
+	claudeExperimentalPersistentRegistry.sessions[ownerSessionID] = session
+	claudeExperimentalPersistentRegistry.Unlock()
+
+	args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
+	if err != nil {
+		session.initErr = err
+		session.mu.Unlock()
+		removeClaudePersistentInteractiveSession(ownerSessionID, session)
+		return nil, err
+	}
+	session.tempFiles = tempFiles
+
+	if err := c.startSession(ctx, sessionName, args, workingDir); err != nil {
+		session.initErr = err
+		session.mu.Unlock()
+		removeClaudePersistentInteractiveSession(ownerSessionID, session)
+		removeFiles(tempFiles)
+		return nil, err
+	}
+	registerClaudeExperimentalSession(sessionName)
+	registerClaudeExperimentalInteractiveSession(ownerSessionID, sessionName)
+	return session, nil
+}
+
+func releaseClaudePersistentInteractiveSession(session *claudeExperimentalPersistentSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	session.lastUsed = time.Now()
+	idleTimeout := persistentInteractiveIdleTimeout()
+	session.idleTimer = time.AfterFunc(idleTimeout, func() {
+		closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
+	})
+	session.mu.Unlock()
+}
+
+func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logger interfaces.Logger) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return
+	}
+
+	claudeExperimentalPersistentRegistry.Lock()
+	session := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]
+	if session == nil {
+		claudeExperimentalPersistentRegistry.Unlock()
+		return
+	}
+	delete(claudeExperimentalPersistentRegistry.sessions, ownerSessionID)
+	claudeExperimentalPersistentRegistry.Unlock()
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Closing persistent Claude Code experimental session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
+	}
+	_ = closeClaudeSessionForResume(session.tmuxSessionName, logger)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = killClaudeExperimentalSession(cleanupCtx, session.tmuxSessionName)
+	unregisterClaudeExperimentalInteractiveSession(ownerSessionID, session.tmuxSessionName)
+	unregisterClaudeExperimentalSession(session.tmuxSessionName)
+	removeFiles(session.tempFiles)
+}
+
+func markClaudePersistentInteractiveSessionFailedLocked(session *claudeExperimentalPersistentSession, err error, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	if err != nil {
+		session.initErr = err
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Discarding persistent Claude Code experimental session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
+	}
+}
+
+func cleanupFailedClaudePersistentInteractiveSession(session *claudeExperimentalPersistentSession) {
+	if session == nil {
+		return
+	}
+	removeClaudePersistentInteractiveSession(session.ownerSessionID, session)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = killClaudeExperimentalSession(cleanupCtx, session.tmuxSessionName)
+	unregisterClaudeExperimentalInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+	unregisterClaudeExperimentalSession(session.tmuxSessionName)
+	removeFiles(session.tempFiles)
+}
+
+func removeClaudePersistentInteractiveSession(ownerSessionID string, session *claudeExperimentalPersistentSession) {
+	claudeExperimentalPersistentRegistry.Lock()
+	defer claudeExperimentalPersistentRegistry.Unlock()
+	if current := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]; current == session {
+		delete(claudeExperimentalPersistentRegistry.sessions, ownerSessionID)
+	}
+}
+
+func drainClaudePersistentInteractiveSessions() []*claudeExperimentalPersistentSession {
+	claudeExperimentalPersistentRegistry.Lock()
+	sessions := make([]*claudeExperimentalPersistentSession, 0, len(claudeExperimentalPersistentRegistry.sessions))
+	for _, session := range claudeExperimentalPersistentRegistry.sessions {
+		sessions = append(sessions, session)
+	}
+	claudeExperimentalPersistentRegistry.sessions = map[string]*claudeExperimentalPersistentSession{}
+	claudeExperimentalPersistentRegistry.Unlock()
+
+	for _, session := range sessions {
+		session.mu.Lock()
+		if session.idleTimer != nil {
+			session.idleTimer.Stop()
+			session.idleTimer = nil
+		}
+		session.mu.Unlock()
+	}
+	return sessions
+}
+
+func SendClaudeCodeExperimentalInput(ctx context.Context, ownerSessionID, message string) error {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return fmt.Errorf("Claude Code experimental owner session ID is required")
+	}
+	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	if !ok {
+		return fmt.Errorf("no active Claude Code experimental session registered for owner session %s", ownerSessionID)
+	}
+	return sendInputToActiveTmux(ctx, sessionName, message)
 }
 
 func cleanupClaudeExperimentalSessionOnce(sessionName string) func() {

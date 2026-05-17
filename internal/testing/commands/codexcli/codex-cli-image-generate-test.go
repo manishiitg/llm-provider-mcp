@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -29,7 +31,7 @@ var (
 )
 
 func init() {
-	CodexCLIImageGenerateTestCmd.Flags().StringVar(&codexImageModel, "model", "codex-cli", "Codex CLI model to use")
+	CodexCLIImageGenerateTestCmd.Flags().StringVar(&codexImageModel, "model", "codex-cli", "Codex CLI image-capable model to use; codex-cli means use the CLI default without passing --model")
 	CodexCLIImageGenerateTestCmd.Flags().StringVar(&codexImagePrompt, "prompt", "", "Text prompt for image generation")
 	CodexCLIImageGenerateTestCmd.Flags().StringVar(&codexImageAspect, "aspect-ratio", "16:9", "Aspect ratio to request")
 	CodexCLIImageGenerateTestCmd.Flags().IntVar(&codexImageNum, "num-images", 1, "Number of images to generate")
@@ -69,12 +71,22 @@ func runCodexCLIImageGenerateTest(cmd *cobra.Command, args []string) {
 	}
 
 	log.Printf("Generated %d image(s)", len(resp.Images))
+	if len(resp.Images) == 0 {
+		log.Fatalf("GenerateImages returned no images")
+	}
 
 	if err := os.MkdirAll(codexImageOutputDir, 0750); err != nil {
 		log.Fatalf("Failed to create output dir: %v", err)
 	}
 
 	for i, img := range resp.Images {
+		if len(img.Data) == 0 {
+			log.Fatalf("Image %d returned empty data", i+1)
+		}
+		if contentType := http.DetectContentType(img.Data); !strings.HasPrefix(contentType, "image/") {
+			log.Fatalf("Image %d detected content type %q, want image/*", i+1, contentType)
+		}
+
 		ext := ".png"
 		switch img.MimeType {
 		case "image/jpeg":

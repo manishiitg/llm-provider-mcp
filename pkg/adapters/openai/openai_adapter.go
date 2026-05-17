@@ -1096,12 +1096,12 @@ func convertTools(llmTools []llmtypes.Tool) []openai.ChatCompletionToolUnionPara
 			// CRITICAL FIX: OpenAI API has conflicting requirements:
 			// 1. If type is "object", properties field MUST be present
 			// 2. But empty properties: {} is rejected
-			// Solution: For empty schemas, provide a minimal valid schema with a dummy optional property
+			// Solution: For empty schemas, provide a minimal valid schema with a placeholder optional property
 			// This satisfies OpenAI's requirement while being functionally equivalent to empty
 			if paramsMap["type"] == "object" {
 				if _, hasProperties := paramsMap["properties"]; !hasProperties {
 					// Empty object schema - OpenAI requires properties to be present
-					// Add a dummy optional property that will never be used
+					// Add a placeholder optional property that will never be used
 					// This is a workaround for OpenAI's API limitation
 					paramsMap["properties"] = map[string]interface{}{
 						"_": map[string]interface{}{

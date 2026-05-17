@@ -1,4 +1,4 @@
-package codexcli
+package geminicli
 
 import (
 	"fmt"
@@ -13,19 +13,19 @@ import (
 	"github.com/spf13/viper"
 )
 
-var CodexCLISearchWebTestCmd = &cobra.Command{
-	Use:   "codex-cli-search-web",
-	Short: "Test Codex CLI native web search",
-	Run:   runCodexCLISearchWebTest,
+var GeminiCLISearchWebTestCmd = &cobra.Command{
+	Use:   "gemini-cli-search-web",
+	Short: "Test Gemini CLI native Google web search",
+	Run:   runGeminiCLISearchWebTest,
 }
 
 func init() {
-	CodexCLISearchWebTestCmd.Flags().String("model", llmproviders.DefaultCodexCLIModel, "Codex CLI model to test")
-	CodexCLISearchWebTestCmd.Flags().String("query", "", "Web search query to run")
-	_ = CodexCLISearchWebTestCmd.MarkFlagRequired("query")
+	GeminiCLISearchWebTestCmd.Flags().String("model", "low", "Gemini CLI model to test")
+	GeminiCLISearchWebTestCmd.Flags().String("query", "", "Web search query to run")
+	_ = GeminiCLISearchWebTestCmd.MarkFlagRequired("query")
 }
 
-func runCodexCLISearchWebTest(cmd *cobra.Command, args []string) {
+func runGeminiCLISearchWebTest(cmd *cobra.Command, args []string) {
 	_ = godotenv.Load("agent_go/.env")
 	_ = godotenv.Load(".env")
 	_ = godotenv.Load("../.env")
@@ -37,7 +37,7 @@ func runCodexCLISearchWebTest(cmd *cobra.Command, args []string) {
 
 	modelID, _ := cmd.Flags().GetString("model")
 	if modelID == "" {
-		modelID = llmproviders.DefaultCodexCLIModel
+		modelID = "low"
 	}
 
 	query, _ := cmd.Flags().GetString("query")
@@ -47,17 +47,17 @@ func runCodexCLISearchWebTest(cmd *cobra.Command, args []string) {
 	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{
-		Provider: llmproviders.ProviderCodexCLI,
+		Provider: llmproviders.ProviderGeminiCLI,
 		ModelID:  modelID,
 		Logger:   logger,
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize Codex CLI LLM: %v", err)
+		log.Fatalf("Failed to initialize Gemini CLI LLM: %v", err)
 	}
 
 	result, err := llmproviders.SearchWeb(cmd.Context(), llmInstance, query)
 	if err != nil {
-		log.Fatalf("Codex CLI web search failed: %v", err)
+		log.Fatalf("Gemini CLI web search failed: %v", err)
 	}
 
 	fmt.Println(result)

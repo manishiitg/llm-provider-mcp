@@ -25,7 +25,7 @@ This guide explains how to test GitHub Actions workflows locally using [act](htt
 2. **Set up secrets (optional):**
    ```bash
    cp .secrets.example .secrets
-   # Edit .secrets if needed (dummy values work for replay mode)
+   # Edit .secrets if needed (placeholder values work for replay mode)
    ```
 
 3. **List available jobs:**
@@ -108,10 +108,10 @@ The test suite requires API keys (even in replay mode). Create `.secrets` file:
 cp .secrets.example .secrets
 ```
 
-For replay mode, dummy values are sufficient:
+For replay mode, placeholder values are sufficient:
 ```
-VERTEX_API_KEY=dummy-key-for-replay-mode
-GOOGLE_API_KEY=dummy-key-for-replay-mode
+VERTEX_API_KEY=placeholder-key-for-replay-mode
+GOOGLE_API_KEY=placeholder-key-for-replay-mode
 ```
 
 ### Act Not Found
@@ -188,4 +188,3 @@ For production CI, always verify workflows run successfully on GitHub Actions.
 - [Act Documentation](https://github.com/nektos/act)
 - [Act Issues](https://github.com/nektos/act/issues) - If you encounter problems
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
-

@@ -1,12 +1,16 @@
 package geminicli
 
-import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+import (
+	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
 
 var knownGeminiCLIModels = []string{
 	"auto",
-	"pro",
-	"flash",
-	"flash-lite",
+	"high",
+	"medium",
+	"low",
 }
 
 // GetAllGeminiCLIModels returns the frontend-visible Gemini CLI model aliases.
@@ -23,16 +27,29 @@ func GetAllGeminiCLIModels() []*llmtypes.ModelMetadata {
 		switch modelID {
 		case "auto":
 			meta.ModelName = "Auto (recommended, pricing varies)"
-		case "pro":
-			meta.ModelName = "Gemini Pro"
-		case "flash":
-			meta.ModelName = "Gemini Flash"
-		case "flash-lite":
-			meta.ModelName = "Gemini Flash Lite"
+		case "high":
+			meta.ModelName = "High (Gemini Pro)"
+		case "medium":
+			meta.ModelName = "Medium (Gemini 3 Flash)"
+		case "low":
+			meta.ModelName = "Low (Gemini 3.1 Flash Lite)"
 		}
 
 		models = append(models, meta)
 	}
 
 	return models
+}
+
+func resolveGeminiCLIModelID(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "high":
+		return "pro"
+	case "medium":
+		return "gemini-3-flash-preview"
+	case "low":
+		return "gemini-3.1-flash-lite"
+	default:
+		return strings.TrimSpace(modelID)
+	}
 }

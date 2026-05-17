@@ -66,6 +66,46 @@ func TestConvertMessageToStreamJSON(t *testing.T) {
 	}
 }
 
+func TestConvertMessageToStreamJSONImageContent(t *testing.T) {
+	msg := llmtypes.MessageContent{
+		Role: llmtypes.ChatMessageTypeHuman,
+		Parts: []llmtypes.ContentPart{
+			llmtypes.TextContent{Text: "Describe these images."},
+			llmtypes.ImageContent{
+				SourceType: "base64",
+				MediaType:  "image/png",
+				Data:       "iVBORw0KGgo=",
+			},
+			llmtypes.ImageContent{
+				SourceType: "url",
+				Data:       "https://example.com/test.png",
+			},
+		},
+	}
+
+	result, err := convertMessageToStreamJSON(msg)
+	if err != nil {
+		t.Fatalf("convertMessageToStreamJSON() error = %v", err)
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	jsonString := string(jsonBytes)
+
+	for _, want := range []string{
+		`"type":"image"`,
+		`"media_type":"image/png"`,
+		`"data":"iVBORw0KGgo="`,
+		`"url":"https://example.com/test.png"`,
+	} {
+		if !strings.Contains(jsonString, want) {
+			t.Fatalf("stream-json = %s, missing %s", jsonString, want)
+		}
+	}
+}
+
 func TestMapResponseToContentResponse(t *testing.T) {
 	adapter := NewClaudeCodeAdapter("", "test-model", &MockLogger{})
 

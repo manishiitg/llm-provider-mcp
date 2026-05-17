@@ -19,7 +19,7 @@ var CodexCLIStreamingMultiTurnTestCmd = &cobra.Command{
 }
 
 func init() {
-	CodexCLIStreamingMultiTurnTestCmd.Flags().String("model", "codex-cli", "Codex CLI model to test")
+	CodexCLIStreamingMultiTurnTestCmd.Flags().String("model", llmproviders.DefaultCodexCLIModel, "Codex CLI model to test")
 }
 
 func runCodexCLIStreamingMultiTurnTest(cmd *cobra.Command, args []string) {
@@ -34,7 +34,7 @@ func runCodexCLIStreamingMultiTurnTest(cmd *cobra.Command, args []string) {
 
 	modelID, _ := cmd.Flags().GetString("model")
 	if modelID == "" {
-		modelID = "codex-cli"
+		modelID = llmproviders.DefaultCodexCLIModel
 	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{
