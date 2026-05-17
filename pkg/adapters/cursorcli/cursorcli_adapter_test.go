@@ -500,6 +500,513 @@ func TestStripCursorHistoricalAssistantTextRemovesPaneReplay(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// hasCursorActivity — generation-in-progress detection
+// ---------------------------------------------------------------------------
+
+func TestHasCursorActivityDuringGeneration(t *testing.T) {
+	tests := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{
+			name: "ctrl+c to stop during streaming",
+			pane: `  writing a story about cats
+
+  Once upon a time there was a cat.
+
+ ⠘⠤ Composing  123 tokens
+
+  → Add a follow-up                                                ctrl+c to stop
+
+  Composer 2 Fast · 5.4%`,
+			want: true,
+		},
+		{
+			name: "composing spinner active",
+			pane: `  Step 1: read the file
+ ⠘⠤ Composing  456 tokens
+  → Add a follow-up
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "thinking prefix",
+			pane: `  Thinking about the problem...
+  → Add a follow-up
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "running tool",
+			pane: `  Running Shell(ls -la)
+  → Add a follow-up
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "editing file",
+			pane: `  Editing src/main.go
+  → Add a follow-up
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "esc to interrupt",
+			pane: `  Looking at the codebase...
+  esc to interrupt
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "calling tool",
+			pane: `  calling execute_shell_command
+  → Add a follow-up
+  Composer 2 Fast`,
+			want: true,
+		},
+		{
+			name: "completed response no activity",
+			pane: `  The answer is 42.
+
+  → Add a follow-up
+
+  Composer 2 Fast · 5.6%`,
+			want: false,
+		},
+		{
+			name: "initial prompt no activity",
+			pane: `  Cursor Agent
+  v2026.05.16-0338208
+  → Plan, search, build anything
+  Composer 2 Fast`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasCursorActivity(tt.pane)
+			if got != tt.want {
+				t.Fatalf("hasCursorActivity = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hasCursorReadyPrompt — completion detection (ready = no activity + prompt visible)
+// ---------------------------------------------------------------------------
+
+func TestHasCursorReadyPromptStates(t *testing.T) {
+	tests := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{
+			name: "completed response with arrow prompt",
+			pane: `  Cursor Agent
+  v2026.05.16-0338208
+
+
+  hello
+
+
+
+  Hi! How can I help?
+
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.4%
+  ~/workspace · main`,
+			want: true,
+		},
+		{
+			name: "initial ready state with arrow",
+			pane: `  Cursor Agent
+  v2026.05.16-0338208
+  Use /plan to iterate.
+
+
+  → Plan, search, build anything
+
+
+  Composer 2 Fast
+  ~/workspace · main`,
+			want: true,
+		},
+		{
+			name: "mid-generation with composing spinner",
+			pane: `  Cursor Agent
+
+  hello
+
+
+  Working on it...
+ ⠘⠤ Composing  200 tokens
+
+  → Add a follow-up                                                ctrl+c to stop
+
+  Composer 2 Fast · 5.4%`,
+			want: false,
+		},
+		{
+			name: "mid-generation with thinking and ctrl+c to stop",
+			pane: `  Cursor Agent
+
+  hello
+
+  Thinking about this...
+
+  → Add a follow-up                                                ctrl+c to stop
+
+  Composer 2 Fast`,
+			want: false,
+		},
+		{
+			name: "stale thinking line after completion is ready",
+			pane: `  Cursor Agent
+
+  hello
+
+  Thinking about this...
+
+  The answer is yes.
+
+  → Add a follow-up
+
+  Composer 2 Fast · 5.4%`,
+			want: true,
+		},
+		{
+			name: "trust prompt is not ready",
+			pane: `  ⚠ Workspace Trust Required
+  Do you trust the contents of this directory?
+  [a] Trust this workspace
+  [q] Quit
+  → Plan, search, build anything`,
+			want: false,
+		},
+		{
+			name: "stale running line with completed follow-up prompt",
+			pane: `  Cursor Agent
+
+  Running Shell(ls)
+  file1.go file2.go
+
+  Done listing files.
+
+  → Add a follow-up
+
+  Composer 2 Fast · 5.5%`,
+			want: true,
+		},
+		{
+			name: "no arrow prompt visible",
+			pane: `  Cursor Agent
+  v2026.05.16-0338208
+
+  Processing request...
+
+  Composer 2 Fast`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasCursorReadyPrompt(tt.pane)
+			if got != tt.want {
+				t.Fatalf("hasCursorReadyPrompt = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hasCursorReadyMarker — structural → arrow detection
+// ---------------------------------------------------------------------------
+
+func TestHasCursorReadyMarkerUsesArrow(t *testing.T) {
+	tests := []struct {
+		name    string
+		cleaned string
+		want    bool
+	}{
+		{name: "arrow with follow-up", cleaned: "→ add a follow-up", want: true},
+		{name: "arrow with plan prompt", cleaned: "→ plan, search, build anything", want: true},
+		{name: "arrow with unknown future text", cleaned: "→ some new cursor prompt text v2027", want: true},
+		{name: "arrow alone", cleaned: "→", want: true},
+		{name: "legacy type your message", cleaned: "type your message here", want: true},
+		{name: "legacy ask shift tab", cleaned: "ask (shift+tab to cycle)", want: true},
+		{name: "no marker at all", cleaned: "hello world\nsome response text", want: false},
+		{name: "composing is not a marker", cleaned: "composing 200 tokens", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasCursorReadyMarker(tt.cleaned)
+			if got != tt.want {
+				t.Fatalf("hasCursorReadyMarker = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isCursorTUILine — TUI chrome filtering
+// ---------------------------------------------------------------------------
+
+func TestIsCursorTUILineFiltering(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"Use /plan to iterate on an implementation plan before code changes.", true},
+		{"Use /skills to give Cursor specialized knowledge for tasks.", true},
+		{"Use /context to add files or docs.", true},
+		{"Use /auto-run to skip all approvals.", true},
+		{"Add a follow-up", true},
+		{"v2026.05.16-0338208", true},
+		{"Try Composer via /models, frontier intelligence at a fraction of the cost.", true},
+		{"Composer 2 Fast · 5.4%", true},
+		{"~/ai-work/multi-llm-provider-go · main", true},
+		{"ctrl+c to stop", true},
+		{"Auto-run", true},
+		{"→ Add a follow-up", true}, // also a TUI line via "→ " prefix; prompt boundary breaks first in extraction
+		{"The answer is 42.", false},
+		{"Hello! How can I help you today?", false},
+		{"Step 1 — Read the file", false},
+		{"12 + 100 = 112", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			got := isCursorTUILine(tt.line)
+			if got != tt.want {
+				t.Fatalf("isCursorTUILine(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isCursorPromptBoundaryLine — extraction break point
+// ---------------------------------------------------------------------------
+
+func TestIsCursorPromptBoundaryLine(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"→ Add a follow-up", true},
+		{"→ Plan, search, build anything", true},
+		{"→ Some future Cursor prompt text", true},
+		{"→", true},
+		{">", true},
+		{"›", true},
+		{"❯", true},
+		{"Add a follow-up", true},
+		{"Type your message", true},
+		{"The answer is 42.", false},
+		{"Hello → world", false}, // → not at start
+		{"Running Shell(ls)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			got := isCursorPromptBoundaryLine(tt.line)
+			if got != tt.want {
+				t.Fatalf("isCursorPromptBoundaryLine(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cursorCapturedAfterBaseline — line-based prefix divergence
+// ---------------------------------------------------------------------------
+
+func TestCursorCapturedAfterBaselineLineDivergence(t *testing.T) {
+	tests := []struct {
+		name     string
+		captured string
+		baseline string
+		wantHas  string
+		wantNot  string
+	}{
+		{
+			name:     "exact substring match",
+			baseline: "line1\nline2\nline3",
+			captured: "line1\nline2\nline3\nnew content here",
+			wantHas:  "new content here",
+			wantNot:  "line1",
+		},
+		{
+			name: "line prefix divergence when baseline tail changes",
+			baseline: `  Cursor Agent
+  v2026.05.16-0338208
+  Use /auto-run to skip all approvals.
+  Previous content
+  → Add a follow-up
+  Composer 2 Fast · 5.5%`,
+			captured: `  Cursor Agent
+  v2026.05.16-0338208
+  Use /auto-run to skip all approvals.
+  Previous content
+  New user prompt
+  New response text
+  → Add a follow-up
+  Composer 2 Fast · 5.6%`,
+			wantHas: "New response text",
+			wantNot: "",
+		},
+		{
+			name:     "empty baseline returns full captured",
+			baseline: "",
+			captured: "full content here",
+			wantHas:  "full content here",
+		},
+		{
+			name:     "completely different content returns full captured",
+			baseline: "something completely different",
+			captured: "nothing in common at all with the other text",
+			wantHas:  "nothing in common",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cursorCapturedAfterBaseline(tt.captured, tt.baseline)
+			if tt.wantHas != "" && !strings.Contains(got, tt.wantHas) {
+				t.Fatalf("result missing %q, got:\n%s", tt.wantHas, got)
+			}
+			if tt.wantNot != "" && strings.Contains(got, tt.wantNot) {
+				t.Fatalf("result should not contain %q, got:\n%s", tt.wantNot, got)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseCursorInteractiveResponse — end-to-end extraction with tool use
+// ---------------------------------------------------------------------------
+
+func TestParseCursorResponseWithToolOutput(t *testing.T) {
+	baseline := `  Cursor Agent
+  v2026.05.16-0338208
+
+
+  → Plan, search, build anything
+
+
+  Composer 2 Fast
+  ~/workspace · main`
+
+	captured := `  Cursor Agent
+  v2026.05.16-0338208
+
+
+  list the go files
+
+
+  Running Shell(ls *.go)
+  main.go  server.go  utils.go
+
+  Here are the Go files in the project:
+  - main.go
+  - server.go
+  - utils.go
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.5%
+  ~/workspace · main`
+
+	got := parseCursorInteractiveResponse(captured, baseline, "list the go files", nil)
+	if !strings.Contains(got, "main.go") {
+		t.Fatalf("response should contain file listing, got:\n%s", got)
+	}
+	if strings.Contains(got, "list the go files") {
+		t.Fatalf("response should not contain echoed prompt, got:\n%s", got)
+	}
+}
+
+func TestParseCursorResponseWithCodeBlock(t *testing.T) {
+	captured := `  explain the function
+
+
+  The \x60greet\x60 function takes a name and returns a greeting:
+
+  \x60\x60\x60go
+  func greet(name string) string {
+      return "Hello, " + name
+  }
+  \x60\x60\x60
+
+  It concatenates "Hello, " with the provided name.
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.5%`
+
+	got := parseCursorInteractiveResponse(captured, "", "explain the function", nil)
+	if !strings.Contains(got, "greet") {
+		t.Fatalf("response should contain function name, got:\n%s", got)
+	}
+	if !strings.Contains(got, "concatenates") {
+		t.Fatalf("response should contain explanation, got:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isCursorToolStatusLine — tool execution status filtering
+// ---------------------------------------------------------------------------
+
+func TestIsCursorToolStatusLine(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"Thinking about the problem...", true},
+		{"Working on your request...", true},
+		{"Running Shell(ls -la)", true},
+		{"Reading src/main.go", true},
+		{"Editing utils.go", true},
+		{"Writing tests/new_test.go", true},
+		{"Searching for references...", true},
+		{"Applying changes...", true},
+		{"Calling execute_shell_command", true},
+		{"Called read_file successfully", true},
+		{"Executing the plan...", true},
+		{`"stdout":"hello\n"`, true},
+		{`"stderr":"error"`, true},
+		{`"exit_code":0`, true},
+		{"mcp bridge tool call", true},
+		{"The answer is 42.", false},
+		{"Here are the results:", false},
+		{"Step 1: Read the file", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			got := isCursorToolStatusLine(tt.line)
+			if got != tt.want {
+				t.Fatalf("isCursorToolStatusLine(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
 func cursorArgsContain(args []string, value string) bool {
 	for _, arg := range args {
 		if arg == value {

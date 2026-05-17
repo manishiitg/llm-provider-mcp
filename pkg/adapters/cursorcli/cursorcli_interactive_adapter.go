@@ -1100,14 +1100,23 @@ func hasCursorReadyPrompt(captured string) bool {
 	if !hasCursorReadyMarker(cleaned) {
 		return false
 	}
-	// Cursor leaves historical status lines in the pane after a tool run. Once the
-	// input prompt (→) is visible, stale "Running..." text should not keep the turn
-	// open forever. Use the → arrow as the structural override rather than specific
-	// placeholder text that rotates across Cursor versions.
+	// Live generation signals (composing spinner, ctrl+c to stop) mean the
+	// turn is still in progress — never treat as ready.
+	if hasCursorLiveGenerationActivity(cleaned) {
+		return false
+	}
+	// Cursor leaves stale status lines (Running..., Thinking...) in the pane
+	// after a tool finishes. Once the → prompt is visible, stale activity
+	// text should not keep the turn open forever.
 	if hasCursorActivity(captured) && !strings.Contains(cleaned, "→") {
 		return false
 	}
 	return true
+}
+
+func hasCursorLiveGenerationActivity(cleaned string) bool {
+	return strings.Contains(cleaned, "ctrl+c to stop") ||
+		strings.Contains(cleaned, "composing")
 }
 
 func hasCursorReadyMarker(cleaned string) bool {
