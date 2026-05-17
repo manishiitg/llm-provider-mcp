@@ -53,13 +53,38 @@ func TestCodexInteractiveStreamTmuxScreenFlag(t *testing.T) {
 }
 
 func TestCodexInteractiveShellCommandUsesCallerWorkingDir(t *testing.T) {
+	shell := writeExecutableTestShell(t, "zsh")
+	t.Setenv("CODING_AGENT_LOGIN_SHELL", shell)
+	t.Setenv("CODING_AGENT_SHELL_MODE", "")
+
 	got := codexInteractiveShellCommand([]string{"codex", "--no-alt-screen"}, "/tmp/user chat")
-	if !strings.HasPrefix(got, "cd '/tmp/user chat' && exec ") {
-		t.Fatalf("shell command = %q, want caller cwd before exec", got)
+	if !strings.HasPrefix(got, "'"+shell+"' '-ilc' ") {
+		t.Fatalf("shell command = %q, want login shell prefix", got)
+	}
+	if !strings.Contains(got, "'/tmp/user chat'") {
+		t.Fatalf("shell command = %q, want caller cwd passed to login shell", got)
 	}
 	if strings.Contains(got, "--cd") {
 		t.Fatalf("shell command = %q, interactive cwd must not rely on --cd", got)
 	}
+}
+
+func TestCodexInteractiveShellCommandDirectMode(t *testing.T) {
+	t.Setenv("CODING_AGENT_SHELL_MODE", "direct")
+
+	got := codexInteractiveShellCommand([]string{"codex", "--no-alt-screen"}, "/tmp/user chat")
+	if !strings.HasPrefix(got, "cd '/tmp/user chat' && exec ") {
+		t.Fatalf("shell command = %q, want direct cwd before exec", got)
+	}
+}
+
+func writeExecutableTestShell(t *testing.T, name string) string {
+	t.Helper()
+	path := t.TempDir() + "/" + name
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write shell: %v", err)
+	}
+	return path
 }
 
 func TestCodexBridgeOnlyDisablesPluginAndDummyToolSurfaces(t *testing.T) {

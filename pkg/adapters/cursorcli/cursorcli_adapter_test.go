@@ -65,6 +65,25 @@ func TestCursorInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestCursorTmuxSessionLostErrorDetection(t *testing.T) {
+	for _, message := range []string{
+		"can't find pane: mlp-cursor-cli-int-123",
+		"can't find session: mlp-cursor-cli-int-123",
+		"no server running on /private/tmp/tmux-501/default",
+		"no current target",
+	} {
+		if !isCursorTmuxSessionLostError(fmt.Errorf("%s", message)) {
+			t.Fatalf("expected session loss detection for %q", message)
+		}
+	}
+	if isCursorTmuxSessionLostError(nil) {
+		t.Fatal("nil error must not be classified as session loss")
+	}
+	if isCursorTmuxSessionLostError(fmt.Errorf("permission denied")) {
+		t.Fatal("unrelated errors must not be classified as session loss")
+	}
+}
+
 func TestCursorWorkspaceTrustPromptIsNotReady(t *testing.T) {
 	pane := `Tip: You can start the Cursor CLI with agent.
 ⚠ Workspace Trust Required

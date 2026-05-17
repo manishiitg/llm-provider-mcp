@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -500,13 +501,6 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 			failures = append(failures, err.Error())
 		}
 	}
-	if listed, err := listGeminiTmuxSessions(ctx); err == nil {
-		for _, sessionName := range listed {
-			if err := killGeminiTmuxSession(ctx, sessionName); err != nil {
-				failures = append(failures, err.Error())
-			}
-		}
-	}
 	if len(failures) > 0 {
 		return fmt.Errorf("failed to clean up Gemini interactive sessions: %s", strings.Join(failures, "; "))
 	}
@@ -686,7 +680,7 @@ func startGeminiTmuxSession(ctx context.Context, sessionName string, args []stri
 			tmuxArgs = append(tmuxArgs, "-e", entry)
 		}
 	}
-	shellCommand := "cd " + geminiShellQuote(projectDir) + " && exec " + geminiShellJoin(args)
+	shellCommand := shelllaunch.Command(args, projectDir)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runGeminiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
 		return fmt.Errorf("failed to start Gemini interactive session %q: %w", sessionName, err)

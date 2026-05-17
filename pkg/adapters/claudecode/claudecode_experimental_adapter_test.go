@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -33,10 +34,35 @@ func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
 }
 
 func TestClaudeExperimentalShellCommandUsesCallerWorkingDir(t *testing.T) {
+	shell := writeExecutableTestShell(t, "zsh")
+	t.Setenv("CODING_AGENT_LOGIN_SHELL", shell)
+	t.Setenv("CODING_AGENT_SHELL_MODE", "")
+
+	got := claudeExperimentalShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
+	if !strings.HasPrefix(got, "'"+shell+"' '-ilc' ") {
+		t.Fatalf("shell command = %q, want login shell prefix", got)
+	}
+	if !strings.Contains(got, "'/tmp/user chat'") {
+		t.Fatalf("shell command = %q, want caller cwd passed to login shell", got)
+	}
+}
+
+func TestClaudeExperimentalShellCommandDirectMode(t *testing.T) {
+	t.Setenv("CODING_AGENT_SHELL_MODE", "direct")
+
 	got := claudeExperimentalShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
 	if !strings.HasPrefix(got, "cd '/tmp/user chat' && exec ") {
-		t.Fatalf("shell command = %q, want caller cwd before exec", got)
+		t.Fatalf("shell command = %q, want direct cwd before exec", got)
 	}
+}
+
+func writeExecutableTestShell(t *testing.T, name string) string {
+	t.Helper()
+	path := t.TempDir() + "/" + name
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write shell: %v", err)
+	}
+	return path
 }
 
 func TestExperimentalBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
@@ -105,6 +131,28 @@ func TestClaudeExperimentalSessionsFromTmuxListOnlyMatchesAdapterPrefix(t *testi
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+}
+
+func TestClaudeTmuxSessionLostErrorDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil},
+		{name: "no server", err: errors.New("failed to capture Claude Code experimental session: exit status 1: no server running on /private/tmp/tmux-501/default"), want: true},
+		{name: "missing pane", err: errors.New("failed to capture Claude Code experimental session: exit status 1: can't find pane: mlp-claude-code-exp-1"), want: true},
+		{name: "missing session", err: errors.New("tmux kill-session failed: can't find session: mlp-claude-code-exp-1"), want: true},
+		{name: "ordinary timeout", err: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isClaudeTmuxSessionLostError(tt.err); got != tt.want {
+				t.Fatalf("isClaudeTmuxSessionLostError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -691,6 +739,32 @@ func TestHasReadyInputPromptAcceptsClaudeSuggestionWithTrailingBlankFill(t *test
 	}
 }
 
+func TestHasReadyInputPromptAcceptsCompletedStatusAfterBackgroundAgents(t *testing.T) {
+	pane := `
+⏺ Both agents running in parallel now:
+
+  ┌────────────────────────────────────────┬───────────────────────────────────────────────────────────┬────────────┐
+  │                 Agent                  │                           Task                            │   Status   │
+  ├────────────────────────────────────────┼───────────────────────────────────────────────────────────┼────────────┤
+  │ bg-sentry-login-&-token-creation-79000 │ Browser login → create token in Sentry UI                 │ 🔄 Running │
+  ├────────────────────────────────────────┼───────────────────────────────────────────────────────────┼────────────┤
+  │ bg-github-.env-file-search-19000       │ Search repos for .env / Sentry vars                       │ 🔄 Running │
+  └────────────────────────────────────────┴───────────────────────────────────────────────────────────┴────────────┘
+
+  Will wait for both notifications.
+
+✻ Baked for 27s
+
+─────────────────────────────────────────────────────────────────── mcp-agent-20260517-143605 ──
+❯ wait for the results
+────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false for idle prompt after Claude-created background agents")
+	}
+}
+
 func TestHasClaudeActivityIgnoresCompletedAssistantOutput(t *testing.T) {
 	pane := `
 ⏺ Final answer
@@ -701,6 +775,23 @@ func TestHasClaudeActivityIgnoresCompletedAssistantOutput(t *testing.T) {
 `
 	if hasClaudeActivity(pane) {
 		t.Fatal("hasClaudeActivity = true for completed assistant output")
+	}
+}
+
+func TestClaudeCompletedWorkStatusIsNotRunningProgress(t *testing.T) {
+	completed := []string{
+		"✻ Baked for 27s",
+		"✻ Cogitated for 1m 2s",
+		"✻ Worked for 1s · ↓ 2 tokens",
+		"✶ Sautéed for 8s",
+	}
+	for _, line := range completed {
+		if isClaudeRunningProgressLine(line) {
+			t.Fatalf("isClaudeRunningProgressLine(%q) = true, want false for completed status", line)
+		}
+		if cleaned := cleanClaudeTerminalProgressLine(line); cleaned != "" {
+			t.Fatalf("cleanClaudeTerminalProgressLine(%q) = %q, want empty completed status", line, cleaned)
+		}
 	}
 }
 

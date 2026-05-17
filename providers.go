@@ -77,27 +77,28 @@ const (
 	ClaudeCodeTransportPrint        = "print"
 )
 
-// CleanupClaudeCodeExperimentalSessions removes tmux sessions created by the
-// Claude Code provider's interactive mode. It is safe to call on startup and
-// shutdown; missing tmux servers or already-closed sessions are ignored.
+// CleanupClaudeCodeExperimentalSessions removes Claude Code tmux sessions
+// registered by this process. It intentionally does not kill every tmux session
+// with the provider prefix, because other backend processes/tests may own live
+// coding-agent sessions in the same user tmux server.
 func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
 	return claudecodeadapter.CleanupClaudeCodeExperimentalSessions(ctx)
 }
 
-// CleanupCodexCLIInteractiveSessions removes tmux sessions created by the Codex
-// CLI interactive chat mode.
+// CleanupCodexCLIInteractiveSessions removes Codex CLI tmux sessions registered
+// by this process.
 func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 	return codexcli.CleanupCodexCLIInteractiveSessions(ctx)
 }
 
-// CleanupCursorCLIInteractiveSessions removes tmux sessions created by the
-// Cursor CLI interactive chat mode.
+// CleanupCursorCLIInteractiveSessions removes Cursor CLI tmux sessions
+// registered by this process.
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
 }
 
-// CleanupGeminiCLIInteractiveSessions removes tmux sessions created by the
-// Gemini CLI interactive chat mode.
+// CleanupGeminiCLIInteractiveSessions removes Gemini CLI tmux sessions
+// registered by this process.
 func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
 }

@@ -3,6 +3,11 @@
 This is the shared pattern set for terminal-native coding agents such as Claude
 Code, Codex CLI, Cursor CLI, and Gemini CLI.
 
+The runtime capability registry is `coding_agent_contract.go`. Do not add a new
+coding provider by copying string switches only; add the provider contract first,
+then wire the provider-specific launch/input/extraction functions that the
+contract requires.
+
 ## 1. One Normal Transport
 
 Interactive chat and workflow execution use the same tmux-backed coding-CLI
@@ -117,7 +122,20 @@ owned sessions when appropriate.
 - Background agents own their own lifecycle; unrelated cancellation should not
   kill sessions that belong to a different owner.
 
-## 9. Idle Cleanup Is Ownership Cleanup
+## 9. Launch Through The User Login Shell
+
+Coding-agent tmux sessions should launch provider CLIs through the user's login
+shell by default. This is especially important for DMG/GUI launches where the
+backend does not inherit Terminal's already-initialized environment.
+
+- Resolve shell from `CODING_AGENT_LOGIN_SHELL`, then `SHELL`, then OS login
+  shell fallbacks.
+- Use login + interactive mode for POSIX-like shells, and fish-specific argv
+  handling for fish.
+- Keep `CODING_AGENT_SHELL_MODE=direct` as the escape hatch when shell startup
+  files interfere with automation.
+
+## 10. Idle Cleanup Is Ownership Cleanup
 
 Persistent sessions are not permanent.
 

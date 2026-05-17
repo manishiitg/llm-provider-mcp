@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -149,6 +150,16 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	var sessionName string
 	var persistentSession *claudeExperimentalPersistentSession
 	releasePersistentSession := false
+	discardPersistentSession := func(err error) {
+		if persistentInteractive && persistentSession != nil {
+			markClaudePersistentInteractiveSessionFailedLocked(persistentSession, err, c.logger)
+			releasePersistentSession = false
+			failedSession := persistentSession
+			persistentSession = nil
+			failedSession.mu.Unlock()
+			cleanupFailedClaudePersistentInteractiveSession(failedSession)
+		}
+	}
 	defer func() {
 		if releasePersistentSession && persistentSession != nil {
 			releaseClaudePersistentInteractiveSession(persistentSession, c.logger)
@@ -185,26 +196,12 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	}
 
 	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
-		if persistentInteractive && persistentSession != nil {
-			markClaudePersistentInteractiveSessionFailedLocked(persistentSession, err, c.logger)
-			releasePersistentSession = false
-			failedSession := persistentSession
-			persistentSession.mu.Unlock()
-			persistentSession = nil
-			cleanupFailedClaudePersistentInteractiveSession(failedSession)
-		}
+		discardPersistentSession(err)
 		return nil, err
 	}
 	resetTmuxPaneForTurn(callCtx, sessionName)
 	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
-		if persistentInteractive && persistentSession != nil {
-			markClaudePersistentInteractiveSessionFailedLocked(persistentSession, err, c.logger)
-			releasePersistentSession = false
-			failedSession := persistentSession
-			persistentSession.mu.Unlock()
-			persistentSession = nil
-			cleanupFailedClaudePersistentInteractiveSession(failedSession)
-		}
+		discardPersistentSession(err)
 		return nil, err
 	}
 
@@ -221,6 +218,9 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 
 	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan)
 	if err != nil {
+		if isClaudeTmuxSessionLostError(err) {
+			discardPersistentSession(err)
+		}
 		if isContextCanceledError(err) {
 			interruptClaudeExperimentalSession(sessionName, c.logger)
 		}
@@ -228,6 +228,14 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 			close(opts.StreamChan)
 		}
 		return nil, err
+	}
+	if persistentInteractive && persistentSession != nil {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), time.Second)
+		exists, checkErr := claudeTmuxSessionExists(checkCtx, sessionName)
+		checkCancel()
+		if checkErr == nil && !exists {
+			discardPersistentSession(fmt.Errorf("Claude Code experimental tmux session %s ended after response capture", sessionName))
+		}
 	}
 	closeResumeRef := ""
 	responseSessionID := nativeSessionID
@@ -410,11 +418,7 @@ func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessio
 }
 
 func claudeExperimentalShellCommand(args []string, workingDir string) string {
-	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
-		workingDir = mustGetwd()
-	}
-	return "cd " + shellQuote(workingDir) + " && exec " + shellJoin(args)
+	return shelllaunch.Command(args, workingDir)
 }
 
 func buildTmuxPrompt(messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, resumeID string, persistentInteractive bool) (string, error) {
@@ -642,6 +646,9 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string) error {
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return err
+				}
 				continue
 			}
 			if !resumePromptHandled && isClaudeResumeCompressionPrompt(captured) {
@@ -929,6 +936,9 @@ func waitForPromptPaste(ctx context.Context, sessionName, paneBeforePaste string
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return false, err
+				}
 				continue
 			}
 			if hasClaudeActivity(captured) && (!baselineActive || captured != paneBeforePaste || sawPaste) {
@@ -973,6 +983,9 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return err
+				}
 				continue
 			}
 			if hasClaudeActivity(captured) {
@@ -1001,7 +1014,13 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
 			return content, nil
 		}
-		return "", fmt.Errorf("timed out waiting for Claude Code experimental response: %w", err)
+		if isClaudeTmuxSessionLostError(err) {
+			return "", fmt.Errorf("Claude Code experimental tmux session ended before response could be captured: %w", err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("timed out waiting for Claude Code experimental response: %w", err)
+		}
+		return "", fmt.Errorf("Claude Code experimental response wait failed: %w", err)
 	}
 
 	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
@@ -1056,6 +1075,12 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 					if strings.TrimSpace(latest) != "" {
 						return latest, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), latest)
 					}
+					if strings.TrimSpace(lastCaptured) != "" {
+						return lastCaptured, ctx.Err()
+					}
+				}
+				if strings.TrimSpace(lastCaptured) != "" {
+					return lastCaptured, err
 				}
 				return "", err
 			}
@@ -1187,6 +1212,9 @@ func isClaudeNonTextAssistantBlock(content string) bool {
 }
 
 func isClaudeRunningProgressLine(trimmed string) bool {
+	if isClaudeCompletedWorkStatusLine(trimmed) {
+		return false
+	}
 	return strings.Contains(trimmed, "esc to interrupt") ||
 		strings.HasPrefix(trimmed, "· ") ||
 		strings.HasPrefix(trimmed, "✶ ") ||
@@ -1194,6 +1222,21 @@ func isClaudeRunningProgressLine(trimmed string) bool {
 		strings.HasPrefix(trimmed, "✢ ") ||
 		strings.HasPrefix(trimmed, "✽ ") ||
 		strings.HasPrefix(trimmed, "✻ ")
+}
+
+func isClaudeCompletedWorkStatusLine(trimmed string) bool {
+	trimmed = strings.TrimSpace(trimmed)
+	if !(strings.HasPrefix(trimmed, "· ") ||
+		strings.HasPrefix(trimmed, "✶ ") ||
+		strings.HasPrefix(trimmed, "✳ ") ||
+		strings.HasPrefix(trimmed, "✢ ") ||
+		strings.HasPrefix(trimmed, "✽ ") ||
+		strings.HasPrefix(trimmed, "✻ ")) {
+		return false
+	}
+	return strings.Contains(trimmed, " for ") &&
+		!strings.Contains(trimmed, "…") &&
+		!strings.Contains(strings.ToLower(trimmed), "esc to interrupt")
 }
 
 func isClaudeToolProgressLine(trimmed string) bool {
@@ -1221,7 +1264,7 @@ func cleanClaudeTerminalProgressLine(trimmed string) string {
 	trimmed = strings.TrimPrefix(trimmed, "⏺ ")
 	trimmed = strings.TrimPrefix(trimmed, "● ")
 	trimmed = strings.TrimSpace(trimmed)
-	if strings.HasPrefix(trimmed, "✻ Worked for ") ||
+	if isClaudeCompletedWorkStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "· ") ||
 		strings.HasPrefix(trimmed, "⎿ Tip:") ||
 		isClaudeTUIStatusLine(trimmed) ||
@@ -1539,11 +1582,7 @@ func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
 		return nil
 	}
 
-	sessions, err := listClaudeExperimentalTmuxSessions(ctx)
-	if err != nil {
-		return err
-	}
-	sessions = appendUniqueStrings(sessions, activeClaudeExperimentalSessions()...)
+	sessions := activeClaudeExperimentalSessions()
 	persistentSessions := drainClaudePersistentInteractiveSessions()
 	for _, session := range persistentSessions {
 		sessions = appendUniqueStrings(sessions, session.tmuxSessionName)
@@ -1879,6 +1918,19 @@ func killClaudeExperimentalSession(ctx context.Context, sessionName string) erro
 	return nil
 }
 
+func claudeTmuxSessionExists(ctx context.Context, sessionName string) (bool, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return false, nil
+	}
+	if err := runCommand(ctx, nil, "tmux", "has-session", "-t", sessionName); err != nil {
+		if isTmuxMissingSessionError(err) || isTmuxNoServerError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func listClaudeExperimentalTmuxSessions(ctx context.Context) ([]string, error) {
 	out, err := runCommandOutput(ctx, nil, "tmux", "list-sessions", "-F", "#{session_name}")
 	if err != nil {
@@ -1921,6 +1973,10 @@ func isTmuxMissingSessionError(err error) bool {
 	return strings.Contains(msg, "can't find session") ||
 		strings.Contains(msg, "can't find pane") ||
 		strings.Contains(msg, "no current target")
+}
+
+func isClaudeTmuxSessionLostError(err error) bool {
+	return isTmuxNoServerError(err) || isTmuxMissingSessionError(err)
 }
 
 func writeTempJSONConfig(pattern, value string) (string, error) {

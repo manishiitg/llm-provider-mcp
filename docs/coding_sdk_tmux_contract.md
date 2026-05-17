@@ -15,6 +15,24 @@ interface for both chat and workflow execution: terminal snapshot progress, MCP
 bridge tool calls, same-session follow-up input, cancellation, final response
 extraction, and native resume.
 
+The mechanical source of truth is `coding_agent_contract.go`. Every provider
+that should behave like a coding agent must be declared there with its transport
+and capabilities. Host applications should use that contract instead of
+copying provider string lists. Adding a future provider means adding a contract
+entry and tests for:
+
+- explicit working directory
+- native system/developer instruction transport
+- MCP bridge launch and bridge-only tool policy
+- live input behavior
+- interrupt/cancel behavior
+- terminal snapshot streaming behavior
+- final assistant text extraction
+- resume or explicit non-resume semantics
+- process-scoped cleanup
+- tmux session-loss handling for `no server running`, `can't find pane`,
+  `can't find session`, and `no current target`
+
 This contract is the normal product path. Structured/JSON CLI transports are
 legacy fallback or provider-regression test paths unless a capability has not
 yet been implemented in tmux.
@@ -226,6 +244,14 @@ The adapter's hard contract is:
 
 - detect when the provider turn is complete
 - extract the final assistant text for the unified completion
+- if the tmux pane/server disappears, parse any last captured pane before
+  failing; then unregister the owned session so later live input/resume attempts
+  do not target stale tmux state
+
+Cursor, OpenCode, or any future tmux-backed provider must set
+`HandlesTmuxSessionLoss=true` in `coding_agent_contract.go` and add an
+adapter-level test that simulates the tmux server/pane disappearing during a
+turn. A contract flag without that adapter test is not enough for review.
 
 The UI may show the raw terminal snapshot for progress/debugging; adapters must
 avoid over-parsing terminal progress into assistant content.
@@ -243,6 +269,36 @@ Operators may tune this without code changes:
 
 Adapters clamp values to a practical range so broken environment values do not
 produce unreadable sessions.
+
+## Login Shell Launch
+
+Interactive tmux sessions start the provider CLI through the user's login shell
+by default:
+
+```sh
+$SHELL -ilc 'cd "$1" || exit; shift; exec "$@"' coding-agent "$WORKING_DIR" <provider-cli> ...
+```
+
+This is required for desktop/DMG launches, where the backend process does not
+inherit a Terminal tab's initialized environment. The login-shell launch gives
+Claude Code, Codex CLI, and Gemini CLI the same `PATH`, shims, and exported
+values the user normally gets from shell startup files.
+
+Shell resolution order:
+
+1. `CODING_AGENT_LOGIN_SHELL`
+2. `SHELL`
+3. macOS Directory Services `UserShell`
+4. `/etc/passwd`
+5. `/bin/zsh`, `/bin/bash`, `/bin/sh`
+
+Supported shell families are POSIX-like shells (`zsh`, `bash`, `sh`, `dash`,
+`ksh`) and `fish`. Unsupported or missing shells fall back to direct launch:
+`cd "$WORKING_DIR" && exec <provider-cli> ...`.
+
+Set `CODING_AGENT_SHELL_MODE=direct` to disable login-shell launch for
+deployments where shell startup files are slow or unsafe for non-human
+processes.
 
 ## Done Detection
 

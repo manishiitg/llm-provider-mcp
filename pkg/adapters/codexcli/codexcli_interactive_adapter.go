@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -393,13 +394,6 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 			failures = append(failures, err.Error())
 		}
 	}
-	if listed, err := listCodexTmuxSessions(ctx); err == nil {
-		for _, sessionName := range listed {
-			if err := killCodexTmuxSession(ctx, sessionName); err != nil {
-				failures = append(failures, err.Error())
-			}
-		}
-	}
 	if len(failures) > 0 {
 		return fmt.Errorf("failed to clean up Codex interactive sessions: %s", strings.Join(failures, "; "))
 	}
@@ -560,11 +554,7 @@ func startCodexTmuxSession(ctx context.Context, sessionName string, args []strin
 }
 
 func codexInteractiveShellCommand(args []string, workingDir string) string {
-	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
-		workingDir = codexMustGetwd()
-	}
-	return "cd " + codexShellQuote(workingDir) + " && exec " + codexShellJoin(args)
+	return shelllaunch.Command(args, workingDir)
 }
 
 func waitForCodexPrompt(ctx context.Context, sessionName string) error {

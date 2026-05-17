@@ -147,7 +147,14 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 
 	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts))
 	if err != nil {
-		if ctx.Err() != nil {
+		if isCursorTmuxSessionLostError(err) {
+			markCursorInteractiveSessionFailedLocked(session, err, c.logger)
+			releaseSession = false
+			failedSession := session
+			session.mu.Unlock()
+			session = nil
+			cleanupFailedCursorInteractiveSession(failedSession)
+		} else if ctx.Err() != nil {
 			interruptCursorInteractiveSession(session.tmuxSessionName, c.logger)
 		}
 		if opts.StreamChan != nil {
@@ -565,13 +572,6 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 			failures = append(failures, err.Error())
 		}
 	}
-	if listed, err := listCursorTmuxSessions(ctx); err == nil {
-		for _, sessionName := range listed {
-			if err := killCursorTmuxSession(ctx, sessionName); err != nil {
-				failures = append(failures, err.Error())
-			}
-		}
-	}
 	if len(failures) > 0 {
 		return fmt.Errorf("failed to clean up Cursor interactive sessions: %s", strings.Join(failures, "; "))
 	}
@@ -698,6 +698,9 @@ func waitForCursorPrompt(ctx context.Context, sessionName string) error {
 		case <-ticker.C:
 			captured, err := captureCursorPane(deadline, sessionName)
 			if err != nil {
+				if isCursorTmuxSessionLostError(err) {
+					return fmt.Errorf("Cursor Agent CLI tmux session ended while waiting for prompt: %w", err)
+				}
 				continue
 			}
 			if hasCursorTrustPrompt(captured) && !trustSubmitted {
@@ -1223,12 +1226,23 @@ func killCursorTmuxSession(ctx context.Context, sessionName string) error {
 		return nil
 	}
 	if err := runCursorCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
-		if strings.Contains(err.Error(), "can't find session") || strings.Contains(err.Error(), "no server running") {
+		if isCursorTmuxSessionLostError(err) {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func isCursorTmuxSessionLostError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "can't find pane") ||
+		strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "no current target")
 }
 
 func cursorInteractiveSessionPrefix() string {
