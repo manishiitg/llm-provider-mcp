@@ -69,7 +69,7 @@ func TestGeminiWorkingDirOptionOverridesProjectDir(t *testing.T) {
 	}
 }
 
-func TestGeminiInteractiveLaunchFingerprintChangesWithSystemPromptAndConfig(t *testing.T) {
+func TestGeminiInteractiveLaunchFingerprintIgnoresDynamicSystemPromptText(t *testing.T) {
 	adapter := NewGeminiCLIAdapter("", geminiCLIContractModel, &MockLogger{})
 	opts := &llmtypes.CallOptions{}
 	policyPath := filepath.Join(t.TempDir(), "policy.toml")
@@ -90,8 +90,11 @@ priority = 999
 	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt A"); got != baseline {
 		t.Fatalf("fingerprint should be stable, got %q want %q", got, baseline)
 	}
-	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt B"); got == baseline {
-		t.Fatal("fingerprint should change when system prompt changes")
+	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt B"); got != baseline {
+		t.Fatal("fingerprint should not change for dynamic system prompt text")
+	}
+	if got := adapter.geminiInteractiveLaunchFingerprint(opts, ""); got == baseline {
+		t.Fatal("fingerprint should distinguish absent vs present system prompt")
 	}
 
 	changedSettings := &llmtypes.CallOptions{}
@@ -110,6 +113,40 @@ priority = 999
 	}
 	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt A"); got == baseline {
 		t.Fatal("fingerprint should change when policy file content changes")
+	}
+}
+
+func TestBuildGeminiInteractivePromptCarriesPriorConversation(t *testing.T) {
+	token := "GEMINI_CONTEXT_TOKEN"
+	prompt := buildGeminiInteractivePrompt([]llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Take note of " + token},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeAI,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "ACK_" + token},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What token did I ask you to remember?"},
+			},
+		},
+	})
+
+	if !strings.Contains(prompt, "Previous conversation context for this same chat") {
+		t.Fatalf("prompt missing prior conversation header: %q", prompt)
+	}
+	if !strings.Contains(prompt, token) {
+		t.Fatalf("prompt missing prior token %q: %q", token, prompt)
+	}
+	if !strings.Contains(prompt, "Current user message:") {
+		t.Fatalf("prompt missing current user marker: %q", prompt)
 	}
 }
 

@@ -147,7 +147,7 @@ func TestCodexCLIInteractiveRejectsImageContent(t *testing.T) {
 	if err == nil {
 		t.Fatal("GenerateContent() error = nil, want unsupported interactive image error")
 	}
-	if !strings.Contains(err.Error(), "persistent interactive transport does not support llmtypes.ImageContent") {
+	if !strings.Contains(err.Error(), "interactive transport does not support llmtypes.ImageContent") {
 		t.Fatalf("GenerateContent() error = %v, want interactive image unsupported error", err)
 	}
 }
@@ -659,7 +659,7 @@ A wide cyberpunk-style cityscape at dusk with a dark balcony foreground.
 func TestParseCodexInteractiveResponseKeepsFramedWorkspacePath(t *testing.T) {
 	baseline := "Codex ready\n›"
 	captured := baseline + `
-────────────────────────────────────────────────────────────────────────────────
+	────────────────────────────────────────────────────────────────────────────────
 
 • Here are the files/folders in:
 
@@ -684,10 +684,49 @@ skills, workflows.
 	assertCodexNoInternalStatus(t, got)
 }
 
+func TestParseCodexInteractiveResponseIgnoresRateLimitReminderModal(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+› Take note of the exact token E2E_NOTE_deadbeef. Do not use tools. Reply with
+  exactly ACK_E2E_NOTE_deadbeef and nothing else.
+
+⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a breakdown.
+
+• ACK_E2E_NOTE_deadbeef
+
+
+  Approaching rate limits
+  Switch to gpt-5.4-mini for lower credit usage?
+
+› 1. Switch to gpt-5.4-mini                 Small, fast, and cost-efficient model for simpler coding tasks.
+  2. Keep current model
+  3. Keep current model (never show again)  Hide future rate limit reminders about switching models.
+
+  Press enter to confirm or esc to go back
+`
+
+	if !hasCodexRateLimitReminderModal(captured) {
+		t.Fatalf("rate limit reminder modal was not detected")
+	}
+	if hasCodexReadyPrompt(captured) {
+		t.Fatalf("rate limit reminder selected option must not be treated as ready prompt")
+	}
+	if got := selectedCodexRateLimitReminderOption(captured); got != 1 {
+		t.Fatalf("selected reminder option = %d, want 1", got)
+	}
+
+	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
+	want := "ACK_E2E_NOTE_deadbeef"
+	if got != want {
+		t.Fatalf("parsed response = %q, want %q", got, want)
+	}
+	assertCodexNoInternalStatus(t, got)
+}
+
 func TestCodexIdleDetectionIgnoresAssistantProseAboutRunning(t *testing.T) {
 	pane := `
-⏺ The prepare-test-fixtures step is now running in the background.
-  I will wait for the automatic notification before proceeding.
+	⏺ The prepare-test-fixtures step is now running in the background.
+	  I will wait for the automatic notification before proceeding.
 
 ────────────────────────────────────────────────────────────────────────────────
 ❯

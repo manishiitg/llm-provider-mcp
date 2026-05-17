@@ -573,6 +573,7 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	dismissedRateReminder := false
 	for {
 		select {
 		case <-deadline.Done():
@@ -583,7 +584,17 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 			return fmt.Errorf("timed out waiting for Codex CLI prompt")
 		case <-ticker.C:
 			captured, err := captureCodexPane(deadline, sessionName)
-			if err == nil && hasCodexReadyPrompt(captured) {
+			if err != nil {
+				continue
+			}
+			if hasCodexRateLimitReminderModal(captured) {
+				if !dismissedRateReminder {
+					_ = dismissCodexRateLimitReminder(deadline, sessionName, captured)
+					dismissedRateReminder = true
+				}
+				continue
+			}
+			if hasCodexReadyPrompt(captured) {
 				return nil
 			}
 		}
@@ -633,6 +644,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
+	var dismissedRateReminder bool
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -649,6 +661,16 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			if hasCodexRateLimitReminderModal(captured) {
+				if !dismissedRateReminder {
+					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
+					dismissedRateReminder = true
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
 			}
 			if hasCodexActivity(captured) {
 				sawActivity = true
@@ -1096,6 +1118,9 @@ func isCodexTUILine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
 	if isCodexBulletOnlyLine(trimmed) {
+		return true
+	}
+	if isCodexRateLimitReminderLine(trimmed) {
 		return true
 	}
 	if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") ||
@@ -1601,6 +1626,9 @@ func hasCodexActivity(captured string) bool {
 }
 
 func hasCodexReadyPrompt(captured string) bool {
+	if hasCodexRateLimitReminderModal(captured) {
+		return false
+	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 12; i-- {
@@ -1614,6 +1642,63 @@ func hasCodexReadyPrompt(captured string) bool {
 		}
 	}
 	return false
+}
+
+func hasCodexRateLimitReminderModal(captured string) bool {
+	lower := strings.ToLower(stripCodexANSI(captured))
+	return strings.Contains(lower, "approaching rate limits") &&
+		strings.Contains(lower, "switch to ") &&
+		strings.Contains(lower, "keep current model") &&
+		strings.Contains(lower, "press enter to confirm")
+}
+
+func isCodexRateLimitReminderLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "› "))
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "heads up") && strings.Contains(lower, "limit left") ||
+		strings.Contains(lower, "approaching rate limits") ||
+		strings.Contains(lower, "switch to ") && strings.Contains(lower, "credit usage") ||
+		strings.HasPrefix(lower, "1. switch to ") ||
+		strings.HasPrefix(lower, "2. keep current model") ||
+		strings.HasPrefix(lower, "3. keep current model") ||
+		strings.Contains(lower, "hide future rate limit reminders") ||
+		strings.Contains(lower, "press enter to confirm or esc to go back")
+}
+
+func dismissCodexRateLimitReminder(ctx context.Context, sessionName, captured string) error {
+	selected := selectedCodexRateLimitReminderOption(captured)
+	if selected < 1 || selected > 3 {
+		selected = 1
+	}
+	keys := make([]string, 0, 4)
+	for selected < 3 {
+		keys = append(keys, "Down")
+		selected++
+	}
+	keys = append(keys, "C-m")
+	args := []string{"send-keys", "-t", sessionName}
+	args = append(args, keys...)
+	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+func selectedCodexRateLimitReminderOption(captured string) int {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "› ") {
+			continue
+		}
+		option := strings.TrimSpace(strings.TrimPrefix(trimmed, "› "))
+		switch {
+		case strings.HasPrefix(option, "1."):
+			return 1
+		case strings.HasPrefix(option, "2."):
+			return 2
+		case strings.HasPrefix(option, "3."):
+			return 3
+		}
+	}
+	return 0
 }
 
 func streamCodexTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {

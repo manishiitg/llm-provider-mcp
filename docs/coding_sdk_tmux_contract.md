@@ -11,28 +11,27 @@ Covered providers:
 - `kimi-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
-interface while preserving live chat behavior: terminal snapshot progress, MCP
-bridge tool calls, same-session follow-up input, cancellation, and native
-resume.
+interface for both chat and workflow execution: terminal snapshot progress, MCP
+bridge tool calls, same-session follow-up input, cancellation, final response
+extraction, and native resume.
 
-This contract is for interactive chat surfaces. Workflow step execution is a
-separate surface and should continue to use the most deterministic provider
-transport available for that step.
+This contract is the normal product path. Structured/JSON CLI transports are
+legacy fallback or provider-regression test paths unless a capability has not
+yet been implemented in tmux.
 
-## Surface Split
+## Product Surfaces
 
-There are two distinct product surfaces:
+There are two product surfaces that share the same coding-CLI transport:
 
 - Interactive chat: a user is chatting with a coding agent in a workspace. This
   includes workflow builder chat, optimizer chat, run chat, and normal coding
-  agent chat. These surfaces may use persistent tmux.
+  agent chat.
 - Workflow execution: a workflow step, route, sub-agent, background execution,
-  scheduled job, or deterministic test run. These surfaces should use bounded
-  per-turn or structured transports unless explicitly migrated.
+  scheduled job, or deterministic test run.
 
-Do not treat "workflow builder chat" as a workflow step. Builder chat is a chat
-session attached to a workflow workspace, so it must be eligible for the same
-persistent tmux behavior as other coding-agent chat sessions.
+Both surfaces should run the provider TUI in tmux when the provider supports it.
+The difference is orchestration: workflow execution sends intermediate messages
+programmatically and waits for idle; chat accepts live user steer input.
 
 ## Provider Transports
 
@@ -41,34 +40,32 @@ Claude Code:
 - Default interactive transport: `claude` inside tmux
   (`CLAUDE_CODE_TRANSPORT=experimental`).
 - Legacy structured print transport: `claude -p --output-format stream-json`
-  (`CLAUDE_CODE_TRANSPORT=print`). This path stays active while the tmux
-  transport is being hardened, especially for native web-search and direct
-  stream-json regression tests.
+  (`CLAUDE_CODE_TRANSPORT=print`). This path is disabled unless
+  `CLAUDE_CODE_ALLOW_LEGACY_PRINT=1` is also set, and should only be used for
+  targeted legacy tests.
 - Do not use `claude -p` or `claude --print` inside the tmux transport.
-- Per-turn fallback may start a tmux session, run one turn, capture native
-  resume metadata, and close the session.
+- Workflow and chat both use the tmux transport.
 
 Codex CLI:
 
-- Structured transport: `codex exec --json`.
+- Legacy structured transport: `codex exec --json`.
 - Interactive transport: `codex` TUI inside tmux.
 - Default coding model: `gpt-5.5`.
-- Workflow execution should prefer `codex exec --json` because it gives
-  structured events, thread ids, tool events, and usage.
+- Workflow and chat both use the tmux transport when an owner session id is
+  available.
 
 Gemini CLI:
 
-- Structured transport: `gemini --output-format stream-json --prompt ...`.
+- Legacy structured transport: `gemini --output-format stream-json --prompt ...`.
 - Interactive transport: `gemini` TUI inside tmux.
-- Workflow execution may keep `stream-json`; interactive chat should use tmux
-  when persistent interactive mode is enabled.
+- Workflow and chat both use the tmux transport when an owner session id is
+  available.
 
 Kimi CLI:
 
 - Structured transport: `kimi --print --output-format stream-json --prompt ...`.
 - Interactive tmux transport is not part of the current contract.
-- Workflow execution must validate the real stream-json path before transport
-  changes are released.
+- Kimi remains on the legacy structured path until a real tmux transport lands.
 
 ## Image Input Contract
 
@@ -104,8 +101,10 @@ All tmux-backed providers must:
   - adding a new coding CLI provider requires adding an explicit working-dir
     option and contract coverage before it can be treated as a coding CLI
 - Keep launch settings stable for the lifetime of the persistent tmux session.
-- Close and recreate the session if model, system prompt, MCP config, approval
-  mode, tool policy, or workspace root changes.
+- Close and recreate the session if model, MCP config, approval mode, tool
+  policy, or workspace root changes. Provider-specific system prompts are
+  pinned at session start for persistent chat; normal per-turn app prompt
+  variation must not silently restart the TUI and lose chat context.
 
 Provider-specific launch requirements:
 
@@ -130,6 +129,10 @@ Provider-specific launch requirements:
   - keep the project dir id stable for a resumed Gemini session
   - deny built-in filesystem/shell tools by policy when bridge-only behavior is
     required
+  - keep the TUI session alive when app-level system prompt text varies between
+    turns; Gemini receives a bounded prior-turn transcript with the current
+    message so the final answer remains correct even when native TUI context is
+    not sufficient
 
 ## Input Contract
 
@@ -267,12 +270,18 @@ must first try to send it to the registered tmux session.
 Required behavior:
 
 1. Look up `app_session_id -> tmux_session_name`.
-2. Paste the live message with the normal tmux buffer sequence.
+2. Deliver the live message to the existing provider session or its adapter-level
+   pending queue.
 3. Do not start a duplicate provider run for the same app session.
 4. Fall back to the generic steer queue only when no live tmux session exists.
 
-The provider TUI owns its own queue semantics after the message is pasted. The
-app does not need to invent a second queue for active coding-agent chat.
+Provider-specific behavior:
+
+- Claude Code and Codex CLI may accept live input directly in the TUI.
+- Gemini CLI 0.42 does not reliably process pasted follow-up input while a
+  response is active. Its adapter must queue live input in-process, then submit
+  queued messages with `Enter` when the Gemini ready prompt returns. Tests must
+  fail if the message is only visible in the pane but never processed.
 
 ## Cancellation Contract
 
@@ -321,8 +330,10 @@ Native resume metadata:
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project dir.
 
-On native resume, send only the latest user message. Older context belongs to
-the provider-native session/thread.
+On native resume, prefer sending only the latest user message when the provider
+session/thread is proven to retain context. If a provider does not reliably
+retain context in the current CLI build, the adapter must replay a bounded
+prior-turn transcript while still reusing the same tmux/native session.
 
 ## Idle Cleanup
 
@@ -362,8 +373,9 @@ Transport behavior must be validated by opt-in real CLI E2E tests, including:
 - cancel/interrupt behavior
 - idle cleanup and server-shutdown cleanup
 - no duplicate session creation for live follow-up input
-- settings-change behavior: model, system prompt, MCP config, tool policy,
-  approval mode, or workspace root changes must close/recreate the tmux session
+- settings-change behavior: model, MCP config, tool policy, approval mode, or
+  workspace root changes must close/recreate the tmux session; normal per-turn
+  app system prompt variation must not close the session
 
 Deterministic stream parsing tests must cover:
 
@@ -387,7 +399,18 @@ Deterministic stream parsing tests must cover:
 Deterministic multi-turn tests must cover:
 
 - turn 1 and turn 2 reuse the same tmux session for the same app session id
-- turn 2 sends only the latest user message to the TUI
+- providers that declare native context-only behavior send only the latest user
+  message to the TUI on turn 2
+- app-level E2E always validates the parsed final completion, not the raw event
+  stream, so the token in the original prompt cannot create a false pass
+- native-session memory, when claimed by a provider, is proven with a canary
+  that cannot be satisfied by app-level history replay:
+  - turn 1 says: `Take note of the word <TOKEN>. Do not save it to memory.`
+  - turn 2 asks only: `What exact word did I ask you to take note of?`
+  - turn 2's submitted prompt must not include turn 1 user text or assistant
+    text
+  - the returned answer must contain `<TOKEN>` and the provider session must be
+    the same native tmux session
 - prior assistant text from turn 1 is not pasted back as user input
 - prior assistant text from turn 1 is not streamed or returned as part of turn 2
 - stream deltas remain correct when the terminal redraw includes both old and
@@ -416,6 +439,28 @@ and transport-change validation should run them alongside deterministic tests:
   default smoke unless explicitly testing another tier.
 - Kimi CLI: use `kimi-code` with no-tools mode for the default stream-json
   smoke unless explicitly testing another Kimi model.
+
+Application-level chat E2E is required in addition to provider-adapter E2E.
+The app-level test must drive the real `mcp-agent-builder-go` HTTP API because
+that is where runtime capture, provider selection, session restoration, event
+polling, and live `/steer` routing are wired together:
+
+```sh
+go run . test coding-agent-chat-e2e \
+  --server-url http://localhost:<agent-port> \
+  --provider gemini-cli \
+  --model gemini-3.1-flash-lite \
+  --selected-folder _users/default/Chats
+```
+
+The app-level E2E must fail if:
+
+- `/api/query` silently falls back to a provider other than the requested
+  provider/model
+- turn 2 cannot recall a random token from turn 1 using the same app session id
+- the live `/api/sessions/{session_id}/steer` message is only visible in the
+  TUI draft but is never processed by the provider
+- terminal/event polling completes without a parseable unified completion
 
 Real tests should cover:
 
@@ -452,10 +497,11 @@ scenario:
 10. Close or idle-clean the session, then resume when that provider supports
     native resume.
 
-JSON/structured transports that remain available for workflow execution must
-run equivalent stream hygiene tests for their structured event path. Fixes for
-tmux parsing must not leave `stream-json`/`--json` mode leaking policy warnings,
-tool payloads, or duplicated assistant text.
+JSON/structured transports that remain available for legacy fallback or direct
+provider regression tests must run equivalent stream hygiene tests for their
+structured event path. Fixes for tmux parsing must not leave
+`stream-json`/`--json` mode leaking policy warnings, tool payloads, or duplicated
+assistant text.
 
 Current Gemini CLI real contract command:
 
@@ -469,7 +515,7 @@ Current Codex CLI real contract command:
 RUN_CODEX_CLI_REAL_E2E=1 RUN_CODEX_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealInteractive|TestCodexCLIInteractiveIntegrationSpark' -v -timeout 6m
 ```
 
-Current structured transport real contract commands:
+Current legacy structured transport real contract commands:
 
 ```sh
 RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealExecJSON' -v -timeout 6m
@@ -482,7 +528,7 @@ Current native web-search real contract commands:
 ```sh
 RUN_CODEX_CLI_SEARCH_WEB_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealSearchWeb' -v -timeout 4m
 RUN_GEMINI_CLI_SEARCH_WEB_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLISearchWebSmoke' -v -timeout 4m
-CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_SEARCH_WEB_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeRealSearchWeb' -v -timeout 4m
+CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_SEARCH_WEB_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeRealSearchWeb' -v -timeout 4m
 RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeStreaming|TestRawClaude' -v -timeout 4m
 ```
 
@@ -511,7 +557,7 @@ is added.
 Current image-input real contract commands:
 
 ```sh
-CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_IMAGE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodePrintRealImageInput' -v -timeout 4m
+CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_IMAGE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodePrintRealImageInput' -v -timeout 4m
 RUN_CODEX_CLI_IMAGE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealImageInput' -v -timeout 4m
 ```
 

@@ -141,7 +141,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 			if opts.StreamChan != nil {
 				close(opts.StreamChan)
 			}
-			return nil, fmt.Errorf("codex-cli persistent interactive transport does not support llmtypes.ImageContent; use codex exec transport for image input")
+			return nil, fmt.Errorf("codex-cli interactive transport does not support llmtypes.ImageContent yet")
 		}
 		return c.generateContentInteractive(ctx, messages, opts)
 	}

@@ -3,20 +3,23 @@
 This is the shared pattern set for terminal-native coding agents such as Claude
 Code, Codex CLI, Gemini CLI, and Kimi CLI.
 
-## 1. Split By Surface
+## 1. One Normal Transport
 
-Interactive chat and workflow execution use different transports.
+Interactive chat and workflow execution use the same tmux-backed coding-CLI
+transport.
 
-- Chat: persistent tmux TUI when users need to send follow-up input while the
-  coding agent is still working.
-- Workflow: structured or per-turn execution so each step has bounded lifecycle,
-  clear retry behavior, and native resume state.
-- Claude Code currently keeps both paths active: tmux is the default
-  interactive transport, while `CLAUDE_CODE_TRANSPORT=print` selects the legacy
-  `claude -p` stream-json path for targeted regressions and web-search coverage.
+- Chat: persistent tmux TUI, with live follow-up input routed into the same
+  owner session.
+- Workflow: the same tmux TUI transport, with the orchestrator deciding when to
+  send intermediate input, wait for idle, extract the final response, and close
+  or retain the owner session.
+- Legacy structured transports (`claude -p`, `codex exec --json`,
+  `gemini --output-format stream-json`, `kimi --print --output-format
+  stream-json`) are fallback/test-only paths unless a provider still lacks a
+  tmux implementation.
 
-Do not move workflow execution to terminal scraping just because chat needs a
-TUI. The workflow path should stay as deterministic as the provider allows.
+Do not add product behavior that depends on structured CLI output unless the
+tmux contract cannot support that capability yet.
 
 ## 2. Owner Session Registry
 

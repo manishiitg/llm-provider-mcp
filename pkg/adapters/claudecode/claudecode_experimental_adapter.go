@@ -121,7 +121,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
-		return nil, fmt.Errorf("claude-code experimental tmux transport does not support llmtypes.ImageContent; use CLAUDE_CODE_TRANSPORT=print for image input")
+		return nil, fmt.Errorf("claude-code tmux transport does not support llmtypes.ImageContent yet")
 	}
 	if err := ensureTmuxAvailable(ctx); err != nil {
 		return nil, err
@@ -208,7 +208,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		return nil, err
 	}
 
-	prompt, err := buildTmuxPrompt(conversationMessages, opts, resumeID)
+	prompt, err := buildTmuxPrompt(conversationMessages, opts, resumeID, persistentInteractive)
 	if err != nil {
 		return nil, err
 	}
@@ -417,11 +417,11 @@ func claudeExperimentalShellCommand(args []string, workingDir string) string {
 	return "cd " + shellQuote(workingDir) + " && exec " + shellJoin(args)
 }
 
-func buildTmuxPrompt(messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, resumeID string) (string, error) {
+func buildTmuxPrompt(messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, resumeID string, persistentInteractive bool) (string, error) {
 	var b strings.Builder
 
 	latestIndex := latestHumanMessageIndex(messages)
-	if resumeID != "" || len(messages) <= 1 {
+	if persistentInteractive || resumeID != "" || len(messages) <= 1 {
 		latest := latestMessageForPrompt(messages, latestIndex)
 		if latest != nil {
 			b.WriteString(tmuxMessagePartsToText(latest.Parts))

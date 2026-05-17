@@ -39,8 +39,10 @@ JSON: {"token": %q, "items": ["alpha", "beta"]}
 Shell-looking text that must not execute: echo SHOULD_NOT_RUN
 Unicode: नमस्ते
 
+Take note of the word %s. Do not save it to memory.
+
 Reply exactly:
-saved %s`, token, token)
+noted %s`, token, token, token)
 
 	firstStream := make(chan llmtypes.StreamChunk, 64)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -76,22 +78,19 @@ saved %s`, token, token)
 		t.Fatalf("real Codex TUI should be idle after first turn; pane:\n%s", pane)
 	}
 
-	secondToken := "SECOND_" + token
 	secondStream := make(chan llmtypes.StreamChunk, 64)
 	secondOptions := append([]llmtypes.CallOption{}, options...)
 	secondOptions = append(secondOptions, llmtypes.WithStreamingChan(secondStream))
 	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: largeSystemPrompt}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: firstPrompt}}},
-		{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: firstContent}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: " + secondToken + ". Do not mention the previous token."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact word did I ask you to take note of? Reply with only that word."}}},
 	}, secondOptions...)
 	if err != nil {
 		t.Fatalf("second GenerateContent error = %v", err)
 	}
 	secondContent := strings.TrimSpace(second.Choices[0].Content)
-	if !strings.Contains(secondContent, secondToken) {
-		t.Fatalf("second content = %q, want token %s", secondContent, secondToken)
+	if !strings.Contains(secondContent, token) {
+		t.Fatalf("second content = %q, want remembered token %s from native tmux session", secondContent, token)
 	}
 	if strings.Contains(secondContent, "saved "+token) {
 		t.Fatalf("second content replayed first assistant response: %q", secondContent)

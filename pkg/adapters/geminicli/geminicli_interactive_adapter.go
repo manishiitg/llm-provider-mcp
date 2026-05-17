@@ -46,6 +46,8 @@ type geminiInteractiveSession struct {
 	createdAt            time.Time
 	lastUsed             time.Time
 	mu                   sync.Mutex
+	liveMu               sync.Mutex
+	pendingLiveInputs    []string
 }
 
 var geminiInteractiveRegistry = struct {
@@ -118,7 +120,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		return nil, err
 	}
 
-	captured, err := waitForGeminiInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan)
+	captured, err := waitForGeminiInteractiveResponse(callCtx, session, baseline, opts.StreamChan)
 	if err != nil {
 		if ctx.Err() != nil {
 			interruptGeminiInteractiveSession(session.tmuxSessionName, g.logger)
@@ -332,7 +334,11 @@ func (g *GeminiCLIAdapter) geminiInteractiveLaunchFingerprint(opts *llmtypes.Cal
 	}
 
 	write("model", modelToUse)
-	write("system_prompt", systemPrompt)
+	// Persistent interactive sessions pin the system prompt at session startup.
+	// Do not include the full prompt text in the reuse fingerprint: app-level
+	// prompts can contain per-turn dynamic context such as secret ordering or
+	// timestamps, and restarting the TUI would break native multi-turn memory.
+	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
 	writeStringOption(MetadataKeyApprovalMode)
 	writeStringOption(MetadataKeyAllowedTools)
 	writeStringOption(MetadataKeyProjectSettings)
@@ -534,11 +540,49 @@ func activeGeminiInteractiveSession(ownerSessionID string) (string, bool) {
 }
 
 func SendGeminiInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
+	if session, ok := geminiPersistentSession(ownerSessionID); ok {
+		if session.mu.TryLock() {
+			session.mu.Unlock()
+			return fmt.Errorf("Gemini interactive session %s is idle; live input should start a normal turn", session.tmuxSessionName)
+		}
+		return enqueueGeminiLiveInput(session, message)
+	}
 	sessionName, ok := activeGeminiInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Gemini interactive session registered for owner session %s", ownerSessionID)
 	}
 	return sendGeminiInputToTmux(ctx, sessionName, message)
+}
+
+func geminiPersistentSession(ownerSessionID string) (*geminiInteractiveSession, bool) {
+	geminiPersistentRegistry.Lock()
+	defer geminiPersistentRegistry.Unlock()
+	session := geminiPersistentRegistry.sessions[strings.TrimSpace(ownerSessionID)]
+	return session, session != nil
+}
+
+func enqueueGeminiLiveInput(session *geminiInteractiveSession, message string) error {
+	message = strings.TrimRight(message, "\r\n")
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("Gemini interactive input is empty")
+	}
+	session.liveMu.Lock()
+	defer session.liveMu.Unlock()
+	session.pendingLiveInputs = append(session.pendingLiveInputs, message)
+	return nil
+}
+
+func popGeminiLiveInput(session *geminiInteractiveSession) (string, bool) {
+	session.liveMu.Lock()
+	defer session.liveMu.Unlock()
+	if len(session.pendingLiveInputs) == 0 {
+		return "", false
+	}
+	message := session.pendingLiveInputs[0]
+	copy(session.pendingLiveInputs, session.pendingLiveInputs[1:])
+	session.pendingLiveInputs[len(session.pendingLiveInputs)-1] = ""
+	session.pendingLiveInputs = session.pendingLiveInputs[:len(session.pendingLiveInputs)-1]
+	return message, true
 }
 
 func geminiInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
@@ -577,14 +621,44 @@ func splitGeminiSystemPrompt(messages []llmtypes.MessageContent) (string, []llmt
 }
 
 func buildGeminiInteractivePrompt(messages []llmtypes.MessageContent) string {
-	// Persistent tmux sessions keep prior turns in the native Gemini TUI, so each
-	// adapter call submits only the newest human message.
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == llmtypes.ChatMessageTypeHuman {
-			return extractTextFromMessage(messages[i])
+			current := extractTextFromMessage(messages[i])
+			if prior := buildGeminiPriorConversationContext(messages[:i]); prior != "" {
+				return prior + "\n\nCurrent user message:\n" + current
+			}
+			return current
 		}
 	}
 	return ""
+}
+
+func buildGeminiPriorConversationContext(messages []llmtypes.MessageContent) string {
+	const maxChars = 16000
+	var lines []string
+	for _, msg := range messages {
+		text := strings.TrimSpace(extractTextFromMessage(msg))
+		if text == "" {
+			continue
+		}
+		switch msg.Role {
+		case llmtypes.ChatMessageTypeHuman:
+			lines = append(lines, "User: "+text)
+		case llmtypes.ChatMessageTypeAI:
+			lines = append(lines, "Assistant: "+text)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	context := strings.Join(lines, "\n\n")
+	if len(context) > maxChars {
+		context = context[len(context)-maxChars:]
+		if idx := strings.Index(context, "\n\n"); idx >= 0 {
+			context = context[idx+2:]
+		}
+	}
+	return "Previous conversation context for this same chat:\n" + context
 }
 
 func geminiAssistantHistory(messages []llmtypes.MessageContent) []string {
@@ -641,7 +715,7 @@ func waitForGeminiPrompt(ctx context.Context, sessionName string) error {
 				return nil
 			}
 			if err == nil && hasGeminiTrustPrompt(captured) {
-				_ = runGeminiCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+				_ = submitGeminiInputInTmux(deadline, sessionName)
 				continue
 			}
 		}
@@ -677,13 +751,20 @@ func sendGeminiInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runGeminiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Gemini interactive session: %w", err)
 	}
-	if err := runGeminiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+	if err := submitGeminiInputInTmux(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Gemini interactive session: %w", err)
 	}
 	return nil
 }
 
-func waitForGeminiInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+func submitGeminiInputInTmux(ctx context.Context, sessionName string) error {
+	// Gemini CLI 0.42 binds prompt submission to tmux's Enter key name. Sending
+	// C-m can leave text as an unsubmitted multiline draft in the prompt editor.
+	return runGeminiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter")
+}
+
+func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiInteractiveSession, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+	sessionName := session.tmuxSessionName
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	var sawActivity bool
@@ -708,11 +789,24 @@ func waitForGeminiInteractiveResponse(ctx context.Context, sessionName, baseline
 			if apiErr := geminiInteractiveAPIError(delta); apiErr != "" {
 				return captured, fmt.Errorf("Gemini CLI interactive API error: %s", apiErr)
 			}
+			if hasGeminiReadyPrompt(captured) {
+				if liveMessage, ok := popGeminiLiveInput(session); ok {
+					if err := sendGeminiInputToTmux(ctx, sessionName, liveMessage); err != nil {
+						return captured, err
+					}
+					sawActivity = false
+					idleSince = time.Time{}
+					lastCaptured = captured
+					continue
+				}
+			}
 			if hasGeminiUnsubmittedDraft(captured) && draftSubmitAttempts < 5 &&
 				(lastDraftSubmit.IsZero() || time.Since(lastDraftSubmit) >= time.Second) {
-				_ = runGeminiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
-				lastDraftSubmit = time.Now()
-				draftSubmitAttempts++
+				if !hasGeminiActivity(captured) {
+					_ = submitGeminiInputInTmux(ctx, sessionName)
+					lastDraftSubmit = time.Now()
+					draftSubmitAttempts++
+				}
 				lastCaptured = captured
 				continue
 			}
@@ -1286,7 +1380,10 @@ func interruptGeminiInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
-	_ = runGeminiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
+	// Do not send Ctrl-L to Gemini CLI here. Recent Gemini CLI builds treat the
+	// shortcut as more than a visual repaint and can drop native conversation
+	// context, breaking persistent multi-turn chat. Clearing tmux scrollback is
+	// enough; per-turn parsing is anchored to the captured baseline.
 	_ = runGeminiCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 

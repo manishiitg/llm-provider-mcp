@@ -47,8 +47,10 @@ JSON: {"token": %q, "items": ["alpha", "beta"]}
 Shell-looking text that must not execute: echo SHOULD_NOT_RUN
 Unicode: नमस्ते
 
+Take note of the word %s. Do not save it to memory.
+
 Reply exactly:
-saved %s`, token, token)
+noted %s`, token, token, token)
 
 	firstStream := make(chan llmtypes.StreamChunk, 64)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -84,22 +86,19 @@ saved %s`, token, token)
 		t.Fatalf("real Gemini TUI should be idle after first turn; pane:\n%s", pane)
 	}
 
-	secondToken := "SECOND_" + token
 	secondStream := make(chan llmtypes.StreamChunk, 64)
 	secondOptions := append([]llmtypes.CallOption{}, options...)
 	secondOptions = append(secondOptions, llmtypes.WithStreamingChan(secondStream))
 	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: largeSystemPrompt}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: firstPrompt}}},
-		{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: firstContent}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: " + secondToken + ". Do not mention the previous token."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact word did I ask you to take note of? Reply with only that word."}}},
 	}, secondOptions...)
 	if err != nil {
 		t.Fatalf("second GenerateContent error = %v", err)
 	}
 	secondContent := strings.TrimSpace(second.Choices[0].Content)
-	if !strings.Contains(secondContent, secondToken) {
-		t.Fatalf("second content = %q, want token %s", secondContent, secondToken)
+	if !strings.Contains(secondContent, token) {
+		t.Fatalf("second content = %q, want remembered token %s from native tmux session", secondContent, token)
 	}
 	if strings.Contains(secondContent, "saved "+token) {
 		t.Fatalf("second content replayed first assistant response: %q", secondContent)
@@ -162,7 +161,7 @@ deny_message = "Use only the api-bridge echo_contract MCP tool for this contract
 	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
 }
 
-func TestGeminiCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
+func TestGeminiCLIRealInteractiveLiveInputContract(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
 
@@ -178,14 +177,20 @@ priority = 999
 deny_message = "No tools are needed for this live-input contract test."
 `)
 
-	parentCtx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	type liveResult struct {
+		content string
+		err     error
+	}
+	errCh := make(chan liveResult, 1)
+	startupErrCh := make(chan error, 1)
 	streamChan := make(chan llmtypes.StreamChunk, 128)
 
 	go func() {
-		_, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
-			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. This is a live input and Escape transport test."}}},
-			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Draft a detailed 1200 word checklist about tmux transport testing. Include token %s near the end only.", token)}}},
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. This is a live input transport test."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Draft a detailed 500 word checklist about tmux transport testing. Include token %s near the end only.", token)}}},
 		},
 			WithInteractiveSessionID(ownerSessionID),
 			WithPersistentInteractiveSession(true),
@@ -194,37 +199,53 @@ deny_message = "No tools are needed for this live-input contract test."
 			WithApprovalMode("yolo"),
 			llmtypes.WithStreamingChan(streamChan),
 		)
-		errCh <- err
+		result := liveResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			result.content = resp.Choices[0].Content
+		} else if err != nil {
+			startupErrCh <- err
+		}
+		errCh <- result
 	}()
 
-	tmuxSession := waitForGeminiRealActiveSession(t, ownerSessionID, 45*time.Second, errCh)
+	tmuxSession := waitForGeminiRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	liveMessage := "LIVE_FOLLOWUP_" + token
+	liveAck := "LIVE_ACK_" + token
+	liveMessage := "Queued live follow-up: after finishing the current answer, reply exactly " + liveAck
 	liveErr := SendGeminiInteractiveInput(sendCtx, ownerSessionID, liveMessage)
 	sendCancel()
 	if liveErr != nil {
-		cancel()
 		t.Fatalf("SendGeminiInteractiveInput error = %v", liveErr)
 	}
 
 	pane, err := captureGeminiPane(context.Background(), tmuxSession)
 	if err != nil {
-		cancel()
 		t.Fatalf("capture Gemini pane after live input: %v", err)
 	}
-	if !strings.Contains(pane, liveMessage) {
-		cancel()
-		t.Fatalf("live input was not visible in tmux pane; pane:\n%s", pane)
+	pendingLiveInput := ""
+	if session, ok := geminiPersistentSession(ownerSessionID); ok {
+		session.liveMu.Lock()
+		pendingLiveInput = strings.Join(session.pendingLiveInputs, "\n")
+		session.liveMu.Unlock()
+	}
+	if !strings.Contains(pane, liveMessage) && !strings.Contains(pendingLiveInput, liveMessage) {
+		t.Fatalf("live input was neither visible in tmux pane nor queued in adapter; pending=%q pane:\n%s", pendingLiveInput, pane)
 	}
 
-	cancel()
 	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatalf("GenerateContent completed normally; want cancellation after Escape path")
+	case result := <-errCh:
+		if result.err != nil {
+			t.Fatalf("GenerateContent error = %v", result.err)
 		}
-	case <-time.After(45 * time.Second):
-		t.Fatalf("timed out waiting for GenerateContent to return after cancellation")
+		paneAfter, err := captureGeminiPane(context.Background(), tmuxSession)
+		if err != nil {
+			t.Fatalf("capture Gemini pane after live response: %v", err)
+		}
+		if !strings.Contains(result.content, liveAck) && !strings.Contains(paneAfter, liveAck) {
+			t.Fatalf("live input was queued but not processed; content=%q pane:\n%s", result.content, paneAfter)
+		}
+	case <-time.After(4 * time.Minute):
+		t.Fatalf("timed out waiting for Gemini to process live input")
 	}
 	_ = drainGeminiStream(streamChan)
 }

@@ -31,6 +31,7 @@ func TestInitializeClaudeCodeDefaultUsesExperimentalTransport(t *testing.T) {
 func TestInitializeClaudeCodeCanUsePrintTransport(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
 	t.Setenv(EnvClaudeCodeMode, "")
+	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
 
 	llm, err := InitializeLLM(Config{
 		Provider: ProviderClaudeCode,
@@ -52,6 +53,7 @@ func TestInitializeClaudeCodeCanUsePrintTransport(t *testing.T) {
 func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
 	t.Setenv(EnvClaudeCodeMode, "")
+	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
 
 	llm, err := InitializeLLM(Config{
 		Provider:            ProviderClaudeCode,
@@ -72,6 +74,8 @@ func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 }
 
 func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
+	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
+
 	tests := []struct {
 		name    string
 		raw     string
@@ -103,6 +107,14 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 				t.Fatalf("normalizeClaudeCodeTransport(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeClaudeCodeTransportRejectsLegacyPrintUnlessExplicitlyAllowed(t *testing.T) {
+	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "")
+
+	if _, err := normalizeClaudeCodeTransport(ClaudeCodeTransportPrint); err == nil {
+		t.Fatal("normalizeClaudeCodeTransport(print) error = nil, want disabled legacy print error")
 	}
 }
 

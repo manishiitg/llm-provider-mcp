@@ -62,11 +62,13 @@ const (
 	DefaultCodexCLIModel = "high"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
-	// Supported values: "experimental" for tmux TUI mode and "print" for the
-	// legacy `claude -p` stream-json mode.
+	// Supported normal value: "experimental" for tmux TUI mode.
 	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
+	// EnvClaudeCodeAllowLegacyPrint must be explicitly enabled before the legacy
+	// `claude -p` stream-json transport can be selected.
+	EnvClaudeCodeAllowLegacyPrint = "CLAUDE_CODE_ALLOW_LEGACY_PRINT"
 
 	ClaudeCodeTransportExperimental = "experimental"
 	ClaudeCodeTransportPrint        = "print"
@@ -127,8 +129,9 @@ type Config struct {
 	// API keys for providers (optional, falls back to environment variables if not provided)
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
-	// initialized Claude Code model. Use "experimental" for tmux/no -p, or
-	// "print" for the legacy claude -p stream-json path.
+	// initialized Claude Code model. Normal execution should use "experimental"
+	// for tmux/no -p. The legacy print path is test-only and requires
+	// CLAUDE_CODE_ALLOW_LEGACY_PRINT=1.
 	ClaudeCodeTransport string
 }
 
@@ -1970,9 +1973,12 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	case "", ClaudeCodeTransportExperimental, "tmux", "interactive":
 		return ClaudeCodeTransportExperimental, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
+		if strings.TrimSpace(os.Getenv(EnvClaudeCodeAllowLegacyPrint)) != "1" {
+			return "", fmt.Errorf("Claude Code legacy print transport is disabled; use %s=%q for tmux mode or set %s=1 only for targeted legacy tests", EnvClaudeCodeTransport, ClaudeCodeTransportExperimental, EnvClaudeCodeAllowLegacyPrint)
+		}
 		return ClaudeCodeTransportPrint, nil
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q or %q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportExperimental, ClaudeCodeTransportPrint)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportExperimental)
 	}
 }
 

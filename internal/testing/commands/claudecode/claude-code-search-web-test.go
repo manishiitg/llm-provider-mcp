@@ -52,6 +52,11 @@ func runClaudeCodeSearchWebTest(cmd *cobra.Command, args []string) {
 			log.Fatalf("Failed to set Claude Code transport: %v", err)
 		}
 	}
+	if strings.TrimSpace(os.Getenv(llmproviders.EnvClaudeCodeAllowLegacyPrint)) == "" {
+		if err := os.Setenv(llmproviders.EnvClaudeCodeAllowLegacyPrint, "1"); err != nil {
+			log.Fatalf("Failed to allow Claude Code legacy print transport: %v", err)
+		}
+	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{
 		Provider: llmproviders.ProviderClaudeCode,

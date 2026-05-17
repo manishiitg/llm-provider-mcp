@@ -197,7 +197,7 @@ func TestBuildTmuxPromptResumeSendsOnlyLatestHumanMessage(t *testing.T) {
 		textPartMessage(llmtypes.ChatMessageTypeAI, "OLD_ASSISTANT_SHOULD_NOT_BE_SENT"),
 		textPartMessage(llmtypes.ChatMessageTypeHuman, "LATEST_USER_SHOULD_BE_SENT"),
 	})
-	prompt, err := buildTmuxPrompt(conversation, opts, claudeResumeIDFromOptions(opts))
+	prompt, err := buildTmuxPrompt(conversation, opts, claudeResumeIDFromOptions(opts), false)
 	if err != nil {
 		t.Fatalf("buildTmuxPrompt error = %v", err)
 	}
@@ -228,6 +228,29 @@ func TestBuildTmuxPromptResumeSendsOnlyLatestHumanMessage(t *testing.T) {
 	}
 }
 
+func TestBuildTmuxPromptPersistentSendsOnlyLatestHumanMessage(t *testing.T) {
+	_, conversation := splitSystemPrompt([]llmtypes.MessageContent{
+		textPartMessage(llmtypes.ChatMessageTypeSystem, "SYSTEM_SHOULD_BE_NATIVE"),
+		textPartMessage(llmtypes.ChatMessageTypeHuman, "OLD_USER_SHOULD_NOT_BE_SENT"),
+		textPartMessage(llmtypes.ChatMessageTypeAI, "OLD_ASSISTANT_SHOULD_NOT_BE_SENT"),
+		textPartMessage(llmtypes.ChatMessageTypeHuman, "LATEST_USER_SHOULD_BE_SENT"),
+	})
+
+	prompt, err := buildTmuxPrompt(conversation, &llmtypes.CallOptions{}, "", true)
+	if err != nil {
+		t.Fatalf("buildTmuxPrompt error = %v", err)
+	}
+	if strings.TrimSpace(prompt) != "LATEST_USER_SHOULD_BE_SENT" {
+		t.Fatalf("persistent prompt = %q, want only latest user message", prompt)
+	}
+	if strings.Contains(prompt, "OLD_USER_SHOULD_NOT_BE_SENT") || strings.Contains(prompt, "OLD_ASSISTANT_SHOULD_NOT_BE_SENT") {
+		t.Fatalf("persistent prompt should not replay old conversation: %q", prompt)
+	}
+	if strings.Contains(prompt, "SYSTEM_SHOULD_BE_NATIVE") || strings.Contains(prompt, "Previous conversation context") {
+		t.Fatalf("persistent prompt should not contain native system/context wrappers: %q", prompt)
+	}
+}
+
 func TestBuildTmuxPromptFreshSingleTurnSendsOnlyUserText(t *testing.T) {
 	prompt, err := buildTmuxPrompt(
 		[]llmtypes.MessageContent{
@@ -235,6 +258,7 @@ func TestBuildTmuxPromptFreshSingleTurnSendsOnlyUserText(t *testing.T) {
 		},
 		&llmtypes.CallOptions{},
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("buildTmuxPrompt error = %v", err)
@@ -268,6 +292,7 @@ func TestBuildTmuxPromptFreshSingleTurnPreservesUserTextVerbatim(t *testing.T) {
 		},
 		&llmtypes.CallOptions{},
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("buildTmuxPrompt error = %v", err)
@@ -295,7 +320,7 @@ func TestBuildTmuxPromptHandlesJSONRehydratedTextParts(t *testing.T) {
 		t.Fatalf("tmuxMessagePartsToText saved first human = %q, want hi", got)
 	}
 
-	prompt, err := buildTmuxPrompt(saved.History, &llmtypes.CallOptions{}, "")
+	prompt, err := buildTmuxPrompt(saved.History, &llmtypes.CallOptions{}, "", false)
 	if err != nil {
 		t.Fatalf("buildTmuxPrompt error = %v", err)
 	}
@@ -330,7 +355,7 @@ func TestBuildTmuxPromptResumeHandlesJSONRehydratedLatestHuman(t *testing.T) {
 		t.Fatalf("json.Unmarshal error = %v", err)
 	}
 
-	prompt, err := buildTmuxPrompt(saved.History, opts, claudeResumeIDFromOptions(opts))
+	prompt, err := buildTmuxPrompt(saved.History, opts, claudeResumeIDFromOptions(opts), false)
 	if err != nil {
 		t.Fatalf("buildTmuxPrompt error = %v", err)
 	}
