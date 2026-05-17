@@ -12,20 +12,11 @@ const (
 )
 
 func GetDefaultVisibleKimiModelIDs() []string {
-	return []string{ModelKimiCode, ModelKimiK26}
+	return []string{ModelKimiK26}
 }
 
 func GetAllKimiModels() []*llmtypes.ModelMetadata {
 	return []*llmtypes.ModelMetadata{
-		{
-			Provider:                "kimi",
-			ModelID:                 ModelKimiCode,
-			ModelName:               "Kimi Code",
-			ContextWindow:           262144,
-			SupportsToolCalls:       true,
-			SupportsReasoningEffort: true,
-			ReasoningEffortLevels:   []string{"low", "medium", "high", "max"},
-		},
 		{
 			Provider:          "kimi",
 			ModelID:           ModelKimiK26,
@@ -39,7 +30,7 @@ func GetAllKimiModels() []*llmtypes.ModelMetadata {
 
 func GetKimiModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	if modelID == "" {
-		modelID = ModelKimiCode
+		modelID = ModelKimiK26
 	}
 	for _, metadata := range GetAllKimiModels() {
 		if metadata.ModelID == modelID {

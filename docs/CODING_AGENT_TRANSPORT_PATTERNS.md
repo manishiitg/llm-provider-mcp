@@ -1,7 +1,7 @@
 # Coding Agent Transport Patterns
 
 This is the shared pattern set for terminal-native coding agents such as Claude
-Code, Codex CLI, Cursor CLI, Gemini CLI, and Kimi CLI.
+Code, Codex CLI, Cursor CLI, and Gemini CLI.
 
 ## 1. One Normal Transport
 
@@ -14,9 +14,8 @@ transport.
   send intermediate input, wait for idle, extract the final response, and close
   or retain the owner session.
 - Legacy structured transports (`claude -p`, `codex exec --json`,
-  `gemini --output-format stream-json`, `kimi --print --output-format
-  stream-json`) are fallback/test-only paths unless a provider still lacks a
-  tmux implementation.
+  `gemini --output-format stream-json`) are fallback/test-only paths unless a
+  provider still lacks a tmux implementation.
 
 Do not add product behavior that depends on structured CLI output unless the
 tmux contract cannot support that capability yet.
@@ -139,7 +138,6 @@ environment-gated so normal CI does not spend credits accidentally:
 - Claude Code with Haiku
 - Codex CLI with the cheaper contract model, currently `gpt-5.3-codex-spark`
 - Gemini CLI low tier, currently `gemini-3.1-flash-lite`
-- Kimi CLI with `kimi-code` in no-tools stream-json mode
 - multi-turn memory in the same persistent tmux session
 
 This gives fast CI coverage for the contract and occasional real validation for

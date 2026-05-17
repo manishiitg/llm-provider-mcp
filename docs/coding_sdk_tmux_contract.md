@@ -9,7 +9,6 @@ Covered providers:
 - `codex-cli`
 - `cursor-cli`
 - `gemini-cli`
-- `kimi-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -75,12 +74,6 @@ Gemini CLI:
 - Workflow and chat both use the tmux transport when an owner session id is
   available.
 
-Kimi CLI:
-
-- Structured transport: `kimi --print --output-format stream-json --prompt ...`.
-- Interactive tmux transport is not part of the current contract.
-- Kimi remains on the legacy structured path until a real tmux transport lands.
-
 ## Image Input Contract
 
 `llmtypes.ImageContent` must never be silently dropped.
@@ -98,8 +91,6 @@ Kimi CLI:
   implemented for the TUI session.
 - Gemini CLI: rejects image input in the current adapter because the supported
   headless/tmux transport has no image attachment flag.
-- Kimi Code CLI: rejects image input in the current adapter because the
-  supported print transport has no image attachment flag.
 
 ## Launch Contract
 
@@ -473,8 +464,6 @@ and transport-change validation should run them alongside deterministic tests:
   default smoke unless explicitly testing another tier.
 - Cursor CLI: use the account/default selector (`cursor-cli`) for the default
   smoke unless explicitly testing a model available in that Cursor account.
-- Kimi CLI: use `kimi-code` with no-tools mode for the default stream-json
-  smoke unless explicitly testing another Kimi model.
 
 Application-level chat E2E is required in addition to provider-adapter E2E.
 The app-level test must drive the real `mcp-agent-builder-go` HTTP API because
@@ -562,7 +551,6 @@ Current legacy structured transport real contract commands:
 ```sh
 RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealExecJSON' -v -timeout 6m
 RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLIRealStreamJSON' -v -timeout 6m
-RUN_KIMI_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/kimi -run 'TestKimiCLIRealStreamJSONContract' -v -timeout 3m
 ```
 
 Current native web-search real contract commands:
@@ -595,10 +583,6 @@ Provider/model semantics:
 - Search tests must assert a native tool-call path where the adapter exposes
   stream tool-call events. A memory-only final answer is not sufficient.
 
-Kimi Code does not currently implement `llmtypes.WebSearchModel`; the adapter
-has a negative test for that contract until a real native web-search transport
-is added.
-
 Current image-input real contract commands:
 
 ```sh
@@ -606,9 +590,8 @@ CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_IMA
 RUN_CODEX_CLI_IMAGE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealImageInput' -v -timeout 4m
 ```
 
-Cursor CLI, Gemini CLI, and Kimi Code CLI currently have negative image-input
-contract tests so unsupported image parts fail clearly instead of being removed
-from the prompt.
+Cursor CLI and Gemini CLI currently have negative image-input contract tests so
+unsupported image parts fail clearly instead of being removed from the prompt.
 
 Builder/workspace read-image virtual-tool contract command:
 
@@ -629,8 +612,8 @@ Read-image provider/model semantics:
 - Codex CLI image input must use an image-capable model, currently
   `gpt-5.4-mini` for the contract test. `gpt-5.3-codex-spark` is not a valid
   image-read contract model.
-- Gemini CLI and Kimi Code must reject `llmtypes.ImageContent` explicitly until
-  those adapters support a real image attachment path.
+- Gemini CLI must reject `llmtypes.ImageContent` explicitly until its adapter
+  supports a real image attachment path.
 
 Current image-generation real contract commands:
 

@@ -2002,7 +2002,7 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	}
 }
 
-// initializeKimi creates and configures a Kimi provider.
+// initializeKimi creates and configures the Kimi API provider.
 func initializeKimi(config Config) (llmtypes.Model, error) {
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,
@@ -2019,7 +2019,7 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 
 	modelID := strings.TrimSpace(config.ModelID)
 	if modelID == "" {
-		modelID = kimiadapter.ModelKimiCode
+		modelID = kimiadapter.ModelKimiK26
 	}
 
 	logger := config.Logger
@@ -2027,25 +2027,20 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 		logger = &noopLoggerImpl{}
 	}
 
-	if modelID == kimiadapter.ModelKimiCode && shouldUseKimiCodeCLITransport() {
-		logger.Infof("Initializing Kimi provider via native Kimi Code CLI - model_id: %s", modelID)
-
-		llm := kimiadapter.NewKimiCLIAdapter(modelID, logger)
-
-		successMetadata := LLMMetadata{
+	if modelID == kimiadapter.ModelKimiCode {
+		err := fmt.Errorf("kimi-code is no longer supported as a Kimi provider model; use OpenCode CLI for Kimi Code coding-agent plans")
+		errorMetadata := LLMMetadata{
 			ModelVersion: modelID,
 			User:         "kimi_user",
 			CustomFields: map[string]string{
-				"provider":     "kimi",
-				"transport":    "cli",
-				"status":       StatusLLMInitialized,
-				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+				"provider":  "kimi",
+				"operation": OperationLLMInitialization,
+				"error":     err.Error(),
+				"status":    StatusLLMFailed,
 			},
 		}
-		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-		logger.Infof("Initialized Kimi provider via native Kimi Code CLI - model_id: %s", modelID)
-		return llm, nil
+		emitLLMInitializationError(config.EventEmitter, string(config.Provider), modelID, OperationLLMInitialization, err, config.TraceID, errorMetadata)
+		return nil, err
 	}
 
 	apiKey := ""
@@ -2071,40 +2066,20 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 		return nil, err
 	}
 
-	if modelID != kimiadapter.ModelKimiCode {
-		baseURL := os.Getenv("KIMI_BASE_URL")
-		if baseURL == "" {
-			baseURL = "https://api.moonshot.ai/v1"
-		}
-
-		client := openaisdk.NewClient(
-			option.WithAPIKey(apiKey),
-			option.WithBaseURL(baseURL),
-		)
-
-		llm := openaiadapter.NewCompatibleOpenAIAdapter(&client, modelID, logger, openaiadapter.OpenAICompatibilityConfig{
-			ProviderName:   "kimi",
-			MetadataLookup: kimiadapter.GetKimiModelMetadata,
-		})
-
-		successMetadata := LLMMetadata{
-			ModelVersion: modelID,
-			User:         "kimi_user",
-			CustomFields: map[string]string{
-				"provider":     "kimi",
-				"status":       StatusLLMInitialized,
-				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-			},
-		}
-		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-		logger.Infof("Initialized Kimi API provider - model_id: %s, base_url: %s", modelID, baseURL)
-		return llm, nil
+	baseURL := os.Getenv("KIMI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.moonshot.ai/v1"
 	}
 
-	logger.Infof("Initializing Kimi provider via Anthropic-compatible HTTP - model_id: %s", modelID)
+	client := openaisdk.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	)
 
-	llm := kimiadapter.NewKimiAdapter(apiKey, modelID, logger)
+	llm := openaiadapter.NewCompatibleOpenAIAdapter(&client, modelID, logger, openaiadapter.OpenAICompatibilityConfig{
+		ProviderName:   "kimi",
+		MetadataLookup: kimiadapter.GetKimiModelMetadata,
+	})
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,
@@ -2117,21 +2092,8 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized Kimi provider via Anthropic-compatible HTTP - model_id: %s", modelID)
+	logger.Infof("Initialized Kimi API provider - model_id: %s, base_url: %s", modelID, baseURL)
 	return llm, nil
-}
-
-func shouldUseKimiCodeCLITransport() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("KIMI_CODE_TRANSPORT"))) {
-	case "":
-		return true
-	case "cli", "native", "kimi-cli", "kimi-code-cli":
-		return true
-	case "http", "api", "anthropic", "anthropic-http", "off", "false", "0":
-		return false
-	default:
-		return true
-	}
 }
 
 // initializeGeminiCLI creates and configures a Gemini CLI adapter instance
@@ -2359,7 +2321,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("KIMI_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return kimiadapter.ModelKimiCode
+		return kimiadapter.ModelKimiK26
 	case ProviderClaudeCode:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("CLAUDE_CODE_PRIMARY_MODEL"); primaryModel != "" {
@@ -3294,11 +3256,6 @@ func WithMCPConfig(config string) llmtypes.CallOption {
 	return claudecodeadapter.WithMCPConfig(config)
 }
 
-// WithKimiWorkingDir sets the process working directory for Kimi Code CLI.
-func WithKimiWorkingDir(dir string) llmtypes.CallOption {
-	return kimiadapter.WithWorkingDir(dir)
-}
-
 // WithDangerouslySkipPermissions enables the --dangerously-skip-permissions flag for the Claude Code CLI.
 // CAUTION: This allows the agent to execute any tool without user confirmation.
 func WithDangerouslySkipPermissions() llmtypes.CallOption {
@@ -3742,7 +3699,7 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	// Kimi configuration
 	kimiModel := os.Getenv("KIMI_PRIMARY_MODEL")
 	if kimiModel == "" {
-		kimiModel = kimiadapter.ModelKimiCode
+		kimiModel = kimiadapter.ModelKimiK26
 	}
 	kimiAPIKey := os.Getenv("KIMI_API_KEY")
 
@@ -4139,7 +4096,7 @@ func validateKimiAPIKey(apiKey string, modelID string, options map[string]interf
 	}
 
 	if modelID == "" {
-		modelID = kimiadapter.ModelKimiCode
+		modelID = kimiadapter.ModelKimiK26
 		fmt.Printf("[KIMI VALIDATION] Using default model: %s\n", modelID)
 	}
 
