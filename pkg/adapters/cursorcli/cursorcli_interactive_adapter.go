@@ -898,6 +898,7 @@ func isCursorPromptBoundaryLine(line string) bool {
 		strings.Contains(lower, "ask (shift+tab") ||
 		strings.HasPrefix(lower, "type your message") ||
 		strings.Contains(lower, "what can i help") ||
+		strings.Contains(lower, "add a follow-up") ||
 		strings.Contains(lower, "cursor agent") && strings.Contains(lower, "workspace")
 }
 
@@ -923,7 +924,9 @@ func isCursorTUILine(line string) bool {
 		strings.Contains(lower, "mode:") ||
 		strings.Contains(lower, "approval") ||
 		strings.Contains(lower, "permission") ||
-		strings.Contains(lower, "pasted text")
+		strings.Contains(lower, "pasted text") ||
+		strings.HasPrefix(lower, "use /") ||
+		strings.HasPrefix(lower, "add a follow-up")
 }
 
 func isCursorToolStatusLine(line string) bool {
