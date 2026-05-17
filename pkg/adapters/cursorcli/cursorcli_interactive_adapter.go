@@ -1201,31 +1201,42 @@ func cursorCapturedAfterBaseline(captured, baseline string) string {
 	if baseline == "" {
 		return captured
 	}
-	// Exact substring match (original fast path).
+	// Fast path: exact substring match.
 	if idx := strings.LastIndex(captured, baseline); idx >= 0 {
 		return captured[idx+len(baseline):]
 	}
-	// The pane content diverges mid-way on multi-turn: the baseline ends
-	// with the previous ready-prompt ("→ Add a follow-up ...") while the
-	// captured pane replaces that section with the new turn's content.
-	// Find the longest common prefix and return everything after it.
-	minLen := len(captured)
-	if len(baseline) < minLen {
-		minLen = len(baseline)
+	// Non-breaking space normalization (matches Claude Code adapter).
+	normalizedCaptured := strings.ReplaceAll(captured, " ", " ")
+	normalizedBaseline := strings.ReplaceAll(baseline, " ", " ")
+	if idx := strings.LastIndex(normalizedCaptured, normalizedBaseline); idx >= 0 {
+		return normalizedCaptured[idx+len(normalizedBaseline):]
 	}
-	commonLen := 0
-	for i := 0; i < minLen; i++ {
-		if captured[i] != baseline[i] {
+	// Line-based prefix divergence: on multi-turn panes the baseline and
+	// captured share the same top lines (header + earlier turns) but diverge
+	// where the new turn starts. Find the first line that differs and
+	// return everything from that point onward.
+	return cursorLinePrefixDelta(normalizedCaptured, normalizedBaseline)
+}
+
+func cursorLinePrefixDelta(captured, baseline string) string {
+	capturedLines := strings.Split(captured, "\n")
+	baselineLines := strings.Split(baseline, "\n")
+	maxCompare := len(capturedLines)
+	if len(baselineLines) < maxCompare {
+		maxCompare = len(baselineLines)
+	}
+	divergeAt := 0
+	for i := 0; i < maxCompare; i++ {
+		if strings.TrimSpace(capturedLines[i]) != strings.TrimSpace(baselineLines[i]) {
 			break
 		}
-		commonLen = i + 1
+		divergeAt = i + 1
 	}
-	// Only trust the prefix if it covers a meaningful portion of the
-	// baseline (at least 30%) to avoid false positives on short matches.
-	if commonLen > 0 && commonLen*100/len(baseline) >= 30 {
-		return captured[commonLen:]
+	// Require at least a few matching lines to trust the prefix.
+	if divergeAt < 3 {
+		return captured
 	}
-	return captured
+	return strings.Join(capturedLines[divergeAt:], "\n")
 }
 
 func killCursorTmuxSession(ctx context.Context, sessionName string) error {
