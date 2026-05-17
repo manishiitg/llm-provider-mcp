@@ -37,6 +37,7 @@ const (
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalVerbose            = "CLAUDE_CODE_EXPERIMENTAL_VERBOSE"
 	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	EnvClaudeExperimentalAutoExpandTools    = "CLAUDE_CODE_AUTO_EXPAND_TOOLS"
 )
 
 var claudeExperimentalSessionRegistry = struct {
@@ -1059,6 +1060,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastTerminalStreamedAt time.Time
 	expandedToolSummary := false
 	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
+	autoExpandToolSummary := claudeExperimentalAutoExpandToolSummaryEnabled()
 
 	for {
 		select {
@@ -1089,7 +1091,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
 				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
 			}
-			if !expandedToolSummary && hasClaudeExpandableToolSummary(captured) {
+			if autoExpandToolSummary && !expandedToolSummary && hasClaudeExpandableToolSummary(captured) {
 				if sendClaudeExpandToolSummary(ctx, sessionName) {
 					expandedToolSummary = true
 				}
@@ -1127,6 +1129,11 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			}
 		}
 	}
+}
+
+func claudeExperimentalAutoExpandToolSummaryEnabled() bool {
+	value := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalAutoExpandTools))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 func hasClaudeExpandableToolSummary(captured string) bool {

@@ -862,6 +862,18 @@ func TestHasClaudeExpandableToolSummary(t *testing.T) {
 	}
 }
 
+func TestClaudeExperimentalAutoExpandToolSummaryDisabledByDefault(t *testing.T) {
+	t.Setenv(EnvClaudeExperimentalAutoExpandTools, "")
+	if claudeExperimentalAutoExpandToolSummaryEnabled() {
+		t.Fatal("auto expand tool summary enabled by default; want disabled")
+	}
+
+	t.Setenv(EnvClaudeExperimentalAutoExpandTools, "true")
+	if !claudeExperimentalAutoExpandToolSummaryEnabled() {
+		t.Fatal("auto expand tool summary disabled with explicit true; want enabled")
+	}
+}
+
 func TestParseTmuxMajorVersion(t *testing.T) {
 	tests := []struct {
 		name    string
