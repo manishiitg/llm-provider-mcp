@@ -241,6 +241,253 @@ func drainCursorStream(streamChan <-chan llmtypes.StreamChunk) cursorDrainedStre
 	}
 }
 
+// ---------------------------------------------------------------------------
+// E2E: TUI chrome never leaks into extracted response
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealResponseHasNoTUIChrome(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-e2e-tui-" + cursorRandomHex(4)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say exactly: hello world"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithMode("ask"),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if content == "" {
+		t.Fatal("extracted response is empty")
+	}
+
+	tuiPatterns := []string{
+		"Cursor Agent",
+		"Composer",
+		"→",
+		"Use /",
+		"Add a follow-up",
+		"Plan, search, build",
+		"ctrl+c",
+		"Auto-run",
+		"shift+tab",
+		"v20", // version string
+	}
+	for _, pattern := range tuiPatterns {
+		if strings.Contains(content, pattern) {
+			t.Errorf("response contains TUI chrome %q; full response:\n%s", pattern, content)
+		}
+	}
+
+	if !strings.Contains(strings.ToLower(content), "hello world") {
+		t.Errorf("response doesn't contain expected text; got:\n%s", content)
+	}
+	_ = drainCursorStream(stream)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Multi-turn extracts only latest response, no historical leakage
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealMultiTurnNoHistoryLeakage(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-e2e-multi-" + cursorRandomHex(4)
+	systemPrompt := "Keep replies to one short sentence. Do not use tools."
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	options := []llmtypes.CallOption{
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithMode("ask"),
+	}
+
+	// Turn 1
+	token1 := "ALPHA_" + cursorRandomHex(4)
+	stream1 := make(chan llmtypes.StreamChunk, 64)
+	opts1 := append(append([]llmtypes.CallOption{}, options...), llmtypes.WithStreamingChan(stream1))
+	resp1, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token1)}}},
+	}, opts1...)
+	if err != nil {
+		t.Fatalf("turn 1 error = %v", err)
+	}
+	content1 := strings.TrimSpace(resp1.Choices[0].Content)
+	if !strings.Contains(content1, token1) {
+		t.Fatalf("turn 1 missing token %s, got: %s", token1, content1)
+	}
+	_ = drainCursorStream(stream1)
+
+	// Turn 2
+	token2 := "BRAVO_" + cursorRandomHex(4)
+	stream2 := make(chan llmtypes.StreamChunk, 64)
+	opts2 := append(append([]llmtypes.CallOption{}, options...), llmtypes.WithStreamingChan(stream2))
+	resp2, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token1)}}},
+		{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: content1}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token2)}}},
+	}, opts2...)
+	if err != nil {
+		t.Fatalf("turn 2 error = %v", err)
+	}
+	content2 := strings.TrimSpace(resp2.Choices[0].Content)
+	if !strings.Contains(content2, token2) {
+		t.Fatalf("turn 2 missing token %s, got: %s", token2, content2)
+	}
+	if strings.Contains(content2, token1) {
+		t.Fatalf("turn 2 leaked turn 1 token %s; got: %s", token1, content2)
+	}
+	_ = drainCursorStream(stream2)
+
+	// Turn 3
+	token3 := "CHARLIE_" + cursorRandomHex(4)
+	stream3 := make(chan llmtypes.StreamChunk, 64)
+	opts3 := append(append([]llmtypes.CallOption{}, options...), llmtypes.WithStreamingChan(stream3))
+	resp3, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token1)}}},
+		{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: content1}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token2)}}},
+		{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: content2}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token3)}}},
+	}, opts3...)
+	if err != nil {
+		t.Fatalf("turn 3 error = %v", err)
+	}
+	content3 := strings.TrimSpace(resp3.Choices[0].Content)
+	if !strings.Contains(content3, token3) {
+		t.Fatalf("turn 3 missing token %s, got: %s", token3, content3)
+	}
+	if strings.Contains(content3, token1) {
+		t.Fatalf("turn 3 leaked turn 1 token %s; got: %s", token1, content3)
+	}
+	if strings.Contains(content3, token2) {
+		t.Fatalf("turn 3 leaked turn 2 token %s; got: %s", token2, content3)
+	}
+	_ = drainCursorStream(stream3)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Completion detection — pane is idle and ready after response
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealCompletionDetection(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-e2e-completion-" + cursorRandomHex(4)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What is 7 * 8?"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithMode("ask"),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainCursorStream(stream)
+
+	// After GenerateContent returns, pane must be in ready state.
+	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok {
+		t.Fatal("no active tmux session after GenerateContent returned")
+	}
+
+	pane, err := captureCursorPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture pane: %v", err)
+	}
+
+	if !hasCursorReadyPrompt(pane) {
+		t.Fatalf("pane is not in ready state after response:\n%s", pane)
+	}
+	if hasCursorLiveGenerationActivity(strings.ToLower(stripCursorANSI(pane))) {
+		t.Fatalf("pane still shows live generation activity after response:\n%s", pane)
+	}
+	if !strings.Contains(pane, "→") {
+		t.Fatalf("pane missing → prompt after response:\n%s", pane)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: MCP bridge tool call — verify tool output appears and is extracted
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealMCPBridgeToolCall(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-e2e-mcp-" + cursorRandomHex(4)
+	workDir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use the shell tool to run commands when asked."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Run: echo E2E_TOOL_TEST_OK"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainCursorStream(stream)
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	// The response should contain something about the tool output, not the
+	// raw shell status lines.
+	tuiPatterns := []string{"Cursor Agent", "Composer", "→", "Add a follow-up"}
+	for _, pattern := range tuiPatterns {
+		if strings.Contains(content, pattern) {
+			t.Errorf("response contains TUI chrome %q; full response:\n%s", pattern, content)
+		}
+	}
+
+	// Verify the tmux pane captured the tool execution.
+	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok {
+		t.Fatal("no active tmux session")
+	}
+	pane, _ := captureCursorPane(ctx, tmuxSession)
+	if !strings.Contains(pane, "E2E_TOOL_TEST_OK") {
+		t.Logf("pane does not contain tool output marker; pane:\n%s", pane)
+	}
+}
+
 func assertCursorInteractiveTerminalOnlyStream(t *testing.T, streamChan <-chan llmtypes.StreamChunk) {
 	t.Helper()
 	drained := drainCursorStream(streamChan)
