@@ -104,6 +104,30 @@ Ask (shift+tab to cycle)`
 	}
 }
 
+func TestCursorReadyPromptAllowsStaleRunningLineAfterToolCompletion(t *testing.T) {
+	pane := `Cursor Agent
+v2026.05.16-0338208
+
+Running the requested shell command.
+
+$ sleep 8; echo READY_FOR_LIVE_INPUT 8.5s
+  READY_FOR_LIVE_INPUT
+
+Command finished: READY_FOR_LIVE_INPUT. LIVE_ACK_abc123
+
+→ Add a follow-up
+
+Composer 2 Fast · 9.8%
+~/workspace · main`
+
+	if !hasCursorActivity(pane) {
+		t.Fatal("fixture should include a stale activity line")
+	}
+	if !hasCursorReadyPrompt(pane) {
+		t.Fatal("completed tool output with follow-up prompt should be treated as ready")
+	}
+}
+
 func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	adapter := NewCursorCLIAdapter("secret", "gpt-5", &MockLogger{})
 	workDir := t.TempDir()

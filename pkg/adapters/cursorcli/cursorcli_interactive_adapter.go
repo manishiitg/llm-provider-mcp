@@ -1086,16 +1086,26 @@ func hasCursorReadyPrompt(captured string) bool {
 		return false
 	}
 	cleaned := strings.ToLower(stripCursorANSI(captured))
-	if hasCursorActivity(captured) {
+	if !hasCursorReadyMarker(cleaned) {
 		return false
 	}
+	// Cursor leaves historical status lines in the pane after a tool run. Once the
+	// follow-up prompt is visible, stale "Running..." text should not keep the turn
+	// open forever.
+	if hasCursorActivity(captured) && !strings.Contains(cleaned, "add a follow-up") {
+		return false
+	}
+	return true
+}
+
+func hasCursorReadyMarker(cleaned string) bool {
 	return strings.Contains(cleaned, "type your message") ||
 		strings.Contains(cleaned, "ask (shift+tab") ||
 		strings.Contains(cleaned, "plan, search, build anything") ||
 		strings.Contains(cleaned, "what can i help") ||
 		strings.Contains(cleaned, "ask me anything") ||
 		strings.Contains(cleaned, "message cursor") ||
-		strings.Contains(cleaned, "cursor agent") && (strings.Contains(cleaned, "workspace") || strings.Contains(cleaned, "model"))
+		strings.Contains(cleaned, "add a follow-up")
 }
 
 func hasCursorTrustPrompt(captured string) bool {
