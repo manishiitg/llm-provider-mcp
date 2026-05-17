@@ -1057,6 +1057,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
+	expandedToolSummary := false
 	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
 
 	for {
@@ -1087,6 +1088,11 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
 				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
+			}
+			if !expandedToolSummary && hasClaudeExpandableToolSummary(captured) {
+				if sendClaudeExpandToolSummary(ctx, sessionName) {
+					expandedToolSummary = true
+				}
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -1121,6 +1127,27 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			}
 		}
 	}
+}
+
+func hasClaudeExpandableToolSummary(captured string) bool {
+	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
+	for _, line := range strings.Split(normalized, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if !strings.Contains(lower, "ctrl+o") || !strings.Contains(lower, "expand") {
+			continue
+		}
+		if isClaudeToolProgressLine(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+func sendClaudeExpandToolSummary(ctx context.Context, sessionName string) bool {
+	sendCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return runCommand(sendCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-o") == nil
 }
 
 func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {

@@ -825,6 +825,43 @@ which stategry was run ?
 	}
 }
 
+func TestHasClaudeExpandableToolSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{
+			name: "calling summary",
+			pane: "⏺ Calling api-bridge 2 times… (ctrl+o to expand)",
+			want: true,
+		},
+		{
+			name: "called summary",
+			pane: "Called api-bridge 6 times (ctrl+o to expand)",
+			want: true,
+		},
+		{
+			name: "compaction summary",
+			pane: "⎿  Compacted (ctrl+o to see full summary)",
+			want: false,
+		},
+		{
+			name: "generic footer",
+			pane: "Tip: ctrl+o opens history",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasClaudeExpandableToolSummary(tt.pane); got != tt.want {
+				t.Fatalf("hasClaudeExpandableToolSummary(%q) = %t, want %t", tt.pane, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseTmuxMajorVersion(t *testing.T) {
 	tests := []struct {
 		name    string
