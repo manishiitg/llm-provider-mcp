@@ -1202,25 +1202,6 @@ func cursorCapturedAfterBaseline(captured, baseline string) string {
 	return captured
 }
 
-func listCursorTmuxSessions(ctx context.Context) ([]string, error) {
-	out, err := runCursorCommandOutput(ctx, nil, "tmux", "list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		if strings.Contains(err.Error(), "no server running") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	prefix := cursorInteractiveSessionPrefix()
-	var sessions []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			sessions = append(sessions, line)
-		}
-	}
-	return sessions, nil
-}
-
 func killCursorTmuxSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil

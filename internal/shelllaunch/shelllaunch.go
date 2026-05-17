@@ -1,12 +1,14 @@
 package shelllaunch
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -143,7 +145,9 @@ func darwinUserShell() string {
 	if idx := strings.LastIndex(username, `\`); idx >= 0 {
 		username = username[idx+1:]
 	}
-	out, err := exec.Command("dscl", ".", "-read", "/Users/"+username, "UserShell").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "dscl", ".", "-read", "/Users/"+username, "UserShell").Output()
 	if err != nil {
 		return ""
 	}

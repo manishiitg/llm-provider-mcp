@@ -36,9 +36,20 @@ type GeminiCLIAdapter struct {
 // NewGeminiCLIAdapter creates a new instance of the GeminiCLIAdapter.
 func NewGeminiCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *GeminiCLIAdapter {
 	return &GeminiCLIAdapter{
-		apiKey:  apiKey,
+		apiKey:  strings.TrimSpace(apiKey),
 		modelID: modelID,
 		logger:  logger,
+	}
+}
+
+func geminiAPIKeyEnv(apiKey string) []string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil
+	}
+	return []string{
+		"GEMINI_API_KEY=" + apiKey,
+		"GOOGLE_API_KEY=" + apiKey,
 	}
 }
 
@@ -266,9 +277,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	env := os.Environ()
 	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
 	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
-	if g.apiKey != "" {
-		env = append(env, "GEMINI_API_KEY="+g.apiKey)
-	}
+	env = append(env, geminiAPIKeyEnv(g.apiKey)...)
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
@@ -1008,9 +1017,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 	env := os.Environ()
 	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
 	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
-	if g.apiKey != "" {
-		env = append(env, "GEMINI_API_KEY="+g.apiKey)
-	}
+	env = append(env, geminiAPIKeyEnv(g.apiKey)...)
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}

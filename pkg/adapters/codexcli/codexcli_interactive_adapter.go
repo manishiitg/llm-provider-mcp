@@ -1876,25 +1876,6 @@ func codexCapturedAfterBaseline(captured, baseline string) string {
 	return captured
 }
 
-func listCodexTmuxSessions(ctx context.Context) ([]string, error) {
-	out, err := runCodexCommandOutput(ctx, nil, "tmux", "list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		if strings.Contains(err.Error(), "no server running") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	prefix := codexInteractiveSessionPrefix()
-	var sessions []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			sessions = append(sessions, line)
-		}
-	}
-	return sessions, nil
-}
-
 func killCodexTmuxSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
@@ -1972,29 +1953,6 @@ func runCodexCommandOutput(ctx context.Context, stdin io.Reader, name string, ar
 		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
-}
-
-func codexShellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = codexShellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func codexShellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}
-
-func codexMustGetwd() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	return wd
 }
 
 func codexRandomHex(n int) string {

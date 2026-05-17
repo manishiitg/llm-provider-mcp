@@ -2147,14 +2147,9 @@ func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Gemini CLI adapter - model_id: %s", modelID)
 
-	// Resolve API key: explicit config > environment variable
-	apiKey := ""
-	if config.APIKeys != nil && config.APIKeys.GeminiCLI != nil {
-		apiKey = *config.APIKeys.GeminiCLI
-		logger.Infof("Gemini CLI: using API key from config (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("GEMINI_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Gemini CLI: using API key from GEMINI_API_KEY env var (length=%d)", len(apiKey))
+	apiKey, apiKeySource := resolveGeminiCLIAPIKey(config)
+	if apiKey != "" {
+		logger.Infof("Gemini CLI: using API key from %s (length=%d)", apiKeySource, len(apiKey))
 	} else {
 		logger.Infof("Gemini CLI: no API key found in config or environment")
 	}
@@ -2176,6 +2171,24 @@ func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
 
 	logger.Infof("Initialized Gemini CLI adapter - model_id: %s", modelID)
 	return llm, nil
+}
+
+func resolveGeminiCLIAPIKey(config Config) (string, string) {
+	if config.APIKeys != nil {
+		if config.APIKeys.GeminiCLI != nil && strings.TrimSpace(*config.APIKeys.GeminiCLI) != "" {
+			return strings.TrimSpace(*config.APIKeys.GeminiCLI), "gemini-cli config"
+		}
+		if config.APIKeys.Vertex != nil && strings.TrimSpace(*config.APIKeys.Vertex) != "" {
+			return strings.TrimSpace(*config.APIKeys.Vertex), "vertex config"
+		}
+	}
+	if envKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); envKey != "" {
+		return envKey, "GEMINI_API_KEY env var"
+	}
+	if envKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")); envKey != "" {
+		return envKey, "GOOGLE_API_KEY env var"
+	}
+	return "", ""
 }
 
 // initializeCodexCLI creates and configures an OpenAI Codex CLI adapter instance

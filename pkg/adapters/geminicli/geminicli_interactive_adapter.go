@@ -125,7 +125,17 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	if err != nil {
 		if ctx.Err() != nil {
 			interruptGeminiInteractiveSession(session.tmuxSessionName, g.logger)
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, err
 		}
+		markGeminiInteractiveSessionFailedLocked(session, err, g.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedGeminiInteractiveSession(failedSession)
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
@@ -283,9 +293,7 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 	}
 
 	env := []string{"GEMINI_CLI_TRUST_WORKSPACE=true", "GEMINI_PROJECT_DIR=" + projectDir}
-	if g.apiKey != "" {
-		env = append(env, "GEMINI_API_KEY="+g.apiKey)
-	}
+	env = append(env, geminiAPIKeyEnv(g.apiKey)...)
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
@@ -841,13 +849,23 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 
 func geminiInteractiveAPIError(delta string) string {
 	cleaned := strings.TrimSpace(stripGeminiANSI(delta))
-	lower := strings.ToLower(cleaned)
-	if !strings.Contains(lower, "api error") && !strings.Contains(lower, "api_key_invalid") {
+	lines := strings.Split(cleaned, "\n")
+	start := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isGeminiTUILine(trimmed) || isGeminiStartupNoticeLine(trimmed) || isGeminiStartupContinuationLine(trimmed) {
+			continue
+		}
+		if isGeminiAPIErrorLine(trimmed) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
 		return ""
 	}
-	lines := strings.Split(cleaned, "\n")
 	out := make([]string, 0, 8)
-	for _, line := range lines {
+	for _, line := range lines[start:] {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || isGeminiTUILine(trimmed) {
 			continue
@@ -861,6 +879,21 @@ func geminiInteractiveAPIError(delta string) string {
 		return truncate(cleaned, 500)
 	}
 	return truncate(strings.Join(out, " "), 500)
+}
+
+func isGeminiAPIErrorLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "api_key_invalid") ||
+		strings.HasPrefix(lower, "api error") ||
+		strings.HasPrefix(lower, "api_error") ||
+		strings.HasPrefix(lower, "gemini api error") ||
+		strings.HasPrefix(lower, "error: api") ||
+		strings.HasPrefix(lower, "error api") ||
+		strings.Contains(lower, "[api error]") ||
+		strings.Contains(lower, " api error:")
 }
 
 func parseGeminiInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
@@ -1394,25 +1427,6 @@ func geminiCapturedAfterBaseline(captured, baseline string) string {
 	return captured
 }
 
-func listGeminiTmuxSessions(ctx context.Context) ([]string, error) {
-	out, err := runGeminiCommandOutput(ctx, nil, "tmux", "list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		if strings.Contains(err.Error(), "no server running") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	prefix := geminiInteractiveSessionPrefix()
-	var sessions []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			sessions = append(sessions, line)
-		}
-	}
-	return sessions, nil
-}
-
 func killGeminiTmuxSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
@@ -1499,24 +1513,13 @@ func geminiCommandString(args []string) string {
 			redacted[i] = "GEMINI_API_KEY=<redacted>"
 			continue
 		}
+		if strings.HasPrefix(arg, "GOOGLE_API_KEY=") {
+			redacted[i] = "GOOGLE_API_KEY=<redacted>"
+			continue
+		}
 		redacted[i] = arg
 	}
 	return strings.Join(redacted, " ")
-}
-
-func geminiShellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = geminiShellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func geminiShellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func geminiMustGetwd() string {

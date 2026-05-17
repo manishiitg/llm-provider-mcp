@@ -227,12 +227,29 @@ func TestAppendGeminiPolicyArgs(t *testing.T) {
 }
 
 func TestGeminiCommandStringRedactsAPIKey(t *testing.T) {
-	got := geminiCommandString([]string{"new-session", "-e", "GEMINI_API_KEY=secret-value", "gemini"})
+	got := geminiCommandString([]string{"new-session", "-e", "GEMINI_API_KEY=secret-value", "-e", "GOOGLE_API_KEY=google-secret", "gemini"})
 	if strings.Contains(got, "secret-value") {
 		t.Fatalf("command string leaked API key: %q", got)
 	}
+	if strings.Contains(got, "google-secret") {
+		t.Fatalf("command string leaked Google API key: %q", got)
+	}
 	if !strings.Contains(got, "GEMINI_API_KEY=<redacted>") {
 		t.Fatalf("command string = %q, want redacted API key marker", got)
+	}
+	if !strings.Contains(got, "GOOGLE_API_KEY=<redacted>") {
+		t.Fatalf("command string = %q, want redacted Google API key marker", got)
+	}
+}
+
+func TestGeminiAPIKeyEnvSetsBothCommonKeyNames(t *testing.T) {
+	got := geminiAPIKeyEnv(" test-key ")
+	want := []string{"GEMINI_API_KEY=test-key", "GOOGLE_API_KEY=test-key"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("geminiAPIKeyEnv() = %#v, want %#v", got, want)
+	}
+	if got := geminiAPIKeyEnv(" "); got != nil {
+		t.Fatalf("geminiAPIKeyEnv(blank) = %#v, want nil", got)
 	}
 }
 
@@ -315,6 +332,31 @@ I see 11 planned regression steps.
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("visible assistant text leaked %q in %q", forbidden, got)
 		}
+	}
+}
+
+func TestGeminiInteractiveAPIErrorIgnoresEchoedPromptText(t *testing.T) {
+	input := `
+ℹ Initializing... Prompts will be queued.
+Question ID: q-20260517T164842-0gkjlo
+Raw operator question: Re-run latency RCA and collect API error context from logs.
+Execution checklist:
+- Query APIs and output files.
+✦ I am checking the logs now.
+`
+	if got := geminiInteractiveAPIError(input); got != "" {
+		t.Fatalf("geminiInteractiveAPIError() = %q, want no error for echoed prompt text", got)
+	}
+}
+
+func TestGeminiInteractiveAPIErrorDetectsActualErrorLine(t *testing.T) {
+	input := `
+ℹ Initializing... Prompts will be queued.
+API Error: API_KEY_INVALID: API key not valid. Please pass a valid API key.
+`
+	got := geminiInteractiveAPIError(input)
+	if !strings.Contains(got, "API Error") || !strings.Contains(got, "API_KEY_INVALID") {
+		t.Fatalf("geminiInteractiveAPIError() = %q, want actual API error line", got)
 	}
 }
 

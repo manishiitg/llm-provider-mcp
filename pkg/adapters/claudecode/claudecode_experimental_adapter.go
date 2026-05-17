@@ -1965,17 +1965,6 @@ func claudeTmuxSessionExists(ctx context.Context, sessionName string) (bool, err
 	return true, nil
 }
 
-func listClaudeExperimentalTmuxSessions(ctx context.Context) ([]string, error) {
-	out, err := runCommandOutput(ctx, nil, "tmux", "list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		if isTmuxNoServerError(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return claudeExperimentalSessionsFromTmuxList(out, claudeExperimentalSessionPrefix()), nil
-}
-
 func claudeExperimentalSessionsFromTmuxList(out, prefix string) []string {
 	var sessions []string
 	for _, line := range strings.Split(out, "\n") {
@@ -2058,29 +2047,6 @@ func runCommandOutput(ctx context.Context, stdin io.Reader, name string, args ..
 		return out.String(), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(out.String()))
 	}
 	return out.String(), nil
-}
-
-func shellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = shellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-func mustGetwd() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	return wd
 }
 
 func randomHex(n int) string {
