@@ -302,6 +302,95 @@ Composer 2 Fast
 	}
 }
 
+func TestParseCursorInteractiveResponseFiltersGreetingAndSlashHints(t *testing.T) {
+	tests := []struct {
+		name     string
+		captured string
+		baseline string
+		prompt   string
+		want     string
+	}{
+		{
+			name: "real pane with greeting and response",
+			baseline: `  Cursor Agent
+  v2026.05.16-0338208
+  Try Composer via /models, frontier intelligence at a fraction of the cost.
+
+
+
+
+  → Plan, search, build anything
+
+
+  Composer 2 Fast
+  ~/ai-work/multi-llm-provider-go · main`,
+			captured: `  Cursor Agent
+  v2026.05.16-0338208
+  Try Composer via /models, frontier intelligence at a fraction of the cost.
+
+
+  hi whats up
+
+
+
+  Hey — not much on my side, just here and ready to help.
+
+  What are you working on?
+
+
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 5.5%
+  ~/ai-work/multi-llm-provider-go · main`,
+			prompt: "hi whats up",
+			want:   "Hey — not much on my side, just here and ready to help.\nWhat are you working on?",
+		},
+		{
+			name: "filters Use /plan and Use /skills greeting lines",
+			captured: `  Cursor Agent
+  v2026.05.16-0338208
+  Use /plan to iterate on an implementation plan before code changes.
+
+
+  hi whats up
+
+
+  Use /skills to give Cursor specialized knowledge for tasks.
+  Not much—here and ready to help. What would you like to work on?
+
+
+  → Add a follow-up
+
+
+  Composer 2 Fast · 14.5%
+  ~/ai-work/mcp-agent-builder-go · main`,
+			prompt: "hi whats up",
+			want:   "Not much—here and ready to help. What would you like to work on?",
+		},
+		{
+			name: "stops extraction at Add a follow-up boundary",
+			captured: `This is the real answer.
+Some extra detail.
+Add a follow-up
+Some junk after the prompt boundary`,
+			prompt: "question",
+			want:   "This is the real answer.\nSome extra detail.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCursorInteractiveResponse(tt.captured, tt.baseline, tt.prompt, nil)
+			if got != tt.want {
+				t.Fatalf("parsed response =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStripCursorHistoricalAssistantTextRemovesPaneReplay(t *testing.T) {
 	previous := "The first turn answer.\nIt has two lines."
 	text := previous + "\nThe second turn answer."

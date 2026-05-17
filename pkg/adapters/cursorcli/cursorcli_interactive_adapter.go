@@ -926,7 +926,8 @@ func isCursorTUILine(line string) bool {
 		strings.Contains(lower, "permission") ||
 		strings.Contains(lower, "pasted text") ||
 		strings.HasPrefix(lower, "use /") ||
-		strings.HasPrefix(lower, "add a follow-up")
+		strings.HasPrefix(lower, "add a follow-up") ||
+		strings.HasPrefix(lower, "auto-run")
 }
 
 func isCursorToolStatusLine(line string) bool {
