@@ -1,7 +1,7 @@
 # Coding Agent Transport Patterns
 
 This is the shared pattern set for terminal-native coding agents such as Claude
-Code, Codex CLI, Gemini CLI, and Kimi CLI.
+Code, Codex CLI, Cursor CLI, Gemini CLI, and Kimi CLI.
 
 ## 1. One Normal Transport
 
@@ -50,6 +50,8 @@ input must be pasted into the TUI.
 - Claude Code: system prompt file plus tmux paste for the user message.
 - Codex CLI: `developer_instructions` config override plus tmux paste for the
   user message.
+- Cursor CLI: temporary/restored `.cursor/rules/*.mdc` project rule plus tmux
+  paste for the user message.
 - Gemini CLI: `GEMINI_SYSTEM_MD` plus tmux paste for the user message.
 
 Never concatenate system text into the pasted user prompt. This prevents bugs
@@ -63,6 +65,8 @@ the runtime wants policy-controlled workflow tools.
 - Claude Code: pass `--mcp-config`, `--strict-mcp-config`, and disable internal
   tools unless explicitly allowed.
 - Codex CLI: pass MCP config overrides and disable `shell_tool` when required.
+- Cursor CLI: pass MCP bridge config through temporary/restored
+  `.cursor/mcp.json` and project permissions through `.cursor/cli.json`.
 - Gemini CLI: pass project settings/policies and deny built-in filesystem/shell
   tools when required.
 

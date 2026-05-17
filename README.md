@@ -159,6 +159,7 @@ All providers have **identical test coverage** using standardized tests, with sp
 | **Z.AI** | ✅ | ✅ | ✅ | ✅ (`glm-4.6v`) | ✅ | ❌ | ❌ |
 | **MiniMax** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | **Codex CLI** | ✅ | ✅ (native agent tools) | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Cursor CLI** | ✅ | ✅ (native agent tools) | ❌ | ❌ | ❌ | ✅ (tmux snapshots) | ✅ |
 | **Claude Code** | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 
 #### Image Generation

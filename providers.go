@@ -18,6 +18,7 @@ import (
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	deepgramadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/deepgram"
 	elevenlabsadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/elevenlabs"
 	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
@@ -54,12 +55,14 @@ const (
 	ProviderClaudeCode        Provider = "claude-code"
 	ProviderGeminiCLI         Provider = "gemini-cli"
 	ProviderCodexCLI          Provider = "codex-cli"
+	ProviderCursorCLI         Provider = "cursor-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
 	ProviderDeepgram          Provider = "deepgram"
 
-	DefaultCodexCLIModel = "high"
+	DefaultCodexCLIModel  = "high"
+	DefaultCursorCLIModel = "cursor-cli"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported normal value: "experimental" for tmux TUI mode.
@@ -87,6 +90,12 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 	return codexcli.CleanupCodexCLIInteractiveSessions(ctx)
 }
 
+// CleanupCursorCLIInteractiveSessions removes tmux sessions created by the
+// Cursor CLI interactive chat mode.
+func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
+	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
+}
+
 // CleanupGeminiCLIInteractiveSessions removes tmux sessions created by the
 // Gemini CLI interactive chat mode.
 func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
@@ -103,6 +112,12 @@ func SendClaudeCodeExperimentalInput(ctx context.Context, sessionID, message str
 // tmux session registered for the owning application session.
 func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return codexcli.SendCodexInteractiveInput(ctx, sessionID, message)
+}
+
+// SendCursorCLIInteractiveInput sends user input to a live Cursor CLI
+// interactive tmux session registered for the owning application session.
+func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
 }
 
 // SendGeminiCLIInteractiveInput sends user input to a live Gemini CLI
@@ -143,6 +158,7 @@ type ProviderAPIKeys struct {
 	Vertex            *string
 	GeminiCLI         *string
 	CodexCLI          *string
+	CursorCLI         *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
 	ElevenLabs        *string
@@ -182,6 +198,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.GeminiCLI = key
 	case ProviderCodexCLI:
 		k.CodexCLI = key
+	case ProviderCursorCLI:
+		k.CursorCLI = key
 	case ProviderMiniMax:
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
@@ -243,6 +261,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeGeminiCLI(config)
 	case ProviderCodexCLI:
 		llm, err = initializeCodexCLI(config)
+	case ProviderCursorCLI:
+		llm, err = initializeCursorCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:
@@ -2237,6 +2257,60 @@ func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeCursorCLI creates and configures a Cursor Agent CLI adapter instance.
+func initializeCursorCLI(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "cursor_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "cursor-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = DefaultCursorCLIModel
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Cursor CLI adapter - model_id: %s", modelID)
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.CursorCLI != nil {
+		apiKey = *config.APIKeys.CursorCLI
+		logger.Infof("Cursor CLI: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("CURSOR_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Cursor CLI: using API key from CURSOR_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Cursor CLI: no explicit API key — will use Cursor Agent CLI's own stored auth")
+	}
+
+	llm := cursorcli.NewCursorCLIAdapter(apiKey, modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "cursor_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "cursor-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Cursor CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // GetDefaultModel returns the default model for each provider from environment variables
 func GetDefaultModel(provider Provider) string {
 	switch provider {
@@ -2306,6 +2380,11 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return DefaultCodexCLIModel
+	case ProviderCursorCLI:
+		if primaryModel := os.Getenv("CURSOR_CLI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return DefaultCursorCLIModel
 	default:
 		return ""
 	}
@@ -2465,6 +2544,16 @@ func GetDefaultFallbackModels(provider Provider) []string {
 		}
 		// No fallback models if environment variable is not set
 		return []string{}
+	case ProviderCursorCLI:
+		fallbackModelsEnv := os.Getenv("CURSOR_CLI_FALLBACK_MODELS")
+		if fallbackModelsEnv == "" {
+			fallbackModelsEnv = os.Getenv("CURSORCLI_FALLBACK_MODELS")
+		}
+		models := parseFallbackModelsEnv(fallbackModelsEnv)
+		if len(models) > 0 {
+			return models
+		}
+		return []string{}
 	default:
 		return []string{}
 	}
@@ -2594,6 +2683,20 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("CODEXCLI_CROSS_FALLBACK_PROVIDER") // Legacy naming
 		}
 		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderCursorCLI:
+		crossFallbackEnv := os.Getenv("CURSOR_CLI_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("CURSORCLI_CROSS_FALLBACK_MODELS")
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("CURSOR_CLI_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("CURSORCLI_CROSS_FALLBACK_PROVIDER")
+		}
+		return prefixModelsWithProvider(models, crossProvider)
 	default:
 		return []string{}
 	}
@@ -2602,10 +2705,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -3385,6 +3488,45 @@ func WithCodexProjectDirID(dir string) llmtypes.CallOption {
 // WithCodexEnableFeatures enables one or more Codex CLI features (comma-separated).
 func WithCodexEnableFeatures(features string) llmtypes.CallOption {
 	return codexcli.WithEnableFeatures(features)
+}
+
+// WithCursorWorkingDir sets the Cursor Agent CLI workspace/cwd for tmux launch.
+func WithCursorWorkingDir(dir string) llmtypes.CallOption {
+	return cursorcli.WithWorkingDir(dir)
+}
+
+// WithCursorInteractiveSessionID links a Cursor Agent CLI tmux run to the
+// owning application session for live follow-up input.
+func WithCursorInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return cursorcli.WithInteractiveSessionID(sessionID)
+}
+
+// WithCursorPersistentInteractiveSession keeps the Cursor Agent CLI tmux
+// session alive across turns.
+func WithCursorPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return cursorcli.WithPersistentInteractiveSession(enabled)
+}
+
+// WithCursorMCPConfig writes a temporary/restored .cursor/mcp.json before
+// launching Cursor Agent CLI.
+func WithCursorMCPConfig(config string) llmtypes.CallOption {
+	return cursorcli.WithMCPConfig(config)
+}
+
+// WithCursorProjectConfig writes a temporary/restored .cursor/cli.json before
+// launching Cursor Agent CLI.
+func WithCursorProjectConfig(config string) llmtypes.CallOption {
+	return cursorcli.WithProjectConfig(config)
+}
+
+// WithCursorForce enables Cursor Agent CLI's --force flag.
+func WithCursorForce() llmtypes.CallOption {
+	return cursorcli.WithForce()
+}
+
+// WithCursorApproveMCPs enables Cursor Agent CLI's --approve-mcps flag.
+func WithCursorApproveMCPs() llmtypes.CallOption {
+	return cursorcli.WithApproveMCPs()
 }
 
 // LLM Configuration Management Functions

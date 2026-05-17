@@ -7,6 +7,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
@@ -54,6 +55,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Codex CLI
 	allModels = append(allModels, codexcli.GetAllCodexCLIModels()...)
+
+	// Cursor CLI
+	allModels = append(allModels, cursorcli.GetAllCursorCLIModels()...)
 
 	// OpenRouter - fetch dynamically from API (cached for 24 hours)
 	openRouterModels := openai.GetAllOpenRouterModels()

@@ -7,6 +7,7 @@ Covered providers:
 
 - `claude-code`
 - `codex-cli`
+- `cursor-cli`
 - `gemini-cli`
 - `kimi-cli`
 
@@ -54,6 +55,19 @@ Codex CLI:
 - Workflow and chat both use the tmux transport when an owner session id is
   available.
 
+Cursor CLI:
+
+- Interactive transport: `cursor-agent` TUI inside tmux.
+- The adapter must not use `cursor-agent -p`, `--print`, or
+  `--output-format stream-json` for the tmux path.
+- Default model selector: `cursor-cli`, which means "do not pass --model; let
+  Cursor use its configured/account default".
+- Bounded per-turn calls should still launch `cursor-agent` in tmux, paste one
+  turn, parse the final TUI output, and close the tmux session.
+- Persistent chat should keep the same tmux session alive when
+  `cursor_interactive_session_id` plus `cursor_persistent_interactive=true` are
+  provided.
+
 Gemini CLI:
 
 - Legacy structured transport: `gemini --output-format stream-json --prompt ...`.
@@ -79,6 +93,8 @@ Kimi CLI:
   and passing them through native `--image` flags. Image URLs are rejected
   because Codex CLI expects local files.
 - Codex CLI persistent tmux: rejects image input until live image attachment is
+  implemented for the TUI session.
+- Cursor CLI tmux: rejects image input until live image attachment is
   implemented for the TUI session.
 - Gemini CLI: rejects image input in the current adapter because the supported
   headless/tmux transport has no image attachment flag.
@@ -122,6 +138,18 @@ Provider-specific launch requirements:
   - pass MCP bridge servers through config overrides
   - disable `shell_tool` when bridge-only tool policy is required
   - use a no-prompt approval policy for MCP-controlled runs
+- Cursor CLI:
+  - launch `cursor-agent` in tmux from the caller-provided workspace directory
+  - pass model with `--model` only when the model selector is not `cursor-cli`
+    or `auto`
+  - pass system/developer instructions through a temporary/restored
+    `.cursor/rules/*.mdc` rule with `alwaysApply: true`
+  - pass MCP bridge servers through a temporary/restored `.cursor/mcp.json`
+  - pass project permissions through a temporary/restored `.cursor/cli.json`
+  - pass `--workspace <dir>` and keep process cwd aligned with the MCP bridge
+    shell cwd
+  - never concatenate system/developer instructions into the pasted user
+    message
 - Gemini CLI:
   - pass system instructions with `GEMINI_SYSTEM_MD`
   - pass MCP bridge and policy through scoped `.gemini/settings.json` and
@@ -244,6 +272,8 @@ Provider hints:
   gone.
 - Codex CLI: idle means the Codex input prompt/footer is ready and no active
   running status is visible.
+- Cursor CLI: idle means the Cursor Agent input prompt/footer is ready and no
+  active thinking/running/editing/tool status is visible.
 - Gemini CLI: idle means the TUI is ready for input, commonly including
   `Type your message`, with no active running state.
 
@@ -256,6 +286,8 @@ Final text extraction must use provider-native TUI structure when available:
 - Claude Code: prefer the latest assistant block beginning with `⏺`.
 - Codex CLI: prefer the assistant block framed by the long horizontal separator
   lines when present; otherwise fall back to the latest clean assistant segment.
+- Cursor CLI: prefer the latest clean assistant segment after removing Cursor
+  TUI chrome, tool/status lines, echoed user input, and old assistant replay.
 - Gemini CLI: prefer the latest marked assistant block beginning with `✦`, `→`,
   or `->`; otherwise fall back to filtered visible assistant text.
 
@@ -327,6 +359,8 @@ Native resume metadata:
 
 - Claude Code: `claude_code_session_id`, resumed with `--resume <uuid>`.
 - Codex CLI: `codex_thread_id`, resumed with `codex exec resume`.
+- Cursor CLI: `cursor_session_id` when available from Cursor-native session
+  state, resumed with `cursor-agent --resume <chatId>` from the same workspace.
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project dir.
 
@@ -437,6 +471,8 @@ and transport-change validation should run them alongside deterministic tests:
   `gpt-5.3-codex-spark`, unless explicitly testing another model.
 - Gemini CLI: use the low tier, currently `gemini-3.1-flash-lite`, for the
   default smoke unless explicitly testing another tier.
+- Cursor CLI: use the account/default selector (`cursor-cli`) for the default
+  smoke unless explicitly testing a model available in that Cursor account.
 - Kimi CLI: use `kimi-code` with no-tools mode for the default stream-json
   smoke unless explicitly testing another Kimi model.
 
@@ -515,6 +551,12 @@ Current Codex CLI real contract command:
 RUN_CODEX_CLI_REAL_E2E=1 RUN_CODEX_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealInteractive|TestCodexCLIInteractiveIntegrationSpark' -v -timeout 6m
 ```
 
+Current Cursor CLI real contract command:
+
+```sh
+RUN_CURSOR_CLI_REAL_E2E=1 RUN_CURSOR_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/cursorcli -run 'TestCursorCLIRealInteractive' -v -timeout 6m
+```
+
 Current legacy structured transport real contract commands:
 
 ```sh
@@ -545,6 +587,9 @@ Provider/model semantics:
 
 - `auto` is a real CLI model selector and must be passed through as `auto`.
   Do not silently rewrite `auto` to `low`, `flash-lite`, or another tier.
+- Cursor CLI is the exception: `cursor-cli` and `auto` are adapter sentinels
+  that omit `--model`, because Cursor Agent CLI does not expose a documented
+  `auto` model flag in the tmux path.
 - Low/medium/high tiers are explicit aliases only when the user or test command
   asks for them.
 - Search tests must assert a native tool-call path where the adapter exposes
@@ -561,9 +606,9 @@ CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_IMA
 RUN_CODEX_CLI_IMAGE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealImageInput' -v -timeout 4m
 ```
 
-Gemini CLI and Kimi Code CLI currently have negative image-input contract tests
-so unsupported image parts fail clearly instead of being removed from the
-prompt.
+Cursor CLI, Gemini CLI, and Kimi Code CLI currently have negative image-input
+contract tests so unsupported image parts fail clearly instead of being removed
+from the prompt.
 
 Builder/workspace read-image virtual-tool contract command:
 

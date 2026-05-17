@@ -126,6 +126,14 @@ func TestGetDefaultModelCodexCLIUsesGPT55(t *testing.T) {
 	}
 }
 
+func TestGetDefaultModelCursorCLIUsesSentinel(t *testing.T) {
+	t.Setenv("CURSOR_CLI_PRIMARY_MODEL", "")
+
+	if got := GetDefaultModel(ProviderCursorCLI); got != DefaultCursorCLIModel {
+		t.Fatalf("GetDefaultModel(ProviderCursorCLI) = %q, want %q", got, DefaultCursorCLIModel)
+	}
+}
+
 func TestGetDefaultFallbackModelsForModel_ZAITextModels(t *testing.T) {
 	tests := []struct {
 		name       string
