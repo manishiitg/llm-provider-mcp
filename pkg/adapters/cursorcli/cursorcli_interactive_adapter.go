@@ -1101,15 +1101,23 @@ func hasCursorReadyPrompt(captured string) bool {
 		return false
 	}
 	// Cursor leaves historical status lines in the pane after a tool run. Once the
-	// follow-up prompt is visible, stale "Running..." text should not keep the turn
-	// open forever.
-	if hasCursorActivity(captured) && !strings.Contains(cleaned, "add a follow-up") {
+	// input prompt (→) is visible, stale "Running..." text should not keep the turn
+	// open forever. Use the → arrow as the structural override rather than specific
+	// placeholder text that rotates across Cursor versions.
+	if hasCursorActivity(captured) && !strings.Contains(cleaned, "→") {
 		return false
 	}
 	return true
 }
 
 func hasCursorReadyMarker(cleaned string) bool {
+	// The → arrow is Cursor's structural input cursor — the most reliable
+	// signal that the prompt area is visible, regardless of placeholder text.
+	for _, line := range strings.Split(cleaned, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "→") {
+			return true
+		}
+	}
 	return strings.Contains(cleaned, "type your message") ||
 		strings.Contains(cleaned, "ask (shift+tab") ||
 		strings.Contains(cleaned, "plan, search, build anything") ||
@@ -1154,6 +1162,8 @@ func hasCursorActivity(captured string) bool {
 		}
 		if strings.Contains(lower, "esc to interrupt") ||
 			strings.Contains(lower, "ctrl+c to cancel") ||
+			strings.Contains(lower, "ctrl+c to stop") ||
+			strings.Contains(lower, "composing") ||
 			strings.HasPrefix(lower, "thinking") ||
 			strings.HasPrefix(lower, "working") ||
 			strings.HasPrefix(lower, "running") ||
