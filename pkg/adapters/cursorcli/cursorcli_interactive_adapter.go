@@ -892,7 +892,11 @@ func normalizeCursorPaneLine(line string) string {
 func isCursorPromptBoundaryLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
-	return trimmed == ">" ||
+	// The → arrow is Cursor's input cursor — the most reliable structural
+	// boundary. In the delta (after baseline stripping), it only appears at
+	// the bottom after the response completes.
+	return strings.HasPrefix(trimmed, "→") ||
+		trimmed == ">" ||
 		trimmed == "›" ||
 		trimmed == "❯" ||
 		strings.Contains(lower, "ask (shift+tab") ||
