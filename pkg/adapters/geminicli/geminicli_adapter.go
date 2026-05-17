@@ -249,15 +249,18 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
-	// Use -p/--prompt flag for non-interactive (headless) mode.
-	// Passing the prompt as a positional arg defaults to interactive mode.
-	if promptText != "" {
-		args = append(args, "--prompt", promptText)
-	}
+	// Use stdin for the prompt to avoid "argument list too long" errors (ARG_MAX)
+	// when the conversation transcript is large. --prompt flag stays empty to
+	// trigger headless mode; the actual text is fed via stdin (Gemini CLI appends
+	// stdin to --prompt per its docs).
+	args = append(args, "--prompt", "")
 
 	// 3. Execute Command
-	g.logger.Infof("Executing Gemini CLI: gemini %v", args)
+	g.logger.Infof("Executing Gemini CLI: gemini %v (prompt via stdin, len=%d)", args, len(promptText))
 	cmd := exec.CommandContext(ctx, "gemini", args...)
+	if promptText != "" {
+		cmd.Stdin = strings.NewReader(promptText)
+	}
 
 	// Build environment: inherit current env + add custom vars
 	env := os.Environ()
@@ -719,11 +722,19 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	}
 
 	if finalResponse == nil {
-		g.logger.Infof("[LIFECYCLE] No finalResponse and no cmdErr, closing StreamChan and returning error")
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
+		// Gemini exited without a "result" event (e.g. hit turn/context limit).
+		// If we accumulated content from streaming events, return that rather than
+		// failing entirely — the user gets partial output instead of an error.
+		if accumulated := accumulatedText.String(); accumulated != "" {
+			g.logger.Infof("[LIFECYCLE] No result event but have %d chars of accumulated text, returning as partial response", len(accumulated))
+			finalResponse = g.mapResultToContentResponse(map[string]interface{}{}, sessionID, resolvedModel, accumulated, "")
+		} else {
+			g.logger.Infof("[LIFECYCLE] No finalResponse and no accumulated text, closing StreamChan and returning error")
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("failed to receive final result from gemini cli")
 		}
-		return nil, fmt.Errorf("failed to receive final result from gemini cli")
 	}
 	g.logger.Infof("[LIFECYCLE] GenerateContent returning successfully")
 
