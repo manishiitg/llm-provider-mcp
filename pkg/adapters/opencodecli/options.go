@@ -3,17 +3,17 @@ package opencodecli
 import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 const (
-	MetadataKeyOpenCodeModel               = "opencode_model"
-	MetadataKeyResumeSessionID             = "opencode_resume_session_id"
-	MetadataKeyAgent                       = "opencode_agent"
-	MetadataKeyWorkingDir                  = "opencode_working_dir"
-	MetadataKeyProjectConfig               = "opencode_project_config"
-	MetadataKeyMCPConfig                   = "opencode_mcp_config"
-	MetadataKeyAutoApproveWebSearch        = "opencode_auto_approve_web_search"
-	MetadataKeyInteractiveSessionID        = "opencode_interactive_session_id"
-	MetadataKeyPersistentInteractive       = "opencode_persistent_interactive"
-	MetadataKeyContinueLastSession         = "opencode_continue_last_session"
-	MetadataKeyDangerouslySkipPermissions  = "opencode_dangerously_skip_permissions"
+	MetadataKeyOpenCodeModel              = "opencode_model"
+	MetadataKeyResumeSessionID            = "opencode_resume_session_id"
+	MetadataKeyAgent                      = "opencode_agent"
+	MetadataKeyWorkingDir                 = "opencode_working_dir"
+	MetadataKeyProjectConfig              = "opencode_project_config"
+	MetadataKeyMCPConfig                  = "opencode_mcp_config"
+	MetadataKeyAutoApproveWebSearch       = "opencode_auto_approve_web_search"
+	MetadataKeyInteractiveSessionID       = "opencode_interactive_session_id"
+	MetadataKeyPersistentInteractive      = "opencode_persistent_interactive"
+	MetadataKeyContinueLastSession        = "opencode_continue_last_session"
+	MetadataKeyDangerouslySkipPermissions = "opencode_dangerously_skip_permissions"
 )
 
 // WithOpenCodeModel sets the OpenCode CLI --model flag. Use "opencode-cli" or
@@ -25,7 +25,7 @@ func WithOpenCodeModel(model string) llmtypes.CallOption {
 	}
 }
 
-// WithResumeSessionID resumes a native OpenCode chat with --resume <sessionID>.
+// WithResumeSessionID resumes a native OpenCode chat with --session <sessionID>.
 func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -41,7 +41,7 @@ func WithAgent(agent string) llmtypes.CallOption {
 	}
 }
 
-// WithWorkingDir sets the OpenCode workspace/cwd for tmux launch.
+// WithWorkingDir sets the OpenCode workspace/cwd.
 func WithWorkingDir(dir string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -67,8 +67,8 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	}
 }
 
-// WithAutoApproveWebSearch allows the OpenCode TUI's web-search approval prompt
-// for a call that is already scoped to SearchWeb. It does not enable --force.
+// WithAutoApproveWebSearch allows OpenCode's web-search approval for a call
+// that is already scoped to SearchWeb. It does not enable --force.
 func WithAutoApproveWebSearch() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -76,8 +76,8 @@ func WithAutoApproveWebSearch() llmtypes.CallOption {
 	}
 }
 
-// WithInteractiveSessionID links a OpenCode tmux run to the owning
-// application session so follow-up input can be sent directly to tmux.
+// WithInteractiveSessionID is retained for API compatibility. OpenCode CLI uses
+// structured JSON invocations; use WithResumeSessionID for continuation.
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -85,8 +85,8 @@ func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
-// WithPersistentInteractiveSession keeps the tmux-backed OpenCode alive
-// across completed chat turns.
+// WithPersistentInteractiveSession is retained for API compatibility. OpenCode
+// CLI uses structured JSON invocations instead of live tmux sessions.
 func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

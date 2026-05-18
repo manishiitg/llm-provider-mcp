@@ -379,7 +379,7 @@ func TestOpenCodeCLIStructuredNoInjectedStrings(t *testing.T) {
 
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
-	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", dir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 }

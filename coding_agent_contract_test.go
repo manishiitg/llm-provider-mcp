@@ -14,7 +14,8 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
 		{name: "gemini cli", provider: ProviderGeminiCLI, wantTmux: true, wantFound: true},
-		{name: "kimi code cli", provider: ProviderKimi, modelID: "kimi-code", wantFound: true},
+		{name: "opencode cli", provider: ProviderOpenCodeCLI, wantFound: true},
+		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
 		{name: "openai", provider: ProviderOpenAI},
 	}

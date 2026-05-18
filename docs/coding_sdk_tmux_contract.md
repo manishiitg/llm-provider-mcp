@@ -9,7 +9,6 @@ Covered providers:
 - `codex-cli`
 - `cursor-cli`
 - `gemini-cli`
-- `opencode-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -125,11 +124,20 @@ Every tmux adapter must classify the provider pane into a small state machine:
 Completion detection must require all of:
 
 - ready prompt visible
-- no running/thinking/tool-call indicator
+- no running/thinking/tool-call indicator anywhere in the current captured turn,
+  even if the input prompt/footer is also visible at the bottom of the pane
 - no queued input
 - no unresolved modal, trust prompt, auth prompt, or rate-limit prompt
 - pane stable for the provider's configured stability window
 - owned tmux session still exists
+
+Important regression case: a provider may render a prompt-looking input footer
+while a long tool call is still active above it, or while queued follow-up text
+is waiting for the next tool boundary. The adapter must classify that state as
+`working` or `queued_input`, never `ready` or `completed`. Tests must include a
+long captured pane where an active line such as `Working (... esc to interrupt)`,
+`Calling ...`, `esc to cancel`, or provider equivalent appears above long tool
+output and the ready prompt appears near the bottom.
 
 String matching is expected because these providers expose TUIs, not stable
 structured APIs. The requirement is to keep the matching state-based, narrow,
@@ -267,8 +275,9 @@ OpenCode CLI:
 - Default structured transport: `opencode run --format json --dangerously-skip-permissions`.
   Emits NDJSON events (`step_start`, `text`, `tool_use`, `step_finish`) with
   token usage and cost.
-- Legacy tmux transport: `opencode <project>` TUI inside tmux. Available as
-  fallback when persistent interactive session ID is set.
+- OpenCode is not part of the tmux coding-agent contract. Treat OpenCode as a
+  structured JSON coding provider unless a future change explicitly restores a
+  tmux contract and its full E2E certification.
 - Default model selector: `opencode-cli`, which means "do not pass --model; let
   OpenCode use its configured/account default".
 - Model overrides are passed as OpenCode provider/model selectors through
@@ -292,9 +301,8 @@ OpenCode CLI:
   implemented for the TUI session.
 - Gemini CLI: rejects image input in the current adapter because the supported
   headless/tmux transport has no image attachment flag.
-- OpenCode CLI tmux: rejects `llmtypes.ImageContent` until live image
-  attachment is implemented for the TUI session. Workspace image tools may still
-  pass local file paths in a text prompt.
+- OpenCode CLI structured: rejects `llmtypes.ImageContent` directly; workspace
+  image tools may still pass local file paths in a text prompt.
 
 ## Launch Contract
 
@@ -356,17 +364,6 @@ Provider-specific launch requirements:
     turns; Gemini receives a bounded prior-turn transcript with the current
     message so the final answer remains correct even when native TUI context is
     not sufficient
-- OpenCode CLI:
-  - launch `opencode <workspace>` in tmux from the caller-provided workspace
-    directory
-  - pass model with `--model` only when the model selector is not
-    `opencode-cli` or `auto`
-  - pass system/developer instructions through a temporary/restored
-    `AGENTS.md`
-  - pass MCP bridge servers through temporary/restored `opencode.jsonc` config
-    when an MCP config is provided
-  - never use `opencode run --format json` for normal chat/workflow execution
-
 ## Input Contract
 
 User input must be pasted into the TUI. It must not be typed key-by-key.
@@ -376,8 +373,25 @@ Required tmux sequence:
 ```text
 tmux load-buffer <payload>
 tmux paste-buffer -p -r
-tmux send-keys C-m
+tmux send-keys <provider-submit-key>
 ```
+
+`<provider-submit-key>` is provider/version specific. For example, Claude Code
+and Codex commonly accept `C-m`; Gemini CLI 0.42 requires tmux's `Enter` key
+name because `C-m` can leave a multiline draft unsubmitted.
+
+The adapter must wait for the TUI to visibly receive the pasted draft before
+sending the submit key. Large prompts may collapse to provider-specific draft
+markers such as `[Pasted Text: 61 lines]`; these markers are still unsubmitted
+input, not idle/ready state.
+
+Submit retries must be state-based, not blind:
+
+- retry only while the draft is still visible and no active generation/tool
+  state is visible
+- cap retry attempts and return a clear error with the latest pane if the draft
+  remains unsubmitted
+- never let an unsubmitted draft run until the full model-call timeout
 
 The paste path must preserve:
 
@@ -444,10 +458,10 @@ The adapter's hard contract is:
   failing; then unregister the owned session so later live input/resume attempts
   do not target stale tmux state
 
-Cursor, OpenCode, or any future tmux-backed provider must set
-`HandlesTmuxSessionLoss=true` in `coding_agent_contract.go` and add an
-adapter-level test that simulates the tmux server/pane disappearing during a
-turn. A contract flag without that adapter test is not enough for review.
+Cursor or any future tmux-backed provider must set `HandlesTmuxSessionLoss=true`
+in `coding_agent_contract.go` and add an adapter-level test that simulates the
+tmux server/pane disappearing during a turn. A contract flag without that
+adapter test is not enough for review.
 
 The UI may show the raw terminal snapshot for progress/debugging; adapters must
 avoid over-parsing terminal progress into assistant content.
@@ -505,7 +519,8 @@ The detector should combine:
 
 - ready prompt visible
 - no interrupt footer
-- no active thinking/tool/calling progress line
+- no active thinking/tool/calling progress line in the current captured turn,
+  including lines above long tool output or above the visible input footer
 - pane content stable for a short window
 - provider-specific idle phrase if available
 
@@ -519,9 +534,6 @@ Provider hints:
   active thinking/running/editing/tool status is visible.
 - Gemini CLI: idle means the TUI is ready for input, commonly including
   `Type your message`, with no active running state.
-- OpenCode CLI: idle means the OpenCode input/footer is ready, commonly
-  including `Ask anything` or `ctrl+p commands`, with no active
-  thinking/running/tool status visible.
 
 Never inject a final-answer marker into the prompt just to detect completion.
 
@@ -536,9 +548,6 @@ Final text extraction must use provider-native TUI structure when available:
   TUI chrome, tool/status lines, echoed user input, and old assistant replay.
 - Gemini CLI: prefer the latest marked assistant block beginning with `✦`, `→`,
   or `->`; otherwise fall back to filtered visible assistant text.
-- OpenCode CLI: prefer the assistant block after the TUI `Thought for ...`
-  marker and before the model/status footer; otherwise fall back to filtered
-  visible assistant text.
 
 The extracted final text must not include tool panels, shell output, footer
 chrome, ready prompts, old assistant replay, or echoed user input.
@@ -612,8 +621,8 @@ Native resume metadata:
   state, resumed with `cursor-agent --resume <chatId>` from the same workspace.
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project dir.
-- OpenCode CLI: `opencode_session_id` when available, resumed with
-  `opencode --session <session_id>` from the same workspace.
+- OpenCode CLI structured: `opencode_session_id` when available, resumed with
+  `opencode run --session <session_id>` from the same workspace.
 
 On native resume, prefer sending only the latest user message when the provider
 session/thread is proven to retain context. If a provider does not reliably
@@ -657,14 +666,15 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Working directory | Provider cwd and MCP bridge shell cwd are the exact caller workspace for chat, workflow chat, workflow steps, sub-agents, and background agents. |
 | Trust/auth prompts | Fresh untrusted workspace trust prompt is handled or surfaced deterministically; auth and rate-limit states are not parsed as final answers. |
 | Native system prompt | System/developer instruction reaches the provider through native mechanism and is not pasted as user text. |
-| Prompt paste | Large multiline user input preserves blank lines, JSON, shell-looking text, markdown, quotes, and Unicode. |
+| Prompt paste | Large multiline user input preserves blank lines, JSON, shell-looking text, markdown, quotes, and Unicode. Large collapsed paste markers such as `[Pasted Text: N lines]` must submit successfully. |
 | Bridge tool call | Real MCP bridge tool is callable from the provider TUI. |
 | Bridge-only policy | Provider-native shell/filesystem/browser tools are disabled or denied when bridge-only mode is active. |
 | Slow tool plus live input | While a real MCP tool call is still running, send a follow-up/pre-validation message; the adapter must not complete from queued text. |
-| Done detection | Completion requires idle prompt, no activity, no queued input, no modal, and a stable pane. |
+| Slow tool false-idle guard | While a real slow MCP tool is still running, captured pane classification remains active even if a prompt-looking input/footer is visible. `GenerateContent` must not return until the tool has finished and the provider is genuinely idle. |
+| Done detection | Completion requires idle prompt, no activity anywhere in the current captured turn, no queued input, no modal, and a stable pane. |
 | Final extraction | Final text excludes TUI chrome, tool progress, raw tool payloads, queued user text, validation feedback, and stale scrollback. |
 | Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
-| Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run. |
+| Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
 | Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |
 | Cleanup | Idle timeout, explicit close, failed launch, lost tmux pane/server, and server shutdown unregister and kill owned sessions. |
@@ -674,18 +684,20 @@ Minimum release gate for any new tmux provider:
 1. Real fresh-launch/ready test.
 2. Real native system prompt test.
 3. Real working-directory test.
-4. Real MCP bridge call test.
-5. Real bridge-only/no-internal-tools test.
-6. Real same-session multi-turn canary test.
-7. Real slow-MCP plus live follow-up test.
-8. Real cancellation/interrupt test.
-9. Real final-extraction hygiene test.
-10. Real cleanup/session-loss test.
+4. Real large-paste submit test.
+5. Real MCP bridge call test.
+6. Real bridge-only/no-internal-tools test.
+7. Real same-session multi-turn canary test.
+8. Real slow-MCP plus live follow-up test.
+9. Real slow-MCP false-idle guard test that asserts the provider call stays
+   open while the pane is active.
+10. Real cancellation/interrupt test.
+11. Real final-extraction hygiene test.
+12. Real cleanup/session-loss test.
 
-Cursor, OpenCode, or any future provider must not be marked as a complete tmux
-coding agent in `coding_agent_contract.go` until the provider has these real
-E2E tests or an explicit documented exception for a capability it does not
-claim.
+Cursor or any future provider must not be marked as a complete tmux coding
+agent in `coding_agent_contract.go` until the provider has these real E2E tests
+or an explicit documented exception for a capability it does not claim.
 
 ### P1/P2 Hardening E2E Matrix
 
@@ -887,6 +899,66 @@ structured event path. Fixes for tmux parsing must not leave
 `stream-json`/`--json` mode leaking policy warnings, tool payloads, or duplicated
 assistant text.
 
+### Current Real Tmux E2E Inventory
+
+Claude Code tmux:
+
+- `TestClaudeCodeExperimentalIntegrationNoInternalTools`
+- `TestClaudeCodeExperimentalIntegrationNativeSystemPrompt`
+- `TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText`
+- `TestClaudeCodeExperimentalIntegrationLargePastedPromptSubmits`
+- `TestClaudeCodeExperimentalIntegrationNativeResume`
+- `TestClaudeCodeExperimentalIntegrationHaikuExtendedResumeIsolation`
+- `TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape`
+- `TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn`
+
+Gemini CLI tmux:
+
+- `TestGeminiCLIRealInteractiveTmuxFullContract`
+- `TestGeminiCLIRealInteractiveLargePastedPromptSubmits`
+- `TestGeminiCLIRealInteractiveMCPBridgeContract`
+- `TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool`
+- `TestGeminiCLIRealInteractiveLiveInputContract`
+
+Codex CLI tmux:
+
+- `TestCodexCLIRealInteractiveTmuxFullContract`
+- `TestCodexCLIRealInteractiveMCPBridgeContract`
+- `TestCodexCLIRealInteractiveWorkspaceTrustPromptContract`
+- `TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool`
+- `TestCodexCLIRealInteractiveLiveInputAndEscapeContract`
+
+Cursor CLI tmux:
+
+- `TestCursorCLIRealInteractiveTmuxFullContract`
+- `TestCursorCLIRealInteractiveLiveInputAndEscapeContract`
+
+Kimi:
+
+- No tmux coding-agent contract. `kimi-code` is intentionally removed; use
+  OpenCode CLI for Kimi Code-style coding-agent workflows.
+
+OpenCode CLI structured JSON:
+
+- `TestOpenCodeCLIStructuredBasicRun`
+- `TestOpenCodeCLIStructuredTokenUsage`
+- `TestOpenCodeCLIStructuredSystemPrompt`
+- `TestOpenCodeCLIStructuredStreaming`
+- `TestOpenCodeCLIStructuredToolUseProducesToolChunks`
+- `TestOpenCodeCLIStructuredSessionIDInMetadata`
+- `TestOpenCodeCLIStructuredMultiTurnResume`
+- `TestOpenCodeCLIStructuredNoInternalMemory`
+- `TestOpenCodeCLIStructuredNoInjectedStrings`
+
+Known certification gaps:
+
+- Codex CLI should get a dedicated `LargePastedPromptSubmits` test, even though
+  its full contract already covers multiline paste and same-session context.
+- Cursor CLI needs the same slow-MCP/live-input/false-idle and large-paste
+  submit tests before it is considered fully certified.
+- OpenCode CLI is structured JSON only now; validate it with the structured E2E
+  tests above, not the tmux release gate.
+
 Current Gemini CLI real contract command:
 
 ```sh
@@ -899,10 +971,24 @@ Current Codex CLI real contract command:
 RUN_CODEX_CLI_REAL_E2E=1 RUN_CODEX_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealInteractive|TestCodexCLIInteractiveIntegrationSpark' -v -timeout 6m
 ```
 
+Current Claude Code tmux real contract commands:
+
+```sh
+RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegration(LargePastedPromptSubmits|NoInternalTools|NativeSystemPrompt|FreshPromptCarriesUserText|NativeResume)' -v -timeout 6m
+RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape' -v -timeout 6m
+RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn' -v -timeout 6m
+```
+
 Current Cursor CLI real contract command:
 
 ```sh
 RUN_CURSOR_CLI_REAL_E2E=1 RUN_CURSOR_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/cursorcli -run 'TestCursorCLIRealInteractive' -v -timeout 6m
+```
+
+Current OpenCode CLI structured real contract command:
+
+```sh
+RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli -run 'TestOpenCodeCLIStructured' -v -timeout 6m
 ```
 
 Current legacy structured transport real contract commands:

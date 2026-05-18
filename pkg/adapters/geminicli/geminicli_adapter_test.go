@@ -564,6 +564,33 @@ func TestGeminiReadyPromptAcceptsV042StarPrompt(t *testing.T) {
 	}
 }
 
+func TestGeminiActiveStatusAbovePromptKeepsSessionActive(t *testing.T) {
+	var filler strings.Builder
+	for i := 0; i < 48; i++ {
+		fmt.Fprintf(&filler, "tool output line %02d\n", i)
+	}
+	pane := `
+✦ Running shell command via api-bridge
+
+esc to interrupt
+` + filler.String() + `
+                                                                ? for shortcuts
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits                                                |⌐■_■|
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ >   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)                            sandbox               /model
+ /tmp/project                                      no sandbox   Auto (Gemini 3)
+`
+	if !hasGeminiReadyPrompt(pane) {
+		t.Fatalf("ready prompt not detected")
+	}
+	if !hasGeminiActivity(pane) {
+		t.Fatalf("active status above long output should keep Gemini session active")
+	}
+}
+
 func TestGeminiDetectsUnsubmittedV042Draft(t *testing.T) {
 	pane := `
 ────────────────────────────────────────────────────────────────────────────────
@@ -576,6 +603,22 @@ func TestGeminiDetectsUnsubmittedV042Draft(t *testing.T) {
 `
 	if !hasGeminiUnsubmittedDraft(pane) {
 		t.Fatalf("v0.42 draft prompt was not detected")
+	}
+	largePastePane := `
+▝▜▄ Gemini CLI v0.42.0
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits                                                |⌐■_■|
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > [Pasted Text: 61 lines]
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)                      sandbox                     /model
+ /tmp/project                                no sandbox          Auto (Gemini 3)
+`
+	if !hasGeminiUnsubmittedDraft(largePastePane) {
+		t.Fatalf("large pasted draft prompt was not detected")
+	}
+	if hasGeminiReadyPrompt(largePastePane) {
+		t.Fatalf("large pasted draft prompt should not be treated as ready")
 	}
 	readyPane := `
 ────────────────────────────────────────────────────────────────────────────────

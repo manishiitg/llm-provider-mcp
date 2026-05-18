@@ -236,8 +236,8 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 				StopReason: stopReason,
 				GenerationInfo: &llmtypes.GenerationInfo{
 					Additional: map[string]interface{}{
-						"provider":           "opencode-cli",
-						"opencode_mode":      "structured",
+						"provider":            "opencode-cli",
+						"opencode_mode":       "structured",
 						"opencode_session_id": sessionID,
 					},
 				},
@@ -253,16 +253,4 @@ func buildOpenCodeEnv(apiKey string) []string {
 		env = append(env, "OPENCODE_API_KEY="+strings.TrimSpace(apiKey))
 	}
 	return env
-}
-
-func killOpenCodeProcessGroup(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	} else {
-		_ = cmd.Process.Kill()
-	}
 }

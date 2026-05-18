@@ -111,6 +111,54 @@ noted %s`, token, token, token)
 	}
 }
 
+func TestGeminiCLIRealInteractiveLargePastedPromptSubmits(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-large-paste-" + geminiRandomHex(4)
+	token := "LARGE_PASTE_OK_" + geminiRandomHex(4)
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this large-paste transport test."
+`)
+
+	var prompt strings.Builder
+	prompt.WriteString("This is a Gemini CLI large-paste transport test.\n")
+	prompt.WriteString("Read the full pasted prompt and do not use tools.\n\n")
+	for i := 0; i < 72; i++ {
+		fmt.Fprintf(&prompt, "line %02d: preserve pasted multiline input before submitting.\n", i+1)
+	}
+	fmt.Fprintf(&prompt, "\nReply exactly with this token and nothing else:\n%s", token)
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply exactly as instructed."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt.String()}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent large pasted prompt error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("content = %q, want token %s", content, token)
+	}
+	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
+}
+
 func TestGeminiCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
@@ -219,6 +267,28 @@ deny_message = "Use only the api-bridge slow_contract MCP tool for this contract
 	waitForGeminiRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
 	waitForGeminiRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
 
+	activeSession, ok := activeGeminiInteractiveSession(ownerSessionID)
+	if !ok || activeSession == "" {
+		cancel()
+		t.Fatalf("expected active Gemini tmux session for %s", ownerSessionID)
+	}
+	activePane := waitForGeminiRealPaneCondition(t, activeSession, "active slow MCP tool", 15*time.Second, resultCh, func(pane string) bool {
+		return hasGeminiActivity(pane)
+	})
+	if hasGeminiReadyPrompt(activePane) && !hasGeminiActivity(activePane) {
+		cancel()
+		t.Fatalf("Gemini pane looked idle-ready while slow MCP tool was still active:\n%s", activePane)
+	}
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while slow MCP tool was active: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while slow MCP tool was active; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
 	validationPrompt := `## Pre-validation failed (retry attempt 3)
 
 ❌ PRE-VALIDATION FAILED
@@ -241,6 +311,10 @@ Missing required output file. Fix the specific issue above and re-produce the re
 	if !strings.Contains(pendingLiveInput, "Pre-validation failed") {
 		cancel()
 		t.Fatalf("validation input was not queued in adapter; pending=%q", pendingLiveInput)
+	}
+	if pane, err := captureGeminiPane(context.Background(), activeSession); err == nil && hasGeminiReadyPrompt(pane) && !hasGeminiActivity(pane) {
+		cancel()
+		t.Fatalf("Gemini queued validation pane looked idle-ready:\n%s", pane)
 	}
 
 	select {
@@ -402,6 +476,26 @@ func waitForGeminiRealFile(t *testing.T, path, label string, timeout time.Durati
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s at %s", label, path)
+}
+
+func waitForGeminiRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan geminiRealResult, matches func(string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before tmux pane matched %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		pane, err := captureGeminiPane(context.Background(), tmuxSession)
+		if err == nil && matches(pane) {
+			return pane
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	pane, _ := captureGeminiPane(context.Background(), tmuxSession)
+	t.Fatalf("timed out waiting for Gemini tmux pane to match %s; latest pane:\n%s", label, pane)
+	return ""
 }
 
 type geminiRealResult struct {

@@ -100,8 +100,9 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
 }
 
-// CleanupOpenCodeCLIInteractiveSessions removes tmux sessions created by the
-// OpenCode CLI interactive chat mode.
+// CleanupOpenCodeCLIInteractiveSessions is retained for callers that still
+// perform provider-wide cleanup; OpenCode CLI currently uses structured JSON and
+// has no live tmux sessions to clean up.
 func CleanupOpenCodeCLIInteractiveSessions(ctx context.Context) error {
 	return opencodecli.CleanupOpenCodeCLIInteractiveSessions(ctx)
 }
@@ -130,8 +131,8 @@ func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
 }
 
-// SendOpenCodeCLIInteractiveInput sends user input to a live OpenCode CLI
-// interactive tmux session registered for the owning application session.
+// SendOpenCodeCLIInteractiveInput is unsupported while OpenCode CLI uses the
+// structured JSON transport.
 func SendOpenCodeCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return opencodecli.SendOpenCodeInteractiveInput(ctx, sessionID, message)
 }
@@ -3619,19 +3620,20 @@ func WithCursorSandbox(mode string) llmtypes.CallOption {
 	return cursorcli.WithSandbox(mode)
 }
 
-// WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd for tmux launch.
+// WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd.
 func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
 	return opencodecli.WithWorkingDir(dir)
 }
 
-// WithOpenCodeInteractiveSessionID links an OpenCode CLI tmux run to the
-// owning application session for live follow-up input.
+// WithOpenCodeInteractiveSessionID is retained for API compatibility. OpenCode
+// CLI currently uses structured JSON; use resume session metadata for
+// multi-turn continuation.
 func WithOpenCodeInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	return opencodecli.WithInteractiveSessionID(sessionID)
 }
 
-// WithOpenCodePersistentInteractiveSession keeps the OpenCode CLI tmux session
-// alive across turns.
+// WithOpenCodePersistentInteractiveSession is retained for API compatibility.
+// OpenCode CLI currently uses structured JSON invocations instead of live tmux.
 func WithOpenCodePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return opencodecli.WithPersistentInteractiveSession(enabled)
 }

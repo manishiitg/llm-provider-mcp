@@ -120,6 +120,47 @@ func TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText(t *testing.
 	assertClaudeExperimentalHaikuMetadata(t, resp)
 }
 
+func TestClaudeCodeExperimentalIntegrationLargePastedPromptSubmits(t *testing.T) {
+	skipClaudeExperimentalIntegration(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	token := "CLAUDE_LARGE_PASTE_OK_" + randomHex(4)
+	var prompt strings.Builder
+	prompt.WriteString("This is a Claude Code tmux large-paste transport test.\n")
+	prompt.WriteString("Read the full pasted prompt. Do not use tools.\n\n")
+	for i := 0; i < 72; i++ {
+		fmt.Fprintf(&prompt, "line %02d: preserve pasted multiline input before submitting.\n", i+1)
+	}
+	fmt.Fprintf(&prompt, "\nReply exactly with this token and nothing else:\n%s", token)
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Do not use tools. Reply exactly as instructed."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: prompt.String()},
+			},
+		},
+	}, WithEffort("low"))
+	if err != nil {
+		t.Fatalf("GenerateContent large pasted prompt error = %v", err)
+	}
+	got := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(got, token) {
+		t.Fatalf("content = %q, want token %s", got, token)
+	}
+	assertClaudeExperimentalHaikuMetadata(t, resp)
+}
+
 func TestClaudeCodeExperimentalIntegrationNativeResume(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 

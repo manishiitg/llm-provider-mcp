@@ -229,6 +229,23 @@ func TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool(t *
 	tmuxSession := waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
 	waitForCodexRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
 
+	activePane := waitForCodexRealPaneCondition(t, tmuxSession, "active slow MCP tool", 15*time.Second, resultCh, func(pane string) bool {
+		return hasCodexActivity(pane)
+	})
+	if hasCodexReadyPrompt(activePane) {
+		cancel()
+		t.Fatalf("Codex pane looked ready while slow MCP tool was still active:\n%s", activePane)
+	}
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while slow MCP tool was active: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while slow MCP tool was active; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
 	validationPrompt := `## Pre-validation failed (retry attempt 3)
 
 ❌ PRE-VALIDATION FAILED
@@ -242,9 +259,17 @@ Missing required output file. Fix the specific issue above and re-produce the re
 	}
 	sendCancel()
 
-	waitForCodexRealPaneCondition(t, tmuxSession, "queued validation input", 15*time.Second, resultCh, func(pane string) bool {
+	queuedPane := waitForCodexRealPaneCondition(t, tmuxSession, "queued validation input", 15*time.Second, resultCh, func(pane string) bool {
 		return hasCodexQueuedInput(pane) || strings.Contains(pane, "Pre-validation failed")
 	})
+	if !hasCodexActivity(queuedPane) {
+		cancel()
+		t.Fatalf("Codex queued validation pane was not considered active:\n%s", queuedPane)
+	}
+	if hasCodexReadyPrompt(queuedPane) {
+		cancel()
+		t.Fatalf("Codex queued validation pane looked ready/completed:\n%s", queuedPane)
+	}
 
 	select {
 	case got := <-resultCh:
@@ -360,7 +385,7 @@ func waitForCodexRealActiveSession(t *testing.T, ownerSessionID string, timeout 
 	return ""
 }
 
-func waitForCodexRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan codexRealResult, matches func(string) bool) {
+func waitForCodexRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan codexRealResult, matches func(string) bool) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -371,12 +396,13 @@ func waitForCodexRealPaneCondition(t *testing.T, tmuxSession, label string, time
 		}
 		pane, err := captureCodexPane(context.Background(), tmuxSession)
 		if err == nil && matches(pane) {
-			return
+			return pane
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	pane, _ := captureCodexPane(context.Background(), tmuxSession)
 	t.Fatalf("timed out waiting for Codex tmux pane to match %s; latest pane:\n%s", label, pane)
+	return ""
 }
 
 func waitForCodexRealFile(t *testing.T, path, label string, timeout time.Duration, errCh <-chan codexRealResult) {

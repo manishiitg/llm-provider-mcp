@@ -20,7 +20,7 @@ func TestOpenCodeCLIRealImagePathAnalysis(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 
 	workspaceDir := t.TempDir()
-	if out, err := exec.Command("git", "init", workspaceDir).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", workspaceDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	imagePath := filepath.Join(workspaceDir, "sample.png")

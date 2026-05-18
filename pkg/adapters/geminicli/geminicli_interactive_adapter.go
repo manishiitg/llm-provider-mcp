@@ -27,6 +27,10 @@ const (
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
 	defaultGeminiInteractivePromptWait  = 20 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
+	geminiActivityScanNonEmptyLines     = 160
+	geminiPromptPasteVisibleWait        = 5 * time.Second
+	geminiPromptSubmitSettleWait        = 900 * time.Millisecond
+	geminiPromptSubmitMaxAttempts       = 5
 
 	EnvGeminiInteractiveSessionPrefix      = "GEMINI_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvGeminiInteractiveTimeoutSeconds     = "GEMINI_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -750,10 +754,14 @@ func sendGeminiInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runGeminiCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
 		return fmt.Errorf("failed to load Gemini input into tmux buffer: %w", err)
 	}
+	beforePaste, _ := captureGeminiPane(ctx, sessionName)
 	if err := runGeminiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Gemini interactive session: %w", err)
 	}
-	if err := submitGeminiInputInTmux(ctx, sessionName); err != nil {
+	if err := waitForGeminiInputDraft(ctx, sessionName, beforePaste); err != nil {
+		return err
+	}
+	if err := ensureGeminiInputSubmitted(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Gemini interactive session: %w", err)
 	}
 	return nil
@@ -763,6 +771,71 @@ func submitGeminiInputInTmux(ctx context.Context, sessionName string) error {
 	// Gemini CLI 0.42 binds prompt submission to tmux's Enter key name. Sending
 	// C-m can leave text as an unsubmitted multiline draft in the prompt editor.
 	return runGeminiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter")
+}
+
+func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste string) error {
+	deadline, cancel := context.WithTimeout(ctx, geminiPromptPasteVisibleWait)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			captured, _ := captureGeminiPane(context.Background(), sessionName)
+			return fmt.Errorf("timed out waiting for Gemini CLI prompt paste; latest pane:\n%s", captured)
+		case <-ticker.C:
+			captured, err := captureGeminiPane(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			if hasGeminiUnsubmittedDraft(captured) || hasGeminiActivity(captured) {
+				return nil
+			}
+			if beforePaste != "" && captured != beforePaste && !hasGeminiReadyPrompt(captured) {
+				return nil
+			}
+		}
+	}
+}
+
+func ensureGeminiInputSubmitted(ctx context.Context, sessionName string) error {
+	var lastCaptured string
+	for attempt := 0; attempt < geminiPromptSubmitMaxAttempts; attempt++ {
+		if err := submitGeminiInputInTmux(ctx, sessionName); err != nil {
+			return err
+		}
+		if geminiInputAccepted(ctx, sessionName, &lastCaptured) {
+			return nil
+		}
+	}
+	if lastCaptured == "" {
+		lastCaptured, _ = captureGeminiPane(context.Background(), sessionName)
+	}
+	return fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; latest pane:\n%s", geminiPromptSubmitMaxAttempts, lastCaptured)
+}
+
+func geminiInputAccepted(ctx context.Context, sessionName string, lastCaptured *string) bool {
+	deadline, cancel := context.WithTimeout(ctx, geminiPromptSubmitSettleWait)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return false
+		case <-ticker.C:
+			captured, err := captureGeminiPane(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			*lastCaptured = captured
+			if hasGeminiActivity(captured) || !hasGeminiUnsubmittedDraft(captured) {
+				return true
+			}
+		}
+	}
 }
 
 func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiInteractiveSession, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
@@ -802,9 +875,12 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 					continue
 				}
 			}
-			if hasGeminiUnsubmittedDraft(captured) && draftSubmitAttempts < 5 &&
-				(lastDraftSubmit.IsZero() || time.Since(lastDraftSubmit) >= time.Second) {
-				if !hasGeminiActivity(captured) {
+			if hasGeminiUnsubmittedDraft(captured) {
+				active := hasGeminiActivity(captured)
+				if !active && draftSubmitAttempts >= geminiPromptSubmitMaxAttempts {
+					return captured, fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; latest pane:\n%s", geminiPromptSubmitMaxAttempts, captured)
+				}
+				if !active && (lastDraftSubmit.IsZero() || time.Since(lastDraftSubmit) >= time.Second) {
 					_ = submitGeminiInputInTmux(ctx, sessionName)
 					lastDraftSubmit = time.Now()
 					draftSubmitAttempts++
@@ -1173,7 +1249,7 @@ func isGeminiBoxDrawingLine(line string) bool {
 func hasGeminiActivity(captured string) bool {
 	lines := strings.Split(stripGeminiANSI(captured), "\n")
 	seenNonEmpty := 0
-	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 24; i-- {
+	for i := len(lines) - 1; i >= 0 && seenNonEmpty < geminiActivityScanNonEmptyLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -1181,7 +1257,7 @@ func hasGeminiActivity(captured string) bool {
 		seenNonEmpty++
 		lower := strings.ToLower(line)
 		if isGeminiReadyPromptLine(line) {
-			return false
+			continue
 		}
 		if strings.Contains(lower, "esc to cancel") ||
 			strings.Contains(lower, "esc to interrupt") ||

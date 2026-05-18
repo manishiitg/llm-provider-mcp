@@ -882,6 +882,48 @@ func TestCodexQueuedInputKeepsSessionActive(t *testing.T) {
 	}
 }
 
+func TestCodexActiveStatusAboveLongToolOutputKeepsSessionActive(t *testing.T) {
+	var filler strings.Builder
+	for i := 0; i < 48; i++ {
+		fmt.Fprintf(&filler, "tool output line %02d\n", i)
+	}
+	pane := `
+• Calling api-bridge.execute_shell_command({"command":"python3 slow.py"})
+
+• Working (6m 49s • esc to interrupt)
+` + filler.String() + `
+────────────────────────────────────────────────────────────────────────────────
+›
+`
+	if !hasCodexActivity(pane) {
+		t.Fatalf("active status above long tool output should keep session active")
+	}
+	if hasCodexReadyPrompt(pane) {
+		t.Fatalf("ready prompt must be ignored while active status remains in the current turn")
+	}
+}
+
+func TestCodexCompletedStatusAllowsReadyPromptDespiteOldWorkingLine(t *testing.T) {
+	pane := `
+› can you list all files
+
+• Working (14s • esc to interrupt)
+
+⏺ Here are the files.
+
+✻ Cogitated for 14s
+
+────────────────────────────────────────────────────────────────────────────────
+›
+`
+	if hasCodexActivity(pane) {
+		t.Fatalf("completed turn should not be kept active by old working status")
+	}
+	if !hasCodexReadyPrompt(pane) {
+		t.Fatalf("completed turn with bottom prompt should be ready")
+	}
+}
+
 func TestParseCodexInteractiveResponseRejectsQueuedValidationEcho(t *testing.T) {
 	baseline := "Codex ready\n›"
 	captured := baseline + `

@@ -11,7 +11,6 @@ import (
 
 // OpenCodeCLIAdapter implements the LLM interface for OpenCode CLI.
 // By default it uses the structured transport (opencode run --format json).
-// The tmux transport is still available for persistent interactive sessions.
 type OpenCodeCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -27,9 +26,8 @@ func NewOpenCodeCLIAdapter(apiKey string, modelID string, logger interfaces.Logg
 	}
 }
 
-// GenerateContent generates content using OpenCode CLI. It uses the structured
-// JSON transport by default. If an interactive session ID is set and the tmux
-// transport is available, it falls back to the tmux adapter for persistent chat.
+// GenerateContent generates content using OpenCode CLI's structured JSON
+// transport.
 func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -188,20 +186,6 @@ func latestOpenCodeHumanMessage(messages []llmtypes.MessageContent) string {
 		}
 	}
 	return ""
-}
-
-func opencodeAssistantHistory(messages []llmtypes.MessageContent) []string {
-	history := make([]string, 0)
-	for _, msg := range messages {
-		if msg.Role != llmtypes.ChatMessageTypeAI {
-			continue
-		}
-		text := strings.TrimSpace(extractTextFromMessage(msg))
-		if text != "" {
-			history = append(history, text)
-		}
-	}
-	return history
 }
 
 func extractTextFromMessage(msg llmtypes.MessageContent) string {

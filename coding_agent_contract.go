@@ -22,7 +22,7 @@ const (
 type CodingAgentProviderContract struct {
 	Provider Provider
 	// ModelID is set only when a provider becomes a coding agent for a specific
-	// model/transport, such as kimi/kimi-code.
+	// model/transport. Prefer provider-level CLI entries for new coding agents.
 	ModelID string
 
 	DisplayName string
@@ -158,33 +158,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
 	},
-	ProviderKimi: {
-		Provider:                ProviderKimi,
-		ModelID:                 "kimi-code",
-		DisplayName:             "Kimi Code",
-		CLIName:                 "kimi",
-		Transport:               CodingAgentTransportStructured,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  false,
-		UsesPersistentSession:   false,
-		SupportsLiveInput:       false,
-		SupportsInterrupt:       false,
-		SupportsTerminalStream:  false,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    false,
-		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   false,
-		ProcessScopedCleanup:    false,
-		StructuredFallback:      true,
-		ImageInputInteractive:   false,
-	},
 }
 
 // GetCodingAgentProviderContract returns the shared coding-agent contract for a
-// provider/model pair. Provider Kimi is model-scoped: kimi/kimi-code is a coding
-// agent, while normal Kimi API models are not.
+// provider/model pair.
 func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAgentProviderContract, bool) {
 	normalizedProvider := Provider(strings.ToLower(strings.TrimSpace(string(provider))))
 	contract, ok := codingAgentProviderContracts[normalizedProvider]
@@ -213,7 +190,7 @@ func IsTmuxCodingAgentProvider(provider Provider, modelID string) bool {
 }
 
 // CodingAgentProviderContracts returns all currently declared coding-agent
-// contracts. Model-scoped entries such as kimi/kimi-code are included.
+// contracts.
 func CodingAgentProviderContracts() []CodingAgentProviderContract {
 	contracts := make([]CodingAgentProviderContract, 0, len(codingAgentProviderContracts))
 	for _, contract := range codingAgentProviderContracts {

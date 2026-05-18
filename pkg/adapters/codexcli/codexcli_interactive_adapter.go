@@ -26,6 +26,7 @@ const (
 	defaultCodexInteractiveIdleTimeout = 20 * time.Minute
 	defaultCodexInteractivePromptWait  = 20 * time.Second
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
+	codexActivityScanNonEmptyLines     = 160
 
 	EnvCodexInteractiveSessionPrefix      = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCodexInteractiveTimeoutSeconds     = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -1685,7 +1686,8 @@ func hasCodexActivity(captured string) bool {
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
-	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 24; i-- {
+	seenReadyPrompt := false
+	for i := len(lines) - 1; i >= 0 && seenNonEmpty < codexActivityScanNonEmptyLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -1693,6 +1695,10 @@ func hasCodexActivity(captured string) bool {
 		seenNonEmpty++
 		lower := strings.ToLower(line)
 		if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") || strings.HasSuffix(line, "›") {
+			seenReadyPrompt = true
+			continue
+		}
+		if seenReadyPrompt && isCodexCompletedStatusLine(line) {
 			return false
 		}
 		if strings.Contains(lower, "esc to interrupt") || isCodexActiveStatusLine(line) {
@@ -2007,6 +2013,29 @@ func isCodexActiveStatusLine(line string) bool {
 		strings.HasPrefix(lower, "calling api-bridge") ||
 		strings.Contains(lower, "ctrl+l is disabled while a task is in progress") ||
 		strings.Contains(lower, "esc to interrupt")
+}
+
+func isCodexCompletedStatusLine(line string) bool {
+	trimmed := strings.TrimSpace(stripCodexANSI(line))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "esc to interrupt") ||
+		strings.Contains(lower, "still thinking") ||
+		strings.Contains(lower, "thinking with") ||
+		strings.Contains(lower, "working (") {
+		return false
+	}
+	if !strings.Contains(lower, " for ") {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "✻ ") ||
+		strings.HasPrefix(trimmed, "✽ ") ||
+		strings.HasPrefix(trimmed, "✳ ") ||
+		strings.HasPrefix(trimmed, "✶ ") ||
+		strings.HasPrefix(trimmed, "✢ ") ||
+		strings.HasPrefix(trimmed, "· ")
 }
 
 func isCodexBoxDrawingLine(line string) bool {
