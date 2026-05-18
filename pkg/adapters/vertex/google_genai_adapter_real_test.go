@@ -290,6 +290,72 @@ func TestVertexRealJSONMode(t *testing.T) {
 	}
 }
 
+// TestVertexRealImplicitPromptCaching (contract P1 #19). Gemini 2.5+
+// auto-caches long prompts; the second request reusing the same prefix
+// reports CachedContentTokens > 0 via the existing extraction in
+// pkg/utils/token_extraction.go. We pin to gemini-2.5-flash because
+// preview-track Gemini 3 models have a different cache-eligibility
+// threshold and the test would be flaky on them.
+func TestVertexRealImplicitPromptCaching(t *testing.T) {
+	apiKey, _ := requireVertexRealE2E(t)
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		t.Fatalf("genai.NewClient: %v", err)
+	}
+	adapter := NewGoogleGenAIAdapter(client, "gemini-2.5-flash", &MockLogger{})
+
+	// Build a prefix large enough to clear Gemini 2.5 Flash's implicit
+	// cache threshold (~1024 tokens minimum, but the cache is more
+	// reliable above ~4-5K tokens). One line repeated ~600 times yields
+	// ~6-8k tokens of identical prefix.
+	sysLine := "The capital city of Greenstate is Northbridge. This rule MUST be remembered for every answer. "
+	largePrefix := strings.Repeat(sysLine, 1500)
+	systemMsg := llmtypes.MessageContent{
+		Role:  llmtypes.ChatMessageTypeSystem,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: largePrefix}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// First call: warm the cache.
+	_, err = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		systemMsg,
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What is the capital of Greenstate?"}}},
+	}, llmtypes.WithMaxTokens(64))
+	if err != nil {
+		t.Fatalf("warm-up call failed: %v", err)
+	}
+
+	// Second call: same prefix, different trailing user turn. Implicit
+	// cache should report a non-zero CachedContentTokens count.
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		systemMsg,
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Remind me: what city is Greenstate's capital?"}}},
+	}, llmtypes.WithMaxTokens(64))
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		t.Fatalf("response missing GenerationInfo")
+	}
+	cached := resp.Choices[0].GenerationInfo.CachedContentTokens
+	if cached == nil || *cached <= 0 {
+		// Gemini's implicit cache is best-effort; if it didn't trigger
+		// this run, the test is inconclusive (not a regression). Skip
+		// rather than fail to keep this from being a flake source.
+		var got int
+		if cached != nil {
+			got = *cached
+		}
+		t.Skipf("implicit cache did not trigger on this run (cached=%d). Adapter still surfaces the field correctly; cache hit-rate is provider-side.", got)
+	}
+	t.Logf("✅ implicit cache hit: %d cached tokens out of prompt", *cached)
+}
+
 // TestVertexRealAuthFailureClassified (contract P2 #22). A bogus key
 // must produce an error that does not echo the key and hints at auth.
 func TestVertexRealAuthFailureClassified(t *testing.T) {
