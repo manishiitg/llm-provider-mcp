@@ -1,0 +1,93 @@
+package claudecode
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
+
+// readClaudeTranscriptUsage looks up the Claude Code session transcript
+// JSONL written by the local claude CLI and aggregates token usage for
+// the current turn.
+//
+// The CLI writes a JSONL file at
+//
+//	~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+//
+// where <encoded-cwd> is the cwd with `/`, `_`, and `.` replaced by `-`.
+// Rather than mirror that encoding (which has drifted over claude
+// versions), we glob `~/.claude/projects/*/<session-id>.jsonl`: session
+// IDs are UUIDs so the match is unambiguous and the glob is cheap.
+//
+// Returns nil on any error or if no usage data is available.
+// Best-effort by design — never surface IO errors to the caller.
+func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) *llmtypes.GenerationInfo {
+	if sessionID == "" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	f, err := os.Open(matches[0])
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var input, output, cacheCreate, cacheRead int
+	scanner := bufio.NewScanner(f)
+	// Assistant events can carry long tool-use payloads; bump line limit.
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var ev struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Usage struct {
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil || ev.Type != "assistant" {
+			continue
+		}
+		if !turnStart.IsZero() && ev.Timestamp != "" {
+			if ts, err := time.Parse(time.RFC3339Nano, ev.Timestamp); err == nil && ts.Before(turnStart) {
+				continue
+			}
+		}
+		input += ev.Message.Usage.InputTokens
+		output += ev.Message.Usage.OutputTokens
+		cacheCreate += ev.Message.Usage.CacheCreationInputTokens
+		cacheRead += ev.Message.Usage.CacheReadInputTokens
+	}
+	if input+output+cacheCreate+cacheRead == 0 {
+		return nil
+	}
+
+	prompt := input + cacheCreate
+	total := prompt + output + cacheRead
+	gi := &llmtypes.GenerationInfo{
+		PromptTokens:     intRef(prompt),
+		CompletionTokens: intRef(output),
+		TotalTokens:      intRef(total),
+	}
+	if cacheRead > 0 {
+		gi.CachedContentTokens = intRef(cacheRead)
+	}
+	return gi
+}
+
+func intRef(v int) *int { return &v }

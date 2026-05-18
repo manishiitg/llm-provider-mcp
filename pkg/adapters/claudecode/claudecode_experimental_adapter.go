@@ -150,6 +150,11 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	}
 	workingDir := claudeWorkingDirFromOptions(opts)
 
+	// Capture turn-start before launching the CLI so we only aggregate
+	// usage from JSONL events emitted during this turn (the transcript
+	// persists prior turns when --resume is used).
+	turnStart := time.Now().UTC()
+
 	callCtx, cancel := newClaudeCallContext(ctx, tmuxTimeout())
 	defer cancel()
 
@@ -279,14 +284,24 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		additional["claude_code_interactive_retention_seconds"] = retentionSeconds
 	}
 
+	// Best-effort usage extraction from the local JSONL transcript.
+	// claude-code's tmux TUI does not emit usage on stdout, but its
+	// session-id'd transcript file at ~/.claude/projects/<...>/<sid>.jsonl
+	// records `usage` on every assistant event.
+	gi := &llmtypes.GenerationInfo{Additional: additional}
+	if usage := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil {
+		gi.PromptTokens = usage.PromptTokens
+		gi.CompletionTokens = usage.CompletionTokens
+		gi.TotalTokens = usage.TotalTokens
+		gi.CachedContentTokens = usage.CachedContentTokens
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content:    content,
-				StopReason: "stop",
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: additional,
-				},
+				Content:        content,
+				StopReason:     "stop",
+				GenerationInfo: gi,
 			},
 		},
 	}, nil

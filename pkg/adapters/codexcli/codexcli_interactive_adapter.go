@@ -80,6 +80,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 	persistent := codexPersistentInteractiveFromOptions(opts)
 
+	turnStart := time.Now().UTC()
+
 	callCtx, cancel := codexInteractiveCallContext(ctx)
 	defer cancel()
 
@@ -156,13 +158,23 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		additional["codex_interactive_retention_seconds"] = retentionSeconds
 	}
 
+	// Best-effort usage from codex's local rollout JSONL — tmux mode
+	// has no stdout JSON, but ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+	// records token_count event_msgs with per-turn token snapshots.
+	gi := &llmtypes.GenerationInfo{Additional: additional}
+	if usage := readCodexTranscriptUsage(turnStart); usage != nil {
+		gi.PromptTokens = usage.PromptTokens
+		gi.CompletionTokens = usage.CompletionTokens
+		gi.TotalTokens = usage.TotalTokens
+		gi.CachedContentTokens = usage.CachedContentTokens
+		gi.ReasoningTokens = usage.ReasoningTokens
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content: content,
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: additional,
-				},
+				Content:        content,
+				GenerationInfo: gi,
 			},
 		},
 	}, nil

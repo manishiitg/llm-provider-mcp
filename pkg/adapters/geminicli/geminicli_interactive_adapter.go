@@ -88,6 +88,10 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}
 	persistent := geminiPersistentInteractiveFromOptions(opts)
 
+	// Capture turn-start so the JSONL extractor only sums tokens from
+	// events emitted during this turn.
+	turnStart := time.Now().UTC()
+
 	callCtx, cancel := geminiInteractiveCallContext(ctx)
 	defer cancel()
 
@@ -175,16 +179,40 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		additional["gemini_interactive_retention_seconds"] = retentionSeconds
 	}
 
+	// Best-effort usage extraction from the local JSONL transcript.
+	// gemini-cli's tmux TUI does not emit usage on stdout, but its
+	// session JSONL at ~/.gemini/tmp/gemini-cli-project-<projectDirID>/
+	// chats/session-*.jsonl records `tokens` on every `gemini` event.
+	gi := &llmtypes.GenerationInfo{Additional: additional}
+	usage := &llmtypes.Usage{}
+	if turnUsage := readGeminiTranscriptUsage(session.projectDirID, turnStart); turnUsage != nil {
+		gi.PromptTokens = turnUsage.PromptTokens
+		gi.CompletionTokens = turnUsage.CompletionTokens
+		gi.TotalTokens = turnUsage.TotalTokens
+		gi.CachedContentTokens = turnUsage.CachedContentTokens
+		gi.ThoughtsTokens = turnUsage.ThoughtsTokens
+		if turnUsage.PromptTokens != nil {
+			usage.InputTokens = *turnUsage.PromptTokens
+		}
+		if turnUsage.CompletionTokens != nil {
+			usage.OutputTokens = *turnUsage.CompletionTokens
+		}
+		if turnUsage.TotalTokens != nil {
+			usage.TotalTokens = *turnUsage.TotalTokens
+		}
+		if turnUsage.ThoughtsTokens != nil {
+			usage.ThoughtsTokens = turnUsage.ThoughtsTokens
+		}
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content: content,
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: additional,
-				},
+				Content:        content,
+				GenerationInfo: gi,
 			},
 		},
-		Usage: &llmtypes.Usage{},
+		Usage: usage,
 	}, nil
 }
 
