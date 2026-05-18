@@ -28,7 +28,7 @@ Both transports must have full e2e test coverage. Neither is legacy.
 | Codex CLI | `codex exec --json` | `--model`, `--config` |
 | Cursor CLI | `cursor-agent --print --output-format stream-json --stream-partial-output` | `--trust`, `--force`, `--workspace`, `--model`, `--mode` |
 | Gemini CLI | `gemini --output-format stream-json` | `--prompt`, `--model` |
-| OpenCode CLI | `opencode run --format json --dangerously-skip-permissions` | `--dir`, `--model`, `--session`, `--continue` |
+| OpenCode CLI | `opencode run --format json` | `--dangerously-skip-permissions` (default on), `--dir`, `--model`, `--session`, `--continue` |
 
 ## Event Formats by Provider
 
@@ -200,6 +200,8 @@ event format end-to-end.
 | 17 | Multi-turn resume | Second call with resume session ID continues the conversation; agent recalls prior context. |
 | 18 | No injected strings | Adapter does not leak internal project names, library names, or custom strings into the prompt. |
 | 19 | No internal memory | Fresh session (no resume) cannot recall data from a previous session; agent memory is isolated. |
+| 20 | Graceful cancel | Context cancellation mid-run preserves all streamed chunks; stream channel is closed; partial content is returned if available. |
+| 21 | Sandboxed MCP | Built-in tools disabled while MCP bridge tools remain callable. Proves the production pattern: agent can only use tools you explicitly provide. |
 
 ## Current Test Coverage
 
@@ -213,19 +215,27 @@ RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 go test ./pkg/adapters/claudecode \
 | Area | Test |
 |---|---|
 | Fresh launch | `TestClaudeCodeStructuredBasicRun` |
+| Working directory | `TestClaudeCodeStructuredWorkingDir` |
 | System prompt | `TestClaudeCodeStructuredSystemPrompt` |
 | Token usage | `TestClaudeCodeStructuredTokenUsage` |
 | Streaming text | `TestClaudeCodeStructuredStreaming` |
 | Streaming tool calls | `TestClaudeCodeStructuredToolUse` |
 | Session metadata | `TestClaudeCodeStructuredSessionMetadata` |
+| Multi-step tool use | `TestClaudeCodeStructuredMultiStepToolUse` |
+| Model override | `TestClaudeCodeStructuredModelOverride` |
 | Image input | `TestClaudeCodePrintRealImageInput` |
 | Web search | `TestClaudeCodeRealSearchWeb` |
+| Error handling | `TestClaudeCodeStructuredErrorHandling` |
+| MCP bridge | `TestClaudeCodeStructuredMCPBridge` |
 | Tool disable | `TestClaudeCodeStructuredToolDisable` |
 | Multi-turn resume | `TestClaudeCodeStructuredMultiTurnResume` |
 | No injected strings | `TestClaudeCodeStructuredNoInjectedStrings` |
 | No internal memory | `TestClaudeCodeStructuredNoInternalMemory` |
+| Live web search | `TestClaudeCodeStructuredSearchWebLiveData` |
+| Graceful cancel | `TestClaudeCodeStructuredGracefulCancel` |
+| Sandboxed MCP | `TestClaudeCodeStructuredMCPBridge` (uses `--tools ""` + MCP) |
 
-**Gaps:** working directory, multi-step tool use, model override, cancellation, MCP bridge.
+**Gaps:** none.
 
 ### Codex CLI (`codex exec --json`)
 
@@ -237,18 +247,28 @@ RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli \
 | Area | Test |
 |---|---|
 | Fresh launch | `TestCodexCLIStructuredBasicRun` |
+| Working directory | `TestCodexCLIStructuredWorkingDir` |
 | System prompt | `TestCodexCLIStructuredSystemPrompt` |
 | Token usage | `TestCodexCLIStructuredTokenUsage` |
 | Streaming text | `TestCodexCLIStructuredStreaming` |
+| Streaming tool calls | `TestCodexCLIStructuredToolUse` |
 | Session metadata | `TestCodexCLIStructuredSessionMetadata` |
+| Multi-step tool use | `TestCodexCLIStructuredMultiStepToolUse` |
+| Model override | `TestCodexCLIStructuredModelOverride` |
 | Session resume | `TestCodexCLIRealExecJSONContract` (multi-turn with resume) |
 | MCP bridge | `TestCodexCLIRealExecJSONMCPBridgeContract` |
+| Image input | `TestCodexCLIStructuredImageInput` |
+| Web search | `TestCodexCLIStructuredSearchWeb` |
+| Live web search | `TestCodexCLIStructuredSearchWebLiveData` |
+| Error handling | `TestCodexCLIStructuredErrorHandling` |
 | Tool disable | `TestCodexCLIStructuredToolDisable` |
 | Multi-turn resume | `TestCodexCLIStructuredMultiTurnResume` |
 | No injected strings | `TestCodexCLIStructuredNoInjectedStrings` |
 | No internal memory | `TestCodexCLIStructuredNoInternalMemory` |
+| Graceful cancel | `TestCodexCLIStructuredGracefulCancel` |
+| Sandboxed MCP | `TestCodexCLIRealExecJSONMCPBridgeContract` (uses `--disable shell_tool` + MCP) |
 
-**Gaps:** tool call events, model override, image path, web search, cancellation.
+**Gaps:** none.
 
 ### Cursor CLI (`cursor-agent --print --output-format stream-json`)
 
@@ -260,21 +280,27 @@ RUN_CURSOR_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/cursorcli \
 | Area | Test |
 |---|---|
 | Fresh launch | `TestCursorCLIStructuredBasicRun` |
+| Working directory | `TestCursorCLIStructuredWorkingDir` |
 | System prompt | `TestCursorCLIStructuredSystemPrompt` |
 | Token usage | `TestCursorCLIStructuredTokenUsage` |
 | Streaming text | `TestCursorCLIStructuredStreaming` |
 | Streaming tool calls | `TestCursorCLIStructuredToolUse` |
 | Session metadata | `TestCursorCLIStructuredSessionMetadata` |
 | Multi-step tool use | `TestCursorCLIStructuredToolUse` |
+| Model override | `TestCursorCLIStructuredModelOverride` |
 | Image path | `TestCursorCLIStructuredImagePath` |
 | Web search | `TestCursorCLIStructuredSearchWeb` |
 | Live web search | `TestCursorCLIStructuredSearchWebLiveData` |
+| Error handling | `TestCursorCLIStructuredErrorHandling` |
+| MCP bridge | `TestCursorCLIStructuredMCPBridge` |
 | Tool disable | `TestCursorCLIStructuredToolDisable` |
 | Multi-turn resume | `TestCursorCLIStructuredMultiTurnResume` |
 | No injected strings | `TestCursorCLIStructuredNoInjectedStrings` |
 | No internal memory | `TestCursorCLIStructuredNoInternalMemory` |
+| Sandboxed MCP | `TestCursorCLIStructuredSandboxedMCP` (uses `--mode ask` + `--approve-mcps`) |
+| Graceful cancel | `TestCursorCLIStructuredGracefulCancel` |
 
-**Gaps:** working directory, model override, cancellation, error handling, MCP bridge.
+**Gaps:** none.
 
 ### Gemini CLI (`gemini --output-format stream-json`)
 
@@ -286,18 +312,28 @@ RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/gem
 | Area | Test |
 |---|---|
 | Fresh launch | `TestGeminiCLIRealStreamJSONContract` |
+| Working directory | `TestGeminiCLIStructuredWorkingDir` |
 | System prompt | `TestGeminiCLIStructuredSystemPrompt` |
 | Token usage | `TestGeminiCLIUsageAndCost` |
 | Streaming text | `TestGeminiCLIStructuredStreaming` |
+| Streaming tool calls | `TestGeminiCLIStructuredToolUse` |
+| Multi-step tool use | `TestGeminiCLIStructuredMultiStepToolUse` |
+| Model override | `TestGeminiCLIStructuredModelOverride` |
 | Session resume | `TestGeminiCLIRealStreamJSONContract` (multi-turn with resume) |
 | Session metadata | `TestGeminiCLIRealStreamJSONContract` (session_id + project_dir_id) |
 | MCP bridge | `TestGeminiCLIRealStreamJSONMCPBridgeContract` |
+| Image path | `TestGeminiCLIStructuredImagePath` |
+| Web search | `TestGeminiCLIStructuredSearchWeb` |
+| Live web search | `TestGeminiCLIStructuredSearchWebLiveData` |
+| Error handling | `TestGeminiCLIStructuredErrorHandling` |
 | Tool disable | `TestGeminiCLIStructuredToolDisable` |
 | Multi-turn resume | `TestGeminiCLIStructuredMultiTurnResume` |
 | No injected strings | `TestGeminiCLIStructuredNoInjectedStrings` |
 | No internal memory | `TestGeminiCLIStructuredNoInternalMemory` |
+| Graceful cancel | `TestGeminiCLIStructuredGracefulCancel` |
+| Sandboxed MCP | `TestGeminiCLIRealStreamJSONMCPBridgeContract` (uses admin policy deny + MCP settings) |
 
-**Gaps:** tool call events, model override, image path, web search, cancellation.
+**Gaps:** none.
 
 ### OpenCode CLI (`opencode run --format json`)
 
@@ -316,38 +352,49 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 | Tool call events | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
 | Session metadata | `TestOpenCodeCLIStructuredSessionIDInMetadata` |
 | Multi-step tool use | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
+| Model override | `TestOpenCodeCLIStructuredModelOverride` |
 | Image path | `TestOpenCodeCLIRealImagePathAnalysis` |
 | Web search | `TestOpenCodeCLIRealSearchWeb` |
 | Live web search | `TestOpenCodeCLIRealSearchWebLiveData` |
+| Error handling | `TestOpenCodeCLIStructuredErrorHandling` |
+| MCP bridge | `TestOpenCodeCLIStructuredMCPBridge` |
 | Multi-turn resume | `TestOpenCodeCLIStructuredMultiTurnResume` |
 | No injected strings | `TestOpenCodeCLIStructuredNoInjectedStrings` |
 | No internal memory | `TestOpenCodeCLIStructuredNoInternalMemory` |
+| Tool disable | `TestOpenCodeCLIStructuredToolDisable` |
+| Sandboxed MCP | `TestOpenCodeCLIStructuredSandboxedMCP` (limitation: `*:deny` blocks all including MCP) |
+| Graceful cancel | `TestOpenCodeCLIStructuredGracefulCancel` |
 
-**Gaps:** model override, cancellation, MCP bridge, error handling, tool disable (no CLI flag available).
+**Gaps:** none.
 
 ## Full Provider Coverage Matrix
 
 | Area | Claude | Codex | Cursor | Gemini | OpenCode |
 |---|:---:|:---:|:---:|:---:|:---:|
 | 1. Fresh launch | yes | yes | yes | yes | yes |
-| 2. Working directory | - | - | **no** | - | yes |
+| 2. Working directory | yes | yes | yes | yes | yes |
 | 3. System prompt | yes | yes | yes | yes | yes |
 | 4. Token usage | yes | yes | yes | yes | yes |
 | 5. Streaming text | yes | yes | yes | yes | yes |
-| 6. Streaming tool calls | yes | **no** | yes | **no** | yes |
+| 6. Streaming tool calls | yes | yes | yes | yes | yes |
 | 7. Session metadata | yes | yes | yes | yes | yes |
-| 8. Multi-step tool use | **no** | **no** | yes | **no** | yes |
-| 9. Model override | **no** | **no** | **no** | **no** | **no** |
-| 10. Image path | yes | **no** | yes | **no** | yes |
-| 11. Web search | yes | **no** | yes | **no** | yes |
-| 12. Live web search | **no** | **no** | yes | **no** | yes |
-| 13. Cancellation | **no** | **no** | **no** | **no** | **no** |
-| 14. Error handling | **no** | **no** | **no** | **no** | **no** |
-| 15. MCP bridge | **no** | yes | **no** | yes | **no** |
-| 16. Tool disable | yes | yes | yes | yes | n/a |
+| 8. Multi-step tool use | yes | yes | yes | yes | yes |
+| 9. Model override | yes | yes | yes | yes | yes |
+| 10. Image path | yes | yes | yes | yes | yes |
+| 11. Web search | yes | yes | yes | yes | yes |
+| 12. Live web search | yes | yes | yes | yes | yes |
+| 13. Cancellation | yes | yes | yes | yes | yes |
+| 14. Error handling | yes | yes | yes | yes | yes |
+| 15. MCP bridge | yes | yes | yes | yes | yes |
+| 16. Tool disable | yes | yes | yes | yes | yes |
 | 17. Multi-turn resume | yes | yes | yes | yes | yes |
 | 18. No injected strings | yes | yes | yes | yes | yes |
 | 19. No internal memory | yes | yes | yes | yes | yes |
+| 20. Graceful cancel | yes | yes | yes | yes | yes |
+| 21. Sandboxed MCP | yes | yes | yes | yes | n/a† |
+
+† OpenCode's permission system is all-or-nothing (`"*":"deny"` blocks all tools including MCP).
+Sandboxed MCP for OpenCode must be implemented at the orchestration layer (mcpagent).
 
 ## Related Docs
 

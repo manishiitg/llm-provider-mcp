@@ -36,6 +36,27 @@ func TestCodexCLIRealSearchWeb(t *testing.T) {
 	}
 }
 
+func TestCodexCLIRealSearchWebLiveData(t *testing.T) {
+	requireRealCodexCLISearchWebE2E(t)
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, quietCodexStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	result, err := adapter.SearchWeb(ctx,
+		"Search the web for the latest OpenAI Codex CLI version number released in 2026. Reply with just the version string.",
+		WithReasoningEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		t.Fatal("SearchWeb returned empty result")
+	}
+	t.Logf("Live web search result: %s", result)
+}
+
 func requireRealCodexCLISearchWebE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_CODEX_CLI_REAL_E2E") == "" && os.Getenv("RUN_CODEX_CLI_SEARCH_WEB_E2E") == "" {

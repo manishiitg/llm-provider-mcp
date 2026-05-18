@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -106,8 +107,34 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		if mode, ok := opts.Metadata.Custom[MetadataKeyMode].(string); ok && strings.TrimSpace(mode) != "" {
 			args = append(args, "--mode", strings.TrimSpace(mode))
 		}
+		if sandbox, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(sandbox) != "" {
+			args = append(args, "--sandbox", strings.TrimSpace(sandbox))
+		}
+		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
+			args = append(args, "--approve-mcps")
+		}
 		if resumeID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(resumeID) != "" {
 			args = append(args, "--resume", strings.TrimSpace(resumeID))
+		}
+	}
+
+	var configCleanups []func()
+	defer func() {
+		for _, fn := range configCleanups {
+			fn()
+		}
+	}()
+	if workingDir != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		cursorDir := filepath.Join(workingDir, ".cursor")
+		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
+			cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON))
+			if werr != nil {
+				if opts.StreamChan != nil {
+					close(opts.StreamChan)
+				}
+				return nil, fmt.Errorf("cursor MCP config: %w", werr)
+			}
+			configCleanups = append(configCleanups, cleanup)
 		}
 	}
 

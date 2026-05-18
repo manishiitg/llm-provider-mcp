@@ -110,6 +110,15 @@ func WithDangerouslySkipPermissions() llmtypes.CallOption {
 	}
 }
 
+// WithPermissionsEnforced prevents passing --dangerously-skip-permissions,
+// allowing OpenCode's permission system to restrict tool access.
+func WithPermissionsEnforced() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions] = false
+	}
+}
+
 func ensureMetadata(opts *llmtypes.CallOptions) {
 	if opts.Metadata == nil {
 		opts.Metadata = &llmtypes.Metadata{Custom: make(map[string]interface{})}

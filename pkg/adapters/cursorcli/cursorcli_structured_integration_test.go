@@ -51,6 +51,37 @@ func TestCursorCLIStructuredBasicRun(t *testing.T) {
 	}
 }
 
+func TestCursorCLIStructuredWorkingDir(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	workspaceDir := t.TempDir()
+	marker := "WDMARKER_" + cursorRandomHex(6)
+	markerFile := filepath.Join(workspaceDir, "marker.txt")
+	if err := os.WriteFile(markerFile, []byte(marker), 0644); err != nil {
+		t.Fatalf("write marker file: %v", err)
+	}
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Read the file marker.txt in the current directory and reply with its exact contents. Nothing else."},
+			},
+		},
+	}, WithWorkingDir(workspaceDir))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, marker) {
+		t.Fatalf("expected marker %q in response, got %q", marker, resp.Choices[0].Content)
+	}
+	t.Logf("working dir verified: marker %q found in response", marker)
+}
+
 func TestCursorCLIStructuredTokenUsage(t *testing.T) {
 	requireCursorCLIStructuredE2E(t)
 
@@ -180,10 +211,13 @@ func TestCursorCLIStructuredToolUse(t *testing.T) {
 			hasToolEnd = true
 		}
 	}
-	if !hasToolStart || !hasToolEnd {
-		t.Logf("tool_call_start=%v tool_call_end=%v (tool may not have been used)", hasToolStart, hasToolEnd)
+	if !hasToolStart {
+		t.Error("expected StreamChunkTypeToolCallStart chunk for shell tool")
 	}
-	t.Logf("response: %q", resp.Choices[0].Content)
+	if !hasToolEnd {
+		t.Error("expected StreamChunkTypeToolCallEnd chunk for shell tool")
+	}
+	t.Logf("tool_start=%v tool_end=%v content=%q", hasToolStart, hasToolEnd, resp.Choices[0].Content)
 }
 
 func TestCursorCLIStructuredSessionMetadata(t *testing.T) {
@@ -446,6 +480,356 @@ func TestCursorCLIStructuredNoInternalMemory(t *testing.T) {
 		t.Fatalf("fresh session should NOT recall secret %q — agent is using internal memory across sessions: %q", secret, content)
 	}
 	t.Logf("fresh session correctly did not recall secret (response: %q)", content)
+}
+
+func TestCursorCLIStructuredModelOverride(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What model are you? Reply with just your model name."},
+			},
+		},
+	}, WithCursorModel("claude-sonnet-4-6"))
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choices returned")
+	}
+	content := resp.Choices[0].Content
+	if content == "" {
+		t.Fatal("empty response content")
+	}
+
+	gen := resp.Choices[0].GenerationInfo
+	if gen != nil && gen.Additional != nil {
+		if model, ok := gen.Additional["cursor_model"].(string); ok {
+			t.Logf("model metadata: %s", model)
+		}
+	}
+	t.Logf("model override response: %q", content)
+}
+
+func TestCursorCLIStructuredErrorHandling(t *testing.T) {
+	t.Run("missing binary returns clear error", func(t *testing.T) {
+		adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+
+		origPath := os.Getenv("PATH")
+		t.Setenv("PATH", "/nonexistent")
+		defer os.Setenv("PATH", origPath)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "hello"},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for missing binary")
+		}
+		errMsg := strings.ToLower(err.Error())
+		if !strings.Contains(errMsg, "not found") && !strings.Contains(errMsg, "no such") && !strings.Contains(errMsg, "executable") && !strings.Contains(errMsg, "cursor") {
+			t.Fatalf("error should mention binary not found, got: %v", err)
+		}
+		t.Logf("missing binary error: %v", err)
+	})
+}
+
+func TestCursorCLIStructuredMCPBridge(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	workspaceDir := t.TempDir()
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	bridgeToken := "CURSOR_STRUCT_BRIDGE_" + cursorRandomHex(4)
+	mcpServerPath := writeCursorContractMCPServer(t)
+
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+
+	stream := make(chan llmtypes.StreamChunk, 256)
+	errCh := make(chan error, 1)
+	var resp *llmtypes.ContentResponse
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	go func() {
+		var err error
+		resp, err = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."},
+				},
+			},
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge echo_contract MCP tool with token %s. Then reply exactly with the tool result text.", bridgeToken)},
+				},
+			},
+		},
+			WithMCPConfig(mcpConfig),
+			WithApproveMCPs(),
+			WithWorkingDir(workspaceDir),
+			llmtypes.WithStreamingChan(stream),
+		)
+		errCh <- err
+	}()
+
+	var hasToolStart, hasToolEnd bool
+	for chunk := range stream {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			hasToolStart = true
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			hasToolEnd = true
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("GenerateContent with MCP bridge error = %v", err)
+	}
+
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, want) {
+		t.Fatalf("content = %q, want bridge tool result %q", content, want)
+	}
+	if !hasToolStart || !hasToolEnd {
+		t.Logf("warning: expected tool start/end chunks, got start=%v end=%v", hasToolStart, hasToolEnd)
+	}
+	t.Logf("MCP bridge: tool_start=%v tool_end=%v content contains bridge result", hasToolStart, hasToolEnd)
+}
+
+func writeCursorContractMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cursor-contract-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "echo_contract",
+          description: "Return a deterministic contract token.",
+          inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: { content: [{ type: "text", text: "BRIDGE_TOOL_OK_" + String(args.token || "") }], isError: false }
+    });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func TestCursorCLIStructuredSandboxedMCP(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	workspaceDir := t.TempDir()
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	bridgeToken := "CURSOR_SANDBOX_BRIDGE_" + cursorRandomHex(4)
+	mcpServerPath := writeCursorContractMCPServer(t)
+
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	markerFile := "sandboxed_mcp_marker_" + cursorRandomHex(4) + ".txt"
+
+	stream := make(chan llmtypes.StreamChunk, 256)
+	errCh := make(chan error, 1)
+	var resp *llmtypes.ContentResponse
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	go func() {
+		var err error
+		resp, err = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "You have access to MCP tools. Use them when asked. Keep answers concise."},
+				},
+			},
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf(
+						"Do two things in order:\n1. Call the api-bridge echo_contract MCP tool with token %s\n2. Create a file called %s with content 'hello'\nReport the MCP tool result.",
+						bridgeToken, markerFile,
+					)},
+				},
+			},
+		},
+			WithMCPConfig(mcpConfig),
+			WithApproveMCPs(),
+			WithMode("ask"),
+			WithWorkingDir(workspaceDir),
+			llmtypes.WithStreamingChan(stream),
+		)
+		errCh <- err
+	}()
+
+	var hasToolStart, hasToolEnd bool
+	for chunk := range stream {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			hasToolStart = true
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			hasToolEnd = true
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+
+	markerPath := filepath.Join(workspaceDir, markerFile)
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Fatalf("file %s was created despite ask mode — built-in tool restriction not working", markerFile)
+	}
+
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	if !strings.Contains(content, want) {
+		t.Fatalf("MCP bridge tool result not found in response — sandboxed MCP failed\ncontent: %q", content[:min(len(content), 300)])
+	}
+
+	t.Logf("sandboxed MCP verified: built-in tools blocked (ask mode) + MCP bridge works (approve-mcps)")
+	t.Logf("tool_start=%v tool_end=%v", hasToolStart, hasToolEnd)
+}
+
+func TestCursorCLIStructuredGracefulCancel(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := make(chan llmtypes.StreamChunk, 256)
+
+	errCh := make(chan error, 1)
+	respCh := make(chan *llmtypes.ContentResponse, 1)
+
+	go func() {
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "List all files recursively in /usr using the shell. Show every single file path. This will take a while."},
+				},
+			},
+		},
+			llmtypes.WithStreamingChan(stream),
+		)
+		respCh <- resp
+		errCh <- err
+	}()
+
+	var chunks []llmtypes.StreamChunk
+	gotFirstChunk := false
+	timeout := time.After(90 * time.Second)
+
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				goto streamClosed
+			}
+			chunks = append(chunks, chunk)
+			if !gotFirstChunk && (chunk.Type == llmtypes.StreamChunkTypeContent || chunk.Type == llmtypes.StreamChunkTypeToolCallStart) {
+				gotFirstChunk = true
+				time.Sleep(500 * time.Millisecond)
+				cancel()
+			}
+		case <-timeout:
+			cancel()
+			t.Fatal("timed out waiting for first chunk")
+		}
+	}
+
+streamClosed:
+	resp := <-respCh
+	err := <-errCh
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before cancellation")
+	}
+
+	var contentChunks, toolStarts, toolEnds int
+	for _, c := range chunks {
+		switch c.Type {
+		case llmtypes.StreamChunkTypeContent:
+			contentChunks++
+		case llmtypes.StreamChunkTypeToolCallStart:
+			toolStarts++
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			toolEnds++
+		}
+	}
+
+	t.Logf("graceful cancel: %d total chunks (%d content, %d tool_start, %d tool_end)", len(chunks), contentChunks, toolStarts, toolEnds)
+
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].Content != "" {
+		t.Logf("partial content returned: %d chars", len(resp.Choices[0].Content))
+	} else if err != nil {
+		t.Logf("error after cancel (expected): %v", err)
+	} else {
+		t.Logf("no content and no error (process may have exited cleanly)")
+	}
 }
 
 func TestCursorCLIStructuredSearchWebLiveData(t *testing.T) {

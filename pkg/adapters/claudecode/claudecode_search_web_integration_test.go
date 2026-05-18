@@ -45,6 +45,26 @@ func requireRealClaudeCodeSearchWebE2E(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeRealSearchWebLiveData(t *testing.T) {
+	requireRealClaudeCodeSearchWebE2E(t)
+
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	result, err := adapter.SearchWeb(ctx,
+		"Search the web for the latest Claude Code CLI version number released in 2026. Reply with just the version string.",
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		t.Fatal("SearchWeb returned empty result")
+	}
+	t.Logf("Live web search result: %s", result)
+}
+
 type quietClaudeSearchLogger struct{}
 
 func (quietClaudeSearchLogger) Debugf(string, ...interface{}) {}

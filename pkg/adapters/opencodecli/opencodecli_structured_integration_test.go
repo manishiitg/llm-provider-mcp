@@ -2,7 +2,10 @@ package opencodecli
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -189,11 +192,12 @@ func TestOpenCodeCLIStructuredToolUseProducesToolChunks(t *testing.T) {
 		}
 	}
 	if !hasToolStart {
-		t.Log("warning: no tool_call_start stream chunk (tool may not have been used)")
+		t.Error("expected StreamChunkTypeToolCallStart chunk for shell tool")
 	}
 	if !hasToolEnd {
-		t.Log("warning: no tool_call_end stream chunk (tool may not have been used)")
+		t.Error("expected StreamChunkTypeToolCallEnd chunk for shell tool")
 	}
+	t.Logf("tool_start=%v tool_end=%v", hasToolStart, hasToolEnd)
 }
 
 func TestOpenCodeCLIStructuredSessionIDInMetadata(t *testing.T) {
@@ -375,6 +379,397 @@ func TestOpenCodeCLIStructuredNoInjectedStrings(t *testing.T) {
 		}
 	}
 	t.Logf("no injected strings found in response (length=%d)", len(resp.Choices[0].Content))
+}
+
+func TestOpenCodeCLIStructuredModelOverride(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	workspaceDir := t.TempDir()
+	gitInit(t, workspaceDir)
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What model are you? Reply with just your model name."},
+			},
+		},
+	},
+		WithWorkingDir(workspaceDir),
+		WithOpenCodeModel("anthropic/claude-sonnet-4-6"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choices returned")
+	}
+	content := resp.Choices[0].Content
+	if content == "" {
+		t.Fatal("empty response content")
+	}
+	t.Logf("model override response: %q", content)
+}
+
+func TestOpenCodeCLIStructuredErrorHandling(t *testing.T) {
+	t.Run("missing binary returns clear error", func(t *testing.T) {
+		adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+
+		origPath := os.Getenv("PATH")
+		t.Setenv("PATH", "/nonexistent")
+		defer os.Setenv("PATH", origPath)
+
+		t.Setenv("OPENCODE_BIN", "/nonexistent/opencode")
+		t.Setenv("HOME", "/nonexistent")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "hello"},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for missing binary")
+		}
+		errMsg := strings.ToLower(err.Error())
+		if !strings.Contains(errMsg, "not found") && !strings.Contains(errMsg, "no such") && !strings.Contains(errMsg, "executable") && !strings.Contains(errMsg, "opencode") && !strings.Contains(errMsg, "missing") && !strings.Contains(errMsg, "invalid") {
+			t.Fatalf("error should mention binary not found, got: %v", err)
+		}
+		t.Logf("missing binary error: %v", err)
+	})
+}
+
+func TestOpenCodeCLIStructuredMCPBridge(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	workspaceDir := t.TempDir()
+	gitInit(t, workspaceDir)
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	bridgeToken := "OPENCODE_STRUCT_BRIDGE_" + opencodeRandomHex(4)
+	mcpServerPath := writeOpenCodeContractMCPServer(t)
+
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+
+	stream := make(chan llmtypes.StreamChunk, 256)
+	errCh := make(chan error, 1)
+	var resp *llmtypes.ContentResponse
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	go func() {
+		var err error
+		resp, err = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."},
+				},
+			},
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge echo_contract MCP tool with token %s. Then reply exactly with the tool result text.", bridgeToken)},
+				},
+			},
+		},
+			WithMCPConfig(mcpConfig),
+			WithWorkingDir(workspaceDir),
+			llmtypes.WithStreamingChan(stream),
+		)
+		errCh <- err
+	}()
+
+	var hasToolStart, hasToolEnd bool
+	for chunk := range stream {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			hasToolStart = true
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			hasToolEnd = true
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("GenerateContent with MCP bridge error = %v", err)
+	}
+
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, want) {
+		t.Fatalf("content = %q, want bridge tool result %q", content, want)
+	}
+	if !hasToolStart || !hasToolEnd {
+		t.Logf("warning: expected tool start/end chunks, got start=%v end=%v", hasToolStart, hasToolEnd)
+	}
+	t.Logf("MCP bridge: tool_start=%v tool_end=%v content contains bridge result", hasToolStart, hasToolEnd)
+}
+
+func writeOpenCodeContractMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "opencode-contract-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "echo_contract",
+          description: "Return a deterministic contract token.",
+          inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: { content: [{ type: "text", text: "BRIDGE_TOOL_OK_" + String(args.token || "") }], isError: false }
+    });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func TestOpenCodeCLIStructuredToolDisable(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	workspaceDir := t.TempDir()
+	gitInit(t, workspaceDir)
+
+	permConfig := `{"permission":{"*":"deny"}}`
+	if err := os.WriteFile(filepath.Join(workspaceDir, "opencode.jsonc"), []byte(permConfig), 0o600); err != nil {
+		t.Fatalf("write opencode.jsonc: %v", err)
+	}
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	marker := "TOOLDISABLE_" + opencodeRandomHex(4) + ".txt"
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: fmt.Sprintf("Create a file called %s containing 'hello'. Use a shell command or file write tool.", marker)},
+			},
+		},
+	},
+		WithWorkingDir(workspaceDir),
+		WithPermissionsEnforced(),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choices returned")
+	}
+
+	markerPath := filepath.Join(workspaceDir, marker)
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Fatalf("file %s was created despite permission deny — tool disable not working", marker)
+	}
+	t.Logf("tool disable verified: file %s was NOT created (response: %q)", marker, resp.Choices[0].Content[:min(len(resp.Choices[0].Content), 200)])
+}
+
+func TestOpenCodeCLIStructuredSandboxedMCP(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	t.Run("permission deny blocks all tools including MCP", func(t *testing.T) {
+		workspaceDir := t.TempDir()
+		gitInit(t, workspaceDir)
+
+		bridgeToken := "OPENCODE_SANDBOX_BRIDGE_" + opencodeRandomHex(4)
+		mcpServerPath := writeOpenCodeContractMCPServer(t)
+		markerFile := "sandboxed_marker_" + opencodeRandomHex(4) + ".txt"
+
+		combinedConfig := fmt.Sprintf(`{
+  "mcp": {
+    "api-bridge": {
+      "type": "local",
+      "command": "node",
+      "args": [%q],
+      "enabled": true
+    }
+  },
+  "permission": {
+    "*": "deny"
+  }
+}`, mcpServerPath)
+
+		if err := os.WriteFile(filepath.Join(workspaceDir, "opencode.jsonc"), []byte(combinedConfig), 0o600); err != nil {
+			t.Fatalf("write opencode.jsonc: %v", err)
+		}
+
+		adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf(
+						"Call the api-bridge echo_contract MCP tool with token %s. Then create a file called %s with 'hello'.",
+						bridgeToken, markerFile,
+					)},
+				},
+			},
+		},
+			WithWorkingDir(workspaceDir),
+			WithPermissionsEnforced(),
+		)
+		if err != nil {
+			t.Fatalf("GenerateContent error = %v", err)
+		}
+
+		markerPath := filepath.Join(workspaceDir, markerFile)
+		if _, err := os.Stat(markerPath); err == nil {
+			t.Fatal("file was created despite permission deny")
+		}
+
+		content := resp.Choices[0].Content
+		want := "BRIDGE_TOOL_OK_" + bridgeToken
+		if strings.Contains(content, want) {
+			t.Fatal("expected MCP to also be blocked by wildcard deny, but tool result found")
+		}
+
+		t.Log("confirmed: OpenCode permission '*':'deny' blocks ALL tools including MCP")
+		t.Log("sandboxed MCP (deny built-in + allow MCP) not possible at CLI level")
+		t.Log("the orchestration layer (mcpagent) must implement selective tool restriction")
+	})
+}
+
+func TestOpenCodeCLIStructuredGracefulCancel(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	workspaceDir := t.TempDir()
+	gitInit(t, workspaceDir)
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := make(chan llmtypes.StreamChunk, 256)
+
+	errCh := make(chan error, 1)
+	respCh := make(chan *llmtypes.ContentResponse, 1)
+
+	go func() {
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Run 'find /usr -type f' in the shell and show every single file path. This will produce a very long output."},
+				},
+			},
+		},
+			WithWorkingDir(workspaceDir),
+			llmtypes.WithStreamingChan(stream),
+		)
+		respCh <- resp
+		errCh <- err
+	}()
+
+	var chunks []llmtypes.StreamChunk
+	gotFirstChunk := false
+	timeout := time.After(90 * time.Second)
+
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				goto streamClosed
+			}
+			chunks = append(chunks, chunk)
+			if !gotFirstChunk && (chunk.Type == llmtypes.StreamChunkTypeContent || chunk.Type == llmtypes.StreamChunkTypeToolCallStart) {
+				gotFirstChunk = true
+				time.Sleep(500 * time.Millisecond)
+				cancel()
+			}
+		case <-timeout:
+			cancel()
+			t.Fatal("timed out waiting for first chunk")
+		}
+	}
+
+streamClosed:
+	resp := <-respCh
+	err := <-errCh
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before cancellation")
+	}
+
+	var contentChunks, toolStarts, toolEnds int
+	for _, c := range chunks {
+		switch c.Type {
+		case llmtypes.StreamChunkTypeContent:
+			contentChunks++
+		case llmtypes.StreamChunkTypeToolCallStart:
+			toolStarts++
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			toolEnds++
+		}
+	}
+
+	t.Logf("graceful cancel: %d total chunks (%d content, %d tool_start, %d tool_end)", len(chunks), contentChunks, toolStarts, toolEnds)
+
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].Content != "" {
+		t.Logf("partial content returned: %d chars", len(resp.Choices[0].Content))
+	} else if err != nil {
+		t.Logf("error after cancel (expected): %v", err)
+	} else {
+		t.Logf("no content and no error (process exited cleanly)")
+	}
 }
 
 func gitInit(t *testing.T, dir string) {

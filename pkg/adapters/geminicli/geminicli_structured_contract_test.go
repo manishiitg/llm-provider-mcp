@@ -3,6 +3,9 @@ package geminicli
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,42 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+func TestGeminiCLIStructuredWorkingDir(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	workspaceDir := t.TempDir()
+	marker := "WDMARKER_" + geminiRandomHex(6)
+	markerFile := filepath.Join(workspaceDir, "marker.txt")
+	if err := os.WriteFile(markerFile, []byte(marker), 0644); err != nil {
+		t.Fatalf("write marker file: %v", err)
+	}
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Read the file marker.txt in the current directory and reply with its exact contents. Nothing else."},
+			},
+		},
+	},
+		WithWorkingDir(workspaceDir),
+		WithProjectSettings(`{}`),
+		WithApprovalMode("yolo"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, marker) {
+		t.Fatalf("expected marker %q in response, got %q", marker, resp.Choices[0].Content)
+	}
+	t.Logf("working dir verified: marker %q found in response", marker)
+}
 
 func TestGeminiCLIStructuredSystemPrompt(t *testing.T) {
 	requireRealGeminiCLIStreamJSONE2E(t)
@@ -79,6 +118,64 @@ func TestGeminiCLIStructuredStreaming(t *testing.T) {
 		t.Fatal("expected streaming content")
 	}
 	t.Logf("streamed %d chars, final: %q", len(streamed), resp.Choices[0].Content)
+}
+
+func TestGeminiCLIStructuredToolUse(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 256)
+
+	errCh := make(chan error, 1)
+	respCh := make(chan *llmtypes.ContentResponse, 1)
+	go func() {
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Run 'echo hello_gemini_tool_test' in the shell. Then say done."},
+				},
+			},
+		},
+			WithProjectSettings(`{}`),
+			WithApprovalMode("yolo"),
+			llmtypes.WithStreamingChan(stream),
+		)
+		respCh <- resp
+		errCh <- err
+	}()
+
+	var hasToolStart, hasToolEnd bool
+	for chunk := range stream {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			hasToolStart = true
+			t.Logf("tool_start: name=%s id=%s", chunk.ToolName, chunk.ToolCallID)
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			hasToolEnd = true
+			t.Logf("tool_end: name=%s result_len=%d", chunk.ToolName, len(chunk.ToolResult))
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	resp := <-respCh
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no response choices")
+	}
+
+	if !hasToolStart {
+		t.Error("expected StreamChunkTypeToolCallStart chunk for shell tool")
+	}
+	if !hasToolEnd {
+		t.Error("expected StreamChunkTypeToolCallEnd chunk for shell tool")
+	}
+	t.Logf("tool_start=%v tool_end=%v content=%q", hasToolStart, hasToolEnd, resp.Choices[0].Content)
 }
 
 func TestGeminiCLIStructuredToolDisable(t *testing.T) {
@@ -279,4 +376,309 @@ func TestGeminiCLIStructuredNoInternalMemory(t *testing.T) {
 		t.Fatalf("fresh session should NOT recall secret %q: %q", secret, content)
 	}
 	t.Logf("fresh session correctly did not recall secret (response: %q)", content)
+}
+
+func TestGeminiCLIStructuredModelOverride(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, "flash", quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "What model are you? Reply with just your model name."},
+			},
+		},
+	},
+		WithProjectSettings(`{}`),
+		WithApprovalMode("yolo"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choices returned")
+	}
+	content := resp.Choices[0].Content
+	if content == "" {
+		t.Fatal("empty response content")
+	}
+
+	gen := resp.Choices[0].GenerationInfo
+	if gen != nil && gen.Additional != nil {
+		if model, ok := gen.Additional["gemini_model"].(string); ok {
+			t.Logf("model metadata: %s", model)
+		}
+	}
+	t.Logf("model override response: %q", content)
+}
+
+func TestGeminiCLIStructuredMultiStepToolUse(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 256)
+	marker := "MSTEP_" + geminiRandomHex(6)
+
+	errCh := make(chan error, 1)
+	respCh := make(chan *llmtypes.ContentResponse, 1)
+	go func() {
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf("Run 'echo %s' in the shell. Then tell me what the output was. Include the marker string in your reply.", marker)},
+				},
+			},
+		},
+			WithProjectSettings(`{}`),
+			WithApprovalMode("yolo"),
+			llmtypes.WithStreamingChan(stream),
+		)
+		respCh <- resp
+		errCh <- err
+	}()
+
+	var hasToolStart, hasToolEnd, hasContent bool
+	for chunk := range stream {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			hasToolStart = true
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			hasToolEnd = true
+		case llmtypes.StreamChunkTypeContent:
+			hasContent = true
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	resp := <-respCh
+	if !hasToolStart || !hasToolEnd {
+		t.Fatalf("expected tool start+end, got start=%v end=%v", hasToolStart, hasToolEnd)
+	}
+	if !hasContent {
+		t.Fatal("expected content chunks after tool use")
+	}
+	if !strings.Contains(resp.Choices[0].Content, marker) {
+		t.Fatalf("response should contain marker %q, got %q", marker, resp.Choices[0].Content)
+	}
+	t.Logf("multi-step: tool_start=%v tool_end=%v marker_in_response=true", hasToolStart, hasToolEnd)
+}
+
+func TestGeminiCLIStructuredErrorHandling(t *testing.T) {
+	t.Run("missing binary returns clear error", func(t *testing.T) {
+		adapter := NewGeminiCLIAdapter("fake-key", "gemini-cli", quietGeminiStreamLogger{})
+
+		origPath := os.Getenv("PATH")
+		t.Setenv("PATH", "/nonexistent")
+		defer os.Setenv("PATH", origPath)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "hello"},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for missing binary")
+		}
+		errMsg := strings.ToLower(err.Error())
+		if !strings.Contains(errMsg, "not found") && !strings.Contains(errMsg, "no such") && !strings.Contains(errMsg, "executable") && !strings.Contains(errMsg, "gemini") {
+			t.Fatalf("error should mention binary not found, got: %v", err)
+		}
+		t.Logf("missing binary error: %v", err)
+	})
+}
+
+func TestGeminiCLIStructuredImagePath(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	workspaceDir := t.TempDir()
+	imagePath := filepath.Join(workspaceDir, "red.png")
+	writeGeminiStructuredTestPNG(t, imagePath, color.RGBA{R: 255, A: 255})
+
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	prompt := fmt.Sprintf("Inspect the local image file at this absolute path:\n%s\n\nQuestion: What is the dominant color? Reply with one lowercase English color word.", imagePath)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: prompt},
+			},
+		},
+	},
+		WithWorkingDir(workspaceDir),
+		WithProjectSettings(`{}`),
+		WithApprovalMode("yolo"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choices returned")
+	}
+	content := strings.ToLower(strings.TrimSpace(resp.Choices[0].Content))
+	if !strings.Contains(content, "red") {
+		t.Fatalf("expected image analysis to mention red, got %q", content)
+	}
+}
+
+func writeGeminiStructuredTestPNG(t *testing.T, path string, pixel color.RGBA) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 48, 48))
+	for y := range 48 {
+		for x := range 48 {
+			img.SetRGBA(x, y, pixel)
+		}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create test image: %v", err)
+	}
+	defer file.Close()
+	if err := png.Encode(file, img); err != nil {
+		t.Fatalf("encode test image: %v", err)
+	}
+}
+
+func TestGeminiCLIStructuredSearchWeb(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	result, err := adapter.SearchWeb(ctx,
+		"What is the capital of France? Use web search and reply with the city and country only.",
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if !strings.Contains(strings.ToLower(result), "paris") {
+		t.Fatalf("expected result to mention Paris, got %q", result)
+	}
+}
+
+func TestGeminiCLIStructuredSearchWebLiveData(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	result, err := adapter.SearchWeb(ctx,
+		"Search the web for the latest Gemini CLI version number released in 2026. Reply with just the version string.",
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		t.Fatal("SearchWeb returned empty result")
+	}
+	t.Logf("Live web search result: %s", result)
+}
+
+func TestGeminiCLIStructuredGracefulCancel(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := make(chan llmtypes.StreamChunk, 256)
+
+	errCh := make(chan error, 1)
+	respCh := make(chan *llmtypes.ContentResponse, 1)
+
+	go func() {
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Run 'find /usr -type f' in the shell and show every single file path. This will produce a very long output."},
+				},
+			},
+		},
+			WithProjectSettings(`{}`),
+			WithApprovalMode("yolo"),
+			llmtypes.WithStreamingChan(stream),
+		)
+		respCh <- resp
+		errCh <- err
+	}()
+
+	var chunks []llmtypes.StreamChunk
+	gotFirstChunk := false
+	timeout := time.After(90 * time.Second)
+
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				goto streamClosed
+			}
+			chunks = append(chunks, chunk)
+			if !gotFirstChunk && (chunk.Type == llmtypes.StreamChunkTypeContent || chunk.Type == llmtypes.StreamChunkTypeToolCallStart) {
+				gotFirstChunk = true
+				time.Sleep(500 * time.Millisecond)
+				cancel()
+			}
+		case <-timeout:
+			cancel()
+			t.Fatal("timed out waiting for first chunk")
+		}
+	}
+
+streamClosed:
+	resp := <-respCh
+	err := <-errCh
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before cancellation")
+	}
+
+	var contentChunks, toolStarts, toolEnds int
+	for _, c := range chunks {
+		switch c.Type {
+		case llmtypes.StreamChunkTypeContent:
+			contentChunks++
+		case llmtypes.StreamChunkTypeToolCallStart:
+			toolStarts++
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			toolEnds++
+		}
+	}
+
+	t.Logf("graceful cancel: %d total chunks (%d content, %d tool_start, %d tool_end)", len(chunks), contentChunks, toolStarts, toolEnds)
+
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].Content != "" {
+		t.Logf("partial content returned: %d chars", len(resp.Choices[0].Content))
+	} else if err != nil {
+		t.Logf("error after cancel (expected): %v", err)
+	} else {
+		t.Logf("no content and no error (process exited cleanly)")
+	}
 }

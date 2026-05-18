@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -77,11 +78,59 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
 	}
 
-	args := []string{"run", "--format", "json", "--dangerously-skip-permissions"}
+	args := []string{"run", "--format", "json"}
+
+	dangerouslySkip := true
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions]; ok {
+			if b, isBool := v.(bool); isBool {
+				dangerouslySkip = b
+			}
+		}
+	}
+	if dangerouslySkip {
+		args = append(args, "--dangerously-skip-permissions")
+	}
 
 	workingDir := opencodeWorkingDirFromOptions(opts)
 	if workingDir != "" {
 		args = append(args, "--dir", workingDir)
+	}
+
+	var configCleanups []func()
+	defer func() {
+		for _, fn := range configCleanups {
+			fn()
+		}
+	}()
+	if workingDir != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if configJSON, ok := opts.Metadata.Custom[MetadataKeyProjectConfig].(string); ok && strings.TrimSpace(configJSON) != "" {
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), []byte(configJSON))
+			if werr != nil {
+				if opts.StreamChan != nil {
+					close(opts.StreamChan)
+				}
+				return nil, fmt.Errorf("opencode project config: %w", werr)
+			}
+			configCleanups = append(configCleanups, cleanup)
+		}
+		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
+			configJSON, merr := buildOpenCodeMCPConfigJSON(mcpJSON)
+			if merr != nil {
+				if opts.StreamChan != nil {
+					close(opts.StreamChan)
+				}
+				return nil, merr
+			}
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), configJSON)
+			if werr != nil {
+				if opts.StreamChan != nil {
+					close(opts.StreamChan)
+				}
+				return nil, fmt.Errorf("opencode MCP config: %w", werr)
+			}
+			configCleanups = append(configCleanups, cleanup)
+		}
 	}
 
 	modelToUse := resolveOpenCodeCLIModelID(c.modelID)
