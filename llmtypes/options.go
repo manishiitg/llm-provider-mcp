@@ -21,6 +21,42 @@ func WithMaxTokens(maxTokens int) CallOption {
 	}
 }
 
+// WithTopP sets the nucleus-sampling probability cutoff. Pass a value in
+// (0, 1]; 1.0 effectively disables nucleus sampling. Zero is treated as
+// "do not set" and the provider's own default applies.
+func WithTopP(topP float64) CallOption {
+	return func(opts *CallOptions) {
+		opts.TopP = topP
+	}
+}
+
+// WithTopK sets the top-k sampling cutoff. Only forwarded to providers
+// that accept top_k (Anthropic Messages API does; OpenAI Chat Completions
+// does not). Pass zero to leave the provider's default in place.
+func WithTopK(topK int) CallOption {
+	return func(opts *CallOptions) {
+		opts.TopK = topK
+	}
+}
+
+// WithStopSequences sets the strings that, if generated, terminate
+// sampling immediately. Pass an empty slice (or nil) to clear.
+func WithStopSequences(seqs []string) CallOption {
+	return func(opts *CallOptions) {
+		if seqs == nil {
+			opts.StopSequences = nil
+			return
+		}
+		out := make([]string, 0, len(seqs))
+		for _, s := range seqs {
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		opts.StopSequences = out
+	}
+}
+
 // WithJSONMode enables JSON mode
 func WithJSONMode() CallOption {
 	return func(opts *CallOptions) {

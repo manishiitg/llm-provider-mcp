@@ -53,6 +53,34 @@ type ImageContent struct {
 	Data string
 }
 
+// DocumentContent represents a document content part (PDFs today; other
+// document types may be added later). Currently consumed by adapters
+// whose underlying provider supports document input natively, such as
+// Anthropic Claude 3.5+ which accepts PDFs in content blocks.
+type DocumentContent struct {
+	// SourceType is either "base64" or "url".
+	SourceType string
+	// MediaType is the MIME type. Only "application/pdf" is universally
+	// supported today; other types may pass through but provider
+	// acceptance varies.
+	MediaType string
+	// Data contains either:
+	//   - Base64-encoded document bytes (no `data:` prefix) for SourceType "base64"
+	//   - Public URL for SourceType "url"
+	Data string
+	// Title is an optional document label (Anthropic surfaces this as
+	// `title` on the content block; useful for citation extraction).
+	Title string
+	// Context is an optional human-readable description of the document's
+	// role in the conversation. Anthropic uses it to improve citation
+	// relevance.
+	Context string
+	// EnableCitations turns on Anthropic's citation extraction so the
+	// model returns explicit `citations` annotations grounded in this
+	// document. Other providers ignore this field.
+	EnableCitations bool
+}
+
 // StreamChunkType represents the type of a streaming chunk
 type StreamChunkType string
 
@@ -97,6 +125,11 @@ type ToolCallResponse struct {
 	Name       string // Name of the tool/function that was called
 	Content    string
 	IsError    bool // True when the tool execution failed
+	// Images, when set, are appended to the tool result block so the
+	// model can reason over them on the next turn. Supported on
+	// Anthropic Claude 3.5+ (vision-in-tool-output); silently ignored
+	// by providers that don't support image content in tool results.
+	Images []ImageContent
 }
 
 // MessageContent represents a message in the conversation
@@ -504,6 +537,14 @@ type CallOptions struct {
 	ThinkingLevel   string             // Thinking level: "low", "high" (for Gemini 3 Pro)
 	ThinkingBudget  int                // Thinking budget (token limit) for reasoning models (e.g., Gemini 2.5 Flash Thinking)
 	AllowedTools    []string           // Explicitly allowed tools for agentic models (e.g., gpt-5.2-codex)
+
+	// Sampling controls supported by most modern providers. Zero values
+	// mean "do not set" — adapters should only forward these to the
+	// provider when explicitly populated, so the provider's own default
+	// (typically top_p=1, top_k=0=disabled) keeps applying.
+	TopP          float64  // Nucleus sampling probability (0 < p ≤ 1)
+	TopK          int      // Top-k sampling cutoff (provider must support; Anthropic accepts; OpenAI does not)
+	StopSequences []string // Up to N strings that, if generated, halt sampling immediately
 }
 
 // CallOption is a function type for setting call options
