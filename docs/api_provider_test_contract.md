@@ -344,13 +344,13 @@ Status as of 2026-05-18:
 | 12. top_k | ✅ **(go test)** | n/a | ✅ **(go test)** | ❌ | n/a | ❌ | ❌ | ❌ | n/a | n/a |
 | 13. Image base64 | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ❌ | n/a | n/a |
 | 14. Image URL | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ❌ | ❌ | n/a | n/a |
-| 15. PDF / document | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 15. PDF / document | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
 | 16. Tool result image | ⚠ (unit only) | n/a | ⚠ (unit only) | ⚠ (unit only) | n/a | ❌ | ❌ | n/a | n/a | n/a |
 | 17. Extended thinking / reasoning | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a | n/a |
 | 18. Interleaved thinking+tools | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | n/a | ❌ | n/a | n/a | n/a |
-| 19. Prompt caching cache_read | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | n/a | n/a | n/a | n/a | n/a |
+| 19. Prompt caching cache_read | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | n/a | n/a | n/a | n/a | n/a |
 | 20. JSON mode | ✅ (cli-smoke) | ✅ **(go test)** | ✅ **(go test)** | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ✅ (cli-smoke) | n/a | n/a |
-| 21. JSON Schema strict | ❌ | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 21. JSON Schema strict | ✅ **(go test, via forced tool)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
 | 22. Auth failure classified | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 23. Rate-limit classified | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 24. Beta headers compose | ✅ **(go test, unit)** | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
