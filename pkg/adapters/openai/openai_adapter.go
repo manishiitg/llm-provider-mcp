@@ -195,6 +195,25 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		params.Verbosity = verbosity
 	}
 
+	// Optional sampling controls. Only forward when the caller
+	// explicitly populated the field so the provider's own defaults
+	// stay in place otherwise. OpenAI Chat Completions does NOT accept
+	// top_k, so opts.TopK is intentionally ignored here.
+	if opts.TopP > 0 {
+		params.TopP = param.NewOpt(opts.TopP)
+	}
+	if len(opts.StopSequences) > 0 {
+		// OpenAI's stop parameter accepts string or []string; we always
+		// send the slice form via the union helper. The SDK enforces
+		// the documented 4-string cap, but we leave that validation to
+		// the API rather than truncating silently here.
+		seqs := make([]string, len(opts.StopSequences))
+		copy(seqs, opts.StopSequences)
+		params.Stop = openai.ChatCompletionNewParamsStopUnion{
+			OfStringArray: seqs,
+		}
+	}
+
 	// Check if we're using OpenRouter and need to add usage parameter
 	isOpenRouter := o.compatibility.TreatAsOpenRouter || strings.Contains(modelID, "/")
 
@@ -1165,11 +1184,35 @@ func convertToolChoice(toolChoice interface{}) *openai.ChatCompletionToolChoiceO
 		}
 	}
 
-	// Handle ToolChoice struct if it's that type
+	// Handle ToolChoice struct (the canonical shape used by
+	// WithToolChoiceString and the function-specific variants).
+	// Earlier versions of this branch silently defaulted everything
+	// to "auto", which meant tool_choice=none and tool_choice=required
+	// were both downgraded to auto — the model would still emit tool
+	// calls when the caller had explicitly asked for none. We now
+	// translate every field on the struct.
 	if tc, ok := toolChoice.(*llmtypes.ToolChoice); ok && tc != nil {
-		// For now, default to auto - could be enhanced to handle function-specific choices
+		// Function-specific selection wins when set.
+		if tc.Function != nil && strings.TrimSpace(tc.Function.Name) != "" {
+			result := openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
+				Name: tc.Function.Name,
+			})
+			return &result
+		}
+		// Both booleans + Type are exposed as legacy hints. We accept
+		// any of them so callers that built the struct directly keep
+		// working.
+		mode := "auto"
+		switch {
+		case tc.None || strings.EqualFold(tc.Type, "none"):
+			mode = "none"
+		case tc.Any || strings.EqualFold(tc.Type, "required") || strings.EqualFold(tc.Type, "any"):
+			mode = "required"
+		case strings.EqualFold(tc.Type, "auto") || tc.Type == "":
+			mode = "auto"
+		}
 		result := openai.ChatCompletionToolChoiceOptionUnionParam{
-			OfAuto: param.NewOpt("auto"),
+			OfAuto: param.NewOpt(mode),
 		}
 		return &result
 	}
