@@ -324,7 +324,34 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	}
 
 	// Convert the accumulated message to llm format
-	return convertResponse(&message), nil
+	resp := convertResponse(&message)
+	a.attachCostEstimate(resp, modelID)
+	return resp, nil
+}
+
+// attachCostEstimate fills in GenerationInfo.Additional["cost_usd_estimated"]
+// from tokens × registry rates so downstream cost ledgers don't have to
+// redo the math. Anthropic's Messages API does not return a cost field
+// in the response (unlike Claude Code CLI's --print result event), so
+// this is the only way to surface a number at the adapter layer.
+func (a *AnthropicAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, modelID string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	meta, err := a.GetModelMetadata(modelID)
+	if err != nil || meta == nil {
+		return
+	}
+	gi := resp.Choices[0].GenerationInfo
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi)
+	if cost <= 0 {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]interface{}{}
+	}
+	gi.Additional["cost_usd_estimated"] = cost
+	gi.Additional["cost_model_id"] = modelID
 }
 
 // Call implements a convenience method that wraps GenerateContent for simple text generation
