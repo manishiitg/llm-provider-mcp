@@ -196,6 +196,10 @@ event format end-to-end.
 | 13 | Cancellation | Context cancellation kills the process group; adapter returns error cleanly. |
 | 14 | Error on empty response | Adapter returns a clear error when no text events are received. |
 | 15 | MCP bridge tool call | A real MCP bridge tool is callable from the structured transport. |
+| 16 | Internal tool disable | Built-in tools disabled via provider flag; agent cannot use shell/file tools. |
+| 17 | Multi-turn resume | Second call with resume session ID continues the conversation; agent recalls prior context. |
+| 18 | No injected strings | Adapter does not leak internal project names, library names, or custom strings into the prompt. |
+| 19 | No internal memory | Fresh session (no resume) cannot recall data from a previous session; agent memory is isolated. |
 
 ## Current Test Coverage
 
@@ -203,18 +207,25 @@ event format end-to-end.
 
 ```sh
 RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 go test ./pkg/adapters/claudecode \
-  -run 'TestClaudeCodeStreaming|TestRawClaude' -v -timeout 4m
+  -run 'TestClaudeCodeStructured|TestClaudeCodeStreaming|TestRawClaude' -v -timeout 4m
 ```
 
 | Area | Test |
 |---|---|
-| Fresh launch | `TestRawClaude` |
-| Streaming text | `TestClaudeCodeStreaming` |
+| Fresh launch | `TestClaudeCodeStructuredBasicRun` |
+| System prompt | `TestClaudeCodeStructuredSystemPrompt` |
+| Token usage | `TestClaudeCodeStructuredTokenUsage` |
+| Streaming text | `TestClaudeCodeStructuredStreaming` |
+| Streaming tool calls | `TestClaudeCodeStructuredToolUse` |
+| Session metadata | `TestClaudeCodeStructuredSessionMetadata` |
 | Image input | `TestClaudeCodePrintRealImageInput` |
 | Web search | `TestClaudeCodeRealSearchWeb` |
+| Tool disable | `TestClaudeCodeStructuredToolDisable` |
+| Multi-turn resume | `TestClaudeCodeStructuredMultiTurnResume` |
+| No injected strings | `TestClaudeCodeStructuredNoInjectedStrings` |
+| No internal memory | `TestClaudeCodeStructuredNoInternalMemory` |
 
-**Gaps:** system prompt, token usage, tool call events, session metadata,
-multi-step tool use, model override, cancellation, MCP bridge.
+**Gaps:** working directory, multi-step tool use, model override, cancellation, MCP bridge.
 
 ### Codex CLI (`codex exec --json`)
 
@@ -251,6 +262,10 @@ RUN_CURSOR_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/cursorcli \
 | Image path | `TestCursorCLIStructuredImagePath` |
 | Web search | `TestCursorCLIStructuredSearchWeb` |
 | Live web search | `TestCursorCLIStructuredSearchWebLiveData` |
+| Tool disable | `TestCursorCLIStructuredToolDisable` |
+| Multi-turn resume | `TestCursorCLIStructuredMultiTurnResume` |
+| No injected strings | `TestCursorCLIStructuredNoInjectedStrings` |
+| No internal memory | `TestCursorCLIStructuredNoInternalMemory` |
 
 **Gaps:** working directory, model override, cancellation, error handling, MCP bridge.
 
@@ -258,18 +273,24 @@ RUN_CURSOR_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/cursorcli \
 
 ```sh
 RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli \
-  -run 'TestGeminiCLIRealStreamJSON' -v -timeout 6m
+  -run 'TestGeminiCLIRealStreamJSON|TestGeminiCLIStructured' -v -timeout 10m
 ```
 
 | Area | Test |
 |---|---|
 | Fresh launch | `TestGeminiCLIRealStreamJSONContract` |
-| Session resume | `TestGeminiCLIRealStreamJSONContract` (multi-turn with resume) |
-| MCP bridge | `TestGeminiCLIRealStreamJSONMCPBridgeContract` |
+| System prompt | `TestGeminiCLIStructuredSystemPrompt` |
 | Token usage | `TestGeminiCLIUsageAndCost` |
+| Streaming text | `TestGeminiCLIStructuredStreaming` |
+| Session resume | `TestGeminiCLIRealStreamJSONContract` (multi-turn with resume) |
+| Session metadata | `TestGeminiCLIRealStreamJSONContract` (session_id + project_dir_id) |
+| MCP bridge | `TestGeminiCLIRealStreamJSONMCPBridgeContract` |
+| Tool disable | `TestGeminiCLIStructuredToolDisable` |
+| Multi-turn resume | `TestGeminiCLIStructuredMultiTurnResume` |
+| No injected strings | `TestGeminiCLIStructuredNoInjectedStrings` |
+| No internal memory | `TestGeminiCLIStructuredNoInternalMemory` |
 
-**Gaps:** system prompt, streaming text, tool call events, session metadata,
-model override, image path, web search, cancellation.
+**Gaps:** tool call events, model override, image path, web search, cancellation.
 
 ### OpenCode CLI (`opencode run --format json`)
 
@@ -291,8 +312,11 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 | Image path | `TestOpenCodeCLIRealImagePathAnalysis` |
 | Web search | `TestOpenCodeCLIRealSearchWeb` |
 | Live web search | `TestOpenCodeCLIRealSearchWebLiveData` |
+| Multi-turn resume | `TestOpenCodeCLIStructuredMultiTurnResume` |
+| No injected strings | `TestOpenCodeCLIStructuredNoInjectedStrings` |
+| No internal memory | `TestOpenCodeCLIStructuredNoInternalMemory` |
 
-**Gaps:** model override, cancellation, MCP bridge, error handling.
+**Gaps:** model override, cancellation, MCP bridge, error handling, tool disable (no CLI flag available).
 
 ## Full Provider Coverage Matrix
 
@@ -300,11 +324,11 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 |---|:---:|:---:|:---:|:---:|:---:|
 | 1. Fresh launch | yes | yes | yes | yes | yes |
 | 2. Working directory | - | - | **no** | - | yes |
-| 3. System prompt | **no** | **no** | yes | **no** | yes |
-| 4. Token usage | **no** | **no** | yes | yes | yes |
-| 5. Streaming text | yes | **no** | yes | **no** | yes |
-| 6. Streaming tool calls | **no** | **no** | yes | **no** | yes |
-| 7. Session metadata | **no** | **no** | yes | **no** | yes |
+| 3. System prompt | yes | **no** | yes | yes | yes |
+| 4. Token usage | yes | **no** | yes | yes | yes |
+| 5. Streaming text | yes | **no** | yes | yes | yes |
+| 6. Streaming tool calls | yes | **no** | yes | **no** | yes |
+| 7. Session metadata | yes | **no** | yes | yes | yes |
 | 8. Multi-step tool use | **no** | **no** | yes | **no** | yes |
 | 9. Model override | **no** | **no** | **no** | **no** | **no** |
 | 10. Image path | yes | **no** | yes | **no** | yes |
@@ -313,6 +337,10 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 | 13. Cancellation | **no** | **no** | **no** | **no** | **no** |
 | 14. Error handling | **no** | **no** | **no** | **no** | **no** |
 | 15. MCP bridge | **no** | yes | **no** | yes | **no** |
+| 16. Tool disable | yes | **no** | yes | yes | n/a |
+| 17. Multi-turn resume | yes | yes | yes | yes | yes |
+| 18. No injected strings | yes | **no** | yes | yes | yes |
+| 19. No internal memory | yes | **no** | yes | yes | yes |
 
 ## Related Docs
 
