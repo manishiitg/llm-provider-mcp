@@ -236,12 +236,19 @@ RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli \
 
 | Area | Test |
 |---|---|
-| Fresh launch | `TestCodexCLIRealExecJSONContract` |
+| Fresh launch | `TestCodexCLIStructuredBasicRun` |
+| System prompt | `TestCodexCLIStructuredSystemPrompt` |
+| Token usage | `TestCodexCLIStructuredTokenUsage` |
+| Streaming text | `TestCodexCLIStructuredStreaming` |
+| Session metadata | `TestCodexCLIStructuredSessionMetadata` |
 | Session resume | `TestCodexCLIRealExecJSONContract` (multi-turn with resume) |
 | MCP bridge | `TestCodexCLIRealExecJSONMCPBridgeContract` |
+| Tool disable | `TestCodexCLIStructuredToolDisable` |
+| Multi-turn resume | `TestCodexCLIStructuredMultiTurnResume` |
+| No injected strings | `TestCodexCLIStructuredNoInjectedStrings` |
+| No internal memory | `TestCodexCLIStructuredNoInternalMemory` |
 
-**Gaps:** system prompt, token usage, streaming text, tool call events, session
-metadata, model override, image path, web search, cancellation.
+**Gaps:** tool call events, model override, image path, web search, cancellation.
 
 ### Cursor CLI (`cursor-agent --print --output-format stream-json`)
 
@@ -324,11 +331,11 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 |---|:---:|:---:|:---:|:---:|:---:|
 | 1. Fresh launch | yes | yes | yes | yes | yes |
 | 2. Working directory | - | - | **no** | - | yes |
-| 3. System prompt | yes | **no** | yes | yes | yes |
-| 4. Token usage | yes | **no** | yes | yes | yes |
-| 5. Streaming text | yes | **no** | yes | yes | yes |
+| 3. System prompt | yes | yes | yes | yes | yes |
+| 4. Token usage | yes | yes | yes | yes | yes |
+| 5. Streaming text | yes | yes | yes | yes | yes |
 | 6. Streaming tool calls | yes | **no** | yes | **no** | yes |
-| 7. Session metadata | yes | **no** | yes | yes | yes |
+| 7. Session metadata | yes | yes | yes | yes | yes |
 | 8. Multi-step tool use | **no** | **no** | yes | **no** | yes |
 | 9. Model override | **no** | **no** | **no** | **no** | **no** |
 | 10. Image path | yes | **no** | yes | **no** | yes |
@@ -337,10 +344,10 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 | 13. Cancellation | **no** | **no** | **no** | **no** | **no** |
 | 14. Error handling | **no** | **no** | **no** | **no** | **no** |
 | 15. MCP bridge | **no** | yes | **no** | yes | **no** |
-| 16. Tool disable | yes | **no** | yes | yes | n/a |
+| 16. Tool disable | yes | yes | yes | yes | n/a |
 | 17. Multi-turn resume | yes | yes | yes | yes | yes |
-| 18. No injected strings | yes | **no** | yes | yes | yes |
-| 19. No internal memory | yes | **no** | yes | yes | yes |
+| 18. No injected strings | yes | yes | yes | yes | yes |
+| 19. No internal memory | yes | yes | yes | yes | yes |
 
 ## Related Docs
 
