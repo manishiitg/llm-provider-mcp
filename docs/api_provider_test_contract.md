@@ -330,28 +330,28 @@ Status as of 2026-05-18:
 
 | Area | anthropic | openai | vertex | bedrock | azure | zai | kimi | minimax | elevenlabs | deepgram |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1. Plain text | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ⚠ | ✅ (cli-smoke) | n/a | n/a |
+| 1. Plain text | ✅ (cli-smoke) | ✅ **(go test)** | ✅ **(go test)** | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ⚠ | ✅ (cli-smoke) | n/a | n/a |
 | 2. Streaming | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ⚠ | ✅ (cli-smoke) | n/a | n/a |
 | 3. Multi-turn | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ⚠ | ❌ | n/a | n/a |
-| 4. System prompt | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ⚠ | ❌ | n/a | n/a |
+| 4. System prompt | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ **(go test)** | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ⚠ | ❌ | n/a | n/a |
 | 5. Token usage | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ⚠ | ✅ (cli-smoke) | n/a | n/a |
 | 6. Cancellation | ✅ (cli-smoke) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
 | 7. Tool call | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ⚠ | ✅ (cli-smoke) | n/a | n/a |
-| 8. Tool description fidelity | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
-| 9. Tool choice modes | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
-| 10. Stop sequences | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
-| 11. top_p | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
-| 12. top_k | ✅ **(go test)** | n/a | ❌ | ❌ | n/a | ❌ | ❌ | ❌ | n/a | n/a |
+| 8. Tool description fidelity | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 9. Tool choice modes | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 10. Stop sequences | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 11. top_p | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 12. top_k | ✅ **(go test)** | n/a | ✅ **(go test)** | ❌ | n/a | ❌ | ❌ | ❌ | n/a | n/a |
 | 13. Image base64 | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ❌ | n/a | n/a |
 | 14. Image URL | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ❌ | ❌ | n/a | n/a |
 | 15. PDF / document | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
 | 16. Tool result image | ⚠ (unit only) | n/a | ⚠ (unit only) | ⚠ (unit only) | n/a | ❌ | ❌ | n/a | n/a | n/a |
-| 17. Extended thinking | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a | n/a |
+| 17. Extended thinking / reasoning | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a | n/a |
 | 18. Interleaved thinking+tools | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | n/a | ❌ | n/a | n/a | n/a |
-| 19. Prompt caching cache_read | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a | n/a | n/a | n/a |
-| 20. JSON mode | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ✅ (cli-smoke) | n/a | n/a |
-| 21. JSON Schema strict | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
-| 22. Auth failure classified | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 19. Prompt caching cache_read | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | n/a | n/a | n/a | n/a | n/a |
+| 20. JSON mode | ✅ (cli-smoke) | ✅ **(go test)** | ✅ **(go test)** | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ✅ (cli-smoke) | n/a | n/a |
+| 21. JSON Schema strict | ❌ | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
+| 22. Auth failure classified | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 23. Rate-limit classified | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 24. Beta headers compose | ✅ **(go test, unit)** | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 
@@ -391,7 +391,7 @@ is the fastest path for a new adapter author.
 |---|---|---|---|
 | Anthropic | `RUN_ANTHROPIC_REAL_E2E=1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_REAL_E2E_MODEL` (default `claude-haiku-4-5`) |
 | OpenAI | `RUN_OPENAI_REAL_E2E=1` | `OPENAI_API_KEY` | `OPENAI_REAL_E2E_MODEL` (default `gpt-5.1-nano`) |
-| Vertex | `RUN_VERTEX_REAL_E2E=1` | `VERTEX_API_KEY` or `GOOGLE_API_KEY` | `VERTEX_REAL_E2E_MODEL` (default `gemini-2.5-flash`) |
+| Vertex | `RUN_VERTEX_REAL_E2E=1` | `GEMINI_API_KEY` or `VERTEX_API_KEY` or `GOOGLE_API_KEY` | `VERTEX_REAL_E2E_MODEL` (default `gemini-3.1-flash-lite-preview`) |
 | Bedrock | `RUN_BEDROCK_REAL_E2E=1` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` | `BEDROCK_REAL_E2E_MODEL` |
 | Azure | `RUN_AZURE_REAL_E2E=1` | `AZURE_AI_API_KEY` + `AZURE_AI_ENDPOINT` | `AZURE_REAL_E2E_MODEL` |
 | Z.AI | `RUN_ZAI_REAL_E2E=1` | `ZAI_API_KEY` | `ZAI_REAL_E2E_MODEL` (default `glm-4.6`) |
