@@ -264,13 +264,16 @@ Gemini CLI:
 
 OpenCode CLI:
 
-- Interactive transport: `opencode <project>` TUI inside tmux.
-- The adapter must not use `opencode run --format json` for the product path.
+- Default structured transport: `opencode run --format json --dangerously-skip-permissions`.
+  Emits NDJSON events (`step_start`, `text`, `tool_use`, `step_finish`) with
+  token usage and cost.
+- Legacy tmux transport: `opencode <project>` TUI inside tmux. Available as
+  fallback when persistent interactive session ID is set.
 - Default model selector: `opencode-cli`, which means "do not pass --model; let
   OpenCode use its configured/account default".
 - Model overrides are passed as OpenCode provider/model selectors through
   `--model <provider/model>`.
-- Workflow and chat both use the tmux transport.
+- Workflow and chat both use the structured transport by default.
 
 ## Image Input Contract
 

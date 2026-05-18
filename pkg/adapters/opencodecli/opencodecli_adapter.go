@@ -235,3 +235,9 @@ func (c *OpenCodeCLIAdapter) logInfof(format string, args ...interface{}) {
 		c.logger.Infof(format, args...)
 	}
 }
+
+func (c *OpenCodeCLIAdapter) logDebugf(format string, args ...interface{}) {
+	if c.logger != nil {
+		c.logger.Debugf(format, args...)
+	}
+}
