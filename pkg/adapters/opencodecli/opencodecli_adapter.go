@@ -11,18 +11,58 @@ import (
 
 // OpenCodeCLIAdapter implements the LLM interface for OpenCode CLI.
 // By default it uses the structured transport (opencode run --format json).
+//
+// When constructed for a specific sub-provider tile (Kimi / DeepSeek /
+// Qwen / MiniMax / GLM / Free) via NewOpenCodeCLIAdapterForSubProvider,
+// the adapter remembers the tile's scope and injects the matching
+// per-sub-provider env var on every call. Callers do not have to attach
+// WithOpenCodeSubProvider/WithOpenCodeSubProviderAPIKey to each call.
+//
+// Call-time options still override the adapter-level defaults so
+// dispatchers can re-scope a single call without rebuilding the adapter.
 type OpenCodeCLIAdapter struct {
 	apiKey  string
 	modelID string
 	logger  interfaces.Logger
+
+	defaultSubProviderID     string
+	defaultSubProviderEnvVar string
+	defaultSubProviderAPIKey string
 }
 
-// NewOpenCodeCLIAdapter creates a new OpenCodeCLIAdapter.
+// NewOpenCodeCLIAdapter creates a new OpenCodeCLIAdapter scoped to the
+// legacy "opencode-cli" tile (single shared OPENCODE_API_KEY).
 func NewOpenCodeCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *OpenCodeCLIAdapter {
 	return &OpenCodeCLIAdapter{
 		apiKey:  apiKey,
 		modelID: modelID,
 		logger:  logger,
+	}
+}
+
+// NewOpenCodeCLIAdapterForSubProvider creates an OpenCodeCLIAdapter
+// preconfigured for a specific sub-provider tile. Every call inherits the
+// tile's scope (the OpenCode-internal provider id, the API-key env var,
+// and the API-key value), so callers do not need to attach the
+// WithOpenCodeSubProvider/WithOpenCodeSubProviderAPIKey options to each
+// GenerateContent invocation.
+//
+// `subProvider` must be one of OpenCodeSubProviders(); `apiKey` is the
+// caller-supplied credential (typically pulled from the workspace-
+// encrypted store). When the sub-provider does not require a key
+// (Free tile), `apiKey` may be empty.
+//
+// `sharedAPIKey` is the legacy OPENCODE_API_KEY used for OpenCode-hosted
+// services (free tier auth, models cache, etc.). It is independent of the
+// per-sub-provider key.
+func NewOpenCodeCLIAdapterForSubProvider(sharedAPIKey string, modelID string, subProvider OpenCodeSubProvider, apiKey string, logger interfaces.Logger) *OpenCodeCLIAdapter {
+	return &OpenCodeCLIAdapter{
+		apiKey:                   sharedAPIKey,
+		modelID:                  modelID,
+		logger:                   logger,
+		defaultSubProviderID:     subProvider.ID,
+		defaultSubProviderEnvVar: subProvider.APIKeyEnvVar,
+		defaultSubProviderAPIKey: apiKey,
 	}
 }
 

@@ -134,6 +134,55 @@ func TestBuildOpenCodeEnvForCallSkipsKeyForFreeSubProvider(t *testing.T) {
 	}
 }
 
+func TestNewOpenCodeCLIAdapterForSubProviderInheritsScope(t *testing.T) {
+	kimi, ok := FindOpenCodeSubProvider("opencode-cli-kimi")
+	if !ok {
+		t.Fatal("kimi sub-provider missing from catalog")
+	}
+	adapter := NewOpenCodeCLIAdapterForSubProvider("legacy-shared", "kimi-k2-thinking", kimi, "sk-kimi-default", &MockLogger{})
+
+	// Simulate a no-options call: generateContentStructured should inherit
+	// the adapter's defaults into the active sub-provider + sub-key map.
+	opts := &llmtypes.CallOptions{}
+	// Reach into the adapter's pre-call resolution by calling the env
+	// builder directly with what the structured path would see.
+	env := buildOpenCodeEnvForCall(adapter.apiKey, &kimi, opts)
+	// Before inheritance kicks in (in generateContentStructured), opts
+	// has no sub-key map and env carries only the legacy key.
+	if !containsEnv(env, "OPENCODE_API_KEY=legacy-shared") {
+		t.Errorf("env missing OPENCODE_API_KEY entry")
+	}
+	if containsEnv(env, "KIMI_API_KEY=sk-kimi-default") {
+		t.Errorf("env unexpectedly carried KIMI_API_KEY before inheritance: %v", filterRelevantEnv(env))
+	}
+
+	// Now apply the inheritance the structured path performs.
+	opts.Metadata = &llmtypes.Metadata{Custom: map[string]interface{}{
+		MetadataKeySubProviderAPIKeys: map[string]string{
+			"KIMI_API_KEY": adapter.defaultSubProviderAPIKey,
+		},
+	}}
+	env = buildOpenCodeEnvForCall(adapter.apiKey, &kimi, opts)
+	if !containsEnv(env, "KIMI_API_KEY=sk-kimi-default") {
+		t.Errorf("env missing inherited KIMI_API_KEY: %v", filterRelevantEnv(env))
+	}
+}
+
+func TestNewOpenCodeCLIAdapterForSubProviderCallTimeOverridesDefault(t *testing.T) {
+	kimi, _ := FindOpenCodeSubProvider("opencode-cli-kimi")
+	adapter := NewOpenCodeCLIAdapterForSubProvider("legacy", "auto", kimi, "sk-kimi-CONSTRUCTION", &MockLogger{})
+	// Call-time options carry a different KIMI key — it must win.
+	opts := &llmtypes.CallOptions{}
+	WithOpenCodeSubProviderAPIKey("KIMI_API_KEY", "sk-kimi-CALLTIME")(opts)
+	env := buildOpenCodeEnvForCall(adapter.apiKey, &kimi, opts)
+	if !containsEnv(env, "KIMI_API_KEY=sk-kimi-CALLTIME") {
+		t.Errorf("call-time KIMI_API_KEY did not win over construction-time default: %v", filterRelevantEnv(env))
+	}
+	if containsEnv(env, "KIMI_API_KEY=sk-kimi-CONSTRUCTION") {
+		t.Errorf("construction-time KIMI_API_KEY leaked into env after call-time override")
+	}
+}
+
 func TestBuildOpenCodeEnvForCallWithNoSubProviderIsBackwardCompatible(t *testing.T) {
 	env := buildOpenCodeEnvForCall("legacy-shared-key", nil, nil)
 	if !containsEnv(env, "OPENCODE_API_KEY=legacy-shared-key") {

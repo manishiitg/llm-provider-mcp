@@ -137,11 +137,39 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	// (Kimi/DeepSeek/Qwen/MiniMax/GLM/Free), tier shortcuts resolve inside
 	// that tile's namespace; otherwise we fall back to the legacy global
 	// resolver.
+	//
+	// Precedence: call-time options win over the adapter's construction-
+	// time default. That lets a dispatcher rebuild credentials per-call
+	// without rebuilding the adapter.
 	var activeSubProvider *OpenCodeSubProvider
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if id, ok := opts.Metadata.Custom[MetadataKeySubProviderID].(string); ok && strings.TrimSpace(id) != "" {
 			if sp, found := FindOpenCodeSubProvider(strings.TrimSpace(id)); found {
 				activeSubProvider = &sp
+			}
+		}
+	}
+	if activeSubProvider == nil && c.defaultSubProviderID != "" {
+		if sp, found := FindOpenCodeSubProvider(c.defaultSubProviderID); found {
+			activeSubProvider = &sp
+			// Also inherit the construction-time API key for this tile
+			// unless the call already provided one via options.
+			if c.defaultSubProviderAPIKey != "" {
+				if opts.Metadata == nil {
+					opts.Metadata = &llmtypes.Metadata{Custom: map[string]interface{}{}}
+				}
+				if opts.Metadata.Custom == nil {
+					opts.Metadata.Custom = map[string]interface{}{}
+				}
+				existing, _ := opts.Metadata.Custom[MetadataKeySubProviderAPIKeys].(map[string]string)
+				merged := make(map[string]string, len(existing)+1)
+				for k, v := range existing {
+					merged[k] = v
+				}
+				if _, hasKey := merged[sp.APIKeyEnvVar]; !hasKey && sp.APIKeyEnvVar != "" {
+					merged[sp.APIKeyEnvVar] = c.defaultSubProviderAPIKey
+				}
+				opts.Metadata.Custom[MetadataKeySubProviderAPIKeys] = merged
 			}
 		}
 	}

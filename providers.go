@@ -58,6 +58,17 @@ const (
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderCursorCLI         Provider = "cursor-cli"
 	ProviderOpenCodeCLI       Provider = "opencode-cli"
+
+	// OpenCode CLI sub-provider tiles. Each routes through the same
+	// `opencode` binary but with sub-provider-scoped credentials and
+	// a curated model catalog. The catalog lives in
+	// pkg/adapters/opencodecli/opencodecli_subproviders.go.
+	ProviderOpenCodeCLIKimi     Provider = "opencode-cli-kimi"
+	ProviderOpenCodeCLIDeepSeek Provider = "opencode-cli-deepseek"
+	ProviderOpenCodeCLIQwen     Provider = "opencode-cli-qwen"
+	ProviderOpenCodeCLIMiniMax  Provider = "opencode-cli-minimax"
+	ProviderOpenCodeCLIGLM      Provider = "opencode-cli-glm"
+	ProviderOpenCodeCLIFree     Provider = "opencode-cli-free"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
@@ -185,6 +196,14 @@ type ProviderAPIKeys struct {
 	Kimi              *string
 	Bedrock           *BedrockConfig
 	Azure             *AzureAPIConfig
+
+	// OpenCodeCLISubKeys holds credentials for OpenCode CLI sub-provider
+	// tiles, keyed by the env-var the OpenCode bundled SDK reads
+	// (KIMI_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY,
+	// MINIMAX_API_KEY, ZHIPU_API_KEY). When `Provider` is one of the
+	// opencode-cli-* tiles, InitializeLLM picks the matching entry and
+	// passes it to NewOpenCodeCLIAdapterForSubProvider.
+	OpenCodeCLISubKeys map[string]string
 }
 
 // AzureAPIConfig holds Azure-specific configuration
@@ -283,7 +302,13 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCodexCLI(config)
 	case ProviderCursorCLI:
 		llm, err = initializeCursorCLI(config)
-	case ProviderOpenCodeCLI:
+	case ProviderOpenCodeCLI,
+		ProviderOpenCodeCLIKimi,
+		ProviderOpenCodeCLIDeepSeek,
+		ProviderOpenCodeCLIQwen,
+		ProviderOpenCodeCLIMiniMax,
+		ProviderOpenCodeCLIGLM,
+		ProviderOpenCodeCLIFree:
 		llm, err = initializeOpenCodeCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
@@ -2308,7 +2333,11 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
-// initializeOpenCodeCLI creates and configures an OpenCode CLI adapter instance.
+// initializeOpenCodeCLI creates and configures an OpenCode CLI adapter
+// instance. When `config.Provider` is one of the OpenCode sub-provider
+// tiles (opencode-cli-kimi, ..., opencode-cli-free), the returned adapter
+// is preconfigured with that tile's scope so every call automatically
+// injects the matching per-sub-provider env var.
 func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,
@@ -2316,7 +2345,7 @@ func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
 		TopP:         config.Temperature,
 		User:         "opencode_cli_user",
 		CustomFields: map[string]string{
-			"provider":  "opencode-cli",
+			"provider":  string(config.Provider),
 			"operation": OperationLLMInitialization,
 		},
 	}
@@ -2332,33 +2361,59 @@ func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
 	if logger == nil {
 		logger = &noopLoggerImpl{}
 	}
-	logger.Infof("Initializing OpenCode CLI adapter - model_id: %s", modelID)
+	logger.Infof("Initializing OpenCode CLI adapter - provider: %s, model_id: %s", config.Provider, modelID)
 
-	apiKey := ""
+	sharedAPIKey := ""
 	if config.APIKeys != nil && config.APIKeys.OpenCodeCLI != nil {
-		apiKey = *config.APIKeys.OpenCodeCLI
-		logger.Infof("OpenCode CLI: using API key from config (length=%d)", len(apiKey))
+		sharedAPIKey = *config.APIKeys.OpenCodeCLI
+		logger.Infof("OpenCode CLI: using shared API key from config (length=%d)", len(sharedAPIKey))
 	} else if envKey := os.Getenv("OPENCODE_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("OpenCode CLI: using API key from OPENCODE_API_KEY env var (length=%d)", len(apiKey))
+		sharedAPIKey = envKey
+		logger.Infof("OpenCode CLI: using shared API key from OPENCODE_API_KEY env var (length=%d)", len(sharedAPIKey))
 	} else {
-		logger.Infof("OpenCode CLI: no explicit API key — will use OpenCode's own provider auth")
+		logger.Infof("OpenCode CLI: no explicit shared API key — will use OpenCode's own provider auth")
 	}
 
-	llm := opencodecli.NewOpenCodeCLIAdapter(apiKey, modelID, logger)
+	var llm llmtypes.Model
+	if IsOpenCodeSubProvider(config.Provider) {
+		// Look up the sub-provider catalog entry; route into the
+		// sub-provider-scoped constructor so every call inherits the
+		// right env-var injection.
+		sp, found := opencodecli.FindOpenCodeSubProvider(string(config.Provider))
+		if !found {
+			return nil, fmt.Errorf("unknown OpenCode sub-provider %q", config.Provider)
+		}
+		subAPIKey := ""
+		if config.APIKeys != nil && config.APIKeys.OpenCodeCLISubKeys != nil {
+			subAPIKey = strings.TrimSpace(config.APIKeys.OpenCodeCLISubKeys[sp.APIKeyEnvVar])
+		}
+		if subAPIKey == "" && sp.APIKeyEnvVar != "" {
+			// Fall back to the process env if the caller did not pass a
+			// key map. This keeps developer ergonomics: set
+			// KIMI_API_KEY=… in .env and the Kimi tile just works.
+			subAPIKey = os.Getenv(sp.APIKeyEnvVar)
+		}
+		if sp.RequiresAPIKey && subAPIKey == "" {
+			return nil, fmt.Errorf("%s requires an API key (env %s) but none was provided", sp.DisplayName, sp.APIKeyEnvVar)
+		}
+		logger.Infof("OpenCode CLI sub-provider: %s (env=%s, key_present=%v)", sp.ID, sp.APIKeyEnvVar, subAPIKey != "")
+		llm = opencodecli.NewOpenCodeCLIAdapterForSubProvider(sharedAPIKey, modelID, sp, subAPIKey, logger)
+	} else {
+		llm = opencodecli.NewOpenCodeCLIAdapter(sharedAPIKey, modelID, logger)
+	}
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,
 		User:         "opencode_cli_user",
 		CustomFields: map[string]string{
-			"provider":     "opencode-cli",
+			"provider":     string(config.Provider),
 			"status":       StatusLLMInitialized,
 			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized OpenCode CLI adapter - model_id: %s", modelID)
+	logger.Infof("Initialized OpenCode CLI adapter - provider: %s, model_id: %s", config.Provider, modelID)
 	return llm, nil
 }
 
@@ -2788,11 +2843,38 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
+		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIFree:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-free, minimax, minimax-coding-plan", provider)
 	}
+}
+
+// IsOpenCodeCLIProvider reports whether the provider is the legacy
+// opencode-cli tile or any of its sub-provider tiles (Kimi / DeepSeek /
+// Qwen / MiniMax / GLM / Free). Useful for code paths that branch on the
+// transport (all of these go through `opencode run`).
+func IsOpenCodeCLIProvider(p Provider) bool {
+	switch p {
+	case ProviderOpenCodeCLI,
+		ProviderOpenCodeCLIKimi,
+		ProviderOpenCodeCLIDeepSeek,
+		ProviderOpenCodeCLIQwen,
+		ProviderOpenCodeCLIMiniMax,
+		ProviderOpenCodeCLIGLM,
+		ProviderOpenCodeCLIFree:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsOpenCodeSubProvider reports whether the provider is one of the
+// OpenCode CLI sub-provider tiles (i.e. anything except the legacy
+// opencode-cli tile).
+func IsOpenCodeSubProvider(p Provider) bool {
+	return IsOpenCodeCLIProvider(p) && p != ProviderOpenCodeCLI
 }
 
 // ProviderAwareLLM is a wrapper around LLM that preserves provider information
@@ -3651,6 +3733,30 @@ func WithOpenCodeProjectConfig(config string) llmtypes.CallOption {
 // WithOpenCodeAgent sets the OpenCode --agent flag.
 func WithOpenCodeAgent(agent string) llmtypes.CallOption {
 	return opencodecli.WithAgent(agent)
+}
+
+// WithOpenCodeSubProvider scopes a single OpenCode CLI call to one
+// sub-provider tile (e.g. "opencode-cli-kimi"). Used by dispatchers that
+// want to re-scope a call without rebuilding the adapter — when the
+// adapter was already constructed for a tile via
+// NewOpenCodeCLIAdapterForSubProvider, the call-time option wins.
+func WithOpenCodeSubProvider(id string) llmtypes.CallOption {
+	return opencodecli.WithOpenCodeSubProvider(id)
+}
+
+// WithOpenCodeSubProviderAPIKey attaches a credential for a single
+// OpenCode-backed sub-provider, keyed by the env-var name the OpenCode
+// bundled SDK reads (KIMI_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY,
+// MINIMAX_API_KEY, ZHIPU_API_KEY).
+func WithOpenCodeSubProviderAPIKey(envVar, apiKey string) llmtypes.CallOption {
+	return opencodecli.WithOpenCodeSubProviderAPIKey(envVar, apiKey)
+}
+
+// WithOpenCodeSubProviderAPIKeys replaces the whole per-sub-provider key
+// map. Useful for the server-side handler that already loaded the full
+// credential set from the workspace-encrypted store.
+func WithOpenCodeSubProviderAPIKeys(keys map[string]string) llmtypes.CallOption {
+	return opencodecli.WithOpenCodeSubProviderAPIKeys(keys)
 }
 
 // LLM Configuration Management Functions
