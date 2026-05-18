@@ -133,11 +133,30 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		}
 	}
 
-	modelToUse := resolveOpenCodeCLIModelID(c.modelID)
+	// Resolve the model id. If the call is scoped to a sub-provider tile
+	// (Kimi/DeepSeek/Qwen/MiniMax/GLM/Free), tier shortcuts resolve inside
+	// that tile's namespace; otherwise we fall back to the legacy global
+	// resolver.
+	var activeSubProvider *OpenCodeSubProvider
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if id, ok := opts.Metadata.Custom[MetadataKeySubProviderID].(string); ok && strings.TrimSpace(id) != "" {
+			if sp, found := FindOpenCodeSubProvider(strings.TrimSpace(id)); found {
+				activeSubProvider = &sp
+			}
+		}
+	}
+
+	rawModel := strings.TrimSpace(c.modelID)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyOpenCodeModel].(string); ok && strings.TrimSpace(model) != "" {
-			modelToUse = resolveOpenCodeCLIModelID(model)
+			rawModel = strings.TrimSpace(model)
 		}
+	}
+	var modelToUse string
+	if activeSubProvider != nil {
+		modelToUse = resolveOpenCodeSubProviderModelID(*activeSubProvider, rawModel)
+	} else {
+		modelToUse = resolveOpenCodeCLIModelID(rawModel)
 	}
 	if modelToUse != "" {
 		args = append(args, "--model", modelToUse)
@@ -158,7 +177,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = buildOpenCodeEnv(c.apiKey)
+	cmd.Env = buildOpenCodeEnvForCall(c.apiKey, activeSubProvider, opts)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -297,9 +316,35 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 }
 
 func buildOpenCodeEnv(apiKey string) []string {
+	return buildOpenCodeEnvForCall(apiKey, nil, nil)
+}
+
+// buildOpenCodeEnvForCall constructs the env passed to `opencode run`. It
+// always carries the parent process environment plus, when set, the legacy
+// shared `OPENCODE_API_KEY`. When the call is scoped to a sub-provider tile
+// it also injects the matching per-sub-provider env var
+// (KIMI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MINIMAX_API_KEY /
+// ZHIPU_API_KEY) drawn from the call options' sub-provider key map.
+//
+// The function deliberately does NOT export every sub-provider's key on
+// every call: doing so would let a misrouted request silently authenticate
+// against the wrong provider. Instead, each call only carries the secret
+// for the sub-provider that owns it.
+func buildOpenCodeEnvForCall(apiKey string, activeSubProvider *OpenCodeSubProvider, opts *llmtypes.CallOptions) []string {
 	env := os.Environ()
 	if strings.TrimSpace(apiKey) != "" {
 		env = append(env, "OPENCODE_API_KEY="+strings.TrimSpace(apiKey))
+	}
+
+	if activeSubProvider == nil || activeSubProvider.APIKeyEnvVar == "" || opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return env
+	}
+	keys, _ := opts.Metadata.Custom[MetadataKeySubProviderAPIKeys].(map[string]string)
+	if keys == nil {
+		return env
+	}
+	if v, ok := keys[activeSubProvider.APIKeyEnvVar]; ok && strings.TrimSpace(v) != "" {
+		env = append(env, activeSubProvider.APIKeyEnvVar+"="+strings.TrimSpace(v))
 	}
 	return env
 }
