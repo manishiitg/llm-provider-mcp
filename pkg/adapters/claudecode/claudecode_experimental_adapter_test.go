@@ -613,6 +613,16 @@ func TestIsClaudeResumeCompressionPromptIgnoresNormalPrompt(t *testing.T) {
 }
 
 func TestExperimentalTimeoutEnv(t *testing.T) {
+	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "")
+	if got := tmuxTimeout(); got != 0 {
+		t.Fatalf("tmuxTimeout default = %v, want 0", got)
+	}
+
+	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "0")
+	if got := tmuxTimeout(); got != 0 {
+		t.Fatalf("tmuxTimeout zero env = %v, want 0", got)
+	}
+
 	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "2")
 	if got := tmuxTimeout(); got != 2*time.Second {
 		t.Fatalf("tmuxTimeout = %v, want 2s", got)

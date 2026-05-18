@@ -52,6 +52,23 @@ func TestCodexInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
+	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "")
+	if got := codexInteractiveTimeout(); got != 0 {
+		t.Fatalf("codexInteractiveTimeout default = %v, want 0", got)
+	}
+
+	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "0")
+	if got := codexInteractiveTimeout(); got != 0 {
+		t.Fatalf("codexInteractiveTimeout zero env = %v, want 0", got)
+	}
+
+	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "2")
+	if got := codexInteractiveTimeout(); got != 2*time.Second {
+		t.Fatalf("codexInteractiveTimeout env = %v, want 2s", got)
+	}
+}
+
 func TestCodexInteractiveShellCommandUsesCallerWorkingDir(t *testing.T) {
 	shell := writeExecutableTestShell(t, "zsh")
 	t.Setenv("CODING_AGENT_LOGIN_SHELL", shell)

@@ -23,7 +23,10 @@ import (
 )
 
 const (
-	defaultTmuxTimeout             = 30 * time.Minute
+	// Default to no provider-level turn timeout. Workflow/background callers own
+	// their execution deadline; the adapter should not cancel a still-running tmux
+	// coding agent before the outer workflow timeout.
+	defaultTmuxTimeout             = 0
 	defaultPersistentIdleTimeout   = 20 * time.Minute
 	defaultTmuxPollInterval        = 750 * time.Millisecond
 	defaultTmuxCaptureLines        = "3000"
@@ -75,7 +78,13 @@ var claudeExperimentalPersistentRegistry = struct {
 }
 
 func newClaudeCallContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	callCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	var callCtx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		callCtx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		callCtx, cancel = context.WithCancel(context.Background())
+	}
 	done := make(chan struct{})
 	var once sync.Once
 
@@ -1575,7 +1584,7 @@ func tmuxTimeout() time.Duration {
 		return defaultTmuxTimeout
 	}
 	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds <= 0 {
+	if err != nil || seconds < 0 {
 		return defaultTmuxTimeout
 	}
 	return time.Duration(seconds) * time.Second

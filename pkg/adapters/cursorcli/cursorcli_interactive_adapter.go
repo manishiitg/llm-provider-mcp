@@ -23,7 +23,10 @@ import (
 )
 
 const (
-	defaultCursorInteractiveTimeout     = 30 * time.Minute
+	// Default to no provider-level turn timeout. Workflow/background callers own
+	// their execution deadline; the adapter should not cancel a still-running tmux
+	// coding agent before the outer workflow timeout.
+	defaultCursorInteractiveTimeout     = 0
 	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
 	defaultCursorInteractivePromptWait  = 25 * time.Second
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
@@ -77,7 +80,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		ownerSessionID = "cursor-bounded-" + cursorRandomHex(8)
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, cursorInteractiveTimeout())
+	callCtx, cancel := cursorInteractiveCallContext(ctx)
 	defer cancel()
 
 	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
@@ -1299,7 +1302,15 @@ func newCursorTmuxSessionName() string {
 }
 
 func cursorInteractiveTimeout() time.Duration {
-	return cursorDurationFromEnv(EnvCursorInteractiveTimeoutSeconds, defaultCursorInteractiveTimeout)
+	return cursorDurationFromEnvAllowZero(EnvCursorInteractiveTimeoutSeconds, defaultCursorInteractiveTimeout)
+}
+
+func cursorInteractiveCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := cursorInteractiveTimeout()
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func cursorInteractiveIdleTimeout() time.Duration {
@@ -1328,6 +1339,18 @@ func cursorDurationFromEnv(key string, fallback time.Duration) time.Duration {
 	}
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func cursorDurationFromEnvAllowZero(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 {
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second

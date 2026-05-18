@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -23,6 +24,23 @@ func TestCursorCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("CursorCLIAdapter should implement llmtypes.WebSearchModel")
+	}
+}
+
+func TestCursorInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
+	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "")
+	if got := cursorInteractiveTimeout(); got != 0 {
+		t.Fatalf("cursorInteractiveTimeout default = %v, want 0", got)
+	}
+
+	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "0")
+	if got := cursorInteractiveTimeout(); got != 0 {
+		t.Fatalf("cursorInteractiveTimeout zero env = %v, want 0", got)
+	}
+
+	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "2")
+	if got := cursorInteractiveTimeout(); got != 2*time.Second {
+		t.Fatalf("cursorInteractiveTimeout env = %v, want 2s", got)
 	}
 }
 

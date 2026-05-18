@@ -43,6 +43,23 @@ func TestGeminiInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestGeminiInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
+	t.Setenv(EnvGeminiInteractiveTimeoutSeconds, "")
+	if got := geminiInteractiveTimeout(); got != 0 {
+		t.Fatalf("geminiInteractiveTimeout default = %v, want 0", got)
+	}
+
+	t.Setenv(EnvGeminiInteractiveTimeoutSeconds, "0")
+	if got := geminiInteractiveTimeout(); got != 0 {
+		t.Fatalf("geminiInteractiveTimeout zero env = %v, want 0", got)
+	}
+
+	t.Setenv(EnvGeminiInteractiveTimeoutSeconds, "2")
+	if got := geminiInteractiveTimeout(); got != 2*time.Second {
+		t.Fatalf("geminiInteractiveTimeout env = %v, want 2s", got)
+	}
+}
+
 func TestGeminiWorkingDirOptionOverridesProjectDir(t *testing.T) {
 	workDir := t.TempDir()
 	opts := &llmtypes.CallOptions{}

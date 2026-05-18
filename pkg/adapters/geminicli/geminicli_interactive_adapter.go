@@ -23,7 +23,10 @@ import (
 )
 
 const (
-	defaultGeminiInteractiveTimeout     = 30 * time.Minute
+	// Default to no provider-level turn timeout. Workflow/background callers own
+	// their execution deadline; the adapter should not cancel a still-running tmux
+	// coding agent before the outer workflow timeout.
+	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
 	defaultGeminiInteractivePromptWait  = 20 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
@@ -82,7 +85,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		return nil, fmt.Errorf("gemini-cli interactive mode requires an owner session ID")
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, geminiInteractiveTimeout())
+	callCtx, cancel := geminiInteractiveCallContext(ctx)
 	defer cancel()
 
 	systemPrompt, conversationMessages := splitGeminiSystemPrompt(messages)
@@ -1577,7 +1580,15 @@ func newGeminiTmuxSessionName() string {
 }
 
 func geminiInteractiveTimeout() time.Duration {
-	return geminiDurationFromEnv(EnvGeminiInteractiveTimeoutSeconds, defaultGeminiInteractiveTimeout)
+	return geminiDurationFromEnvAllowZero(EnvGeminiInteractiveTimeoutSeconds, defaultGeminiInteractiveTimeout)
+}
+
+func geminiInteractiveCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := geminiInteractiveTimeout()
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func geminiInteractiveIdleTimeout() time.Duration {
@@ -1606,6 +1617,18 @@ func geminiDurationFromEnv(key string, fallback time.Duration) time.Duration {
 	}
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func geminiDurationFromEnvAllowZero(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 {
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
