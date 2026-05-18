@@ -9,9 +9,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// OpenCodeCLIAdapter implements the LLM interface for OpenCode CLI in tmux
-// mode. It deliberately does not use opencode run --format json; both
-// persistent chat and bounded per-turn calls run through the terminal TUI.
+// OpenCodeCLIAdapter implements the LLM interface for OpenCode CLI.
+// By default it uses the structured transport (opencode run --format json).
+// The tmux transport is still available for persistent interactive sessions.
 type OpenCodeCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -27,7 +27,9 @@ func NewOpenCodeCLIAdapter(apiKey string, modelID string, logger interfaces.Logg
 	}
 }
 
-// GenerateContent generates content using OpenCode CLI inside tmux.
+// GenerateContent generates content using OpenCode CLI. It uses the structured
+// JSON transport by default. If an interactive session ID is set and the tmux
+// transport is available, it falls back to the tmux adapter for persistent chat.
 func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -38,10 +40,14 @@ func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llm
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
-		return nil, fmt.Errorf("opencode-cli tmux transport does not support llmtypes.ImageContent; OpenCode CLI has no supported live image attachment path in this adapter")
+		return nil, fmt.Errorf("opencode-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	return c.generateContentTmux(ctx, messages, opts)
+	if opencodeInteractiveSessionIDFromOptions(opts) != "" && opencodePersistentInteractiveFromOptions(opts) {
+		return c.generateContentTmux(ctx, messages, opts)
+	}
+
+	return c.generateContentStructured(ctx, messages, opts)
 }
 
 // SearchWeb asks OpenCode CLI to use its web search capability and returns

@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,9 +18,11 @@ import (
 
 func TestOpenCodeCLIRealImagePathAnalysis(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupOpenCodeCLIInteractiveSessions(context.Background()) })
 
 	workspaceDir := t.TempDir()
+	if out, err := exec.Command("git", "init", workspaceDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
 	imagePath := filepath.Join(workspaceDir, "sample.png")
 	writeSolidOpenCodeTestPNG(t, imagePath, color.RGBA{R: 255, A: 255})
 
@@ -36,8 +39,6 @@ func TestOpenCodeCLIRealImagePathAnalysis(t *testing.T) {
 			},
 		},
 	},
-		WithInteractiveSessionID("opencode-e2e-image-"+opencodeRandomHex(4)),
-		WithPersistentInteractiveSession(true),
 		WithWorkingDir(workspaceDir),
 	)
 	if err != nil {

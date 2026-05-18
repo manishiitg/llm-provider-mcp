@@ -91,7 +91,7 @@ ctrl+p commands opencode`
 }
 
 func TestOpenCodeCLIRealInteractiveTmuxContract(t *testing.T) {
-	requireRealOpenCodeCLIE2E(t)
+	requireRealOpenCodeCLITmuxE2E(t)
 	t.Cleanup(func() { _ = CleanupOpenCodeCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
@@ -156,13 +156,18 @@ saved %s`, token, token)}},
 func requireRealOpenCodeCLIE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_OPENCODE_CLI_REAL_E2E") == "" {
-		t.Skip("set RUN_OPENCODE_CLI_REAL_E2E=1 to run real OpenCode CLI tmux contract tests")
-	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatalf("real OpenCode CLI tests require tmux in PATH: %v", err)
+		t.Skip("set RUN_OPENCODE_CLI_REAL_E2E=1 to run real OpenCode CLI e2e tests")
 	}
 	if _, err := opencodeBinaryPath(); err != nil {
 		t.Fatalf("real OpenCode CLI tests require opencode: %v", err)
+	}
+}
+
+func requireRealOpenCodeCLITmuxE2E(t *testing.T) {
+	t.Helper()
+	requireRealOpenCodeCLIE2E(t)
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Fatalf("real OpenCode CLI tmux tests require tmux in PATH: %v", err)
 	}
 }
 

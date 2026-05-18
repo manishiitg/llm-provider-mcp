@@ -3,15 +3,17 @@ package opencodecli
 import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 const (
-	MetadataKeyOpenCodeModel         = "opencode_model"
-	MetadataKeyResumeSessionID       = "opencode_resume_session_id"
-	MetadataKeyAgent                 = "opencode_agent"
-	MetadataKeyWorkingDir            = "opencode_working_dir"
-	MetadataKeyProjectConfig         = "opencode_project_config"
-	MetadataKeyMCPConfig             = "opencode_mcp_config"
-	MetadataKeyAutoApproveWebSearch  = "opencode_auto_approve_web_search"
-	MetadataKeyInteractiveSessionID  = "opencode_interactive_session_id"
-	MetadataKeyPersistentInteractive = "opencode_persistent_interactive"
+	MetadataKeyOpenCodeModel               = "opencode_model"
+	MetadataKeyResumeSessionID             = "opencode_resume_session_id"
+	MetadataKeyAgent                       = "opencode_agent"
+	MetadataKeyWorkingDir                  = "opencode_working_dir"
+	MetadataKeyProjectConfig               = "opencode_project_config"
+	MetadataKeyMCPConfig                   = "opencode_mcp_config"
+	MetadataKeyAutoApproveWebSearch        = "opencode_auto_approve_web_search"
+	MetadataKeyInteractiveSessionID        = "opencode_interactive_session_id"
+	MetadataKeyPersistentInteractive       = "opencode_persistent_interactive"
+	MetadataKeyContinueLastSession         = "opencode_continue_last_session"
+	MetadataKeyDangerouslySkipPermissions  = "opencode_dangerously_skip_permissions"
 )
 
 // WithOpenCodeModel sets the OpenCode CLI --model flag. Use "opencode-cli" or
@@ -89,6 +91,22 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithContinueLastSession resumes the most recent OpenCode session (--continue).
+func WithContinueLastSession() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyContinueLastSession] = true
+	}
+}
+
+// WithDangerouslySkipPermissions passes --dangerously-skip-permissions to OpenCode.
+func WithDangerouslySkipPermissions() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions] = true
 	}
 }
 
