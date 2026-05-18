@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"strings"
@@ -393,6 +394,129 @@ func TestOpenAIRealPromptCachingCacheRead(t *testing.T) {
 			resp.Choices[0].GenerationInfo.CachedContentTokens, resp.Choices[0].GenerationInfo.Additional)
 	}
 	t.Logf("cache_read=%d tokens", *resp.Choices[0].GenerationInfo.CachedContentTokens)
+}
+
+// TestOpenAIRealPDFInputDocumentReceived (contract P1 #15). Proves
+// that DocumentContent → file content-part conversion in the adapter
+// reaches OpenAI's Chat Completions API and the model actually reads
+// from the inline PDF. We embed a unique marker inside a tiny
+// hand-rolled PDF stream and require the model to echo it back. If
+// the adapter ever drops DocumentContent parts again, the model will
+// respond "I don't see a document attached" and the assertion fails.
+// Uses gpt-4.1-mini (the cheapest current chat model that supports
+// file input).
+func TestOpenAIRealPDFInputDocumentReceived(t *testing.T) {
+	apiKey, _ := requireOpenAIRealE2E(t)
+	model := strings.TrimSpace(os.Getenv("OPENAI_PDF_MODEL"))
+	if model == "" {
+		model = "gpt-4.1-mini"
+	}
+	client := openai.NewClient(openaioption.WithAPIKey(apiKey))
+	adapter := NewOpenAIAdapter(&client, model, &MockLogger{})
+
+	marker := "OAI_PDF_MARKER_" + time.Now().Format("150405")
+	pdfBytes := minimalPDFWithMarker(marker)
+	encoded := base64.StdEncoding.EncodeToString(pdfBytes)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.DocumentContent{
+						SourceType: "base64",
+						MediaType:  "application/pdf",
+						Data:       encoded,
+						Title:      "marker-doc.pdf",
+					},
+					llmtypes.TextContent{Text: "The attached PDF contains a single marker token that begins 'OAI_PDF_MARKER_'. Reply with ONLY that full token — no other words."},
+				},
+			},
+		},
+		llmtypes.WithMaxTokens(64),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with PDF document error = %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
+		t.Fatalf("response had no choices")
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, marker) {
+		t.Fatalf("response missing PDF marker %q (DocumentContent likely dropped). content=%q", marker, content)
+	}
+}
+
+// minimalPDFWithMarker builds a tiny but syntactically valid PDF whose
+// only printable text is a caller-supplied marker. Same shape as the
+// helper in the Anthropic suite — kept package-local so each adapter
+// test file compiles standalone.
+func minimalPDFWithMarker(marker string) []byte {
+	header := "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"
+	objs := []string{
+		"<</Type/Catalog/Pages 2 0 R>>",
+		"<</Type/Pages/Count 1/Kids[3 0 R]>>",
+		"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+		"",
+		"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+	}
+	stream := "BT /F1 24 Tf 72 720 Td (" + marker + ") Tj ET"
+	objs[3] = "<</Length " + iToA(len(stream)) + ">>\nstream\n" + stream + "\nendstream"
+
+	var b strings.Builder
+	b.WriteString(header)
+	offsets := make([]int, len(objs)+1)
+	for i, body := range objs {
+		offsets[i+1] = b.Len()
+		b.WriteString(iToA(i+1) + " 0 obj\n" + body + "\nendobj\n")
+	}
+	xrefOff := b.Len()
+	b.WriteString("xref\n0 ")
+	b.WriteString(iToA(len(objs) + 1))
+	b.WriteString("\n0000000000 65535 f \n")
+	for _, off := range offsets[1:] {
+		b.WriteString(pad10(off) + " 00000 n \n")
+	}
+	b.WriteString("trailer\n<</Size ")
+	b.WriteString(iToA(len(objs) + 1))
+	b.WriteString("/Root 1 0 R>>\nstartxref\n")
+	b.WriteString(iToA(xrefOff))
+	b.WriteString("\n%%EOF\n")
+	return []byte(b.String())
+}
+
+func pad10(n int) string {
+	s := iToA(n)
+	if len(s) >= 10 {
+		return s
+	}
+	return strings.Repeat("0", 10-len(s)) + s
+}
+
+func iToA(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // TestOpenAIRealAuthFailureClassified (contract P2 #22). A bogus key

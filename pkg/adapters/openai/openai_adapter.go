@@ -870,6 +870,7 @@ func convertMessages(langMessages []llmtypes.MessageContent, logger interfaces.L
 		// Extract content parts
 		var contentParts []string
 		var imageParts []llmtypes.ImageContent
+		var documentParts []llmtypes.DocumentContent
 		var toolResponses []llmtypes.ToolCallResponse // Support multiple tool responses
 		var toolCalls []llmtypes.ToolCall
 
@@ -879,6 +880,8 @@ func convertMessages(langMessages []llmtypes.MessageContent, logger interfaces.L
 				contentParts = append(contentParts, p.Text)
 			case llmtypes.ImageContent:
 				imageParts = append(imageParts, p)
+			case llmtypes.DocumentContent:
+				documentParts = append(documentParts, p)
 			case llmtypes.ToolCallResponse:
 				// Collect all tool responses (a message can have multiple tool responses)
 				toolResponses = append(toolResponses, p)
@@ -901,10 +904,10 @@ func convertMessages(langMessages []llmtypes.MessageContent, logger interfaces.L
 			}
 			openaiMessages = append(openaiMessages, openai.SystemMessage(content))
 		case string(llmtypes.ChatMessageTypeHuman):
-			// User message can have text and/or images
-			// If images are present, use content array format
-			if len(imageParts) > 0 {
-				// Build content array with text and image parts
+			// User message can have text, images, and/or documents
+			// If any non-text parts are present, use content array format
+			if len(imageParts) > 0 || len(documentParts) > 0 {
+				// Build content array with text, image, and document parts
 				contentPartsArray := make([]openai.ChatCompletionContentPartUnionParam, 0)
 
 				// Add text parts
@@ -919,6 +922,14 @@ func convertMessages(langMessages []llmtypes.MessageContent, logger interfaces.L
 					imagePart := createImageContentPart(img)
 					if imagePart != nil {
 						contentPartsArray = append(contentPartsArray, *imagePart)
+					}
+				}
+
+				// Add document parts (PDFs).
+				for _, doc := range documentParts {
+					docPart := createFileContentPart(doc, logger)
+					if docPart != nil {
+						contentPartsArray = append(contentPartsArray, *docPart)
 					}
 				}
 
@@ -1049,6 +1060,35 @@ func convertMessages(langMessages []llmtypes.MessageContent, logger interfaces.L
 	}
 
 	return openaiMessages
+}
+
+// createFileContentPart creates an OpenAI file content part from
+// DocumentContent. OpenAI's Chat Completions accepts PDFs inline via
+// base64 file_data; URL-source documents are not supported on Chat
+// Completions (require Files API upload first) and are dropped here.
+func createFileContentPart(doc llmtypes.DocumentContent, logger interfaces.Logger) *openai.ChatCompletionContentPartUnionParam {
+	if doc.SourceType != "base64" || doc.Data == "" {
+		if logger != nil && doc.SourceType == "url" {
+			logger.Infof("⚠️ OpenAI: URL-source documents are not supported inline; upload via Files API and reference by file_id instead (dropping document)")
+		}
+		return nil
+	}
+	filename := doc.Title
+	if filename == "" {
+		filename = "document.pdf"
+	}
+	mediaType := doc.MediaType
+	if mediaType == "" {
+		mediaType = "application/pdf"
+	}
+	// OpenAI requires file_data as a data URL with MIME prefix, not raw base64.
+	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, doc.Data)
+	fileParam := openai.ChatCompletionContentPartFileFileParam{
+		FileData: openai.String(dataURL),
+		Filename: openai.String(filename),
+	}
+	part := openai.FileContentPart(fileParam)
+	return &part
 }
 
 // createImageContentPart creates an OpenAI image content part from ImageContent
