@@ -1446,10 +1446,13 @@ func initializeAnthropic(config Config) (llmtypes.Model, error) {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required (not found in config or environment)")
 	}
 
-	// Use provided model or default
+	// Use provided model or default. We default to the cheapest current
+	// model on the active model line; the previous default
+	// (claude-3-5-sonnet-20241022) is no longer accepted by the API and
+	// any caller that did not explicitly set ModelID would 404.
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "claude-3-5-sonnet-20241022"
+		modelID = "claude-haiku-4-5"
 	}
 
 	logger := config.Logger
@@ -2437,7 +2440,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("ANTHROPIC_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return "claude-3-5-sonnet-20241022"
+		return "claude-sonnet-4-6"
 	case ProviderOpenRouter:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("OPENROUTER_PRIMARY_MODEL"); primaryModel != "" {
@@ -4686,9 +4689,10 @@ func validateAnthropicAPIKey(apiKey string, modelID string, options map[string]i
 	}
 	fmt.Printf("[ANTHROPIC VALIDATION] Format validation passed\n")
 
-	// Use a default model if none provided
+	// Use a default model if none provided. Haiku 4.5 is the cheapest
+	// current model — perfect for a low-cost auth-check call.
 	if modelID == "" {
-		modelID = "claude-3-5-sonnet-20241022"
+		modelID = "claude-haiku-4-5"
 		fmt.Printf("[ANTHROPIC VALIDATION] Using default model: %s\n", modelID)
 	}
 

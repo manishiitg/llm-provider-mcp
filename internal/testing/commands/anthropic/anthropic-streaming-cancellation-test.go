@@ -21,7 +21,7 @@ var AnthropicStreamingCancellationTestCmd = &cobra.Command{
 }
 
 func init() {
-	AnthropicStreamingCancellationTestCmd.Flags().String("model", "claude-3-5-sonnet-20241022", "Anthropic model to test")
+	AnthropicStreamingCancellationTestCmd.Flags().String("model", "claude-haiku-4-5", "Anthropic model to test")
 	AnthropicStreamingCancellationTestCmd.Flags().String("api-key", "", "Anthropic API key (or set ANTHROPIC_API_KEY env var)")
 }
 
@@ -47,7 +47,7 @@ func runAnthropicStreamingCancellationTest(cmd *cobra.Command, args []string) {
 
 	modelID, _ := cmd.Flags().GetString("model")
 	if modelID == "" {
-		modelID = "claude-3-5-sonnet-20241022"
+		modelID = "claude-haiku-4-5"
 	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{

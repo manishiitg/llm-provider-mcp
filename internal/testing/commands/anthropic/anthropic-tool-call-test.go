@@ -26,7 +26,7 @@ type anthropicToolCallTestFlags struct {
 var anthropicToolCallFlags anthropicToolCallTestFlags
 
 func init() {
-	AnthropicToolCallTestCmd.Flags().StringVar(&anthropicToolCallFlags.model, "model", "", "Anthropic model to test (default: claude-3-5-sonnet-20241022)")
+	AnthropicToolCallTestCmd.Flags().StringVar(&anthropicToolCallFlags.model, "model", "", "Anthropic model to test (default: claude-haiku-4-5)")
 }
 
 func runAnthropicToolCallTest(cmd *cobra.Command, args []string) {
@@ -35,7 +35,7 @@ func runAnthropicToolCallTest(cmd *cobra.Command, args []string) {
 	// Get model ID
 	modelID := anthropicToolCallFlags.model
 	if modelID == "" {
-		modelID = "claude-3-5-sonnet-20241022"
+		modelID = "claude-haiku-4-5"
 	}
 
 	log.Printf("🚀 Testing Anthropic Tool Calling with %s", modelID)

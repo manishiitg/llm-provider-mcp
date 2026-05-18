@@ -31,7 +31,7 @@ type anthropicToolCallEventsTestFlags struct {
 var anthropicToolCallEventsFlags anthropicToolCallEventsTestFlags
 
 func init() {
-	AnthropicToolCallEventsTestCmd.Flags().StringVar(&anthropicToolCallEventsFlags.model, "model", "", "Anthropic model to test (default: claude-3-5-sonnet-20241022)")
+	AnthropicToolCallEventsTestCmd.Flags().StringVar(&anthropicToolCallEventsFlags.model, "model", "", "Anthropic model to test (default: claude-haiku-4-5)")
 	AnthropicToolCallEventsTestCmd.Flags().BoolVar(&anthropicToolCallEventsFlags.record, "record", false, "Record LLM responses to testdata/")
 	AnthropicToolCallEventsTestCmd.Flags().BoolVar(&anthropicToolCallEventsFlags.replay, "replay", false, "Replay recorded responses from testdata/")
 	AnthropicToolCallEventsTestCmd.Flags().StringVar(&anthropicToolCallEventsFlags.testDir, "test-dir", "testdata", "Directory for test recordings")
@@ -43,7 +43,7 @@ func runAnthropicToolCallEventsTest(cmd *cobra.Command, args []string) {
 	// Get model ID
 	modelID := anthropicToolCallEventsFlags.model
 	if modelID == "" {
-		modelID = "claude-3-5-sonnet-20241022"
+		modelID = "claude-haiku-4-5"
 	}
 
 	log.Printf("🚀 Testing Anthropic Tool Call Events with %s", modelID)
