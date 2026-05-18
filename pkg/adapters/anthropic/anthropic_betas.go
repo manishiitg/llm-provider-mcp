@@ -52,21 +52,35 @@ func buildAnthropicBetaTokens(params anthropic.MessageNewParams, opts *llmtypes.
 		ordered = append(ordered, token)
 	}
 
-	// 1. Interleaved thinking + tool use. We require BOTH thinking
+	// 1. Prompt caching activation. The Messages API treats prompt
+	//    caching as GA in the sense that no organization opt-in is
+	//    required, but it still gates per-request behavior on the
+	//    `prompt-caching-2024-07-31` beta token — without it the API
+	//    silently returns cache_creation_input_tokens=0 and never
+	//    populates cache_read_input_tokens on follow-up calls.
+	//
+	//    We attach the token only when at least one cache_control
+	//    breakpoint is present in the outgoing request, so calls that
+	//    do not use caching keep a minimal request surface.
+	if anthropicRequestUsesCacheControl(params) {
+		add(betaPromptCachingLegacy)
+	}
+
+	// 2. Interleaved thinking + tool use. We require BOTH thinking
 	//    enablement AND a non-empty tool list — otherwise the header
 	//    does nothing and just inflates the request surface.
 	if anthropicRequestEnablesThinking(params) && len(params.Tools) > 0 {
 		add(betaInterleavedThinking)
 	}
 
-	// 2. Extended cache TTL. Opt in whenever the caller marked any
+	// 3. Extended cache TTL. Opt in whenever the caller marked any
 	//    block with the 1-hour TTL, since the SDK silently downgrades
 	//    to 5m otherwise.
 	if anthropicRequestUsesExtendedCacheTTL(params) {
 		add(betaExtendedCacheTTL)
 	}
 
-	// 3. Caller-supplied explicit beta tokens via CallOptions metadata.
+	// 4. Caller-supplied explicit beta tokens via CallOptions metadata.
 	//    This is the escape hatch for users who need a beta we haven't
 	//    promoted to a first-class field yet (e.g. a brand new feature
 	//    flag). Format: opts.Metadata.Custom["anthropic_beta"] is either
@@ -76,6 +90,39 @@ func buildAnthropicBetaTokens(params anthropic.MessageNewParams, opts *llmtypes.
 	}
 
 	return ordered
+}
+
+// anthropicRequestUsesCacheControl reports whether any block in the
+// outgoing request has a cache_control breakpoint set. We check system
+// blocks, message content blocks, and tool definitions — every place
+// the Messages API allows a cache_control attachment.
+func anthropicRequestUsesCacheControl(params anthropic.MessageNewParams) bool {
+	for _, block := range params.System {
+		if string(block.CacheControl.TTL) != "" || block.CacheControl.Type != "" {
+			return true
+		}
+	}
+	for _, msg := range params.Messages {
+		for _, block := range msg.Content {
+			cc := contentBlockCacheControl(block)
+			if cc == nil {
+				continue
+			}
+			if string(cc.TTL) != "" || cc.Type != "" {
+				return true
+			}
+		}
+	}
+	for _, toolUnion := range params.Tools {
+		if toolUnion.OfTool == nil {
+			continue
+		}
+		cc := toolUnion.OfTool.CacheControl
+		if string(cc.TTL) != "" || cc.Type != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // anthropicRequestEnablesThinking reports whether the assembled

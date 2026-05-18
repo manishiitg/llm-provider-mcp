@@ -55,6 +55,41 @@ func TestBuildAnthropicBetaTokensSkipsInterleavedWhenNoTools(t *testing.T) {
 	}
 }
 
+// TestBuildAnthropicBetaTokensPromptCachingAttachesWhenCacheControlPresent:
+// the Messages API silently returns zero cache_creation/cache_read
+// tokens unless the `prompt-caching-2024-07-31` beta header is sent on
+// requests that carry a cache_control breakpoint. The adapter must
+// auto-attach the token whenever the request has any cache_control,
+// even after prompt caching went GA.
+func TestBuildAnthropicBetaTokensPromptCachingAttachesWhenCacheControlPresent(t *testing.T) {
+	systemBlock := anthropic.TextBlockParam{
+		Text:         "system",
+		CacheControl: anthropic.NewCacheControlEphemeralParam(),
+	}
+	systemBlock.CacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+	params := anthropic.MessageNewParams{System: []anthropic.TextBlockParam{systemBlock}}
+	got := buildAnthropicBetaTokens(params, nil)
+	if !contains(got, betaPromptCachingLegacy) {
+		t.Fatalf("expected %s when cache_control is present; got %v", betaPromptCachingLegacy, got)
+	}
+}
+
+// TestBuildAnthropicBetaTokensPromptCachingOmittedWithoutCacheControl:
+// the prompt-caching beta is a no-op (and unnecessary noise on the
+// wire) when the request has no cache_control. The adapter must NOT
+// attach it in that case so we keep the request surface minimal.
+func TestBuildAnthropicBetaTokensPromptCachingOmittedWithoutCacheControl(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		System: []anthropic.TextBlockParam{
+			{Text: "system without cache_control"},
+		},
+	}
+	got := buildAnthropicBetaTokens(params, nil)
+	if contains(got, betaPromptCachingLegacy) {
+		t.Fatalf("prompt-caching beta attached unnecessarily for cache-less request: %v", got)
+	}
+}
+
 // TestBuildAnthropicBetaTokensExtendedCacheFromSystem: when the caller
 // marked the system block with the 1-hour TTL, the adapter must opt into
 // extended-cache-ttl. Without the beta, the SDK silently downgrades to

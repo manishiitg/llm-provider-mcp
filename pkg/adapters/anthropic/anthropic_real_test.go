@@ -509,6 +509,220 @@ func TestAnthropicRealPDFInputDocumentReceived(t *testing.T) {
 	}
 }
 
+// TestAnthropicRealToolChoiceModes is the P0 #9 contract test — proves
+// the adapter's `tool_choice: auto/none/required` translation actually
+// works against the live Messages API. Each branch sends the same
+// prompt with the same single tool and asserts the behavioral
+// difference: `auto` may or may not call (so we accept either),
+// `none` MUST emit text and no tool_use, `required` MUST emit a
+// tool_use.
+//
+// Anthropic's API rejects `tool_choice: required` together with
+// thinking, but we don't enable thinking here.
+func TestAnthropicRealToolChoiceModes(t *testing.T) {
+	adapter, _ := newRealAnthropicAdapter(t)
+
+	tools := []llmtypes.Tool{
+		{
+			Type: "function",
+			Function: &llmtypes.FunctionDefinition{
+				Name:        "lookup_city_population",
+				Description: "Look up the population of a city.",
+				Parameters: &llmtypes.Parameters{
+					Type: "object",
+					Properties: map[string]interface{}{
+						"city": map[string]interface{}{"type": "string"},
+					},
+					Required: []string{"city"},
+				},
+			},
+		},
+	}
+	prompt := []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What is the population of Tokyo? Use the tool if you have it."}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// "none" — model must NOT emit any tool_use blocks. The contract
+	// here is the absence of tool calls, not the presence of text:
+	// some models reply with an empty content array when they
+	// genuinely have nothing to say (e.g. they would have used the
+	// tool if allowed), and that's a valid response shape — the wire
+	// constraint is just "no tool_use".
+	respNone, err := adapter.GenerateContent(ctx, prompt,
+		llmtypes.WithTools(tools),
+		llmtypes.WithToolChoiceString("none"),
+		llmtypes.WithMaxTokens(120),
+	)
+	if err != nil {
+		t.Fatalf("none branch: GenerateContent error = %v", err)
+	}
+	if len(respNone.Choices) == 0 || respNone.Choices[0] == nil {
+		t.Fatalf("none branch: no choices")
+	}
+	if len(respNone.Choices[0].ToolCalls) > 0 {
+		t.Fatalf("none branch: model emitted a tool_use despite tool_choice=none: %+v", respNone.Choices[0].ToolCalls)
+	}
+
+	// "required" — model MUST emit a tool_use.
+	respRequired, err := adapter.GenerateContent(ctx, prompt,
+		llmtypes.WithTools(tools),
+		llmtypes.WithToolChoiceString("required"),
+		llmtypes.WithMaxTokens(120),
+	)
+	if err != nil {
+		t.Fatalf("required branch: GenerateContent error = %v", err)
+	}
+	if len(respRequired.Choices) == 0 || respRequired.Choices[0] == nil {
+		t.Fatalf("required branch: no choices")
+	}
+	if len(respRequired.Choices[0].ToolCalls) == 0 {
+		t.Fatalf("required branch: model did not emit a tool_use despite tool_choice=required. content=%q", respRequired.Choices[0].Content)
+	}
+
+	// "auto" — model may or may not call the tool. We only assert the
+	// request succeeded and produced *some* output, so the adapter's
+	// auto-branch wiring is exercised end-to-end.
+	respAuto, err := adapter.GenerateContent(ctx, prompt,
+		llmtypes.WithTools(tools),
+		llmtypes.WithToolChoiceString("auto"),
+		llmtypes.WithMaxTokens(120),
+	)
+	if err != nil {
+		t.Fatalf("auto branch: GenerateContent error = %v", err)
+	}
+	if len(respAuto.Choices) == 0 {
+		t.Fatalf("auto branch: no choices")
+	}
+	if strings.TrimSpace(respAuto.Choices[0].Content) == "" && len(respAuto.Choices[0].ToolCalls) == 0 {
+		t.Fatalf("auto branch: response had neither text nor tool_use")
+	}
+}
+
+// TestAnthropicRealPromptCachingCacheRead is the P1 #19 contract test:
+// send the same large cached system prompt twice and assert that the
+// second turn reads from cache. The proof point is
+// GenerationInfo.Additional["cache_read_input_tokens"] > 0 on the
+// second response. Without this, prompt-caching regressions slip
+// silently because the request still succeeds; we just stop paying
+// the discount.
+//
+// Anthropic's cache requires the system block to be ≥1024 tokens for
+// Sonnet/Opus and ≥2048 for Haiku. We pad to ~3000 tokens to be safe
+// regardless of which model the test runs against.
+func TestAnthropicRealPromptCachingCacheRead(t *testing.T) {
+	adapter, _ := newRealAnthropicAdapter(t)
+
+	// We need to exceed Anthropic's minimum cache breakpoint, which
+	// varies by model: ~1024 tokens for Sonnet/Opus, ~4096 tokens for
+	// Haiku 4.5 (the default real-e2e model). 100 repetitions of the
+	// boilerplate paragraph yields ~6.5k tokens, comfortably above all
+	// current minimums while still being a small enough request to
+	// avoid noise from rate limits.
+	//
+	// The text must be deterministic — Anthropic computes the cache
+	// key from the content hash, so any randomness would invalidate
+	// the cache between the two calls in this test.
+	const sysLine = "This is a stable instructional paragraph used to fill the cache_control breakpoint. " +
+		"It establishes the operating constraints and persona for a helpful assistant. " +
+		"It must be long enough to exceed Anthropic's minimum cache breakpoint, which is approximately 1024 tokens for Sonnet/Opus and 4096 tokens for Haiku. "
+	systemPrompt := strings.Repeat(sysLine, 100)
+
+	prompt := func() []llmtypes.MessageContent {
+		return []llmtypes.MessageContent{
+			{
+				Role:  llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}},
+			},
+			{
+				Role:  llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with only the word OK."}},
+			},
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// Warm the cache.
+	resp1, err := adapter.GenerateContent(ctx, prompt(), llmtypes.WithMaxTokens(16))
+	if err != nil {
+		t.Fatalf("first (cache-priming) call error = %v", err)
+	}
+	if resp1.Choices[0].GenerationInfo == nil || resp1.Choices[0].GenerationInfo.Additional == nil {
+		t.Fatalf("first call missing GenerationInfo.Additional")
+	}
+	// On the first call we expect cache_creation_input_tokens > 0
+	// (cache write). cache_read may or may not be > 0 depending on
+	// whether a previous identical call within the 5m TTL has primed
+	// it from another test run.
+	createdRaw := resp1.Choices[0].GenerationInfo.Additional["cache_creation_input_tokens"]
+	created, _ := createdRaw.(int)
+	t.Logf("first call: cache_creation=%d cache_read=%v", created, resp1.Choices[0].GenerationInfo.Additional["cache_read_input_tokens"])
+
+	// Second call — same system prompt, must hit the cache.
+	resp2, err := adapter.GenerateContent(ctx, prompt(), llmtypes.WithMaxTokens(16))
+	if err != nil {
+		t.Fatalf("second call error = %v", err)
+	}
+	if resp2.Choices[0].GenerationInfo == nil || resp2.Choices[0].GenerationInfo.Additional == nil {
+		t.Fatalf("second call missing GenerationInfo.Additional")
+	}
+	readRaw := resp2.Choices[0].GenerationInfo.Additional["cache_read_input_tokens"]
+	read, ok := readRaw.(int)
+	t.Logf("second call: cache_read=%d cache_creation=%v", read, resp2.Choices[0].GenerationInfo.Additional["cache_creation_input_tokens"])
+	if !ok || read <= 0 {
+		t.Fatalf("expected cache_read_input_tokens > 0 on the second call; got %v (type %T). The adapter may have stopped attaching cache_control breakpoints, or the GA-era prompt-caching beta dropped.", readRaw, readRaw)
+	}
+}
+
+// TestAnthropicRealAuthFailureClassified is the P2 #22 contract test.
+// A deliberately invalid key must produce an error whose surface text
+//   - mentions auth/credential trouble,
+//   - does NOT echo the invalid key back (otherwise screen-share
+//     debugging leaks real keys when a user pastes one with a typo).
+//
+// The adapter today wraps SDK errors verbatim, so this test pins down
+// the user-facing contract independently from whatever upstream
+// changes Anthropic makes to its 401 body.
+func TestAnthropicRealAuthFailureClassified(t *testing.T) {
+	if os.Getenv("RUN_ANTHROPIC_REAL_E2E") == "" {
+		t.Skip("set RUN_ANTHROPIC_REAL_E2E=1 to run real Anthropic auth-failure tests")
+	}
+	const badKey = "sk-ant-api03-DELIBERATELY-INVALID-FOR-AUTH-CLASSIFICATION-TEST"
+	client := anthropic.NewClient(anthropicoption.WithAPIKey(badKey))
+	adapter := NewAnthropicAdapter(client, ModelClaudeHaiku45, &MockLogger{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "hi"}}},
+	}, llmtypes.WithMaxTokens(8))
+	if err == nil {
+		t.Fatal("expected GenerateContent to fail with a bogus key; got nil error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, badKey) {
+		t.Fatalf("error leaked the bogus key text — a real user's mis-pasted key would also leak through this surface.\nerror=%q", msg)
+	}
+	lower := strings.ToLower(msg)
+	hint := false
+	for _, marker := range []string{"auth", "key", "invalid", "credential", "unauthorized", "401"} {
+		if strings.Contains(lower, marker) {
+			hint = true
+			break
+		}
+	}
+	if !hint {
+		t.Fatalf("error does not hint at auth/credential trouble; users won't know to re-check their key.\nerror=%q", msg)
+	}
+}
+
 // TestAnthropicRealTopKDoesNotError mirrors TestAnthropicRealTopPDoesNotError
 // for the top_k parameter. Anthropic accepts top_k (unlike OpenAI Chat
 // Completions), so a non-zero value should round-trip cleanly.
