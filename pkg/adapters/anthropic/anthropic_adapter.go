@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -110,6 +111,22 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		params.MaxTokens = int64(opts.MaxTokens)
 	}
 
+	// Optional sampling controls. We only forward when the caller
+	// explicitly populated the field — leaving the provider's own
+	// default in place otherwise.
+	if opts.TopP > 0 {
+		params.TopP = anthropic.Float(opts.TopP)
+	}
+	if opts.TopK > 0 {
+		params.TopK = anthropic.Int(int64(opts.TopK))
+	}
+	if len(opts.StopSequences) > 0 {
+		// Defensive copy so the SDK's mutation rules don't surprise us.
+		seqs := make([]string, len(opts.StopSequences))
+		copy(seqs, opts.StopSequences)
+		params.StopSequences = seqs
+	}
+
 	// Convert tools if provided
 	if len(opts.Tools) > 0 {
 		tools := convertTools(opts.Tools)
@@ -122,6 +139,23 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
+	// Extended thinking (Claude 4 family). Anthropic requires
+	//   budget_tokens >= 1024 AND budget_tokens < max_tokens.
+	// Callers express their intent two ways:
+	//   1. opts.ThinkingBudget  — explicit token budget (wins if set)
+	//   2. opts.ThinkingLevel   — "low" / "medium" / "high" labels, which
+	//      we map to concrete budgets that satisfy the >=1024 floor.
+	if budget := resolveAnthropicThinkingBudget(opts, params.MaxTokens); budget >= 1024 {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{BudgetTokens: int64(budget)},
+		}
+		// Anthropic rejects `temperature != 1.0` together with thinking
+		// on the Messages API. Drop the override silently rather than
+		// failing the request — callers may set temperature for other
+		// providers in the same call site without realizing.
+		params.Temperature = anthropic.Float(1.0)
+	}
+
 	// Generate unique request ID for tracking request/response correlation
 	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
 
@@ -132,17 +166,25 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		a.logRawInput(requestID, modelID, params)
 	}
 
-	// Always use streaming API for Anthropic to avoid "streaming is required" error
-	// Anthropic requires streaming for operations that may take longer than 10 minutes
-	// Using NewStreaming() disables this error check regardless of actual request size
-	// Add beta header for prompt caching support (required for cache_control to work)
-	// DEBUG: Log beta header and cache control status using logger
+	// Always use streaming API for Anthropic to avoid "streaming is required" error.
+	// Anthropic requires streaming for operations that may take longer than 10 minutes;
+	// NewStreaming() disables that error check regardless of actual request size.
+	//
+	// Beta headers are composed per-request from the params themselves so we
+	// only opt into features we are actually using. Prompt caching is GA in
+	// the Messages API, so we no longer send the legacy
+	// `prompt-caching-2024-07-31` token unconditionally; it remains available
+	// behind a sentinel for adapters that want to pin the legacy contract.
+	betaTokens := buildAnthropicBetaTokens(params, opts)
 	if a.logger != nil {
-		a.logger.Debugf("[ANTHROPIC DEBUG] Making API call with beta header: anthropic-beta=prompt-caching-2024-07-31")
-		a.logger.Debugf("[ANTHROPIC DEBUG] Model: %s, Messages: %d, System blocks: %d",
-			params.Model, len(params.Messages), len(params.System))
+		a.logger.Debugf("[ANTHROPIC DEBUG] Model: %s, Messages: %d, System blocks: %d, beta=%q",
+			params.Model, len(params.Messages), len(params.System), strings.Join(betaTokens, ","))
 	}
-	stream := a.client.Messages.NewStreaming(ctx, params, anthropicoption.WithHeader("anthropic-beta", "prompt-caching-2024-07-31"))
+	streamOpts := []anthropicoption.RequestOption{}
+	if len(betaTokens) > 0 {
+		streamOpts = append(streamOpts, anthropicoption.WithHeader("anthropic-beta", strings.Join(betaTokens, ",")))
+	}
+	stream := a.client.Messages.NewStreaming(ctx, params, streamOpts...)
 
 	// Ensure channel is closed when done (if streaming is enabled)
 	defer func() {
@@ -323,9 +365,11 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 		// Extract content parts
 		var contentParts []string
 		var imageParts []llmtypes.ImageContent
+		var documentParts []llmtypes.DocumentContent
 		var toolCallID string
 		var toolResponseContent string
 		var toolResponseIsError bool
+		var toolResponseImages []llmtypes.ImageContent
 		var toolCalls []llmtypes.ToolCall
 
 		for _, part := range msg.Parts {
@@ -334,11 +378,16 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 				contentParts = append(contentParts, p.Text)
 			case llmtypes.ImageContent:
 				imageParts = append(imageParts, p)
+			case llmtypes.DocumentContent:
+				documentParts = append(documentParts, p)
 			case llmtypes.ToolCallResponse:
-				// Tool response - extract tool call ID and content
+				// Tool response - extract tool call ID, text content,
+				// and any image attachments. Claude 3.5+ supports
+				// images in tool_result blocks (vision-in-tool-output).
 				toolCallID = p.ToolCallID
 				toolResponseContent = p.Content
 				toolResponseIsError = p.IsError
+				toolResponseImages = append(toolResponseImages, p.Images...)
 			case llmtypes.ToolCall:
 				// Tool call in assistant message
 				toolCalls = append(toolCalls, p)
@@ -398,6 +447,17 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 				imageBlock := createImageBlock(img)
 				if imageBlock != nil {
 					contentBlocks = append(contentBlocks, *imageBlock)
+				}
+			}
+
+			// Add document content blocks (e.g. PDFs) if present.
+			// Anthropic Claude 3.5+ natively reads PDFs and other
+			// document content; unsupported media types are silently
+			// dropped by createDocumentBlock.
+			for _, doc := range documentParts {
+				docBlock := createDocumentBlock(doc)
+				if docBlock != nil {
+					contentBlocks = append(contentBlocks, *docBlock)
 				}
 			}
 
@@ -462,8 +522,7 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 			// Mark that we've seen tool interactions (tool responses are dynamic)
 			if toolCallID != "" {
 				hasSeenToolInteraction = true
-				contentBlock := anthropic.NewToolResultBlock(toolCallID, toolResponseContent, toolResponseIsError)
-
+				contentBlock := buildToolResultBlock(toolCallID, toolResponseContent, toolResponseIsError, toolResponseImages)
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
 					Role:    anthropic.MessageParamRoleUser,
 					Content: []anthropic.ContentBlockParamUnion{contentBlock},
@@ -487,6 +546,14 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 				}
 			}
 
+			// Add document content blocks (e.g. PDFs) if present.
+			for _, doc := range documentParts {
+				docBlock := createDocumentBlock(doc)
+				if docBlock != nil {
+					contentBlocks = append(contentBlocks, *docBlock)
+				}
+			}
+
 			// Only add message if there's content
 			if len(contentBlocks) > 0 {
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
@@ -498,6 +565,91 @@ func convertMessages(langMessages []llmtypes.MessageContent) ([]anthropic.Messag
 	}
 
 	return anthropicMessages, systemMessage
+}
+
+// buildToolResultBlock constructs a tool_result content block, optionally
+// embedding image content for Claude 3.5+ vision-in-tool-output. When no
+// images are attached we fall back to the SDK's text-only convenience
+// constructor so the wire format matches existing tests bit-for-bit.
+func buildToolResultBlock(toolCallID, text string, isError bool, images []llmtypes.ImageContent) anthropic.ContentBlockParamUnion {
+	if len(images) == 0 {
+		return anthropic.NewToolResultBlock(toolCallID, text, isError)
+	}
+	result := anthropic.ToolResultBlockParam{
+		ToolUseID: toolCallID,
+	}
+	if isError {
+		result.IsError = anthropic.Bool(true)
+	}
+	if strings.TrimSpace(text) != "" {
+		result.Content = append(result.Content, anthropic.ToolResultBlockParamContentUnion{
+			OfText: &anthropic.TextBlockParam{Text: text},
+		})
+	}
+	for _, img := range images {
+		block := createImageBlock(img)
+		if block == nil || block.OfImage == nil {
+			continue
+		}
+		result.Content = append(result.Content, anthropic.ToolResultBlockParamContentUnion{
+			OfImage: block.OfImage,
+		})
+	}
+	return anthropic.ContentBlockParamUnion{OfToolResult: &result}
+}
+
+// createDocumentBlock converts a DocumentContent into the Anthropic
+// document content-block. Two media types are supported today:
+//
+//   - application/pdf — wrapped in Base64PDFSourceParam (base64 source)
+//     or URLPDFSourceParam (URL source).
+//   - text/plain      — wrapped in PlainTextSourceParam (base64 source
+//     only; PlainTextSourceParam carries the raw text inline).
+//
+// Anything else returns nil so the caller can degrade gracefully
+// instead of forwarding a malformed request.
+func createDocumentBlock(doc llmtypes.DocumentContent) *anthropic.ContentBlockParamUnion {
+	mediaType := strings.ToLower(strings.TrimSpace(doc.MediaType))
+	source := strings.ToLower(strings.TrimSpace(doc.SourceType))
+	data := strings.TrimSpace(doc.Data)
+	if data == "" {
+		return nil
+	}
+
+	var block anthropic.ContentBlockParamUnion
+	switch mediaType {
+	case "application/pdf":
+		if source == "url" {
+			block = anthropic.NewDocumentBlock(anthropic.URLPDFSourceParam{URL: doc.Data})
+		} else {
+			block = anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{Data: doc.Data})
+		}
+	case "text/plain":
+		// PlainTextSourceParam carries the raw decoded text. If the
+		// caller passed base64 data, decode here; if they passed the
+		// raw text, just hand it through unchanged.
+		text := doc.Data
+		if source == "base64" {
+			if decoded, err := base64.StdEncoding.DecodeString(doc.Data); err == nil {
+				text = string(decoded)
+			}
+		}
+		block = anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{Data: text})
+	default:
+		return nil
+	}
+	if block.OfDocument != nil {
+		if doc.Title != "" {
+			block.OfDocument.Title = anthropic.String(doc.Title)
+		}
+		if doc.Context != "" {
+			block.OfDocument.Context = anthropic.String(doc.Context)
+		}
+		if doc.EnableCitations {
+			block.OfDocument.Citations = anthropic.CitationsConfigParam{Enabled: anthropic.Bool(true)}
+		}
+	}
+	return &block
 }
 
 // createImageBlock creates an Anthropic image content block from ImageContent
@@ -570,10 +722,15 @@ func convertTools(llmTools []llmtypes.Tool) []anthropic.ToolUnionParam {
 		}
 		anthropicTool := anthropic.ToolUnionParamOfTool(inputSchema, tool.Function.Name)
 
-		// Set description if available
-		// Note: ToolUnionParam doesn't directly expose Description, so we add it to the schema description if needed
-		// For now, we'll just use the tool name
-		_ = tool.Function.Description // Description is available but not used in current implementation
+		// Set description on the inner ToolParam variant. The Anthropic docs
+		// explicitly state: "Tool descriptions should be as detailed as
+		// possible. The more information that the model has about what the
+		// tool is and how to use it, the better it will perform." Dropping
+		// the description forces the model to disambiguate tools by name
+		// alone, which degrades selection quality on any multi-tool prompt.
+		if desc := strings.TrimSpace(tool.Function.Description); desc != "" && anthropicTool.OfTool != nil {
+			anthropicTool.OfTool.Description = anthropic.String(desc)
+		}
 
 		anthropicTools = append(anthropicTools, anthropicTool)
 	}
@@ -665,9 +822,16 @@ func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
 
 	choice := &llmtypes.ContentChoice{}
 
-	// Extract text content and tool calls from content blocks
+	// Extract text content, tool calls, and thinking blocks from the
+	// response. Thinking blocks are kept out of the assistant content
+	// (they're internal reasoning, not the user-facing reply) and
+	// surfaced separately via GenerationInfo.Additional so callers that
+	// need them — tracing, debugging, follow-up turns that want to
+	// re-feed the thinking back into Claude — can opt in.
 	var textParts []string
 	var toolCalls []llmtypes.ToolCall
+	var thinkingParts []string
+	var thinkingSignatures []string
 
 	// Content is a slice of ContentBlockUnion
 	for _, block := range result.Content {
@@ -695,6 +859,18 @@ func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
 				},
 			}
 			toolCalls = append(toolCalls, toolCall)
+		case "thinking":
+			// Extended-thinking reasoning. Block.Thinking holds the
+			// raw chain-of-thought text; Block.Signature is the
+			// integrity stamp Anthropic returns so the same thinking
+			// block can be re-sent in a follow-up turn (required for
+			// tool_use turns when thinking is on).
+			if block.Thinking != "" {
+				thinkingParts = append(thinkingParts, block.Thinking)
+			}
+			if block.Signature != "" {
+				thinkingSignatures = append(thinkingSignatures, block.Signature)
+			}
 		}
 	}
 
@@ -753,6 +929,20 @@ func convertResponse(result *anthropic.Message) *llmtypes.ContentResponse {
 		cacheCreationTokens := int(result.Usage.CacheCreationInputTokens)
 		genInfo.Additional["cache_creation_input_tokens"] = cacheCreationTokens
 		genInfo.Additional["CacheCreationInputTokens"] = cacheCreationTokens
+	}
+
+	// Extended-thinking output. We keep it out of the assistant content
+	// (it is internal reasoning, not the user-facing reply) but expose
+	// the joined chain-of-thought + each block's signature via
+	// Additional so callers that need to re-feed the thinking back to
+	// Claude on a follow-up turn (required for tool-use continuations
+	// when thinking is on) can do so.
+	if len(thinkingParts) > 0 {
+		genInfo.Additional["thinking"] = strings.Join(thinkingParts, "\n")
+		genInfo.Additional["thinking_blocks"] = len(thinkingParts)
+	}
+	if len(thinkingSignatures) > 0 {
+		genInfo.Additional["thinking_signatures"] = thinkingSignatures
 	}
 
 	choice.GenerationInfo = genInfo
