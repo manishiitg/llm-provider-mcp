@@ -68,7 +68,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
-		ImageInputInteractive:   false,
+		ImageInputInteractive:   true,
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -90,7 +90,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
-		ImageInputInteractive:   false,
+		ImageInputInteractive:   true,
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -134,7 +134,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
-		ImageInputInteractive:   false,
+		ImageInputInteractive:   true,
 	},
 	ProviderOpenCodeCLI: {
 		Provider:                ProviderOpenCodeCLI,
@@ -156,7 +156,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
-		ImageInputInteractive:   false,
+		ImageInputInteractive:   true,
 	},
 	ProviderKimi: {
 		Provider:                ProviderKimi,
