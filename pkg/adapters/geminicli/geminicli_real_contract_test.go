@@ -282,6 +282,149 @@ deny_message = "Use only the api-bridge echo_contract MCP tool for this contract
 	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestGeminiCLIRealInteractiveSharedWorkingDirMCPIsolation(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")
+	if err := os.MkdirAll(sharedWorkDir, 0o755); err != nil {
+		t.Fatalf("create shared workdir: %v", err)
+	}
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "mcp_api-bridge_write_contract"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 998
+deny_message = "Use only the api-bridge write_contract MCP tool for this isolation test."
+`)
+
+	type runSpec struct {
+		name          string
+		ownerSession  string
+		projectDirID  string
+		sessionMarker string
+		token         string
+		outputPath    string
+		mcpServerPath string
+	}
+	specs := []runSpec{
+		{
+			name:          "alpha",
+			ownerSession:  "gemini-real-shared-alpha-" + geminiRandomHex(4),
+			projectDirID:  "shared-alpha-" + geminiRandomHex(4),
+			sessionMarker: "SESSION_ALPHA_" + geminiRandomHex(4),
+			token:         "TOKEN_ALPHA_" + geminiRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "alpha-output.json"),
+		},
+		{
+			name:          "beta",
+			ownerSession:  "gemini-real-shared-beta-" + geminiRandomHex(4),
+			projectDirID:  "shared-beta-" + geminiRandomHex(4),
+			sessionMarker: "SESSION_BETA_" + geminiRandomHex(4),
+			token:         "TOKEN_BETA_" + geminiRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "beta-output.json"),
+		},
+	}
+	for i := range specs {
+		specs[i].mcpServerPath = writeGeminiIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
+	}
+
+	type runResult struct {
+		spec    runSpec
+		content string
+		err     error
+		genInfo map[string]interface{}
+	}
+	resultCh := make(chan runResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			settings := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, spec.mcpServerPath)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge write_contract MCP tool with token %s. Then reply exactly with the tool result text.", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(sharedWorkDir),
+				WithProjectDirID(spec.projectDirID),
+				WithProjectSettings(settings),
+				WithAdminPolicyPath(policyPath),
+				WithApprovalMode("yolo"),
+			)
+			result := runResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+				if resp.Choices[0].GenerationInfo != nil {
+					result.genInfo = resp.Choices[0].GenerationInfo.Additional
+				}
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]runResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	seenProjectDirs := map[string]string{}
+	for _, spec := range specs {
+		got := results[spec.name]
+		want := "ISOLATED_OK_" + spec.sessionMarker + "_" + spec.token
+		if !strings.Contains(got.content, want) {
+			t.Fatalf("%s content = %q, want isolated tool result %q", spec.name, got.content, want)
+		}
+		data, err := os.ReadFile(spec.outputPath)
+		if err != nil {
+			t.Fatalf("%s output file missing at %s: %v", spec.name, spec.outputPath, err)
+		}
+		forbiddenMarker := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				forbiddenMarker = other.sessionMarker
+				break
+			}
+		}
+		text := string(data)
+		if !strings.Contains(text, spec.sessionMarker) || !strings.Contains(text, spec.token) {
+			t.Fatalf("%s output = %s, want session %s and token %s", spec.name, text, spec.sessionMarker, spec.token)
+		}
+		if forbiddenMarker != "" && strings.Contains(text, forbiddenMarker) {
+			t.Fatalf("%s output crossed sessions: %s", spec.name, text)
+		}
+		projectDirID, _ := got.genInfo["gemini_project_dir_id"].(string)
+		if projectDirID != spec.projectDirID {
+			t.Fatalf("%s gemini_project_dir_id = %q, want %q; genInfo=%#v", spec.name, projectDirID, spec.projectDirID, got.genInfo)
+		}
+		projectDir := filepath.Join(os.TempDir(), "gemini-cli-project-"+projectDirID)
+		if projectDir == sharedWorkDir {
+			t.Fatalf("%s project dir must not equal shared working dir %q", spec.name, sharedWorkDir)
+		}
+		if owner, exists := seenProjectDirs[projectDir]; exists {
+			t.Fatalf("%s reused project dir %q already used by %s", spec.name, projectDir, owner)
+		}
+		seenProjectDirs[projectDir] = spec.name
+	}
+
+	if _, err := os.Stat(filepath.Join(sharedWorkDir, ".gemini", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("shared working directory must not contain Gemini settings; stat err=%v", err)
+	}
+}
+
 func TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
@@ -657,6 +800,93 @@ rl.on("line", (line) => {
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func writeGeminiIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gemini-isolation-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const sessionMarker = %q;
+const outputPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") {
+    return;
+  }
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "write_contract",
+          description: "Write a deterministic marker proving this MCP server/session was used.",
+          inputSchema: {
+            type: "object",
+            properties: { token: { type: "string" } },
+            required: ["token"]
+          }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const payload = {
+      session_marker: sessionMarker,
+      token,
+      cwd: process.cwd(),
+      gemini_project_dir: process.env.GEMINI_PROJECT_DIR || "",
+      timestamp: new Date().toISOString()
+    };
+    fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        content: [{ type: "text", text: "ISOLATED_OK_" + sessionMarker + "_" + token }],
+        isError: false
+      }
+    });
+    return;
+  }
+  if (msg.id !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  }
+});
+`, sessionMarker, outputPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write isolation MCP server: %v", err)
 	}
 	return path
 }

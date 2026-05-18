@@ -216,7 +216,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 	geminiPersistentRegistry.sessions[ownerSessionID] = session
 	geminiPersistentRegistry.Unlock()
 
-	args, env, projectDir, projectDirID, systemPromptTempFile, err := g.buildGeminiInteractiveLaunch(ownerSessionID, opts, systemPrompt)
+	args, env, projectDir, projectDirID, commandDir, systemPromptTempFile, err := g.buildGeminiInteractiveLaunch(ownerSessionID, opts, systemPrompt)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
@@ -227,7 +227,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 	session.projectDirID = projectDirID
 	session.systemPromptTempFile = systemPromptTempFile
 
-	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, projectDir); err != nil {
+	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {
 		session.initErr = err
 		if systemPromptTempFile != "" {
 			_ = os.Remove(systemPromptTempFile)
@@ -240,7 +240,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 	return session, nil
 }
 
-func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, string, string, error) {
+func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, string, string, string, error) {
 	modelToUse := resolveGeminiCLIModelID(g.modelID)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyGeminiModel].(string); ok && model != "" {
@@ -271,7 +271,14 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 
 	projectDir, projectDirID, err := prepareGeminiInteractiveProjectDir(ownerSessionID, opts)
 	if err != nil {
-		return nil, nil, "", "", "", err
+		return nil, nil, "", "", "", "", err
+	}
+	commandDir := projectDir
+	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
+		if err := os.MkdirAll(workingDir, 0o755); err != nil {
+			return nil, nil, "", "", "", "", fmt.Errorf("failed to create Gemini interactive working dir: %w", err)
+		}
+		appendGeminiIncludeWorkingDirArg(&args, opts, projectDir)
 	}
 
 	systemPromptFile := ""
@@ -284,17 +291,17 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 	if systemPromptFile == "" && strings.TrimSpace(systemPrompt) != "" {
 		tmpFile, err := os.CreateTemp("", "gemini-interactive-system-*.md")
 		if err != nil {
-			return nil, nil, "", "", "", fmt.Errorf("failed to create temp file for Gemini interactive system prompt: %w", err)
+			return nil, nil, "", "", "", "", fmt.Errorf("failed to create temp file for Gemini interactive system prompt: %w", err)
 		}
 		systemPromptTempFile = tmpFile.Name()
 		if _, err := tmpFile.WriteString(systemPrompt); err != nil {
 			tmpFile.Close()
 			_ = os.Remove(systemPromptTempFile)
-			return nil, nil, "", "", "", fmt.Errorf("failed to write Gemini interactive system prompt: %w", err)
+			return nil, nil, "", "", "", "", fmt.Errorf("failed to write Gemini interactive system prompt: %w", err)
 		}
 		if err := tmpFile.Close(); err != nil {
 			_ = os.Remove(systemPromptTempFile)
-			return nil, nil, "", "", "", fmt.Errorf("failed to close Gemini interactive system prompt: %w", err)
+			return nil, nil, "", "", "", "", fmt.Errorf("failed to close Gemini interactive system prompt: %w", err)
 		}
 		systemPromptFile = systemPromptTempFile
 	}
@@ -304,7 +311,7 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
-	return args, env, projectDir, projectDirID, systemPromptTempFile, nil
+	return args, env, projectDir, projectDirID, commandDir, systemPromptTempFile, nil
 }
 
 func (g *GeminiCLIAdapter) geminiInteractiveLaunchFingerprint(opts *llmtypes.CallOptions, systemPrompt string) string {
@@ -378,7 +385,6 @@ func stringOptionValue(custom map[string]interface{}, key string) string {
 func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.CallOptions) (string, string, error) {
 	projectDirID := ""
 	settingsJSON := ""
-	workingDir := geminiWorkingDirFromOptions(opts)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if id, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && strings.TrimSpace(id) != "" {
 			projectDirID = strings.TrimSpace(id)
@@ -391,10 +397,6 @@ func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.Ca
 		projectDirID = "interactive-" + sanitizeGeminiTmuxSessionName(ownerSessionID)
 	}
 	projectDir := filepath.Join(os.TempDir(), "gemini-cli-project-"+projectDirID)
-	if workingDir != "" {
-		projectDir = workingDir
-		projectDirID = ""
-	}
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("failed to create Gemini interactive project dir: %w", err)
 	}
@@ -684,9 +686,9 @@ func geminiAssistantHistory(messages []llmtypes.MessageContent) []string {
 	return history
 }
 
-func startGeminiTmuxSession(ctx context.Context, sessionName string, args []string, env []string, projectDir string) error {
-	if projectDir == "" {
-		projectDir = geminiMustGetwd()
+func startGeminiTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
+	if workingDir == "" {
+		workingDir = geminiMustGetwd()
 	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
@@ -695,7 +697,7 @@ func startGeminiTmuxSession(ctx context.Context, sessionName string, args []stri
 			tmuxArgs = append(tmuxArgs, "-e", entry)
 		}
 	}
-	shellCommand := shelllaunch.Command(args, projectDir)
+	shellCommand := shelllaunch.Command(args, workingDir)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runGeminiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
 		return fmt.Errorf("failed to start Gemini interactive session %q: %w", sessionName, err)
@@ -1286,8 +1288,10 @@ func isGeminiActiveStatusLine(line string) bool {
 
 func hasGeminiTrustPrompt(captured string) bool {
 	lower := strings.ToLower(stripGeminiANSI(captured))
-	return strings.Contains(lower, "do you trust the files in this folder") &&
-		strings.Contains(lower, "trust folder")
+	return (strings.Contains(lower, "do you trust the files in this folder") &&
+		strings.Contains(lower, "trust folder")) ||
+		(strings.Contains(lower, "do you trust the following folders being added to this workspace") &&
+			strings.Contains(lower, "trusting a folder allows gemini"))
 }
 
 func hasGeminiReadyPrompt(captured string) bool {

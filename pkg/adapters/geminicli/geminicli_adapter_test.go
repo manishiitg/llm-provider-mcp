@@ -60,30 +60,99 @@ func TestGeminiInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	}
 }
 
-func TestGeminiWorkingDirOptionOverridesProjectDir(t *testing.T) {
-	workDir := t.TempDir()
+func TestGeminiWorkingDirKeepsProjectSettingsIsolated(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	workDir := filepath.Join(tmpDir, "shared-work")
 	opts := &llmtypes.CallOptions{}
 	WithWorkingDir(" " + workDir + " ")(opts)
-	WithProjectDirID("legacy-temp-id")(opts)
+	WithProjectDirID("session-a")(opts)
+	WithProjectSettings(`{"mcpServers":{"api-bridge":{"env":{"MCP_API_URL":"http://example.test/s/session-a"}}}}`)(opts)
 
 	projectDir, projectDirID := resolveProjectDir(opts, "")
-	if projectDir != workDir {
-		t.Fatalf("project dir = %q, want working dir %q", projectDir, workDir)
+	if projectDir == workDir {
+		t.Fatalf("project dir should be isolated from working dir, both were %q", workDir)
 	}
-	if projectDirID != "" {
-		t.Fatalf("project dir ID = %q, want empty when using explicit working dir", projectDirID)
+	if projectDirID != "session-a" {
+		t.Fatalf("project dir ID = %q, want session-a", projectDirID)
 	}
 
 	interactiveDir, interactiveDirID, err := prepareGeminiInteractiveProjectDir("owner-session", opts)
 	if err != nil {
 		t.Fatalf("prepareGeminiInteractiveProjectDir returned error: %v", err)
 	}
-	if interactiveDir != workDir {
-		t.Fatalf("interactive dir = %q, want working dir %q", interactiveDir, workDir)
+	if interactiveDir != projectDir {
+		t.Fatalf("interactive dir = %q, want isolated project dir %q", interactiveDir, projectDir)
 	}
-	if interactiveDirID != "" {
-		t.Fatalf("interactive project dir ID = %q, want empty when using explicit working dir", interactiveDirID)
+	if interactiveDirID != "session-a" {
+		t.Fatalf("interactive project dir ID = %q, want session-a", interactiveDirID)
 	}
+	settingsPath := filepath.Join(interactiveDir, ".gemini", "settings.json")
+	settingsBytes, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read isolated settings: %v", err)
+	}
+	if !strings.Contains(string(settingsBytes), "/s/session-a") {
+		t.Fatalf("isolated settings did not contain session-a MCP URL: %s", settingsBytes)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".gemini", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("working dir settings should not be written; stat err=%v", err)
+	}
+
+	adapter := NewGeminiCLIAdapter("", geminiCLIContractModel, &MockLogger{})
+	args, env, launchProjectDir, launchProjectDirID, commandDir, _, err := adapter.buildGeminiInteractiveLaunch("owner-session", opts, "")
+	if err != nil {
+		t.Fatalf("buildGeminiInteractiveLaunch returned error: %v", err)
+	}
+	if launchProjectDir != projectDir || launchProjectDirID != "session-a" {
+		t.Fatalf("launch project dir/id = %q/%q, want %q/session-a", launchProjectDir, launchProjectDirID, projectDir)
+	}
+	if commandDir != projectDir {
+		t.Fatalf("command dir = %q, want isolated project dir %q", commandDir, projectDir)
+	}
+	if !argPairContains(args, "--include-directories", workDir) {
+		t.Fatalf("args did not include working dir %q via --include-directories: %#v", workDir, args)
+	}
+	if !envContains(env, "GEMINI_PROJECT_DIR="+projectDir) {
+		t.Fatalf("env did not include isolated GEMINI_PROJECT_DIR=%q: %#v", projectDir, env)
+	}
+
+	other := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(other)
+	WithProjectDirID("session-b")(other)
+	WithProjectSettings(`{"mcpServers":{"api-bridge":{"env":{"MCP_API_URL":"http://example.test/s/session-b"}}}}`)(other)
+	otherDir, _, err := prepareGeminiInteractiveProjectDir("other-owner", other)
+	if err != nil {
+		t.Fatalf("prepare other project dir: %v", err)
+	}
+	if otherDir == interactiveDir {
+		t.Fatalf("parallel sessions with same working dir must use distinct project settings dirs")
+	}
+	otherSettings, err := os.ReadFile(filepath.Join(otherDir, ".gemini", "settings.json"))
+	if err != nil {
+		t.Fatalf("read other settings: %v", err)
+	}
+	if !strings.Contains(string(otherSettings), "/s/session-b") || strings.Contains(string(otherSettings), "/s/session-a") {
+		t.Fatalf("other isolated settings contain wrong session URL: %s", otherSettings)
+	}
+}
+
+func envContains(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
+func argPairContains(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGeminiInteractiveLaunchFingerprintIgnoresDynamicSystemPromptText(t *testing.T) {
@@ -578,6 +647,27 @@ func TestGeminiReadyPromptAcceptsV042StarPrompt(t *testing.T) {
 	}
 	if hasGeminiActivity(pane) {
 		t.Fatalf("v0.42 star prompt should not count as active generation")
+	}
+}
+
+func TestGeminiTrustPromptAcceptsIncludedDirectoryPrompt(t *testing.T) {
+	pane := `
+ ▝▜▄     Gemini CLI v0.42.0
+   ▗▟▀    Authenticated with gemini-api-key /auth
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ Do you trust the following folders being added to this workspace?          │
+ │ - /tmp/shared-workspace                                                   │
+ │ Trusting a folder allows Gemini to read and perform auto-edits when in     │
+ │ auto-approval mode.                                                       │
+ │                                                                            │
+ │ ● 1. Yes                                                                  │
+ │   2. Yes, and remember the directories as trusted                          │
+ │   3. No                                                                   │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+`
+	if !hasGeminiTrustPrompt(pane) {
+		t.Fatalf("Gemini included-directory trust prompt was not detected")
 	}
 }
 

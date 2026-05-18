@@ -64,12 +64,8 @@ const inactivityTimeout = 10 * time.Minute
 // Priority: explicit dirID from metadata > resumeID-based > generate new unique ID.
 // Returns the project directory path and the directory ID (for storing in response metadata).
 func resolveProjectDir(opts *llmtypes.CallOptions, resumeID string) (projectDir string, dirID string) {
-	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
-		return workingDir, ""
-	}
-
 	// 1. Check for explicit project dir ID from metadata (highest priority)
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if id, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && id != "" {
 			dirID = id
 			projectDir = filepath.Join(os.TempDir(), "gemini-cli-project-"+dirID)
@@ -100,6 +96,17 @@ func geminiWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 		}
 	}
 	return ""
+}
+
+func appendGeminiIncludeWorkingDirArg(args *[]string, opts *llmtypes.CallOptions, projectDir string) {
+	workingDir := geminiWorkingDirFromOptions(opts)
+	if workingDir == "" {
+		return
+	}
+	if projectDir != "" && filepath.Clean(workingDir) == filepath.Clean(projectDir) {
+		return
+	}
+	*args = append(*args, "--include-directories", workingDir)
 }
 
 // GenerateContent generates content using the Gemini CLI.
@@ -266,14 +273,9 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	// stdin to --prompt per its docs).
 	args = append(args, "--prompt", "")
 
-	// 3. Execute Command
-	g.logger.Infof("Executing Gemini CLI: gemini %v (prompt via stdin, len=%d)", args, len(promptText))
-	cmd := exec.CommandContext(ctx, "gemini", args...)
-	if promptText != "" {
-		cmd.Stdin = strings.NewReader(promptText)
-	}
-
-	// Build environment: inherit current env + add custom vars
+	// 3. Build environment and command context. Keep this before exec.CommandContext
+	// because settings-backed calls may add --include-directories after creating
+	// the isolated Gemini project dir.
 	env := os.Environ()
 	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
 	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
@@ -281,35 +283,49 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
-	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
-		env = append(env, "GEMINI_PROJECT_DIR="+workingDir)
-	}
-	cmd.Env = env
 
+	commandDir := ""
 	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
 		if err := os.MkdirAll(workingDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create Gemini CLI working directory: %w", err)
 		}
-		cmd.Dir = workingDir
+		commandDir = workingDir
 		g.logger.Infof("Using Gemini CLI working dir: %s", workingDir)
 	}
 
 	// If project settings JSON is provided, create a per-invocation project directory with
-	// .gemini/settings.json and run the CLI from there. Each invocation gets its own
-	// directory to prevent concurrent processes from corrupting each other's session files.
+	// .gemini/settings.json. Each invocation gets its own directory to prevent concurrent
+	// processes from corrupting each other's MCP bridge/session configuration.
 	// Resume calls reuse the same directory (keyed by session ID or explicit dir ID).
 	var projectDir string
 	var projectDirID string
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if settingsJSON, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok && settingsJSON != "" {
 			projectDir, projectDirID = resolveProjectDir(opts, resumeID)
-			os.MkdirAll(projectDir, 0755)
+			if err := os.MkdirAll(projectDir, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create Gemini project settings dir: %w", err)
+			}
 			geminiDir := filepath.Join(projectDir, ".gemini")
-			os.MkdirAll(geminiDir, 0755)
-			os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0644)
-			cmd.Dir = projectDir
-			g.logger.Infof("Using project dir with settings: %s (dirID=%s, resume=%s)", projectDir, projectDirID, resumeID)
+			if err := os.MkdirAll(geminiDir, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create Gemini settings dir: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0644); err != nil {
+				return nil, fmt.Errorf("failed to write Gemini settings: %w", err)
+			}
+			env = append(env, "GEMINI_PROJECT_DIR="+projectDir)
+			commandDir = projectDir
+			appendGeminiIncludeWorkingDirArg(&args, opts, projectDir)
+			g.logger.Infof("Using Gemini project settings dir: %s (dirID=%s, resume=%s, cwd=%s)", projectDir, projectDirID, resumeID, commandDir)
 		}
+	}
+	g.logger.Infof("Executing Gemini CLI: gemini %v (prompt via stdin, len=%d, cwd=%s)", args, len(promptText), commandDir)
+	cmd := exec.CommandContext(ctx, "gemini", args...)
+	if promptText != "" {
+		cmd.Stdin = strings.NewReader(promptText)
+	}
+	cmd.Env = env
+	if commandDir != "" {
+		cmd.Dir = commandDir
 	}
 
 	// Use Pipe for stdout to parse as a stream
@@ -756,7 +772,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	// If result was empty and we have a session ID, retry with a finalization prompt
 	if emptyResultSessionID != "" {
 		g.logger.Infof("Empty result detected, retrying with finalization prompt (sessionID=%s)", emptyResultSessionID)
-		retryResp, retryErr := g.retryForFinalAnswer(ctx, emptyResultSessionID, opts, systemPromptFile, projectDir)
+		retryResp, retryErr := g.retryForFinalAnswer(ctx, emptyResultSessionID, opts, systemPromptFile, projectDir, commandDir)
 		if retryErr != nil {
 			g.logger.Errorf("Retry for final answer failed: %v", retryErr)
 		} else if retryResp != nil && len(retryResp.Choices) > 0 && retryResp.Choices[0].Content != "" {
@@ -983,14 +999,18 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 }
 
 // retryForFinalAnswer resumes a Gemini CLI session that produced an empty result
-// and asks it to provide a final summary. projectDir is the same directory used
-// by the original invocation (so --resume can find the session).
+// and asks it to provide a final summary. projectDir is the isolated Gemini
+// project/settings directory used by the original invocation; commandDir is the
+// same process cwd used by that invocation. For settings-backed runs that cwd is
+// usually projectDir because Gemini discovers .gemini/settings.json from cwd,
+// while the caller workspace is supplied with --include-directories.
 func (g *GeminiCLIAdapter) retryForFinalAnswer(
 	ctx context.Context,
 	sessionID string,
 	opts *llmtypes.CallOptions,
 	systemPromptFile string,
 	projectDir string,
+	commandDir string,
 ) (*llmtypes.ContentResponse, error) {
 	finalizationPrompt := "You have run out of turns. Please provide your final answer now based on what you have accomplished so far. Summarize results, findings, and any remaining work."
 
@@ -999,6 +1019,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 		"--resume", sessionID,
 	}
 	appendGeminiPolicyArgs(&args, opts)
+	appendGeminiIncludeWorkingDirArg(&args, opts, projectDir)
 
 	// Set approval mode only if explicitly provided (Policy Engine handles tool approval via TOML rules)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -1021,12 +1042,17 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 	if systemPromptFile != "" {
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
+	if projectDir != "" {
+		env = append(env, "GEMINI_PROJECT_DIR="+projectDir)
+	}
 	cmd.Env = env
 
-	// Use the same project directory as the original invocation
-	if projectDir != "" {
-		cmd.Dir = projectDir
-		g.logger.Infof("Retry: using same project dir: %s", projectDir)
+	if commandDir == "" {
+		commandDir = projectDir
+	}
+	if commandDir != "" {
+		cmd.Dir = commandDir
+		g.logger.Infof("Retry: using cwd: %s (project dir: %s)", commandDir, projectDir)
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()

@@ -358,6 +358,11 @@ Provider-specific launch requirements:
   - pass MCP bridge and policy through scoped `.gemini/settings.json` and
     `.gemini/policies`
   - keep the project dir id stable for a resumed Gemini session
+  - run the Gemini process from the isolated project/settings directory when
+    scoped settings are present, because Gemini CLI 0.42 discovers
+    `.gemini/settings.json` from process cwd
+  - pass the caller workspace with `--include-directories <working-dir>` in
+    that mode; the MCP bridge shell cwd must still be the caller workspace
   - deny built-in filesystem/shell tools by policy when bridge-only behavior is
     required
   - keep the TUI session alive when app-level system prompt text varies between
@@ -620,7 +625,8 @@ Native resume metadata:
 - Cursor CLI: `cursor_session_id` when available from Cursor-native session
   state, resumed with `cursor-agent --resume <chatId>` from the same workspace.
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
-  `--resume <session_id>` from the same project dir.
+  `--resume <session_id>` from the same project/settings dir and the same
+  caller workspace supplied via `--include-directories`.
 - OpenCode CLI structured: `opencode_session_id` when available, resumed with
   `opencode run --session <session_id>` from the same workspace.
 
@@ -677,6 +683,7 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
 | Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |
+| Shared-workdir MCP isolation | Parallel sessions that run from the same working directory must still use distinct provider settings/project dirs and distinct MCP bridge session URLs; each real tool call must route to its own session and write only to its own allowed output directory. |
 | Cleanup | Idle timeout, explicit close, failed launch, lost tmux pane/server, and server shutdown unregister and kill owned sessions. |
 
 Minimum release gate for any new tmux provider:
@@ -693,7 +700,8 @@ Minimum release gate for any new tmux provider:
    open while the pane is active.
 10. Real cancellation/interrupt test.
 11. Real final-extraction hygiene test.
-12. Real cleanup/session-loss test.
+12. Real shared-working-directory MCP isolation test with parallel sub-agents.
+13. Real cleanup/session-loss test.
 
 Cursor or any future provider must not be marked as a complete tmux coding
 agent in `coding_agent_contract.go` until the provider has these real E2E tests
@@ -918,6 +926,7 @@ Gemini CLI tmux:
 - `TestGeminiCLIRealInteractiveLargePastedPromptSubmits`
 - `TestGeminiCLIRealInteractiveMarkdownBulletCompletionDoesNotLookUnsubmitted`
 - `TestGeminiCLIRealInteractiveMCPBridgeContract`
+- `TestGeminiCLIRealInteractiveSharedWorkingDirMCPIsolation`
 - `TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool`
 - `TestGeminiCLIRealInteractiveLiveInputContract`
 

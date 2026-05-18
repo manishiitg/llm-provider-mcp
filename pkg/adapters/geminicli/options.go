@@ -94,9 +94,10 @@ func WithAdminPolicyPath(path string) llmtypes.CallOption {
 	}
 }
 
-// WithWorkingDir sets the Gemini CLI process working directory. When project
-// settings are also provided, .gemini/settings.json is written under this
-// directory so Gemini's displayed workspace and MCP shell cwd stay aligned.
+// WithWorkingDir sets the caller workspace for Gemini. When project settings
+// are present, the CLI process starts from the isolated settings directory and
+// this path is added with --include-directories so parallel agents cannot
+// overwrite each other's MCP bridge/session configuration.
 func WithWorkingDir(dir string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
