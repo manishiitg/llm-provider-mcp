@@ -162,7 +162,11 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// has no stdout JSON, but ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 	// records token_count event_msgs with per-turn token snapshots.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
-	if usage := readCodexTranscriptUsage(turnStart); usage != nil {
+	usage, effectiveModel := readCodexTranscriptUsage(turnStart)
+	if effectiveModel != "" {
+		additional["codex_effective_model"] = effectiveModel
+	}
+	if usage != nil {
 		gi.PromptTokens = usage.PromptTokens
 		gi.CompletionTokens = usage.CompletionTokens
 		gi.TotalTokens = usage.TotalTokens

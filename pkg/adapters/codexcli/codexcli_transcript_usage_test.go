@@ -32,6 +32,8 @@ func TestReadCodexTranscriptUsageTakesLatestEventInTurn(t *testing.T) {
 		`{"type":"session_meta","timestamp":"` + beforeTurn + `","payload":{"id":"aaaa","cwd":"/x"}}`,
 		// prior-turn token snapshot — must be ignored
 		`{"type":"event_msg","timestamp":"` + beforeTurn + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":999,"cached_input_tokens":999,"output_tokens":999,"reasoning_output_tokens":999,"total_tokens":1}}}}`,
+		// turn_context: in-turn, captures model name
+		`{"type":"turn_context","timestamp":"` + earlyTurn + `","payload":{"model":"gpt-5.4","reasoning_effort":"high"}}`,
 		// turn-iteration #1 (early, NOT what we want)
 		`{"type":"event_msg","timestamp":"` + earlyTurn + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":50,"output_tokens":40,"reasoning_output_tokens":10,"total_tokens":340}}}}`,
 		// non-token noise
@@ -51,7 +53,7 @@ func TestReadCodexTranscriptUsageTakesLatestEventInTurn(t *testing.T) {
 		t.Fatalf("Chtimes: %v", err)
 	}
 
-	gi := readCodexTranscriptUsage(turnStart)
+	gi, model := readCodexTranscriptUsage(turnStart)
 	if gi == nil {
 		t.Fatal("expected non-nil GenerationInfo")
 	}
@@ -73,12 +75,15 @@ func TestReadCodexTranscriptUsageTakesLatestEventInTurn(t *testing.T) {
 	if gi.TotalTokens == nil || *gi.TotalTokens != 580 {
 		t.Fatalf("TotalTokens = %v, want 580", gi.TotalTokens)
 	}
+	if model != "gpt-5.4" {
+		t.Fatalf("model = %q, want gpt-5.4", model)
+	}
 }
 
 func TestReadCodexTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	if gi := readCodexTranscriptUsage(time.Now()); gi != nil {
-		t.Fatalf("expected nil for missing rollout dir; got %+v", gi)
+	if gi, model := readCodexTranscriptUsage(time.Now()); gi != nil || model != "" {
+		t.Fatalf("expected nil/empty for missing rollout dir; got gi=%+v model=%q", gi, model)
 	}
 }

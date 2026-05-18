@@ -185,7 +185,11 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	// chats/session-*.jsonl records `tokens` on every `gemini` event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	usage := &llmtypes.Usage{}
-	if turnUsage := readGeminiTranscriptUsage(session.projectDirID, turnStart); turnUsage != nil {
+	turnUsage, effectiveModel := readGeminiTranscriptUsage(session.projectDirID, turnStart)
+	if effectiveModel != "" {
+		additional["gemini_effective_model"] = effectiveModel
+	}
+	if turnUsage != nil {
 		gi.PromptTokens = turnUsage.PromptTokens
 		gi.CompletionTokens = turnUsage.CompletionTokens
 		gi.TotalTokens = turnUsage.TotalTokens

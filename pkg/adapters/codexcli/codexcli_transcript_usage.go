@@ -33,11 +33,13 @@ import (
 // which is robust as long as we're not racing parallel codex
 // instances.
 //
-// Returns nil on any error — best-effort.
-func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
+// Returns nil/empty on any error — best-effort. The model string is
+// the latest model observed on an in-turn `turn_context` event
+// (codex reports the effective model + reasoning effort there).
+func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	root := filepath.Join(home, ".codex", "sessions")
 
@@ -66,13 +68,13 @@ func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
 		return nil
 	})
 	if len(cands) == 0 {
-		return nil
+		return nil, ""
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
 
 	f, err := os.Open(cands[0].path)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	defer f.Close()
 
@@ -84,8 +86,9 @@ func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
 		TotalTokens           int `json:"total_tokens"`
 	}
 	type eventPayload struct {
-		Type string `json:"type"`
-		Info struct {
+		Type  string `json:"type"`
+		Model string `json:"model"`
+		Info  struct {
 			LastTokenUsage tokenSnapshot `json:"last_token_usage"`
 		} `json:"info"`
 	}
@@ -96,6 +99,7 @@ func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
 	}
 
 	var latest *tokenSnapshot
+	var latestModel string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
@@ -103,19 +107,21 @@ func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
-		if ev.Type != "event_msg" || ev.Payload.Type != "token_count" {
-			continue
-		}
 		if !turnStart.IsZero() && ev.Timestamp != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, ev.Timestamp); err == nil && ts.Before(turnStart) {
 				continue
 			}
 		}
-		snap := ev.Payload.Info.LastTokenUsage
-		latest = &snap
+		switch {
+		case ev.Type == "turn_context" && ev.Payload.Model != "":
+			latestModel = ev.Payload.Model
+		case ev.Type == "event_msg" && ev.Payload.Type == "token_count":
+			snap := ev.Payload.Info.LastTokenUsage
+			latest = &snap
+		}
 	}
 	if latest == nil || (latest.InputTokens+latest.OutputTokens+latest.CachedInputTokens) == 0 {
-		return nil
+		return nil, latestModel
 	}
 
 	// codex reports `input_tokens` as the total prompt-side count
@@ -136,7 +142,7 @@ func readCodexTranscriptUsage(turnStart time.Time) *llmtypes.GenerationInfo {
 	if latest.ReasoningOutputTokens > 0 {
 		gi.ReasoningTokens = intRef(latest.ReasoningOutputTokens)
 	}
-	return gi
+	return gi, latestModel
 }
 
 func intRef(v int) *int { return &v }

@@ -23,27 +23,30 @@ import (
 // versions), we glob `~/.claude/projects/*/<session-id>.jsonl`: session
 // IDs are UUIDs so the match is unambiguous and the glob is cheap.
 //
-// Returns nil on any error or if no usage data is available.
-// Best-effort by design — never surface IO errors to the caller.
-func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) *llmtypes.GenerationInfo {
+// Returns nil/empty on any error or if no usage data is available.
+// Best-effort by design — never surface IO errors to the caller. The
+// model string is the latest model seen on an in-turn assistant event
+// (claude-code can swap models mid-session via /model).
+func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
 	if sessionID == "" {
-		return nil
+		return nil, ""
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
 	if err != nil || len(matches) == 0 {
-		return nil
+		return nil, ""
 	}
 	f, err := os.Open(matches[0])
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	defer f.Close()
 
 	var input, output, cacheCreate, cacheRead int
+	var latestModel string
 	scanner := bufio.NewScanner(f)
 	// Assistant events can carry long tool-use payloads; bump line limit.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -52,6 +55,7 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) *llmtypes.
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
 			Message   struct {
+				Model string `json:"model"`
 				Usage struct {
 					InputTokens              int `json:"input_tokens"`
 					OutputTokens             int `json:"output_tokens"`
@@ -72,9 +76,12 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) *llmtypes.
 		output += ev.Message.Usage.OutputTokens
 		cacheCreate += ev.Message.Usage.CacheCreationInputTokens
 		cacheRead += ev.Message.Usage.CacheReadInputTokens
+		if m := ev.Message.Model; m != "" && m != "<synthetic>" {
+			latestModel = m
+		}
 	}
 	if input+output+cacheCreate+cacheRead == 0 {
-		return nil
+		return nil, latestModel
 	}
 
 	prompt := input + cacheCreate
@@ -87,7 +94,7 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) *llmtypes.
 	if cacheRead > 0 {
 		gi.CachedContentTokens = intRef(cacheRead)
 	}
-	return gi
+	return gi, latestModel
 }
 
 func intRef(v int) *int { return &v }

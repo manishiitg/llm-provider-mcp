@@ -25,19 +25,22 @@ import (
 // `tokens` blocks on every `type=gemini` event whose timestamp is at
 // or after turnStart.
 //
-// Returns nil on any error — best-effort, never surfaces IO failures.
-func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) *llmtypes.GenerationInfo {
+// Returns nil/empty on any error — best-effort, never surfaces IO
+// failures. The model string is the latest model observed on an
+// in-turn `gemini` event (gemini-cli auto-routes between models, so
+// the value here is the model that ACTUALLY served the request).
+func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
 	if projectDirID == "" {
-		return nil
+		return nil, ""
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	chatsDir := filepath.Join(home, ".gemini", "tmp", "gemini-cli-project-"+projectDirID, "chats")
 	entries, err := os.ReadDir(chatsDir)
 	if err != nil || len(entries) == 0 {
-		return nil
+		return nil, ""
 	}
 	// Pick the most recently modified session-*.jsonl
 	type candidate struct {
@@ -60,23 +63,25 @@ func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) *llmtyp
 		cands = append(cands, candidate{path: filepath.Join(chatsDir, name), mod: info.ModTime()})
 	}
 	if len(cands) == 0 {
-		return nil
+		return nil, ""
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
 
 	f, err := os.Open(cands[0].path)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	defer f.Close()
 
 	var input, output, cached, thoughts, tool int
+	var latestModel string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var ev struct {
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
+			Model     string `json:"model"`
 			Tokens    struct {
 				Input    int `json:"input"`
 				Output   int `json:"output"`
@@ -99,9 +104,12 @@ func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) *llmtyp
 		cached += ev.Tokens.Cached
 		thoughts += ev.Tokens.Thoughts
 		tool += ev.Tokens.Tool
+		if ev.Model != "" {
+			latestModel = ev.Model
+		}
 	}
 	if input+output+cached+thoughts+tool == 0 {
-		return nil
+		return nil, latestModel
 	}
 
 	prompt := input + tool
@@ -117,7 +125,7 @@ func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) *llmtyp
 	if thoughts > 0 {
 		gi.ThoughtsTokens = intRef(thoughts)
 	}
-	return gi
+	return gi, latestModel
 }
 
 func intRef(v int) *int { return &v }

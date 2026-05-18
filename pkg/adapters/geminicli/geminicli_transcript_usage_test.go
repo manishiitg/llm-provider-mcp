@@ -37,9 +37,9 @@ func TestReadGeminiTranscriptUsageAggregatesTurn(t *testing.T) {
 		// non-gemini noise
 		`{"type":"user","timestamp":"` + earlyTurn + `","content":"hi"}`,
 		// current turn iteration #1
-		`{"type":"gemini","timestamp":"` + earlyTurn + `","tokens":{"input":100,"output":20,"cached":30,"thoughts":15,"tool":5,"total":170}}`,
-		// current turn iteration #2
-		`{"type":"gemini","timestamp":"` + lateTurn + `","tokens":{"input":50,"output":10,"cached":0,"thoughts":0,"tool":0,"total":60}}`,
+		`{"type":"gemini","timestamp":"` + earlyTurn + `","model":"gemini-2.5-flash","tokens":{"input":100,"output":20,"cached":30,"thoughts":15,"tool":5,"total":170}}`,
+		// current turn iteration #2 (latest — model should be this one)
+		`{"type":"gemini","timestamp":"` + lateTurn + `","model":"gemini-3.1-flash-lite","tokens":{"input":50,"output":10,"cached":0,"thoughts":0,"tool":0,"total":60}}`,
 		// $set upsert — must not break parsing
 		`{"$set":{"lastUpdated":"` + lateTurn + `"}}`,
 	}
@@ -47,7 +47,7 @@ func TestReadGeminiTranscriptUsageAggregatesTurn(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	gi := readGeminiTranscriptUsage(projectDirID, turnStart)
+	gi, model := readGeminiTranscriptUsage(projectDirID, turnStart)
 	if gi == nil {
 		t.Fatal("expected non-nil GenerationInfo")
 	}
@@ -71,12 +71,15 @@ func TestReadGeminiTranscriptUsageAggregatesTurn(t *testing.T) {
 	if gi.TotalTokens == nil || *gi.TotalTokens != 230 {
 		t.Fatalf("TotalTokens = %v, want 230", gi.TotalTokens)
 	}
+	if model != "gemini-3.1-flash-lite" {
+		t.Fatalf("model = %q, want gemini-3.1-flash-lite (latest in-turn event)", model)
+	}
 }
 
 func TestReadGeminiTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	if gi := readGeminiTranscriptUsage("nonexistent-project", time.Time{}); gi != nil {
-		t.Fatalf("expected nil for missing chats dir; got %+v", gi)
+	if gi, model := readGeminiTranscriptUsage("nonexistent-project", time.Time{}); gi != nil || model != "" {
+		t.Fatalf("expected nil/empty for missing chats dir; got gi=%+v model=%q", gi, model)
 	}
 }

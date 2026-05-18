@@ -289,11 +289,16 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	// session-id'd transcript file at ~/.claude/projects/<...>/<sid>.jsonl
 	// records `usage` on every assistant event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
-	if usage := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil {
-		gi.PromptTokens = usage.PromptTokens
-		gi.CompletionTokens = usage.CompletionTokens
-		gi.TotalTokens = usage.TotalTokens
-		gi.CachedContentTokens = usage.CachedContentTokens
+	if usage, effectiveModel := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil || effectiveModel != "" {
+		if usage != nil {
+			gi.PromptTokens = usage.PromptTokens
+			gi.CompletionTokens = usage.CompletionTokens
+			gi.TotalTokens = usage.TotalTokens
+			gi.CachedContentTokens = usage.CachedContentTokens
+		}
+		if effectiveModel != "" {
+			additional["claude_code_model"] = effectiveModel
+		}
 	}
 
 	return &llmtypes.ContentResponse{
