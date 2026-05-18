@@ -3606,6 +3606,19 @@ func WithCursorApproveMCPs() llmtypes.CallOption {
 	return cursorcli.WithApproveMCPs()
 }
 
+// WithCursorMode sets Cursor Agent CLI's --mode flag. "ask" is read-only
+// (blocks built-in Write/Shell tools at the CLI level), "plan" is
+// analyze-only. Leave empty for normal agent mode.
+func WithCursorMode(mode string) llmtypes.CallOption {
+	return cursorcli.WithMode(mode)
+}
+
+// WithCursorSandbox sets Cursor Agent CLI's --sandbox flag. Supported values
+// are "enabled" and "disabled".
+func WithCursorSandbox(mode string) llmtypes.CallOption {
+	return cursorcli.WithSandbox(mode)
+}
+
 // WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd for tmux launch.
 func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
 	return opencodecli.WithWorkingDir(dir)

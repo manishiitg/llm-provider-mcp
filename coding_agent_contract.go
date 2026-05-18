@@ -112,7 +112,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
-		ImageInputInteractive:   false,
+		ImageInputInteractive:   true,
 	},
 	ProviderGeminiCLI: {
 		Provider:                ProviderGeminiCLI,
