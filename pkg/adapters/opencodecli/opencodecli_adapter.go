@@ -43,10 +43,6 @@ func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("opencode-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if opencodeInteractiveSessionIDFromOptions(opts) != "" && opencodePersistentInteractiveFromOptions(opts) {
-		return c.generateContentTmux(ctx, messages, opts)
-	}
-
 	return c.generateContentStructured(ctx, messages, opts)
 }
 

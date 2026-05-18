@@ -1,80 +1,85 @@
-# Coding SDK Structured (JSON) Contract
+# Coding SDK Structured (JSON Streaming) Contract
 
-This document defines the structured JSON transport contract for coding SDK
-providers in `multi-llm-provider-go`.
+This document defines the structured JSON streaming transport contract for
+coding SDK providers in `multi-llm-provider-go`.
 
 Covered providers:
 
-- `opencode-cli` (default transport)
-- `kimi` / `kimi-code` (structured-only)
+- `claude-code` — `claude -p --output-format stream-json`
+- `codex-cli` — `codex exec --json`
+- `cursor-cli` — `cursor-agent --print --output-format stream-json`
+- `gemini-cli` — `gemini --output-format stream-json`
+- `opencode-cli` — `opencode run --format json` (structured-only, no tmux)
 
-The structured transport uses `<cli> run --format json` or equivalent to get
-NDJSON event streams instead of parsing a TUI through tmux. This is simpler,
-more reliable, and provides native token/cost tracking, but trades off
-persistent chat, live input, terminal streaming, and interrupt for clean
-per-turn semantics.
+Every coding agent provider supports both the tmux interactive transport and the
+structured JSON transport. OpenCode CLI is the exception: it uses structured JSON
+only. The two transports are complementary:
 
-The mechanical source of truth is `coding_agent_contract.go`. Providers using
-`CodingAgentTransportStructured` must satisfy this contract.
+- Tmux: persistent chat, live input, terminal streaming, interrupt, multi-turn.
+- Structured: per-turn, native token/cost, clean tool events, no tmux dependency.
 
-## Comparison with Tmux Transport
+Both transports must have full e2e test coverage. Neither is legacy.
 
-| Capability | Tmux | Structured |
-|---|:---:|:---:|
-| Persistent multi-turn chat | Yes | No (per-turn) |
-| Live follow-up input | Yes | No |
-| Terminal snapshot streaming | Yes | No |
-| Interrupt/cancel mid-turn | Kill process group | Kill process group |
-| Token/cost tracking | Estimated | Native from events |
-| Tool call visibility | Inferred from TUI | Native events |
-| Done detection | TUI state machine | Process exit |
-| Final text extraction | TUI parsing | Text events |
-| MCP bridge support | Yes | Yes |
-| System prompt | Native files | Prepended to prompt |
-| Working directory | `--dir` or cwd | `--dir` or cwd |
-| Requires tmux | Yes | No |
+## Provider CLI Commands
 
-## Transport Mechanics
+| Provider | Structured CLI | Key Flags |
+|---|---|---|
+| Claude Code | `claude -p --output-format stream-json` | `--system-prompt-file`, `--mcp-config`, `--tools ""` |
+| Codex CLI | `codex exec --json` | `--model`, `--config` |
+| Cursor CLI | `cursor-agent --print --output-format stream-json --stream-partial-output` | `--trust`, `--force`, `--workspace`, `--model`, `--mode` |
+| Gemini CLI | `gemini --output-format stream-json` | `--prompt`, `--model` |
+| OpenCode CLI | `opencode run --format json --dangerously-skip-permissions` | `--dir`, `--model`, `--session`, `--continue` |
 
-### Event Stream
+## Event Formats by Provider
 
-The structured transport reads NDJSON (one JSON object per line) from stdout.
-Each event has:
+### Claude Code (stream-json)
 
-```json
-{
-  "type": "step_start|text|tool_use|step_finish",
-  "timestamp": 1779079046322,
-  "sessionID": "ses_...",
-  "part": { ... }
-}
+```jsonl
+{"type":"message_start","message":{"id":"msg_...","model":"claude-haiku-4-5-20241022",...}}
+{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+{"type":"content_block_stop","index":0}
+{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}
+{"type":"message_stop"}
+{"type":"result","subtype":"success","result":"...","session_id":"...","usage":{"input_tokens":1234,"output_tokens":56}}
 ```
 
-Event types:
+### Codex CLI (exec --json)
 
-- `step_start`: A new inference step begins. Contains session ID and snapshot.
-- `text`: Assistant text output. Accumulated into the final response and
-  streamed as content chunks.
-- `tool_use`: A tool call with status, input, and output. Streamed as
-  tool-call-start and tool-call-end chunks.
-- `step_finish`: Step completed. Contains reason (`stop` or `tool-calls`),
-  token counts, and cost. Multiple step_finish events may occur when the
-  agent loops through tool calls.
+```jsonl
+{"type":"message","message":{"role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}
+{"type":"completed","response":{"output":[...],"usage":{"input_tokens":100,"output_tokens":50}}}
+```
 
-### Process Lifecycle
+### Cursor CLI (stream-json)
 
-1. Spawn the CLI subprocess with `--format json` and `--dangerously-skip-permissions`.
-2. Read NDJSON events line by line from stdout.
-3. Accumulate text events into the final response.
-4. Stream text and tool events through the stream channel.
-5. Sum token usage across all `step_finish` events.
-6. Wait for process exit.
-7. Return accumulated text, usage, session ID, and metadata.
+```jsonl
+{"type":"system","subtype":"init","session_id":"...","model":"...","permissionMode":"..."}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
+{"type":"thinking","subtype":"delta","text":"...","session_id":"..."}
+{"type":"thinking","subtype":"completed","session_id":"..."}
+{"type":"tool_call","subtype":"started","call_id":"...","tool_call":{...}}
+{"type":"tool_call","subtype":"completed","call_id":"...","tool_call":{...}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"delta"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"full final text"}]}}
+{"type":"result","subtype":"success","result":"...","session_id":"...","usage":{"inputTokens":3705,"outputTokens":45,"cacheReadTokens":7040}}
+```
 
-### Cancellation
+### Gemini CLI (stream-json)
 
-Context cancellation kills the process group (`syscall.Kill(-pgid, SIGKILL)`).
-There is no graceful interrupt — the process is terminated immediately.
+```jsonl
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}
+{"type":"result","subtype":"success","result":"...","session_id":"...","usage":{...}}
+```
+
+### OpenCode CLI (run --format json)
+
+```jsonl
+{"type":"step_start","timestamp":...,"sessionID":"ses_...","part":{...}}
+{"type":"text","timestamp":...,"sessionID":"ses_...","part":{"type":"text","text":"Hello"}}
+{"type":"tool_use","timestamp":...,"sessionID":"ses_...","part":{"type":"tool","tool":"bash","callID":"...","state":{"status":"completed","input":{...},"output":"..."}}}
+{"type":"step_finish","timestamp":...,"sessionID":"ses_...","part":{"reason":"stop","tokens":{"total":8134,"input":8113,"output":2,"reasoning":19,"cache":{"write":0,"read":0}},"cost":0}}
+```
 
 ## Normative Structured Agent Contract
 
@@ -83,69 +88,80 @@ There is no graceful interrupt — the process is terminated immediately.
 The adapter must:
 
 - find the provider CLI binary via PATH or configured location
-- always pass `--dangerously-skip-permissions` since there is no interactive
-  user to approve tool calls
-- pass `--format json` to get NDJSON events
-- pass `--dir <workspace>` when a working directory is configured
-- pass `--model <provider/model>` when a model override is set
-- pass `--session <id>` or `--continue` for session resume
+- pass the structured output flag (`--print --output-format stream-json`,
+  `exec --json`, `run --format json`, etc.)
+- pass tool approval flags (`--force`, `--trust`,
+  `--dangerously-skip-permissions`) since there is no interactive user
+- pass `--workspace <dir>` or `--dir <dir>` when a working directory is set
+- pass `--model <model>` when a model override is set
 - set the process group for clean cancellation
 - build the environment with provider-specific API keys
+- report clear errors for missing binary, auth, or version
 
 ### 2. Instructions and Prompting
 
 The adapter must:
 
 - extract system messages from the message list
-- prepend system instructions as `[System Instructions]\n...\n\n[User Message]\n...`
+- route system instructions through the provider-native mechanism when
+  available (Claude Code `--system-prompt-file`, Cursor `.cursor/rules`,
+  Gemini `GEMINI_SYSTEM_MD`)
+- fall back to prepending system instructions to the prompt when no native
+  mechanism exists (OpenCode `[System Instructions]\n...\n\n[User Message]\n...`)
 - build user conversation from all non-system messages
-- reject empty prompts
+- reject empty prompts with a clear error
 
 ### 3. Tool Surface
 
 The adapter must:
 
-- pass `--dangerously-skip-permissions` to allow all tool calls without
-  interactive approval
-- parse `tool_use` events and stream them as tool-call chunks
+- pass tool approval flags so all tool calls execute without interactive
+  approval
+- parse tool-call events from the JSON stream and stream them as
+  `StreamChunkTypeToolCallStart` and `StreamChunkTypeToolCallEnd` chunks
 - support MCP bridge configuration when the provider supports it
+- support bridge-only mode (disable built-in tools) via provider-specific
+  flags (`--tools ""`, `--mode ask`, policy files)
 
 ### 4. Response Extraction
 
 The adapter must:
 
-- accumulate all `text` events into the final content
+- accumulate text/assistant content events into the final response
+- for providers with streaming deltas plus a final full-text event (Cursor),
+  prefer the final full-text event
 - trim whitespace from the accumulated content
-- return an error if no text events were received
-- map `step_finish` reason `tool-calls` to `tool_calls` stop reason
-- default stop reason to `stop`
+- return an error if no text was received and the process exited with error
+- map provider-specific stop reasons to `stop` or `tool_calls`
 
 ### 5. Token Usage
 
 The adapter must:
 
-- sum `InputTokens`, `OutputTokens`, and `TotalTokens` across all
-  `step_finish` events (multi-step tool-calling agents emit multiple)
-- propagate `CacheTokens` when the provider reports cache hits
-- return the accumulated usage in the response
+- extract token usage from the provider's result/finish events
+- normalize to `InputTokens`, `OutputTokens`, `TotalTokens`
+- propagate `CacheTokens` when the provider reports cache read/write
+- sum across multiple step/result events for multi-step agent runs
 
 ### 6. Session Metadata
 
 The adapter must:
 
-- capture the `sessionID` from the first event that carries one
-- expose it in `GenerationInfo.Additional["opencode_session_id"]`
-- expose `opencode_mode: "structured"` to distinguish from tmux
+- capture the session/thread/request ID from the provider events
+- expose it in `GenerationInfo.Additional` with a provider-specific key
+- expose the transport mode (`structured`, `stream-json`, `exec-json`, etc.)
 
 ### 7. Streaming
 
 The adapter must:
 
-- stream `text` events as `StreamChunkTypeContent` chunks
-- stream `tool_use` events as `StreamChunkTypeToolCallStart` and
+- stream assistant text deltas as `StreamChunkTypeContent` chunks
+- stream thinking/reasoning deltas as `StreamChunkTypeReasoning` chunks when
+  available
+- stream tool calls as `StreamChunkTypeToolCallStart` and
   `StreamChunkTypeToolCallEnd` chunks
-- close the stream channel after process exit
-- use non-blocking sends to avoid deadlock if the consumer is slow
+- close the stream channel after process exit or error
+- use non-blocking sends to avoid deadlock
 
 ### 8. Error Handling
 
@@ -157,66 +173,146 @@ The adapter must:
 - handle malformed JSON lines gracefully (skip and log)
 - close the stream channel on all error paths
 
-## Provider Transports
+## Required Real E2E Certification Matrix
 
-OpenCode CLI:
+Every structured/JSON coding provider must have opt-in real E2E tests for each
+area below. The test proves the adapter correctly handles the provider's actual
+event format end-to-end.
 
-- Default: `opencode run --format json --dangerously-skip-permissions`
-- Session resume: `--session <id>` or `--continue`
-- Model override: `--model <provider/model>`
-- Working directory: `--dir <workspace>`
-- Requires git-initialized workspace
-- Legacy tmux: `opencode <project>` inside tmux, available as fallback for
-  persistent interactive sessions
+| # | Area | Required proof |
+|---|---|---|
+| 1 | Fresh launch | Starts the real CLI in structured mode, gets a text response. |
+| 2 | Working directory | Provider operates in the exact caller workspace. |
+| 3 | System prompt | System instructions reach the provider and a canary appears in the response. |
+| 4 | Token usage | Result/finish events produce non-zero input and output token counts. |
+| 5 | Streaming text | Text/assistant delta events stream to the channel as content chunks. |
+| 6 | Streaming tool calls | Tool call events stream as tool-call-start and tool-call-end chunks. |
+| 7 | Session metadata | Session/thread ID captured from events, transport mode in generation info. |
+| 8 | Multi-step tool use | Agent uses a tool, gets output, then produces final text. |
+| 9 | Model override | Non-default model selector produces a response (adapter passes `--model`). |
+| 10 | Image path analysis | Provider reads a local image file path and answers content questions. |
+| 11 | Web search | Provider performs web search and returns real internet data. |
+| 12 | Live web search | Web search returns data that could not come from model training data. |
+| 13 | Cancellation | Context cancellation kills the process group; adapter returns error cleanly. |
+| 14 | Error on empty response | Adapter returns a clear error when no text events are received. |
+| 15 | MCP bridge tool call | A real MCP bridge tool is callable from the structured transport. |
 
-Kimi Code:
+## Current Test Coverage
 
-- Structured-only transport (no tmux support)
-- Uses Kimi API with structured output format
+### Claude Code (`claude -p --output-format stream-json`)
 
-## Testing Contract
+```sh
+RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 go test ./pkg/adapters/claudecode \
+  -run 'TestClaudeCodeStreaming|TestRawClaude' -v -timeout 4m
+```
 
-### Required Real E2E Certification Matrix
+| Area | Test |
+|---|---|
+| Fresh launch | `TestRawClaude` |
+| Streaming text | `TestClaudeCodeStreaming` |
+| Image input | `TestClaudeCodePrintRealImageInput` |
+| Web search | `TestClaudeCodeRealSearchWeb` |
 
-Every structured coding provider must have opt-in real E2E tests for:
+**Gaps:** system prompt, token usage, tool call events, session metadata,
+multi-step tool use, model override, cancellation, MCP bridge.
 
-| Area | Required proof |
-| --- | --- |
-| Fresh launch | Starts the real CLI, gets a response, reports clear errors for missing binary. |
-| Working directory | Provider runs in the exact caller workspace directory. |
-| System prompt | System instructions reach the provider and influence the response. |
-| Token usage | `step_finish` events produce non-zero input and output token counts. |
-| Streaming | Text events stream as content chunks to the stream channel. |
-| Tool use events | Tool calls produce tool-call-start and tool-call-end stream chunks. |
-| Session metadata | `sessionID` is captured from events and exposed in generation metadata. |
-| Multi-step tool use | Agent that uses tools produces text after tool completion. |
-| Image path analysis | Provider reads a local image file path and answers content questions. |
-| Web search | Provider performs web search and returns real internet data. |
+### Codex CLI (`codex exec --json`)
 
-Current real contract commands:
+```sh
+RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli \
+  -run 'TestCodexCLIRealExecJSON' -v -timeout 6m
+```
+
+| Area | Test |
+|---|---|
+| Fresh launch | `TestCodexCLIRealExecJSONContract` |
+| Session resume | `TestCodexCLIRealExecJSONContract` (multi-turn with resume) |
+| MCP bridge | `TestCodexCLIRealExecJSONMCPBridgeContract` |
+
+**Gaps:** system prompt, token usage, streaming text, tool call events, session
+metadata, model override, image path, web search, cancellation.
+
+### Cursor CLI (`cursor-agent --print --output-format stream-json`)
+
+```sh
+RUN_CURSOR_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/cursorcli \
+  -run 'TestCursorCLIStructured' -v -timeout 10m
+```
+
+| Area | Test |
+|---|---|
+| Fresh launch | `TestCursorCLIStructuredBasicRun` |
+| System prompt | `TestCursorCLIStructuredSystemPrompt` |
+| Token usage | `TestCursorCLIStructuredTokenUsage` |
+| Streaming text | `TestCursorCLIStructuredStreaming` |
+| Streaming tool calls | `TestCursorCLIStructuredToolUse` |
+| Session metadata | `TestCursorCLIStructuredSessionMetadata` |
+| Multi-step tool use | `TestCursorCLIStructuredToolUse` |
+| Image path | `TestCursorCLIStructuredImagePath` |
+| Web search | `TestCursorCLIStructuredSearchWeb` |
+| Live web search | `TestCursorCLIStructuredSearchWebLiveData` |
+
+**Gaps:** working directory, model override, cancellation, error handling, MCP bridge.
+
+### Gemini CLI (`gemini --output-format stream-json`)
+
+```sh
+RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli \
+  -run 'TestGeminiCLIRealStreamJSON' -v -timeout 6m
+```
+
+| Area | Test |
+|---|---|
+| Fresh launch | `TestGeminiCLIRealStreamJSONContract` |
+| Session resume | `TestGeminiCLIRealStreamJSONContract` (multi-turn with resume) |
+| MCP bridge | `TestGeminiCLIRealStreamJSONMCPBridgeContract` |
+| Token usage | `TestGeminiCLIUsageAndCost` |
+
+**Gaps:** system prompt, streaming text, tool call events, session metadata,
+model override, image path, web search, cancellation.
+
+### OpenCode CLI (`opencode run --format json`)
 
 ```sh
 RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
-  -run 'TestOpenCodeCLIStructured' -v -timeout 10m
-
-RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
-  -run 'TestOpenCodeCLIRealImagePathAnalysis|TestOpenCodeCLIRealSearchWeb' -v -timeout 6m
+  -run 'TestOpenCodeCLIStructured|TestOpenCodeCLIRealImagePath|TestOpenCodeCLIRealSearchWeb' \
+  -v -timeout 10m
 ```
 
-### Test Coverage Status
-
-| Area | Status |
-| --- | --- |
+| Area | Test |
+|---|---|
 | Fresh launch | `TestOpenCodeCLIStructuredBasicRun` |
-| Working directory | Covered by all tests via `WithWorkingDir()` |
 | System prompt | `TestOpenCodeCLIStructuredSystemPrompt` |
 | Token usage | `TestOpenCodeCLIStructuredTokenUsage` |
-| Streaming | `TestOpenCodeCLIStructuredStreaming` |
-| Tool use events | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
+| Streaming text | `TestOpenCodeCLIStructuredStreaming` |
+| Tool call events | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
 | Session metadata | `TestOpenCodeCLIStructuredSessionIDInMetadata` |
 | Multi-step tool use | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
-| Image path analysis | `TestOpenCodeCLIRealImagePathAnalysis` |
-| Web search | `TestOpenCodeCLIRealSearchWeb`, `TestOpenCodeCLIRealSearchWebLiveData` |
+| Image path | `TestOpenCodeCLIRealImagePathAnalysis` |
+| Web search | `TestOpenCodeCLIRealSearchWeb` |
+| Live web search | `TestOpenCodeCLIRealSearchWebLiveData` |
+
+**Gaps:** model override, cancellation, MCP bridge, error handling.
+
+## Full Provider Coverage Matrix
+
+| Area | Claude | Codex | Cursor | Gemini | OpenCode |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 1. Fresh launch | yes | yes | yes | yes | yes |
+| 2. Working directory | - | - | **no** | - | yes |
+| 3. System prompt | **no** | **no** | yes | **no** | yes |
+| 4. Token usage | **no** | **no** | yes | yes | yes |
+| 5. Streaming text | yes | **no** | yes | **no** | yes |
+| 6. Streaming tool calls | **no** | **no** | yes | **no** | yes |
+| 7. Session metadata | **no** | **no** | yes | **no** | yes |
+| 8. Multi-step tool use | **no** | **no** | yes | **no** | yes |
+| 9. Model override | **no** | **no** | **no** | **no** | **no** |
+| 10. Image path | yes | **no** | yes | **no** | yes |
+| 11. Web search | yes | **no** | yes | **no** | yes |
+| 12. Live web search | **no** | **no** | yes | **no** | yes |
+| 13. Cancellation | **no** | **no** | **no** | **no** | **no** |
+| 14. Error handling | **no** | **no** | **no** | **no** | **no** |
+| 15. MCP bridge | **no** | yes | **no** | yes | **no** |
 
 ## Related Docs
 

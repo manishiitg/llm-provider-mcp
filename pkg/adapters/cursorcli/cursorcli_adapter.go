@@ -9,9 +9,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// CursorCLIAdapter implements the LLM interface for Cursor Agent CLI in tmux
-// mode. It deliberately does not use cursor-agent -p/stream-json; both
-// persistent chat and bounded per-turn calls run through the terminal TUI.
+// CursorCLIAdapter implements the LLM interface for Cursor Agent CLI.
+// It supports both tmux (persistent interactive) and structured JSON
+// (cursor-agent --print --output-format stream-json) transports.
 type CursorCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -27,7 +27,9 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent generates content using Cursor Agent CLI inside tmux.
+// GenerateContent generates content using Cursor Agent CLI. It uses the
+// structured JSON transport by default. When an interactive session ID and
+// persistent interactive mode are both set, it uses the tmux transport.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -38,10 +40,14 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
-		return nil, fmt.Errorf("cursor-cli tmux transport does not support llmtypes.ImageContent; Cursor Agent CLI has no supported live image attachment path in this adapter")
+		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	return c.generateContentTmux(ctx, messages, opts)
+	if cursorInteractiveSessionIDFromOptions(opts) != "" && cursorPersistentInteractiveFromOptions(opts) {
+		return c.generateContentTmux(ctx, messages, opts)
+	}
+
+	return c.generateContentStructured(ctx, messages, opts)
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns
