@@ -52,6 +52,175 @@ Both surfaces should run the provider TUI in tmux when the provider supports it.
 The difference is orchestration: workflow execution sends intermediate messages
 programmatically and waits for idle; chat accepts live user steer input.
 
+## Normative Coding Agent Contract
+
+A provider is a coding agent only if it can satisfy this shared contract. Exact
+CLI flags and TUI strings are provider-specific, but host applications must be
+able to rely on the same behavior for every coding provider.
+
+### 1. Launch
+
+The adapter must:
+
+- launch the real provider CLI in tmux
+- use one isolated tmux session per logical app/agent session
+- start in the exact caller working directory
+- keep the provider cwd aligned with the MCP bridge shell cwd
+- inherit the user login-shell environment unless explicitly disabled
+- expose provider, model, effort, working dir, tmux session id, and native
+  session/thread id metadata when available
+- detect missing binaries, unsupported versions, lost tmux server/panes, and
+  auth/rate-limit failures with clear errors
+- avoid putting secrets in process args or shell command text where the CLI
+  provides a safer env/config path
+
+### 2. Instructions and Prompting
+
+The adapter must:
+
+- pass system/developer instructions through the provider's native mechanism
+  such as system-prompt files, rules files, project config, or env-supported
+  instruction paths
+- never concatenate system/developer instructions into the pasted user message
+- paste user input through tmux buffer paste, preserving newlines, blank lines,
+  quotes, markdown, JSON, shell-looking commands, Unicode, and large pasted
+  blocks
+- submit only the latest user message for persistent native TUI sessions when
+  native session memory is proven reliable
+- replay bounded prior-turn transcript only for providers that need it, and only
+  in a way that cannot be confused with live user input
+- reject unsupported content parts such as images instead of silently dropping
+  them
+
+### 3. Tool Surface
+
+The adapter must:
+
+- launch with the MCP bridge configuration when tools are needed
+- support bridge-only mode where provider-native shell/filesystem/browser tools
+  are disabled or denied
+- explicitly allow only the intended bridge tools when the provider supports an
+  allow-list
+- handle permission/trust/tool approval prompts deterministically
+- prove through real E2E that forbidden built-in tools are unavailable in
+  bridge-only mode; passing flags is not enough
+
+### 4. TUI State Machine
+
+Every tmux adapter must classify the provider pane into a small state machine:
+
+- `starting`: CLI launched, startup banners or MCP init messages may appear
+- `needs_trust`: workspace trust prompt or equivalent
+- `needs_auth`: login/API key/OAuth/keychain failure
+- `rate_limited`: quota or rate-limit prompt/error
+- `ready`: input prompt visible and no active work is present
+- `working`: thinking, tool calling, editing, waiting, or interrupt footer
+  visible
+- `queued_input`: user/follow-up text is queued while the provider is still
+  working
+- `completed`: provider is idle, stable, and final assistant text is parseable
+- `failed`: provider surfaced a fatal error
+- `lost_session`: tmux server, session, or pane disappeared
+
+Completion detection must require all of:
+
+- ready prompt visible
+- no running/thinking/tool-call indicator
+- no queued input
+- no unresolved modal, trust prompt, auth prompt, or rate-limit prompt
+- pane stable for the provider's configured stability window
+- owned tmux session still exists
+
+String matching is expected because these providers expose TUIs, not stable
+structured APIs. The requirement is to keep the matching state-based, narrow,
+provider-specific, and covered by real E2E.
+
+### 5. Live Input
+
+The adapter must:
+
+- send a new message to the existing tmux session when the agent is working
+- use a provider-native input queue when the TUI supports it
+- otherwise maintain an adapter-level pending queue and submit when the ready
+  prompt returns
+- never start a duplicate provider run for a live follow-up
+- never parse queued user text, validation feedback, or follow-up prompts as
+  final assistant output
+- return a clear error when a live-input API is used against an idle session and
+  the caller should start a normal turn instead
+
+### 6. Cancellation
+
+The adapter must:
+
+- send the provider interrupt key on context cancellation
+- wait briefly for idle or process exit
+- kill only the adapter-owned tmux session if graceful interrupt fails
+- preserve unrelated sessions, parallel agents, and background agents unless the
+  owning lifecycle explicitly says they should stop
+- unregister stale session ids when tmux reports missing server/session/pane
+
+### 7. Streaming
+
+The adapter must:
+
+- stream terminal snapshots as terminal/screen chunks, not assistant-content
+  chunks
+- deduplicate snapshots enough to avoid repeated TUI redraw spam
+- keep final assistant extraction separate from terminal streaming
+- allow the UI to hide/show terminal output without changing provider behavior
+- avoid converting progress rows, tool panels, JSON payloads, or menu text into
+  normal assistant stream content
+
+### 8. Final Response Extraction
+
+The adapter must extract only the final assistant answer. It must reject:
+
+- tool progress such as `Calling api-bridge...`
+- raw MCP panels or JSON tool payloads
+- shell output unless the assistant intentionally quoted it as answer text
+- user prompt echoes
+- queued follow-up input
+- pre-validation or retry feedback
+- trust/auth/rate-limit menu options
+- startup banners, shortcut hints, footer text, spinner frames, and box borders
+- stale assistant text from prior turns
+
+Hard invariant: a final response must never be a TUI status line, queued user
+message, validation feedback, or terminal menu option.
+
+### 9. Sessions and Resume
+
+The adapter must:
+
+- isolate sessions by owner/app session id
+- reuse the same tmux session for persistent chat multi-turn
+- avoid cross-talk between parallel agents
+- close and recreate the session when launch fingerprint changes
+- support native resume when the provider exposes stable metadata
+- keep resume metadata separate from persistent tmux metadata
+- clean up idle sessions and process-scoped registries
+
+### 10. Error Reporting
+
+Errors should be classified into stable categories where possible:
+
+- binary missing
+- unsupported version
+- auth missing or expired
+- trust prompt unresolved
+- rate limit
+- MCP server failed
+- tool policy denied
+- prompt paste failed
+- timeout waiting for ready
+- timeout waiting for completion
+- parse failure
+- tmux session lost
+
+When useful, include a redacted latest pane snapshot in the error so the caller
+can debug the provider TUI state without exposing secrets.
+
 ## Provider Transports
 
 Claude Code:
@@ -468,6 +637,105 @@ contract is the same across providers.
 Default tests must be deterministic and credit-free for pure parser and UI
 normalization logic only. They should not install replacement provider binaries
 or replacement `tmux` binaries.
+
+Parser/unit tests are necessary but not sufficient. A coding provider is not
+accepted as contract-compliant until it has real provider CLI E2E for the risky
+transport behaviors. Fake pane fixtures can prevent regressions after a bug is
+understood, but they cannot certify launch, prompt paste, MCP startup, native
+queueing, cancellation, auth/trust prompts, or provider-version TUI changes.
+
+### Required Real E2E Certification Matrix
+
+Every tmux coding provider must have opt-in real E2E tests for:
+
+| Area | Required proof |
+| --- | --- |
+| Fresh launch | Starts the real CLI in tmux, reaches ready, and reports clear errors for missing auth/binary/version. |
+| Working directory | Provider cwd and MCP bridge shell cwd are the exact caller workspace for chat, workflow chat, workflow steps, sub-agents, and background agents. |
+| Trust/auth prompts | Fresh untrusted workspace trust prompt is handled or surfaced deterministically; auth and rate-limit states are not parsed as final answers. |
+| Native system prompt | System/developer instruction reaches the provider through native mechanism and is not pasted as user text. |
+| Prompt paste | Large multiline user input preserves blank lines, JSON, shell-looking text, markdown, quotes, and Unicode. |
+| Bridge tool call | Real MCP bridge tool is callable from the provider TUI. |
+| Bridge-only policy | Provider-native shell/filesystem/browser tools are disabled or denied when bridge-only mode is active. |
+| Slow tool plus live input | While a real MCP tool call is still running, send a follow-up/pre-validation message; the adapter must not complete from queued text. |
+| Done detection | Completion requires idle prompt, no activity, no queued input, no modal, and a stable pane. |
+| Final extraction | Final text excludes TUI chrome, tool progress, raw tool payloads, queued user text, validation feedback, and stale scrollback. |
+| Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
+| Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run. |
+| Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
+| Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |
+| Cleanup | Idle timeout, explicit close, failed launch, lost tmux pane/server, and server shutdown unregister and kill owned sessions. |
+
+Minimum release gate for any new tmux provider:
+
+1. Real fresh-launch/ready test.
+2. Real native system prompt test.
+3. Real working-directory test.
+4. Real MCP bridge call test.
+5. Real bridge-only/no-internal-tools test.
+6. Real same-session multi-turn canary test.
+7. Real slow-MCP plus live follow-up test.
+8. Real cancellation/interrupt test.
+9. Real final-extraction hygiene test.
+10. Real cleanup/session-loss test.
+
+Cursor, OpenCode, or any future provider must not be marked as a complete tmux
+coding agent in `coding_agent_contract.go` until the provider has these real
+E2E tests or an explicit documented exception for a capability it does not
+claim.
+
+### P1/P2 Hardening E2E Matrix
+
+The certification matrix above is the minimum P0 release gate. It is not
+exhaustive. Providers that are used in production workflows should also have
+hardening coverage for provider upgrades, long-running workflows, app-level
+routing, and optional multimodal/tool capabilities.
+
+P1 hardening tests should run before provider upgrades, release candidates, or
+large workflow-runtime changes:
+
+| Area | Required proof |
+| --- | --- |
+| CLI version upgrade | Record provider CLI version in test logs and rerun real tmux contract after any CLI upgrade. |
+| Model selector semantics | `auto`, no-model sentinel, low/medium/high aliases, and concrete model ids map to the intended CLI flags. |
+| Auth source behavior | API key, OAuth/keychain, and login-shell inherited auth work according to provider capability; missing auth fails clearly. |
+| Login shell env | Tmux launch inherits the same PATH/shims/env needed for tools such as `aws`, `gh`, `sentry-cli`, `node`, `python`, and provider CLIs. |
+| Terminal stream quality | Terminal snapshots are deduped, readable, not over-repeated, and do not emit assistant-content chunks during generation. |
+| UI terminal persistence | User-controlled terminal hide/show state remains stable across streaming, completion, refresh, and provider changes. |
+| Background agents | Background agents get their own tmux session, stream terminal/progress events, and are not killed by unrelated foreground request cancellation. |
+| Workflow sub-agents | Parallel todo/sub-agent sessions each expose the correct terminal/progress stream and do not duplicate parent terminal output. |
+| Query running step | Query/log APIs return live progress for running steps, including execution id lookup by step id where supported. |
+| Query completed step | Query/log APIs return completed step logs and final output without depending on live tmux state. |
+| Backend restart/shutdown | Server Ctrl+C/shutdown cleans owned foreground sessions and preserves or cancels background sessions according to lifecycle policy. |
+| External tmux loss | Killing tmux server/session/pane externally produces a classified lost-session error and unregisters stale mappings. |
+| Rate-limit/modal handling | Provider rate-limit, trust, permission, and model-switch prompts are handled or surfaced without being parsed as assistant text. |
+| Long workflow | A long workflow with multiple sequential steps and parallel sub-agents completes without stale terminal replay or session collision. |
+| Event de-duplication | Replayed/polled events do not create duplicate terminal blocks, duplicate step-start messages, or duplicate final completions. |
+| Large scrollback | Final extraction works when pane scrollback contains old turns, long tables, tool JSON, and compact/history notices. |
+| App-level chat API | Real `mcp-agent-builder-go` chat API preserves provider/model, selected folder, owner session id, terminal stream, live steer, and final response. |
+| App-level workflow API | Real workflow run/step APIs preserve working directory, step/session identity, terminals, query-step logs, and final step result. |
+
+P2 hardening tests cover optional capabilities and provider-specific extended
+behavior. They are required before advertising a capability through the shared
+workspace tools or model metadata:
+
+| Area | Required proof |
+| --- | --- |
+| Native web search | Provider search path produces a real tool-call/search event or a verifiable native search trace, not only a memory answer. |
+| Read image | Supported providers read a real local image path and answer content-specific questions; unsupported providers reject image content clearly. |
+| Generate image | Supported providers save non-empty image bytes, detect as `image/*`, and return absolute workspace paths. |
+| Read PDF/video/audio | Tools that accept files require absolute workspace paths, enforce guard policy, and return content-specific answers. |
+| Generate video/audio/music | Supported providers create non-empty media files, detect correct MIME/container, and return absolute workspace paths. |
+| Absolute path contract | Workspace tools that read/write files accept absolute paths consistently and reject unsafe paths outside allowed roots. |
+| Provider/model discovery | `list_llm_capabilities(..., include_models=true)` exposes provider and model choices for every LLM-backed workspace tool. |
+| Cost/usage metadata | If a provider cannot provide reliable token/cost breakdown, usage is explicitly zero/unknown and not guessed. |
+| Native resume | Providers claiming native resume survive close/reopen and recall a canary without app-level history replay. |
+| Multi-window/browser auth | Browser or desktop-auth dependent tools work when launched from app/DMG environment, not only a developer terminal. |
+| K8s/Docker runtime | Tmux-backed providers either run in container/pod environments or fail with a clear unsupported-environment error. |
+
+P1/P2 failures should not automatically block every local development run, but
+they should block releases that touch coding-agent transport, provider model
+selection, workspace tool routing, event streaming, or workflow orchestration.
 
 Transport behavior must be validated by opt-in real CLI E2E tests, including:
 

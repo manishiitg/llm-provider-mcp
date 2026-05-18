@@ -145,6 +145,132 @@ func TestCodexCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 	assertCodexInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestCodexCLIRealInteractiveWorkspaceTrustPromptContract(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-trust-" + codexRandomHex(4)
+	token := "TRUST_REAL_" + codexRandomHex(4)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Keep the response exact and concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: trusted " + token}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectDirID(t.TempDir()),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent in fresh workspace error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("content = %q, want trust token %s", content, token)
+	}
+	assertCodexDoesNotContainAny(t, "trust response", content, "No, quit", "Press enter to continue", "Do you trust")
+	assertCodexInteractiveTerminalOnlyStream(t, streamChan)
+}
+
+func TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-queued-validation-" + codexRandomHex(4)
+	bridgeToken := "SLOW_BRIDGE_REAL_" + codexRandomHex(4)
+
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeCodexSlowContractMCPServer(t, slowToolMarker)
+	mcpCommandOverride, err := codexStringConfigOverride("mcp_servers.api-bridge.command", mcpServerPath)
+	if err != nil {
+		t.Fatalf("build MCP command override: %v", err)
+	}
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan codexRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge slow_contract MCP tool with token %s and delay_ms 30000. Do not answer until the tool returns. Then reply exactly with the tool result text.", bridgeToken)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithDisableShellTool(),
+			WithApprovalPolicy("never"),
+			WithReasoningEffort("low"),
+			WithConfigOverrides([]string{mcpCommandOverride}),
+			llmtypes.WithStreamingChan(streamChan),
+		)
+		out := codexRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	tmuxSession := waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForCodexRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	validationPrompt := `## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Missing required output file. Fix the specific issue above and re-produce the required outputs.`
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendCodexInteractiveInput(sendCtx, ownerSessionID, validationPrompt); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendCodexInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	waitForCodexRealPaneCondition(t, tmuxSession, "queued validation input", 15*time.Second, resultCh, func(pane string) bool {
+		return hasCodexQueuedInput(pane) || strings.Contains(pane, "Pre-validation failed")
+	})
+
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while validation input was queued: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while validation input was queued; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+		// The regression was an early false completion while the TUI still showed
+		// queued input. Remaining active here proves the adapter did not parse the
+		// queued validation prompt as the assistant's final response.
+	}
+
+	cancel()
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatalf("GenerateContent completed normally after cancellation; content=%q", got.content)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for GenerateContent to return after cancellation")
+	}
+	_ = drainCodexStream(streamChan)
+}
+
 func TestCodexCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
@@ -234,6 +360,47 @@ func waitForCodexRealActiveSession(t *testing.T, ownerSessionID string, timeout 
 	return ""
 }
 
+func waitForCodexRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan codexRealResult, matches func(string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before tmux pane matched %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		pane, err := captureCodexPane(context.Background(), tmuxSession)
+		if err == nil && matches(pane) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	pane, _ := captureCodexPane(context.Background(), tmuxSession)
+	t.Fatalf("timed out waiting for Codex tmux pane to match %s; latest pane:\n%s", label, pane)
+}
+
+func waitForCodexRealFile(t *testing.T, path, label string, timeout time.Duration, errCh <-chan codexRealResult) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s at %s", label, path)
+}
+
+type codexRealResult struct {
+	content string
+	err     error
+}
+
 func writeCodexContractMCPServer(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "codex-contract-mcp.js")
@@ -273,22 +440,51 @@ rl.on("line", (line) => {
       jsonrpc: "2.0",
       id: msg.id,
       result: {
-        tools: [{
-          name: "echo_contract",
-          description: "Return a deterministic contract token.",
-          inputSchema: {
-            type: "object",
-            properties: { token: { type: "string" } },
-            required: ["token"]
+        tools: [
+          {
+            name: "echo_contract",
+            description: "Return a deterministic contract token.",
+            inputSchema: {
+              type: "object",
+              properties: { token: { type: "string" } },
+              required: ["token"]
+            }
+          },
+          {
+            name: "slow_contract",
+            description: "Return a deterministic contract token after a caller-provided delay.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                token: { type: "string" },
+                delay_ms: { type: "number" }
+              },
+              required: ["token"]
+            }
           }
-        }]
+        ]
       }
     });
     return;
   }
   if (msg.method === "tools/call") {
+    const name = String((msg.params && msg.params.name) || "");
     const args = (msg.params && msg.params.arguments) || {};
     const token = String(args.token || "");
+    if (name === "slow_contract") {
+      const delay = Math.max(0, Math.min(Number(args.delay_ms || 30000), 60000));
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          id: msg.id,
+          result: {
+            content: [{ type: "text", text: "SLOW_BRIDGE_TOOL_OK_" + token }],
+            isError: false
+          }
+        });
+      }, delay);
+      return;
+    }
     send({
       jsonrpc: "2.0",
       id: msg.id,
@@ -306,6 +502,91 @@ rl.on("line", (line) => {
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func writeCodexSlowContractMCPServer(t *testing.T, markerPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex-slow-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const markerPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") {
+    return;
+  }
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "slow_contract",
+          description: "Return a deterministic contract token after a caller-provided delay.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              token: { type: "string" },
+              delay_ms: { type: "number" }
+            },
+            required: ["token"]
+          }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const delay = Math.max(0, Math.min(Number(args.delay_ms || 30000), 60000));
+    fs.writeFileSync(markerPath, JSON.stringify({ token, delay, started_at: new Date().toISOString() }));
+    setTimeout(() => {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          content: [{ type: "text", text: "SLOW_BRIDGE_TOOL_OK_" + token }],
+          isError: false
+        }
+      });
+    }, delay);
+    return;
+  }
+  if (msg.id !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  }
+});
+`, markerPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write slow MCP server: %v", err)
 	}
 	return path
 }

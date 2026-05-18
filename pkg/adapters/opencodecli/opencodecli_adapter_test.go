@@ -53,6 +53,43 @@ func TestOpenCodeCLIModelMetadata(t *testing.T) {
 	}
 }
 
+func TestOpenCodeRunningPaneWithLiveInputIsNotReady(t *testing.T) {
+	pane := `OpenCode
+Running Shell(python slow.py)
+esc to interrupt
+> ## Pre-validation failed (retry attempt 3)
+Ask anything
+ctrl+p commands opencode`
+
+	if !hasOpenCodeActivity(pane) {
+		t.Fatal("running pane with live input should count as active")
+	}
+	if hasOpenCodeReadyPrompt(pane) {
+		t.Fatal("running pane with live input must not be treated as ready")
+	}
+}
+
+func TestParseOpenCodeInteractiveResponseRejectsQueuedValidationEcho(t *testing.T) {
+	prompt := "## Pre-validation failed (retry attempt 3)"
+	baseline := "OpenCode\nAsk anything\n"
+	captured := baseline + `
+> ## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Checks: 0 passed, 1 failed
+
+Fix the specific issues above and re-produce the required outputs.
+
+Ask anything
+ctrl+p commands opencode`
+
+	got := parseOpenCodeInteractiveResponse(captured, baseline, prompt, nil)
+	if got != "" {
+		t.Fatalf("parsed queued validation echo = %q, want empty", got)
+	}
+}
+
 func TestOpenCodeCLIRealInteractiveTmuxContract(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupOpenCodeCLIInteractiveSessions(context.Background()) })

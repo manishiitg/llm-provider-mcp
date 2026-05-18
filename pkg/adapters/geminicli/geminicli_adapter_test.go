@@ -302,6 +302,26 @@ func TestParseGeminiInteractiveResponseAcceptsArrowAssistantMarker(t *testing.T)
 	}
 }
 
+func TestParseGeminiInteractiveResponseRejectsQueuedValidationEcho(t *testing.T) {
+	baseline := "Gemini ready\n>"
+	captured := baseline + `
+> ## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Checks: 0 passed, 1 failed
+
+Fix the specific issues above and re-produce the required outputs.
+
+> Type your message
+`
+
+	got := parseGeminiInteractiveResponse(captured, baseline, "## Pre-validation failed (retry attempt 3)", nil)
+	if got != "" {
+		t.Fatalf("parsed queued validation echo = %q, want empty", got)
+	}
+}
+
 func TestExtractGeminiVisibleAssistantTextFiltersMCPToolPanels(t *testing.T) {
 	input := `
 ℹ Waiting for MCP servers to initialize... Slash commands are still available
@@ -564,6 +584,28 @@ func TestGeminiDetectsUnsubmittedV042Draft(t *testing.T) {
 `
 	if hasGeminiUnsubmittedDraft(readyPane) {
 		t.Fatalf("empty v0.42 ready prompt should not be treated as a draft")
+	}
+}
+
+func TestGeminiLiveInputQueueRoundTrip(t *testing.T) {
+	session := &geminiInteractiveSession{}
+	if err := enqueueGeminiLiveInput(session, "follow-up one"); err != nil {
+		t.Fatalf("enqueue first live input: %v", err)
+	}
+	if err := enqueueGeminiLiveInput(session, "follow-up two\nwith newline"); err != nil {
+		t.Fatalf("enqueue second live input: %v", err)
+	}
+
+	got, ok := popGeminiLiveInput(session)
+	if !ok || got != "follow-up one" {
+		t.Fatalf("first pop = %q, %v; want first queued message", got, ok)
+	}
+	got, ok = popGeminiLiveInput(session)
+	if !ok || got != "follow-up two\nwith newline" {
+		t.Fatalf("second pop = %q, %v; want second queued message", got, ok)
+	}
+	if got, ok = popGeminiLiveInput(session); ok || got != "" {
+		t.Fatalf("third pop = %q, %v; want empty queue", got, ok)
 	}
 }
 

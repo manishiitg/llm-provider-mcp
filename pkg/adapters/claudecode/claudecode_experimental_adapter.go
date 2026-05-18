@@ -1377,6 +1377,9 @@ func isClaudeTUIArtifact(content string) bool {
 	if trimmed == "" || trimmed == "<final answer>" {
 		return true
 	}
+	if isClaudeLikelyQueuedUserEcho(trimmed) {
+		return true
+	}
 	if isClaudeTUIStatusLine(trimmed) {
 		return true
 	}
@@ -1385,6 +1388,33 @@ func isClaudeTUIArtifact(content string) bool {
 		return true
 	}
 	return false
+}
+
+func isClaudeLikelyQueuedUserEcho(text string) bool {
+	lines := nonEmptyClaudeLines(text)
+	if len(lines) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.Join(lines, "\n"))
+	return strings.Contains(lower, "pre-validation failed") &&
+		(strings.Contains(lower, "checks:") ||
+			strings.Contains(lower, "fix the specific issue") ||
+			strings.Contains(lower, "validation failed") ||
+			strings.Contains(lower, "must exist")) ||
+		strings.Contains(lower, "fix the specific issue") &&
+			strings.Contains(lower, "re-produce the required outputs")
+}
+
+func nonEmptyClaudeLines(text string) []string {
+	rawLines := strings.Split(strings.TrimSpace(text), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func isClaudeTUIStatusLine(trimmed string) bool {
@@ -1438,7 +1468,7 @@ func extractLatestUnmarkedAssistantResponse(text string) (string, bool) {
 	}
 
 	content := normalizeCapturedAssistantText(strings.Join(responseLines, "\n"))
-	if content == "" || isClaudeTUIArtifact(content) {
+	if content == "" || isClaudeTUIArtifact(content) || isClaudeNonTextAssistantBlock(content) {
 		return "", false
 	}
 	return content, true

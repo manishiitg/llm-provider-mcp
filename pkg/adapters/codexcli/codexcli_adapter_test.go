@@ -609,6 +609,28 @@ Here is the final answer:
 	assertCodexNoInternalStatus(t, got)
 }
 
+func TestParseCodexInteractiveResponseRejectsSeparatorFramedToolTail(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+• Called
+  └ api-bridge.execute_shell_command({"command":"python3 - <<'PY'\nimport json\nprint(json.dumps({'ok': True}, indent=2))\nPY","timeout":120})
+    {"stdout":"{\"ok\": true}\n","stderr":"","exit_code":0,"execution_time_ms":42}
+
+────────────────────────────────────────────────────────────────────────────────
+
+indent=2))\nPY","timeout":120})
+
+────────────────────────────────────────────────────────────────────────────────
+
+›`
+
+	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
+	if got != "" {
+		t.Fatalf("parsed response = %q, want empty string for tool-call tail", got)
+	}
+	assertCodexNoInternalStatus(t, got)
+}
+
 func TestParseCodexInteractiveResponseKeepsUnframedSavedImagePath(t *testing.T) {
 	baseline := "Codex ready\n›"
 	captured := baseline + `
@@ -748,6 +770,69 @@ func TestParseCodexInteractiveResponseIgnoresRateLimitReminderModal(t *testing.T
 	assertCodexNoInternalStatus(t, got)
 }
 
+func TestCodexWorkspaceTrustPromptIsNotReady(t *testing.T) {
+	pane := `> You are in /private/tmp/codex-trust-check
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
+  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue`
+
+	if !hasCodexTrustPrompt(pane) {
+		t.Fatal("trust prompt was not detected")
+	}
+	if hasCodexReadyPrompt(pane) {
+		t.Fatal("trust prompt must not be treated as ready")
+	}
+	if got := selectedCodexTrustPromptOption(pane); got != 1 {
+		t.Fatalf("selected trust option = %d, want 1", got)
+	}
+	got := parseCodexInteractiveResponse(pane, "", "", nil)
+	if got != "" {
+		t.Fatalf("parsed trust prompt = %q, want empty", got)
+	}
+}
+
+func TestCodexWorkspaceTrustPromptSelectedNoUsesPreviousOption(t *testing.T) {
+	pane := `Do you trust the contents of this directory?
+  1. Yes, continue
+› 2. No, quit
+  Press enter to continue`
+
+	if got := selectedCodexTrustPromptOption(pane); got != 2 {
+		t.Fatalf("selected trust option = %d, want 2", got)
+	}
+}
+
+func TestCodexAcceptedWorkspaceTrustPromptScrollbackIsNotLiveTrustPrompt(t *testing.T) {
+	pane := `> You are in /tmp/workspace
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue
+
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.130.0)                               │
+╰──────────────────────────────────────────────────────────╯
+
+› Explain this codebase
+
+  gpt-5.3-codex-spark low · /tmp/workspace`
+
+	if hasCodexTrustPrompt(pane) {
+		t.Fatal("accepted trust prompt scrollback must not be treated as live trust prompt")
+	}
+	if !hasCodexReadyPrompt(pane) {
+		t.Fatal("pane with later Codex input prompt should be ready")
+	}
+}
+
 func TestCodexIdleDetectionIgnoresAssistantProseAboutRunning(t *testing.T) {
 	pane := `
 	⏺ The prepare-test-fixtures step is now running in the background.
@@ -764,6 +849,57 @@ func TestCodexIdleDetectionIgnoresAssistantProseAboutRunning(t *testing.T) {
 	}
 	if isCodexTUILine("The prepare-test-fixtures step is now running in the background.") {
 		t.Fatalf("assistant prose containing running should not be filtered as TUI chrome")
+	}
+}
+
+func TestCodexQueuedInputKeepsSessionActive(t *testing.T) {
+	pane := `
+• Calling api-bridge.execute_shell_command({"command":"python3 slow.py"})
+
+■ Ctrl+L is disabled while a task is in progress.
+
+• Working (6m 32s • esc to interrupt)
+
+• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
+  ↳ ## Pre-validation failed (retry attempt 3)
+
+    ❌ PRE-VALIDATION FAILED
+
+────────────────────────────────────────────────────────────────────────────────
+›
+`
+	if !hasCodexQueuedInput(pane) {
+		t.Fatalf("queued input was not detected")
+	}
+	if !hasCodexActivity(pane) {
+		t.Fatalf("queued input should keep session active")
+	}
+	if hasCodexReadyPrompt(pane) {
+		t.Fatalf("queued input must not be treated as ready/completed prompt")
+	}
+	if !isCodexTUILine("Messages to be submitted after next tool call (press esc to interrupt and send immediately)") {
+		t.Fatalf("queued-input banner should be treated as TUI chrome")
+	}
+}
+
+func TestParseCodexInteractiveResponseRejectsQueuedValidationEcho(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
+  ↳ ## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Checks: 0 passed, 1 failed
+
+Fix the specific issues above and re-produce the required outputs.
+
+────────────────────────────────────────────────────────────────────────────────
+›
+`
+	got := parseCodexInteractiveResponse(captured, baseline, "## Pre-validation failed (retry attempt 3)", nil)
+	if got != "" {
+		t.Fatalf("parsed queued validation echo = %q, want empty", got)
 	}
 }
 

@@ -804,6 +804,23 @@ func TestHasClaudeActivityDetectsRunningStatus(t *testing.T) {
 	}
 }
 
+func TestClaudeRunningPaneWithLiveInputIsNotReady(t *testing.T) {
+	pane := `
+⏺ Calling api-bridge…
+✶ Precipitating… (1s · ↓ 2 tokens) · esc to interrupt
+──────────────────────────────────────────────────
+❯ ## Pre-validation failed (retry attempt 3)
+──────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+`
+	if !hasClaudeActivity(pane) {
+		t.Fatal("running pane with live input should count as active")
+	}
+	if hasReadyInputPrompt(pane) {
+		t.Fatal("running pane with live input must not be treated as ready")
+	}
+}
+
 func TestHasNewAssistantOutput(t *testing.T) {
 	delta := `
 ⏺ MLP_START
@@ -822,6 +839,38 @@ which stategry was run ?
 `
 	if got, ok := extractTrailingUnmarkedAssistantResponse(pane); ok {
 		t.Fatalf("trailing response = %q, want no assistant response", got)
+	}
+}
+
+func TestClaudeQueuedValidationEchoIsNotAssistantResponse(t *testing.T) {
+	pane := `
+❯ ## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Checks: 0 passed, 1 failed
+
+Fix the specific issues above and re-produce the required outputs.
+`
+	if got, ok := extractTrailingUnmarkedAssistantResponse(pane); ok {
+		t.Fatalf("trailing queued validation echo = %q, want no assistant response", got)
+	}
+	if !isClaudeTUIArtifact(`❌ PRE-VALIDATION FAILED
+Checks: 0 passed, 1 failed
+Fix the specific issues above and re-produce the required outputs.`) {
+		t.Fatal("validation feedback echo should be treated as TUI/user artifact")
+	}
+	if !isClaudeTUIArtifact("Fix the specific issue above and re-produce the required outputs.") {
+		t.Fatal("truncated validation feedback echo should be treated as TUI/user artifact")
+	}
+}
+
+func TestClaudeLatestAssistantResponseRejectsToolProgress(t *testing.T) {
+	pane := `
+⏺ Calling api-bridge… (ctrl+o to expand)
+`
+	if got, ok := extractLatestUnmarkedAssistantResponse(pane); ok {
+		t.Fatalf("latest tool progress = %q, want no assistant response", got)
 	}
 }
 

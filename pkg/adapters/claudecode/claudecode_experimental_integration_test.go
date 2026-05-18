@@ -2,8 +2,9 @@ package claudecode
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -302,49 +303,75 @@ func TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape(t *testing.T) 
 	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
 
 	ownerSessionID := "claude-live-e2e-" + randomHex(4)
-	errCh := make(chan error, 1)
+	toolToken := "SLOW_CLAUDE_E2E_" + randomHex(4)
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeClaudeExperimentalSlowMCPServer(t, slowToolMarker)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+
+	resultCh := make(chan claudeExperimentalRealResult, 1)
+	startupErrCh := make(chan error, 1)
 	go func() {
-		_, err := adapter.GenerateContent(
+		resp, err := adapter.GenerateContent(
 			parentCtx,
 			[]llmtypes.MessageContent{
 				{
 					Role: llmtypes.ChatMessageTypeSystem,
 					Parts: []llmtypes.ContentPart{
-						llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep running until interrupted if the user asks for a long response."},
+						llmtypes.TextContent{Text: "This is a Claude Code transport test. Use only declared MCP tools. Keep the final answer concise."},
 					},
 				},
 				{
 					Role: llmtypes.ChatMessageTypeHuman,
 					Parts: []llmtypes.ContentPart{
-						llmtypes.TextContent{Text: "Write 2000 numbered lines about reliable terminal transports. Use one short sentence per line. Do not summarize."},
+						llmtypes.TextContent{Text: "Call the api-bridge slow_contract MCP tool with token " + toolToken + " and delay_ms 30000. Do not answer until the tool returns. Then reply exactly with the tool result text."},
 					},
 				},
 			},
 			WithInteractiveSessionID(ownerSessionID),
+			WithMCPConfig(mcpConfig),
+			WithClaudeCodeTools(""),
+			WithAllowedTools("mcp__api-bridge__slow_contract"),
 			WithEffort("low"),
 		)
-		errCh <- err
+		out := claudeExperimentalRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
 	}()
 
-	waitForIntegrationInteractiveSession(t, ownerSessionID, 30*time.Second, errCh)
-	waitForIntegrationClaudeActivity(t, ownerSessionID, 30*time.Second, errCh)
+	waitForIntegrationInteractiveSession(t, ownerSessionID, 30*time.Second, startupErrCh)
+	waitForClaudeExperimentalFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	liveErr := SendClaudeCodeExperimentalInput(sendCtx, ownerSessionID, "LIVE_HAIKU_E2E_FOLLOWUP: acknowledge this after your current work if not interrupted.")
+	liveErr := SendClaudeCodeExperimentalInput(sendCtx, ownerSessionID, "## Pre-validation failed (retry attempt 3)\n\nFix the specific issue above and re-produce the required outputs.")
 	sendCancel()
 	if liveErr != nil {
 		cancel()
 		t.Fatalf("SendClaudeCodeExperimentalInput error = %v", liveErr)
 	}
 
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while live validation input was queued: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while live validation input was queued; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
 	cancel()
 	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatalf("GenerateContent completed normally; want cancellation after Escape path")
-		}
-		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), context.Canceled.Error()) {
-			t.Fatalf("GenerateContent error = %v, want context canceled", err)
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatalf("GenerateContent completed normally after cancellation; content=%q", got.content)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Claude Code live E2E cancellation")
@@ -482,7 +509,7 @@ func waitForIntegrationInteractiveSession(t *testing.T, ownerSessionID string, t
 	}
 }
 
-func waitForIntegrationClaudeActivity(t *testing.T, ownerSessionID string, timeout time.Duration, errCh <-chan error) {
+func waitForClaudeExperimentalFile(t *testing.T, path, label string, timeout time.Duration, resultCh <-chan claudeExperimentalRealResult) {
 	t.Helper()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -490,21 +517,21 @@ func waitForIntegrationClaudeActivity(t *testing.T, ownerSessionID string, timeo
 	defer ticker.Stop()
 	for {
 		select {
-		case err := <-errCh:
-			t.Fatalf("Claude Code exited before activity was visible: %v", err)
+		case got := <-resultCh:
+			t.Fatalf("Claude Code exited before %s: err=%v content=%q", label, got.err, got.content)
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for Claude Code activity in interactive session %q", ownerSessionID)
+			t.Fatalf("timed out waiting for %s at %s", label, path)
 		case <-ticker.C:
-			sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
-			if !ok {
-				continue
-			}
-			captured, err := captureTmuxPane(context.Background(), sessionName)
-			if err == nil && hasClaudeActivity(captured) {
+			if _, err := os.Stat(path); err == nil {
 				return
 			}
 		}
 	}
+}
+
+type claudeExperimentalRealResult struct {
+	content string
+	err     error
 }
 
 func experimentalClaudeResumedSessionID(resp *llmtypes.ContentResponse) string {
@@ -524,6 +551,91 @@ func buildClaudeExperimentalIntegrationLargeInput() string {
 		b.WriteString(" checks prompt paste stability, pane reset, and resume parsing.\n")
 	}
 	return b.String()
+}
+
+func writeClaudeExperimentalSlowMCPServer(t *testing.T, markerPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-slow-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const markerPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") {
+    return;
+  }
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "slow_contract",
+          description: "Return a deterministic contract token after a caller-provided delay.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              token: { type: "string" },
+              delay_ms: { type: "number" }
+            },
+            required: ["token"]
+          }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const delay = Math.max(0, Math.min(Number(args.delay_ms || 30000), 60000));
+    fs.writeFileSync(markerPath, JSON.stringify({ token, delay, started_at: new Date().toISOString() }));
+    setTimeout(() => {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          content: [{ type: "text", text: "SLOW_BRIDGE_TOOL_OK_" + token }],
+          isError: false
+        }
+      });
+    }, delay);
+    return;
+  }
+  if (msg.id !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  }
+});
+`, markerPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write slow MCP server: %v", err)
+	}
+	return path
 }
 
 func containsFold(s, substr string) bool {

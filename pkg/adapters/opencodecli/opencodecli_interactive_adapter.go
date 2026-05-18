@@ -831,7 +831,23 @@ func parseOpenCodeInteractiveResponse(captured, baseline, echoedUserPrompt strin
 	text := extractOpenCodeVisibleAssistantText(delta)
 	text = stripOpenCodeEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripOpenCodeHistoricalAssistantText(text, historicalAssistantTexts)
+	if isOpenCodeLikelyQueuedUserEcho(text) {
+		return ""
+	}
 	return strings.TrimSpace(text)
+}
+
+func isOpenCodeLikelyQueuedUserEcho(text string) bool {
+	lines := nonEmptyOpenCodeLines(text)
+	if len(lines) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.Join(lines, "\n"))
+	return strings.Contains(lower, "pre-validation failed") &&
+		strings.Contains(lower, "checks:") &&
+		(strings.Contains(lower, "fix the specific issues") ||
+			strings.Contains(lower, "validation failed") ||
+			strings.Contains(lower, "must exist"))
 }
 
 func extractOpenCodeVisibleAssistantText(delta string) string {

@@ -161,6 +161,110 @@ deny_message = "Use only the api-bridge echo_contract MCP tool for this contract
 	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-queued-validation-" + geminiRandomHex(4)
+	bridgeToken := "SLOW_BRIDGE_REAL_" + geminiRandomHex(4)
+
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeGeminiSlowContractMCPServer(t, slowToolMarker)
+	settings := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "mcp_api-bridge_slow_contract"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 998
+deny_message = "Use only the api-bridge slow_contract MCP tool for this contract test."
+`)
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan geminiRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge slow_contract MCP tool with token %s and delay_ms 30000. Do not answer until the tool returns. Then reply exactly with the tool result text.", bridgeToken)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithProjectSettings(settings),
+			WithAdminPolicyPath(policyPath),
+			WithApprovalMode("yolo"),
+			llmtypes.WithStreamingChan(streamChan),
+		)
+		out := geminiRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	waitForGeminiRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForGeminiRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	validationPrompt := `## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Missing required output file. Fix the specific issue above and re-produce the required outputs.`
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendGeminiInteractiveInput(sendCtx, ownerSessionID, validationPrompt); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendGeminiInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	pendingLiveInput := ""
+	if session, ok := geminiPersistentSession(ownerSessionID); ok {
+		session.liveMu.Lock()
+		pendingLiveInput = strings.Join(session.pendingLiveInputs, "\n")
+		session.liveMu.Unlock()
+	}
+	if !strings.Contains(pendingLiveInput, "Pre-validation failed") {
+		cancel()
+		t.Fatalf("validation input was not queued in adapter; pending=%q", pendingLiveInput)
+	}
+
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while validation input was queued: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while validation input was queued; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
+	cancel()
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatalf("GenerateContent completed normally after cancellation; content=%q", got.content)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for GenerateContent to return after cancellation")
+	}
+	_ = drainGeminiStream(streamChan)
+}
+
 func TestGeminiCLIRealInteractiveLiveInputContract(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
@@ -283,6 +387,28 @@ func waitForGeminiRealActiveSession(t *testing.T, ownerSessionID string, timeout
 	return ""
 }
 
+func waitForGeminiRealFile(t *testing.T, path, label string, timeout time.Duration, errCh <-chan geminiRealResult) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s at %s", label, path)
+}
+
+type geminiRealResult struct {
+	content string
+	err     error
+}
+
 func writeGeminiRealPolicy(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "restrict-tools.toml")
@@ -364,6 +490,91 @@ rl.on("line", (line) => {
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func writeGeminiSlowContractMCPServer(t *testing.T, markerPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gemini-slow-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const markerPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") {
+    return;
+  }
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "slow_contract",
+          description: "Return a deterministic contract token after a caller-provided delay.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              token: { type: "string" },
+              delay_ms: { type: "number" }
+            },
+            required: ["token"]
+          }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const delay = Math.max(0, Math.min(Number(args.delay_ms || 30000), 60000));
+    fs.writeFileSync(markerPath, JSON.stringify({ token, delay, started_at: new Date().toISOString() }));
+    setTimeout(() => {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          content: [{ type: "text", text: "SLOW_BRIDGE_TOOL_OK_" + token }],
+          isError: false
+        }
+      });
+    }, delay);
+    return;
+  }
+  if (msg.id !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  }
+});
+`, markerPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write slow MCP server: %v", err)
 	}
 	return path
 }

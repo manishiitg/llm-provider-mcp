@@ -905,7 +905,23 @@ func parseGeminiInteractiveResponse(captured, baseline, echoedUserPrompt string,
 	text = stripGeminiEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripGeminiHistoricalAssistantText(text, historicalAssistantTexts)
 	text = stripGeminiLeadingPromptFragments(text, echoedUserPrompt)
+	if isGeminiLikelyQueuedUserEcho(text) {
+		return ""
+	}
 	return strings.TrimSpace(text)
+}
+
+func isGeminiLikelyQueuedUserEcho(text string) bool {
+	lines := nonEmptyGeminiLines(text)
+	if len(lines) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.Join(lines, "\n"))
+	return strings.Contains(lower, "pre-validation failed") &&
+		strings.Contains(lower, "checks:") &&
+		(strings.Contains(lower, "fix the specific issues") ||
+			strings.Contains(lower, "validation failed") ||
+			strings.Contains(lower, "must exist"))
 }
 
 func extractLatestGeminiMarkedAssistantText(delta string) string {

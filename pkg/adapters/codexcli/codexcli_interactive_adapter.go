@@ -564,6 +564,7 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	dismissedRateReminder := false
+	dismissedTrustPrompt := false
 	for {
 		select {
 		case <-deadline.Done():
@@ -575,6 +576,13 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 		case <-ticker.C:
 			captured, err := captureCodexPane(deadline, sessionName)
 			if err != nil {
+				continue
+			}
+			if hasCodexTrustPrompt(captured) {
+				if !dismissedTrustPrompt {
+					_ = dismissCodexTrustPrompt(deadline, sessionName, captured)
+					dismissedTrustPrompt = true
+				}
 				continue
 			}
 			if hasCodexRateLimitReminderModal(captured) {
@@ -652,6 +660,12 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
+			if hasCodexQueuedInput(captured) {
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
 			if hasCodexRateLimitReminderModal(captured) {
 				if !dismissedRateReminder {
 					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
@@ -693,6 +707,9 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 }
 
 func parseCodexInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	if hasCodexTrustPrompt(captured) {
+		return ""
+	}
 	delta := codexCapturedAfterBaseline(captured, baseline)
 	text := rawFramedCodexAnswer(delta)
 	if strings.TrimSpace(text) == "" {
@@ -700,6 +717,9 @@ func parseCodexInteractiveResponse(captured, baseline, echoedUserPrompt string, 
 	}
 	text = stripCodexEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
+	if isCodexLikelyQueuedUserEcho(text) {
+		return ""
+	}
 	return strings.TrimSpace(text)
 }
 
@@ -714,15 +734,45 @@ func rawFramedCodexAnswer(delta string) string {
 	if len(ruleIndices) >= 2 {
 		for i := len(ruleIndices) - 1; i > 0; i-- {
 			text := cleanCodexRawFinalLines(lines[ruleIndices[i-1]+1:ruleIndices[i]], false)
-			if strings.TrimSpace(text) != "" {
+			if strings.TrimSpace(text) != "" && !isCodexLikelyToolReplayFinalText(text) {
 				return text
 			}
 		}
 	}
 	if len(ruleIndices) == 1 {
-		return cleanCodexRawFinalLines(lines[ruleIndices[0]+1:], true)
+		text := cleanCodexRawFinalLines(lines[ruleIndices[0]+1:], true)
+		if isCodexLikelyToolReplayFinalText(text) {
+			return ""
+		}
+		return text
 	}
 	return ""
+}
+
+func isCodexLikelyToolReplayFinalText(text string) bool {
+	lines := nonEmptyCodexLines(text)
+	if len(lines) == 0 {
+		return true
+	}
+	if isCodexAssistantAnswerPathSegment(lines) {
+		return false
+	}
+	toolish := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if isCodexToolReplayLine(trimmed) ||
+			isCodexToolReplayContinuationLine(trimmed) ||
+			isCodexShellScriptContinuationLine(trimmed) ||
+			isCodexJSONToolOutputLine(trimmed) ||
+			strings.Contains(lower, `,"timeout":`) ||
+			strings.Contains(lower, `"timeout":`) && strings.Contains(lower, "})") ||
+			strings.Contains(lower, "py\",\"timeout") ||
+			strings.Contains(lower, "indent=2))") {
+			toolish++
+		}
+	}
+	return toolish == len(lines)
 }
 
 func cleanCodexRawFinalLines(lines []string, stopAtPrompt bool) string {
@@ -762,7 +812,26 @@ func parseCodexInteractiveResponseSegmentFallback(delta, echoedUserPrompt string
 	}
 	text = stripCodexEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
+	if isCodexLikelyQueuedUserEcho(text) {
+		return ""
+	}
 	return strings.TrimSpace(text)
+}
+
+func isCodexLikelyQueuedUserEcho(text string) bool {
+	lines := nonEmptyCodexLines(text)
+	if len(lines) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.Join(lines, "\n"))
+	if strings.Contains(lower, "pre-validation failed") &&
+		strings.Contains(lower, "checks:") &&
+		(strings.Contains(lower, "fix the specific issues") ||
+			strings.Contains(lower, "validation failed") ||
+			strings.Contains(lower, "must exist")) {
+		return true
+	}
+	return false
 }
 
 func extractCodexVisibleAssistantText(delta string) string {
@@ -918,7 +987,7 @@ func classifyCodexLine(line string) codexSegmentKind {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
 	switch {
-	case isCodexInputEchoLine(trimmed):
+	case isCodexInputEchoLine(trimmed), isCodexQueuedInputLine(trimmed):
 		return codexSegmentInputEcho
 	case strings.HasPrefix(lower, "updated plan"):
 		return codexSegmentPlanStatus
@@ -1085,6 +1154,12 @@ func isCodexInputEchoLine(line string) bool {
 		strings.HasPrefix(trimmed, "↳ ")
 }
 
+func isCodexQueuedInputLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(stripCodexANSI(line)))
+	return strings.Contains(lower, "messages to be submitted after next tool call") ||
+		strings.Contains(lower, "press esc to interrupt and send immediately")
+}
+
 var codexInlineTUIBoundaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(^|\s+)(Working \([0-9]+s\)?)`),
 	regexp.MustCompile(`\s+•+\s*`),
@@ -1108,6 +1183,9 @@ func isCodexTUILine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
 	if isCodexBulletOnlyLine(trimmed) {
+		return true
+	}
+	if isCodexTrustPromptLine(trimmed) {
 		return true
 	}
 	if isCodexRateLimitReminderLine(trimmed) {
@@ -1144,6 +1222,7 @@ func isCodexTUILine(line string) bool {
 		strings.Contains(lower, "run the tool and remember this choice") ||
 		strings.Contains(lower, "calling api-bridge") ||
 		strings.Contains(lower, "called api-bridge") ||
+		isCodexQueuedInputLine(trimmed) ||
 		strings.Contains(lower, "sent immediately") ||
 		trimmed == "immediately)" ||
 		strings.HasPrefix(trimmed, "↳ ") ||
@@ -1270,6 +1349,11 @@ func isCodexToolReplayLine(line string) bool {
 		strings.Contains(trimmed, "{") ||
 		strings.Contains(trimmed, "}") ||
 		strings.Contains(trimmed, "PY")) {
+		return true
+	}
+	if strings.Contains(lower, "indent=2))") ||
+		strings.Contains(lower, "py\",\"timeout") ||
+		strings.Contains(lower, `"timeout":`) && strings.Contains(lower, "})") {
 		return true
 	}
 	if isCodexLikelyWrappedToolOutputLine(trimmed) {
@@ -1596,6 +1680,9 @@ func isCodexLikelyToolReplayAssistantSegment(lines []string, prevKind, nextKind 
 }
 
 func hasCodexActivity(captured string) bool {
+	if hasCodexQueuedInput(captured) {
+		return true
+	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 24; i-- {
@@ -1616,7 +1703,7 @@ func hasCodexActivity(captured string) bool {
 }
 
 func hasCodexReadyPrompt(captured string) bool {
-	if hasCodexRateLimitReminderModal(captured) {
+	if hasCodexTrustPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -1632,6 +1719,60 @@ func hasCodexReadyPrompt(captured string) bool {
 		}
 	}
 	return false
+}
+
+func hasCodexQueuedInput(captured string) bool {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	seenNonEmpty := 0
+	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 80; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seenNonEmpty++
+		if isCodexQueuedInputLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCodexTrustPrompt(captured string) bool {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	lastTrustQuestion := -1
+	lastSelectedTrustOption := -1
+	lastLaterInputPrompt := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "do you trust the contents of this directory") {
+			lastTrustQuestion = i
+			continue
+		}
+		if strings.HasPrefix(trimmed, "› ") {
+			option := strings.TrimSpace(strings.TrimPrefix(trimmed, "› "))
+			optionLower := strings.ToLower(option)
+			if strings.HasPrefix(optionLower, "1. yes, continue") || strings.HasPrefix(optionLower, "2. no, quit") {
+				lastSelectedTrustOption = i
+				continue
+			}
+			lastLaterInputPrompt = i
+		}
+	}
+	return lastTrustQuestion >= 0 &&
+		lastSelectedTrustOption > lastTrustQuestion &&
+		lastLaterInputPrompt < lastTrustQuestion
+}
+
+func isCodexTrustPromptLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "› "))
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "do you trust the contents of this directory") ||
+		strings.Contains(lower, "working with untrusted contents") ||
+		strings.Contains(lower, "trusting the directory allows") ||
+		strings.HasPrefix(lower, "1. yes, continue") ||
+		strings.HasPrefix(lower, "2. no, quit") ||
+		strings.Contains(lower, "press enter to continue")
 }
 
 func hasCodexRateLimitReminderModal(captured string) bool {
@@ -1653,6 +1794,36 @@ func isCodexRateLimitReminderLine(line string) bool {
 		strings.HasPrefix(lower, "3. keep current model") ||
 		strings.Contains(lower, "hide future rate limit reminders") ||
 		strings.Contains(lower, "press enter to confirm or esc to go back")
+}
+
+func dismissCodexTrustPrompt(ctx context.Context, sessionName, captured string) error {
+	selected := selectedCodexTrustPromptOption(captured)
+	keys := make([]string, 0, 2)
+	if selected == 2 {
+		keys = append(keys, "Up")
+	}
+	keys = append(keys, "C-m")
+	args := []string{"send-keys", "-t", sessionName}
+	args = append(args, keys...)
+	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+func selectedCodexTrustPromptOption(captured string) int {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "› ") {
+			continue
+		}
+		option := strings.TrimSpace(strings.TrimPrefix(trimmed, "› "))
+		switch {
+		case strings.HasPrefix(option, "1."):
+			return 1
+		case strings.HasPrefix(option, "2."):
+			return 2
+		}
+	}
+	return 0
 }
 
 func dismissCodexRateLimitReminder(ctx context.Context, sessionName, captured string) error {
@@ -1834,6 +2005,7 @@ func isCodexActiveStatusLine(line string) bool {
 		strings.HasPrefix(lower, "executing") ||
 		strings.HasPrefix(lower, "calling ") ||
 		strings.HasPrefix(lower, "calling api-bridge") ||
+		strings.Contains(lower, "ctrl+l is disabled while a task is in progress") ||
 		strings.Contains(lower, "esc to interrupt")
 }
 
