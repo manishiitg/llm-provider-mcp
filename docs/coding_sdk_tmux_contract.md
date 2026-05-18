@@ -241,6 +241,21 @@ Claude Code:
   targeted legacy tests.
 - Do not use `claude -p` or `claude --print` inside the tmux transport.
 - Workflow and chat both use the tmux transport.
+- Tmux transport and tmux persistence are separate concerns. Supplying an
+  owner/app session id selects the tmux transport. Supplying the provider's
+  persistent-interactive flag keeps that tmux session alive after a completed
+  turn.
+- Workflow steps, workflow sub-agents, and background tasks default to bounded
+  `close_on_completion` lifecycle: create/use the step-owned tmux session,
+  execute the turn, extract the final result, then close the owned tmux session.
+- Interactive chat and workflow-builder chat default to `keep_alive`
+  lifecycle: reuse the same tmux session across turns until idle cleanup,
+  explicit close, launch-fingerprint change, lost-session cleanup, or server
+  shutdown.
+- Step-level runtimes may opt into `keep_alive` only with an explicit lifecycle
+  setting such as `coding_agent_tmux_lifecycle="keep_alive"`; this should be
+  reserved for steps that intentionally need live steering/debugging after
+  completion.
 
 Codex CLI:
 
@@ -588,8 +603,16 @@ Required behavior:
   session.
 - The adapter waits briefly for idle or process exit.
 - Adapter-owned per-turn sessions are cleaned up after the turn exits.
+- Bounded per-turn sessions are retained for a short inspection window after
+  completion before tmux is killed. The product default is 5 minutes, and the
+  completion metadata must expose this as `terminal_retention_seconds` so the UI
+  can show a `closing` / `closes in ...` state.
 - Persistent chat sessions are cleaned up only when the owner session is closed,
   the launch settings change, the idle timeout fires, or the server shuts down.
+- Workflow-step lifecycle is explicit. Default is `close_on_completion`; an
+  individual step can request `keep_alive`, but that step then owns the extra
+  tmux lifetime and must still be cleaned up by idle timeout, explicit close,
+  lost-session handling, or server shutdown.
 
 Cancellation for one app session must not kill a tmux session owned by a
 different app session or a background agent.
@@ -650,6 +673,17 @@ Required behavior:
 Provider-specific timeout env vars may exist for tests, but the product
 contract is the same across providers.
 
+Bounded per-turn tmux sessions use a different retention timer:
+
+- Default retention is 5 minutes after a successful turn completes.
+- During this retention window the terminal is view-only and should be reported
+  as inactive with `state=closing`, `closes_at`, and
+  `terminal_retention_seconds`.
+- If a follow-up turn reuses the same owner session before the timer fires, the
+  adapter must cancel the retention timer and continue in the same tmux session.
+- After the retention timer fires, kill tmux and unregister the terminal
+  registry entry.
+
 ## Testing Contract
 
 Default tests must be deterministic and credit-free for pure parser and UI
@@ -682,6 +716,8 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
 | Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
+| Lifecycle policy | Chat sessions keep tmux alive by default; workflow steps/sub-agents/background tasks close on completion unless their explicit lifecycle setting is `keep_alive`. |
+| Bounded retention | A completed bounded tmux turn remains viewable with `terminal_retention_seconds`, `closes_at`, and `state=closing`, then is killed after the retention window. |
 | Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |
 | Shared-workdir MCP isolation | Parallel sessions that run from the same working directory must still use distinct provider settings/project dirs and distinct MCP bridge session URLs; each real tool call must route to its own session and write only to its own allowed output directory. |
 | Cleanup | Idle timeout, explicit close, failed launch, lost tmux pane/server, and server shutdown unregister and kill owned sessions. |

@@ -27,6 +27,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultCodexInteractiveTimeout     = 0
 	defaultCodexInteractiveIdleTimeout = 20 * time.Minute
+	defaultCodexInteractiveRetention   = 5 * time.Minute
 	defaultCodexInteractivePromptWait  = 20 * time.Second
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160
@@ -34,6 +35,7 @@ const (
 	EnvCodexInteractiveSessionPrefix      = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCodexInteractiveTimeoutSeconds     = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvCodexInteractiveIdleTimeoutSeconds = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCodexInteractiveRetentionSeconds   = "CODEX_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvCodexInteractivePromptWaitSeconds  = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCodexInteractiveStreamTmuxScreen   = "CODEX_CLI_STREAM_TMUX_SCREEN"
 )
@@ -76,6 +78,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	if ownerSessionID == "" {
 		return nil, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
 	}
+	persistent := codexPersistentInteractiveFromOptions(opts)
 
 	callCtx, cancel := codexInteractiveCallContext(ctx)
 	defer cancel()
@@ -89,7 +92,11 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	releaseSession := true
 	defer func() {
 		if releaseSession && session != nil {
-			releaseCodexInteractiveSession(session, c.logger)
+			if persistent {
+				releaseCodexInteractiveSession(session, c.logger)
+			} else {
+				releaseCodexBoundedInteractiveSession(session, c.logger)
+			}
 		}
 	}()
 
@@ -136,18 +143,25 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		close(opts.StreamChan)
 	}
 
+	additional := map[string]interface{}{
+		"provider":                     "codex-cli",
+		"codex_mode":                   "interactive",
+		"codex_interactive_session":    session.tmuxSessionName,
+		"codex_persistent_interactive": persistent,
+		"codex_uses_exec_json":         false,
+	}
+	if !persistent {
+		retentionSeconds := int(codexInteractiveRetention().Seconds())
+		additional["terminal_retention_seconds"] = retentionSeconds
+		additional["codex_interactive_retention_seconds"] = retentionSeconds
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
 				Content: content,
 				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":                     "codex-cli",
-						"codex_mode":                   "interactive",
-						"codex_interactive_session":    session.tmuxSessionName,
-						"codex_persistent_interactive": true,
-						"codex_uses_exec_json":         false,
-					},
+					Additional: additional,
 				},
 			},
 		},
@@ -303,6 +317,25 @@ func releaseCodexInteractiveSession(session *codexInteractiveSession, logger int
 	session.mu.Unlock()
 }
 
+func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	retention := codexInteractiveRetention()
+	session.lastUsed = time.Now()
+	if retention <= 0 {
+		closeCodexSessionLocked(session, "bounded turn complete", logger)
+		return
+	}
+	if logger != nil {
+		logger.Debugf("Retaining completed Codex interactive session %s for owner %s for %s", session.tmuxSessionName, session.ownerSessionID, retention)
+	}
+	session.idleTimer = time.AfterFunc(retention, func() {
+		closeCodexPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
+	})
+	session.mu.Unlock()
+}
+
 func closeCodexPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	codexPersistentRegistry.Lock()
 	session := codexPersistentRegistry.sessions[ownerSessionID]
@@ -322,14 +355,30 @@ func closeCodexPersistentSession(ownerSessionID, reason string, logger interface
 	if logger != nil {
 		logger.Debugf("Closing Codex interactive session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
+	closeCodexSessionLocked(session, reason, logger)
+}
+
+func closeCodexSessionLocked(session *codexInteractiveSession, reason string, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Closing Codex interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
+	}
+	removeCodexPersistentSession(session.ownerSessionID, session)
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = runCodexCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
 	_ = killCodexTmuxSession(closeCtx, session.tmuxSessionName)
 	if session.systemPromptTempFile != "" {
 		_ = os.Remove(session.systemPromptTempFile)
+		session.systemPromptTempFile = ""
 	}
-	unregisterCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
+	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
 func markCodexInteractiveSessionFailedLocked(session *codexInteractiveSession, err error, logger interfaces.Logger) {
@@ -2119,6 +2168,10 @@ func codexInteractiveCallContext(ctx context.Context) (context.Context, context.
 
 func codexInteractiveIdleTimeout() time.Duration {
 	return codexDurationFromEnv(EnvCodexInteractiveIdleTimeoutSeconds, defaultCodexInteractiveIdleTimeout)
+}
+
+func codexInteractiveRetention() time.Duration {
+	return codexDurationFromEnv(EnvCodexInteractiveRetentionSeconds, defaultCodexInteractiveRetention)
 }
 
 func codexInteractivePromptWait() time.Duration {

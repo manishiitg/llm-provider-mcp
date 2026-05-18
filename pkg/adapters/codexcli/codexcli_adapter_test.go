@@ -174,7 +174,7 @@ func TestWriteCodexImageContentFilesRejectsURL(t *testing.T) {
 	}
 }
 
-func TestCodexCLIInteractiveRejectsImageContent(t *testing.T) {
+func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
 
 	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
@@ -185,7 +185,7 @@ func TestCodexCLIInteractiveRejectsImageContent(t *testing.T) {
 				llmtypes.ImageContent{SourceType: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="},
 			},
 		},
-	}, WithInteractiveSessionID("codex-image-test"), WithPersistentInteractiveSession(true))
+	}, WithInteractiveSessionID("codex-image-test"))
 	if err == nil {
 		t.Fatal("GenerateContent() error = nil, want unsupported interactive image error")
 	}

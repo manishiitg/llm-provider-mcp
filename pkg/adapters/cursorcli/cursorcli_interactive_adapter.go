@@ -28,12 +28,14 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultCursorInteractiveTimeout     = 0
 	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
+	defaultCursorInteractiveRetention   = 5 * time.Minute
 	defaultCursorInteractivePromptWait  = 25 * time.Second
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 
 	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvCursorInteractiveIdleTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCursorInteractiveRetentionSeconds   = "CURSOR_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvCursorInteractivePromptWaitSeconds  = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCursorInteractiveStreamTmuxScreen   = "CURSOR_CLI_STREAM_TMUX_SCREEN"
 )
@@ -109,7 +111,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		if persistent {
 			releaseCursorInteractiveSession(session, c.logger)
 		} else {
-			closeCursorSessionLocked(session, "bounded turn complete", c.logger)
+			releaseCursorBoundedInteractiveSession(session, c.logger)
 		}
 	}()
 
@@ -171,19 +173,26 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		close(opts.StreamChan)
 	}
 
+	additional := map[string]interface{}{
+		"provider":                      "cursor-cli",
+		"cursor_mode":                   "tmux",
+		"cursor_interactive_session":    session.tmuxSessionName,
+		"cursor_persistent_interactive": persistent,
+		"cursor_uses_print_json":        false,
+		"cursor_working_dir":            session.workingDir,
+	}
+	if !persistent {
+		retentionSeconds := int(cursorInteractiveRetention().Seconds())
+		additional["terminal_retention_seconds"] = retentionSeconds
+		additional["cursor_interactive_retention_seconds"] = retentionSeconds
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
 				Content: content,
 				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":                      "cursor-cli",
-						"cursor_mode":                   "tmux",
-						"cursor_interactive_session":    session.tmuxSessionName,
-						"cursor_persistent_interactive": persistent,
-						"cursor_uses_print_json":        false,
-						"cursor_working_dir":            session.workingDir,
-					},
+					Additional: additional,
 				},
 			},
 		},
@@ -466,6 +475,25 @@ func releaseCursorInteractiveSession(session *cursorInteractiveSession, logger i
 	session.lastUsed = time.Now()
 	session.idleTimer = time.AfterFunc(cursorInteractiveIdleTimeout(), func() {
 		closeCursorPersistentSession(session.ownerSessionID, "idle timeout", logger)
+	})
+	session.mu.Unlock()
+}
+
+func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	retention := cursorInteractiveRetention()
+	session.lastUsed = time.Now()
+	if retention <= 0 {
+		closeCursorSessionLocked(session, "bounded turn complete", logger)
+		return
+	}
+	if logger != nil {
+		logger.Debugf("Retaining completed Cursor interactive session %s for owner %s for %s", session.tmuxSessionName, session.ownerSessionID, retention)
+	}
+	session.idleTimer = time.AfterFunc(retention, func() {
+		closeCursorPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
 	})
 	session.mu.Unlock()
 }
@@ -1315,6 +1343,10 @@ func cursorInteractiveCallContext(ctx context.Context) (context.Context, context
 
 func cursorInteractiveIdleTimeout() time.Duration {
 	return cursorDurationFromEnv(EnvCursorInteractiveIdleTimeoutSeconds, defaultCursorInteractiveIdleTimeout)
+}
+
+func cursorInteractiveRetention() time.Duration {
+	return cursorDurationFromEnv(EnvCursorInteractiveRetentionSeconds, defaultCursorInteractiveRetention)
 }
 
 func cursorInteractivePromptWait() time.Duration {

@@ -124,7 +124,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("gemini-cli adapter does not support llmtypes.ImageContent; Gemini CLI has no image attachment flag in the supported headless/tmux transports")
 	}
 
-	if geminiPersistentInteractiveFromOptions(opts) && geminiInteractiveSessionIDFromOptions(opts) != "" {
+	if geminiInteractiveSessionIDFromOptions(opts) != "" {
 		return g.generateContentInteractive(ctx, messages, opts)
 	}
 

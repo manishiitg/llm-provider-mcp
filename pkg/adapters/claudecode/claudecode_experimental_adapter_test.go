@@ -662,9 +662,7 @@ func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
 	}
 }
 
-func TestExperimentalVerboseEnvAddsVerboseFlag(t *testing.T) {
-	t.Setenv(EnvClaudeExperimentalVerbose, "true")
-
+func TestExperimentalAlwaysAddsVerboseFlag(t *testing.T) {
 	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
@@ -674,7 +672,7 @@ func TestExperimentalVerboseEnvAddsVerboseFlag(t *testing.T) {
 		t.Fatalf("tempFiles = %v, want none", tempFiles)
 	}
 	if !containsArg(args, "--verbose") {
-		t.Fatalf("args = %v, want --verbose when %s=true", args, EnvClaudeExperimentalVerbose)
+		t.Fatalf("args = %v, want --verbose by default", args)
 	}
 }
 
@@ -881,55 +879,6 @@ func TestClaudeLatestAssistantResponseRejectsToolProgress(t *testing.T) {
 `
 	if got, ok := extractLatestUnmarkedAssistantResponse(pane); ok {
 		t.Fatalf("latest tool progress = %q, want no assistant response", got)
-	}
-}
-
-func TestHasClaudeExpandableToolSummary(t *testing.T) {
-	tests := []struct {
-		name string
-		pane string
-		want bool
-	}{
-		{
-			name: "calling summary",
-			pane: "⏺ Calling api-bridge 2 times… (ctrl+o to expand)",
-			want: true,
-		},
-		{
-			name: "called summary",
-			pane: "Called api-bridge 6 times (ctrl+o to expand)",
-			want: true,
-		},
-		{
-			name: "compaction summary",
-			pane: "⎿  Compacted (ctrl+o to see full summary)",
-			want: false,
-		},
-		{
-			name: "generic footer",
-			pane: "Tip: ctrl+o opens history",
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasClaudeExpandableToolSummary(tt.pane); got != tt.want {
-				t.Fatalf("hasClaudeExpandableToolSummary(%q) = %t, want %t", tt.pane, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestClaudeExperimentalAutoExpandToolSummaryDisabledByDefault(t *testing.T) {
-	t.Setenv(EnvClaudeExperimentalAutoExpandTools, "")
-	if claudeExperimentalAutoExpandToolSummaryEnabled() {
-		t.Fatal("auto expand tool summary enabled by default; want disabled")
-	}
-
-	t.Setenv(EnvClaudeExperimentalAutoExpandTools, "true")
-	if !claudeExperimentalAutoExpandToolSummaryEnabled() {
-		t.Fatal("auto expand tool summary disabled with explicit true; want enabled")
 	}
 }
 

@@ -28,6 +28,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
+	defaultGeminiInteractiveRetention   = 5 * time.Minute
 	defaultGeminiInteractivePromptWait  = 20 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160
@@ -38,6 +39,7 @@ const (
 	EnvGeminiInteractiveSessionPrefix      = "GEMINI_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvGeminiInteractiveTimeoutSeconds     = "GEMINI_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvGeminiInteractiveIdleTimeoutSeconds = "GEMINI_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvGeminiInteractiveRetentionSeconds   = "GEMINI_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvGeminiInteractivePromptWaitSeconds  = "GEMINI_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvGeminiInteractiveStreamTmuxScreen   = "GEMINI_CLI_STREAM_TMUX_SCREEN"
 )
@@ -84,6 +86,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	if ownerSessionID == "" {
 		return nil, fmt.Errorf("gemini-cli interactive mode requires an owner session ID")
 	}
+	persistent := geminiPersistentInteractiveFromOptions(opts)
 
 	callCtx, cancel := geminiInteractiveCallContext(ctx)
 	defer cancel()
@@ -97,7 +100,11 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	releaseSession := true
 	defer func() {
 		if releaseSession && session != nil {
-			releaseGeminiInteractiveSession(session, g.logger)
+			if persistent {
+				releaseGeminiInteractiveSession(session, g.logger)
+			} else {
+				releaseGeminiBoundedInteractiveSession(session, g.logger)
+			}
 		}
 	}()
 
@@ -154,19 +161,26 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		close(opts.StreamChan)
 	}
 
+	additional := map[string]interface{}{
+		"provider":                      "gemini-cli",
+		"gemini_mode":                   "interactive",
+		"gemini_interactive_session":    session.tmuxSessionName,
+		"gemini_persistent_interactive": persistent,
+		"gemini_uses_stream_json":       false,
+		"gemini_project_dir_id":         session.projectDirID,
+	}
+	if !persistent {
+		retentionSeconds := int(geminiInteractiveRetention().Seconds())
+		additional["terminal_retention_seconds"] = retentionSeconds
+		additional["gemini_interactive_retention_seconds"] = retentionSeconds
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
 				Content: content,
 				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":                      "gemini-cli",
-						"gemini_mode":                   "interactive",
-						"gemini_interactive_session":    session.tmuxSessionName,
-						"gemini_persistent_interactive": true,
-						"gemini_uses_stream_json":       false,
-						"gemini_project_dir_id":         session.projectDirID,
-					},
+					Additional: additional,
 				},
 			},
 		},
@@ -423,6 +437,25 @@ func releaseGeminiInteractiveSession(session *geminiInteractiveSession, logger i
 	session.mu.Unlock()
 }
 
+func releaseGeminiBoundedInteractiveSession(session *geminiInteractiveSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	retention := geminiInteractiveRetention()
+	session.lastUsed = time.Now()
+	if retention <= 0 {
+		closeGeminiSessionLocked(session, "bounded turn complete", logger)
+		return
+	}
+	if logger != nil {
+		logger.Debugf("Retaining completed Gemini interactive session %s for owner %s for %s", session.tmuxSessionName, session.ownerSessionID, retention)
+	}
+	session.idleTimer = time.AfterFunc(retention, func() {
+		closeGeminiPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
+	})
+	session.mu.Unlock()
+}
+
 func closeGeminiPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	geminiPersistentRegistry.Lock()
 	session := geminiPersistentRegistry.sessions[ownerSessionID]
@@ -442,14 +475,30 @@ func closeGeminiPersistentSession(ownerSessionID, reason string, logger interfac
 	if logger != nil {
 		logger.Debugf("Closing Gemini interactive session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
+	closeGeminiSessionLocked(session, reason, logger)
+}
+
+func closeGeminiSessionLocked(session *geminiInteractiveSession, reason string, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Closing Gemini interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
+	}
+	removeGeminiPersistentSession(session.ownerSessionID, session)
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = runGeminiCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
 	_ = killGeminiTmuxSession(closeCtx, session.tmuxSessionName)
 	if session.systemPromptTempFile != "" {
 		_ = os.Remove(session.systemPromptTempFile)
+		session.systemPromptTempFile = ""
 	}
-	unregisterGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
+	unregisterGeminiInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
 func markGeminiInteractiveSessionFailedLocked(session *geminiInteractiveSession, err error, logger interfaces.Logger) {
@@ -1597,6 +1646,10 @@ func geminiInteractiveCallContext(ctx context.Context) (context.Context, context
 
 func geminiInteractiveIdleTimeout() time.Duration {
 	return geminiDurationFromEnv(EnvGeminiInteractiveIdleTimeoutSeconds, defaultGeminiInteractiveIdleTimeout)
+}
+
+func geminiInteractiveRetention() time.Duration {
+	return geminiDurationFromEnv(EnvGeminiInteractiveRetentionSeconds, defaultGeminiInteractiveRetention)
 }
 
 func geminiInteractivePromptWait() time.Duration {

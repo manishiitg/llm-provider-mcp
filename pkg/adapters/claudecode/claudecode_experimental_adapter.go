@@ -28,6 +28,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultTmuxTimeout             = 0
 	defaultPersistentIdleTimeout   = 20 * time.Minute
+	defaultBoundedRetention        = 5 * time.Minute
 	defaultTmuxPollInterval        = 750 * time.Millisecond
 	defaultTmuxCaptureLines        = "3000"
 	minTmuxMajorVersion            = 3
@@ -38,9 +39,8 @@ const (
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalVerbose            = "CLAUDE_CODE_EXPERIMENTAL_VERBOSE"
+	EnvClaudeExperimentalRetentionSeconds   = "CLAUDE_CODE_EXPERIMENTAL_RETENTION_SECONDS"
 	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
-	EnvClaudeExperimentalAutoExpandTools    = "CLAUDE_CODE_AUTO_EXPAND_TOOLS"
 )
 
 var claudeExperimentalSessionRegistry = struct {
@@ -197,7 +197,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 			return nil, err
 		}
 		registerClaudeExperimentalSession(sessionName)
-		cleanupSession := cleanupClaudeExperimentalSessionOnce(sessionName)
+		cleanupSession := cleanupClaudeExperimentalSessionAfter(sessionName, boundedRetentionTimeout())
 		defer cleanupSession()
 		if interactiveSessionID != "" {
 			registerClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
@@ -260,25 +260,32 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		close(opts.StreamChan)
 	}
 
+	additional := map[string]interface{}{
+		"provider":                           "claude-code",
+		"claude_code_mode":                   "experimental",
+		"claude_code_run_id":                 runID,
+		"claude_code_session":                sessionName,
+		"claude_code_session_id":             responseSessionID,
+		"claude_code_native_session_id":      nativeSessionID,
+		"claude_code_resumed_session_id":     resumeID,
+		"claude_code_close_resume_ref":       closeResumeRef,
+		"claude_code_uses_print_flag":        false,
+		"claude_code_structured_streaming":   false,
+		"claude_code_persistent_interactive": persistentInteractive,
+	}
+	if !persistentInteractive {
+		retentionSeconds := int(boundedRetentionTimeout().Seconds())
+		additional["terminal_retention_seconds"] = retentionSeconds
+		additional["claude_code_interactive_retention_seconds"] = retentionSeconds
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
 				Content:    content,
 				StopReason: "stop",
 				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":                           "claude-code",
-						"claude_code_mode":                   "experimental",
-						"claude_code_run_id":                 runID,
-						"claude_code_session":                sessionName,
-						"claude_code_session_id":             responseSessionID,
-						"claude_code_native_session_id":      nativeSessionID,
-						"claude_code_resumed_session_id":     resumeID,
-						"claude_code_close_resume_ref":       closeResumeRef,
-						"claude_code_uses_print_flag":        false,
-						"claude_code_structured_streaming":   false,
-						"claude_code_persistent_interactive": persistentInteractive,
-					},
+					Additional: additional,
 				},
 			},
 		},
@@ -382,7 +389,7 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 		}
 	}
 
-	args := []string{"claude", "--permission-mode", "dontAsk"}
+	args := []string{"claude", "--permission-mode", "dontAsk", "--verbose"}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	} else if nativeSessionID != "" {
@@ -390,9 +397,6 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 	}
 	if c.shouldPassModelFlag() {
 		args = append(args, "--model", c.modelID)
-	}
-	if claudeExperimentalVerboseEnabled() {
-		args = append(args, "--verbose")
 	}
 	if strings.TrimSpace(systemPrompt) != "" {
 		systemPromptPath, err := writeTempFile("claude-code-system-prompt-*.md", systemPrompt)
@@ -619,11 +623,6 @@ func newClaudeNativeSessionID() string {
 
 func defaultClaudeDisplayName() string {
 	return "mcp-agent-" + time.Now().Format("20060102-150405")
-}
-
-func claudeExperimentalVerboseEnabled() bool {
-	raw := strings.TrimSpace(strings.ToLower(os.Getenv(EnvClaudeExperimentalVerbose)))
-	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
 func claudeExperimentalStreamTmuxScreenEnabled() bool {
@@ -1067,9 +1066,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	expandedToolSummary := false
 	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
-	autoExpandToolSummary := claudeExperimentalAutoExpandToolSummaryEnabled()
 
 	for {
 		select {
@@ -1099,11 +1096,6 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
 				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
-			}
-			if autoExpandToolSummary && !expandedToolSummary && hasClaudeExpandableToolSummary(captured) {
-				if sendClaudeExpandToolSummary(ctx, sessionName) {
-					expandedToolSummary = true
-				}
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -1138,32 +1130,6 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			}
 		}
 	}
-}
-
-func claudeExperimentalAutoExpandToolSummaryEnabled() bool {
-	value := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalAutoExpandTools))
-	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
-}
-
-func hasClaudeExpandableToolSummary(captured string) bool {
-	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
-	for _, line := range strings.Split(normalized, "\n") {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if !strings.Contains(lower, "ctrl+o") || !strings.Contains(lower, "expand") {
-			continue
-		}
-		if isClaudeToolProgressLine(trimmed) {
-			return true
-		}
-	}
-	return false
-}
-
-func sendClaudeExpandToolSummary(ctx context.Context, sessionName string) bool {
-	sendCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	return runCommand(sendCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-o") == nil
 }
 
 func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
@@ -1602,6 +1568,18 @@ func persistentInteractiveIdleTimeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+func boundedRetentionTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalRetentionSeconds))
+	if raw == "" {
+		return defaultBoundedRetention
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return defaultBoundedRetention
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func ensureTmuxAvailable(ctx context.Context) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return fmt.Errorf("tmux not found in PATH; claude-code requires tmux %d.x or newer for interactive mode", minTmuxMajorVersion)
@@ -1966,16 +1944,26 @@ func SendClaudeCodeExperimentalInput(ctx context.Context, ownerSessionID, messag
 	return sendInputToActiveTmux(ctx, sessionName, message)
 }
 
-func cleanupClaudeExperimentalSessionOnce(sessionName string) func() {
+func cleanupClaudeExperimentalSessionAfter(sessionName string, retention time.Duration) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			defer unregisterClaudeExperimentalSession(sessionName)
-			killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = killClaudeExperimentalSession(killCtx, sessionName)
+			if retention <= 0 {
+				closeClaudeExperimentalSessionNow(sessionName)
+				return
+			}
+			time.AfterFunc(retention, func() {
+				closeClaudeExperimentalSessionNow(sessionName)
+			})
 		})
 	}
+}
+
+func closeClaudeExperimentalSessionNow(sessionName string) {
+	defer unregisterClaudeExperimentalSession(sessionName)
+	killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = killClaudeExperimentalSession(killCtx, sessionName)
 }
 
 func killClaudeExperimentalSession(ctx context.Context, sessionName string) error {

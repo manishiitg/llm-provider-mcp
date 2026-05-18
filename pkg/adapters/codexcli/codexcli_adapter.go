@@ -136,7 +136,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		opt(opts)
 	}
 
-	if codexPersistentInteractiveFromOptions(opts) && codexInteractiveSessionIDFromOptions(opts) != "" {
+	if codexInteractiveSessionIDFromOptions(opts) != "" {
 		if len(collectCodexImageContent(messages)) > 0 {
 			if opts.StreamChan != nil {
 				close(opts.StreamChan)
