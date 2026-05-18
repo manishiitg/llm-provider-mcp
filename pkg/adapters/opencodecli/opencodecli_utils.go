@@ -3,6 +3,7 @@ package opencodecli
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,4 +56,59 @@ func opencodeRandomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+func writeOpenCodeRestoredFile(path string, content []byte) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create OpenCode config dir: %w", err)
+	}
+	previous, readErr := os.ReadFile(path)
+	existed := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("failed to read existing OpenCode config %s: %w", path, readErr)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write OpenCode config %s: %w", path, err)
+	}
+	return func() {
+		if existed {
+			_ = os.WriteFile(path, previous, 0o600)
+		} else {
+			_ = os.Remove(path)
+		}
+	}, nil
+}
+
+// buildOpenCodeMCPConfigJSON transforms the standard {"mcpServers":{...}} format
+// into OpenCode's {"mcp":{...}} format, adding required "type" and "enabled" fields.
+func buildOpenCodeMCPConfigJSON(mcpServersJSON string) ([]byte, error) {
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(mcpServersJSON), &input); err != nil {
+		return nil, fmt.Errorf("invalid MCP config JSON: %w", err)
+	}
+
+	servers, ok := input["mcpServers"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("MCP config JSON missing mcpServers object")
+	}
+
+	mcpSection := make(map[string]interface{})
+	for name, serverRaw := range servers {
+		server, ok := serverRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, has := server["type"]; !has {
+			server["type"] = "local"
+		}
+		if _, has := server["enabled"]; !has {
+			server["enabled"] = true
+		}
+		mcpSection[name] = server
+	}
+
+	output := map[string]interface{}{
+		"mcp": mcpSection,
+	}
+	return json.MarshalIndent(output, "", "  ")
 }
