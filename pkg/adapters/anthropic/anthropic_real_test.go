@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -682,6 +683,72 @@ func TestAnthropicRealPromptCachingCacheRead(t *testing.T) {
 }
 
 // TestAnthropicRealAuthFailureClassified is the P2 #22 contract test.
+// TestAnthropicRealJSONSchemaStrictViaTool (contract P1 #21).
+// Anthropic does not expose a separate strict JSON schema mode like
+// OpenAI's response_format=json_schema. The canonical strict-output
+// pattern on Claude is forcing tool_use on a tool whose input_schema
+// pins the shape — the model is required to emit a tool_use block
+// whose `input` validates against that schema. We test that the
+// adapter both: (a) forwards tool_choice so the model is forced to
+// call it, and (b) returns a parseable tool_call whose arguments
+// match the required keys and types.
+func TestAnthropicRealJSONSchemaStrictViaTool(t *testing.T) {
+	adapter, _ := newRealAnthropicAdapter(t)
+
+	tools := []llmtypes.Tool{
+		{Type: "function", Function: &llmtypes.FunctionDefinition{
+			Name:        "record_movie_review",
+			Description: "Record a movie review with a numeric rating and a one-sentence summary.",
+			Parameters: &llmtypes.Parameters{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"title":   map[string]interface{}{"type": "string", "description": "The movie's title."},
+					"rating":  map[string]interface{}{"type": "integer", "description": "Rating from 1 to 10."},
+					"summary": map[string]interface{}{"type": "string", "description": "One-sentence summary."},
+				},
+				Required: []string{"title", "rating", "summary"},
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Record a review for the movie 'Arrival' with a rating of 9 and a short summary."}}},
+		},
+		llmtypes.WithTools(tools),
+		llmtypes.WithToolChoice(&llmtypes.ToolChoice{Type: "function", Function: &llmtypes.FunctionName{Name: "record_movie_review"}}),
+		llmtypes.WithMaxTokens(512),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	if len(resp.Choices) == 0 || len(resp.Choices[0].ToolCalls) == 0 {
+		t.Fatalf("model did not emit a forced tool_call; content=%q", resp.Choices[0].Content)
+	}
+	call := resp.Choices[0].ToolCalls[0]
+	if call.FunctionCall == nil || call.FunctionCall.Name != "record_movie_review" {
+		t.Fatalf("forced tool_choice did not pin tool: got call=%+v", call)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(call.FunctionCall.Arguments), &args); err != nil {
+		t.Fatalf("tool arguments are not valid JSON: %v\nargs=%s", err, call.FunctionCall.Arguments)
+	}
+	for _, key := range []string{"title", "rating", "summary"} {
+		if _, ok := args[key]; !ok {
+			t.Fatalf("schema violated: required key %q missing from tool args. args=%v", key, args)
+		}
+	}
+	if _, ok := args["rating"].(float64); !ok {
+		t.Fatalf("schema violated: rating is not numeric. args=%v", args)
+	}
+	if _, ok := args["title"].(string); !ok {
+		t.Fatalf("schema violated: title is not string. args=%v", args)
+	}
+}
+
 // A deliberately invalid key must produce an error whose surface text
 //   - mentions auth/credential trouble,
 //   - does NOT echo the invalid key back (otherwise screen-share
