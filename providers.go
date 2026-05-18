@@ -1805,7 +1805,7 @@ func initializeVertex(config Config) (llmtypes.Model, error) {
 	// Set default model if not specified
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = vertexadapter.ModelGemini31FlashLitePreview
 	}
 
 	logger := config.Logger
@@ -1871,15 +1871,15 @@ func initializeVertexGemini(config Config, modelID string, logger interfaces.Log
 		apiKey = *config.APIKeys.Vertex
 		logger.Infof("🔑 [VERTEX AUTH] Using API key from config")
 	} else {
-		// Try environment variables
-		apiKey = os.Getenv("VERTEX_API_KEY")
-		if apiKey == "" {
-			// Try alternative environment variable names
-			apiKey = os.Getenv("GOOGLE_API_KEY")
-		}
+		// Try environment variables (AI Studio key works under any of these names)
+		apiKey = firstNonEmpty(
+			os.Getenv("VERTEX_API_KEY"),
+			os.Getenv("GEMINI_API_KEY"),
+			os.Getenv("GOOGLE_API_KEY"),
+		)
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("VERTEX_API_KEY or GOOGLE_API_KEY is required for Gemini models (not found in config or environment)")
+		return nil, fmt.Errorf("an AI Studio API key is required for Gemini models — set VERTEX_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY (or pass via config.APIKeys.Vertex)")
 	}
 
 	// Use provided context or use background context
@@ -2452,7 +2452,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("VERTEX_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return "gemini-2.5-flash"
+		return vertexadapter.ModelGemini31FlashLitePreview
 	case ProviderAzure:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("AZURE_PRIMARY_MODEL"); primaryModel != "" {
@@ -5203,7 +5203,7 @@ func validateVertexCredentials(modelID string, options map[string]interface{}) (
 
 	// Use a default model if none provided
 	if modelID == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = vertexadapter.ModelGemini31FlashLitePreview
 		fmt.Printf("[VERTEX VALIDATION] Using default model: %s\n", modelID)
 	}
 
@@ -5310,7 +5310,7 @@ func validateVertexAPIKey(apiKey string, modelID string, options map[string]inte
 
 	// Use a default model if none provided
 	if modelID == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = vertexadapter.ModelGemini31FlashLitePreview
 		fmt.Printf("[VERTEX VALIDATION] Using default model: %s\n", modelID)
 	}
 

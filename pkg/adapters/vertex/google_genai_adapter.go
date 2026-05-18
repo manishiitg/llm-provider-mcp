@@ -70,6 +70,27 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 		modelID = opts.Model
 	}
 
+	// Extract system messages up-front. Gemini exposes a dedicated
+	// `SystemInstruction` field on the request config; previously the
+	// adapter mapped llmtypes.ChatMessageTypeSystem to role "user" and
+	// folded the system content into the chat history, which (a) loses
+	// the semantic signal Gemini uses for safety + caching behavior
+	// and (b) breaks multi-turn conversations because the system block
+	// becomes part of the assistant's reply context. We now strip
+	// system messages here and attach them to config.SystemInstruction
+	// near the config construction site.
+	var systemTextParts []string
+	for _, msg := range messages {
+		if msg.Role != llmtypes.ChatMessageTypeSystem {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if t, ok := part.(llmtypes.TextContent); ok && strings.TrimSpace(t.Text) != "" {
+				systemTextParts = append(systemTextParts, t.Text)
+			}
+		}
+	}
+
 	// Convert messages from llmtypes format to genai format
 	genaiContents := make([]*genai.Content, 0, len(messages))
 
@@ -156,6 +177,16 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 	}
 
 	for msgIdx, msg := range messages {
+		// System messages are routed via config.SystemInstruction (set
+		// near the config construction site below). Skipping them in
+		// the chat history avoids mis-attributing the system prompt
+		// to a "user" turn, which previously caused Gemini to treat
+		// it as part of the conversation rather than as governing
+		// instructions.
+		if msg.Role == llmtypes.ChatMessageTypeSystem {
+			continue
+		}
+
 		// 🔍 DETECTION & FIX: Check for mixed Text + ToolCall parts (can cause Gemini empty responses)
 		// If detected, split into separate messages automatically
 		hasText := false
@@ -535,6 +566,17 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 	// Build GenerateContentConfig from options
 	config := &genai.GenerateContentConfig{}
 
+	// Attach the extracted system message(s) via Gemini's native
+	// SystemInstruction field. Multiple system messages from upstream
+	// (rare but possible) are joined with a blank line so they form
+	// one coherent instruction block on the wire.
+	if len(systemTextParts) > 0 {
+		config.SystemInstruction = &genai.Content{
+			Role:  "user",
+			Parts: []*genai.Part{genai.NewPartFromText(strings.Join(systemTextParts, "\n\n"))},
+		}
+	}
+
 	// Set temperature
 	if opts.Temperature > 0 {
 		temp := float32(opts.Temperature)
@@ -575,6 +617,46 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 		// If ResponseSchema is set, ensure JSON mode is enabled
 		if config.ResponseMIMEType == "" {
 			config.ResponseMIMEType = "application/json"
+		}
+	}
+
+	// Optional sampling controls — only forward when the caller
+	// explicitly populated the field so Gemini's own defaults stay in
+	// place otherwise. Gemini natively accepts all four; the previous
+	// adapter version silently ignored them.
+	if opts.TopP > 0 {
+		v := float32(opts.TopP)
+		config.TopP = &v
+	}
+	if opts.TopK > 0 {
+		v := float32(opts.TopK)
+		config.TopK = &v
+	}
+	if len(opts.StopSequences) > 0 {
+		seqs := make([]string, len(opts.StopSequences))
+		copy(seqs, opts.StopSequences)
+		config.StopSequences = seqs
+	}
+
+	// Extended thinking budget for Gemini 2.5 Flash Thinking and
+	// later. The previous adapter wired ThinkingLevel (string knob for
+	// Gemini 3 Pro) but ignored ThinkingBudget (token-count knob for
+	// Gemini 2.5 Flash). Both controls coexist; we forward whichever
+	// the caller set without trying to validate per-model — the SDK
+	// returns a clean error for unsupported combinations.
+	if opts.ThinkingBudget > 0 {
+		// Clamp to int32 to avoid overflow; the Gemini API caps
+		// realistic budgets well below this anyway.
+		budget := int32(opts.ThinkingBudget)
+		if opts.ThinkingBudget > math.MaxInt32 {
+			budget = math.MaxInt32
+		}
+		if config.ThinkingConfig == nil {
+			config.ThinkingConfig = &genai.ThinkingConfig{}
+		}
+		config.ThinkingConfig.ThinkingBudget = &budget
+		if g.logger != nil {
+			g.logger.Infof("🔍 [GEMINI] Setting thinking_budget=%d", budget)
 		}
 	}
 
@@ -637,6 +719,15 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 			toolConfig := convertToolChoice(opts.ToolChoice)
 			if toolConfig != nil {
 				config.ToolConfig = toolConfig
+				// Gemini 3 preview models silently return zero candidates
+				// when tools are attached together with Mode=None. Stripping
+				// the tools is semantically equivalent (no calls allowed)
+				// and works across all Gemini models.
+				if toolConfig.FunctionCallingConfig != nil &&
+					toolConfig.FunctionCallingConfig.Mode == genai.FunctionCallingConfigModeNone {
+					config.Tools = nil
+					config.ToolConfig = nil
+				}
 			}
 		}
 	}
@@ -1485,12 +1576,34 @@ func convertToolChoice(toolChoice interface{}) *genai.ToolConfig {
 
 	// Handle ToolChoice struct if it's that type
 	if tc, ok := toolChoice.(*llmtypes.ToolChoice); ok && tc != nil {
-		// Note: llmtypes ToolChoice structure may vary, adjust as needed
-		// For now, default to AUTO
-		config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAuto
-
-		// If there's a function specified, we could set AllowedFunctionNames
-		// This would require knowing the actual ToolChoice structure
+		if tc.Function != nil && tc.Function.Name != "" {
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAny
+			config.FunctionCallingConfig.AllowedFunctionNames = []string{tc.Function.Name}
+			return config
+		}
+		if tc.None {
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeNone
+			return config
+		}
+		if tc.Any {
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAny
+			return config
+		}
+		switch strings.ToLower(strings.TrimSpace(tc.Type)) {
+		case "none":
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeNone
+		case "required", "any":
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAny
+		case "function":
+			if tc.Function != nil && tc.Function.Name != "" {
+				config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAny
+				config.FunctionCallingConfig.AllowedFunctionNames = []string{tc.Function.Name}
+			} else {
+				config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAuto
+			}
+		default:
+			config.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAuto
+		}
 		return config
 	}
 

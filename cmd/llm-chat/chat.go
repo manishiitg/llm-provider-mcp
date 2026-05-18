@@ -164,9 +164,9 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 		input = strings.TrimSpace(input)
 		switch input {
 		case "1":
-			return "gemini-2.5-flash", nil
+			return "gemini-3.1-flash-lite-preview", nil
 		case "2":
-			return "gemini-2.5-pro", nil
+			return "gemini-3-pro-preview", nil
 		default:
 			return "", fmt.Errorf("invalid choice: %s (must be 1 or 2)", input)
 		}
