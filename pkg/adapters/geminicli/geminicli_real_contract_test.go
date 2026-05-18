@@ -159,6 +159,79 @@ deny_message = "No tools are needed for this large-paste transport test."
 	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestGeminiCLIRealInteractiveMarkdownBulletCompletionDoesNotLookUnsubmitted(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-bullet-complete-" + geminiRandomHex(4)
+	token := "BULLET_COMPLETE_" + geminiRandomHex(4)
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this markdown completion test."
+`)
+
+	var prompt strings.Builder
+	prompt.WriteString("This is a Gemini CLI tmux completion-state contract test.\n")
+	prompt.WriteString("Read the full pasted prompt and do not use tools.\n")
+	for i := 0; i < 48; i++ {
+		fmt.Fprintf(&prompt, "context line %02d: keep the prompt large enough to render as a pasted block.\n", i+1)
+	}
+	fmt.Fprintf(&prompt, `
+Do not echo these instructions. Finish with a four-line answer:
+first line is the status text STATUS: COMPLETED;
+the next three lines are markdown bullet lines that start with "*".
+One bullet must be an Impact bullet containing token %s.
+Keep the remaining bullets short and about completion state.`, token)
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply exactly as instructed."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt.String()}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent markdown bullet completion error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) || !strings.Contains(content, "STATUS: COMPLETED") {
+		if tmuxSession, ok := activeGeminiInteractiveSession(ownerSessionID); ok && tmuxSession != "" {
+			if pane, captureErr := captureGeminiPane(ctx, tmuxSession); captureErr == nil {
+				t.Fatalf("content = %q, want completed markdown bullet answer with token %s; pane:\n%s", content, token, pane)
+			}
+		}
+		t.Fatalf("content = %q, want completed markdown bullet answer with token %s", content, token)
+	}
+
+	tmuxSession, ok := activeGeminiInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Gemini tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureGeminiPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Gemini pane: %v", err)
+	}
+	if !hasGeminiReadyPrompt(pane) {
+		t.Fatalf("real Gemini TUI ready prompt not detected after markdown completion; pane:\n%s", pane)
+	}
+	if hasGeminiUnsubmittedDraft(pane) {
+		t.Fatalf("completed markdown bullet answer was misdetected as unsubmitted draft; pane:\n%s", pane)
+	}
+	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
+}
+
 func TestGeminiCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })

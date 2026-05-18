@@ -678,6 +678,17 @@ func TestGeminiSubmittedPromptInScrollbackIsNotDraftWhenReady(t *testing.T) {
 	}
 }
 
+func TestGeminiLeadingStatusCompletionIsPreserved(t *testing.T) {
+	prompt := `Reply with STATUS: COMPLETED when done.`
+	text := `STATUS: COMPLETED
+Impact: done`
+
+	got := stripGeminiLeadingPromptFragments(text, prompt)
+	if !strings.Contains(got, "STATUS: COMPLETED") {
+		t.Fatalf("stripGeminiLeadingPromptFragments() = %q, want STATUS preserved", got)
+	}
+}
+
 func TestGeminiLiveInputQueueRoundTrip(t *testing.T) {
 	session := &geminiInteractiveSession{}
 	if err := enqueueGeminiLiveInput(session, "follow-up one"); err != nil {

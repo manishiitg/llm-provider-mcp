@@ -1469,6 +1469,9 @@ func stripGeminiLeadingPromptFragments(text, prompt string) string {
 		if line == "" || len([]rune(line)) > 24 || strings.Contains(line, "_") {
 			break
 		}
+		if strings.HasPrefix(strings.ToUpper(line), "STATUS:") {
+			break
+		}
 		if !strings.Contains(normalizedPrompt, strings.ToLower(line)) {
 			break
 		}

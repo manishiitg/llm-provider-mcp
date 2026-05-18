@@ -916,6 +916,7 @@ Gemini CLI tmux:
 
 - `TestGeminiCLIRealInteractiveTmuxFullContract`
 - `TestGeminiCLIRealInteractiveLargePastedPromptSubmits`
+- `TestGeminiCLIRealInteractiveMarkdownBulletCompletionDoesNotLookUnsubmitted`
 - `TestGeminiCLIRealInteractiveMCPBridgeContract`
 - `TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool`
 - `TestGeminiCLIRealInteractiveLiveInputContract`
