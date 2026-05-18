@@ -1305,6 +1305,30 @@ func hasGeminiReadyPrompt(captured string) bool {
 
 func hasGeminiUnsubmittedDraft(captured string) bool {
 	lines := strings.Split(stripGeminiANSI(captured), "\n")
+
+	// Gemini 0.42 renders the active input box immediately above the footer
+	// that starts with "workspace (/directory)". Limit draft detection to that
+	// input box; assistant markdown bullets also begin with "*" and must not be
+	// mistaken for an unsubmitted prompt.
+	for footerIdx := len(lines) - 1; footerIdx >= 0; footerIdx-- {
+		if !isGeminiWorkspaceFooterLine(strings.TrimSpace(lines[footerIdx])) {
+			continue
+		}
+		for i := footerIdx - 1; i >= 0 && footerIdx-i <= 24; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" || isGeminiBoxDrawingLine(line) {
+				continue
+			}
+			if isGeminiReadyPromptLine(line) {
+				return false
+			}
+			if strings.HasPrefix(line, ">") || strings.HasPrefix(line, "*") {
+				return normalizeGeminiPromptLine(line) != ""
+			}
+		}
+		return false
+	}
+
 	seenNonEmpty := 0
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 16; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -1321,6 +1345,11 @@ func hasGeminiUnsubmittedDraft(captured string) bool {
 		}
 	}
 	return false
+}
+
+func isGeminiWorkspaceFooterLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(stripGeminiANSI(line)))
+	return strings.Contains(lower, "workspace (/directory)")
 }
 
 func isGeminiReadyPromptLine(line string) bool {

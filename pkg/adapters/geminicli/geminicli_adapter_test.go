@@ -630,6 +630,54 @@ func TestGeminiDetectsUnsubmittedV042Draft(t *testing.T) {
 	}
 }
 
+func TestGeminiCompletedMarkdownBulletsAreNotDraft(t *testing.T) {
+	pane := `
+✦ Investigation complete.
+
+  Key Evidence
+   1. RTS-FRONTEND-5
+       * Impact: Extreme UI thread blocking during bootstrap.
+       * Details: CSS bundle blocking for 5174 ms.
+
+  STATUS: COMPLETED
+
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits                                                |⌐■_■|
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ >   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)                      sandbox                     /model
+ /tmp/project                                no sandbox          Auto (Gemini 3)
+`
+	if hasGeminiUnsubmittedDraft(pane) {
+		t.Fatalf("completed assistant markdown bullets should not be treated as an unsubmitted draft")
+	}
+}
+
+func TestGeminiSubmittedPromptInScrollbackIsNotDraftWhenReady(t *testing.T) {
+	pane := `
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > ## Orchestrator Instructions
+   Do the task and create the output file.
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+✦ Done.
+
+  STATUS: COMPLETED
+
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits                                                |⌐■_■|
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ >   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)                      sandbox                     /model
+ /tmp/project                                no sandbox          Auto (Gemini 3)
+`
+	if hasGeminiUnsubmittedDraft(pane) {
+		t.Fatalf("submitted prompt retained in scrollback should not be treated as current draft")
+	}
+}
+
 func TestGeminiLiveInputQueueRoundTrip(t *testing.T) {
 	session := &geminiInteractiveSession{}
 	if err := enqueueGeminiLiveInput(session, "follow-up one"); err != nil {
