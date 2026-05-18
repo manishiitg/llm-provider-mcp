@@ -617,6 +617,403 @@ rl.on("line", (line) => {
 	return path
 }
 
+// ---------------------------------------------------------------------------
+// E2E: Working directory — Codex CLI launches with the requested cwd and the
+// MCP bridge processes inherit that workspace so they can be located by path.
+// ---------------------------------------------------------------------------
+
+func TestCodexCLIRealInteractiveWorkingDirectoryContract(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-workdir-" + codexRandomHex(4)
+	workDir := t.TempDir()
+
+	mcpServerPath := writeCodexCwdReportMCPServer(t)
+	mcpCommandOverride, err := codexStringConfigOverride("mcp_servers.api-bridge.command", mcpServerPath)
+	if err != nil {
+		t.Fatalf("build MCP command override: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Call the api-bridge report_cwd MCP tool. Then reply exactly with the tool result text."}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectDirID(workDir),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
+		WithConfigOverrides([]string{mcpCommandOverride}),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with working dir error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+
+	// The MCP server reports its process cwd. macOS symlinks /var/folders to
+	// /private/var/folders, so the cwd Codex spawns the MCP server under may
+	// be either form.
+	wantPaths := []string{workDir}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
+		wantPaths = append(wantPaths, resolved)
+	}
+	matched := false
+	for _, want := range wantPaths {
+		if strings.Contains(content, "CWD_REPORTED_"+want) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("content = %q, want CWD_REPORTED_<workDir> with workDir in %v", content, wantPaths)
+	}
+	assertCodexInteractiveTerminalOnlyStream(t, streamChan)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Parallel session isolation — two concurrent Codex sessions in distinct
+// working dirs return their own tokens without leaking each other.
+// ---------------------------------------------------------------------------
+
+func TestCodexCLIRealInteractiveParallelIsolation(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+
+	type parallelSpec struct {
+		name         string
+		ownerSession string
+		token        string
+		workDir      string
+	}
+	specs := []parallelSpec{
+		{
+			name:         "left",
+			ownerSession: "codex-real-parallel-left-" + codexRandomHex(4),
+			token:        "PAR_LEFT_" + codexRandomHex(4),
+			workDir:      t.TempDir(),
+		},
+		{
+			name:         "right",
+			ownerSession: "codex-real-parallel-right-" + codexRandomHex(4),
+			token:        "PAR_RIGHT_" + codexRandomHex(4),
+			workDir:      t.TempDir(),
+		},
+	}
+
+	type parallelResult struct {
+		spec    parallelSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan parallelResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Keep the reply exact and concise."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithProjectDirID(spec.workDir),
+				WithDisableShellTool(),
+				WithApprovalPolicy("never"),
+				WithReasoningEffort("low"),
+			)
+			result := parallelResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]parallelResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		if !strings.Contains(got.content, spec.token) {
+			t.Fatalf("%s content = %q, want token %s", spec.name, got.content, spec.token)
+		}
+		otherToken := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				otherToken = other.token
+				break
+			}
+		}
+		if otherToken != "" && strings.Contains(got.content, otherToken) {
+			t.Fatalf("%s content leaked other session's token %s: %q", spec.name, otherToken, got.content)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Shared-workdir MCP isolation — two concurrent Codex sessions that
+// share the same working directory still see their own MCP server replies.
+// ---------------------------------------------------------------------------
+
+func TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")
+	if err := os.MkdirAll(sharedWorkDir, 0o755); err != nil {
+		t.Fatalf("create shared workdir: %v", err)
+	}
+
+	type runSpec struct {
+		name          string
+		ownerSession  string
+		sessionMarker string
+		token         string
+		outputPath    string
+		mcpServerPath string
+		mcpOverride   string
+	}
+	specs := []runSpec{
+		{
+			name:          "alpha",
+			ownerSession:  "codex-real-shared-alpha-" + codexRandomHex(4),
+			sessionMarker: "SESSION_ALPHA_" + codexRandomHex(4),
+			token:         "TOKEN_ALPHA_" + codexRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "alpha-output.json"),
+		},
+		{
+			name:          "beta",
+			ownerSession:  "codex-real-shared-beta-" + codexRandomHex(4),
+			sessionMarker: "SESSION_BETA_" + codexRandomHex(4),
+			token:         "TOKEN_BETA_" + codexRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "beta-output.json"),
+		},
+	}
+	for i := range specs {
+		specs[i].mcpServerPath = writeCodexIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
+		ov, err := codexStringConfigOverride("mcp_servers.api-bridge.command", specs[i].mcpServerPath)
+		if err != nil {
+			t.Fatalf("build MCP command override for %s: %v", specs[i].name, err)
+		}
+		specs[i].mcpOverride = ov
+	}
+
+	type runResult struct {
+		spec    runSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan runResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge write_contract MCP tool with token %s. Then reply exactly with the tool result text.", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithProjectDirID(sharedWorkDir),
+				WithDisableShellTool(),
+				WithApprovalPolicy("never"),
+				WithReasoningEffort("low"),
+				WithConfigOverrides([]string{spec.mcpOverride}),
+			)
+			result := runResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]runResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		want := "ISOLATED_OK_" + spec.sessionMarker + "_" + spec.token
+		if !strings.Contains(got.content, want) {
+			t.Fatalf("%s content = %q, want isolated tool result %q", spec.name, got.content, want)
+		}
+		data, err := os.ReadFile(spec.outputPath)
+		if err != nil {
+			t.Fatalf("%s output file missing at %s: %v", spec.name, spec.outputPath, err)
+		}
+		forbiddenMarker := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				forbiddenMarker = other.sessionMarker
+				break
+			}
+		}
+		text := string(data)
+		if !strings.Contains(text, spec.sessionMarker) || !strings.Contains(text, spec.token) {
+			t.Fatalf("%s output = %s, want session %s and token %s", spec.name, text, spec.sessionMarker, spec.token)
+		}
+		if forbiddenMarker != "" && strings.Contains(text, forbiddenMarker) {
+			t.Fatalf("%s output crossed sessions: %s", spec.name, text)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Cleanup — tmux session is removed after explicit cleanup.
+// ---------------------------------------------------------------------------
+
+func TestCodexCLIRealInteractiveCleanup(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-cleanup-" + codexRandomHex(4)
+	workDir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: cleanup test OK"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectDirID(workDir),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainCodexStream(stream)
+
+	tmuxSession, ok := activeCodexInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active tmux session for %s before cleanup", ownerSessionID)
+	}
+
+	if err := CleanupCodexCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("cleanup error = %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if _, stillActive := activeCodexInteractiveSession(ownerSessionID); stillActive {
+		t.Fatalf("tmux session still registered after cleanup for %s", ownerSessionID)
+	}
+
+	out, err := exec.CommandContext(ctx, "tmux", "has-session", "-t", tmuxSession).CombinedOutput()
+	if err == nil {
+		t.Fatalf("tmux session %s still exists after cleanup; output=%s", tmuxSession, string(out))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for working-dir + isolation contracts
+// ---------------------------------------------------------------------------
+
+func writeCodexCwdReportMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex-cwd-report-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(message) { process.stdout.write(JSON.stringify(message) + "\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch (err) { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "api-bridge", version: "1.0.0" } } });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "report_cwd", description: "Return the MCP server process cwd, which the Codex CLI inherits from the launched workspace.", inputSchema: { type: "object", properties: {}, required: [] } }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "CWD_REPORTED_" + process.cwd() }], isError: false } });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write cwd MCP server: %v", err)
+	}
+	return path
+}
+
+func writeCodexIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex-isolation-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const sessionMarker = %q;
+const outputPath = %q;
+
+function send(message) { process.stdout.write(JSON.stringify(message) + "\n"); }
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch (err) { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "api-bridge", version: "1.0.0" } } });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "write_contract", description: "Write a deterministic marker proving this MCP server/session was used.", inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] } }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const payload = { session_marker: sessionMarker, token, cwd: process.cwd(), timestamp: new Date().toISOString() };
+    fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "ISOLATED_OK_" + sessionMarker + "_" + token }], isError: false } });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`, sessionMarker, outputPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write isolation MCP server: %v", err)
+	}
+	return path
+}
+
 func assertCodexDoesNotContainAny(t *testing.T, label, got string, forbidden ...string) {
 	t.Helper()
 	for _, item := range forbidden {

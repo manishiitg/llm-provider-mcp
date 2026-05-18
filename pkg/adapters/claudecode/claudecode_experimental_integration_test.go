@@ -2,10 +2,12 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -677,6 +679,251 @@ rl.on("line", (line) => {
 		t.Fatalf("write slow MCP server: %v", err)
 	}
 	return path
+}
+
+// ---------------------------------------------------------------------------
+// E2E: MCP bridge tool call — verify a synchronous MCP tool returns through
+// the bridge and the tool result text reaches the assistant response.
+// ---------------------------------------------------------------------------
+
+func TestClaudeCodeExperimentalIntegrationHaikuMCPBridgeContract(t *testing.T) {
+	skipClaudeExperimentalIntegration(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	bridgeToken := "CLAUDE_BRIDGE_" + randomHex(4)
+	mcpServerPath := writeClaudeExperimentalContractMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge echo_contract MCP tool with token %s. Then reply exactly with the tool result text.", bridgeToken)},
+			},
+		},
+	},
+		WithMCPConfig(mcpConfig),
+		WithClaudeCodeTools(""),
+		WithAllowedTools("mcp__api-bridge__echo_contract"),
+		WithEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with MCP bridge error = %v", err)
+	}
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	got := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(got, want) {
+		t.Fatalf("content = %q, want bridge tool result %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Working directory — verify Claude Code launches with the requested cwd
+// by asking it to read a marker file that exists only in that workspace.
+// ---------------------------------------------------------------------------
+
+func TestClaudeCodeExperimentalIntegrationHaikuWorkingDirectory(t *testing.T) {
+	skipClaudeExperimentalIntegration(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	workDir := t.TempDir()
+	preTrustClaudeWorkspace(t, workDir)
+	marker := "CLAUDE_WD_MARKER_" + randomHex(6)
+	markerPath := filepath.Join(workDir, "wd-marker.txt")
+	if err := os.WriteFile(markerPath, []byte(marker), 0o600); err != nil {
+		t.Fatalf("write workspace marker: %v", err)
+	}
+
+	mcpServerPath := writeClaudeExperimentalCwdMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Call the api-bridge report_cwd MCP tool. Then reply exactly with the tool result text."},
+			},
+		},
+	},
+		WithWorkingDir(workDir),
+		WithMCPConfig(mcpConfig),
+		WithClaudeCodeTools(""),
+		WithAllowedTools("mcp__api-bridge__report_cwd"),
+		WithEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with working dir error = %v", err)
+	}
+	got := strings.TrimSpace(resp.Choices[0].Content)
+
+	// The MCP server reports its process cwd; it should match the requested
+	// working dir (or its resolved real path on macOS).
+	wantPaths := []string{workDir}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
+		wantPaths = append(wantPaths, resolved)
+	}
+	matched := false
+	for _, want := range wantPaths {
+		if strings.Contains(got, "CWD_REPORTED_"+want) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("content = %q, want CWD_REPORTED_<workDir> with workDir in %v", got, wantPaths)
+	}
+}
+
+func writeClaudeExperimentalContractMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-contract-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(message) { process.stdout.write(JSON.stringify(message) + "\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch (err) { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "api-bridge", version: "1.0.0" } } });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "echo_contract", description: "Return a deterministic contract token.", inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] } }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "BRIDGE_TOOL_OK_" + String(args.token || "") }], isError: false } });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write contract MCP server: %v", err)
+	}
+	return path
+}
+
+func writeClaudeExperimentalCwdMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-cwd-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(message) { process.stdout.write(JSON.stringify(message) + "\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch (err) { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "api-bridge", version: "1.0.0" } } });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "report_cwd", description: "Return the MCP server process cwd. The Claude Code adapter spawns MCP servers inheriting the caller's working directory, so this proves the launched session is anchored to the requested workspace.", inputSchema: { type: "object", properties: {}, required: [] } }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "CWD_REPORTED_" + process.cwd() }], isError: false } });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write cwd MCP server: %v", err)
+	}
+	return path
+}
+
+// preTrustClaudeWorkspace marks the workspace as trusted in ~/.claude.json so
+// Claude Code does not show its interactive "trust this folder" dialog when
+// launched there for the first time. Without this, tests that pass
+// WithWorkingDir to a fresh t.TempDir() get stuck on the trust prompt because
+// the adapter does not yet auto-dismiss it in tmux mode.
+//
+// Per-workspace trust is recorded under projects.<path>.hasTrustDialogAccepted.
+// Claude resolves the workspace path through symlinks (/var -> /private/var on
+// macOS), so we record entries under both the raw and resolved paths.
+var preTrustClaudeMu sync.Mutex
+
+func preTrustClaudeWorkspace(t *testing.T, workDir string) {
+	t.Helper()
+	paths := []string{workDir}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
+		paths = append(paths, resolved)
+	}
+
+	preTrustClaudeMu.Lock()
+	defer preTrustClaudeMu.Unlock()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+	configPath := filepath.Join(home, ".claude.json")
+
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read claude config: %v", readErr)
+	}
+	var config map[string]interface{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &config); err != nil {
+			t.Fatalf("parse claude config: %v", err)
+		}
+	}
+	if config == nil {
+		config = map[string]interface{}{}
+	}
+
+	projects, _ := config["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = map[string]interface{}{}
+	}
+	for _, p := range paths {
+		entry, _ := projects[p].(map[string]interface{})
+		if entry == nil {
+			entry = map[string]interface{}{}
+		}
+		entry["hasTrustDialogAccepted"] = true
+		entry["hasCompletedProjectOnboarding"] = true
+		projects[p] = entry
+	}
+	config["projects"] = projects
+
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal claude config: %v", err)
+	}
+	if err := os.WriteFile(configPath, out, 0o600); err != nil {
+		t.Fatalf("write claude config: %v", err)
+	}
 }
 
 func containsFold(s, substr string) bool {

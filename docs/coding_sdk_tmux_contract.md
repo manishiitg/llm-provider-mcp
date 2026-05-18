@@ -1000,10 +1000,44 @@ Known certification gaps:
 
 - Codex CLI should get a dedicated `LargePastedPromptSubmits` test, even though
   its full contract already covers multiline paste and same-session context.
-- Cursor CLI needs the same slow-MCP/live-input/false-idle and large-paste
-  submit tests before it is considered fully certified.
 - OpenCode CLI is structured JSON only now; validate it with the structured E2E
   tests above, not the tmux release gate.
+
+Cursor CLI MCP bridge notes:
+
+- Cursor CLI's MCP tool exposure in TUI mode requires per-workspace pre-approval
+  via `cursor-agent mcp enable <server>` AND a non-interactive `cursor-agent
+  --print --trust` pre-warm before the TUI launch. Without the pre-warm, the
+  workspace trust dialog dismissal races the MCP tools/list response and the
+  model launches with an empty MCP tool list (see
+  `preApproveCursorMCP` / `primeCursorWorkspaceForMCP` in
+  `cursorcli_real_contract_test.go`).
+- In Cursor TUI `--mode ask`, the model refuses to invoke MCP tools that look
+  non-read-only (descriptions or parameter names that suggest delays, writes,
+  computation). Contract MCP servers must therefore advertise tools as
+  read-only and avoid exposing user-tunable delays as parameters.
+- `cursor-agent` resolves the workspace path through symlinks (`/var/folders`
+  → `/private/var/folders` on macOS) and treats the two forms as distinct
+  projects in `~/.cursor/projects/<hashed-path>/mcp-approvals.json`; pre-
+  approval must be issued from both forms when the workspace lives under a
+  symlinked temp dir.
+
+The full Cursor CLI tmux test set after these additions:
+
+- `TestCursorCLIRealInteractiveTmuxFullContract`
+- `TestCursorCLIRealInteractiveLiveInputAndEscapeContract`
+- `TestCursorCLIRealResponseHasNoTUIChrome`
+- `TestCursorCLIRealMultiTurnNoHistoryLeakage`
+- `TestCursorCLIRealCompletionDetection`
+- `TestCursorCLIRealMCPBridgeToolCall` (built-in shell)
+- `TestCursorCLIRealBuiltInReadNotBlockedInAskMode`
+- `TestCursorCLIRealBuiltInWriteBlockedInAskMode`
+- `TestCursorCLIRealBuiltInShellBlockedInAskMode`
+- `TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool` (slow MCP + live input + false-idle)
+- `TestCursorCLIRealInteractiveMCPBridgeContractTmux` (custom MCP server)
+- `TestCursorCLIRealInteractiveSharedWorkingDirMCPIsolation`
+- `TestCursorCLIRealInteractiveParallelIsolation`
+- `TestCursorCLIRealInteractiveCleanup`
 
 Current Gemini CLI real contract command:
 

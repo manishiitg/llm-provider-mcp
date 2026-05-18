@@ -976,6 +976,222 @@ rl.on("line", (line) => {
 	return path
 }
 
+// ---------------------------------------------------------------------------
+// E2E: Trust prompt — Gemini auto-dismisses the workspace trust dialog for a
+// fresh working directory so the first turn still resolves to a clean answer.
+// ---------------------------------------------------------------------------
+
+func TestGeminiCLIRealInteractiveWorkspaceTrustPromptContract(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-trust-" + geminiRandomHex(4)
+	token := "TRUST_REAL_" + geminiRandomHex(4)
+	freshWorkDir := t.TempDir()
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this trust contract test."
+`)
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Keep the reply exact and concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: trusted " + token}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(freshWorkDir),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent in fresh workspace error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("content = %q, want trust token %s", content, token)
+	}
+	assertGeminiDoesNotContainAny(t, "trust response", content,
+		"do you trust",
+		"Do you trust",
+		"trust folder",
+		"Trust folder")
+	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Parallel session isolation — concurrent Gemini sessions in distinct
+// working dirs return distinct tokens without leaking each other's prompts.
+// ---------------------------------------------------------------------------
+
+func TestGeminiCLIRealInteractiveParallelIsolation(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this parallel isolation test."
+`)
+
+	type parallelSpec struct {
+		name         string
+		ownerSession string
+		token        string
+		workDir      string
+	}
+	specs := []parallelSpec{
+		{
+			name:         "left",
+			ownerSession: "gemini-real-parallel-left-" + geminiRandomHex(4),
+			token:        "PAR_LEFT_" + geminiRandomHex(4),
+			workDir:      t.TempDir(),
+		},
+		{
+			name:         "right",
+			ownerSession: "gemini-real-parallel-right-" + geminiRandomHex(4),
+			token:        "PAR_RIGHT_" + geminiRandomHex(4),
+			workDir:      t.TempDir(),
+		},
+	}
+
+	type parallelResult struct {
+		spec    parallelSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan parallelResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Keep the reply exact and concise."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(spec.workDir),
+				WithProjectSettings(`{}`),
+				WithAdminPolicyPath(policyPath),
+				WithApprovalMode("yolo"),
+			)
+			result := parallelResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]parallelResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		if !strings.Contains(got.content, spec.token) {
+			t.Fatalf("%s content = %q, want token %s", spec.name, got.content, spec.token)
+		}
+		otherToken := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				otherToken = other.token
+				break
+			}
+		}
+		if otherToken != "" && strings.Contains(got.content, otherToken) {
+			t.Fatalf("%s content leaked other session's token %s: %q", spec.name, otherToken, got.content)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Cleanup — tmux session is removed after explicit cleanup, and no
+// stray .gemini settings.json is left behind in the workspace.
+// ---------------------------------------------------------------------------
+
+func TestGeminiCLIRealInteractiveCleanup(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-cleanup-" + geminiRandomHex(4)
+	workDir := t.TempDir()
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this cleanup test."
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: cleanup test OK"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainGeminiStream(stream)
+
+	tmuxSession, ok := activeGeminiInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active tmux session for %s before cleanup", ownerSessionID)
+	}
+
+	if err := CleanupGeminiCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("cleanup error = %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if _, stillActive := activeGeminiInteractiveSession(ownerSessionID); stillActive {
+		t.Fatalf("tmux session still registered after cleanup for %s", ownerSessionID)
+	}
+
+	out, err := exec.CommandContext(ctx, "tmux", "has-session", "-t", tmuxSession).CombinedOutput()
+	if err == nil {
+		t.Fatalf("tmux session %s still exists after cleanup; output=%s", tmuxSession, string(out))
+	}
+
+	// Adapter must not leave .gemini config behind in the workspace.
+	if _, err := os.Stat(filepath.Join(workDir, ".gemini", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("workspace still contains .gemini/settings.json after cleanup; stat err=%v", err)
+	}
+}
+
 func assertGeminiDoesNotContainAny(t *testing.T, label, got string, forbidden ...string) {
 	t.Helper()
 	for _, item := range forbidden {

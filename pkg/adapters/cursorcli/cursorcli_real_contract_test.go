@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -616,6 +617,758 @@ func TestCursorCLIRealBuiltInShellBlockedInAskMode(t *testing.T) {
 	} else {
 		t.Logf("CONFIRMED: Cursor did not execute shell command in ask mode (shell blocked)")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Slow MCP tool — adapter must not complete while tool is active
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-queued-validation-" + cursorRandomHex(4)
+	bridgeToken := "SLOW_BRIDGE_REAL_" + cursorRandomHex(4)
+	workDir := t.TempDir()
+
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeCursorSlowContractMCPServer(t, slowToolMarker)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	preApproveCursorMCP(t, workDir, mcpConfig, "api-bridge")
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan cursorRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge MCP tool named contract_echo_token with token %s. Then reply with the exact text returned by the tool.", bridgeToken)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithWorkingDir(workDir),
+			WithForce(),
+			WithMCPConfig(mcpConfig),
+			WithApproveMCPs(),
+			llmtypes.WithStreamingChan(streamChan),
+		)
+		out := cursorRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	waitForCursorRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForCursorRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	activeSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok || activeSession == "" {
+		cancel()
+		t.Fatalf("expected active Cursor tmux session for %s", ownerSessionID)
+	}
+	activePane := waitForCursorRealPaneCondition(t, activeSession, "active slow MCP tool", 15*time.Second, resultCh, func(pane string) bool {
+		return hasCursorActivity(pane)
+	})
+	if hasCursorReadyPrompt(activePane) && !hasCursorActivity(activePane) {
+		cancel()
+		t.Fatalf("Cursor pane looked idle-ready while slow MCP tool was still active:\n%s", activePane)
+	}
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while slow MCP tool was active: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while slow MCP tool was active; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
+	validationPrompt := `## Pre-validation failed (retry attempt 3)
+
+❌ PRE-VALIDATION FAILED
+
+Missing required output file. Fix the specific issue above and re-produce the required outputs.`
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendCursorInteractiveInput(sendCtx, ownerSessionID, validationPrompt); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendCursorInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	waitForCursorRealPaneContains(t, activeSession, "Pre-validation failed", 10*time.Second, startupErrCh)
+
+	select {
+	case got := <-resultCh:
+		cancel()
+		if got.err != nil {
+			t.Fatalf("GenerateContent returned while validation input was queued: err=%v content=%q", got.err, got.content)
+		}
+		t.Fatalf("GenerateContent completed while validation input was queued; content=%q", got.content)
+	case <-time.After(3 * time.Second):
+	}
+
+	cancel()
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatalf("GenerateContent completed normally after cancellation; content=%q", got.content)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for GenerateContent to return after cancellation")
+	}
+	_ = drainCursorStream(streamChan)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: MCP bridge tool call via custom MCP server (tmux transport)
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveMCPBridgeContractTmux(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-mcp-tmux-" + cursorRandomHex(4)
+	bridgeToken := "BRIDGE_TMUX_REAL_" + cursorRandomHex(4)
+	workDir := t.TempDir()
+
+	mcpServerPath := writeCursorTmuxContractMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	preApproveCursorMCP(t, workDir, mcpConfig, "api-bridge")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge MCP tool named contract_echo_token with token %s. Then reply with the exact text returned by the tool.", bridgeToken)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithForce(),
+		WithMCPConfig(mcpConfig),
+		WithApproveMCPs(),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with MCP bridge error = %v", err)
+	}
+
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, want) {
+		t.Fatalf("content = %q, want bridge tool result %q", content, want)
+	}
+	assertCursorInteractiveTerminalOnlyStream(t, streamChan)
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Shared working dir MCP isolation — two sessions, same workdir
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveSharedWorkingDirMCPIsolation(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")
+	if err := os.MkdirAll(sharedWorkDir, 0o755); err != nil {
+		t.Fatalf("create shared workdir: %v", err)
+	}
+
+	type runSpec struct {
+		name          string
+		ownerSession  string
+		sessionMarker string
+		token         string
+		outputPath    string
+		mcpServerPath string
+	}
+	specs := []runSpec{
+		{
+			name:          "alpha",
+			ownerSession:  "cursor-real-shared-alpha-" + cursorRandomHex(4),
+			sessionMarker: "SESSION_ALPHA_" + cursorRandomHex(4),
+			token:         "TOKEN_ALPHA_" + cursorRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "alpha-output.json"),
+		},
+		{
+			name:          "beta",
+			ownerSession:  "cursor-real-shared-beta-" + cursorRandomHex(4),
+			sessionMarker: "SESSION_BETA_" + cursorRandomHex(4),
+			token:         "TOKEN_BETA_" + cursorRandomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "beta-output.json"),
+		},
+	}
+	for i := range specs {
+		specs[i].mcpServerPath = writeCursorIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
+	}
+
+	type runResult struct {
+		spec    runSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan runResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, spec.mcpServerPath)
+			workDir := filepath.Join(sharedWorkDir, spec.name+"-"+cursorRandomHex(4))
+			if mkErr := os.MkdirAll(workDir, 0o755); mkErr != nil {
+				resultCh <- runResult{spec: spec, err: mkErr}
+				return
+			}
+			preApproveCursorMCPQuiet(workDir, mcpConfig, "api-bridge")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge write_contract MCP tool with token %s. Then reply exactly with the tool result text.", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(workDir),
+				WithForce(),
+				WithMCPConfig(mcpConfig),
+				WithApproveMCPs(),
+			)
+			result := runResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]runResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		want := "ISOLATED_OK_" + spec.sessionMarker + "_" + spec.token
+		if !strings.Contains(got.content, want) {
+			t.Fatalf("%s content = %q, want isolated tool result %q", spec.name, got.content, want)
+		}
+		data, err := os.ReadFile(spec.outputPath)
+		if err != nil {
+			t.Fatalf("%s output file missing at %s: %v", spec.name, spec.outputPath, err)
+		}
+		forbiddenMarker := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				forbiddenMarker = other.sessionMarker
+				break
+			}
+		}
+		text := string(data)
+		if !strings.Contains(text, spec.sessionMarker) || !strings.Contains(text, spec.token) {
+			t.Fatalf("%s output = %s, want session %s and token %s", spec.name, text, spec.sessionMarker, spec.token)
+		}
+		if forbiddenMarker != "" && strings.Contains(text, forbiddenMarker) {
+			t.Fatalf("%s output crossed sessions: %s", spec.name, text)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Parallel session isolation — concurrent sessions don't interfere
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveParallelIsolation(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+
+	type parallelSpec struct {
+		name         string
+		ownerSession string
+		token        string
+	}
+	specs := []parallelSpec{
+		{
+			name:         "left",
+			ownerSession: "cursor-real-parallel-left-" + cursorRandomHex(4),
+			token:        "PAR_LEFT_" + cursorRandomHex(4),
+		},
+		{
+			name:         "right",
+			ownerSession: "cursor-real-parallel-right-" + cursorRandomHex(4),
+			token:        "PAR_RIGHT_" + cursorRandomHex(4),
+		},
+	}
+
+	type parallelResult struct {
+		spec    parallelSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan parallelResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			workDir := t.TempDir()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", spec.token)}}},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(workDir),
+				WithMode("ask"),
+			)
+			result := parallelResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]parallelResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		if !strings.Contains(got.content, spec.token) {
+			t.Fatalf("%s content = %q, want token %s", spec.name, got.content, spec.token)
+		}
+		otherToken := ""
+		for _, other := range specs {
+			if other.name != spec.name {
+				otherToken = other.token
+				break
+			}
+		}
+		if otherToken != "" && strings.Contains(got.content, otherToken) {
+			t.Fatalf("%s content leaked other session's token %s: %q", spec.name, otherToken, got.content)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Cleanup — tmux session removed after explicit close
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveCleanup(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-cleanup-" + cursorRandomHex(4)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say: cleanup test OK"}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithMode("ask"),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainCursorStream(stream)
+
+	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active tmux session for %s before cleanup", ownerSessionID)
+	}
+
+	if err := CleanupCursorCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("cleanup error = %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	_, stillActive := activeCursorInteractiveSession(ownerSessionID)
+	if stillActive {
+		t.Fatalf("tmux session still registered after cleanup for %s", ownerSessionID)
+	}
+
+	out, err := exec.CommandContext(ctx, "tmux", "has-session", "-t", tmuxSession).CombinedOutput()
+	if err == nil {
+		t.Fatalf("tmux session %s still exists after cleanup; output=%s", tmuxSession, string(out))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: MCP servers and wait utilities for Cursor tmux contract tests
+// ---------------------------------------------------------------------------
+
+type cursorRealResult struct {
+	content string
+	err     error
+}
+
+// preApproveCursorMCP makes a fresh workspace ready for a Cursor tmux test
+// that needs an MCP bridge tool:
+//
+//  1. Registers the MCP server with `cursor-agent mcp enable` from both the
+//     raw and resolved paths (macOS symlinks /var/folders to /private/var/folders
+//     and cursor-agent treats them as distinct projects).
+//  2. Runs a non-interactive `cursor-agent --print --trust ...` to accept the
+//     workspace-trust dialog AND to load + cache the MCP server's tool list.
+//     Without this pre-warm, the subsequent TUI launch shows the trust dialog
+//     and asks the model before MCP tools/list completes, so the model sees an
+//     empty MCP tool list and falls back to refusing the call.
+//
+// The caller still passes WithMCPConfig + WithApproveMCPs so the adapter
+// re-writes .cursor/mcp.json with the same content when the tmux session
+// launches; the approval persists across that rewrite.
+func preApproveCursorMCP(t *testing.T, workDir, mcpConfig, serverName string) {
+	t.Helper()
+	if err := primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName); err != nil {
+		t.Fatalf("prime cursor workspace for MCP: %v", err)
+	}
+}
+
+func preApproveCursorMCPQuiet(workDir, mcpConfig, serverName string) {
+	_ = primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName)
+}
+
+func primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName string) error {
+	cursorDir := filepath.Join(workDir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		return fmt.Errorf("create .cursor dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpConfig), 0o600); err != nil {
+		return fmt.Errorf("write mcp.json: %w", err)
+	}
+	defer os.Remove(filepath.Join(cursorDir, "mcp.json"))
+
+	candidateDirs := []string{workDir}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
+		candidateDirs = append(candidateDirs, resolved)
+	}
+
+	// 1. Register approval from each candidate dir so whichever path
+	//    cursor-agent computes at TUI launch already has the approval.
+	for _, dir := range candidateDirs {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cmd := exec.CommandContext(ctx, "cursor-agent", "mcp", "enable", serverName)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("cursor-agent mcp enable %s in %s: %w\noutput: %s", serverName, dir, err, string(out))
+		}
+	}
+
+	// 2. Pre-warm: a non-interactive --print run accepts the workspace-trust
+	//    dialog (via --trust) and loads the MCP server end-to-end. After this
+	//    completes, the TUI launch can dispatch MCP tool calls without a
+	//    trust/tools-list race.
+	for _, dir := range candidateDirs {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cmd := exec.CommandContext(ctx, "cursor-agent",
+			"--workspace", dir,
+			"--force", "--approve-mcps", "--trust",
+			"-p", "respond with the single word OK",
+		)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("cursor-agent --print pre-warm in %s: %w\noutput: %s", dir, err, string(out))
+		}
+	}
+	return nil
+}
+
+func waitForCursorRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan cursorRealResult, matches func(string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before tmux pane matched %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		pane, err := captureCursorPane(context.Background(), tmuxSession)
+		if err == nil && matches(pane) {
+			return pane
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	pane, _ := captureCursorPane(context.Background(), tmuxSession)
+	t.Fatalf("timed out waiting for Cursor tmux pane to match %s; latest pane:\n%s", label, pane)
+	return ""
+}
+
+func waitForCursorRealFile(t *testing.T, path, label string, timeout time.Duration, errCh <-chan cursorRealResult) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-errCh:
+			t.Fatalf("GenerateContent returned before %s: err=%v content=%q", label, got.err, got.content)
+		default:
+		}
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s at %s", label, path)
+}
+
+func writeCursorTmuxContractMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cursor-tmux-contract-mcp.js")
+	script := `#!/usr/bin/env node
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "contract_echo_token",
+          description: "REQUIRED tool for contract test - returns the token wrapped in BRIDGE_TOOL_OK_. Always call this when asked to echo a token.",
+          inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: { content: [{ type: "text", text: "BRIDGE_TOOL_OK_" + String(args.token || "") }], isError: false }
+    });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write MCP server: %v", err)
+	}
+	return path
+}
+
+func writeCursorSlowContractMCPServer(t *testing.T, markerPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cursor-slow-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const markerPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "contract_echo_token",
+          description: "Read-only tool. Return a deterministic contract token wrapped in BRIDGE_TOOL_OK_. Always call this when asked to echo a contract token.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              token: { type: "string" }
+            },
+            required: ["token"]
+          }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    // The contract test needs a tool that takes time to return so the adapter
+    // can observe the running state. Cursor's TUI ask mode refuses tools that
+    // expose a delay parameter, so the delay is fixed inside the server.
+    const delay = 30000;
+    fs.writeFileSync(markerPath, JSON.stringify({ token, delay, started_at: new Date().toISOString() }));
+    setTimeout(() => {
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          content: [{ type: "text", text: "SLOW_BRIDGE_TOOL_OK_" + token }],
+          isError: false
+        }
+      });
+    }, delay);
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`, markerPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write slow MCP server: %v", err)
+	}
+	return path
+}
+
+func writeCursorIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cursor-isolation-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const sessionMarker = %q;
+const outputPath = %q;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    return;
+  }
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "api-bridge", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        tools: [{
+          name: "write_contract",
+          description: "Write a deterministic marker proving this MCP server/session was used.",
+          inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] }
+        }]
+      }
+    });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const payload = {
+      session_marker: sessionMarker,
+      token,
+      cwd: process.cwd(),
+      timestamp: new Date().toISOString()
+    };
+    fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        content: [{ type: "text", text: "ISOLATED_OK_" + sessionMarker + "_" + token }],
+        isError: false
+      }
+    });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`, sessionMarker, outputPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write isolation MCP server: %v", err)
+	}
+	return path
 }
 
 func assertCursorInteractiveTerminalOnlyStream(t *testing.T, streamChan <-chan llmtypes.StreamChunk) {
