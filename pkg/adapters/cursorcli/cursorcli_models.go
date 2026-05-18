@@ -31,14 +31,14 @@ func GetAllCursorCLIModels() []*llmtypes.ModelMetadata {
 // concrete --model arg passed to cursor-agent.
 //
 // cursor-agent's own implicit default (no --model) is "composer-2-fast",
-// which downgrades quality silently. To keep our default predictable,
-// the empty/"cursor-cli" alias maps to "composer-2" (non-fast). Users
-// who want the speed/cost tradeoff can pass "composer-2-fast"
-// explicitly.
+// which downgrades quality silently. To keep our default predictable
+// and on the latest non-fast Composer release, the empty/"cursor-cli"
+// alias maps to "composer-2.5". Users who want the speed/cost tradeoff
+// can pass "composer-2.5-fast" (or "composer-2-fast") explicitly.
 func resolveCursorCLIModelID(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "", "cursor-cli":
-		return "composer-2"
+		return "composer-2.5"
 	case "auto":
 		return "auto"
 	case "high":
