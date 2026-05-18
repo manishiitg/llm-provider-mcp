@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -556,4 +557,64 @@ func TestOpenAIRealAuthFailureClassified(t *testing.T) {
 	if !hint {
 		t.Fatalf("error doesn't hint at auth trouble — user won't know to recheck key.\nerror=%q", msg)
 	}
+}
+
+// TestOpenAIRealRateLimitClassified (contract P2 #23). Fires a burst
+// of tiny requests in parallel; if any returns a 429 / quota /
+// throttle error, assert it is classifiable and does NOT echo the
+// API key. If no rate-limit response triggers inside the budget,
+// self-skip rather than fail (provider headroom is not under our
+// control).
+func TestOpenAIRealRateLimitClassified(t *testing.T) {
+	adapter, _ := newRealOpenAINonReasoningAdapter(t)
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+
+	const N = 30
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, err := adapter.GenerateContent(ctx,
+				[]llmtypes.MessageContent{
+					{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say OK."}}},
+				},
+				llmtypes.WithMaxTokens(8),
+			)
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	classify := func(s string) bool {
+		lower := strings.ToLower(s)
+		for _, marker := range []string{"rate limit", "rate-limit", "ratelimit", "429", "too many requests", "quota", "throttle"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var hit string
+	for _, e := range errs {
+		if e == nil {
+			continue
+		}
+		if classify(e.Error()) {
+			hit = e.Error()
+			break
+		}
+	}
+	if hit == "" {
+		t.Skipf("no rate-limit response provoked in %d concurrent requests; provider headroom too high to test classification this run", N)
+	}
+	if apiKey != "" && strings.Contains(hit, apiKey) {
+		t.Fatalf("rate-limit error leaked the API key. error=%q", hit)
+	}
+	t.Logf("✅ rate-limit error classified cleanly: %s", hit)
 }

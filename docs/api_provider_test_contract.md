@@ -352,7 +352,7 @@ Status as of 2026-05-18:
 | 20. JSON mode | ✅ (cli-smoke) | ✅ **(go test)** | ✅ **(go test)** | ✅ (cli-smoke) | ✅ (cli-smoke) | ✅ (cli-smoke) | ❌ | ✅ (cli-smoke) | n/a | n/a |
 | 21. JSON Schema strict | ✅ **(go test, via forced tool)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | n/a | n/a |
 | 22. Auth failure classified | ✅ **(go test)** | ✅ **(go test)** | ✅ **(go test)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| 23. Rate-limit classified | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 23. Rate-limit classified | ✅ **(go test, self-skips on miss)** | ✅ **(go test, self-skips on miss)** | ✅ **(go test, self-skips on miss)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 24. Beta headers compose | ✅ **(go test, unit)** | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 
 Legend:

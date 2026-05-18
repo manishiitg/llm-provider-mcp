@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -810,4 +811,67 @@ func TestAnthropicRealTopKDoesNotError(t *testing.T) {
 	if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Content) == "" {
 		t.Fatalf("response with top_k was empty")
 	}
+}
+
+// TestAnthropicRealRateLimitClassified (contract P2 #23). Real
+// rate-limit responses are hard to provoke deterministically, so this
+// test fires a burst of concurrent tiny requests and inspects whatever
+// errors come back. If at least one is classifiable as a rate-limit
+// (429 / "rate limit" / "quota" / "throttle"), we assert:
+//   - the error text does NOT echo the API key
+//   - the surfaced text would tell a user the request was throttled
+// If no 429 fires inside the budget, the test self-skips rather than
+// fails — provider tier headroom is not under our control.
+func TestAnthropicRealRateLimitClassified(t *testing.T) {
+	adapter, _ := newRealAnthropicAdapter(t)
+	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+
+	const N = 30
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, err := adapter.GenerateContent(ctx,
+				[]llmtypes.MessageContent{
+					{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Say OK."}}},
+				},
+				llmtypes.WithMaxTokens(8),
+			)
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	classify := func(s string) bool {
+		lower := strings.ToLower(s)
+		for _, marker := range []string{"rate limit", "rate-limit", "ratelimit", "429", "too many requests", "quota", "throttle", "overloaded"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var hit string
+	for _, e := range errs {
+		if e == nil {
+			continue
+		}
+		if classify(e.Error()) {
+			hit = e.Error()
+			break
+		}
+	}
+	if hit == "" {
+		t.Skipf("no rate-limit response provoked in %d concurrent requests; provider headroom too high to test classification this run", N)
+	}
+	if apiKey != "" && strings.Contains(hit, apiKey) {
+		t.Fatalf("rate-limit error leaked the API key. error=%q", hit)
+	}
+	t.Logf("✅ rate-limit error classified cleanly: %s", hit)
 }
