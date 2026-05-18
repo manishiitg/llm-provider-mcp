@@ -714,7 +714,7 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Done detection | Completion requires idle prompt, no activity anywhere in the current captured turn, no queued input, no modal, and a stable pane. |
 | Final extraction | Final text excludes TUI chrome, tool progress, raw tool payloads, queued user text, validation feedback, and stale scrollback. |
 | Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
-| Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. |
+| Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. The adapter must not leave pasted live input sitting as an unsubmitted draft when the provider TUI is actively thinking. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
 | Lifecycle policy | Chat sessions keep tmux alive by default; workflow steps/sub-agents/background tasks close on completion unless their explicit lifecycle setting is `keep_alive`. |
 | Bounded retention | A completed bounded tmux turn remains viewable with `terminal_retention_seconds`, `closes_at`, and `state=closing`, then is killed after the retention window. |
@@ -760,6 +760,8 @@ large workflow-runtime changes:
 | Auth source behavior | API key, OAuth/keychain, and login-shell inherited auth work according to provider capability; missing auth fails clearly. |
 | Login shell env | Tmux launch inherits the same PATH/shims/env needed for tools such as `aws`, `gh`, `sentry-cli`, `node`, `python`, and provider CLIs. |
 | Terminal stream quality | Terminal snapshots are deduped, readable, not over-repeated, and do not emit assistant-content chunks during generation. |
+| Terminal pane aliases | Real app-level terminal API collapses multiple logical owner ids for the same tmux pane using `tmux_session`, including while the turn is still running. |
+| Provider status vocabulary drift | Busy/idle detection remains correct when the provider changes spinner glyphs or progress verbs; parser fixtures must include real panes from recent CLI versions after any observed drift. |
 | UI terminal persistence | User-controlled terminal hide/show state remains stable across streaming, completion, refresh, and provider changes. |
 | Background agents | Background agents get their own tmux session, stream terminal/progress events, and are not killed by unrelated foreground request cancellation. |
 | Workflow sub-agents | Parallel todo/sub-agent sessions each expose the correct terminal/progress stream and do not duplicate parent terminal output. |

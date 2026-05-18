@@ -97,12 +97,13 @@ const (
 type StreamChunk struct {
 	Type         StreamChunkType // Type of chunk: "content" or "tool_call"
 	Content      string          // Text content (when Type is "content")
-	ToolCall     *ToolCall       // Complete tool call (when Type is "tool_call")
-	ToolName     string          // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
-	ToolCallID   string          // ID of the tool call (when Type is "tool_call_start" or "tool_call_end")
-	ToolArgs     string          // JSON arguments of the tool call (when Type is "tool_call_end")
-	ToolResult   string          // Tool execution result (when Type is "tool_call_end")
-	ToolDuration time.Duration   // Duration of the tool call (when Type is "tool_call_end")
+	Metadata     map[string]interface{}
+	ToolCall     *ToolCall     // Complete tool call (when Type is "tool_call")
+	ToolName     string        // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
+	ToolCallID   string        // ID of the tool call (when Type is "tool_call_start" or "tool_call_end")
+	ToolArgs     string        // JSON arguments of the tool call (when Type is "tool_call_end")
+	ToolResult   string        // Tool execution result (when Type is "tool_call_end")
+	ToolDuration time.Duration // Duration of the tool call (when Type is "tool_call_end")
 }
 
 // ToolCall represents a tool/function call request

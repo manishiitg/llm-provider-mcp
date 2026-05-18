@@ -1467,7 +1467,14 @@ func streamGeminiTerminalSnapshot(ctx context.Context, sessionName string, strea
 		return false
 	}
 	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeTerminal, Content: snapshot}:
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":               sessionName,
+			"gemini_interactive_session": sessionName,
+		},
+	}:
 		*lastTerminalSnapshot = snapshot
 		return true
 	default:

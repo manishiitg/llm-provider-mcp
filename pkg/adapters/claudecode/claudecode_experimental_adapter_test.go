@@ -812,6 +812,16 @@ func TestHasClaudeActivityDetectsRunningStatus(t *testing.T) {
 	}
 }
 
+func TestHasClaudeActivityDetectsRenamedRunningStatus(t *testing.T) {
+	pane := `
+✢ Flibbertigibbeting… (10m 46s · ↑ 19.1k tokens · thought for 3s)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+`
+	if !hasClaudeActivity(pane) {
+		t.Fatal("hasClaudeActivity = false for renamed Claude running status")
+	}
+}
+
 func TestClaudeRunningPaneWithLiveInputIsNotReady(t *testing.T) {
 	pane := `
 ⏺ Calling api-bridge…
@@ -826,6 +836,26 @@ func TestClaudeRunningPaneWithLiveInputIsNotReady(t *testing.T) {
 	}
 	if hasReadyInputPrompt(pane) {
 		t.Fatal("running pane with live input must not be treated as ready")
+	}
+}
+
+func TestClaudeCompletedPaneWithStaleToolCallsIsNotActive(t *testing.T) {
+	pane := `
+⏺ Calling api-bridge 4 times… (ctrl+o to expand)
+
+⏺ All 29 validation checks pass. Here's a summary of what was produced:
+
+  STATUS: COMPLETED
+
+✻ Sautéed for 7m 10s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ run the next step in the workflow
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if hasClaudeActivity(pane) {
+		t.Fatal("completed pane with stale tool-call text above the prompt should not count as active")
 	}
 }
 

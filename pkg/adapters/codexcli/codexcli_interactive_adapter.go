@@ -1954,7 +1954,14 @@ func streamCodexTerminalSnapshot(ctx context.Context, sessionName string, stream
 		return false
 	}
 	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeTerminal, Content: snapshot}:
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":              sessionName,
+			"codex_interactive_session": sessionName,
+		},
+	}:
 		*lastTerminalSnapshot = snapshot
 		return true
 	default:

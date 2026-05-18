@@ -764,7 +764,13 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		return fmt.Errorf("failed to paste input into Claude Code experimental session: %w", err)
 	}
 	if _, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste); err != nil {
-		return err
+		if ctx.Err() != nil || isClaudeTmuxSessionLostError(err) {
+			return err
+		}
+		// Live steering is best-effort after paste-buffer succeeds. Claude Code's
+		// busy status line changes wording often, so paste detection can time out
+		// even though the draft is already visible in the TUI. Still submit once
+		// so the user's message does not sit unsubmitted in the input line.
 	}
 	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
@@ -910,10 +916,46 @@ func isIgnorableClaudePromptFooterLine(trimmed string) bool {
 
 func hasClaudeActivity(captured string) bool {
 	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
-	return strings.Contains(normalized, "esc to interrupt") ||
-		strings.Contains(normalized, "Calling ") ||
-		strings.Contains(normalized, "Precipitating") ||
-		strings.Contains(normalized, "Composing")
+	lines := strings.Split(normalized, "\n")
+	if promptIndex := lastClaudePromptLineIndex(lines); promptIndex >= 0 {
+		for i := promptIndex + 1; i < len(lines); i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if strings.Contains(trimmed, "esc to interrupt") ||
+				isClaudeRunningProgressLine(trimmed) {
+				return true
+			}
+		}
+		start := promptIndex - 8
+		if start < 0 {
+			start = 0
+		}
+		for i := promptIndex - 1; i >= start; i-- {
+			trimmed := strings.TrimSpace(lines[i])
+			if isClaudeRunningProgressLine(trimmed) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "esc to interrupt") ||
+			isClaudeRunningProgressLine(trimmed) ||
+			isClaudeToolProgressLine(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastClaudePromptLineIndex(lines []string) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ") {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseClaudeResumeSessionID(captured string) string {
@@ -1170,7 +1212,14 @@ func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, strea
 		return false
 	}
 	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeTerminal, Content: snapshot}:
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":                    sessionName,
+			"claude_code_interactive_session": sessionName,
+		},
+	}:
 		*lastTerminalSnapshot = snapshot
 		return true
 	default:

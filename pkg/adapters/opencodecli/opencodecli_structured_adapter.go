@@ -343,10 +343,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	}, nil
 }
 
-func buildOpenCodeEnv(apiKey string) []string {
-	return buildOpenCodeEnvForCall(apiKey, nil, nil)
-}
-
 // buildOpenCodeEnvForCall constructs the env passed to `opencode run`. It
 // always carries the parent process environment plus, when set, the legacy
 // shared `OPENCODE_API_KEY`. When the call is scoped to a sub-provider tile

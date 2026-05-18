@@ -1227,7 +1227,14 @@ func streamCursorTerminalSnapshot(ctx context.Context, sessionName string, strea
 	}
 	*lastTerminalSnapshot = snapshot
 	select {
-	case streamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeTerminal, Content: snapshot}:
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":               sessionName,
+			"cursor_interactive_session": sessionName,
+		},
+	}:
 		return true
 	default:
 		return false
