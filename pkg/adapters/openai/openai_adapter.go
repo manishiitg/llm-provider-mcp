@@ -310,7 +310,9 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 			}
 
 			// Convert response from OpenAI format to llmtypes format
-			return convertResponse(&result, o.logger, isOpenRouter), nil
+			resp := convertResponse(&result, o.logger, isOpenRouter)
+			o.attachCostEstimate(resp, modelID)
+			return resp, nil
 		}
 	}
 
@@ -320,7 +322,11 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: param.NewOpt(true),
 		}
-		return o.generateContentStreaming(ctx, modelID, params, opts, isOpenRouter, messages)
+		resp, err := o.generateContentStreaming(ctx, modelID, params, opts, isOpenRouter, messages)
+		if err == nil {
+			o.attachCostEstimate(resp, modelID)
+		}
+		return resp, err
 	}
 
 	// Call OpenAI API (non-streaming)
@@ -356,7 +362,33 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 	// isOpenRouter already detected above
 
 	// Convert response from OpenAI format to llmtypes format
-	return convertResponse(result, o.logger, isOpenRouter), nil
+	resp := convertResponse(result, o.logger, isOpenRouter)
+	o.attachCostEstimate(resp, modelID)
+	return resp, nil
+}
+
+// attachCostEstimate fills in GenerationInfo.Additional["cost_usd_estimated"]
+// from tokens × registry rates so downstream cost ledgers don't have
+// to redo the math. OpenAI's Chat Completions response carries usage
+// but no USD field; this is the only adapter-layer surface for cost.
+func (o *OpenAIAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, modelID string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	meta, err := o.GetModelMetadata(modelID)
+	if err != nil || meta == nil {
+		return
+	}
+	gi := resp.Choices[0].GenerationInfo
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi)
+	if cost <= 0 {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]interface{}{}
+	}
+	gi.Additional["cost_usd_estimated"] = cost
+	gi.Additional["cost_model_id"] = modelID
 }
 
 // generateContentStreaming handles streaming responses from OpenAI API

@@ -122,6 +122,29 @@ func (a *AzureAdapter) GetModelID() string {
 }
 
 // GetModelMetadata implements the llmtypes.Model interface
+// attachCostEstimate fills GenerationInfo.Additional["cost_usd_estimated"]
+// from tokens × registry rates. Azure OpenAI responses carry usage
+// but no USD field.
+func (a *AzureAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, modelID string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	meta, err := a.GetModelMetadata(modelID)
+	if err != nil || meta == nil {
+		return
+	}
+	gi := resp.Choices[0].GenerationInfo
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi)
+	if cost <= 0 {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]interface{}{}
+	}
+	gi.Additional["cost_usd_estimated"] = cost
+	gi.Additional["cost_model_id"] = modelID
+}
+
 func (a *AzureAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	if modelID == "" {
 		modelID = a.modelID
@@ -130,7 +153,7 @@ func (a *AzureAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata
 }
 
 // GenerateContent implements the llmtypes.Model interface
-func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (resp *llmtypes.ContentResponse, err error) {
 	// Parse call options
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -142,6 +165,15 @@ func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 	if opts.Model != "" {
 		modelID = opts.Model
 	}
+
+	// On success, fill in cost_usd_estimated from tokens × registry
+	// rates. Azure OpenAI's response shape mirrors OpenAI's (usage but
+	// no USD field).
+	defer func() {
+		if err == nil {
+			a.attachCostEstimate(resp, modelID)
+		}
+	}()
 
 	// Convert messages from llmtypes format to OpenAI format
 	openaiMessages := convertMessages(messages, a.logger)

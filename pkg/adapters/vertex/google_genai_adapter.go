@@ -1189,10 +1189,35 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 	// Extract usage from GenerationInfo
 	usageExtracted := llmtypes.ExtractUsageFromGenerationInfo(choice.GenerationInfo)
 
-	return &llmtypes.ContentResponse{
+	resp := &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{choice},
 		Usage:   usageExtracted,
-	}, nil
+	}
+	g.attachCostEstimate(resp, modelID)
+	return resp, nil
+}
+
+// attachCostEstimate fills in GenerationInfo.Additional["cost_usd_estimated"]
+// from tokens × registry rates. Gemini API responses carry usage but
+// no USD field; this is the only adapter-layer surface for cost.
+func (g *GoogleGenAIAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, modelID string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	meta, err := g.GetModelMetadata(modelID)
+	if err != nil || meta == nil {
+		return
+	}
+	gi := resp.Choices[0].GenerationInfo
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi)
+	if cost <= 0 {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]interface{}{}
+	}
+	gi.Additional["cost_usd_estimated"] = cost
+	gi.Additional["cost_model_id"] = modelID
 }
 
 // buildRequestInfo creates a RequestInfo from messages and options for recording/matching

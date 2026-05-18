@@ -357,6 +357,39 @@ func TestVertexRealImplicitPromptCaching(t *testing.T) {
 	t.Logf("✅ implicit cache hit: %d cached tokens out of prompt", *cached)
 }
 
+// TestVertexRealCostEstimateOnPlainText (contract P2 #25). After a
+// successful call the adapter must surface cost_usd_estimated +
+// cost_model_id on GenerationInfo.Additional. Gemini API ships
+// tokens but no USD, so this proves the registry-driven cost math
+// reaches downstream cost ledgers.
+func TestVertexRealCostEstimateOnPlainText(t *testing.T) {
+	adapter, model := newRealVertexAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with OK."}}},
+		},
+		llmtypes.WithMaxTokens(256),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		t.Fatal("response missing GenerationInfo")
+	}
+	add := resp.Choices[0].GenerationInfo.Additional
+	cost, ok := add["cost_usd_estimated"].(float64)
+	if !ok || cost <= 0 {
+		t.Fatalf("expected cost_usd_estimated > 0; got %v (type %T). model=%q", add["cost_usd_estimated"], add["cost_usd_estimated"], model)
+	}
+	if got := add["cost_model_id"]; got != model {
+		t.Fatalf("cost_model_id = %v, want %q", got, model)
+	}
+	t.Logf("✅ cost_usd_estimated=$%.6f model=%q", cost, model)
+}
+
 // TestVertexRealAuthFailureClassified (contract P2 #22). A bogus key
 // must produce an error that does not echo the key and hints at auth.
 func TestVertexRealAuthFailureClassified(t *testing.T) {

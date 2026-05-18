@@ -813,6 +813,39 @@ func TestAnthropicRealTopKDoesNotError(t *testing.T) {
 	}
 }
 
+// TestAnthropicRealCostEstimateOnPlainText (contract P2 #25). After a
+// successful call the adapter must surface cost_usd_estimated +
+// cost_model_id on GenerationInfo.Additional. Anthropic's Messages
+// API ships tokens but no USD field; this proves the registry-driven
+// cost math reaches downstream cost ledgers.
+func TestAnthropicRealCostEstimateOnPlainText(t *testing.T) {
+	adapter, model := newRealAnthropicAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with OK."}}},
+		},
+		llmtypes.WithMaxTokens(16),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		t.Fatal("response missing GenerationInfo")
+	}
+	add := resp.Choices[0].GenerationInfo.Additional
+	cost, ok := add["cost_usd_estimated"].(float64)
+	if !ok || cost <= 0 {
+		t.Fatalf("expected cost_usd_estimated > 0; got %v (type %T). model=%q", add["cost_usd_estimated"], add["cost_usd_estimated"], model)
+	}
+	if got := add["cost_model_id"]; got != model {
+		t.Fatalf("cost_model_id = %v, want %q", got, model)
+	}
+	t.Logf("✅ cost_usd_estimated=$%.6f model=%q", cost, model)
+}
+
 // TestAnthropicRealRateLimitClassified (contract P2 #23). Real
 // rate-limit responses are hard to provoke deterministically, so this
 // test fires a burst of concurrent tiny requests and inspects whatever

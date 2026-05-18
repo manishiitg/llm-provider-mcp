@@ -520,6 +520,39 @@ func iToA(n int) string {
 	return string(buf[i:])
 }
 
+// TestOpenAIRealCostEstimateOnPlainText (contract P2 #25). The
+// adapter must surface a non-zero cost_usd_estimated and cost_model_id
+// on GenerationInfo.Additional after a successful call. OpenAI's API
+// ships tokens but no USD, so this proves the registry-driven cost
+// computation reaches downstream cost ledgers.
+func TestOpenAIRealCostEstimateOnPlainText(t *testing.T) {
+	adapter, model := newRealOpenAIAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with OK."}}},
+		},
+		llmtypes.WithMaxTokens(32),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		t.Fatal("response missing GenerationInfo")
+	}
+	add := resp.Choices[0].GenerationInfo.Additional
+	cost, ok := add["cost_usd_estimated"].(float64)
+	if !ok || cost <= 0 {
+		t.Fatalf("expected cost_usd_estimated > 0; got %v (type %T). model=%q", add["cost_usd_estimated"], add["cost_usd_estimated"], model)
+	}
+	if got := add["cost_model_id"]; got != model {
+		t.Fatalf("cost_model_id = %v, want %q", got, model)
+	}
+	t.Logf("✅ cost_usd_estimated=$%.6f model=%q", cost, model)
+}
+
 // TestOpenAIRealAuthFailureClassified (contract P2 #22). A bogus key
 // must produce an error that does NOT echo the key back and that
 // hints at auth/credential trouble.

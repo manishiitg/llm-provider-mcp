@@ -75,6 +75,29 @@ func (m *MiniMaxAdapter) GetModelID() string {
 }
 
 // GetModelMetadata implements the llmtypes.Model interface
+// attachCostEstimate fills GenerationInfo.Additional["cost_usd_estimated"]
+// from tokens × registry rates. MiniMax responses carry usage but no
+// USD field.
+func (m *MiniMaxAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, modelID string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	meta, err := m.GetModelMetadata(modelID)
+	if err != nil || meta == nil {
+		return
+	}
+	gi := resp.Choices[0].GenerationInfo
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi)
+	if cost <= 0 {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]interface{}{}
+	}
+	gi.Additional["cost_usd_estimated"] = cost
+	gi.Additional["cost_model_id"] = modelID
+}
+
 func (m *MiniMaxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	// Try coding plan models first (Anthropic model names)
 	if meta, err := GetMiniMaxCodingPlanModelMetadata(modelID); err == nil {
@@ -85,7 +108,7 @@ func (m *MiniMaxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 }
 
 // GenerateContent implements the llmtypes.Model interface
-func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (resp *llmtypes.ContentResponse, err error) {
 	if !m.codingPlan && containsImageParts(messages) {
 		return nil, fmt.Errorf("MiniMax image understanding requires provider minimax-coding-plan")
 	}
@@ -99,6 +122,14 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	if opts.Model != "" {
 		modelID = opts.Model
 	}
+
+	// On success, fill in cost_usd_estimated from tokens × registry
+	// rates. MiniMax responses carry usage but no USD field.
+	defer func() {
+		if err == nil {
+			m.attachCostEstimate(resp, modelID)
+		}
+	}()
 
 	anthropicMessages, systemMessage := convertMessages(messages)
 
