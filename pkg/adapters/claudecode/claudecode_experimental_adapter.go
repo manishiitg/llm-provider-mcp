@@ -299,6 +299,14 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		if effectiveModel != "" {
 			additional["claude_code_model"] = effectiveModel
 		}
+		if effectiveModel != "" {
+			if meta, _ := c.GetModelMetadata(effectiveModel); meta != nil {
+				if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
+					additional["cost_usd_estimated"] = cost
+					additional["cost_model_id"] = effectiveModel
+				}
+			}
+		}
 	}
 
 	return &llmtypes.ContentResponse{

@@ -173,6 +173,14 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		gi.CachedContentTokens = usage.CachedContentTokens
 		gi.ReasoningTokens = usage.ReasoningTokens
 	}
+	if effectiveModel != "" {
+		if meta, _ := c.GetModelMetadata(effectiveModel); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = effectiveModel
+			}
+		}
+	}
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

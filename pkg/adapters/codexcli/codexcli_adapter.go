@@ -988,6 +988,15 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	if totalCachedInputTokens > 0 {
 		genInfo.CachedContentTokens = &totalCachedInputTokens
 	}
+	if modelToUse != "" {
+		additional["codex_effective_model"] = modelToUse
+		if meta, _ := c.GetModelMetadata(modelToUse); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = modelToUse
+			}
+		}
+	}
 
 	finalResponse = &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

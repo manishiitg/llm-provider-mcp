@@ -986,6 +986,14 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	if cachedTokens > 0 {
 		genInfo.CachedContentTokens = &cachedTokens
 	}
+	if resolvedModel != "" {
+		if meta, _ := g.GetModelMetadata(resolvedModel); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = resolvedModel
+			}
+		}
+	}
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

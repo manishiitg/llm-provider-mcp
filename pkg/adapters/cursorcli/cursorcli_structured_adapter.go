@@ -287,23 +287,53 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		return nil, fmt.Errorf("cursor run returned no text output")
 	}
 
+	additional := map[string]any{
+		"provider":          "cursor-cli",
+		"cursor_mode":       "structured",
+		"cursor_session_id": sessionID,
+		"cursor_model":      modelName,
+	}
+	genInfo := &llmtypes.GenerationInfo{
+		InputTokens:  intPtrFromInt(totalUsage.InputTokens),
+		OutputTokens: intPtrFromInt(totalUsage.OutputTokens),
+		TotalTokens:  intPtrFromInt(totalUsage.TotalTokens),
+		Additional:   additional,
+	}
+	if totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0 {
+		v := *totalUsage.CacheTokens
+		genInfo.CachedContentTokens = &v
+	}
+	// Cost lookup: prefer the cursor-reported effective model name, fall
+	// back to the requested model alias.
+	costLookupModel := modelName
+	if costLookupModel == "" {
+		costLookupModel = modelToUse
+	}
+	if costLookupModel != "" {
+		if meta, _ := c.GetModelMetadata(costLookupModel); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = costLookupModel
+			}
+		}
+	}
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content:    content,
-				StopReason: "stop",
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]any{
-						"provider":          "cursor-cli",
-						"cursor_mode":       "structured",
-						"cursor_session_id": sessionID,
-						"cursor_model":      modelName,
-					},
-				},
+				Content:        content,
+				StopReason:     "stop",
+				GenerationInfo: genInfo,
 			},
 		},
 		Usage: &totalUsage,
 	}, nil
+}
+
+func intPtrFromInt(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
 }
 
 func cursorEventMessageText(msg *cursorEventMessage) string {
