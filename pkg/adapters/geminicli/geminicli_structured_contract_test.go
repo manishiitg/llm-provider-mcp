@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -681,4 +682,111 @@ streamClosed:
 	} else {
 		t.Logf("no content and no error (process exited cleanly)")
 	}
+}
+
+// TestGeminiCLIStructuredParallelWorkspaceIsolation proves that two concurrent
+// GenerateContent calls sharing the same working dir but with different project
+// settings each get their own isolated .gemini/settings.json and do not
+// overwrite each other's configuration.
+func TestGeminiCLIStructuredParallelWorkspaceIsolation(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	sharedWorkDir := t.TempDir()
+
+	tokenA := "PARALLEL_A_" + geminiRandomHex(6)
+	tokenB := "PARALLEL_B_" + geminiRandomHex(6)
+
+	if err := os.WriteFile(filepath.Join(sharedWorkDir, "token_a.txt"), []byte(tokenA), 0644); err != nil {
+		t.Fatalf("write token_a: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedWorkDir, "token_b.txt"), []byte(tokenB), 0644); err != nil {
+		t.Fatalf("write token_b: %v", err)
+	}
+
+	type result struct {
+		resp *llmtypes.ContentResponse
+		err  error
+		tag  string
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan result, 2)
+
+	launch := func(tag, tokenFile, settingsJSON string) {
+		defer wg.Done()
+		adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, quietGeminiStreamLogger{})
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: fmt.Sprintf(
+						"Read the file %s in the current directory and reply with ONLY its exact contents. Nothing else.",
+						tokenFile,
+					)},
+				},
+			},
+		},
+			WithWorkingDir(sharedWorkDir),
+			WithProjectSettings(settingsJSON),
+			WithApprovalMode("yolo"),
+		)
+		results <- result{resp: resp, err: err, tag: tag}
+	}
+
+	wg.Add(2)
+	go launch("A", "token_a.txt", `{"mcpServers":{"session-a":{"command":"echo","args":["a"]}}}`)
+	go launch("B", "token_b.txt", `{"mcpServers":{"session-b":{"command":"echo","args":["b"]}}}`)
+	wg.Wait()
+	close(results)
+
+	var respA, respB *llmtypes.ContentResponse
+	for r := range results {
+		if r.err != nil {
+			t.Fatalf("invocation %s failed: %v", r.tag, r.err)
+		}
+		switch r.tag {
+		case "A":
+			respA = r.resp
+		case "B":
+			respB = r.resp
+		}
+	}
+
+	contentA := respA.Choices[0].Content
+	contentB := respB.Choices[0].Content
+
+	if !strings.Contains(contentA, tokenA) {
+		t.Errorf("invocation A: expected token %q, got %q", tokenA, contentA)
+	}
+	if !strings.Contains(contentB, tokenB) {
+		t.Errorf("invocation B: expected token %q, got %q", tokenB, contentB)
+	}
+
+	if strings.Contains(contentA, tokenB) {
+		t.Errorf("invocation A leaked token B %q in response %q", tokenB, contentA)
+	}
+	if strings.Contains(contentB, tokenA) {
+		t.Errorf("invocation B leaked token A %q in response %q", tokenA, contentB)
+	}
+
+	genA := respA.Choices[0].GenerationInfo
+	genB := respB.Choices[0].GenerationInfo
+	if genA != nil && genB != nil {
+		dirIDA, _ := genA.Additional["gemini_project_dir_id"].(string)
+		dirIDB, _ := genB.Additional["gemini_project_dir_id"].(string)
+		if dirIDA != "" && dirIDB != "" && dirIDA == dirIDB {
+			t.Errorf("parallel invocations got same project_dir_id %q — isolation failed", dirIDA)
+		}
+		t.Logf("isolation verified: A dir_id=%s, B dir_id=%s", dirIDA, dirIDB)
+	}
+
+	if _, err := os.Stat(filepath.Join(sharedWorkDir, ".gemini", "settings.json")); err == nil {
+		t.Errorf("shared working dir should NOT have .gemini/settings.json — settings should be in isolated project dirs")
+	}
+
+	t.Logf("parallel workspace isolation: A=%q B=%q", contentA, contentB)
 }
