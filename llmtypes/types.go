@@ -546,6 +546,14 @@ type CallOptions struct {
 	TopP          float64  // Nucleus sampling probability (0 < p ≤ 1)
 	TopK          int      // Top-k sampling cutoff (provider must support; Anthropic accepts; OpenAI does not)
 	StopSequences []string // Up to N strings that, if generated, halt sampling immediately
+
+	// InspectorSink is an opt-in debug-event consumer. When non-nil,
+	// adapters emit structured InspectorEvents (request → events →
+	// tool_calls → completion/error) describing the call lifecycle.
+	// When nil (the default), adapters skip emission entirely — zero
+	// allocation, single nil-compare per event hook.
+	// See docs/inspector_contract.md for the wire contract.
+	InspectorSink InspectorSink
 }
 
 // CallOption is a function type for setting call options

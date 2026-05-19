@@ -1,0 +1,164 @@
+package llmproviders_test
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
+)
+
+// adapterFactory builds a Model and reports its model ID. Returns
+// nils + skip=true when the adapter cannot run (missing env, missing
+// dependency, etc.). The matrix test honors skip without failing.
+type adapterFactory func(t *testing.T) (model llmtypes.Model, modelID string, skip bool)
+
+// inspectorContractFactories is the registry of adapters that
+// participate in the inspector contract. Adding a new provider:
+// implement the factory below, register it here, the matrix test
+// asserts the SAME contract for the new entry.
+//
+// This is the "unified interface" enforcement point — adapters honor
+// the contract by passing the matrix; the contract stays stable
+// because the assertion is centralised.
+var inspectorContractFactories = map[string]adapterFactory{
+	"anthropic": newRealAnthropicForInspectorMatrix,
+	// TODO: openai, vertex, claudecode (structured), codex (structured),
+	// gemini-cli (structured), cursor-cli (structured). Each registers
+	// here as it's wired.
+}
+
+// TestInspectorContractMatrix runs the shared assertion against every
+// registered adapter. Each provider gets its own subtest; missing
+// API keys cause clean Skip rather than failure.
+//
+// What this enforces:
+//   - Same phase ordering (request → events → completion) regardless
+//     of provider transport.
+//   - Same required metadata keys on the request + completion phases.
+//   - Same Seq/Provider/Model envelope on every event.
+//
+// When this passes for N adapters, those N adapters can be swapped
+// behind a UI inspector pane interchangeably.
+func TestInspectorContractMatrix(t *testing.T) {
+	for name, factory := range inspectorContractFactories {
+		factory := factory // capture for goroutine safety in t.Parallel()
+		t.Run(name, func(t *testing.T) {
+			model, modelID, skip := factory(t)
+			if skip {
+				t.Skipf("%s factory could not build adapter (likely missing API key)", name)
+			}
+
+			rec := &llmtypes.InspectorRecorder{}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			_, err := model.GenerateContent(ctx,
+				[]llmtypes.MessageContent{
+					{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with OK."}}},
+				},
+				llmtypes.WithMaxTokens(32),
+				llmtypes.WithInspectorSink(rec),
+			)
+			if err != nil {
+				t.Fatalf("%s GenerateContent: %v", name, err)
+			}
+
+			assertInspectorContract(t, rec.Events(), name, modelID)
+		})
+	}
+}
+
+// --- shared contract assertion (mirror of the per-adapter test) ---
+
+func assertInspectorContract(t *testing.T, events []llmtypes.InspectorEvent, wantProvider, wantModel string) {
+	t.Helper()
+	if len(events) == 0 {
+		t.Fatal("no inspector events emitted; adapter is not wired up")
+	}
+
+	if events[0].Phase != llmtypes.InspectorPhaseRequest {
+		t.Fatalf("first event phase = %q, want %q", events[0].Phase, llmtypes.InspectorPhaseRequest)
+	}
+	last := events[len(events)-1]
+	if last.Phase != llmtypes.InspectorPhaseCompletion {
+		t.Fatalf("last event phase = %q, want %q", last.Phase, llmtypes.InspectorPhaseCompletion)
+	}
+	for _, ev := range events {
+		if ev.Phase == llmtypes.InspectorPhaseError {
+			t.Fatalf("unexpected error event: %+v", ev)
+		}
+	}
+
+	sawEvent := false
+	for _, ev := range events {
+		if ev.Phase == llmtypes.InspectorPhaseEvent {
+			sawEvent = true
+			break
+		}
+	}
+	if !sawEvent {
+		t.Fatal("no event-phase entries; adapter must emit at least one mid-stream event")
+	}
+
+	for i, ev := range events {
+		if ev.Provider != wantProvider {
+			t.Fatalf("events[%d].Provider = %q, want %q", i, ev.Provider, wantProvider)
+		}
+		if ev.Model != wantModel {
+			t.Fatalf("events[%d].Model = %q, want %q", i, ev.Model, wantModel)
+		}
+		if ev.Timestamp.IsZero() {
+			t.Fatalf("events[%d].Timestamp is zero", i)
+		}
+		if ev.Seq != i+1 {
+			t.Fatalf("events[%d].Seq = %d, want %d", i, ev.Seq, i+1)
+		}
+	}
+
+	req := events[0]
+	for _, key := range []string{"message_count"} {
+		if req.Metadata[key] == nil {
+			t.Fatalf("request event missing required key %q", key)
+		}
+	}
+	for _, key := range []string{"prompt_tokens", "completion_tokens", "stop_reason", "duration_ms"} {
+		if last.Metadata[key] == nil {
+			t.Fatalf("completion event missing required key %q", key)
+		}
+	}
+
+	t.Logf("✅ %s: %d events", wantProvider, len(events))
+}
+
+// --- factories ---
+
+func newRealAnthropicForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool) {
+	t.Helper()
+	if os.Getenv("RUN_ANTHROPIC_REAL_E2E") == "" {
+		return nil, "", true
+	}
+	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	if apiKey == "" {
+		return nil, "", true
+	}
+	model := strings.TrimSpace(os.Getenv("ANTHROPIC_REAL_E2E_MODEL"))
+	if model == "" {
+		model = "claude-haiku-4-5"
+	}
+	client := anthropic.NewClient(anthropicoption.WithAPIKey(apiKey))
+	return anthropicadapter.NewAnthropicAdapter(client, model, &matrixMockLogger{}), model, false
+}
+
+// matrixMockLogger is a silent logger for the matrix test.
+type matrixMockLogger struct{}
+
+func (l *matrixMockLogger) Infof(format string, args ...any)         {}
+func (l *matrixMockLogger) Errorf(format string, args ...any)        {}
+func (l *matrixMockLogger) Debugf(format string, args ...interface{}) {}

@@ -39,6 +39,17 @@ func WithTopK(topK int) CallOption {
 	}
 }
 
+// WithInspectorSink attaches a debug-event sink for this call. Adapters
+// that participate in the inspector contract will emit
+// InspectorEvents at request/event/tool_call/completion/error
+// boundaries. Pass nil (the default) to disable inspector emission
+// entirely.
+func WithInspectorSink(sink InspectorSink) CallOption {
+	return func(opts *CallOptions) {
+		opts.InspectorSink = sink
+	}
+}
+
 // WithStopSequences sets the strings that, if generated, terminate
 // sampling immediately. Pass an empty slice (or nil) to clear.
 func WithStopSequences(seqs []string) CallOption {

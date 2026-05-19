@@ -56,6 +56,12 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 		modelID = opts.Model
 	}
 
+	// Inspector emitter — no-op when opts.InspectorSink is nil. The
+	// emitter is the single point of contact for debug-event emission;
+	// adapter code never builds InspectorEvent structs directly.
+	inspector := llmtypes.NewInspectorEmitter(opts.InspectorSink, "anthropic", modelID)
+	callStart := time.Now()
+
 	// Convert messages from llm format to Anthropic format
 	anthropicMessages, systemMessage := convertMessages(messages)
 
@@ -184,6 +190,21 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if len(betaTokens) > 0 {
 		streamOpts = append(streamOpts, anthropicoption.WithHeader("anthropic-beta", strings.Join(betaTokens, ",")))
 	}
+
+	// Inspector: emit the request envelope before dispatching. Keep
+	// metadata to lightweight counters — full message bodies live in
+	// the chat history already.
+	inspector.EmitRequest(map[string]interface{}{
+		"message_count":        len(params.Messages),
+		"system_block_count":   len(params.System),
+		"system_prompt_length": anthropicSystemPromptLength(params.System),
+		"max_tokens":           params.MaxTokens,
+		"tool_count":           len(params.Tools),
+		"json_mode":            opts.JSONMode,
+		"beta_tokens":          betaTokens,
+		"streaming":            true,
+	})
+
 	stream := a.client.Messages.NewStreaming(ctx, params, streamOpts...)
 
 	// Ensure channel is closed when done (if streaming is enabled)
@@ -206,7 +227,22 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 				a.logErrorDetails(modelID, messages, params, opts, err, &message)
 				a.logRawResponse(requestID, modelID, &message, err)
 			}
+			inspector.EmitError(err, map[string]interface{}{
+				"phase":       "stream_accumulate",
+				"duration_ms": time.Since(callStart).Milliseconds(),
+			})
 			return nil, fmt.Errorf("anthropic streaming accumulate error: %w", err)
+		}
+
+		// Inspector: emit one event per streaming chunk. Keep it cheap;
+		// just the event-name tag + a delta length on text deltas.
+		if inspector.Enabled() {
+			eventName, deltaLen := anthropicEventTag(event)
+			eventMeta := map[string]interface{}{}
+			if deltaLen > 0 {
+				eventMeta["delta_text_length"] = deltaLen
+			}
+			inspector.EmitEvent(eventName, eventMeta)
 		}
 
 		// If streaming channel is provided, extract and send text chunks
@@ -238,6 +274,10 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 			a.logErrorDetails(modelID, messages, params, opts, err, &message)
 			a.logRawResponse(requestID, modelID, &message, err)
 		}
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":       "stream_err",
+			"duration_ms": time.Since(callStart).Milliseconds(),
+		})
 		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}
 	stream.Close()
@@ -326,7 +366,86 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	// Convert the accumulated message to llm format
 	resp := convertResponse(&message)
 	a.attachCostEstimate(resp, modelID)
+
+	// Inspector: emit tool calls observed (one event per call), then
+	// the completion envelope. Sequence is request → events → tool_call*
+	// → completion.
+	if inspector.Enabled() {
+		for _, block := range message.Content {
+			if block.Type == "tool_use" {
+				inspector.EmitToolCall(map[string]interface{}{
+					"tool_name":    block.Name,
+					"tool_call_id": block.ID,
+					"args_length":  len(block.Input),
+				})
+			}
+		}
+		completionMeta := map[string]interface{}{
+			"stop_reason":      string(message.StopReason),
+			"prompt_tokens":    int(message.Usage.InputTokens),
+			"completion_tokens": int(message.Usage.OutputTokens),
+			"total_tokens":     int(message.Usage.InputTokens + message.Usage.OutputTokens),
+			"duration_ms":      time.Since(callStart).Milliseconds(),
+			"content_chunks":   contentChunksSent,
+		}
+		if message.Usage.CacheReadInputTokens > 0 {
+			completionMeta["cache_read_input_tokens"] = int(message.Usage.CacheReadInputTokens)
+		}
+		if message.Usage.CacheCreationInputTokens > 0 {
+			completionMeta["cache_creation_input_tokens"] = int(message.Usage.CacheCreationInputTokens)
+		}
+		if len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
+			if cost, ok := resp.Choices[0].GenerationInfo.Additional["cost_usd_estimated"].(float64); ok && cost > 0 {
+				completionMeta["cost_usd_estimated"] = cost
+			}
+			if cm, ok := resp.Choices[0].GenerationInfo.Additional["cost_model_id"].(string); ok && cm != "" {
+				completionMeta["cost_model_id"] = cm
+			}
+		}
+		inspector.EmitCompletion(completionMeta)
+	}
+
 	return resp, nil
+}
+
+// anthropicSystemPromptLength reports the total characters across all
+// system content blocks. Used by the inspector emitter to surface a
+// PII-free signal of system-prompt scale.
+func anthropicSystemPromptLength(blocks []anthropic.TextBlockParam) int {
+	total := 0
+	for _, b := range blocks {
+		total += len(b.Text)
+	}
+	return total
+}
+
+// anthropicEventTag derives a stable event-name string for inspector
+// emission from an Anthropic stream event. Returns (name, delta_text_len).
+func anthropicEventTag(event anthropic.MessageStreamEventUnion) (string, int) {
+	switch v := event.AsAny().(type) {
+	case anthropic.MessageStartEvent:
+		return "message_start", 0
+	case anthropic.ContentBlockStartEvent:
+		return "content_block_start", 0
+	case anthropic.ContentBlockDeltaEvent:
+		switch d := v.Delta.AsAny().(type) {
+		case anthropic.TextDelta:
+			return "text_delta", len(d.Text)
+		case anthropic.InputJSONDelta:
+			return "input_json_delta", len(d.PartialJSON)
+		case anthropic.ThinkingDelta:
+			return "thinking_delta", len(d.Thinking)
+		default:
+			return "content_block_delta", 0
+		}
+	case anthropic.ContentBlockStopEvent:
+		return "content_block_stop", 0
+	case anthropic.MessageDeltaEvent:
+		return "message_delta", 0
+	case anthropic.MessageStopEvent:
+		return "message_stop", 0
+	}
+	return "unknown", 0
 }
 
 // attachCostEstimate fills in GenerationInfo.Additional["cost_usd_estimated"]
