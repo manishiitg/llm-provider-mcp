@@ -96,6 +96,9 @@ Important tests:
   bridge and policy)
 - `TestGeminiCLIRealInteractiveLiveInputAndEscapeContract` (real Gemini CLI
   live input plus Escape/cancel path)
+- `TestGeminiCLIRealInteractivePastedAtHandleDoesNotBecomePath` (real Gemini
+  CLI pasted prompt with a literal `@handle`; verifies the TUI does not expand
+  it as an `@path` file reference)
 - `TestGeminiCLIRealStreamJSONContract` (real Gemini CLI structured transport
   plus native resume)
 - `TestGeminiCLIRealStreamJSONMCPBridgeContract` (real Gemini CLI structured

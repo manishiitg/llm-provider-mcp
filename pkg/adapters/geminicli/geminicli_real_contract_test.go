@@ -159,6 +159,51 @@ deny_message = "No tools are needed for this large-paste transport test."
 	assertGeminiInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestGeminiCLIRealInteractivePastedAtHandleDoesNotBecomePath(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-at-handle-" + geminiRandomHex(4)
+	token := "AT_HANDLE_OK_" + geminiRandomHex(4)
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this @ handle transport test."
+`)
+
+	prompt := fmt.Sprintf(`This is a Gemini CLI pasted @ handle transport test.
+
+Treat @fixyo.urflow as a literal Instagram handle, not a file path.
+Do not use tools.
+
+Reply exactly:
+%s @fixyo.urflow`, token)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply exactly as instructed."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with pasted @ handle error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) || !strings.Contains(content, "@fixyo.urflow") {
+		t.Fatalf("content = %q, want token %s and literal @fixyo.urflow", content, token)
+	}
+}
+
 func TestGeminiCLIRealInteractiveMarkdownBulletCompletionDoesNotLookUnsubmitted(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })

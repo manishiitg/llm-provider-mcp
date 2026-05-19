@@ -86,6 +86,26 @@ func resolveProjectDir(opts *llmtypes.CallOptions, resumeID string) (projectDir 
 	return
 }
 
+func geminiProjectSettingsWithSafePaste(settingsJSON string) (string, error) {
+	settings := map[string]interface{}{}
+	if strings.TrimSpace(settingsJSON) != "" {
+		if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+			return "", fmt.Errorf("invalid Gemini project settings JSON: %w", err)
+		}
+	}
+	ui, _ := settings["ui"].(map[string]interface{})
+	if ui == nil {
+		ui = map[string]interface{}{}
+	}
+	ui["escapePastedAtSymbols"] = true
+	settings["ui"] = ui
+	merged, err := json.Marshal(settings)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode Gemini project settings: %w", err)
+	}
+	return string(merged), nil
+}
+
 func geminiWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return ""
@@ -301,6 +321,10 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	var projectDirID string
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if settingsJSON, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok && settingsJSON != "" {
+			settingsJSON, err := geminiProjectSettingsWithSafePaste(settingsJSON)
+			if err != nil {
+				return nil, err
+			}
 			projectDir, projectDirID = resolveProjectDir(opts, resumeID)
 			if err := os.MkdirAll(projectDir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create Gemini project settings dir: %w", err)

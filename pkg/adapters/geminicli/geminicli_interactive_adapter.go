@@ -454,14 +454,16 @@ func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.Ca
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("failed to create Gemini interactive project dir: %w", err)
 	}
-	if settingsJSON != "" {
-		geminiDir := filepath.Join(projectDir, ".gemini")
-		if err := os.MkdirAll(geminiDir, 0o755); err != nil {
-			return "", "", fmt.Errorf("failed to create Gemini interactive settings dir: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0o644); err != nil {
-			return "", "", fmt.Errorf("failed to write Gemini interactive settings: %w", err)
-		}
+	settingsJSON, err := geminiProjectSettingsWithSafePaste(settingsJSON)
+	if err != nil {
+		return "", "", err
+	}
+	geminiDir := filepath.Join(projectDir, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("failed to create Gemini interactive settings dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0o644); err != nil {
+		return "", "", fmt.Errorf("failed to write Gemini interactive settings: %w", err)
 	}
 	return projectDir, projectDirID, nil
 }
@@ -955,6 +957,9 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 				return "", err
 			}
 			delta := geminiCapturedAfterBaseline(captured, baseline)
+			if fatalErr := geminiInteractiveFatalError(delta); fatalErr != "" {
+				return captured, fmt.Errorf("Gemini CLI interactive fatal error: %s", fatalErr)
+			}
 			if apiErr := geminiInteractiveAPIError(delta); apiErr != "" {
 				return captured, fmt.Errorf("Gemini CLI interactive API error: %s", apiErr)
 			}
@@ -1015,6 +1020,44 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 			}
 		}
 	}
+}
+
+func geminiInteractiveFatalError(delta string) string {
+	cleaned := strings.TrimSpace(stripGeminiANSI(delta))
+	if cleaned == "" {
+		return ""
+	}
+	lower := strings.ToLower(cleaned)
+	if !strings.Contains(lower, "debug console") &&
+		!strings.Contains(lower, "unhandled promise rejection") &&
+		!strings.Contains(lower, "this is an unexpected error") &&
+		!strings.Contains(lower, "enametoolong") {
+		return ""
+	}
+	lines := strings.Split(cleaned, "\n")
+	out := make([]string, 0, 8)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isGeminiTUILine(trimmed) || isGeminiStartupNoticeLine(trimmed) || isGeminiStartupContinuationLine(trimmed) {
+			continue
+		}
+		lineLower := strings.ToLower(trimmed)
+		if len(out) == 0 &&
+			!strings.Contains(lineLower, "debug console") &&
+			!strings.Contains(lineLower, "unhandled promise rejection") &&
+			!strings.Contains(lineLower, "this is an unexpected error") &&
+			!strings.Contains(lineLower, "enametoolong") {
+			continue
+		}
+		out = append(out, trimmed)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return truncate(cleaned, 500)
+	}
+	return truncate(strings.Join(out, " "), 500)
 }
 
 func geminiInteractiveAPIError(delta string) string {

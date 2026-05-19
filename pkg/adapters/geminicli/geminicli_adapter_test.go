@@ -60,6 +60,22 @@ func TestGeminiInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	}
 }
 
+func TestGeminiProjectSettingsWithSafePaste(t *testing.T) {
+	got, err := geminiProjectSettingsWithSafePaste(`{"mcpServers":{"api-bridge":{"command":"bridge"}},"ui":{"hideTips":true,"escapePastedAtSymbols":false}}`)
+	if err != nil {
+		t.Fatalf("geminiProjectSettingsWithSafePaste returned error: %v", err)
+	}
+	if !strings.Contains(got, `"escapePastedAtSymbols":true`) {
+		t.Fatalf("settings did not force safe pasted @ handling: %s", got)
+	}
+	if !strings.Contains(got, `"hideTips":true`) {
+		t.Fatalf("settings did not preserve existing ui keys: %s", got)
+	}
+	if !strings.Contains(got, `"mcpServers"`) || !strings.Contains(got, `"api-bridge"`) {
+		t.Fatalf("settings did not preserve existing keys: %s", got)
+	}
+}
+
 func TestGeminiWorkingDirKeepsProjectSettingsIsolated(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
@@ -94,6 +110,9 @@ func TestGeminiWorkingDirKeepsProjectSettingsIsolated(t *testing.T) {
 	}
 	if !strings.Contains(string(settingsBytes), "/s/session-a") {
 		t.Fatalf("isolated settings did not contain session-a MCP URL: %s", settingsBytes)
+	}
+	if !strings.Contains(string(settingsBytes), `"escapePastedAtSymbols":true`) {
+		t.Fatalf("isolated settings did not enable safe pasted @ handling: %s", settingsBytes)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".gemini", "settings.json")); !os.IsNotExist(err) {
 		t.Fatalf("working dir settings should not be written; stat err=%v", err)
@@ -463,6 +482,22 @@ API Error: API_KEY_INVALID: API key not valid. Please pass a valid API key.
 	got := geminiInteractiveAPIError(input)
 	if !strings.Contains(got, "API Error") || !strings.Contains(got, "API_KEY_INVALID") {
 		t.Fatalf("geminiInteractiveAPIError() = %q, want actual API error line", got)
+	}
+}
+
+func TestGeminiInteractiveFatalErrorDetectsDebugConsoleCrash(t *testing.T) {
+	input := `
+╭────────────────────────────────────────────────────────╮
+│ Debug Console (F12 to close)                           │
+│ ✖ =========================================             │
+│   This is an unexpected error. Please file a bug report │
+│   CRITICAL: Unhandled Promise Rejection!                │
+│   Reason: Error: ENAMETOOLONG: name too long, lstat     │
+╰────────────────────────────────────────────────────────╯
+`
+	got := geminiInteractiveFatalError(input)
+	if !strings.Contains(got, "Debug Console") || !strings.Contains(got, "ENAMETOOLONG") {
+		t.Fatalf("geminiInteractiveFatalError() = %q, want debug console ENAMETOOLONG", got)
 	}
 }
 

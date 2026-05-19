@@ -378,6 +378,9 @@ Provider-specific launch requirements:
     `.gemini/settings.json` from process cwd
   - pass the caller workspace with `--include-directories <working-dir>` in
     that mode; the MCP bridge shell cwd must still be the caller workspace
+  - force `ui.escapePastedAtSymbols=true` in scoped `.gemini/settings.json` so
+    literal handles or email-like text such as `@fixyo.urflow` are not treated
+    as Gemini `@path` file references during tmux paste submission
   - deny built-in filesystem/shell tools by policy when bridge-only behavior is
     required
   - keep the TUI session alive when app-level system prompt text varies between
