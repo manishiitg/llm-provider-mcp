@@ -124,6 +124,32 @@ func NewScopedInspectorSink(parent InspectorSink, ctx StepContext) *ScopedInspec
 	return &ScopedInspectorSink{parent: parent, ctx: ctx}
 }
 
+// StepContext returns the scope's recorded step context, merged with
+// any enclosing scope. Used by WithObservability to enrich the
+// synthetic terminal Header with workflow info (step N/M, attempt,
+// agent, parent, triggered_by) so the top of the pane carries the
+// same context the inspector timeline already attributes events to.
+func (s *ScopedInspectorSink) StepContext() StepContext {
+	if s == nil {
+		return StepContext{}
+	}
+	// Walk down to find any enclosing scoped sink and merge.
+	if parent, ok := s.parent.(*ScopedInspectorSink); ok {
+		return mergeStepContext(s.ctx, parent.StepContext())
+	}
+	return s.ctx
+}
+
+// InspectorSinkStepContext extracts the step context attached to any
+// InspectorSink, returning a zero StepContext if the sink doesn't
+// carry one (e.g. a bare InspectorRecorder used in tests).
+func InspectorSinkStepContext(sink InspectorSink) StepContext {
+	if scoped, ok := sink.(*ScopedInspectorSink); ok {
+		return scoped.StepContext()
+	}
+	return StepContext{}
+}
+
 // Emit implements InspectorSink. Zero-valued fields on the incoming
 // event are filled in from the scope; non-zero fields are preserved
 // (this is what lets a chained inner scope override an outer one).

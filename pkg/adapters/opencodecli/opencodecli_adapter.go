@@ -81,7 +81,20 @@ func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("opencode-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	return c.generateContentStructured(ctx, messages, opts)
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "opencode-cli",
+		Model:        c.modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("opencode --output-format stream-json model=%s msgs=%d", c.modelID, len(messages)),
+		RequestMetaExtra: map[string]interface{}{
+			"transport": "structured_cli",
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		return c.generateContentStructured(ctx, messages, opts)
+	})
 }
 
 // SearchWeb asks OpenCode CLI to use its web search capability and returns

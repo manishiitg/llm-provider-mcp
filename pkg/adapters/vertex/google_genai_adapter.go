@@ -70,6 +70,19 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 		modelID = opts.Model
 	}
 
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "vertex",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("vertex.generateContent model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		return g.generateContentInner(ctx, opts, modelID, messages, sink.Term)
+	})
+}
+
+func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal) (*llmtypes.ContentResponse, error) {
 	// Extract system messages up-front. Gemini exposes a dedicated
 	// `SystemInstruction` field on the request config; previously the
 	// adapter mapped llmtypes.ChatMessageTypeSystem to role "user" and
@@ -766,7 +779,7 @@ func (g *GoogleGenAIAdapter) GenerateContent(ctx context.Context, messages []llm
 	// Use streaming path for both streaming and non-streaming requests
 	// For non-streaming (StreamChan == nil), the streaming function will accumulate tokens
 	// without sending chunks to the channel, ensuring consistent thought signature handling
-	return g.generateContentStreaming(ctx, modelID, genaiContents, config, opts, hadMixedMessages, requestID, messages)
+	return g.generateContentStreaming(ctx, modelID, genaiContents, config, opts, hadMixedMessages, requestID, messages, term)
 }
 
 // SearchWeb uses the Google GenAI SDK's native Google Search tool and returns
@@ -833,13 +846,9 @@ func (g *GoogleGenAIAdapter) SearchWeb(ctx context.Context, query string, option
 // generateContentStreaming handles streaming responses from Google GenAI API
 // It works for both streaming (StreamChan != nil) and non-streaming (StreamChan == nil) requests
 // For non-streaming, it accumulates tokens without sending chunks to the channel
-func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, modelID string, genaiContents []*genai.Content, config *genai.GenerateContentConfig, opts *llmtypes.CallOptions, hadMixedMessages bool, requestID string, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
-	// Ensure channel is closed when done (only if streaming was requested)
-	defer func() {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-	}()
+func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, modelID string, genaiContents []*genai.Content, config *genai.GenerateContentConfig, opts *llmtypes.CallOptions, hadMixedMessages bool, requestID string, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal) (*llmtypes.ContentResponse, error) {
+	// opts.StreamChan close is owned by WithObservability so term.Done's
+	// terminal snapshot (cost + tokens) lands before the channel is shut.
 
 	// Check for recorder in context
 	rec, found := recorder.FromContext(ctx)
@@ -911,6 +920,7 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 									return nil, ctx.Err()
 								}
 							}
+							term.AssistantText(part.Text)
 						}
 						if part.FunctionCall != nil {
 							thoughtSignature := extractThoughtSignature(part, g.logger)
@@ -939,6 +949,9 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 								case <-ctx.Done():
 									return nil, ctx.Err()
 								}
+							}
+							if toolCall.FunctionCall != nil {
+								term.ToolStart(toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
 							}
 						}
 					}
@@ -1038,6 +1051,7 @@ func (g *GoogleGenAIAdapter) generateContentStreaming(ctx context.Context, model
 									return nil, ctx.Err()
 								}
 							}
+							term.AssistantText(part.Text)
 						}
 
 						// Extract function calls (tool calls)

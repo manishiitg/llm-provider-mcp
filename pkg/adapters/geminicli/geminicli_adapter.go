@@ -148,6 +148,23 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return g.generateContentInteractive(ctx, messages, opts)
 	}
 
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "gemini-cli",
+		Model:        g.modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("gemini --output-format stream-json model=%s msgs=%d", g.modelID, len(messages)),
+		RequestMetaExtra: map[string]interface{}{
+			"transport": "structured_cli",
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		return g.generateContentStructured(ctx, opts, messages)
+	})
+}
+
+func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	// 0. Check for 'gemini' binary
 	if _, err := exec.LookPath("gemini"); err != nil {
 		return nil, fmt.Errorf("gemini cli not found in PATH. Please install it first (npm install -g @anthropic-ai/gemini-cli or see https://github.com/google-gemini/gemini-cli)")
@@ -758,10 +775,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	if cmdErr != nil {
 		g.logger.Errorf("[LIFECYCLE] Gemini CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		if finalResponse == nil {
-			g.logger.Infof("[LIFECYCLE] No finalResponse, closing StreamChan and returning error")
-			if opts.StreamChan != nil {
-				close(opts.StreamChan)
-			}
+			g.logger.Infof("[LIFECYCLE] No finalResponse, returning error (close owned by WithObservability)")
 			if detectedOverload.Load() {
 				return nil, fmt.Errorf("gemini cli overloaded: model is experiencing high demand (503). Please try again later")
 			}
@@ -778,10 +792,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 			g.logger.Infof("[LIFECYCLE] No result event but have %d chars of accumulated text, returning as partial response", len(accumulated))
 			finalResponse = g.mapResultToContentResponse(map[string]interface{}{}, sessionID, resolvedModel, accumulated, "")
 		} else {
-			g.logger.Infof("[LIFECYCLE] No finalResponse and no accumulated text, closing StreamChan and returning error")
-			if opts.StreamChan != nil {
-				close(opts.StreamChan)
-			}
+			g.logger.Infof("[LIFECYCLE] No finalResponse and no accumulated text, returning error (close owned by WithObservability)")
 			return nil, fmt.Errorf("failed to receive final result from gemini cli")
 		}
 	}
@@ -811,9 +822,7 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		}
 	}
 
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
+	// opts.StreamChan close is owned by WithObservability.
 
 	return finalResponse, nil
 }

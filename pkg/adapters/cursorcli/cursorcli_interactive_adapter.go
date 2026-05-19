@@ -85,6 +85,15 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	callCtx, cancel := cursorInteractiveCallContext(ctx)
 	defer cancel()
 
+	// On user-initiated cancellation, tear down the persistent tmux
+	// session so the live pane closes alongside the workflow step.
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		closeCursorPersistentSession(ownerSessionID, "workflow context canceled", c.logger)
+	}()
+
 	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
 	historicalAssistantTexts := cursorAssistantHistory(conversationMessages)
 	resume := cursorResumeSessionIDFromOptions(opts) != ""

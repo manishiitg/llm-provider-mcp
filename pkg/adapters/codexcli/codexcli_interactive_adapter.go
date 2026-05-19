@@ -82,15 +82,55 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 
 	turnStart := time.Now().UTC()
 
+	// Inspector emitter — no-op when opts.InspectorSink is nil. Lifecycle
+	// events (tmux acquiring/ready/prompt/captured) are what the unified
+	// debug panel renders for tmux providers, since they have no
+	// per-token stream to tap into.
+	inspector := llmtypes.NewInspectorEmitter(opts.InspectorSink, "codex-cli", c.modelID)
+	inspector.EmitRequest(map[string]interface{}{
+		"transport":     "tmux",
+		"message_count": len(messages),
+		"persistent":    persistent,
+	})
+
 	callCtx, cancel := codexInteractiveCallContext(ctx)
 	defer cancel()
 
+	// On user-initiated cancellation, tear down the persistent tmux
+	// session so the live pane closes alongside the workflow step.
+	// Without this, "cancel step" leaves the codex process running
+	// in tmux indefinitely and the UI keeps the terminal entry
+	// listed as active. DeadlineExceeded is treated separately —
+	// timeouts shouldn't kill a session a user might still want.
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer killCancel()
+		closeCodexPersistentSession(ownerSessionID, "workflow context canceled", c.logger)
+		_ = killCtx
+	}()
+
 	systemPrompt, conversationMessages := splitCodexSystemPrompt(messages)
 	historicalAssistantTexts := codexAssistantHistory(conversationMessages)
+
+	acquireStart := time.Now()
+	inspector.EmitEvent("tmux_session_acquiring", map[string]interface{}{
+		"owner_session_id": ownerSessionID,
+	})
 	session, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
 	if err != nil {
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":      "tmux_session_acquire",
+			"elapsed_ms": time.Since(acquireStart).Milliseconds(),
+		})
 		return nil, err
 	}
+	inspector.EmitEvent("tmux_session_ready", map[string]interface{}{
+		"tmux_session_name": session.tmuxSessionName,
+		"elapsed_ms":        time.Since(acquireStart).Milliseconds(),
+	})
 	releaseSession := true
 	defer func() {
 		if releaseSession && session != nil {
@@ -125,12 +165,21 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	prompt := buildCodexInteractivePrompt(conversationMessages)
 	baseline, _ := captureCodexPane(callCtx, session.tmuxSessionName)
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
+	promptSentAt := time.Now()
 	if err := sendCodexPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+		inspector.EmitError(err, map[string]interface{}{"phase": "tmux_prompt_send"})
 		return nil, err
 	}
+	inspector.EmitEvent("tmux_prompt_sent", map[string]interface{}{
+		"prompt_length": len(prompt),
+	})
 
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan)
 	if err != nil {
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":      "tmux_wait_response",
+			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
+		})
 		if ctx.Err() != nil {
 			interruptCodexInteractiveSession(session.tmuxSessionName, c.logger)
 		}
@@ -139,6 +188,10 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 		return nil, err
 	}
+	inspector.EmitEvent("tmux_response_captured", map[string]interface{}{
+		"response_chars": len(captured),
+		"elapsed_ms":     time.Since(promptSentAt).Milliseconds(),
+	})
 
 	content := parseCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	if opts.StreamChan != nil {
@@ -180,6 +233,30 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 				additional["cost_model_id"] = effectiveModel
 			}
 		}
+	}
+
+	// Inspector: emit the completion envelope. Token counts are
+	// best-effort from the rollout JSONL; cost may be unavailable on
+	// runs that didn't write a rollout file yet.
+	if inspector.Enabled() {
+		completionMeta := map[string]interface{}{
+			"stop_reason":  "tmux_response_captured",
+			"duration_ms":  time.Since(turnStart).Milliseconds(),
+			"content_chars": len(content),
+		}
+		if gi.PromptTokens != nil {
+			completionMeta["prompt_tokens"] = *gi.PromptTokens
+		}
+		if gi.CompletionTokens != nil {
+			completionMeta["completion_tokens"] = *gi.CompletionTokens
+		}
+		if cost, ok := additional["cost_usd_estimated"].(float64); ok {
+			completionMeta["cost_usd_estimated"] = cost
+		}
+		if cm, ok := additional["cost_model_id"].(string); ok && cm != "" {
+			completionMeta["cost_model_id"] = cm
+		}
+		inspector.EmitCompletion(completionMeta)
 	}
 
 	return &llmtypes.ContentResponse{

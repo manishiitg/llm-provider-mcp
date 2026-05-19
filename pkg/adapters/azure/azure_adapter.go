@@ -153,7 +153,7 @@ func (a *AzureAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata
 }
 
 // GenerateContent implements the llmtypes.Model interface
-func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (resp *llmtypes.ContentResponse, err error) {
+func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -166,14 +166,24 @@ func (a *AzureAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 		modelID = opts.Model
 	}
 
-	// On success, fill in cost_usd_estimated from tokens × registry
-	// rates. Azure OpenAI's response shape mirrors OpenAI's (usage but
-	// no USD field).
-	defer func() {
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "azure",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("azure.chat.completions model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		resp, err := a.generateContentInner(ctx, opts, modelID, messages)
 		if err == nil {
 			a.attachCostEstimate(resp, modelID)
 		}
-	}()
+		return resp, err
+	})
+}
+
+func (a *AzureAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 
 	// Convert messages from llmtypes format to OpenAI format
 	openaiMessages := convertMessages(messages, a.logger)
@@ -307,13 +317,7 @@ func (a *AzureAdapter) generateContentStreaming(ctx context.Context, modelID str
 	// Create streaming request
 	stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 	defer stream.Close()
-
-	// Ensure channel is closed when done
-	defer func() {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-	}()
+	// opts.StreamChan close is owned by WithObservability.
 
 	// Accumulate response data
 	var accumulatedContent strings.Builder
@@ -1006,7 +1010,7 @@ func (a *AzureAdapter) executeResponsesStreamingRequest(ctx context.Context, mod
 
 	go func() {
 		defer resp.Body.Close()
-		defer close(opts.StreamChan)
+		// opts.StreamChan close is owned by WithObservability.
 		defer close(done)
 
 		scanner := bufio.NewScanner(resp.Body)

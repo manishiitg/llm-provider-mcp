@@ -59,8 +59,29 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	// Inspector emitter — no-op when opts.InspectorSink is nil. The
 	// emitter is the single point of contact for debug-event emission;
 	// adapter code never builds InspectorEvent structs directly.
-	inspector := llmtypes.NewInspectorEmitter(opts.InspectorSink, "anthropic", modelID)
-	callStart := time.Now()
+	// Cross-cutting observability is delegated to WithObservability via
+	// the closure return path. We capture anthropic-specific completion
+	// extras (cache stats) into this map, which EnrichCompletionMeta
+	// merges after the body returns.
+	var anthropicCompletionExtras map[string]interface{}
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "anthropic",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("anthropic.messages.create model=%s msgs=%d", modelID, len(messages)),
+		EnrichCompletionMeta: func(_ *llmtypes.ContentResponse, meta map[string]interface{}) {
+			for k, v := range anthropicCompletionExtras {
+				meta[k] = v
+			}
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		return a.generateContentInner(ctx, opts, modelID, messages, sink.Term, sink.Inspector, &anthropicCompletionExtras)
+	})
+}
+
+func (a *AnthropicAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter, completionExtras *map[string]interface{}) (*llmtypes.ContentResponse, error) {
 
 	// Convert messages from llm format to Anthropic format
 	anthropicMessages, systemMessage := convertMessages(messages)
@@ -206,13 +227,8 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	})
 
 	stream := a.client.Messages.NewStreaming(ctx, params, streamOpts...)
-
-	// Ensure channel is closed when done (if streaming is enabled)
-	defer func() {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-	}()
+	// opts.StreamChan close is owned by WithObservability so term.Done's
+	// terminal snapshot (cost + tokens) lands before the channel is shut.
 
 	// Use Message.Accumulate to build the final message
 	message := anthropic.Message{}
@@ -227,10 +243,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 				a.logErrorDetails(modelID, messages, params, opts, err, &message)
 				a.logRawResponse(requestID, modelID, &message, err)
 			}
-			inspector.EmitError(err, map[string]interface{}{
-				"phase":       "stream_accumulate",
-				"duration_ms": time.Since(callStart).Milliseconds(),
-			})
+			inspector.EmitEvent("error_phase", map[string]interface{}{"phase": "stream_accumulate"})
 			return nil, fmt.Errorf("anthropic streaming accumulate error: %w", err)
 		}
 
@@ -262,6 +275,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 						case <-ctx.Done():
 							return nil, ctx.Err()
 						}
+						term.AssistantText(deltaVariant.Text)
 					}
 				}
 			}
@@ -274,10 +288,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 			a.logErrorDetails(modelID, messages, params, opts, err, &message)
 			a.logRawResponse(requestID, modelID, &message, err)
 		}
-		inspector.EmitError(err, map[string]interface{}{
-			"phase":       "stream_err",
-			"duration_ms": time.Since(callStart).Milliseconds(),
-		})
+		inspector.EmitEvent("error_phase", map[string]interface{}{"phase": "stream_err"})
 		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}
 	stream.Close()
@@ -339,6 +350,7 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				}
+				term.ToolStart(block.Name, string(argsJSON))
 			}
 		}
 
@@ -367,9 +379,8 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 	resp := convertResponse(&message)
 	a.attachCostEstimate(resp, modelID)
 
-	// Inspector: emit tool calls observed (one event per call), then
-	// the completion envelope. Sequence is request → events → tool_call*
-	// → completion.
+	// Provider-specific tool-call events; the bookend completion envelope
+	// is emitted by WithObservability after this body returns.
 	if inspector.Enabled() {
 		for _, block := range message.Content {
 			if block.Type == "tool_use" {
@@ -380,29 +391,17 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 				})
 			}
 		}
-		completionMeta := map[string]interface{}{
-			"stop_reason":      string(message.StopReason),
-			"prompt_tokens":    int(message.Usage.InputTokens),
-			"completion_tokens": int(message.Usage.OutputTokens),
-			"total_tokens":     int(message.Usage.InputTokens + message.Usage.OutputTokens),
-			"duration_ms":      time.Since(callStart).Milliseconds(),
-			"content_chunks":   contentChunksSent,
-		}
-		if message.Usage.CacheReadInputTokens > 0 {
-			completionMeta["cache_read_input_tokens"] = int(message.Usage.CacheReadInputTokens)
-		}
-		if message.Usage.CacheCreationInputTokens > 0 {
-			completionMeta["cache_creation_input_tokens"] = int(message.Usage.CacheCreationInputTokens)
-		}
-		if len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
-			if cost, ok := resp.Choices[0].GenerationInfo.Additional["cost_usd_estimated"].(float64); ok && cost > 0 {
-				completionMeta["cost_usd_estimated"] = cost
-			}
-			if cm, ok := resp.Choices[0].GenerationInfo.Additional["cost_model_id"].(string); ok && cm != "" {
-				completionMeta["cost_model_id"] = cm
-			}
-		}
-		inspector.EmitCompletion(completionMeta)
+	}
+
+	extras := map[string]interface{}{"content_chunks": contentChunksSent}
+	if message.Usage.CacheReadInputTokens > 0 {
+		extras["cache_read_input_tokens"] = int(message.Usage.CacheReadInputTokens)
+	}
+	if message.Usage.CacheCreationInputTokens > 0 {
+		extras["cache_creation_input_tokens"] = int(message.Usage.CacheCreationInputTokens)
+	}
+	if completionExtras != nil {
+		*completionExtras = extras
 	}
 
 	return resp, nil

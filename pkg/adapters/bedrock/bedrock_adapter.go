@@ -67,7 +67,7 @@ func (b *BedrockAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 }
 
 // GenerateContent implements the llmtypes.Model interface
-func (b *BedrockAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (resp *llmtypes.ContentResponse, err error) {
+func (b *BedrockAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	// Parse call options
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -80,15 +80,24 @@ func (b *BedrockAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		modelID = opts.Model
 	}
 
-	// On success, fill in cost_usd_estimated from tokens × registry
-	// rates. Bedrock's Converse API ships tokens but no USD field, so
-	// this is the only adapter-layer surface for cost.
-	defer func() {
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "bedrock",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("bedrock.converse model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		resp, err := b.generateContentInner(ctx, opts, modelID, messages)
 		if err == nil {
 			b.attachCostEstimate(resp, modelID)
 		}
-	}()
+		return resp, err
+	})
+}
 
+func (b *BedrockAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	// Convert messages to Converse API format
 	converseMessages := convertMessagesToConverse(messages)
 

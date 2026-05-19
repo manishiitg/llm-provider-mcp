@@ -108,7 +108,7 @@ func (m *MiniMaxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 }
 
 // GenerateContent implements the llmtypes.Model interface
-func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (resp *llmtypes.ContentResponse, err error) {
+func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	if !m.codingPlan && containsImageParts(messages) {
 		return nil, fmt.Errorf("MiniMax image understanding requires provider minimax-coding-plan")
 	}
@@ -123,14 +123,24 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		modelID = opts.Model
 	}
 
-	// On success, fill in cost_usd_estimated from tokens × registry
-	// rates. MiniMax responses carry usage but no USD field.
-	defer func() {
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "minimax",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("minimax.messages model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		resp, err := m.generateContentInner(ctx, opts, modelID, messages)
 		if err == nil {
 			m.attachCostEstimate(resp, modelID)
 		}
-	}()
+		return resp, err
+	})
+}
 
+func (m *MiniMaxAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	anthropicMessages, systemMessage := convertMessages(messages)
 
 	params := anthropic.MessageNewParams{

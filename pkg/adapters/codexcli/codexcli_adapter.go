@@ -146,6 +146,27 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return c.generateContentInteractive(ctx, messages, opts)
 	}
 
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "codex-cli",
+		Model:        c.modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("codex exec --json --model %s (msgs=%d)", c.modelID, len(messages)),
+		RequestMetaExtra: map[string]interface{}{
+			"transport": "structured_cli",
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		return c.generateContentStructured(ctx, opts, messages, sink.Term, sink.Inspector)
+	})
+}
+
+// generateContentStructured is the body of the non-interactive codex
+// path. The public GenerateContent dispatches between interactive
+// (tmux) and this structured path; this method holds all the
+// stream-json parsing logic and per-event emissions.
+func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
+	_ = inspector // reserved for future per-event emissions
 	modelToUse := resolveCodexCLIModelID(c.modelID)
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCodexModel].(string); ok && model != "" {
@@ -618,6 +639,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 							ToolArgs:   toolArgs,
 						}
 					}
+					term.ToolStart(toolName, toolArgs)
 
 				case "file_change":
 					// File change (apply_patch) starting
@@ -646,6 +668,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 							ToolArgs:   toolArgs,
 						}
 					}
+					term.ToolStart(toolName, toolArgs)
 
 				case "web_search":
 					// Web search starting
@@ -672,6 +695,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 							ToolArgs:   toolArgs,
 						}
 					}
+					term.ToolStart(toolName, toolArgs)
 
 				case "mcp_call", "mcp_tool_call":
 					// MCP tool call starting
@@ -709,6 +733,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 							ToolArgs:   toolArgs,
 						}
 					}
+					term.ToolStart(toolName, toolArgs)
 				}
 
 			case "item.completed":
@@ -735,6 +760,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 								Content: "\n\n" + text,
 							}
 						}
+						term.AssistantText(text)
 					}
 					// Also check "content" as fallback in case format changes
 					if content, ok := item["content"].(string); ok && content != "" {
@@ -769,6 +795,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 								ToolDuration: duration,
 							}
 						}
+						term.ToolEnd(pt.toolName, resultContent, duration)
 						delete(pendingTools, itemID)
 						pendingToolCalls.Add(-1)
 					}
@@ -815,6 +842,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 								ToolDuration: duration,
 							}
 						}
+						term.ToolEnd(pt.toolName, resultContent, duration)
 						delete(pendingTools, itemID)
 						pendingToolCalls.Add(-1)
 					}
@@ -1016,9 +1044,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	if cmdErr != nil {
 		c.logger.Errorf("Codex CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		if resultText == "" {
-			if opts.StreamChan != nil {
-				close(opts.StreamChan)
-			}
+			// opts.StreamChan close is owned by WithObservability.
 			if detectedRateLimit.Load() {
 				return nil, fmt.Errorf("codex cli rate limited: model is experiencing high demand. Please try again later")
 			}
@@ -1049,9 +1075,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		}
 	}
 
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
+	// opts.StreamChan close is owned by WithObservability.
 
 	return finalResponse, nil
 }

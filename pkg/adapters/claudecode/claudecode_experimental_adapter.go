@@ -134,6 +134,24 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		}
 		return nil, fmt.Errorf("claude-code tmux transport does not support llmtypes.ImageContent yet")
 	}
+
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "claudecode",
+		Model:        c.modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("claude (tmux) model=%s msgs=%d", c.modelID, len(messages)),
+		RequestMetaExtra: map[string]interface{}{
+			"transport": "tmux",
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		_ = sink
+		return c.generateContentTmuxBody(ctx, opts, messages)
+	})
+}
+
+func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	if err := ensureTmuxAvailable(ctx); err != nil {
 		return nil, err
 	}
@@ -144,6 +162,15 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	resumeID := claudeResumeIDFromOptions(opts)
 	interactiveSessionID := claudeInteractiveSessionIDFromOptions(opts)
 	persistentInteractive := claudePersistentInteractiveFromOptions(opts) && interactiveSessionID != ""
+
+	// On user-initiated cancellation, tear down the persistent tmux
+	// session so the live pane closes alongside the workflow step.
+	defer func() {
+		if interactiveSessionID == "" || ctx.Err() != context.Canceled {
+			return
+		}
+		closeClaudePersistentInteractiveSession(interactiveSessionID, "workflow context canceled", c.logger)
+	}()
 	nativeSessionID := resumeID
 	if nativeSessionID == "" {
 		nativeSessionID = newClaudeNativeSessionID()
@@ -239,9 +266,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		if isContextCanceledError(err) {
 			interruptClaudeExperimentalSession(sessionName, c.logger)
 		}
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		// opts.StreamChan close is owned by WithObservability.
 		return nil, err
 	}
 	if persistentInteractive && persistentSession != nil {
@@ -261,9 +286,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 		}
 	}
 
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
+	// opts.StreamChan close is owned by WithObservability.
 
 	additional := map[string]interface{}{
 		"provider":                           "claude-code",

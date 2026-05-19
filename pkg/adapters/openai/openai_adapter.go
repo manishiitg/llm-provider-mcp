@@ -120,6 +120,19 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		modelID = opts.Model
 	}
 
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     "openai",
+		Model:        modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("openai.chat.completions model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		return o.generateContentInner(ctx, opts, modelID, messages, sink.Term)
+	})
+}
+
+func (o *OpenAIAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, modelID string, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal) (*llmtypes.ContentResponse, error) {
 	// Convert messages from llmtypes format to OpenAI format
 	openaiMessages := convertMessages(messages, o.logger)
 
@@ -322,7 +335,7 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: param.NewOpt(true),
 		}
-		resp, err := o.generateContentStreaming(ctx, modelID, params, opts, isOpenRouter, messages)
+		resp, err := o.generateContentStreaming(ctx, modelID, params, opts, isOpenRouter, messages, term)
 		if err == nil {
 			o.attachCostEstimate(resp, modelID)
 		}
@@ -392,7 +405,7 @@ func (o *OpenAIAdapter) attachCostEstimate(resp *llmtypes.ContentResponse, model
 }
 
 // generateContentStreaming handles streaming responses from OpenAI API
-func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID string, params openai.ChatCompletionNewParams, opts *llmtypes.CallOptions, isOpenRouter bool, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
+func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID string, params openai.ChatCompletionNewParams, opts *llmtypes.CallOptions, isOpenRouter bool, messages []llmtypes.MessageContent, term *llmtypes.SyntheticTerminal) (*llmtypes.ContentResponse, error) {
 	// Check for recorder in context
 	rec, _ := recorder.FromContext(ctx)
 	var recordedChunks []interface{}
@@ -492,6 +505,7 @@ func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID st
 							return nil, ctx.Err()
 						}
 					}
+					term.AssistantText(deltaText)
 				}
 
 				// Handle tool call deltas (same logic as real streaming)
@@ -544,9 +558,9 @@ func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID st
 						for index := range toolCallMap {
 							if !completedToolCallIndices[index] {
 								completedToolCallIndices[index] = true
+								toolCall := toolCallMap[index]
 								// Stream complete tool call
 								if opts.StreamChan != nil {
-									toolCall := toolCallMap[index]
 									toolCallCopy := *toolCall
 									select {
 									case opts.StreamChan <- llmtypes.StreamChunk{
@@ -556,6 +570,9 @@ func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID st
 									case <-ctx.Done():
 										return nil, ctx.Err()
 									}
+								}
+								if toolCall.FunctionCall != nil {
+									term.ToolStart(toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
 								}
 							}
 						}

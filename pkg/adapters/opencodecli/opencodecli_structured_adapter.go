@@ -68,9 +68,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	systemPrompt, conversationMessages := splitOpenCodeSystemPrompt(messages)
 	prompt := buildOpenCodePrompt(conversationMessages, false)
 	if strings.TrimSpace(prompt) == "" {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("opencode-cli prompt is empty")
 	}
 
@@ -107,9 +104,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		if configJSON, ok := opts.Metadata.Custom[MetadataKeyProjectConfig].(string); ok && strings.TrimSpace(configJSON) != "" {
 			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), []byte(configJSON))
 			if werr != nil {
-				if opts.StreamChan != nil {
-					close(opts.StreamChan)
-				}
 				return nil, fmt.Errorf("opencode project config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
@@ -117,16 +111,10 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
 			configJSON, merr := buildOpenCodeMCPConfigJSON(mcpJSON)
 			if merr != nil {
-				if opts.StreamChan != nil {
-					close(opts.StreamChan)
-				}
 				return nil, merr
 			}
 			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), configJSON)
 			if werr != nil {
-				if opts.StreamChan != nil {
-					close(opts.StreamChan)
-				}
 				return nil, fmt.Errorf("opencode MCP config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
@@ -209,9 +197,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("opencode stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
@@ -219,9 +204,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 
 	c.logInfof("Executing OpenCode CLI structured: opencode %s", strings.Join(args[:3], " "))
 	if err := cmd.Start(); err != nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("opencode start: %w", err)
 	}
 
@@ -301,10 +283,6 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	}
 
 	waitErr := cmd.Wait()
-
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
 
 	content := strings.TrimSpace(strings.Join(textParts, ""))
 

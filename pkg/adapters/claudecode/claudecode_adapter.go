@@ -252,6 +252,35 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 	}
 	workingDir := claudeWorkingDirFromOptions(opts)
 
+	toolCount := 0
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if tools, ok := opts.Metadata.Custom[MetadataKeyTools].(string); ok && tools != "" {
+			toolCount = strings.Count(tools, ",") + 1
+		}
+	}
+
+	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+		Provider:     c.providerName,
+		Model:        c.modelID,
+		Opts:         opts,
+		MessageCount: len(messages),
+		Messages:     messages,
+		HeaderLine:   fmt.Sprintf("claude --print --model %s (msgs=%d)", c.modelID, len(messages)),
+		RequestMetaExtra: map[string]interface{}{
+			"transport":   "structured_cli",
+			"working_dir": workingDir,
+			"tool_count":  toolCount,
+		},
+	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+		return c.generateContentInner(ctx, opts, messages, workingDir, sink.Term, sink.Inspector)
+	})
+}
+
+// generateContentInner is the body of GenerateContent — kept as a
+// separate method so the public entry point is just the
+// WithObservability wrapper. All per-stream emissions live here.
+func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent, workingDir string, term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
+	_ = inspector // reserved for future per-event emissions
 	// 1. Prepare Command Arguments
 	// Note: --input-format stream-json requires --output-format stream-json and --verbose
 	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages"}
@@ -476,6 +505,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 									Content: txt,
 								}
 							}
+							term.AssistantText(txt)
 						}
 					} else if deltaType == "input_json_delta" {
 						if partialJSON, ok := delta["partial_json"].(string); ok {
@@ -501,6 +531,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 								ToolArgs:   toolArgs,
 							}
 						}
+						term.ToolStart(currentToolName, toolArgs)
 
 						// Save args to pending tool (don't emit ToolCallEnd yet — wait for tool_result)
 						if pt, ok := pendingTools[currentToolID]; ok {
@@ -560,6 +591,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 										ToolDuration: duration,
 									}
 								}
+								term.ToolEnd(pt.toolName, resultContent, duration)
 								delete(pendingTools, toolUseID)
 							}
 						}
@@ -663,26 +695,20 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		c.logger.Errorf("Claude Code CLI failed with error: %v. stderr: %s", cmdErr, stderrBuf.String())
 		// If we already have a final response (sometimes CLI errors out after finishing), we might still want to return it
 		if finalResponse == nil {
-			if opts.StreamChan != nil {
-				close(opts.StreamChan)
-			}
+			// opts.StreamChan close is owned by WithObservability.
 			return nil, fmt.Errorf("claude cli execution failed: %w", cmdErr)
 		}
 	}
 
 	if finalResponse == nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		// opts.StreamChan close is owned by WithObservability.
 		return nil, fmt.Errorf("failed to receive final result from claude cli")
 	}
 
 	// Surface CLI-reported errors as Go errors so upstream retry logic can handle them.
 	// This catches API errors (500, 502, 503, etc.) that the CLI reports via is_error=true.
 	if resultIsError && resultErrorText != "" {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		// opts.StreamChan close is owned by WithObservability.
 		return nil, fmt.Errorf("claude cli error: %s", resultErrorText)
 	}
 
@@ -700,9 +726,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 		}
 	}
 
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
+	// opts.StreamChan close is owned by WithObservability.
 
 	return finalResponse, nil
 }

@@ -95,6 +95,15 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	callCtx, cancel := geminiInteractiveCallContext(ctx)
 	defer cancel()
 
+	// On user-initiated cancellation, tear down the persistent tmux
+	// session so the live pane closes alongside the workflow step.
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		closeGeminiPersistentSession(ownerSessionID, "workflow context canceled", g.logger)
+	}()
+
 	systemPrompt, conversationMessages := splitGeminiSystemPrompt(messages)
 	historicalAssistantTexts := geminiAssistantHistory(conversationMessages)
 	session, err := g.acquireGeminiInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
