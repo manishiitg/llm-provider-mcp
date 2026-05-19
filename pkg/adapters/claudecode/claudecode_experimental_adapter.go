@@ -772,10 +772,18 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		// even though the draft is already visible in the TUI. Still submit once
 		// so the user's message does not sit unsubmitted in the input line.
 	}
-	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
-		return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+			return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
+		}
+		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
 	}
-	return nil
+	return fmt.Errorf("Claude Code experimental input remained unsubmitted after submit retries: %w", lastErr)
 }
 
 func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) string {
@@ -1075,6 +1083,78 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 			}
 		}
 	}
+}
+
+func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message string) error {
+	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastCaptured string
+	for {
+		select {
+		case <-deadline.Done():
+			captured := lastCaptured
+			if strings.TrimSpace(captured) == "" {
+				captured, _ = captureTmuxPane(context.Background(), sessionName)
+			}
+			if strings.TrimSpace(captured) != "" {
+				return fmt.Errorf("timed out waiting for Claude Code live input draft to clear; latest pane:\n%s", captured)
+			}
+			return fmt.Errorf("timed out waiting for Claude Code live input draft to clear")
+		case <-ticker.C:
+			captured, err := captureTmuxPane(deadline, sessionName)
+			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return err
+				}
+				continue
+			}
+			lastCaptured = captured
+			draft, ok := latestClaudePromptDraft(captured)
+			if !ok {
+				if hasClaudeActivity(captured) {
+					return nil
+				}
+				continue
+			}
+			if !claudePromptDraftStillMatchesMessage(draft, message) {
+				return nil
+			}
+		}
+	}
+}
+
+func latestClaudePromptDraft(captured string) (string, bool) {
+	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
+	lines := strings.Split(normalized, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "❯" {
+			return "", true
+		}
+		if strings.HasPrefix(trimmed, "❯ ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯")), true
+		}
+	}
+	return "", false
+}
+
+func claudePromptDraftStillMatchesMessage(draft, message string) bool {
+	normalizedDraft := strings.ToLower(strings.Join(strings.Fields(draft), " "))
+	normalizedMessage := strings.ToLower(strings.Join(strings.Fields(message), " "))
+	if normalizedDraft == "" {
+		return false
+	}
+	if strings.HasPrefix(normalizedDraft, "[pasted") {
+		return true
+	}
+	if normalizedMessage == "" {
+		return false
+	}
+	return strings.Contains(normalizedDraft, normalizedMessage) || strings.Contains(normalizedMessage, normalizedDraft)
 }
 
 func hasNewAssistantOutput(delta string) bool {

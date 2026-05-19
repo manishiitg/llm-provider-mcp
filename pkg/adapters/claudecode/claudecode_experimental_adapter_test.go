@@ -903,6 +903,44 @@ Fix the specific issues above and re-produce the required outputs.`) {
 	}
 }
 
+func TestLatestClaudePromptDraftUsesLastPromptLine(t *testing.T) {
+	pane := `
+⏺ Done
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ yes fix?
+
+⏺ api-bridge - execute_shell_command (MCP)
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+`
+	got, ok := latestClaudePromptDraft(pane)
+	if !ok {
+		t.Fatal("latestClaudePromptDraft ok = false, want true")
+	}
+	if got != "" {
+		t.Fatalf("latestClaudePromptDraft = %q, want blank current draft", got)
+	}
+}
+
+func TestClaudePromptDraftStillMatchesMessage(t *testing.T) {
+	if !claudePromptDraftStillMatchesMessage("yes fix", "yes fix") {
+		t.Fatal("exact live input draft should match message")
+	}
+	if !claudePromptDraftStillMatchesMessage("[Pasted Text: 61 lines]", strings.Repeat("large prompt\n", 61)) {
+		t.Fatal("pasted text marker should be treated as an uncleared draft")
+	}
+	if claudePromptDraftStillMatchesMessage("", "yes fix") {
+		t.Fatal("blank prompt draft should be treated as submitted")
+	}
+	if claudePromptDraftStillMatchesMessage("new unrelated draft", "yes fix") {
+		t.Fatal("different draft should not block submit verification")
+	}
+}
+
 func TestClaudeLatestAssistantResponseRejectsToolProgress(t *testing.T) {
 	pane := `
 ⏺ Calling api-bridge… (ctrl+o to expand)
