@@ -103,7 +103,13 @@ func WithObservability(ctx context.Context, cfg ObservabilityConfig, body Adapte
 	}
 	inspector.EmitRequest(reqMeta)
 
-	term := NewSyntheticTerminal(cfg.Opts.StreamChan, cfg.Provider, cfg.Model)
+	// Pass the actual transport into the synthetic terminal so the
+	// chunk metadata carries the right transport label. RequestMetaExtra
+	// is the existing place adapters declare their transport
+	// ("tmux" / "structured_cli" / "api"); honour whatever's there so
+	// the frontend chip matches the Header line in the pane.
+	transportLabel, _ := cfg.RequestMetaExtra["transport"].(string)
+	term := NewSyntheticTerminalWithTransport(cfg.Opts.StreamChan, cfg.Provider, cfg.Model, transportLabel)
 	if cfg.HeaderLine != "" {
 		term.Header(cfg.HeaderLine)
 	}
@@ -115,8 +121,8 @@ func WithObservability(ctx context.Context, cfg ObservabilityConfig, body Adapte
 	if line := formatWorkflowContextLine(InspectorSinkStepContext(cfg.Opts.InspectorSink)); line != "" {
 		term.Line("%s", line)
 	}
-	if userLine := formatLastUserMessageLine(cfg.Messages); userLine != "" {
-		term.Line("%s", userLine)
+	for _, line := range formatConversationLines(cfg.Messages) {
+		term.Line("%s", line)
 	}
 
 	sink := &StreamSink{
@@ -229,35 +235,100 @@ func extractCostUSD(resp *ContentResponse) float64 {
 	return 0
 }
 
-// formatLastUserMessageLine returns "> user: <truncated text>" for the
-// most recent human message in the slice, or "" when there is no
-// user content. Truncation keeps the terminal pane scannable; the
-// full text remains in the inspector request event.
-func formatLastUserMessageLine(messages []MessageContent) string {
-	const maxLen = 200
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != ChatMessageTypeHuman {
-			continue
-		}
-		text := ""
-		for _, part := range messages[i].Parts {
-			if tp, ok := part.(TextContent); ok {
-				if text != "" {
-					text += " "
-				}
-				text += tp.Text
-			}
-		}
-		text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
-		if text == "" {
-			continue
-		}
-		if len(text) > maxLen {
-			text = text[:maxLen] + "…"
-		}
-		return "> user: " + text
+// formatConversationLines renders the message history as a list of
+// pane lines: user → "> user: ...", assistant → "< asst: ...",
+// tool call → "→ tool: name(args)", tool result → "✓ result: ...".
+// Each line ends up in the synthetic terminal's buffer so the pane
+// shows the whole step's activity, not just the latest LLM call.
+//
+// Truncation rules:
+//   - User messages: shown in full (debug visibility — they're
+//     usually the most informative line).
+//   - Assistant text / tool results: truncated to maxLen so the
+//     pane stays scannable. Full text remains in the inspector
+//     request event.
+//   - Tool args: truncated more aggressively (120 chars).
+func formatConversationLines(messages []MessageContent) []string {
+	const maxLen = 400
+	out := make([]string, 0, len(messages))
+	collapse := func(s string) string {
+		return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	}
-	return ""
+	truncate := func(s string, max int) string {
+		s = collapse(s)
+		if len(s) <= max {
+			return s
+		}
+		return s[:max] + "…"
+	}
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case TextContent:
+				text := collapse(p.Text)
+				if text == "" {
+					continue
+				}
+				switch msg.Role {
+				case ChatMessageTypeHuman:
+					// User messages: full, not truncated. The
+					// step's instructions live here; clipping
+					// hides the most useful signal.
+					out = append(out, "> user: "+text)
+				case ChatMessageTypeAI:
+					out = append(out, "< asst: "+truncate(text, maxLen))
+				case ChatMessageTypeSystem:
+					// Skip system prompts — too long, not useful
+					// inline. They're available in the inspector
+					// request event.
+				default:
+					out = append(out, "  "+truncate(text, maxLen))
+				}
+			case ToolCall:
+				name := ""
+				args := ""
+				if p.FunctionCall != nil {
+					name = p.FunctionCall.Name
+					args = p.FunctionCall.Arguments
+				}
+				out = append(out, fmt.Sprintf("→ tool: %s(%s)", name, truncate(args, 120)))
+			case ToolCallResponse:
+				prefix := "✓"
+				if p.IsError {
+					prefix = "✗"
+				}
+				name := p.Name
+				if name == "" {
+					name = p.ToolCallID
+				}
+				out = append(out, fmt.Sprintf("%s result %s: %s", prefix, name, truncate(p.Content, 300)))
+				if len(p.Images) > 0 {
+					out = append(out, fmt.Sprintf("    + %d image(s) attached to result", len(p.Images)))
+				}
+			case ImageContent:
+				ref := p.Data
+				if p.SourceType == "base64" {
+					ref = fmt.Sprintf("base64 %d bytes", len(p.Data))
+				}
+				out = append(out, fmt.Sprintf("[image %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80)))
+			case DocumentContent:
+				ref := p.Data
+				if p.SourceType == "base64" {
+					ref = fmt.Sprintf("base64 %d bytes", len(p.Data))
+				}
+				out = append(out, fmt.Sprintf("[document %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80)))
+			}
+			// Reasoning / thinking blocks (Claude extended thinking,
+			// Gemini thinking) don't ride as their own ContentPart in
+			// llmtypes today — providers surface them either as
+			// StreamChunkTypeContent during the response (routed to
+			// term.AssistantText by StreamSink) or as token-count
+			// metadata (ReasoningTokens / ThoughtsTokens on Usage).
+			// If/when a dedicated ReasoningContent part is added,
+			// extend this switch with a "(thinking) ..." line.
+		}
+	}
+	return out
 }
 
 // formatWorkflowContextLine builds the "↳ step X (N/M) · attempt A ·

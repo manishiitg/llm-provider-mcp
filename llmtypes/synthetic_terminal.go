@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+// transportLabel returns the explicit transport ("api" / "structured_cli"
+// / "tmux") when the caller set one, otherwise falls back to "non_tmux"
+// for backwards compatibility with the old hard-coded value.
+func (t *SyntheticTerminal) transportLabel() string {
+	if t == nil || t.transport == "" {
+		return "non_tmux"
+	}
+	return t.transport
+}
+
 // SyntheticTerminal accumulates a terminal-style log for transports
 // that have no real tmux pane to snapshot (structured CLI + direct
 // API providers). The log is emitted as StreamChunkTypeTerminal chunks
@@ -17,12 +27,13 @@ import (
 // every adapter needs the same line cap, the same non-blocking emit,
 // the same metadata shape. Five copies drift.
 type SyntheticTerminal struct {
-	mu       sync.Mutex
-	lines    []string
-	maxLines int
-	provider string
-	model    string
-	ch       chan<- StreamChunk
+	mu        sync.Mutex
+	lines     []string
+	maxLines  int
+	provider  string
+	model     string
+	transport string
+	ch        chan<- StreamChunk
 }
 
 // NewSyntheticTerminal builds a log bound to a single StreamChan. If
@@ -30,11 +41,21 @@ type SyntheticTerminal struct {
 // safe to call but emit nothing). The caller passes provider/model
 // for metadata enrichment.
 func NewSyntheticTerminal(ch chan<- StreamChunk, provider, model string) *SyntheticTerminal {
+	return NewSyntheticTerminalWithTransport(ch, provider, model, "")
+}
+
+// NewSyntheticTerminalWithTransport is like NewSyntheticTerminal but
+// also records the actual transport class ("api" / "structured_cli" /
+// "tmux"). The chip in the frontend reads this from the chunk
+// metadata so a claude (tmux) call is labelled tmux·claude code
+// rather than the wrong-by-default api·claude code.
+func NewSyntheticTerminalWithTransport(ch chan<- StreamChunk, provider, model, transport string) *SyntheticTerminal {
 	return &SyntheticTerminal{
-		ch:       ch,
-		provider: provider,
-		model:    model,
-		maxLines: 200, // keep the pane bounded; older lines drop off the top
+		ch:        ch,
+		provider:  provider,
+		model:     model,
+		transport: transport,
+		maxLines:  200, // keep the pane bounded; older lines drop off the top
 	}
 }
 
@@ -196,7 +217,7 @@ func (t *SyntheticTerminal) emit() {
 			"source":    "synthetic",
 			"provider":  t.provider,
 			"model":     t.model,
-			"transport": "non_tmux",
+			"transport": t.transportLabel(),
 		},
 	}:
 	default:
