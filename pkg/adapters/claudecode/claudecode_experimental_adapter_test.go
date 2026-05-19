@@ -528,6 +528,30 @@ Called api-bridge
 	}
 }
 
+func TestExtractLatestUnmarkedAssistantResponseSkipsTrailingToolBlock(t *testing.T) {
+	pane := `
+⏺ Here's the full summary:
+  - done
+  - verified
+
+✻ Worked for 2s
+
+⏺ api-bridge - execute_shell_command (MCP)(command: "cat file")
+  ⎿  {"stdout":"ok"}
+
+─────────────────────────────────────────────────── mcp-agent-20260519 ──
+❯
+`
+	got, ok := extractLatestUnmarkedAssistantResponse(pane)
+	if !ok {
+		t.Fatal("extractLatestUnmarkedAssistantResponse ok = false, want true")
+	}
+	want := "Here's the full summary:\n- done\n- verified"
+	if got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func TestExtractLatestUnmarkedAssistantResponseCanStillStripMarkers(t *testing.T) {
 	startMarker := "RESPONSE_START_abc"
 	endMarker := "RESPONSE_END_def"
@@ -549,6 +573,17 @@ func TestExtractLatestUnmarkedAssistantResponseCanStillStripMarkers(t *testing.T
 	}
 	if got != "final text" {
 		t.Fatalf("content = %q, want final text", got)
+	}
+}
+
+func TestTruncateClaudePaneForError(t *testing.T) {
+	pane := strings.Repeat("x", 5000)
+	got := truncateClaudePaneForError(pane)
+	if len([]rune(got)) >= len([]rune(pane)) {
+		t.Fatal("truncateClaudePaneForError did not shorten large pane")
+	}
+	if !strings.Contains(got, "truncated to last") {
+		t.Fatalf("truncate notice missing: %q", got[:80])
 	}
 }
 

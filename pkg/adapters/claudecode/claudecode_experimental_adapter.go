@@ -1185,7 +1185,7 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
 		return content, nil
 	}
-	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", captured)
+	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", truncateClaudePaneForError(captured))
 }
 
 func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
@@ -1407,7 +1407,8 @@ func isClaudeCompletedWorkStatusLine(trimmed string) bool {
 
 func isClaudeToolProgressLine(trimmed string) bool {
 	return strings.Contains(trimmed, "Calling ") ||
-		strings.Contains(trimmed, "Called ")
+		strings.Contains(trimmed, "Called ") ||
+		(strings.Contains(trimmed, " - ") && strings.Contains(trimmed, " (MCP)"))
 }
 
 func isClaudeFatalProgressLine(trimmed string) bool {
@@ -1580,30 +1581,27 @@ func extractLatestUnmarkedAssistantResponse(text string) (string, bool) {
 	normalized := strings.ReplaceAll(text, "\u00a0", " ")
 	lines := strings.Split(normalized, "\n")
 
-	start := -1
-	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "⏺ ") {
-			start = i
+	for start := len(lines) - 1; start >= 0; start-- {
+		if !strings.HasPrefix(strings.TrimSpace(lines[start]), "⏺ ") {
+			continue
 		}
-	}
-	if start < 0 {
-		return "", false
-	}
 
-	responseLines := make([]string, 0, len(lines)-start)
-	for _, line := range lines[start:] {
-		trimmed := strings.TrimSpace(line)
-		if len(responseLines) > 0 && isClaudeTUIBoundaryLine(trimmed) {
-			break
+		responseLines := make([]string, 0, len(lines)-start)
+		for _, line := range lines[start:] {
+			trimmed := strings.TrimSpace(line)
+			if len(responseLines) > 0 && isClaudeTUIBoundaryLine(trimmed) {
+				break
+			}
+			responseLines = append(responseLines, line)
 		}
-		responseLines = append(responseLines, line)
-	}
 
-	content := normalizeCapturedAssistantText(strings.Join(responseLines, "\n"))
-	if content == "" || isClaudeTUIArtifact(content) || isClaudeNonTextAssistantBlock(content) {
-		return "", false
+		content := normalizeCapturedAssistantText(strings.Join(responseLines, "\n"))
+		if content == "" || isClaudeTUIArtifact(content) || isClaudeNonTextAssistantBlock(content) {
+			continue
+		}
+		return content, true
 	}
-	return content, true
+	return "", false
 }
 
 func extractTrailingUnmarkedAssistantResponse(text string) (string, bool) {
@@ -1699,6 +1697,19 @@ func normalizeCapturedAssistantText(content string) string {
 		cleaned = append(cleaned, line)
 	}
 	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+}
+
+func truncateClaudePaneForError(captured string) string {
+	const maxRunes = 4000
+	captured = strings.TrimSpace(captured)
+	if captured == "" {
+		return captured
+	}
+	runes := []rune(captured)
+	if len(runes) <= maxRunes {
+		return captured
+	}
+	return fmt.Sprintf("[truncated to last %d of %d chars]\n%s", maxRunes, len(runes), string(runes[len(runes)-maxRunes:]))
 }
 
 func tmuxTimeout() time.Duration {
