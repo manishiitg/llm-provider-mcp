@@ -1026,6 +1026,24 @@ func TestGetModelMetadata(t *testing.T) {
 	}
 }
 
+func TestResolveGeminiCLITierAliases(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "high", want: "gemini-3.5-flash"},
+		{model: "medium", want: "gemini-3.5-flash"},
+		{model: "low", want: "gemini-3.1-flash-lite"},
+		{model: "gemini-3.5-flash", want: "gemini-3.5-flash"},
+	}
+
+	for _, tt := range tests {
+		if got := resolveGeminiCLIModelID(tt.model); got != tt.want {
+			t.Fatalf("resolveGeminiCLIModelID(%q) = %q, want %q", tt.model, got, tt.want)
+		}
+	}
+}
+
 func TestGetModelID(t *testing.T) {
 	adapter := NewGeminiCLIAdapter("", "gemini-2.5-pro", &MockLogger{})
 	if adapter.GetModelID() != "gemini-2.5-pro" {

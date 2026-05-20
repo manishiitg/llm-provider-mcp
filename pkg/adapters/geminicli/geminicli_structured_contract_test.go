@@ -418,6 +418,62 @@ func TestGeminiCLIStructuredModelOverride(t *testing.T) {
 	t.Logf("model override response: %q", content)
 }
 
+func TestGeminiCLIStructuredTierAliasesUseGemini35Flash(t *testing.T) {
+	requireRealGeminiCLIStreamJSONE2E(t)
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	tests := []struct {
+		alias string
+		want  string
+	}{
+		{alias: "high", want: "gemini-3.5-flash"},
+		{alias: "medium", want: "gemini-3.5-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alias, func(t *testing.T) {
+			adapter := NewGeminiCLIAdapter(apiKey, tt.alias, quietGeminiStreamLogger{})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			marker := "GEMINI_ALIAS_" + strings.ToUpper(tt.alias) + "_" + geminiRandomHex(4)
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{
+					Role: llmtypes.ChatMessageTypeHuman,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: "Reply exactly: " + marker},
+					},
+				},
+			},
+				WithProjectSettings(`{}`),
+				WithApprovalMode("yolo"),
+			)
+			if err != nil {
+				t.Fatalf("GenerateContent(%s) error = %v", tt.alias, err)
+			}
+			if resp == nil || len(resp.Choices) == 0 {
+				t.Fatalf("GenerateContent(%s) returned no choices", tt.alias)
+			}
+			content := strings.TrimSpace(resp.Choices[0].Content)
+			if !strings.Contains(content, marker) {
+				t.Fatalf("GenerateContent(%s) content = %q, want marker %q", tt.alias, content, marker)
+			}
+
+			gen := resp.Choices[0].GenerationInfo
+			if gen == nil || gen.Additional == nil {
+				t.Fatalf("GenerateContent(%s) missing generation info: %#v", tt.alias, gen)
+			}
+			got, ok := gen.Additional["gemini_model"].(string)
+			if !ok || strings.TrimSpace(got) == "" {
+				t.Fatalf("GenerateContent(%s) missing gemini_model metadata: %#v", tt.alias, gen.Additional)
+			}
+			if got != tt.want {
+				t.Fatalf("GenerateContent(%s) gemini_model = %q, want %q", tt.alias, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGeminiCLIStructuredMultiStepToolUse(t *testing.T) {
 	requireRealGeminiCLIStreamJSONE2E(t)
 

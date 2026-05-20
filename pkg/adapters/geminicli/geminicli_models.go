@@ -28,9 +28,9 @@ func GetAllGeminiCLIModels() []*llmtypes.ModelMetadata {
 		case "auto":
 			meta.ModelName = "Auto (recommended, pricing varies)"
 		case "high":
-			meta.ModelName = "High (Gemini Pro)"
+			meta.ModelName = "High (Gemini 3.5 Flash)"
 		case "medium":
-			meta.ModelName = "Medium (Gemini 3 Flash)"
+			meta.ModelName = "Medium (Gemini 3.5 Flash)"
 		case "low":
 			meta.ModelName = "Low (Gemini 3.1 Flash Lite)"
 		}
@@ -44,9 +44,9 @@ func GetAllGeminiCLIModels() []*llmtypes.ModelMetadata {
 func resolveGeminiCLIModelID(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "high":
-		return "pro"
+		return "gemini-3.5-flash"
 	case "medium":
-		return "gemini-3-flash-preview"
+		return "gemini-3.5-flash"
 	case "low":
 		return "gemini-3.1-flash-lite"
 	default:
