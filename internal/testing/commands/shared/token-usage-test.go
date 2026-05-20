@@ -441,7 +441,7 @@ func testVertexAI(ctx context.Context, messages []llmtypes.MessageContent, mainT
 	if rec != nil {
 		recConfig := rec.GetConfig()
 		recConfig.Provider = provider
-		recConfig.ModelID = "gemini-2.5-flash"
+		recConfig.ModelID = "gemini-3.5-flash"
 		rec = recorder.NewRecorder(recConfig)
 		if tokenTestReplay {
 			rec.SetReplayMode(true)
@@ -455,7 +455,7 @@ func testVertexAI(ctx context.Context, messages []llmtypes.MessageContent, mainT
 
 	vertexConfig := llmproviders.Config{
 		Provider:     llmproviders.ProviderVertex,
-		ModelID:      "gemini-2.5-flash",
+		ModelID:      "gemini-3.5-flash",
 		Temperature:  0.7,
 		EventEmitter: nil,
 		TraceID:      mainTraceID,

@@ -11,6 +11,7 @@ import (
 
 	llmproviders "github.com/manishiitg/multi-llm-provider-go"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 
@@ -151,8 +152,8 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 	// For Vertex, show a menu with model options
 	if provider == llmproviders.ProviderVertex {
 		fmt.Println("\nSelect Vertex AI Model:")
-		fmt.Println("1. gemini-2.5-flash (Gemini 2.5 Flash)")
-		fmt.Println("2. gemini-2.5-pro (Gemini 2.5 Pro)")
+		fmt.Println("1. gemini-3.5-flash (Gemini 3.5 Flash — GA default)")
+		fmt.Println("2. gemini-3-pro-preview (Gemini 3 Pro Preview)")
 		fmt.Print("\nEnter choice (1-2): ")
 
 		reader := bufio.NewReader(os.Stdin)
@@ -164,9 +165,9 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 		input = strings.TrimSpace(input)
 		switch input {
 		case "1":
-			return "gemini-3.1-flash-lite-preview", nil
+			return vertexadapter.ModelGemini35Flash, nil
 		case "2":
-			return "gemini-3-pro-preview", nil
+			return vertexadapter.ModelGemini3ProPreview, nil
 		default:
 			return "", fmt.Errorf("invalid choice: %s (must be 1 or 2)", input)
 		}

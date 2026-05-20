@@ -32,7 +32,7 @@ type vertexTestFlags struct {
 var vertexFlags vertexTestFlags
 
 func init() {
-	VertexCmd.Flags().StringVar(&vertexFlags.model, "model", "gemini-2.5-flash", "Gemini model to test")
+	VertexCmd.Flags().StringVar(&vertexFlags.model, "model", "gemini-3.5-flash", "Gemini model to test")
 	VertexCmd.Flags().StringVar(&vertexFlags.apiKey, "api-key", "", "Google API key (or set VERTEX_API_KEY env var)")
 	VertexCmd.Flags().BoolVar(&vertexFlags.record, "record", false, "Record LLM responses to testdata/")
 	VertexCmd.Flags().BoolVar(&vertexFlags.replay, "replay", false, "Replay recorded responses from testdata/")
@@ -66,7 +66,7 @@ func runVertex(cmd *cobra.Command, args []string) {
 	// Set default model if not specified
 	modelID := vertexFlags.model
 	if modelID == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = "gemini-3.5-flash"
 	}
 
 	// Setup recorder if recording or replaying

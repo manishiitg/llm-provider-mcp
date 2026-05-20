@@ -1805,7 +1805,7 @@ func initializeVertex(config Config) (llmtypes.Model, error) {
 	// Set default model if not specified
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = vertexadapter.ModelGemini31FlashLitePreview
+		modelID = vertexadapter.ModelGemini35Flash
 	}
 
 	logger := config.Logger
@@ -2452,7 +2452,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("VERTEX_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return vertexadapter.ModelGemini31FlashLitePreview
+		return vertexadapter.ModelGemini35Flash
 	case ProviderAzure:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("AZURE_PRIMARY_MODEL"); primaryModel != "" {
@@ -2478,7 +2478,7 @@ func GetDefaultModel(provider Provider) string {
 	case ProviderGeminiCLI:
 		// Get primary model from environment variable
 		// Supports aliases: "auto" (default), "pro", "flash", "flash-lite"
-		// or full names: "gemini-2.5-flash", "gemini-2.5-pro", etc.
+		// or full names: "gemini-3.5-flash", "gemini-3-pro-preview", etc.
 		if primaryModel := os.Getenv("GEMINI_CLI_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}

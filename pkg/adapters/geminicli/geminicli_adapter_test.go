@@ -921,7 +921,7 @@ func TestGeminiCLIRejectsImageContent(t *testing.T) {
 }
 
 func TestMapResultToContentResponse(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
 
 	raw := map[string]interface{}{
 		"type":       "result",
@@ -966,7 +966,7 @@ func TestMapResultToContentResponse(t *testing.T) {
 }
 
 func TestMapResultToContentResponse_UsageField(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
 
 	// Test with "usage" field instead of "stats"
 	raw := map[string]interface{}{
@@ -993,7 +993,7 @@ func TestMapResultToContentResponse_UsageField(t *testing.T) {
 }
 
 func TestMapResultToContentResponse_EmptyResult(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
 
 	raw := map[string]interface{}{
 		"type":     "result",
@@ -1008,9 +1008,9 @@ func TestMapResultToContentResponse_EmptyResult(t *testing.T) {
 }
 
 func TestGetModelMetadata(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
 
-	meta, err := adapter.GetModelMetadata("gemini-2.5-flash")
+	meta, err := adapter.GetModelMetadata("gemini-3.5-flash")
 	if err != nil {
 		t.Fatalf("GetModelMetadata() error = %v", err)
 	}
@@ -1018,11 +1018,11 @@ func TestGetModelMetadata(t *testing.T) {
 	if meta.Provider != "gemini-cli" {
 		t.Errorf("Expected provider 'gemini-cli', got '%s'", meta.Provider)
 	}
-	if meta.InputCostPer1MTokens != 0.30 {
-		t.Errorf("Expected input cost 0.30, got %f", meta.InputCostPer1MTokens)
+	if meta.InputCostPer1MTokens != 1.50 {
+		t.Errorf("Expected input cost 1.50, got %f", meta.InputCostPer1MTokens)
 	}
-	if meta.OutputCostPer1MTokens != 2.50 {
-		t.Errorf("Expected output cost 2.50, got %f", meta.OutputCostPer1MTokens)
+	if meta.OutputCostPer1MTokens != 9.00 {
+		t.Errorf("Expected output cost 9.00, got %f", meta.OutputCostPer1MTokens)
 	}
 }
 
@@ -1045,9 +1045,9 @@ func TestResolveGeminiCLITierAliases(t *testing.T) {
 }
 
 func TestGetModelID(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", "gemini-2.5-pro", &MockLogger{})
-	if adapter.GetModelID() != "gemini-2.5-pro" {
-		t.Errorf("Expected model ID 'gemini-2.5-pro', got '%s'", adapter.GetModelID())
+	adapter := NewGeminiCLIAdapter("", "gemini-3-pro-preview", &MockLogger{})
+	if adapter.GetModelID() != "gemini-3-pro-preview" {
+		t.Errorf("Expected model ID 'gemini-3-pro-preview', got '%s'", adapter.GetModelID())
 	}
 }
 

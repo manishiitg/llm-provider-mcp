@@ -188,7 +188,7 @@ func runVertexNestedArrayTest(cmd *cobra.Command, args []string) {
 		// Create Vertex AI LLM
 		vertexLLM, err := llmproviders.InitializeLLM(llmproviders.Config{
 			Provider:    llmproviders.ProviderVertex,
-			ModelID:     "gemini-2.5-flash", // Use a model that supports tools
+			ModelID:     "gemini-3.5-flash", // Use a model that supports tools
 			Temperature: 0,
 			Context:     ctx,
 		})

@@ -189,7 +189,7 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 	}
 	// Pass --model explicitly. Gemini CLI supports aliases such as "pro",
 	// "flash", and "flash-lite", as well as full model names such as
-	// "gemini-3.1-flash-lite" and "gemini-2.5-pro".
+	// "gemini-3.5-flash" and "gemini-3-pro-preview".
 	// Default to "auto" — lets Gemini CLI pick the best model automatically.
 	// Frontend can pass specific models: aliases or full model names.
 	if modelToUse == "" || modelToUse == "gemini-cli" {
@@ -878,32 +878,32 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 	}
 
 	switch modelID {
-	case "pro", "gemini-2.5-pro":
+	case "pro", "gemini-3-pro-preview", "gemini-3.1-pro-preview":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
-			ModelName:             "Gemini 2.5 Pro",
+			ModelName:             "Gemini 3 Pro Preview",
 			ContextWindow:         1048576,
-			InputCostPer1MTokens:  1.25,
-			OutputCostPer1MTokens: 10.00,
+			InputCostPer1MTokens:  2.00,
+			OutputCostPer1MTokens: 12.00,
 		}, nil
-	case "flash", "gemini-2.5-flash":
+	case "flash", "gemini-3.5-flash", "gemini-3-flash-preview":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
-			ModelName:             "Gemini 2.5 Flash",
+			ModelName:             "Gemini 3.5 Flash",
 			ContextWindow:         1048576,
-			InputCostPer1MTokens:  0.30,
-			OutputCostPer1MTokens: 2.50,
+			InputCostPer1MTokens:  1.50,
+			OutputCostPer1MTokens: 9.00,
 		}, nil
-	case "flash-lite", "gemini-2.5-flash-lite":
+	case "flash-lite", "gemini-3.1-flash-lite-preview":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
-			ModelName:             "Gemini 2.5 Flash-Lite",
+			ModelName:             "Gemini 3.1 Flash-Lite Preview",
 			ContextWindow:         1048576,
-			InputCostPer1MTokens:  0.10,
-			OutputCostPer1MTokens: 0.40,
+			InputCostPer1MTokens:  0.25,
+			OutputCostPer1MTokens: 1.50,
 		}, nil
 	default:
 		return &llmtypes.ModelMetadata{

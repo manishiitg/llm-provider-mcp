@@ -28,7 +28,7 @@ go run vertex_streaming_tool_calls.go
 
 ## What it does
 
-- Initializes the Vertex AI provider with `gemini-2.5-flash` model
+- Initializes the Vertex AI provider with `gemini-3.5-flash` model
 - Defines three tools: `read_file`, `get_weather`, and `calculate`
 - **Turn 1**: Sends a request that triggers multiple parallel tool calls
 - Enables streaming to receive real-time tool call chunks
@@ -52,7 +52,7 @@ go run vertex_streaming_tool_calls.go
 When you run this example, you should see output similar to:
 
 ```
-Initializing Vertex AI provider with model: gemini-2.5-flash
+Initializing Vertex AI provider with model: gemini-3.5-flash
 🚀 Making request with streaming and multiple tools...
    📦 Streamed tool call 1: read_file (ID: call_abc123, Args: {"path":"go.mod"})
    📦 Streamed tool call 2: get_weather (ID: call_def456, Args: {"location":"San Francisco"})

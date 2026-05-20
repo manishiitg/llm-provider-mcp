@@ -21,7 +21,7 @@ var VertexSearchWebTestCmd = &cobra.Command{
 }
 
 func init() {
-	VertexSearchWebTestCmd.Flags().String("model", "gemini-2.5-flash", "Gemini model to test")
+	VertexSearchWebTestCmd.Flags().String("model", "gemini-3.5-flash", "Gemini model to test")
 	VertexSearchWebTestCmd.Flags().String("query", "", "Web search query to run")
 	VertexSearchWebTestCmd.Flags().String("api-key", "", "Google API key (or set VERTEX_API_KEY / GOOGLE_API_KEY env var)")
 	_ = VertexSearchWebTestCmd.MarkFlagRequired("query")
@@ -52,7 +52,7 @@ func runVertexSearchWebTest(cmd *cobra.Command, args []string) {
 
 	modelID, _ := cmd.Flags().GetString("model")
 	if strings.TrimSpace(modelID) == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = "gemini-3.5-flash"
 	}
 
 	query, _ := cmd.Flags().GetString("query")

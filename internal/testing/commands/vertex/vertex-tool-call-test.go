@@ -32,7 +32,7 @@ type vertexToolCallTestFlags struct {
 var vertexToolCallFlags vertexToolCallTestFlags
 
 func init() {
-	VertexToolCallTestCmd.Flags().StringVar(&vertexToolCallFlags.model, "model", "", "Vertex AI model to test (default: gemini-2.5-flash)")
+	VertexToolCallTestCmd.Flags().StringVar(&vertexToolCallFlags.model, "model", "", "Vertex AI model to test (default: gemini-3.5-flash)")
 	VertexToolCallTestCmd.Flags().BoolVar(&vertexToolCallFlags.record, "record", false, "Record LLM responses to testdata/")
 	VertexToolCallTestCmd.Flags().BoolVar(&vertexToolCallFlags.replay, "replay", false, "Replay recorded responses from testdata/")
 	VertexToolCallTestCmd.Flags().StringVar(&vertexToolCallFlags.testDir, "test-dir", "testdata", "Directory for test recordings")
@@ -49,7 +49,7 @@ func runVertexToolCallTest(cmd *cobra.Command, args []string) {
 	// Get model ID
 	modelID := vertexToolCallFlags.model
 	if modelID == "" {
-		modelID = "gemini-2.5-flash"
+		modelID = "gemini-3.5-flash"
 	}
 
 	// Check for API key

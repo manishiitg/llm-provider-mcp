@@ -37,7 +37,7 @@ func TestReadGeminiTranscriptUsageAggregatesTurn(t *testing.T) {
 		// non-gemini noise
 		`{"type":"user","timestamp":"` + earlyTurn + `","content":"hi"}`,
 		// current turn iteration #1
-		`{"type":"gemini","timestamp":"` + earlyTurn + `","model":"gemini-2.5-flash","tokens":{"input":100,"output":20,"cached":30,"thoughts":15,"tool":5,"total":170}}`,
+		`{"type":"gemini","timestamp":"` + earlyTurn + `","model":"gemini-3.5-flash","tokens":{"input":100,"output":20,"cached":30,"thoughts":15,"tool":5,"total":170}}`,
 		// current turn iteration #2 (latest — model should be this one)
 		`{"type":"gemini","timestamp":"` + lateTurn + `","model":"gemini-3.1-flash-lite","tokens":{"input":50,"output":10,"cached":0,"thoughts":0,"tool":0,"total":60}}`,
 		// $set upsert — must not break parsing

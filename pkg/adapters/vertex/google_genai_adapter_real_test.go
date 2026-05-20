@@ -294,7 +294,7 @@ func TestVertexRealJSONMode(t *testing.T) {
 // TestVertexRealImplicitPromptCaching (contract P1 #19). Gemini 2.5+
 // auto-caches long prompts; the second request reusing the same prefix
 // reports CachedContentTokens > 0 via the existing extraction in
-// pkg/utils/token_extraction.go. We pin to gemini-2.5-flash because
+// pkg/utils/token_extraction.go. We pin to gemini-3.5-flash because
 // preview-track Gemini 3 models have a different cache-eligibility
 // threshold and the test would be flaky on them.
 func TestVertexRealImplicitPromptCaching(t *testing.T) {
@@ -306,7 +306,7 @@ func TestVertexRealImplicitPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("genai.NewClient: %v", err)
 	}
-	adapter := NewGoogleGenAIAdapter(client, "gemini-2.5-flash", &MockLogger{})
+	adapter := NewGoogleGenAIAdapter(client, "gemini-3.5-flash", &MockLogger{})
 
 	// Build a prefix large enough to clear Gemini 2.5 Flash's implicit
 	// cache threshold (~1024 tokens minimum, but the cache is more

@@ -63,7 +63,7 @@ To record a test (capture real LLM responses):
 
 ```bash
 # Vertex (Gemini) - Record a plain text test
-./bin/llm-test vertex --model gemini-2.5-flash --record
+./bin/llm-test vertex --model gemini-3.5-flash --record
 
 # Vertex (Gemini) - Record a tool call test
 ./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --record
@@ -93,10 +93,10 @@ To record a test (capture real LLM responses):
 ./bin/llm-test openrouter-tool-call-events --model moonshotai/kimi-k2 --record
 
 # Vertex - Record a tool call events test
-./bin/llm-test vertex-tool-call-events --model gemini-2.5-flash --record
+./bin/llm-test vertex-tool-call-events --model gemini-3.5-flash --record
 
 # Custom test directory
-./bin/llm-test vertex-tool-call --model gemini-2.5-pro --record --test-dir my-testdata
+./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --record --test-dir my-testdata
 ```
 
 **What happens:**
@@ -115,7 +115,7 @@ To replay a recorded test (use recorded responses):
 
 ```bash
 # Vertex (Gemini) - Replay a plain text test
-./bin/llm-test vertex --model gemini-2.5-flash --replay
+./bin/llm-test vertex --model gemini-3.5-flash --replay
 
 # Vertex (Gemini) - Replay a tool call test
 ./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --replay
@@ -145,10 +145,10 @@ To replay a recorded test (use recorded responses):
 ./bin/llm-test openrouter-tool-call-events --model moonshotai/kimi-k2 --replay
 
 # Vertex - Replay a tool call events test
-./bin/llm-test vertex-tool-call-events --model gemini-2.5-flash --replay
+./bin/llm-test vertex-tool-call-events --model gemini-3.5-flash --replay
 
 # Custom test directory
-./bin/llm-test vertex-tool-call --model gemini-2.5-pro --replay --test-dir my-testdata
+./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --replay --test-dir my-testdata
 ```
 
 **What happens:**
@@ -203,13 +203,13 @@ All test types are registered in the `initTestRegistry()` function and automatic
 
   PLAIN_TEXT:
     ✅ Passed: 2
-      ✅ gemini-2.5-flash (997.166µs)
+      ✅ gemini-3.5-flash (997.166µs)
       ✅ gemini-3-pro-preview (586.458µs)
 
   TOOL_CALL:
     ✅ Passed: 3
-      ✅ gemini-2.5-flash (2.398792ms)
-      ✅ gemini-2.5-pro (2.618541ms)
+      ✅ gemini-3.5-flash (2.398792ms)
+      ✅ gemini-3-pro-preview (2.618541ms)
       ✅ gemini-3-pro-preview (2.886625ms)
 
   TOOL_CALL_EVENTS:
@@ -247,7 +247,7 @@ Tests basic text generation without tools:
 
 ```bash
 # Vertex (Gemini)
-./bin/llm-test vertex --model gemini-2.5-flash --record
+./bin/llm-test vertex --model gemini-3.5-flash --record
 
 # OpenAI
 ./bin/llm-test openai --model gpt-4o-mini --record
@@ -302,7 +302,7 @@ Tests tool call event emission for all providers:
 ./bin/llm-test openrouter-tool-call-events --model moonshotai/kimi-k2 --record
 
 # Vertex (Gemini)
-./bin/llm-test vertex-tool-call-events --model gemini-2.5-flash --record
+./bin/llm-test vertex-tool-call-events --model gemini-3.5-flash --record
 ```
 
 **Validates:**
@@ -345,10 +345,10 @@ Recorded responses are stored in JSON files with the following structure:
 ```
 testdata/
 ├── vertex/
-│   ├── plain_text_gemini-2.5-flash_d84fd823_20251128_194115.json
+│   ├── plain_text_gemini-3.5-flash_d84fd823_20251128_194115.json
 │   ├── plain_text_gemini-3-pro-preview_fa9ec0bd_20251128_200059.json
-│   ├── tool_call_gemini-2.5-flash_abc12345_20251128_200000.json
-│   ├── tool_call_gemini-2.5-pro_def67890_20251128_200100.json
+│   ├── tool_call_gemini-3.5-flash_abc12345_20251128_200000.json
+│   ├── tool_call_gemini-3-pro-preview_def67890_20251128_200100.json
 │   └── tool_call_gemini-3-pro-preview_b8bb768b_20251128_202056.json
 ├── openai/
 │   ├── plain_text_gpt-4o-mini_084d803f_20251128_205313.json
@@ -369,13 +369,13 @@ testdata/
 ```json
 {
   "provider": "vertex",
-  "model_id": "gemini-2.5-flash",
+  "model_id": "gemini-3.5-flash",
   "test_name": "tool_call",
   "recorded_at": "2025-11-28T19:41:15Z",
   "request_hash": "d84fd823abc12345...",
   "request": {
     "messages": [...],
-    "model_id": "gemini-2.5-flash",
+    "model_id": "gemini-3.5-flash",
     "options": {...}
   },
   "response_data": [...],
@@ -550,10 +550,10 @@ The test suite will automatically discover and run any recorded test files match
 
 ```bash
 # Record the test
-./bin/llm-test my-new-test --model gemini-2.5-flash --record
+./bin/llm-test my-new-test --model gemini-3.5-flash --record
 
 # Replay the test
-./bin/llm-test my-new-test --model gemini-2.5-flash --replay
+./bin/llm-test my-new-test --model gemini-3.5-flash --replay
 
 # Run in test suite
 ./bin/llm-test test-suite
@@ -699,7 +699,7 @@ Use different directories for different test suites:
 Record tests for multiple models:
 
 ```bash
-for model in gemini-2.5-flash gemini-2.5-pro gemini-3-pro-preview; do
+for model in gemini-3.5-flash gemini-3-pro-preview gemini-3.1-flash-lite-preview; do
     ./bin/llm-test vertex-tool-call --model $model --record
 done
 ```
@@ -784,8 +784,8 @@ if rec.IsRecordingEnabled() {
 
 ```bash
 # 1. Record tests for multiple models (Vertex)
-./bin/llm-test vertex-tool-call --model gemini-2.5-flash --record
-./bin/llm-test vertex-tool-call --model gemini-2.5-pro --record
+./bin/llm-test vertex-tool-call --model gemini-3.5-flash --record
+./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --record
 ./bin/llm-test vertex-tool-call --model gemini-3-pro-preview --record
 
 # 1. Record tests for multiple models (OpenAI)
@@ -801,7 +801,7 @@ ls -lh testdata/openai/
 ls -lh testdata/bedrock/
 
 # 3. Test replay
-./bin/llm-test vertex-tool-call --model gemini-2.5-flash --replay
+./bin/llm-test vertex-tool-call --model gemini-3.5-flash --replay
 ./bin/llm-test openai-tool-call --model gpt-5.1 --replay
 ./bin/llm-test llm-tool-call --model global.anthropic.claude-sonnet-4-5-20250929-v1:0 --replay
 
@@ -817,10 +817,10 @@ ls -lh testdata/bedrock/
 ```bash
 # 1. Create test command (see "Adding New Tests" above)
 # 2. Record initial test
-./bin/llm-test my-new-test --model gemini-2.5-flash --record
+./bin/llm-test my-new-test --model gemini-3.5-flash --record
 
 # 3. Verify it works
-./bin/llm-test my-new-test --model gemini-2.5-flash --replay
+./bin/llm-test my-new-test --model gemini-3.5-flash --replay
 
 # 4. Add to test suite (optional)
 # 5. Run test suite

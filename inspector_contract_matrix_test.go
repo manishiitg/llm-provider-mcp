@@ -69,11 +69,16 @@ func TestInspectorContractMatrix(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
+			// MaxTokens=512 is sized for thinking-on-by-default models
+			// (e.g. gemini-3.5-flash regularly uses 300+ tokens for
+			// internal thinking before emitting any output). A lower
+			// cap caused the gemini factory to return zero candidates.
+			// Cost is trivial per matrix run.
 			_, err := model.GenerateContent(ctx,
 				[]llmtypes.MessageContent{
 					{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with OK."}}},
 				},
-				llmtypes.WithMaxTokens(32),
+				llmtypes.WithMaxTokens(512),
 				llmtypes.WithInspectorSink(rec),
 			)
 			if err != nil {
@@ -226,7 +231,7 @@ func newRealVertexForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool
 	}
 	model := strings.TrimSpace(os.Getenv("VERTEX_REAL_E2E_MODEL"))
 	if model == "" {
-		model = "gemini-3.1-flash-lite-preview"
+		model = "gemini-3.5-flash"
 	}
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  apiKey,

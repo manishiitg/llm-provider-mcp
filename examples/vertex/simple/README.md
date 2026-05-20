@@ -28,7 +28,7 @@ go run vertex_simple.go
 
 ## What it does
 
-- Initializes the Vertex AI provider with `gemini-2.5-flash` model
+- Initializes the Vertex AI provider with `gemini-3.5-flash` model
 - Sends a simple greeting message
 - Displays the response and token usage
 
