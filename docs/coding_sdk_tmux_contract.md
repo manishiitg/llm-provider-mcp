@@ -620,8 +620,8 @@ Required behavior:
   session.
 - The adapter waits briefly for idle or process exit.
 - Adapter-owned per-turn sessions are cleaned up after the turn exits.
-- Bounded per-turn sessions are retained for a short inspection window after
-  completion before tmux is killed. The product default is 5 minutes, and the
+- Bounded per-turn sessions are retained for an inspection window after
+  completion before tmux is killed. The product default is 30 minutes, and the
   completion metadata must expose this as `terminal_retention_seconds` so the UI
   can show a `closing` / `closes in ...` state.
 - Persistent chat sessions are cleaned up only when the owner session is closed,
@@ -692,7 +692,7 @@ contract is the same across providers.
 
 Bounded per-turn tmux sessions use a different retention timer:
 
-- Default retention is 5 minutes after a successful turn completes.
+- Default retention is 30 minutes after a successful turn completes.
 - During this retention window the terminal is view-only and should be reported
   as inactive with `state=closing`, `closes_at`, and
   `terminal_retention_seconds`.
