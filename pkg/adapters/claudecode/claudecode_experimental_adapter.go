@@ -28,7 +28,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultTmuxTimeout             = 0
 	defaultPersistentIdleTimeout   = 20 * time.Minute
-	defaultBoundedRetention        = 5 * time.Minute
+	defaultBoundedRetention        = 30 * time.Minute
 	defaultTmuxPollInterval        = 750 * time.Millisecond
 	defaultTmuxCaptureLines        = "3000"
 	minTmuxMajorVersion            = 3

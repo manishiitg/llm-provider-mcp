@@ -28,7 +28,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
-	defaultGeminiInteractiveRetention   = 5 * time.Minute
+	defaultGeminiInteractiveRetention   = 30 * time.Minute
 	defaultGeminiInteractivePromptWait  = 20 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160

@@ -27,7 +27,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultCodexInteractiveTimeout     = 0
 	defaultCodexInteractiveIdleTimeout = 20 * time.Minute
-	defaultCodexInteractiveRetention   = 5 * time.Minute
+	defaultCodexInteractiveRetention   = 30 * time.Minute
 	defaultCodexInteractivePromptWait  = 20 * time.Second
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160

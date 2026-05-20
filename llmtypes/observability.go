@@ -109,7 +109,19 @@ func WithObservability(ctx context.Context, cfg ObservabilityConfig, body Adapte
 	// ("tmux" / "structured_cli" / "api"); honour whatever's there so
 	// the frontend chip matches the Header line in the pane.
 	transportLabel, _ := cfg.RequestMetaExtra["transport"].(string)
-	term := NewSyntheticTerminalWithTransport(cfg.Opts.StreamChan, cfg.Provider, cfg.Model, transportLabel)
+	// Tmux adapters already publish a live pane scrape — their real
+	// terminal output IS the screen. Emitting a parallel synthetic
+	// banner ("$ claude (tmux) ... > user: ... [done]") competes with
+	// the pane scrape for the same terminal entry in the store and
+	// produces a flip-flop where the chip toggles between tmux and
+	// api, plus a duplicate [done · tokens · cost] trailer. Build a
+	// disabled terminal (ch=nil) for tmux so every term.* call is a
+	// no-op while still keeping inspector emission for cost/tokens.
+	var termSink chan<- StreamChunk = cfg.Opts.StreamChan
+	if transportLabel == "tmux" {
+		termSink = nil
+	}
+	term := NewSyntheticTerminalWithTransport(termSink, cfg.Provider, cfg.Model, transportLabel)
 	if cfg.HeaderLine != "" {
 		term.Header(cfg.HeaderLine)
 	}

@@ -28,7 +28,7 @@ const (
 	// coding agent before the outer workflow timeout.
 	defaultCursorInteractiveTimeout     = 0
 	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
-	defaultCursorInteractiveRetention   = 5 * time.Minute
+	defaultCursorInteractiveRetention   = 30 * time.Minute
 	defaultCursorInteractivePromptWait  = 25 * time.Second
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 
