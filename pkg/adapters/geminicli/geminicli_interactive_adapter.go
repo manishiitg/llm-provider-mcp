@@ -20,6 +20,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 const (
@@ -29,7 +30,7 @@ const (
 	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
 	defaultGeminiInteractiveRetention   = 30 * time.Minute
-	defaultGeminiInteractivePromptWait  = 20 * time.Second
+	defaultGeminiInteractivePromptWait  = 60 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160
 	geminiPromptPasteVisibleWait        = 5 * time.Second
@@ -51,6 +52,8 @@ type geminiInteractiveSession struct {
 	projectDirID         string
 	systemPromptTempFile string
 	launchFingerprint    string
+	startupSlotMu        sync.Mutex
+	startupSlotRelease   func()
 	idleTimer            *time.Timer
 	initErr              error
 	createdAt            time.Time
@@ -123,6 +126,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 
 	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName); err != nil {
 		markGeminiInteractiveSessionFailedLocked(session, err, g.logger)
+		releaseGeminiStartupSlot(session)
 		releaseSession = false
 		failedSession := session
 		session.mu.Unlock()
@@ -130,6 +134,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		cleanupFailedGeminiInteractiveSession(failedSession)
 		return nil, err
 	}
+	releaseGeminiStartupSlot(session)
 	resetGeminiPaneForTurn(callCtx, session.tmuxSessionName)
 	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName); err != nil {
 		markGeminiInteractiveSessionFailedLocked(session, err, g.logger)
@@ -290,8 +295,20 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 	session.projectDirID = projectDirID
 	session.systemPromptTempFile = systemPromptTempFile
 
+	startupRelease, err := tmuxlaunch.Acquire(ctx, "gemini-cli", session.tmuxSessionName)
+	if err != nil {
+		session.initErr = err
+		if systemPromptTempFile != "" {
+			_ = os.Remove(systemPromptTempFile)
+		}
+		session.mu.Unlock()
+		removeGeminiPersistentSession(ownerSessionID, session)
+		return nil, err
+	}
+	session.startupSlotRelease = startupRelease
 	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {
 		session.initErr = err
+		releaseGeminiStartupSlot(session)
 		if systemPromptTempFile != "" {
 			_ = os.Remove(systemPromptTempFile)
 		}
@@ -481,6 +498,7 @@ func releaseGeminiInteractiveSession(session *geminiInteractiveSession, logger i
 	if session == nil {
 		return
 	}
+	releaseGeminiStartupSlot(session)
 	session.lastUsed = time.Now()
 	session.idleTimer = time.AfterFunc(geminiInteractiveIdleTimeout(), func() {
 		closeGeminiPersistentSession(session.ownerSessionID, "idle timeout", logger)
@@ -492,6 +510,7 @@ func releaseGeminiBoundedInteractiveSession(session *geminiInteractiveSession, l
 	if session == nil {
 		return
 	}
+	releaseGeminiStartupSlot(session)
 	retention := geminiInteractiveRetention()
 	session.lastUsed = time.Now()
 	if retention <= 0 {
@@ -505,6 +524,20 @@ func releaseGeminiBoundedInteractiveSession(session *geminiInteractiveSession, l
 		closeGeminiPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
 	})
 	session.mu.Unlock()
+}
+
+func releaseGeminiStartupSlot(session *geminiInteractiveSession) {
+	if session == nil {
+		return
+	}
+	session.startupSlotMu.Lock()
+	defer session.startupSlotMu.Unlock()
+	if session.startupSlotRelease == nil {
+		return
+	}
+	release := session.startupSlotRelease
+	session.startupSlotRelease = nil
+	release()
 }
 
 func closeGeminiPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
@@ -533,6 +566,7 @@ func closeGeminiSessionLocked(session *geminiInteractiveSession, reason string, 
 	if session == nil {
 		return
 	}
+	releaseGeminiStartupSlot(session)
 	if session.idleTimer != nil {
 		session.idleTimer.Stop()
 		session.idleTimer = nil
@@ -559,6 +593,7 @@ func markGeminiInteractiveSessionFailedLocked(session *geminiInteractiveSession,
 	if err != nil {
 		session.initErr = err
 	}
+	releaseGeminiStartupSlot(session)
 	if session.idleTimer != nil {
 		session.idleTimer.Stop()
 		session.idleTimer = nil
@@ -572,6 +607,7 @@ func cleanupFailedGeminiInteractiveSession(session *geminiInteractiveSession) {
 	if session == nil {
 		return
 	}
+	releaseGeminiStartupSlot(session)
 	removeGeminiPersistentSession(session.ownerSessionID, session)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -604,12 +640,8 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 
 	var failures []string
 	for _, session := range sessions {
-		session.mu.Lock()
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.mu.Unlock()
+		releaseGeminiStartupSlot(session)
+		stopGeminiIdleTimerIfAvailable(session)
 		unregisterGeminiInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 		if session.systemPromptTempFile != "" {
 			_ = os.Remove(session.systemPromptTempFile)
@@ -622,6 +654,17 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 		return fmt.Errorf("failed to clean up Gemini interactive sessions: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func stopGeminiIdleTimerIfAvailable(session *geminiInteractiveSession) {
+	if session == nil || !session.mu.TryLock() {
+		return
+	}
+	defer session.mu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
 }
 
 func registerGeminiInteractiveSession(ownerSessionID, tmuxSessionName string) {
@@ -1711,7 +1754,9 @@ func killGeminiTmuxSession(ctx context.Context, sessionName string) error {
 		return nil
 	}
 	if err := runGeminiCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
-		if strings.Contains(err.Error(), "can't find session") || strings.Contains(err.Error(), "no server running") {
+		if strings.Contains(err.Error(), "can't find session") ||
+			strings.Contains(err.Error(), "no server running") ||
+			strings.Contains(err.Error(), "error connecting to") {
 			return nil
 		}
 		return err

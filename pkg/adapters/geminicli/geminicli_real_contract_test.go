@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 func TestGeminiCLIRealInteractiveTmuxFullContract(t *testing.T) {
@@ -1166,6 +1167,70 @@ deny_message = "No tools are needed for this parallel isolation test."
 		}
 		if otherToken != "" && strings.Contains(got.content, otherToken) {
 			t.Fatalf("%s content leaked other session's token %s: %q", spec.name, otherToken, got.content)
+		}
+	}
+}
+
+func TestGeminiCLIRealInteractiveParallelStartupQueue(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Setenv(tmuxlaunch.EnvStartConcurrency, "1")
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this parallel startup pressure test."
+`)
+
+	const parallelStarts = 8
+	type startupResult struct {
+		index   int
+		token   string
+		content string
+		err     error
+	}
+	start := make(chan struct{})
+	resultCh := make(chan startupResult, parallelStarts)
+	for i := 0; i < parallelStarts; i++ {
+		i := i
+		token := fmt.Sprintf("GEMINI_PAR_START_%02d_%s", i, geminiRandomHex(4))
+		ownerSessionID := fmt.Sprintf("gemini-real-startup-queue-%02d-%s", i, geminiRandomHex(4))
+		workDir := t.TempDir()
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply exactly as instructed."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", token)}}},
+			},
+				WithInteractiveSessionID(ownerSessionID),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(workDir),
+				WithProjectSettings(`{}`),
+				WithAdminPolicyPath(policyPath),
+				WithApprovalMode("yolo"),
+			)
+			result := startupResult{index: i, token: token, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+	close(start)
+
+	for i := 0; i < parallelStarts; i++ {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("parallel startup %d failed: %v", got.index, got.err)
+		}
+		if !strings.Contains(got.content, got.token) {
+			t.Fatalf("parallel startup %d content = %q, want token %s", got.index, got.content, got.token)
 		}
 	}
 }

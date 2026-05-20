@@ -163,6 +163,11 @@ The adapter must:
 
 - send the provider interrupt key on context cancellation
 - wait briefly for idle or process exit
+- reuse a persistent tmux session after cancellation only if the provider has
+  visibly returned to a prompt-ready state
+- discard and kill an adapter-owned persistent tmux session when cancellation
+  does not return it to prompt-ready state; a later turn/fallback must start a
+  fresh session instead of inheriting a still-busy pane
 - kill only the adapter-owned tmux session if graceful interrupt fails
 - preserve unrelated sessions, parallel agents, and background agents unless the
   owning lifecycle explicitly says they should stop
@@ -415,6 +420,15 @@ Submit retries must be state-based, not blind:
 - cap retry attempts and return a clear error with the latest pane if the draft
   remains unsubmitted
 - never let an unsubmitted draft run until the full model-call timeout
+
+Before every backend-controlled paste, the adapter must inspect the ready input
+prompt for an existing draft. If a non-empty real draft is present, it is
+untrusted stale TUI state and must be cleared before the new message is pasted.
+The provider must never append a new backend turn onto an untracked draft or
+submit that draft instead of the new turn. Provider suggestion placeholders must
+be distinguished from real drafts; for example Claude Code may render suggested
+text after `❯` using a non-breaking-space separator, and that placeholder must
+not be treated as a user-typed message.
 
 The paste path must preserve:
 
@@ -717,11 +731,14 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Done detection | Completion requires idle prompt, no activity anywhere in the current captured turn, no queued input, no modal, and a stable pane. |
 | Final extraction | Final text excludes TUI chrome, tool progress, raw tool payloads, queued user text, validation feedback, and stale scrollback. |
 | Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
+| Stale draft cleanup | Seed an idle provider prompt with an untracked draft such as `go with option B`, then submit a different backend turn. The adapter must clear the stale draft, submit only the new turn, and ignore provider suggestion placeholders. |
 | Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. The adapter must not leave pasted live input sitting as an unsubmitted draft when the provider TUI is actively thinking. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
+| Persistent cancel reuse | Cancel a persistent turn while the provider is working or waiting on a tool. After the call returns, the session registry must either have no entry for that owner or the registered tmux pane must be prompt-ready. A non-ready canceled pane must never be reused by a retry/fallback. |
 | Lifecycle policy | Chat sessions keep tmux alive by default; workflow steps/sub-agents/background tasks close on completion unless their explicit lifecycle setting is `keep_alive`. |
 | Bounded retention | A completed bounded tmux turn remains viewable with `terminal_retention_seconds`, `closes_at`, and `state=closing`, then is killed after the retention window. |
 | Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |
+| Parallel startup queue | Launch 6-8 real tmux-backed provider sessions at once. The orchestrator may schedule them in parallel, but the adapter must queue the expensive tmux/CLI startup phase according to `CODING_SDK_TMUX_START_CONCURRENCY` and release the slot only after the provider reaches a ready prompt or fails cleanly. |
 | Shared-workdir MCP isolation | Parallel sessions that run from the same working directory must still use distinct provider settings/project dirs and distinct MCP bridge session URLs; each real tool call must route to its own session and write only to its own allowed output directory. |
 | Cleanup | Idle timeout, explicit close, failed launch, lost tmux pane/server, and server shutdown unregister and kill owned sessions. |
 
