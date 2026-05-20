@@ -209,6 +209,36 @@ var openCodeSubProviders = []OpenCodeSubProvider{
 		},
 	},
 	{
+		// The "coding plan" tile routes through Z.AI's coding-subscription
+		// endpoint (api.z.ai/api/coding/paas/v4) rather than the BigModel
+		// commerce platform. Mirrors the kimi-for-coding pattern: the model
+		// id namespace and the billed entitlement differ from the regular
+		// zhipuai tile above. Users on a Z.AI coding subscription should
+		// pick this tile; users buying GLM credits on open.bigmodel.cn
+		// should pick the opencode-cli-glm tile. Both tiles share the
+		// ZHIPU_API_KEY env var — that is the single auth namespace
+		// opencode uses for all four GLM/Z.AI provider ids; the tile
+		// differs only in endpoint, model namespace, and billing platform.
+		ID:                 "opencode-cli-glm-coding-plan",
+		OpenCodeProviderID: "zai-coding-plan",
+		DisplayName:        "GLM (Z.AI Coding Plan)",
+		Description:        "Z.AI's coding-subscription endpoint for GLM. Routes through OpenCode so the assistant identifies as an allowed coding agent.",
+		APIKeyEnvVar:       "ZHIPU_API_KEY",
+		APIKeyURL:          "https://z.ai/manage-apikey/apikey-list",
+		RequiresAPIKey:     true,
+		DefaultModelID:     "glm-4.7",
+		TierShortcuts: map[string]string{
+			"high":   "glm-5-turbo",
+			"medium": "glm-4.7",
+			"low":    "glm-4.5-air",
+		},
+		Models: []OpenCodeSubProviderModel{
+			{ID: "glm-5-turbo", DisplayName: "GLM-5 Turbo", Group: "GLM-5", ContextWindow: 200000, SupportsTools: true},
+			{ID: "glm-4.7", DisplayName: "GLM-4.7", Group: "GLM-4", ContextWindow: 200000, SupportsTools: true, IsDefault: true},
+			{ID: "glm-4.5-air", DisplayName: "GLM-4.5 Air", Group: "GLM-4", ContextWindow: 128000, SupportsTools: true},
+		},
+	},
+	{
 		ID:                 "opencode-cli-free",
 		OpenCodeProviderID: "opencode",
 		DisplayName:        "Free Models",

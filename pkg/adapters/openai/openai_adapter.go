@@ -120,13 +120,17 @@ func (o *OpenAIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		modelID = opts.Model
 	}
 
+	providerName := o.compatibility.ProviderName
+	if providerName == "" {
+		providerName = "openai"
+	}
 	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
-		Provider:     "openai",
+		Provider:     providerName,
 		Model:        modelID,
 		Opts:         opts,
 		MessageCount: len(messages),
 		Messages:     messages,
-		HeaderLine:   fmt.Sprintf("openai.chat.completions model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+		HeaderLine:   fmt.Sprintf("%s.chat.completions model=%s msgs=%d tools=%d", providerName, modelID, len(messages), len(opts.Tools)),
 	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
 		return o.generateContentInner(ctx, opts, modelID, messages, sink.Term)
 	})

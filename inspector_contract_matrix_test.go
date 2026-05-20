@@ -20,6 +20,7 @@ import (
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
+	zaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 )
 
 // adapterFactory builds a Model and reports its model ID. Returns
@@ -40,6 +41,7 @@ var inspectorContractFactories = map[string]adapterFactory{
 	"bedrock":   newRealBedrockForInspectorMatrix,
 	"openai":    newRealOpenAIForInspectorMatrix,
 	"vertex":    newRealVertexForInspectorMatrix,
+	"z-ai":      newRealZAIForInspectorMatrix,
 	// TODO: claudecode (structured), codex (structured),
 	// gemini-cli (structured), cursor-cli (structured). Each registers
 	// here as it's wired.
@@ -241,6 +243,34 @@ func newRealVertexForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool
 		t.Fatalf("genai.NewClient: %v", err)
 	}
 	return vertexadapter.NewGoogleGenAIAdapter(client, model, &matrixMockLogger{}), model, false
+}
+
+func newRealZAIForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool) {
+	t.Helper()
+	if os.Getenv("RUN_ZAI_REAL_E2E") == "" {
+		return nil, "", true
+	}
+	apiKey := strings.TrimSpace(os.Getenv("ZAI_API_KEY"))
+	if apiKey == "" {
+		return nil, "", true
+	}
+	model := strings.TrimSpace(os.Getenv("ZAI_REAL_E2E_MODEL"))
+	if model == "" {
+		model = zaiadapter.ModelGLM46
+	}
+	baseURL := strings.TrimSpace(os.Getenv("ZAI_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://api.z.ai/api/coding/paas/v4"
+	}
+	client := openaisdk.NewClient(
+		openaisdkoption.WithAPIKey(apiKey),
+		openaisdkoption.WithBaseURL(baseURL),
+	)
+	adapter := openaiadapter.NewCompatibleOpenAIAdapter(&client, model, &matrixMockLogger{}, openaiadapter.OpenAICompatibilityConfig{
+		ProviderName:   "z-ai",
+		MetadataLookup: zaiadapter.GetZAIModelMetadata,
+	})
+	return adapter, model, false
 }
 
 // matrixMockLogger is a silent logger for the matrix test.

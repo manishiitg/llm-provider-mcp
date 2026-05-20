@@ -114,3 +114,77 @@ func TestOpenCodeSubProviderRealKimiEndToEnd(t *testing.T) {
 		t.Errorf("GenerationInfo.provider = %q, want opencode-cli", got)
 	}
 }
+
+// TestOpenCodeSubProviderRealGLMCodingPlanEndToEnd is the GLM
+// counterpart to TestOpenCodeSubProviderRealKimiEndToEnd, targeting the
+// **Z.AI coding subscription** tile (zai-coding-plan) rather than the
+// BigModel commerce tile. Mirrors the kimi-for-coding pattern.
+//
+// Why this test exists (and why the regular opencode-cli-glm tile does
+// not have an equivalent): the user-facing key may be entitled on
+// either platform. Keys minted at z.ai/manage-apikey route through
+// api.z.ai/api/coding/paas/v4 (this tile); keys minted at
+// open.bigmodel.cn route through the BigModel commerce endpoint
+// (opencode-cli-glm tile). A key entitled only on Z.AI will return
+// HTTP 429 code 1113 ("insufficient balance") on the BigModel path,
+// which opencode silently retries — manifesting as a "hang" in tests.
+//
+// Skipped unless RUN_OPENCODE_REAL_E2E=1 and ZHIPU_API_KEY (or
+// ZAI_API_KEY as a convenience alias) are both set. opencode reads
+// the env var literally named ZHIPU_API_KEY for both BigModel and
+// Z.AI coding plan tiles.
+func TestOpenCodeSubProviderRealGLMCodingPlanEndToEnd(t *testing.T) {
+	if os.Getenv("RUN_OPENCODE_REAL_E2E") == "" {
+		t.Skip("set RUN_OPENCODE_REAL_E2E=1 to run real OpenCode sub-provider e2e tests")
+	}
+	apiKey := strings.TrimSpace(os.Getenv("ZHIPU_API_KEY"))
+	if apiKey == "" {
+		// Accept ZAI_API_KEY as a UX alias — z.ai dashboard surfaces the
+		// key under that label even though opencode reads ZHIPU_API_KEY.
+		apiKey = strings.TrimSpace(os.Getenv("ZAI_API_KEY"))
+	}
+	if apiKey == "" {
+		t.Skip("set ZHIPU_API_KEY (or ZAI_API_KEY) to run the GLM coding-plan sub-provider e2e test")
+	}
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skipf("opencode binary not found: %v", err)
+	}
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	token := "GLM_REAL_OK_" + opencodeRandomHex(4)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply with exactly this token and nothing else: " + token},
+			},
+		},
+	},
+		WithOpenCodeSubProvider("opencode-cli-glm-coding-plan"),
+		WithOpenCodeSubProviderAPIKey("ZHIPU_API_KEY", apiKey),
+		// tier=medium resolves to zai-coding-plan/glm-4.7 through the
+		// sub-provider tier shortcut.
+		WithOpenCodeModel("medium"),
+	)
+	if err != nil {
+		t.Fatalf("GLM sub-provider GenerateContent error = %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatalf("GLM sub-provider returned no choices")
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("GLM coding-plan sub-provider content = %q, want token %q", content, token)
+	}
+
+	if resp.Choices[0].GenerationInfo == nil {
+		t.Fatal("response missing GenerationInfo")
+	}
+	if got, _ := resp.Choices[0].GenerationInfo.Additional["provider"].(string); got != "opencode-cli" {
+		t.Errorf("GenerationInfo.provider = %q, want opencode-cli", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,20 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+// errOpencodeSilentEmpty is the sentinel returned by runOpencodeAttempt
+// when opencode exited 0 but emitted no text part. Observed on cold-start
+// of `opencode run --format json` (v1.15.4): a step_start event is
+// emitted, then the process exits cleanly without any text events. The
+// outer generateContentStructured retries once on this sentinel.
+var errOpencodeSilentEmpty = errors.New("opencode emitted no text on clean exit")
+
+type opencodeAttemptResult struct {
+	textParts        []string
+	usage            llmtypes.Usage
+	sessionID        string
+	lastFinishReason string
+}
 
 type opencodeEvent struct {
 	Type      string          `json:"type"`
@@ -188,12 +203,70 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 
 	args = append(args, "--", prompt)
 
+	env := buildOpenCodeEnvForCall(c.apiKey, activeSubProvider, opts)
+
+	c.logInfof("Executing OpenCode CLI structured: opencode %s", strings.Join(args[:3], " "))
+	res, err := c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, opts)
+	if errors.Is(err, errOpencodeSilentEmpty) {
+		// Retry once. opencode v1.15.4 occasionally exits 0 with only
+		// a step_start event on first invocation in a process (likely
+		// a cold-start race in its bundled provider init). A second
+		// invocation against the same args+env reliably succeeds.
+		// Retry is unconditional-but-bounded: we trade one extra
+		// opencode launch for resilience to that known flake. The
+		// stream channel (if any) received nothing on the first
+		// attempt — by construction, since textParts was empty — so
+		// retrying does not double-emit chunks.
+		c.logInfof("opencode emitted no text on clean exit; retrying once")
+		res, err = c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, opts)
+	}
+	if err != nil {
+		return nil, err
+	}
+	textParts := res.textParts
+	totalUsage := res.usage
+	sessionID := res.sessionID
+	lastFinishReason := res.lastFinishReason
+	content := strings.TrimSpace(strings.Join(textParts, ""))
+
+	stopReason := "stop"
+	if lastFinishReason == "tool-calls" {
+		stopReason = "tool_calls"
+	}
+
+	return &llmtypes.ContentResponse{
+		Choices: []*llmtypes.ContentChoice{
+			{
+				Content:    content,
+				StopReason: stopReason,
+				GenerationInfo: &llmtypes.GenerationInfo{
+					Additional: map[string]interface{}{
+						"provider":            "opencode-cli",
+						"opencode_mode":       "structured",
+						"opencode_session_id": sessionID,
+					},
+				},
+			},
+		},
+		Usage: &totalUsage,
+	}, nil
+}
+
+// runOpencodeAttempt is one execution of `opencode run` with the args
+// and env already assembled by generateContentStructured. It collects
+// the JSON event stream and returns the parsed result.
+//
+// Returns errOpencodeSilentEmpty when opencode exited 0 but produced no
+// text part — the caller may retry. All other terminal conditions
+// (start failure, non-zero exit, fatal scanner error) return a normal
+// wrapped error and must not be retried.
+func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath string, args []string, env []string, workingDir string, opts *llmtypes.CallOptions) (*opencodeAttemptResult, error) {
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = buildOpenCodeEnvForCall(c.apiKey, activeSubProvider, opts)
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -202,15 +275,11 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	c.logInfof("Executing OpenCode CLI structured: opencode %s", strings.Join(args[:3], " "))
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("opencode start: %w", err)
 	}
 
-	var textParts []string
-	var totalUsage llmtypes.Usage
-	var sessionID string
-	var lastFinishReason string
+	res := &opencodeAttemptResult{}
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -227,15 +296,15 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 			continue
 		}
 
-		if sessionID == "" && event.SessionID != "" {
-			sessionID = event.SessionID
+		if res.sessionID == "" && event.SessionID != "" {
+			res.sessionID = event.SessionID
 		}
 
 		switch event.Type {
 		case "text":
 			var part opencodeTextPart
 			if err := json.Unmarshal(event.Part, &part); err == nil && part.Text != "" {
-				textParts = append(textParts, part.Text)
+				res.textParts = append(res.textParts, part.Text)
 				if opts.StreamChan != nil {
 					select {
 					case opts.StreamChan <- llmtypes.StreamChunk{
@@ -270,21 +339,20 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		case "step_finish":
 			var part opencodeStepFinishPart
 			if err := json.Unmarshal(event.Part, &part); err == nil {
-				totalUsage.InputTokens += part.Tokens.Input
-				totalUsage.OutputTokens += part.Tokens.Output
-				totalUsage.TotalTokens += part.Tokens.Total
+				res.usage.InputTokens += part.Tokens.Input
+				res.usage.OutputTokens += part.Tokens.Output
+				res.usage.TotalTokens += part.Tokens.Total
 				if part.Tokens.Cache.Read > 0 {
 					cacheRead := part.Tokens.Cache.Read
-					totalUsage.CacheTokens = &cacheRead
+					res.usage.CacheTokens = &cacheRead
 				}
-				lastFinishReason = part.Reason
+				res.lastFinishReason = part.Reason
 			}
 		}
 	}
 
 	waitErr := cmd.Wait()
-
-	content := strings.TrimSpace(strings.Join(textParts, ""))
+	content := strings.TrimSpace(strings.Join(res.textParts, ""))
 
 	if waitErr != nil && content == "" {
 		stderrStr := strings.TrimSpace(stderr.String())
@@ -295,30 +363,16 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	}
 
 	if content == "" {
-		return nil, fmt.Errorf("opencode run returned no text output")
+		// Clean exit with no text — the retriable cold-start flake.
+		// Surface stderr in the diagnostic so a second silent-empty
+		// after retry still tells the operator what opencode said.
+		if stderrStr := strings.TrimSpace(stderr.String()); stderrStr != "" {
+			return nil, fmt.Errorf("%w; stderr: %s", errOpencodeSilentEmpty, stderrStr)
+		}
+		return nil, errOpencodeSilentEmpty
 	}
 
-	stopReason := "stop"
-	if lastFinishReason == "tool-calls" {
-		stopReason = "tool_calls"
-	}
-
-	return &llmtypes.ContentResponse{
-		Choices: []*llmtypes.ContentChoice{
-			{
-				Content:    content,
-				StopReason: stopReason,
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":            "opencode-cli",
-						"opencode_mode":       "structured",
-						"opencode_session_id": sessionID,
-					},
-				},
-			},
-		},
-		Usage: &totalUsage,
-	}, nil
+	return res, nil
 }
 
 // buildOpenCodeEnvForCall constructs the env passed to `opencode run`. It

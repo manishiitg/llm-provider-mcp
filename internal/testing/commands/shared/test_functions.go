@@ -1044,8 +1044,10 @@ func RunStreamingToolCallTest(llm llmtypes.Model, modelID string) {
 // RunStreamingContentTest runs basic content streaming tests (no tool calls)
 // Tests that content chunks stream correctly and match the final response
 func RunStreamingContentTest(llm llmtypes.Model, modelID string) {
-	// Use context with timeout to prevent hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// 120s matches the multi-turn streaming budget below; thinking-on
+	// models (GLM-4.7, o-series) routinely spend 15-25s on internal
+	// reasoning before any text streams, which can blow a 60s budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	// Test 1: Short content streaming
