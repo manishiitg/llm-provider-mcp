@@ -534,12 +534,7 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 
 	var failures []string
 	for _, session := range sessions {
-		session.mu.Lock()
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.mu.Unlock()
+		stopCodexIdleTimerIfAvailable(session)
 		unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 		if session.systemPromptTempFile != "" {
 			_ = os.Remove(session.systemPromptTempFile)
@@ -552,6 +547,17 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 		return fmt.Errorf("failed to clean up Codex interactive sessions: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func stopCodexIdleTimerIfAvailable(session *codexInteractiveSession) {
+	if session == nil || !session.mu.TryLock() {
+		return
+	}
+	defer session.mu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
 }
 
 func registerCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {

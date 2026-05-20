@@ -264,7 +264,11 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 			discardPersistentSession(err)
 		}
 		if isContextCanceledError(err) {
-			interruptClaudeExperimentalSession(sessionName, c.logger)
+			if interruptErr := interruptClaudeExperimentalSession(sessionName, c.logger); interruptErr != nil {
+				if persistentInteractive && persistentSession != nil {
+					discardPersistentSession(fmt.Errorf("Claude Code experimental session did not return to prompt after context cancellation: %w", interruptErr))
+				}
+			}
 		}
 		// opts.StreamChan close is owned by WithObservability.
 		return nil, err
@@ -711,18 +715,41 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string) error {
 				}
 				continue
 			}
-			if !resumePromptHandled && isClaudeResumeCompressionPrompt(captured) {
-				resumePromptHandled = true
-				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "continue", "C-m"); err != nil {
-					return fmt.Errorf("failed to continue Claude Code resumed session without compaction: %w", err)
+			if !resumePromptHandled {
+				resumePromptKeys := claudeResumeCompressionPromptSubmitKeys(captured)
+				if len(resumePromptKeys) > 0 {
+					resumePromptHandled = true
+					args := append([]string{"send-keys", "-t", sessionName}, resumePromptKeys...)
+					if err := runCommand(deadline, nil, "tmux", args...); err != nil {
+						return fmt.Errorf("failed to continue Claude Code resumed session without compaction: %w", err)
+					}
+					continue
 				}
-				continue
 			}
 			if hasReadyInputPrompt(captured) {
 				return nil
 			}
 		}
 	}
+}
+
+func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
+	if isClaudeResumeSummaryMenu(captured) {
+		return []string{"C-m"}
+	}
+	if isClaudeResumeCompressionPrompt(captured) {
+		return []string{"continue", "C-m"}
+	}
+	return nil
+}
+
+func isClaudeResumeSummaryMenu(captured string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(captured, "\u00a0", " "))
+	return strings.Contains(normalized, "resume from summary") &&
+		strings.Contains(normalized, "enter to confirm") &&
+		(strings.Contains(normalized, "resume full session") ||
+			strings.Contains(normalized, "usage limits") ||
+			strings.Contains(normalized, "substantial portion"))
 }
 
 func isClaudeResumeCompressionPrompt(captured string) bool {
@@ -742,6 +769,9 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 	bufferName := "mlp-claude-prompt-" + randomHex(6)
 	prompt = strings.TrimRight(prompt, "\n")
 
+	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
+		return err
+	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
 	if err := runCommand(ctx, strings.NewReader(prompt), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("failed to load prompt into tmux buffer: %w", err)
@@ -760,7 +790,8 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
+		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code experimental session: %w", err)
 		}
 		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane); err == nil {
@@ -778,6 +809,9 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Claude Code experimental input is empty")
+	}
+	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
+		return err
 	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
 	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
@@ -797,7 +831,8 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	}
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
+		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
 		}
 		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
@@ -807,6 +842,99 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		}
 	}
 	return fmt.Errorf("Claude Code experimental input remained unsubmitted after submit retries: %w", lastErr)
+}
+
+func claudeSubmitPromptKeys() []string {
+	// Claude Code can leave a bracket-pasted live message as a visible draft when
+	// Enter is sent while the cursor/focus is not at the accepted end of input.
+	// Move to the end first, then submit.
+	return []string{"C-e", "C-m"}
+}
+
+func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) error {
+	captured, err := captureTmuxPane(ctx, sessionName)
+	if err != nil {
+		if isClaudeTmuxSessionLostError(err) {
+			return err
+		}
+		return nil
+	}
+	draft, shouldClear := claudePromptDraftToClearBeforePaste(captured)
+	if !shouldClear {
+		return nil
+	}
+	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u"); err != nil {
+		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
+	}
+	if err := waitForClaudePromptDraftCleared(ctx, sessionName); err != nil {
+		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
+	}
+	return nil
+}
+
+func claudePromptDraftToClearBeforePaste(captured string) (string, bool) {
+	if !hasReadyInputPrompt(captured) {
+		return "", false
+	}
+	draft, placeholder, ok := latestClaudePromptDraftRaw(captured)
+	if !ok {
+		return "", false
+	}
+	draft = strings.TrimSpace(draft)
+	return draft, draft != "" && !placeholder
+}
+
+func latestClaudePromptDraftRaw(captured string) (draft string, placeholder bool, ok bool) {
+	lines := strings.Split(captured, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "❯" {
+			return "", false, true
+		}
+		if strings.HasPrefix(trimmed, "❯\u00a0") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯\u00a0")), true, true
+		}
+		if strings.HasPrefix(trimmed, "❯ ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯ ")), false, true
+		}
+	}
+	return "", false, false
+}
+
+func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) error {
+	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastCaptured string
+	for {
+		select {
+		case <-deadline.Done():
+			captured := lastCaptured
+			if strings.TrimSpace(captured) == "" {
+				captured, _ = captureTmuxPane(context.Background(), sessionName)
+			}
+			if strings.TrimSpace(captured) != "" {
+				return fmt.Errorf("timed out waiting for Claude Code prompt draft to clear; latest pane:\n%s", captured)
+			}
+			return fmt.Errorf("timed out waiting for Claude Code prompt draft to clear")
+		case <-ticker.C:
+			captured, err := captureTmuxPane(deadline, sessionName)
+			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return err
+				}
+				continue
+			}
+			lastCaptured = captured
+			draft, ok := latestClaudePromptDraft(captured)
+			if ok && strings.TrimSpace(draft) == "" {
+				return nil
+			}
+		}
+	}
 }
 
 func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) string {
@@ -857,7 +985,7 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 	}
 }
 
-func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Logger) {
+func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Logger) error {
 	interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -865,11 +993,15 @@ func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Lo
 		if logger != nil {
 			logger.Debugf("Failed to send Escape to Claude Code experimental session %s: %v", sessionName, err)
 		}
-		return
+		return err
 	}
-	if err := waitForReadyInputPrompt(interruptCtx, sessionName); err != nil && logger != nil {
-		logger.Debugf("Claude Code experimental session %s did not return to prompt after Escape: %v", sessionName, err)
+	if err := waitForReadyInputPrompt(interruptCtx, sessionName); err != nil {
+		if logger != nil {
+			logger.Debugf("Claude Code experimental session %s did not return to prompt after Escape: %v", sessionName, err)
+		}
+		return err
 	}
+	return nil
 }
 
 func isContextCanceledError(err error) bool {
@@ -1178,6 +1310,17 @@ func claudePromptDraftStillMatchesMessage(draft, message string) bool {
 		return false
 	}
 	return strings.Contains(normalizedDraft, normalizedMessage) || strings.Contains(normalizedMessage, normalizedDraft)
+}
+
+func truncateClaudeDraftForError(value string, max int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	if max <= 3 {
+		return value[:max]
+	}
+	return value[:max-3] + "..."
 }
 
 func hasNewAssistantOutput(delta string) bool {
@@ -2113,14 +2256,20 @@ func drainClaudePersistentInteractiveSessions() []*claudeExperimentalPersistentS
 	claudeExperimentalPersistentRegistry.Unlock()
 
 	for _, session := range sessions {
-		session.mu.Lock()
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.mu.Unlock()
+		stopClaudeIdleTimerIfAvailable(session)
 	}
 	return sessions
+}
+
+func stopClaudeIdleTimerIfAvailable(session *claudeExperimentalPersistentSession) {
+	if session == nil || !session.mu.TryLock() {
+		return
+	}
+	defer session.mu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
 }
 
 func SendClaudeCodeExperimentalInput(ctx context.Context, ownerSessionID, message string) error {

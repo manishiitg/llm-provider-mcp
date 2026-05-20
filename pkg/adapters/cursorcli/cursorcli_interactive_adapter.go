@@ -597,17 +597,11 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 
 	var failures []string
 	for _, session := range sessions {
-		session.mu.Lock()
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		if session.cleanupFiles != nil {
-			session.cleanupFiles()
-			session.cleanupFiles = nil
-		}
-		session.mu.Unlock()
+		cleanupFiles := stopCursorIdleTimerAndSnapshotCleanupIfAvailable(session)
 		unregisterCursorInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
 		if err := killCursorTmuxSession(ctx, session.tmuxSessionName); err != nil {
 			failures = append(failures, err.Error())
 		}
@@ -616,6 +610,20 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 		return fmt.Errorf("failed to clean up Cursor interactive sessions: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func stopCursorIdleTimerAndSnapshotCleanupIfAvailable(session *cursorInteractiveSession) func() {
+	if session == nil || !session.mu.TryLock() {
+		return nil
+	}
+	defer session.mu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	cleanupFiles := session.cleanupFiles
+	session.cleanupFiles = nil
+	return cleanupFiles
 }
 
 func registerCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {

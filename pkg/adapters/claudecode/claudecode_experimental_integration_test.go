@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -480,6 +481,163 @@ func TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn(t 
 	}
 }
 
+func TestClaudeCodeExperimentalIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	ownerSessionID := "claude-stale-draft-e2e-" + randomHex(4)
+	options := []llmtypes.CallOption{
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithEffort("low"),
+	}
+
+	first, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep answers short."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply exactly: ready"},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("first GenerateContent error = %v", err)
+	}
+	if got := firstChoiceText(first); !containsFold(got, "ready") {
+		t.Fatalf("first content = %q, want ready", got)
+	}
+
+	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	if !ok {
+		t.Fatalf("persistent interactive session not registered for %s", ownerSessionID)
+	}
+	staleDraft := "go with option B"
+	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, staleDraft); err != nil {
+		t.Fatalf("seed stale tmux draft: %v", err)
+	}
+	waitForClaudeExperimentalDraft(t, sessionName, staleDraft, 5*time.Second)
+
+	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply exactly: CURRENT_TURN_STALE_DRAFT_OK. Do not mention options."},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("second GenerateContent error = %v", err)
+	}
+	got := firstChoiceText(second)
+	if !containsFold(got, "CURRENT_TURN_STALE_DRAFT_OK") {
+		t.Fatalf("second content = %q, want current turn marker", got)
+	}
+	if containsFold(got, "option b") {
+		t.Fatalf("second content = %q, stale draft leaked into submitted turn", got)
+	}
+}
+
+func TestClaudeCodeExperimentalIntegrationPersistentCancelDoesNotLeaveBusySessionReusable(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	ownerSessionID := "claude-cancel-ready-e2e-" + randomHex(4)
+	markerPath := filepath.Join(t.TempDir(), "slow-tool-started.json")
+	mcpServerPath := writeClaudeExperimentalSlowMCPServer(t, markerPath)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+	options := []llmtypes.CallOption{
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithMCPConfig(mcpConfig),
+		WithClaudeCodeTools(""),
+		WithAllowedTools("mcp__api-bridge__slow_contract"),
+		WithEffort("low"),
+	}
+
+	callCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := adapter.GenerateContent(callCtx, []llmtypes.MessageContent{
+			{
+				Role: llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "This is a cancellation contract test. Use only declared MCP tools."},
+				},
+			},
+			{
+				Role: llmtypes.ChatMessageTypeHuman,
+				Parts: []llmtypes.ContentPart{
+					llmtypes.TextContent{Text: "Call the api-bridge slow_contract MCP tool with token CANCEL_READY and delay_ms 60000. Do not answer until the tool returns."},
+				},
+			},
+		}, options...)
+		errCh <- err
+	}()
+
+	waitForClaudeExperimentalFileOrResult(t, markerPath, "slow tool start marker", 90*time.Second, errCh, ownerSessionID)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatalf("GenerateContent error = nil, want context cancellation")
+		}
+		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("GenerateContent error = %v, want context canceled", err)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for canceled Claude Code turn to return")
+	}
+
+	if sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+		captured, err := captureTmuxPane(context.Background(), sessionName)
+		if err != nil {
+			t.Fatalf("active session %s could not be captured after cancellation: %v", sessionName, err)
+		}
+		if !hasReadyInputPrompt(captured) {
+			t.Fatalf("canceled persistent session remained registered but was not prompt-ready; latest pane:\n%s", captured)
+		}
+	}
+}
+
+func waitForClaudeExperimentalFileOrResult(t *testing.T, path, label string, timeout time.Duration, errCh <-chan error, ownerSessionID string) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-errCh:
+			t.Fatalf("Claude Code exited before %s: %v", label, err)
+		case <-deadline.C:
+			if sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+				if captured, err := captureTmuxPane(context.Background(), sessionName); err == nil {
+					t.Fatalf("timed out waiting for %s at %s; latest pane:\n%s", label, path, captured)
+				}
+			}
+			t.Fatalf("timed out waiting for %s at %s", label, path)
+		case <-ticker.C:
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+		}
+	}
+}
+
 func skipClaudeExperimentalIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv(runClaudeExperimentalIntegrationEnv) == "" {
@@ -570,6 +728,22 @@ func waitForClaudeExperimentalFile(t *testing.T, path, label string, timeout tim
 			}
 		}
 	}
+}
+
+func waitForClaudeExperimentalDraft(t *testing.T, sessionName, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		captured, err := captureTmuxPane(context.Background(), sessionName)
+		if err == nil {
+			if draft, ok := latestClaudePromptDraft(captured); ok && strings.Contains(draft, want) {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	captured, _ := captureTmuxPane(context.Background(), sessionName)
+	t.Fatalf("timed out waiting for Claude Code draft %q; latest pane:\n%s", want, captured)
 }
 
 type claudeExperimentalRealResult struct {

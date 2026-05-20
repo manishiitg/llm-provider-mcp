@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,14 @@ func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
 		if claudeExperimentalStreamTmuxScreenEnabled() {
 			t.Fatalf("tmux screen streaming should be disabled for %q", value)
 		}
+	}
+}
+
+func TestClaudeSubmitPromptKeysMoveToEndBeforeEnter(t *testing.T) {
+	got := claudeSubmitPromptKeys()
+	want := []string{"C-e", "C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claude submit keys = %v, want %v", got, want)
 	}
 }
 
@@ -635,6 +644,36 @@ Would you like to compact the conversation or continue without compacting?
 	if !isClaudeResumeCompressionPrompt(pane) {
 		t.Fatal("isClaudeResumeCompressionPrompt = false, want true")
 	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"continue", "C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
+}
+
+func TestClaudeResumeSummaryMenuSubmitsDefaultChoice(t *testing.T) {
+	pane := `
+────────────────────────────────────────────────────────────────────────────────────────────────── mcp-agent ──
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  This session is 2h 17m old and 167.9k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
+
+  ❯ 1. Resume from summary (recommended)
+    2. Resume full session as-is
+    3. Don't ask me again
+
+  Enter to confirm · Esc to cancel
+`
+	if !isClaudeResumeSummaryMenu(pane) {
+		t.Fatal("isClaudeResumeSummaryMenu = false, want true")
+	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
 }
 
 func TestIsClaudeResumeCompressionPromptIgnoresNormalPrompt(t *testing.T) {
@@ -644,6 +683,12 @@ func TestIsClaudeResumeCompressionPromptIgnoresNormalPrompt(t *testing.T) {
 `
 	if isClaudeResumeCompressionPrompt(pane) {
 		t.Fatal("isClaudeResumeCompressionPrompt = true for normal prompt")
+	}
+	if isClaudeResumeSummaryMenu(pane) {
+		t.Fatal("isClaudeResumeSummaryMenu = true for normal prompt")
+	}
+	if got := claudeResumeCompressionPromptSubmitKeys(pane); got != nil {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want nil", got)
 	}
 }
 
@@ -779,6 +824,52 @@ func TestHasReadyInputPromptAcceptsClaudeSuggestionWithTrailingBlankFill(t *test
 `
 	if !hasReadyInputPrompt(pane) {
 		t.Fatal("hasReadyInputPrompt = false for idle prompt with Claude suggestion text and trailing blank fill")
+	}
+}
+
+func TestWaitForTmuxPromptAcceptsNormalPromptWithoutResumePrompt(t *testing.T) {
+	fakeBin := t.TempDir()
+	capturePath := fakeBin + "/capture.txt"
+	sendKeysPath := fakeBin + "/send-keys.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  cat "$TMUX_TEST_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$TMUX_TEST_SEND_KEYS"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	pane := `
+ ▐▛███▜▌   Claude Code v2.1.144
+▝▜█████▛▘  Opus 4.6 with high effort · Claude Max
+  ▘▘ ▝▝    ~/ai-work/mcp-agent-builder-go/workspace-docs/Workflow/instagram
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── mcp-agent-20260519-220956 ──
+❯ Try "write a test for Perform Sheet Update Verification_code.go"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents                                                                                                 0 tokens
+`
+	if err := os.WriteFile(capturePath, []byte(pane), 0o644); err != nil {
+		t.Fatalf("write capture: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE", capturePath)
+	t.Setenv("TMUX_TEST_SEND_KEYS", sendKeysPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := waitForTmuxPrompt(ctx, "test-session"); err != nil {
+		t.Fatalf("waitForTmuxPrompt returned error for normal ready prompt: %v", err)
+	}
+	if got, err := os.ReadFile(sendKeysPath); err == nil && strings.TrimSpace(string(got)) != "" {
+		t.Fatalf("waitForTmuxPrompt sent resume keys for normal prompt: %q", string(got))
 	}
 }
 
@@ -958,6 +1049,70 @@ func TestLatestClaudePromptDraftUsesLastPromptLine(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("latestClaudePromptDraft = %q, want blank current draft", got)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePaste(t *testing.T) {
+	pane := `
+⏺ What do you think?
+
+✻ Cogitated for 30s
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ go with option B
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	draft, ok := claudePromptDraftToClearBeforePaste(pane)
+	if !ok {
+		t.Fatal("claudePromptDraftToClearBeforePaste ok = false, want true for stale idle draft")
+	}
+	if draft != "go with option B" {
+		t.Fatalf("draft = %q, want stale draft text", draft)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteIgnoresBlankPrompt(t *testing.T) {
+	pane := `
+⏺ Done
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear for blank prompt", draft)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteIgnoresSuggestedPlaceholder(t *testing.T) {
+	pane := `
+⏺ What do you think?
+
+✻ Cogitated for 30s
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ go with option B
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear for Claude suggestion placeholder", draft)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteIgnoresRunningPrompt(t *testing.T) {
+	pane := `
+⏺ Calling api-bridge…
+✶ Working… (1s)
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ go with option B
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear while Claude is active", draft)
 	}
 }
 
