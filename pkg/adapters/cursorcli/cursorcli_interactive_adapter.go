@@ -492,14 +492,17 @@ func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, l
 	if session == nil {
 		return
 	}
-	retention := cursorInteractiveRetention()
+	// tmux kill delay is short (30s grace for trailing output);
+	// cursorInteractiveRetention() drives the rail-display retention
+	// passed through metadata so the snapshot persists after kill.
+	retention := llmtypes.TmuxKillDelay
 	session.lastUsed = time.Now()
 	if retention <= 0 {
 		closeCursorSessionLocked(session, "bounded turn complete", logger)
 		return
 	}
 	if logger != nil {
-		logger.Debugf("Retaining completed Cursor interactive session %s for owner %s for %s", session.tmuxSessionName, session.ownerSessionID, retention)
+		logger.Debugf("Retaining completed Cursor interactive session %s for owner %s for %s (then kill)", session.tmuxSessionName, session.ownerSessionID, retention)
 	}
 	session.idleTimer = time.AfterFunc(retention, func() {
 		closeCursorPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)

@@ -511,14 +511,17 @@ func releaseGeminiBoundedInteractiveSession(session *geminiInteractiveSession, l
 		return
 	}
 	releaseGeminiStartupSlot(session)
-	retention := geminiInteractiveRetention()
+	// tmux kill delay is short (30s grace for trailing output);
+	// geminiInteractiveRetention() drives the rail-display retention
+	// passed through metadata so the snapshot persists after kill.
+	retention := llmtypes.TmuxKillDelay
 	session.lastUsed = time.Now()
 	if retention <= 0 {
 		closeGeminiSessionLocked(session, "bounded turn complete", logger)
 		return
 	}
 	if logger != nil {
-		logger.Debugf("Retaining completed Gemini interactive session %s for owner %s for %s", session.tmuxSessionName, session.ownerSessionID, retention)
+		logger.Debugf("Retaining completed Gemini interactive session %s for owner %s for %s (then kill)", session.tmuxSessionName, session.ownerSessionID, retention)
 	}
 	session.idleTimer = time.AfterFunc(retention, func() {
 		closeGeminiPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)

@@ -229,7 +229,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 			return nil, err
 		}
 		registerClaudeExperimentalSession(sessionName)
-		cleanupSession := cleanupClaudeExperimentalSessionAfter(sessionName, boundedRetentionTimeout())
+		cleanupSession := cleanupClaudeExperimentalSessionAfter(sessionName, llmtypes.TmuxKillDelay)
 		defer cleanupSession()
 		if interactiveSessionID != "" {
 			registerClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
