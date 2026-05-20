@@ -273,6 +273,24 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		// opts.StreamChan close is owned by WithObservability.
 		return nil, err
 	}
+	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
+	// Skip for persistent interactive sessions: they live past the call
+	// and are scraped by other paths.
+	if !persistentInteractive {
+		llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+			func(ctx context.Context) (string, error) {
+				snap, err := captureTmuxPane(ctx, sessionName)
+				if err != nil {
+					return "", err
+				}
+				return strings.TrimRight(snap, "\n"), nil
+			},
+			map[string]interface{}{
+				"tmux_session":                    sessionName,
+				"claude_code_interactive_session": sessionName,
+			},
+		)
+	}
 	if persistentInteractive && persistentSession != nil {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), time.Second)
 		exists, checkErr := claudeTmuxSessionExists(checkCtx, sessionName)
@@ -306,9 +324,9 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		"claude_code_persistent_interactive": persistentInteractive,
 	}
 	if !persistentInteractive {
-		retentionSeconds := int(boundedRetentionTimeout().Seconds())
-		additional["terminal_retention_seconds"] = retentionSeconds
-		additional["claude_code_interactive_retention_seconds"] = retentionSeconds
+		// terminal_retention_seconds intentionally not set: the rail
+		// snapshot stays until the user dismisses it via the X button.
+		additional["claude_code_interactive_retention_seconds"] = int(boundedRetentionTimeout().Seconds())
 	}
 
 	// Best-effort usage extraction from the local JSONL transcript.

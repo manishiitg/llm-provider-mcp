@@ -194,6 +194,20 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	})
 
 	content := parseCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
+	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+		func(ctx context.Context) (string, error) {
+			snap, err := captureCodexPane(ctx, session.tmuxSessionName)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(stripCodexANSI(snap), "\n"), nil
+		},
+		map[string]interface{}{
+			"tmux_session":              session.tmuxSessionName,
+			"codex_interactive_session": session.tmuxSessionName,
+		},
+	)
 	if opts.StreamChan != nil {
 		close(opts.StreamChan)
 	}
@@ -206,9 +220,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"codex_uses_exec_json":         false,
 	}
 	if !persistent {
-		retentionSeconds := int(codexInteractiveRetention().Seconds())
-		additional["terminal_retention_seconds"] = retentionSeconds
-		additional["codex_interactive_retention_seconds"] = retentionSeconds
+		// terminal_retention_seconds intentionally not set — see cursor.
+		additional["codex_interactive_retention_seconds"] = int(codexInteractiveRetention().Seconds())
 	}
 
 	// Best-effort usage from codex's local rollout JSONL — tmux mode
@@ -2237,6 +2250,7 @@ func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
 func captureCodexPane(ctx context.Context, sessionName string) (string, error) {
 	return runCodexCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
 }
+
 
 func codexCapturedAfterBaseline(captured, baseline string) string {
 	if baseline != "" {

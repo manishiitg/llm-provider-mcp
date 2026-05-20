@@ -175,6 +175,20 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}
 
 	content := parseGeminiInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
+	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+		func(ctx context.Context) (string, error) {
+			snap, err := captureGeminiPane(ctx, session.tmuxSessionName)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(stripGeminiANSI(snap), "\n"), nil
+		},
+		map[string]interface{}{
+			"tmux_session":               session.tmuxSessionName,
+			"gemini_interactive_session": session.tmuxSessionName,
+		},
+	)
 	if opts.StreamChan != nil {
 		close(opts.StreamChan)
 	}
@@ -188,9 +202,8 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		"gemini_project_dir_id":         session.projectDirID,
 	}
 	if !persistent {
-		retentionSeconds := int(geminiInteractiveRetention().Seconds())
-		additional["terminal_retention_seconds"] = retentionSeconds
-		additional["gemini_interactive_retention_seconds"] = retentionSeconds
+		// terminal_retention_seconds intentionally not set — see cursor.
+		additional["gemini_interactive_retention_seconds"] = int(geminiInteractiveRetention().Seconds())
 	}
 
 	// Best-effort usage extraction from the local JSONL transcript.
@@ -1742,6 +1755,7 @@ func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
 func captureGeminiPane(ctx context.Context, sessionName string) (string, error) {
 	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
 }
+
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {
 	if baseline != "" {

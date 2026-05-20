@@ -178,6 +178,20 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
+	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+		func(ctx context.Context) (string, error) {
+			snap, err := captureCursorPane(ctx, session.tmuxSessionName)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(stripCursorANSI(snap), "\n"), nil
+		},
+		map[string]interface{}{
+			"tmux_session":               session.tmuxSessionName,
+			"cursor_interactive_session": session.tmuxSessionName,
+		},
+	)
 	if opts.StreamChan != nil {
 		close(opts.StreamChan)
 	}
@@ -191,9 +205,13 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		"cursor_working_dir":            session.workingDir,
 	}
 	if !persistent {
-		retentionSeconds := int(cursorInteractiveRetention().Seconds())
-		additional["terminal_retention_seconds"] = retentionSeconds
-		additional["cursor_interactive_retention_seconds"] = retentionSeconds
+		// terminal_retention_seconds intentionally not set: the rail
+		// snapshot stays read-only until the user dismisses it via the
+		// X button. Tmux itself is killed quickly after the turn via
+		// the bounded-session cleanup using llmtypes.TmuxKillDelay.
+		// The cursor_interactive_retention_seconds value is kept for
+		// any backend code that still tracks it for diagnostics.
+		additional["cursor_interactive_retention_seconds"] = int(cursorInteractiveRetention().Seconds())
 	}
 
 	return &llmtypes.ContentResponse{
