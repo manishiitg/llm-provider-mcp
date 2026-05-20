@@ -9,12 +9,15 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	openaisdk "github.com/openai/openai-go/v3"
 	openaisdkoption "github.com/openai/openai-go/v3/option"
 	"google.golang.org/genai"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
+	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 )
@@ -34,6 +37,7 @@ type adapterFactory func(t *testing.T) (model llmtypes.Model, modelID string, sk
 // because the assertion is centralised.
 var inspectorContractFactories = map[string]adapterFactory{
 	"anthropic": newRealAnthropicForInspectorMatrix,
+	"bedrock":   newRealBedrockForInspectorMatrix,
 	"openai":    newRealOpenAIForInspectorMatrix,
 	"vertex":    newRealVertexForInspectorMatrix,
 	// TODO: claudecode (structured), codex (structured),
@@ -182,6 +186,27 @@ func newRealOpenAIForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool
 	}
 	client := openaisdk.NewClient(openaisdkoption.WithAPIKey(apiKey))
 	return openaiadapter.NewOpenAIAdapter(&client, model, &matrixMockLogger{}), model, false
+}
+
+func newRealBedrockForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool) {
+	t.Helper()
+	if os.Getenv("RUN_BEDROCK_REAL_E2E") == "" {
+		return nil, "", true
+	}
+	model := strings.TrimSpace(os.Getenv("BEDROCK_REAL_E2E_MODEL"))
+	if model == "" {
+		model = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	}
+	region := strings.TrimSpace(os.Getenv("AWS_REGION"))
+	if region == "" {
+		region = "us-east-1"
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
+	if err != nil {
+		t.Fatalf("aws LoadDefaultConfig: %v", err)
+	}
+	client := bedrockruntime.NewFromConfig(cfg)
+	return bedrockadapter.NewBedrockAdapter(client, model, &matrixMockLogger{}), model, false
 }
 
 func newRealVertexForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool) {

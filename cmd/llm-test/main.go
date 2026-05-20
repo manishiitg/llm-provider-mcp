@@ -40,7 +40,6 @@ func main() {
 	rootCmd.AddCommand(bedrockcmd.BedrockStructuredOutputTestCmd)
 	rootCmd.AddCommand(bedrockcmd.BedrockTokenUsageTestCmd)
 	rootCmd.AddCommand(bedrockcmd.BedrockImageTestCmd)
-	rootCmd.AddCommand(bedrockcmd.BedrockEmbeddingTestCmd)
 	rootCmd.AddCommand(openaicmd.OpenAICmd)
 	rootCmd.AddCommand(openaicmd.OpenAIToolCallTestCmd)
 	rootCmd.AddCommand(openaicmd.OpenAIToolCallEventsTestCmd)
