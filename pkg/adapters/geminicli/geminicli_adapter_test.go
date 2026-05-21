@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 type MockLogger struct{}
@@ -43,6 +44,51 @@ func TestGeminiInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestGeminiTerminalStreamCapturesRawScreenRows(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/capture-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$*" > "$TMUX_TEST_CAPTURE_ARGS"
+  for arg in "$@"; do
+    if [ "$arg" = "-J" ]; then
+      echo "terminal display capture must not use -J" >&2
+      exit 9
+    fi
+  done
+  printf 'screen row one\nscreen row two\n'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE_ARGS", argsPath)
+
+	stream := make(chan llmtypes.StreamChunk, 1)
+	var last string
+	if !streamGeminiTerminalSnapshot(context.Background(), "raw-display-session", stream, &last) {
+		t.Fatal("streamGeminiTerminalSnapshot returned false")
+	}
+	chunk := <-stream
+	if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+		t.Fatalf("chunk type = %q, want terminal", chunk.Type)
+	}
+	if !strings.Contains(chunk.Content, "screen row one\nscreen row two") {
+		t.Fatalf("chunk content = %q, want raw screen rows", chunk.Content)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read capture args: %v", err)
+	}
+	if strings.Contains(string(args), " -J") {
+		t.Fatalf("terminal display capture used joined rows: %q", string(args))
+	}
+}
+
 func TestGeminiInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvGeminiInteractiveTimeoutSeconds, "")
 	if got := geminiInteractiveTimeout(); got != 0 {
@@ -57,6 +103,25 @@ func TestGeminiInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvGeminiInteractiveTimeoutSeconds, "2")
 	if got := geminiInteractiveTimeout(); got != 2*time.Second {
 		t.Fatalf("geminiInteractiveTimeout env = %v, want 2s", got)
+	}
+}
+
+func TestGeminiInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
+	t.Setenv(EnvGeminiInteractivePromptWaitSeconds, "")
+	if got := geminiInteractivePromptWait(); got != 120*time.Second {
+		t.Fatalf("geminiInteractivePromptWait default = %v, want 120s", got)
+	}
+
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
+	t.Setenv(EnvGeminiInteractivePromptWaitSeconds, "")
+	if got := geminiInteractivePromptWait(); got != 3*time.Second {
+		t.Fatalf("geminiInteractivePromptWait global env = %v, want 3s", got)
+	}
+
+	t.Setenv(EnvGeminiInteractivePromptWaitSeconds, "2")
+	if got := geminiInteractivePromptWait(); got != 2*time.Second {
+		t.Fatalf("geminiInteractivePromptWait provider env = %v, want 2s", got)
 	}
 }
 
@@ -917,6 +982,51 @@ func TestGeminiCLIRejectsImageContent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not support llmtypes.ImageContent") {
 		t.Fatalf("GenerateContent() error = %v, want image content unsupported error", err)
+	}
+}
+
+func TestGeminiCLIStructuredStreamMirrorsAssistantTextToTerminal(t *testing.T) {
+	fakeBin := t.TempDir()
+	geminiPath := filepath.Join(fakeBin, "gemini")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"init","session_id":"session-structured","model":"gemini-3"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"{\"selected_route_id\":\"search\",\"reasoning\":\"assistant terminal mirror ok\"}"}'
+printf '%s\n' '{"type":"result","session_id":"session-structured","status":"success"}'
+`
+	if err := os.WriteFile(geminiPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gemini: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter := NewGeminiCLIAdapter("dummy-key", "auto", quietGeminiStreamLogger{})
+	streamChan := make(chan llmtypes.StreamChunk, 32)
+	resp, err := adapter.GenerateContent(context.Background(),
+		[]llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "route this")},
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "assistant terminal mirror ok") {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	var assistantContent strings.Builder
+	var terminalContent strings.Builder
+	for chunk := range streamChan {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeContent:
+			assistantContent.WriteString(chunk.Content)
+		case llmtypes.StreamChunkTypeTerminal:
+			terminalContent.WriteString(chunk.Content)
+			terminalContent.WriteString("\n")
+		}
+	}
+	if !strings.Contains(assistantContent.String(), "assistant terminal mirror ok") {
+		t.Fatalf("assistant stream missing final text: %q", assistantContent.String())
+	}
+	if !strings.Contains(terminalContent.String(), "assistant terminal mirror ok") {
+		t.Fatalf("terminal stream missing assistant text:\n%s", terminalContent.String())
 	}
 }
 

@@ -51,6 +51,35 @@ Both surfaces should run the provider TUI in tmux when the provider supports it.
 The difference is orchestration: workflow execution sends intermediate messages
 programmatically and waits for idle; chat accepts live user steer input.
 
+## Highest-Risk Tmux Requirements
+
+Every tmux provider integration lives or dies on two behaviors:
+
+1. **Completion detection: decide when the current provider turn is really
+   finished.**
+   - The primary signal must be provider-owned TUI state: ready prompt visible,
+     no running/thinking/tool indicator, no queued input, no unresolved modal,
+     and a stable pane for the provider stability window.
+   - Prompt-contract text such as `STATUS: COMPLETED` is not provider-owned
+     lifecycle state. It may be used only as a bounded UI recovery hint by host
+     applications, never as the adapter's primary completion signal.
+   - A false positive here is severe: workflow validation can run before files
+     exist, retries can be triggered incorrectly, or a later user draft can be
+     treated as the next completed response.
+
+2. **Final response extraction: decide what text is the assistant's answer.**
+   - Extraction must run only after completion detection says the turn is idle.
+   - The extracted response must exclude terminal chrome, old turns, tool panels,
+     MCP JSON, shell output, startup banners, queued user drafts, validation
+     feedback, spinner/status lines, and menu/footer text.
+   - A false positive here is severe: users see tool dumps as final answers,
+     workflow logs persist the wrong response, or validation/learning consumes
+     stale text from a previous turn.
+
+Every provider contract test must include fixture and real-E2E coverage for both
+behaviors. A provider is not certified just because it can launch in tmux and
+stream a pane.
+
 ## Normative Coding Agent Contract
 
 A provider is a coding agent only if it can satisfy this shared contract. Exact
@@ -131,6 +160,10 @@ Completion detection must require all of:
 - pane stable for the provider's configured stability window
 - owned tmux session still exists
 
+Completion detection decides **when** to read. It must not decide **what** the
+assistant said. Final response extraction is a separate step and must be tested
+separately.
+
 Important regression case: a provider may render a prompt-looking input footer
 while a long tool call is still active above it, or while queued follow-up text
 is waiting for the next tool boundary. The adapter must classify that state as
@@ -201,6 +234,24 @@ The adapter must extract only the final assistant answer. It must reject:
 
 Hard invariant: a final response must never be a TUI status line, queued user
 message, validation feedback, or terminal menu option.
+
+Extraction decides **what** to return. It must not be used to infer that the
+provider has finished. Provider-specific extraction examples:
+
+- Claude Code: latest assistant block marked by `⏺`, or trailing assistant text
+  only after the pane is idle.
+- Codex CLI: final framed answer between provider separator lines, with a
+  segment fallback that rejects tool/status/error segments.
+- Gemini CLI: assistant text after provider assistant markers, with TUI and tool
+  blocks filtered.
+
+Required regression fixtures:
+
+- busy pane with prompt-looking footer must not complete
+- completed pane with tool panels must extract only the final answer
+- old turn plus new turn must extract only the newest assistant answer
+- queued draft after completion must not be extracted as assistant text
+- pre-validation retry feedback must not be extracted as assistant text
 
 ### 9. Sessions and Resume
 
@@ -715,11 +766,27 @@ queueing, cancellation, auth/trust prompts, or provider-version TUI changes.
 
 ### Required Real E2E Certification Matrix
 
+The executable certification registry lives in
+`coding_agent_certification.go`. The markdown table below defines the expected
+behavior; the registry maps provider capability claims to concrete test
+functions. Normal unit tests fail if `claude-code` or `codex-cli` claims a
+capability in `coding_agent_contract.go` without a registered certification, or
+if the registered certification points at a missing test function.
+
+For `claude-code` and `codex-cli`, this registry is a hard P0 gate for every row
+in the table below. A row may be certified by a deterministic unit test only when
+the behavior is provider-independent or not safely reproducible against the live
+CLI on every run; otherwise the registry must point at an opt-in real E2E test.
+Future tmux providers must be added to the same registry before being marked
+production-ready.
+
 Every tmux coding provider must have opt-in real E2E tests for:
 
 | Area | Required proof |
 | --- | --- |
 | Fresh launch | Starts the real CLI in tmux, reaches ready, and reports clear errors for missing auth/binary/version. |
+| Resume/compaction startup | A resumed persistent chat may enter provider-native compaction before the input prompt returns. Prompt-ready waits must use the global `CODING_SDK_TMUX_PROMPT_WAIT_SECONDS` setting, with provider-specific env vars only as overrides; a 20s fixed cutoff is not acceptable. |
+| Startup terminal visibility | While waiting for the initial or reset prompt, the adapter must stream real tmux pane snapshots so auth/trust/MCP-init/compaction/prompt-timeout failures are visible in the terminal UI. Terminal streaming must not begin only after the user prompt is accepted. |
 | Working directory | Provider cwd and MCP bridge shell cwd are the exact caller workspace for chat, workflow chat, workflow steps, sub-agents, and background agents. |
 | Trust/auth prompts | Fresh untrusted workspace trust prompt is handled or surfaced deterministically; auth and rate-limit states are not parsed as final answers. |
 | Native system prompt | System/developer instruction reaches the provider through native mechanism and is not pasted as user text. |
@@ -889,6 +956,11 @@ Deterministic resume tests must cover:
   it
 - persistent tmux mode and per-turn native resume mode do not mix metadata
   incorrectly
+- external tmux loss is recovered through the public continuation API:
+  first call starts a persistent tmux session, captures the provider-native
+  handle, kills the tmux session, then `ContinueCodingAgentSession` starts a
+  fresh tmux process with the same native resume id and recalls a random token
+  without app-level history replay
 
 Provider-contract validation must include real provider E2E. These tests stay
 environment-gated so normal CI does not spend credits accidentally, but release

@@ -7,11 +7,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const EnvStartConcurrency = "CODING_SDK_TMUX_START_CONCURRENCY"
+const EnvPromptWaitSeconds = "CODING_SDK_TMUX_PROMPT_WAIT_SECONDS"
 
 const defaultStartConcurrency = 1
+const defaultPromptWait = 120 * time.Second
 
 var startGate = struct {
 	sync.Mutex
@@ -50,4 +53,30 @@ func configuredStartConcurrency() int {
 		return defaultStartConcurrency
 	}
 	return parsed
+}
+
+func PromptWait(providerEnvKey string) time.Duration {
+	if parsed, ok := durationFromEnv(providerEnvKey); ok {
+		return parsed
+	}
+	if parsed, ok := durationFromEnv(EnvPromptWaitSeconds); ok {
+		return parsed
+	}
+	return defaultPromptWait
+}
+
+func durationFromEnv(key string) (time.Duration, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return 0, false
+	}
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return time.Duration(parsed) * time.Second, true
 }

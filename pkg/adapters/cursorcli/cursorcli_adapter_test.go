@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 type MockLogger struct{}
@@ -41,6 +42,25 @@ func TestCursorInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "2")
 	if got := cursorInteractiveTimeout(); got != 2*time.Second {
 		t.Fatalf("cursorInteractiveTimeout env = %v, want 2s", got)
+	}
+}
+
+func TestCursorInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
+	t.Setenv(EnvCursorInteractivePromptWaitSeconds, "")
+	if got := cursorInteractivePromptWait(); got != 120*time.Second {
+		t.Fatalf("cursorInteractivePromptWait default = %v, want 120s", got)
+	}
+
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
+	t.Setenv(EnvCursorInteractivePromptWaitSeconds, "")
+	if got := cursorInteractivePromptWait(); got != 3*time.Second {
+		t.Fatalf("cursorInteractivePromptWait global env = %v, want 3s", got)
+	}
+
+	t.Setenv(EnvCursorInteractivePromptWaitSeconds, "2")
+	if got := cursorInteractivePromptWait(); got != 2*time.Second {
+		t.Fatalf("cursorInteractivePromptWait provider env = %v, want 2s", got)
 	}
 }
 
@@ -80,6 +100,97 @@ func TestCursorInteractiveStreamTmuxScreenFlag(t *testing.T) {
 		if cursorInteractiveStreamTmuxScreenEnabled() {
 			t.Fatalf("tmux screen streaming should be disabled for %q", value)
 		}
+	}
+}
+
+func TestCursorTerminalStreamCapturesRawScreenRows(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/capture-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$*" > "$TMUX_TEST_CAPTURE_ARGS"
+  for arg in "$@"; do
+    if [ "$arg" = "-J" ]; then
+      echo "terminal display capture must not use -J" >&2
+      exit 9
+    fi
+  done
+  printf 'screen row one\nscreen row two\n'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE_ARGS", argsPath)
+
+	stream := make(chan llmtypes.StreamChunk, 1)
+	var last string
+	if !streamCursorTerminalSnapshot(context.Background(), "raw-display-session", stream, &last) {
+		t.Fatal("streamCursorTerminalSnapshot returned false")
+	}
+	chunk := <-stream
+	if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+		t.Fatalf("chunk type = %q, want terminal", chunk.Type)
+	}
+	if !strings.Contains(chunk.Content, "screen row one\nscreen row two") {
+		t.Fatalf("chunk content = %q, want raw screen rows", chunk.Content)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read capture args: %v", err)
+	}
+	if strings.Contains(string(args), " -J") {
+		t.Fatalf("terminal display capture used joined rows: %q", string(args))
+	}
+}
+
+func TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal(t *testing.T) {
+	fakeBin := t.TempDir()
+	cursorPath := filepath.Join(fakeBin, "cursor-agent")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"system","session_id":"cursor-structured","model":"cursor-test"}'
+printf '%s\n' '{"type":"thinking","subtype":"delta","text":"thinking terminal mirror ok"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"assistant terminal mirror ok"}]}}'
+printf '%s\n' '{"type":"result","result":"assistant terminal mirror ok","session_id":"cursor-structured","usage":{"inputTokens":1,"outputTokens":2}}'
+`
+	if err := os.WriteFile(cursorPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake cursor-agent: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	streamChan := make(chan llmtypes.StreamChunk, 32)
+	resp, err := adapter.GenerateContent(context.Background(),
+		[]llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "route this")},
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "assistant terminal mirror ok") {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	var assistantContent strings.Builder
+	var terminalContent strings.Builder
+	for chunk := range streamChan {
+		switch chunk.Type {
+		case llmtypes.StreamChunkTypeContent:
+			assistantContent.WriteString(chunk.Content)
+		case llmtypes.StreamChunkTypeTerminal:
+			terminalContent.WriteString(chunk.Content)
+			terminalContent.WriteString("\n")
+		}
+	}
+	if !strings.Contains(assistantContent.String(), "assistant terminal mirror ok") {
+		t.Fatalf("assistant stream missing final text: %q", assistantContent.String())
+	}
+	if !strings.Contains(terminalContent.String(), "assistant terminal mirror ok") {
+		t.Fatalf("terminal stream missing assistant text:\n%s", terminalContent.String())
 	}
 }
 

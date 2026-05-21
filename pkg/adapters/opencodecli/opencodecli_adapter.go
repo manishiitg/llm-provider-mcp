@@ -92,8 +92,7 @@ func (c *OpenCodeCLIAdapter) GenerateContent(ctx context.Context, messages []llm
 			"transport": "structured_cli",
 		},
 	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
-		_ = sink
-		return c.generateContentStructured(ctx, messages, opts)
+		return c.generateContentStructured(ctx, messages, opts, sink)
 	})
 }
 

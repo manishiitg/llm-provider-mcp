@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,8 +19,10 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 const (
@@ -29,7 +32,6 @@ const (
 	defaultCursorInteractiveTimeout     = 0
 	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
 	defaultCursorInteractiveRetention   = 30 * time.Minute
-	defaultCursorInteractivePromptWait  = 25 * time.Second
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 
 	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
@@ -124,7 +126,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 	}()
 
-	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -137,7 +139,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, err
 	}
 	resetCursorPaneForTurn(callCtx, session.tmuxSessionName)
-	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -160,7 +162,8 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts))
-	if err != nil {
+	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	if err != nil && !forcedComplete {
 		if isCursorTmuxSessionLostError(err) {
 			markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 			releaseSession = false
@@ -178,6 +181,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	if forcedComplete && strings.TrimSpace(content) == "" {
+		content = forcedCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
 		func(ctx context.Context) (string, error) {
@@ -749,13 +755,16 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 	return nil
 }
 
-func waitForCursorPrompt(ctx context.Context, sessionName string) error {
+func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
 	deadline, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
 	defer cancel()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	var trustSubmitted bool
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
 		case <-deadline.Done():
@@ -771,6 +780,11 @@ func waitForCursorPrompt(ctx context.Context, sessionName string) error {
 					return fmt.Errorf("Cursor Agent CLI tmux session ended while waiting for prompt: %w", err)
 				}
 				continue
+			}
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
 			}
 			if hasCursorTrustPrompt(captured) && !trustSubmitted {
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(captured))
@@ -861,6 +875,9 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				return "", err
 			}
 			delta := cursorCapturedAfterBaseline(captured, baseline)
+			if tmuxcontrol.ConsumeForceComplete(sessionName) {
+				return captured, tmuxcontrol.ErrForceComplete
+			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
@@ -924,6 +941,14 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 }
 
 func parseCursorInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	delta := cursorCapturedAfterBaseline(captured, baseline)
+	text := extractCursorVisibleAssistantText(delta)
+	text = stripCursorEchoedUserPrompt(text, echoedUserPrompt)
+	text = stripCursorHistoricalAssistantText(text, historicalAssistantTexts)
+	return strings.TrimSpace(text)
+}
+
+func forcedCursorInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
 	delta := cursorCapturedAfterBaseline(captured, baseline)
 	text := extractCursorVisibleAssistantText(delta)
 	text = stripCursorEchoedUserPrompt(text, echoedUserPrompt)
@@ -1255,7 +1280,7 @@ func hasCursorActivity(captured string) bool {
 }
 
 func streamCursorTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
-	snapshot, err := captureCursorPane(ctx, sessionName)
+	snapshot, err := captureCursorPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
 	}
@@ -1294,6 +1319,10 @@ func resetCursorPaneForTurn(ctx context.Context, sessionName string) {
 
 func captureCursorPane(ctx context.Context, sessionName string) (string, error) {
 	return runCursorCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
+}
+
+func captureCursorPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	return runCursorCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-S", "-3000", "-t", sessionName)
 }
 
 func cursorCapturedAfterBaseline(captured, baseline string) string {
@@ -1395,7 +1424,7 @@ func cursorInteractiveRetention() time.Duration {
 }
 
 func cursorInteractivePromptWait() time.Duration {
-	return cursorDurationFromEnv(EnvCursorInteractivePromptWaitSeconds, defaultCursorInteractivePromptWait)
+	return tmuxlaunch.PromptWait(EnvCursorInteractivePromptWaitSeconds)
 }
 
 func cursorInteractiveStreamTmuxScreenEnabled() bool {

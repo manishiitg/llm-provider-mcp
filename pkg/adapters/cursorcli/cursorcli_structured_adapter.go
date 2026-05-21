@@ -58,21 +58,31 @@ type cursorEventUsage struct {
 	CacheWriteTokens int `json:"cacheWriteTokens"`
 }
 
-func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+	emitChunk := func(chunk llmtypes.StreamChunk) {
+		if sink != nil {
+			if err := sink.Emit(ctx, chunk); err != nil {
+				c.logDebugf("cursor: stream emit failed: %v", err)
+			}
+			return
+		}
+		if opts.StreamChan == nil {
+			return
+		}
+		select {
+		case opts.StreamChan <- chunk:
+		case <-ctx.Done():
+		}
+	}
+
 	binPath, err := exec.LookPath("cursor-agent")
 	if err != nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("cursor-agent not found in PATH: %w", err)
 	}
 
 	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
 	prompt := buildCursorPrompt(conversationMessages, false)
 	if strings.TrimSpace(prompt) == "" {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("cursor-cli prompt is empty")
 	}
 
@@ -129,9 +139,6 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
 			cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON))
 			if werr != nil {
-				if opts.StreamChan != nil {
-					close(opts.StreamChan)
-				}
 				return nil, fmt.Errorf("cursor MCP config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
@@ -149,9 +156,6 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("cursor stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
@@ -159,9 +163,6 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 
 	c.logInfof("Executing Cursor CLI structured: cursor-agent --print --output-format stream-json")
 	if err := cmd.Start(); err != nil {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
 		return nil, fmt.Errorf("cursor start: %w", err)
 	}
 
@@ -199,14 +200,11 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			}
 
 		case "thinking":
-			if event.Subtype == "delta" && event.Text != "" && opts.StreamChan != nil {
-				select {
-				case opts.StreamChan <- llmtypes.StreamChunk{
+			if event.Subtype == "delta" && event.Text != "" {
+				emitChunk(llmtypes.StreamChunk{
 					Type:    llmtypes.StreamChunkTypeContent,
 					Content: event.Text,
-				}:
-				default:
-				}
+				})
 			}
 
 		case "assistant":
@@ -214,38 +212,27 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				text := cursorEventMessageText(event.Message)
 				if text != "" {
 					finalContent = text
-					if opts.StreamChan != nil {
-						select {
-						case opts.StreamChan <- llmtypes.StreamChunk{
-							Type:    llmtypes.StreamChunkTypeContent,
-							Content: text,
-						}:
-						default:
-						}
-					}
+					emitChunk(llmtypes.StreamChunk{
+						Type:    llmtypes.StreamChunkTypeContent,
+						Content: text,
+					})
 				}
 			}
 
 		case "tool_call":
-			if opts.StreamChan != nil {
-				switch event.Subtype {
-				case "started":
-					select {
-					case opts.StreamChan <- llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeToolCallStart,
-						Content: fmt.Sprintf("tool_call(%s)", event.CallID),
-					}:
-					default:
-					}
-				case "completed":
-					select {
-					case opts.StreamChan <- llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeToolCallEnd,
-						Content: event.CallID,
-					}:
-					default:
-					}
-				}
+			switch event.Subtype {
+			case "started":
+				emitChunk(llmtypes.StreamChunk{
+					Type:       llmtypes.StreamChunkTypeToolCallStart,
+					Content:    fmt.Sprintf("tool_call(%s)", event.CallID),
+					ToolCallID: event.CallID,
+				})
+			case "completed":
+				emitChunk(llmtypes.StreamChunk{
+					Type:       llmtypes.StreamChunkTypeToolCallEnd,
+					Content:    event.CallID,
+					ToolCallID: event.CallID,
+				})
 			}
 
 		case "result":
@@ -268,10 +255,6 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	}
 
 	waitErr := cmd.Wait()
-
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
 
 	content := strings.TrimSpace(finalContent)
 

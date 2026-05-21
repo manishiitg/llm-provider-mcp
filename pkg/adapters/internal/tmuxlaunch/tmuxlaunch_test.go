@@ -56,3 +56,39 @@ func TestAcquireHonorsCancellationWhileQueued(t *testing.T) {
 		t.Fatal("queued startup acquired despite canceled context")
 	}
 }
+
+func TestPromptWaitUsesGlobalDefault(t *testing.T) {
+	t.Setenv(EnvPromptWaitSeconds, "")
+	t.Setenv("TEST_PROVIDER_PROMPT_WAIT_SECONDS", "")
+
+	if got := PromptWait("TEST_PROVIDER_PROMPT_WAIT_SECONDS"); got != defaultPromptWait {
+		t.Fatalf("PromptWait default = %v, want %v", got, defaultPromptWait)
+	}
+}
+
+func TestPromptWaitUsesGlobalOverride(t *testing.T) {
+	t.Setenv(EnvPromptWaitSeconds, "3")
+	t.Setenv("TEST_PROVIDER_PROMPT_WAIT_SECONDS", "")
+
+	if got := PromptWait("TEST_PROVIDER_PROMPT_WAIT_SECONDS"); got != 3*time.Second {
+		t.Fatalf("PromptWait global override = %v, want 3s", got)
+	}
+}
+
+func TestPromptWaitProviderOverrideWins(t *testing.T) {
+	t.Setenv(EnvPromptWaitSeconds, "3")
+	t.Setenv("TEST_PROVIDER_PROMPT_WAIT_SECONDS", "7")
+
+	if got := PromptWait("TEST_PROVIDER_PROMPT_WAIT_SECONDS"); got != 7*time.Second {
+		t.Fatalf("PromptWait provider override = %v, want 7s", got)
+	}
+}
+
+func TestPromptWaitIgnoresInvalidProviderOverride(t *testing.T) {
+	t.Setenv(EnvPromptWaitSeconds, "3")
+	t.Setenv("TEST_PROVIDER_PROMPT_WAIT_SECONDS", "bad")
+
+	if got := PromptWait("TEST_PROVIDER_PROMPT_WAIT_SECONDS"); got != 3*time.Second {
+		t.Fatalf("PromptWait invalid provider override = %v, want global 3s", got)
+	}
+}

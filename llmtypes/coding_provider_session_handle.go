@@ -1,0 +1,116 @@
+package llmtypes
+
+import (
+	"encoding/json"
+	"strings"
+)
+
+const (
+	CodingProviderTransportTmux       = "tmux"
+	CodingProviderTransportStructured = "structured"
+	CodingProviderTransportAPI        = "api"
+
+	CodingProviderSessionStatusIdle   = "idle"
+	CodingProviderSessionStatusActive = "active"
+	CodingProviderSessionStatusLost   = "lost"
+	CodingProviderSessionStatusClosed = "closed"
+
+	CodingProviderSessionHandleAdditionalKey = "coding_provider_session_handle"
+)
+
+// CodingProviderSessionHandle is the provider-owned continuation state for a
+// coding-agent session. Callers should persist and pass this as opaque data; the
+// provider adapter owns interpreting native session IDs, tmux names, and project
+// directories.
+type CodingProviderSessionHandle struct {
+	Provider        string `json:"provider,omitempty"`
+	Transport       string `json:"transport,omitempty"`
+	NativeSessionID string `json:"native_session_id,omitempty"`
+	TmuxSession     string `json:"tmux_session,omitempty"`
+	WorkingDir      string `json:"working_dir,omitempty"`
+	ProjectDirID    string `json:"project_dir_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Status          string `json:"status,omitempty"`
+}
+
+func (h CodingProviderSessionHandle) Empty() bool {
+	return strings.TrimSpace(h.Provider) == "" &&
+		strings.TrimSpace(h.Transport) == "" &&
+		strings.TrimSpace(h.NativeSessionID) == "" &&
+		strings.TrimSpace(h.TmuxSession) == "" &&
+		strings.TrimSpace(h.WorkingDir) == "" &&
+		strings.TrimSpace(h.ProjectDirID) == "" &&
+		strings.TrimSpace(h.Model) == "" &&
+		strings.TrimSpace(h.Status) == ""
+}
+
+// AttachCodingProviderSessionHandle stores the handle in both the typed
+// GenerationInfo field and Additional for compatibility with older callers that
+// forward Additional into event metadata.
+func AttachCodingProviderSessionHandle(genInfo *GenerationInfo, handle CodingProviderSessionHandle) {
+	if genInfo == nil || handle.Empty() {
+		return
+	}
+	genInfo.CodingProviderSessionHandle = &handle
+	if genInfo.Additional == nil {
+		genInfo.Additional = map[string]interface{}{}
+	}
+	genInfo.Additional[CodingProviderSessionHandleAdditionalKey] = handle
+}
+
+func ExtractCodingProviderSessionHandle(genInfo *GenerationInfo) (CodingProviderSessionHandle, bool) {
+	if genInfo == nil {
+		return CodingProviderSessionHandle{}, false
+	}
+	if genInfo.CodingProviderSessionHandle != nil && !genInfo.CodingProviderSessionHandle.Empty() {
+		return *genInfo.CodingProviderSessionHandle, true
+	}
+	if genInfo.Additional == nil {
+		return CodingProviderSessionHandle{}, false
+	}
+	handle, ok := codingProviderSessionHandleFromValue(genInfo.Additional[CodingProviderSessionHandleAdditionalKey])
+	if ok && !handle.Empty() {
+		return handle, true
+	}
+	return CodingProviderSessionHandle{}, false
+}
+
+func ExtractCodingProviderSessionHandleFromResponse(resp *ContentResponse) (CodingProviderSessionHandle, bool) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
+		return CodingProviderSessionHandle{}, false
+	}
+	return ExtractCodingProviderSessionHandle(resp.Choices[0].GenerationInfo)
+}
+
+func codingProviderSessionHandleFromValue(value interface{}) (CodingProviderSessionHandle, bool) {
+	switch typed := value.(type) {
+	case CodingProviderSessionHandle:
+		return typed, !typed.Empty()
+	case *CodingProviderSessionHandle:
+		if typed == nil {
+			return CodingProviderSessionHandle{}, false
+		}
+		return *typed, !typed.Empty()
+	case map[string]interface{}:
+		var handle CodingProviderSessionHandle
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return CodingProviderSessionHandle{}, false
+		}
+		if err := json.Unmarshal(data, &handle); err != nil {
+			return CodingProviderSessionHandle{}, false
+		}
+		return handle, !handle.Empty()
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return CodingProviderSessionHandle{}, false
+		}
+		var handle CodingProviderSessionHandle
+		if err := json.Unmarshal([]byte(typed), &handle); err != nil {
+			return CodingProviderSessionHandle{}, false
+		}
+		return handle, !handle.Empty()
+	default:
+		return CodingProviderSessionHandle{}, false
+	}
+}

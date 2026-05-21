@@ -159,15 +159,29 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 			"transport": "structured_cli",
 		},
 	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
-		_ = sink
-		return g.generateContentStructured(ctx, opts, messages)
+		return g.generateContentStructured(ctx, opts, messages, sink)
 	})
 }
 
-func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
+func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent, sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
 	// 0. Check for 'gemini' binary
 	if _, err := exec.LookPath("gemini"); err != nil {
 		return nil, fmt.Errorf("gemini cli not found in PATH. Please install it first (npm install -g @anthropic-ai/gemini-cli or see https://github.com/google-gemini/gemini-cli)")
+	}
+	emitChunk := func(chunk llmtypes.StreamChunk) {
+		if sink != nil {
+			if err := sink.Emit(ctx, chunk); err != nil {
+				g.logger.Errorf("Gemini CLI stream emit failed: %v", err)
+			}
+			return
+		}
+		if opts.StreamChan == nil {
+			return
+		}
+		select {
+		case opts.StreamChan <- chunk:
+		case <-ctx.Done():
+		}
 	}
 
 	// 1. Prepare Command Arguments
@@ -414,12 +428,10 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				detectedOverload.Store(true)
 				g.logger.Errorf("Gemini CLI: 503 overload detected in stderr (process kept alive for retry): %s", truncate(line, 300))
 				// Notify the user via the stream so they see feedback immediately
-				if opts.StreamChan != nil {
-					opts.StreamChan <- llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeContent,
-						Content: "\n⚠️ Gemini model is experiencing high demand (503). Retrying automatically, please wait…\n",
-					}
-				}
+				emitChunk(llmtypes.StreamChunk{
+					Type:    llmtypes.StreamChunkTypeContent,
+					Content: "\n⚠️ Gemini model is experiencing high demand (503). Retrying automatically, please wait…\n",
+				})
 			}
 		}
 	}()
@@ -470,13 +482,10 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				if elapsed >= 30*time.Second && opts.StreamChan != nil {
 					heartbeatSent.Store(true)
 					g.logger.Infof("Gemini CLI: no content for %ds, sending one-time progress heartbeat to user", int(elapsed.Seconds()))
-					select {
-					case opts.StreamChan <- llmtypes.StreamChunk{
+					emitChunk(llmtypes.StreamChunk{
 						Type:    llmtypes.StreamChunkTypeContent,
 						Content: "\n⏳ Gemini is still working on it, please wait…\n",
-					}:
-					default:
-					}
+					})
 				}
 			case <-decodeDone:
 				return
@@ -565,12 +574,10 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 					accumulatedText.WriteString(content)
 					lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer
 					heartbeatSent.Store(false)                   // allow one more heartbeat if Gemini goes quiet again
-					if opts.StreamChan != nil {
-						opts.StreamChan <- llmtypes.StreamChunk{
-							Type:    llmtypes.StreamChunkTypeContent,
-							Content: content,
-						}
-					}
+					emitChunk(llmtypes.StreamChunk{
+						Type:    llmtypes.StreamChunkTypeContent,
+						Content: content,
+					})
 				}
 				// Also handle content as array of parts
 				if contentArr, ok := raw["content"].([]interface{}); ok {
@@ -582,12 +589,10 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 									continue
 								}
 								accumulatedText.WriteString(text)
-								if opts.StreamChan != nil {
-									opts.StreamChan <- llmtypes.StreamChunk{
-										Type:    llmtypes.StreamChunkTypeContent,
-										Content: text,
-									}
-								}
+								emitChunk(llmtypes.StreamChunk{
+									Type:    llmtypes.StreamChunkTypeContent,
+									Content: text,
+								})
 							}
 						}
 					}
@@ -632,14 +637,12 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				pendingToolCalls.Add(1) // signal watchdog: tool is in flight, don't kill
 
 				lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
-				if opts.StreamChan != nil {
-					opts.StreamChan <- llmtypes.StreamChunk{
-						Type:       llmtypes.StreamChunkTypeToolCallStart,
-						ToolName:   toolName,
-						ToolCallID: toolID,
-						ToolArgs:   toolArgsJSON,
-					}
-				}
+				emitChunk(llmtypes.StreamChunk{
+					Type:       llmtypes.StreamChunkTypeToolCallStart,
+					ToolName:   toolName,
+					ToolCallID: toolID,
+					ToolArgs:   toolArgsJSON,
+				})
 
 			case "tool_result":
 				// Tool call completed
@@ -660,16 +663,14 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				lastContentTime.Store(time.Now().UnixNano()) // reset heartbeat timer on tool activity
 				if pt, ok := pendingTools[toolID]; ok {
 					duration := time.Since(pt.startTime)
-					if opts.StreamChan != nil {
-						opts.StreamChan <- llmtypes.StreamChunk{
-							Type:         llmtypes.StreamChunkTypeToolCallEnd,
-							ToolName:     pt.toolName,
-							ToolCallID:   pt.toolID,
-							ToolArgs:     pt.toolArgs,
-							ToolResult:   resultContent,
-							ToolDuration: duration,
-						}
-					}
+					emitChunk(llmtypes.StreamChunk{
+						Type:         llmtypes.StreamChunkTypeToolCallEnd,
+						ToolName:     pt.toolName,
+						ToolCallID:   pt.toolID,
+						ToolArgs:     pt.toolArgs,
+						ToolResult:   resultContent,
+						ToolDuration: duration,
+					})
 					delete(pendingTools, toolID)
 					pendingToolCalls.Add(-1) // tool done; watchdog may kill again if idle
 				}
@@ -684,15 +685,13 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 			case "result":
 				// Flush any remaining pending tool calls
 				for _, pt := range pendingTools {
-					if opts.StreamChan != nil {
-						opts.StreamChan <- llmtypes.StreamChunk{
-							Type:         llmtypes.StreamChunkTypeToolCallEnd,
-							ToolName:     pt.toolName,
-							ToolCallID:   pt.toolID,
-							ToolArgs:     pt.toolArgs,
-							ToolDuration: time.Since(pt.startTime),
-						}
-					}
+					emitChunk(llmtypes.StreamChunk{
+						Type:         llmtypes.StreamChunkTypeToolCallEnd,
+						ToolName:     pt.toolName,
+						ToolCallID:   pt.toolID,
+						ToolArgs:     pt.toolArgs,
+						ToolDuration: time.Since(pt.startTime),
+					})
 				}
 				pendingTools = make(map[string]*pendingToolCall)
 
@@ -802,12 +801,13 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 	if projectDirID != "" && finalResponse != nil && len(finalResponse.Choices) > 0 &&
 		finalResponse.Choices[0].GenerationInfo != nil {
 		finalResponse.Choices[0].GenerationInfo.Additional["gemini_project_dir_id"] = projectDirID
+		attachGeminiStructuredProviderHandle(finalResponse, projectDirID, projectDir, commandDir, resolvedModel, g.modelID)
 	}
 
 	// If result was empty and we have a session ID, retry with a finalization prompt
 	if emptyResultSessionID != "" {
 		g.logger.Infof("Empty result detected, retrying with finalization prompt (sessionID=%s)", emptyResultSessionID)
-		retryResp, retryErr := g.retryForFinalAnswer(ctx, emptyResultSessionID, opts, systemPromptFile, projectDir, commandDir)
+		retryResp, retryErr := g.retryForFinalAnswer(ctx, emptyResultSessionID, opts, systemPromptFile, projectDir, commandDir, sink)
 		if retryErr != nil {
 			g.logger.Errorf("Retry for final answer failed: %v", retryErr)
 		} else if retryResp != nil && len(retryResp.Choices) > 0 && retryResp.Choices[0].Content != "" {
@@ -816,6 +816,7 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 			// Preserve project dir ID in retry response
 			if projectDirID != "" && finalResponse.Choices[0].GenerationInfo != nil {
 				finalResponse.Choices[0].GenerationInfo.Additional["gemini_project_dir_id"] = projectDirID
+				attachGeminiStructuredProviderHandle(finalResponse, projectDirID, projectDir, commandDir, resolvedModel, g.modelID)
 			}
 		} else {
 			g.logger.Infof("Retry produced empty result, using original response")
@@ -1027,6 +1028,13 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 			}
 		}
 	}
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+		Provider:        "gemini-cli",
+		Transport:       llmtypes.CodingProviderTransportStructured,
+		NativeSessionID: sessionID,
+		Model:           firstNonEmpty(resolvedModel, g.modelID),
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
@@ -1037,6 +1045,35 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 		},
 		Usage: usage,
 	}
+}
+
+func attachGeminiStructuredProviderHandle(resp *llmtypes.ContentResponse, projectDirID, projectDir, workingDir, resolvedModel, fallbackModel string) {
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil || resp.Choices[0].GenerationInfo == nil {
+		return
+	}
+	genInfo := resp.Choices[0].GenerationInfo
+	handle, _ := llmtypes.ExtractCodingProviderSessionHandle(genInfo)
+	handle.Provider = "gemini-cli"
+	handle.Transport = llmtypes.CodingProviderTransportStructured
+	handle.ProjectDirID = strings.TrimSpace(projectDirID)
+	if strings.TrimSpace(handle.WorkingDir) == "" {
+		handle.WorkingDir = strings.TrimSpace(workingDir)
+	}
+	if strings.TrimSpace(handle.WorkingDir) == "" {
+		handle.WorkingDir = strings.TrimSpace(projectDir)
+	}
+	handle.Model = firstNonEmpty(resolvedModel, fallbackModel, handle.Model)
+	handle.Status = llmtypes.CodingProviderSessionStatusIdle
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, handle)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // retryForFinalAnswer resumes a Gemini CLI session that produced an empty result
@@ -1052,6 +1089,7 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 	systemPromptFile string,
 	projectDir string,
 	commandDir string,
+	sink *llmtypes.StreamSink,
 ) (*llmtypes.ContentResponse, error) {
 	finalizationPrompt := "You have run out of turns. Please provide your final answer now based on what you have accomplished so far. Summarize results, findings, and any remaining work."
 
@@ -1109,6 +1147,21 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("retry: failed to start gemini cli: %w", err)
+	}
+	emitChunk := func(chunk llmtypes.StreamChunk) {
+		if sink != nil {
+			if err := sink.Emit(ctx, chunk); err != nil {
+				g.logger.Errorf("Retry: Gemini CLI stream emit failed: %v", err)
+			}
+			return
+		}
+		if opts.StreamChan == nil {
+			return
+		}
+		select {
+		case opts.StreamChan <- chunk:
+		case <-ctx.Done():
+		}
 	}
 
 	// Simplified decode loop
@@ -1183,12 +1236,10 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 						continue
 					}
 					retryAccumulatedText.WriteString(content)
-					if opts.StreamChan != nil {
-						opts.StreamChan <- llmtypes.StreamChunk{
-							Type:    llmtypes.StreamChunkTypeContent,
-							Content: content,
-						}
-					}
+					emitChunk(llmtypes.StreamChunk{
+						Type:    llmtypes.StreamChunkTypeContent,
+						Content: content,
+					})
 				}
 				if contentArr, ok := raw["content"].([]interface{}); ok {
 					for _, part := range contentArr {
@@ -1199,12 +1250,10 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 									continue
 								}
 								retryAccumulatedText.WriteString(text)
-								if opts.StreamChan != nil {
-									opts.StreamChan <- llmtypes.StreamChunk{
-										Type:    llmtypes.StreamChunkTypeContent,
-										Content: text,
-									}
-								}
+								emitChunk(llmtypes.StreamChunk{
+									Type:    llmtypes.StreamChunkTypeContent,
+									Content: text,
+								})
 							}
 						}
 					}

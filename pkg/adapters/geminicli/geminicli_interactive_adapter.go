@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
@@ -30,7 +32,6 @@ const (
 	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
 	defaultGeminiInteractiveRetention   = 30 * time.Minute
-	defaultGeminiInteractivePromptWait  = 60 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160
 	geminiPromptPasteVisibleWait        = 5 * time.Second
@@ -124,7 +125,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		}
 	}()
 
-	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markGeminiInteractiveSessionFailedLocked(session, err, g.logger)
 		releaseGeminiStartupSlot(session)
 		releaseSession = false
@@ -136,7 +137,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}
 	releaseGeminiStartupSlot(session)
 	resetGeminiPaneForTurn(callCtx, session.tmuxSessionName)
-	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForGeminiPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markGeminiInteractiveSessionFailedLocked(session, err, g.logger)
 		releaseSession = false
 		failedSession := session
@@ -154,7 +155,8 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}
 
 	captured, err := waitForGeminiInteractiveResponse(callCtx, session, baseline, opts.StreamChan)
-	if err != nil {
+	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	if err != nil && !forcedComplete {
 		if ctx.Err() != nil {
 			interruptGeminiInteractiveSession(session.tmuxSessionName, g.logger)
 			if opts.StreamChan != nil {
@@ -175,6 +177,9 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}
 
 	content := parseGeminiInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	if forcedComplete && strings.TrimSpace(content) == "" {
+		content = forcedGeminiInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
 		func(ctx context.Context) (string, error) {
@@ -212,8 +217,10 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	// chats/session-*.jsonl records `tokens` on every `gemini` event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	usage := &llmtypes.Usage{}
+	handleModel := g.modelID
 	turnUsage, effectiveModel := readGeminiTranscriptUsage(session.projectDirID, turnStart)
 	if effectiveModel != "" {
+		handleModel = effectiveModel
 		additional["gemini_effective_model"] = effectiveModel
 	}
 	if turnUsage != nil {
@@ -243,6 +250,15 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 			}
 		}
 	}
+	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+		Provider:     "gemini-cli",
+		Transport:    llmtypes.CodingProviderTransportTmux,
+		TmuxSession:  session.tmuxSessionName,
+		WorkingDir:   geminiWorkingDirFromOptions(opts),
+		ProjectDirID: session.projectDirID,
+		Model:        handleModel,
+		Status:       llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
@@ -865,12 +881,15 @@ func startGeminiTmuxSession(ctx context.Context, sessionName string, args []stri
 	return nil
 }
 
-func waitForGeminiPrompt(ctx context.Context, sessionName string) error {
+func waitForGeminiPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
 	deadline, cancel := context.WithTimeout(ctx, geminiInteractivePromptWait())
 	defer cancel()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := geminiInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
 		case <-deadline.Done():
@@ -881,6 +900,11 @@ func waitForGeminiPrompt(ctx context.Context, sessionName string) error {
 			return fmt.Errorf("timed out waiting for Gemini CLI prompt")
 		case <-ticker.C:
 			captured, err := captureGeminiPane(deadline, sessionName)
+			if err == nil && streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamGeminiTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
+			}
 			if err == nil && hasGeminiReadyPrompt(captured) {
 				return nil
 			}
@@ -1030,6 +1054,9 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 			}
 			if apiErr := geminiInteractiveAPIError(delta); apiErr != "" {
 				return captured, fmt.Errorf("Gemini CLI interactive API error: %s", apiErr)
+			}
+			if tmuxcontrol.ConsumeForceComplete(sessionName) {
+				return captured, tmuxcontrol.ErrForceComplete
 			}
 			if hasGeminiReadyPrompt(captured) {
 				if liveMessage, ok := popGeminiLiveInput(session); ok {
@@ -1189,6 +1216,15 @@ func parseGeminiInteractiveResponse(captured, baseline, echoedUserPrompt string,
 	if isGeminiLikelyQueuedUserEcho(text) {
 		return ""
 	}
+	return strings.TrimSpace(text)
+}
+
+func forcedGeminiInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	delta := geminiCapturedAfterBaseline(captured, baseline)
+	text := extractGeminiVisibleAssistantText(delta)
+	text = stripGeminiEchoedUserPrompt(text, echoedUserPrompt)
+	text = stripGeminiHistoricalAssistantText(text, historicalAssistantTexts)
+	text = stripGeminiLeadingPromptFragments(text, echoedUserPrompt)
 	return strings.TrimSpace(text)
 }
 
@@ -1569,7 +1605,7 @@ func isGeminiReadyPromptLine(line string) bool {
 }
 
 func streamGeminiTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
-	snapshot, err := captureGeminiPane(ctx, sessionName)
+	snapshot, err := captureGeminiPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
 	}
@@ -1756,6 +1792,9 @@ func captureGeminiPane(ctx context.Context, sessionName string) (string, error) 
 	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
 }
 
+func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-S", "-3000", "-t", sessionName)
+}
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {
 	if baseline != "" {
@@ -1814,7 +1853,7 @@ func geminiInteractiveRetention() time.Duration {
 }
 
 func geminiInteractivePromptWait() time.Duration {
-	return geminiDurationFromEnv(EnvGeminiInteractivePromptWaitSeconds, defaultGeminiInteractivePromptWait)
+	return tmuxlaunch.PromptWait(EnvGeminiInteractivePromptWaitSeconds)
 }
 
 func geminiInteractiveStreamTmuxScreenEnabled() bool {

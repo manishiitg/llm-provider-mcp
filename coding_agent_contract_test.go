@@ -1,6 +1,11 @@
 package llmproviders
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 	tests := []struct {
@@ -72,5 +77,95 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 		if prev.Provider > cur.Provider || (prev.Provider == cur.Provider && prev.ModelID > cur.ModelID) {
 			t.Fatalf("contracts are not sorted at %d: %#v before %#v", i, prev, cur)
 		}
+	}
+}
+
+func TestClaudeAndCodexCapabilityClaimsHaveRegisteredCertification(t *testing.T) {
+	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Fatalf("missing coding-agent contract for %s", provider)
+		}
+		if missing := MissingCodingAgentCertifications(contract); len(missing) > 0 {
+			t.Fatalf("%s claims capabilities without registered certification: %v", provider, missing)
+		}
+	}
+}
+
+func TestClaudeAndCodexCertificationReferencesExistingTests(t *testing.T) {
+	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
+		certs := CodingAgentProviderCertifications(provider)
+		if len(certs) == 0 {
+			t.Fatalf("%s has no registered certifications", provider)
+		}
+		seen := make(map[CodingAgentCertificationID]string, len(certs))
+		for _, cert := range certs {
+			if cert.ID == "" {
+				t.Fatalf("%s has certification with empty id: %#v", provider, cert)
+			}
+			if previous := seen[cert.ID]; previous != "" {
+				t.Fatalf("%s certification %s registered twice: %s and %s", provider, cert.ID, previous, cert.TestName)
+			}
+			seen[cert.ID] = cert.TestName
+			if strings.TrimSpace(cert.TestFile) == "" || strings.TrimSpace(cert.TestName) == "" {
+				t.Fatalf("%s certification %s must name a test file and test function: %#v", provider, cert.ID, cert)
+			}
+			path := filepath.Clean(cert.TestFile)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s certification %s references unreadable test file %s: %v", provider, cert.ID, path, err)
+			}
+			if !strings.Contains(string(raw), "func "+cert.TestName+"(") {
+				t.Fatalf("%s certification %s references missing test %s in %s", provider, cert.ID, cert.TestName, path)
+			}
+		}
+	}
+}
+
+func TestStructuredCLIAdaptersMirrorAssistantTextToTerminal(t *testing.T) {
+	tests := []struct {
+		name        string
+		adapterFile string
+		testFile    string
+		testName    string
+	}{
+		{
+			name:        "gemini cli",
+			adapterFile: "pkg/adapters/geminicli/geminicli_adapter.go",
+			testFile:    "pkg/adapters/geminicli/geminicli_adapter_test.go",
+			testName:    "TestGeminiCLIStructuredStreamMirrorsAssistantTextToTerminal",
+		},
+		{
+			name:        "cursor cli",
+			adapterFile: "pkg/adapters/cursorcli/cursorcli_adapter.go",
+			testFile:    "pkg/adapters/cursorcli/cursorcli_adapter_test.go",
+			testName:    "TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal",
+		},
+		{
+			name:        "opencode cli",
+			adapterFile: "pkg/adapters/opencodecli/opencodecli_adapter.go",
+			testFile:    "pkg/adapters/opencodecli/opencodecli_adapter_test.go",
+			testName:    "TestOpenCodeCLIStructuredStreamMirrorsAssistantTextToTerminal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapterRaw, err := os.ReadFile(filepath.Clean(tt.adapterFile))
+			if err != nil {
+				t.Fatalf("read adapter file: %v", err)
+			}
+			if strings.Contains(string(adapterRaw), "_ = sink") {
+				t.Fatalf("%s discards StreamSink; structured adapters must emit through sink.Emit so terminal panes mirror assistant/tool output", tt.adapterFile)
+			}
+
+			testRaw, err := os.ReadFile(filepath.Clean(tt.testFile))
+			if err != nil {
+				t.Fatalf("read test file: %v", err)
+			}
+			if !strings.Contains(string(testRaw), "func "+tt.testName+"(") {
+				t.Fatalf("%s missing terminal mirror regression test %s", tt.testFile, tt.testName)
+			}
+		})
 	}
 }

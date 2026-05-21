@@ -18,8 +18,10 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 const (
@@ -35,12 +37,15 @@ const (
 	claudeIdleStableWindow         = 1200 * time.Millisecond
 	promptPasteVisibleStableWindow = 900 * time.Millisecond
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
+	promptPasteLiveInputWait       = 2 * time.Second
 
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
+	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalRetentionSeconds   = "CLAUDE_CODE_EXPERIMENTAL_RETENTION_SECONDS"
 	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 )
 
 var claudeExperimentalSessionRegistry = struct {
@@ -237,12 +242,12 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		}
 	}
 
-	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
+	if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan); err != nil {
 		discardPersistentSession(err)
 		return nil, err
 	}
 	resetTmuxPaneForTurn(callCtx, sessionName)
-	if err := waitForTmuxPrompt(callCtx, sessionName); err != nil {
+	if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan); err != nil {
 		discardPersistentSession(err)
 		return nil, err
 	}
@@ -334,25 +339,36 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 	// session-id'd transcript file at ~/.claude/projects/<...>/<sid>.jsonl
 	// records `usage` on every assistant event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
-	if usage, effectiveModel := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil || effectiveModel != "" {
+	effectiveModel := c.modelID
+	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil || transcriptModel != "" {
 		if usage != nil {
 			gi.PromptTokens = usage.PromptTokens
 			gi.CompletionTokens = usage.CompletionTokens
 			gi.TotalTokens = usage.TotalTokens
 			gi.CachedContentTokens = usage.CachedContentTokens
 		}
-		if effectiveModel != "" {
-			additional["claude_code_model"] = effectiveModel
+		if transcriptModel != "" {
+			effectiveModel = transcriptModel
+			additional["claude_code_model"] = transcriptModel
 		}
-		if effectiveModel != "" {
-			if meta, _ := c.GetModelMetadata(effectiveModel); meta != nil {
+		if transcriptModel != "" {
+			if meta, _ := c.GetModelMetadata(transcriptModel); meta != nil {
 				if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
 					additional["cost_usd_estimated"] = cost
-					additional["cost_model_id"] = effectiveModel
+					additional["cost_model_id"] = transcriptModel
 				}
 			}
 		}
 	}
+	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+		Provider:        "claude-code",
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: responseSessionID,
+		TmuxSession:     sessionName,
+		WorkingDir:      workingDir,
+		Model:           effectiveModel,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
@@ -493,6 +509,7 @@ func (c *ClaudeCodeExperimentalAdapter) shouldPassModelFlag() bool {
 func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
 	shellCommand := claudeExperimentalShellCommand(args, workingDir)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
+	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
@@ -502,6 +519,10 @@ func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessio
 		return fmt.Errorf("failed to configure Claude Code experimental session %q: %w", sessionName, err)
 	}
 	return nil
+}
+
+func claudePromptSuggestionEnvArgs() []string {
+	return []string{"-e", EnvClaudePromptSuggestion + "=false"}
 }
 
 func claudeExperimentalShellCommand(args []string, workingDir string) string {
@@ -709,22 +730,26 @@ func claudeExperimentalStreamTmuxScreenEnabled() bool {
 	}
 }
 
-func waitForTmuxPrompt(ctx context.Context, sessionName string) error {
-	deadline, cancel := context.WithTimeout(ctx, 20*time.Second)
+func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	promptWait := promptReadyTimeout()
+	deadline, cancel := context.WithTimeout(ctx, promptWait)
 	defer cancel()
 
 	ticker := time.NewTicker(defaultTmuxPollInterval)
 	defer ticker.Stop()
 	resumePromptHandled := false
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
 
 	for {
 		select {
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code prompt; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; latest pane:\n%s", promptWait, captured)
 			}
-			return fmt.Errorf("timed out waiting for Claude Code prompt")
+			return fmt.Errorf("timed out after %s waiting for Claude Code prompt", promptWait)
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
@@ -732,6 +757,11 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string) error {
 					return err
 				}
 				continue
+			}
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
 			}
 			if !resumePromptHandled {
 				resumePromptKeys := claudeResumeCompressionPromptSubmitKeys(captured)
@@ -838,7 +868,7 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Claude Code experimental session: %w", err)
 	}
-	if _, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste); err != nil {
+	if _, err := waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, promptPasteLiveInputWait); err != nil {
 		if ctx.Err() != nil || isClaudeTmuxSessionLostError(err) {
 			return err
 		}
@@ -866,7 +896,7 @@ func claudeSubmitPromptKeys() []string {
 	// Claude Code can leave a bracket-pasted live message as a visible draft when
 	// Enter is sent while the cursor/focus is not at the accepted end of input.
 	// Move to the end first, then submit.
-	return []string{"C-e", "C-m"}
+	return []string{"C-e", "Enter"}
 }
 
 func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) error {
@@ -909,14 +939,22 @@ func latestClaudePromptDraftRaw(captured string) (draft string, placeholder bool
 		if trimmed == "❯" {
 			return "", false, true
 		}
-		if strings.HasPrefix(trimmed, "❯\u00a0") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯\u00a0")), true, true
-		}
-		if strings.HasPrefix(trimmed, "❯ ") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯ ")), false, true
+		if strings.HasPrefix(trimmed, "❯") {
+			draft := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+			return draft, isClaudePromptPlaceholder(draft), true
 		}
 	}
 	return "", false, false
+}
+
+func isClaudePromptPlaceholder(draft string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(draft), " "))
+	if normalized == "" {
+		return false
+	}
+	return strings.HasPrefix(normalized, "type your message") ||
+		(strings.HasPrefix(normalized, "try ") && strings.Contains(normalized, "\"")) ||
+		normalized == "show me what it found"
 }
 
 func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) error {
@@ -947,8 +985,8 @@ func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) er
 				continue
 			}
 			lastCaptured = captured
-			draft, ok := latestClaudePromptDraft(captured)
-			if ok && strings.TrimSpace(draft) == "" {
+			draft, placeholder, ok := latestClaudePromptDraftRaw(captured)
+			if ok && (strings.TrimSpace(draft) == "" || placeholder) {
 				return nil
 			}
 		}
@@ -1049,6 +1087,17 @@ func waitForReadyInputPrompt(ctx context.Context, sessionName string) error {
 			}
 		}
 	}
+}
+
+func hasReadyEmptyInputPrompt(captured string) bool {
+	if !hasReadyInputPrompt(captured) {
+		return false
+	}
+	draft, placeholder, ok := latestClaudePromptDraftRaw(captured)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(draft) == "" || placeholder
 }
 
 func hasReadyInputPrompt(captured string) bool {
@@ -1173,7 +1222,14 @@ func isUUIDLike(value string) bool {
 }
 
 func waitForPromptPaste(ctx context.Context, sessionName, paneBeforePaste string) (bool, error) {
-	deadline, cancel := context.WithTimeout(ctx, 15*time.Second)
+	return waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, 15*time.Second)
+}
+
+func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforePaste string, timeout time.Duration) (bool, error) {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -1251,7 +1307,7 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 			if hasClaudeActivity(captured) {
 				return nil
 			}
-			if hasReadyInputPrompt(captured) && hasNewAssistantOutput(capturedAfterPaneBaseline(captured, preSubmitPane)) {
+			if hasReadyEmptyInputPrompt(captured) && hasNewAssistantOutput(capturedAfterPaneBaseline(captured, preSubmitPane)) {
 				return nil
 			}
 		}
@@ -1301,18 +1357,11 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 }
 
 func latestClaudePromptDraft(captured string) (string, bool) {
-	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
-	lines := strings.Split(normalized, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "❯" {
-			return "", true
-		}
-		if strings.HasPrefix(trimmed, "❯ ") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "❯")), true
-		}
+	draft, _, ok := latestClaudePromptDraftRaw(captured)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return draft, true
 }
 
 func claudePromptDraftStillMatchesMessage(draft, message string) bool {
@@ -1353,7 +1402,8 @@ func hasNewAssistantOutput(delta string) bool {
 
 func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
 	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan)
-	if err != nil {
+	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	if err != nil && !forcedComplete {
 		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
 			return content, nil
 		}
@@ -1368,6 +1418,11 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 
 	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
 		return content, nil
+	}
+	if forcedComplete {
+		if content := forcedClaudeResponseFromCaptured(captured, paneBaseline); strings.TrimSpace(content) != "" {
+			return content, nil
+		}
 	}
 	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", truncateClaudePaneForError(captured))
 }
@@ -1389,6 +1444,17 @@ func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMar
 		}
 	}
 	return "", false
+}
+
+func forcedClaudeResponseFromCaptured(captured, paneBaseline string) string {
+	newOutput := capturedAfterPaneBaseline(captured, paneBaseline)
+	if content, ok := extractLatestUnmarkedAssistantResponse(newOutput); ok {
+		return strings.TrimSpace(content)
+	}
+	if content, ok := extractTrailingUnmarkedAssistantResponse(newOutput); ok {
+		return strings.TrimSpace(content)
+	}
+	return strings.TrimSpace(newOutput)
 }
 
 func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
@@ -1431,6 +1497,9 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
 				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
 			}
+			if tmuxcontrol.ConsumeForceComplete(sessionName) {
+				return captured, tmuxcontrol.ErrForceComplete
+			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
@@ -1445,7 +1514,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			if hasNewAssistantOutput(delta) || (endMarker != "" && strings.Contains(delta, endMarker)) {
 				sawActivity = true
 			}
-			if !sawActivity || !hasReadyInputPrompt(captured) {
+			if !sawActivity || !hasReadyEmptyInputPrompt(captured) {
 				idleSince = time.Time{}
 				lastCaptured = captured
 				continue
@@ -1467,7 +1536,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 }
 
 func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
-	snapshot, err := captureTmuxPane(ctx, sessionName)
+	snapshot, err := captureTmuxPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
 	}
@@ -1662,6 +1731,17 @@ func captureTmuxPane(ctx context.Context, sessionName string) (string, error) {
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to capture Claude Code experimental session: %w: %s", err, strings.TrimSpace(out.String()))
+	}
+	return out.String(), nil
+}
+
+func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-S", "-"+defaultTmuxCaptureLines)
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to capture Claude Code experimental display session: %w: %s", err, strings.TrimSpace(out.String()))
 	}
 	return out.String(), nil
 }
@@ -1906,6 +1986,10 @@ func tmuxTimeout() time.Duration {
 		return defaultTmuxTimeout
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func promptReadyTimeout() time.Duration {
+	return tmuxlaunch.PromptWait(EnvClaudeExperimentalPromptWaitSeconds)
 }
 
 func persistentInteractiveIdleTimeout() time.Duration {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
@@ -41,23 +42,30 @@ import (
 	"google.golang.org/genai"
 )
 
+// ForceCompleteCodingAgentTmuxSession asks a tmux-backed coding adapter to
+// finish its current wait loop on the next poll and return the pane's current
+// response through the normal generation path.
+func ForceCompleteCodingAgentTmuxSession(sessionName string) bool {
+	return tmuxcontrol.RequestForceComplete(sessionName)
+}
+
 // Provider represents the available LLM providers
 type Provider string
 
 const (
-	ProviderBedrock           Provider = "bedrock"
-	ProviderOpenAI            Provider = "openai"
-	ProviderAnthropic         Provider = "anthropic"
-	ProviderOpenRouter        Provider = "openrouter"
-	ProviderVertex            Provider = "vertex"
-	ProviderAzure             Provider = "azure"
-	ProviderZAI               Provider = "z-ai"
-	ProviderKimi              Provider = "kimi"
-	ProviderClaudeCode        Provider = "claude-code"
-	ProviderGeminiCLI         Provider = "gemini-cli"
-	ProviderCodexCLI          Provider = "codex-cli"
-	ProviderCursorCLI         Provider = "cursor-cli"
-	ProviderOpenCodeCLI       Provider = "opencode-cli"
+	ProviderBedrock     Provider = "bedrock"
+	ProviderOpenAI      Provider = "openai"
+	ProviderAnthropic   Provider = "anthropic"
+	ProviderOpenRouter  Provider = "openrouter"
+	ProviderVertex      Provider = "vertex"
+	ProviderAzure       Provider = "azure"
+	ProviderZAI         Provider = "z-ai"
+	ProviderKimi        Provider = "kimi"
+	ProviderClaudeCode  Provider = "claude-code"
+	ProviderGeminiCLI   Provider = "gemini-cli"
+	ProviderCodexCLI    Provider = "codex-cli"
+	ProviderCursorCLI   Provider = "cursor-cli"
+	ProviderOpenCodeCLI Provider = "opencode-cli"
 
 	// OpenCode CLI sub-provider tiles. Each routes through the same
 	// `opencode` binary but with sub-provider-scoped credentials and
@@ -69,10 +77,10 @@ const (
 	ProviderOpenCodeCLIMiniMax  Provider = "opencode-cli-minimax"
 	ProviderOpenCodeCLIGLM      Provider = "opencode-cli-glm"
 	ProviderOpenCodeCLIFree     Provider = "opencode-cli-free"
-	ProviderMiniMax           Provider = "minimax"
-	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
-	ProviderElevenLabs        Provider = "elevenlabs"
-	ProviderDeepgram          Provider = "deepgram"
+	ProviderMiniMax             Provider = "minimax"
+	ProviderMiniMaxCodingPlan   Provider = "minimax-coding-plan"
+	ProviderElevenLabs          Provider = "elevenlabs"
+	ProviderDeepgram            Provider = "deepgram"
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "cursor-cli"
@@ -2891,6 +2899,13 @@ type ProviderAwareLLM struct {
 	logger       interfaces.Logger
 }
 
+const (
+	providerAwareMessageLogMaxChars    = 500
+	providerAwarePromptLogMaxChars     = 2000
+	providerAwareToolNamesLogMaxChars  = 4000
+	providerAwareToolSchemaLogMaxChars = 2000
+)
+
 // NewProviderAwareLLM creates a new provider-aware LLM wrapper
 func NewProviderAwareLLM(llm llmtypes.Model, provider Provider, modelID string, eventEmitter interfaces.EventEmitter, traceID interfaces.TraceID, logger interfaces.Logger) *ProviderAwareLLM {
 	// Use no-op logger if nil is provided
@@ -2929,16 +2944,39 @@ func extractTextFromParts(parts []llmtypes.ContentPart) string {
 	return strings.Join(textParts, " ")
 }
 
-func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
-	// Note: LLM generation start event is now emitted at the agent level to avoid duplication
-
-	// Automatically add usage parameter for OpenRouter requests to get cache token information
-	if p.provider == ProviderOpenRouter {
-		options = append(options, WithOpenRouterUsage())
+func truncateProviderAwareLogText(text string, maxChars int) string {
+	if maxChars <= 0 || len(text) == 0 {
+		return ""
 	}
+	runes := []rune(text)
+	if len(runes) <= maxChars {
+		return text
+	}
+	return string(runes[:maxChars]) + fmt.Sprintf("... [truncated, total length: %d chars]", len(runes))
+}
 
-	// 🆕 USEFUL LOGGING - System prompts, messages, and tools
-	// Parse call options to extract tools
+func providerAwareVerboseRequestLogging() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTI_LLM_VERBOSE_REQUEST_LOGS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerAwareRequestPayloadLoggingEnabled() bool {
+	if providerAwareVerboseRequestLogging() {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTI_LLM_REQUEST_LOGS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *ProviderAwareLLM) logRequestPayload(messages []llmtypes.MessageContent, options ...llmtypes.CallOption) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
@@ -2957,7 +2995,7 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 	if len(systemPrompts) > 0 {
 		p.logger.Infof("📋 SYSTEM PROMPTS (%d):", len(systemPrompts))
 		for i, prompt := range systemPrompts {
-			p.logger.Infof("   [%d] %s", i+1, prompt)
+			p.logger.Infof("   [%d] length=%d preview=%s", i+1, len([]rune(prompt)), truncateProviderAwareLogText(prompt, providerAwarePromptLogMaxChars))
 		}
 	} else {
 		p.logger.Infof("📋 SYSTEM PROMPTS: None")
@@ -2967,31 +3005,52 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 	p.logger.Infof("💬 MESSAGES (%d):", len(messages))
 	for i, msg := range messages {
 		text := extractTextFromParts(msg.Parts)
-		// Truncate very long messages for readability
-		displayText := text
-		if len(displayText) > 500 {
-			displayText = displayText[:500] + "... [truncated]"
-		}
+		displayText := truncateProviderAwareLogText(text, providerAwareMessageLogMaxChars)
 		p.logger.Infof("   [%d] Role: %s, Content: %s", i+1, msg.Role, displayText)
 	}
 
 	// Log tools if provided
 	if len(opts.Tools) > 0 {
 		p.logger.Infof("🔧 TOOLS (%d):", len(opts.Tools))
+		toolNames := make([]string, 0, len(opts.Tools))
 		for i, tool := range opts.Tools {
 			if tool.Function != nil {
-				toolJSON, err := json.MarshalIndent(tool, "      ", "  ")
-				if err != nil {
-					p.logger.Infof("   [%d] %s (error marshaling: %v)", i+1, tool.Function.Name, err)
-				} else {
-					p.logger.Infof("   [%d] %s:\n%s", i+1, tool.Function.Name, string(toolJSON))
-				}
+				toolNames = append(toolNames, tool.Function.Name)
 			} else {
-				p.logger.Infof("   [%d] Tool with nil Function", i+1)
+				toolNames = append(toolNames, fmt.Sprintf("tool[%d]=<nil function>", i+1))
+			}
+		}
+		p.logger.Infof("   Names: %s", truncateProviderAwareLogText(strings.Join(toolNames, ", "), providerAwareToolNamesLogMaxChars))
+
+		if providerAwareVerboseRequestLogging() {
+			for i, tool := range opts.Tools {
+				if tool.Function != nil {
+					toolJSON, err := json.MarshalIndent(tool, "      ", "  ")
+					if err != nil {
+						p.logger.Infof("   [%d] %s (error marshaling: %v)", i+1, tool.Function.Name, err)
+					} else {
+						p.logger.Infof("   [%d] %s schema preview:\n%s", i+1, tool.Function.Name, truncateProviderAwareLogText(string(toolJSON), providerAwareToolSchemaLogMaxChars))
+					}
+				} else {
+					p.logger.Infof("   [%d] Tool with nil Function", i+1)
+				}
 			}
 		}
 	} else {
 		p.logger.Infof("🔧 TOOLS: None")
+	}
+}
+
+func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	// Note: LLM generation start event is now emitted at the agent level to avoid duplication
+
+	// Automatically add usage parameter for OpenRouter requests to get cache token information
+	if p.provider == ProviderOpenRouter {
+		options = append(options, WithOpenRouterUsage())
+	}
+
+	if providerAwareRequestPayloadLoggingEnabled() {
+		p.logRequestPayload(messages, options...)
 	}
 
 	// Log request timing

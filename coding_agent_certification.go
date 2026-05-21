@@ -1,0 +1,537 @@
+package llmproviders
+
+import (
+	"sort"
+	"strings"
+)
+
+// CodingAgentCertificationID is an executable proof point for one part of the
+// coding-agent contract. Capability flags in CodingAgentProviderContract should
+// map to these IDs instead of being treated as comments.
+type CodingAgentCertificationID string
+
+const (
+	CertFreshLaunch               CodingAgentCertificationID = "fresh_launch"
+	CertResumeCompactionStartup   CodingAgentCertificationID = "resume_compaction_startup"
+	CertStartupTerminalVisibility CodingAgentCertificationID = "startup_terminal_visibility"
+	CertWorkingDirectory          CodingAgentCertificationID = "working_directory"
+	CertTrustAuthPrompts          CodingAgentCertificationID = "trust_auth_prompts"
+	CertNativeSystemPrompt        CodingAgentCertificationID = "native_system_prompt"
+	CertPromptPaste               CodingAgentCertificationID = "prompt_paste"
+	CertMCPBridge                 CodingAgentCertificationID = "mcp_bridge"
+	CertBridgeOnlyTools           CodingAgentCertificationID = "bridge_only_tools"
+	CertSlowToolLiveInput         CodingAgentCertificationID = "slow_tool_live_input"
+	CertSlowToolFalseIdle         CodingAgentCertificationID = "slow_tool_false_idle"
+	CertDoneDetection             CodingAgentCertificationID = "done_detection"
+	CertFinalExtraction           CodingAgentCertificationID = "final_extraction"
+	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
+	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
+	CertLiveInput                 CodingAgentCertificationID = "live_input"
+	CertCancellation              CodingAgentCertificationID = "cancellation"
+	CertPersistentCancelReuse     CodingAgentCertificationID = "persistent_cancel_reuse"
+	CertLifecyclePolicy           CodingAgentCertificationID = "lifecycle_policy"
+	CertBoundedRetention          CodingAgentCertificationID = "bounded_retention"
+	CertParallelIsolation         CodingAgentCertificationID = "parallel_isolation"
+	CertParallelStartupQueue      CodingAgentCertificationID = "parallel_startup_queue"
+	CertSharedWorkdirMCPIsolation CodingAgentCertificationID = "shared_workdir_mcp_isolation"
+	CertCleanup                   CodingAgentCertificationID = "cleanup"
+	CertSessionLoss               CodingAgentCertificationID = "session_loss"
+)
+
+var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
+	CertFreshLaunch,
+	CertResumeCompactionStartup,
+	CertStartupTerminalVisibility,
+	CertWorkingDirectory,
+	CertTrustAuthPrompts,
+	CertNativeSystemPrompt,
+	CertPromptPaste,
+	CertMCPBridge,
+	CertBridgeOnlyTools,
+	CertSlowToolLiveInput,
+	CertSlowToolFalseIdle,
+	CertDoneDetection,
+	CertFinalExtraction,
+	CertMultiTurn,
+	CertStaleDraftCleanup,
+	CertLiveInput,
+	CertCancellation,
+	CertPersistentCancelReuse,
+	CertLifecyclePolicy,
+	CertBoundedRetention,
+	CertParallelIsolation,
+	CertParallelStartupQueue,
+	CertSharedWorkdirMCPIsolation,
+	CertCleanup,
+	CertSessionLoss,
+}
+
+// CodingAgentCertification records the real or deterministic test that proves a
+// certification ID. TestFile is repository-relative so normal unit tests can
+// verify that the referenced proof still exists.
+type CodingAgentCertification struct {
+	ID          CodingAgentCertificationID
+	TestFile    string
+	TestName    string
+	Env         []string
+	Description string
+	RealE2E     bool
+}
+
+var codingAgentCapabilityCertifications = []struct {
+	name     string
+	enabled  func(CodingAgentProviderContract) bool
+	required []CodingAgentCertificationID
+}{
+	{"working directory", func(c CodingAgentProviderContract) bool { return c.RequiresWorkingDir }, []CodingAgentCertificationID{CertWorkingDirectory}},
+	{"native system prompt", func(c CodingAgentProviderContract) bool { return c.UsesNativeSystemPrompt }, []CodingAgentCertificationID{CertNativeSystemPrompt}},
+	{"mcp bridge", func(c CodingAgentProviderContract) bool { return c.UsesMCPBridge }, []CodingAgentCertificationID{CertMCPBridge}},
+	{"bridge only tools", func(c CodingAgentProviderContract) bool { return c.SupportsBridgeOnlyTools }, []CodingAgentCertificationID{CertBridgeOnlyTools}},
+	{"terminal stream", func(c CodingAgentProviderContract) bool { return c.SupportsTerminalStream }, []CodingAgentCertificationID{CertFreshLaunch}},
+	{"final extraction", func(c CodingAgentProviderContract) bool { return c.SupportsFinalExtraction }, []CodingAgentCertificationID{CertFinalExtraction}},
+	{"persistent session", func(c CodingAgentProviderContract) bool { return c.UsesPersistentSession }, []CodingAgentCertificationID{CertMultiTurn, CertStaleDraftCleanup}},
+	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput}},
+	{"interrupt", func(c CodingAgentProviderContract) bool { return c.SupportsInterrupt }, []CodingAgentCertificationID{CertCancellation}},
+	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
+	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss}},
+}
+
+var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
+	ProviderClaudeCode: {
+		{
+			ID:          CertFreshLaunch,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
+			Description: "starts Claude Code tmux transport and carries the first user prompt",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertResumeCompactionStartup,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestName:    "TestClaudeResumeSummaryMenuSubmitsDefaultChoice",
+			Description: "resume/compaction startup prompts are detected and submitted through the global prompt-wait path",
+		},
+		{
+			ID:          CertStartupTerminalVisibility,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestName:    "TestClaudeTerminalStreamCapturesRawScreenRows",
+			Description: "Claude startup/working panes emit raw terminal rows before final completion",
+		},
+		{
+			ID:          CertWorkingDirectory,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuWorkingDirectory",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "proves Claude Code and its MCP bridge run in the requested cwd",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTrustAuthPrompts,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuWorkingDirectory",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "fresh Claude workspace trust setup is handled before launching in a requested cwd",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertNativeSystemPrompt,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationNativeSystemPrompt",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
+			Description: "system prompt reaches Claude through native system-prompt transport",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPromptPaste,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationLargePastedPromptSubmits",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
+			Description: "large pasted prompt submits correctly through tmux",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuMCPBridgeContract",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "Claude Code calls a real MCP bridge tool",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBridgeOnlyTools,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationNoInternalTools",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
+			Description: "Claude Code bridge-only mode does not expose internal shell/file tools",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolLiveInput,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1"},
+			Description: "live validation input during a slow MCP tool does not complete the foreground turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolFalseIdle,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1"},
+			Description: "slow MCP activity keeps Claude classified active even if prompt-looking UI appears",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertDoneDetection,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1"},
+			Description: "slow MCP plus live input does not falsely complete while active",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
+			Description: "final response is extracted from Claude Code tmux output",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMultiTurn,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "persistent Claude Code tmux session keeps native multi-turn memory",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStaleDraftCleanup,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationPersistentClearsStaleDraftBeforeNextTurn",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "stale prompt drafts are cleared before the next backend turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertLiveInput,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1"},
+			Description: "live input routes into the active Claude Code tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCancellation,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationPersistentCancelDoesNotLeaveBusySessionReusable",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "canceled Claude Code persistent sessions are not reused while busy",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPersistentCancelReuse,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationPersistentCancelDoesNotLeaveBusySessionReusable",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "a canceled persistent Claude pane is not reused unless it is prompt-ready",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertLifecyclePolicy,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "persistent chat sessions remain registered after a completed turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBoundedRetention,
+			TestFile:    "pkg/adapters/claudecode/claudecode_cleanup_test.go",
+			TestName:    "TestCleanupClaudeCodeExperimentalSessionsDoesNotBlockOnBusyPersistentSession",
+			Description: "bounded Claude cleanup/retention path can drain without blocking active sessions",
+		},
+		{
+			ID:          CertParallelIsolation,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationParallelIsolation",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "parallel Claude tmux sessions do not share state",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertParallelStartupQueue,
+			TestFile:    "pkg/adapters/internal/tmuxlaunch/tmuxlaunch_test.go",
+			TestName:    "TestAcquireQueuesConcurrentStarts",
+			Description: "tmux startup acquisition serializes concurrent provider launches when configured",
+		},
+		{
+			ID:          CertSharedWorkdirMCPIsolation,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestName:    "TestClaudeCodeExperimentalIntegrationSharedWorkingDirMCPIsolation",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1"},
+			Description: "parallel Claude sessions in one cwd keep MCP sessions isolated",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCleanup,
+			TestFile:    "pkg/adapters/claudecode/claudecode_cleanup_test.go",
+			TestName:    "TestCleanupClaudeCodeExperimentalSessionsDoesNotBlockOnBusyPersistentSession",
+			Description: "cleanup does not deadlock on busy persistent Claude Code sessions",
+		},
+		{
+			ID:          CertSessionLoss,
+			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestName:    "TestClaudeTmuxSessionLostErrorDetection",
+			Description: "Claude Code classifies missing tmux server/session/pane errors",
+		},
+	},
+	ProviderCodexCLI: {
+		{
+			ID:          CertFreshLaunch,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "starts Codex CLI tmux transport, reaches ready, and streams terminal-only chunks",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertResumeCompactionStartup,
+			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
+			TestName:    "TestCodexInteractivePromptWaitDefaultsToStartupBudget",
+			Description: "Codex prompt waits use the startup budget rather than a fixed short cutoff",
+		},
+		{
+			ID:          CertStartupTerminalVisibility,
+			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
+			TestName:    "TestCodexTerminalStreamCapturesRawScreenRows",
+			Description: "Codex startup/working panes emit raw terminal rows before final completion",
+		},
+		{
+			ID:          CertWorkingDirectory,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveWorkingDirectoryContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "proves Codex CLI and its MCP bridge run in the requested cwd",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTrustAuthPrompts,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveWorkspaceTrustPromptContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "fresh Codex workspace trust prompt is handled and excluded from final output",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertNativeSystemPrompt,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "system/developer instructions reach Codex through native config override",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPromptPaste,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "large multiline prompt submits correctly through tmux",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveMCPBridgeContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "Codex CLI calls a real MCP bridge tool",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBridgeOnlyTools,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveMCPBridgeContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "Codex CLI bridge-only mode runs through MCP with internal shell disabled",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolLiveInput,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "live validation input during a slow MCP tool does not complete the foreground turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolFalseIdle,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "slow MCP activity keeps Codex classified active even if prompt-looking UI appears",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertDoneDetection,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "slow MCP plus queued validation does not falsely complete while active",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
+			TestName:    "TestExtractCodexVisibleAssistantTextDropsLiveInputEcho",
+			Description: "Codex final extraction excludes queued user text and TUI noise",
+		},
+		{
+			ID:          CertMultiTurn,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "persistent Codex CLI tmux session keeps native multi-turn memory",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStaleDraftCleanup,
+			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
+			TestName:    "TestCodexQueuedInputKeepsSessionActive",
+			Description: "queued/draft input is classified active and not completed as final output",
+		},
+		{
+			ID:          CertLiveInput,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "live input routes into the active Codex CLI tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCancellation,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "escape/interrupt path is exercised against a live Codex CLI session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPersistentCancelReuse,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "a canceled persistent Codex pane is not reused unless it is prompt-ready",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertLifecyclePolicy,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "persistent chat sessions remain registered after a completed turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBoundedRetention,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveCleanup",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "bounded Codex cleanup/retention path unregisters and removes owned sessions",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertParallelStartupQueue,
+			TestFile:    "pkg/adapters/internal/tmuxlaunch/tmuxlaunch_test.go",
+			TestName:    "TestAcquireQueuesConcurrentStarts",
+			Description: "tmux startup acquisition serializes concurrent provider launches when configured",
+		},
+		{
+			ID:          CertCleanup,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveCleanup",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "Codex cleanup unregisters and kills owned tmux sessions",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSessionLoss,
+			TestFile:    "pkg/adapters/codexcli/codexcli_cleanup_test.go",
+			TestName:    "TestCleanupCodexCLIInteractiveSessionsDoesNotBlockOnBusySession",
+			Description: "Codex cleanup path is safe when a session is busy or unavailable",
+		},
+		{
+			ID:          CertParallelIsolation,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveParallelIsolation",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "parallel Codex tmux sessions do not share state",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSharedWorkdirMCPIsolation,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "parallel Codex sessions in one cwd keep MCP sessions isolated",
+			RealE2E:     true,
+		},
+	},
+}
+
+// RequiredCodingAgentCertificationIDs returns the proof IDs implied by the
+// provider's claimed capabilities.
+func RequiredCodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
+	seen := make(map[CodingAgentCertificationID]struct{}, len(requiredTmuxCertificationIDs))
+	if contract.Transport == CodingAgentTransportTmux {
+		for _, id := range requiredTmuxCertificationIDs {
+			seen[id] = struct{}{}
+		}
+	} else {
+		seen[CertFreshLaunch] = struct{}{}
+		seen[CertPromptPaste] = struct{}{}
+		seen[CertDoneDetection] = struct{}{}
+		seen[CertFinalExtraction] = struct{}{}
+	}
+	for _, rule := range codingAgentCapabilityCertifications {
+		if !rule.enabled(contract) {
+			continue
+		}
+		for _, id := range rule.required {
+			seen[id] = struct{}{}
+		}
+	}
+
+	out := make([]CodingAgentCertificationID, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func CodingAgentProviderCertifications(provider Provider) []CodingAgentCertification {
+	provider = Provider(strings.ToLower(strings.TrimSpace(string(provider))))
+	certs := append([]CodingAgentCertification(nil), codingAgentProviderCertifications[provider]...)
+	sort.Slice(certs, func(i, j int) bool {
+		if certs[i].ID == certs[j].ID {
+			return certs[i].TestName < certs[j].TestName
+		}
+		return certs[i].ID < certs[j].ID
+	})
+	return certs
+}
+
+func MissingCodingAgentCertifications(contract CodingAgentProviderContract) []CodingAgentCertificationID {
+	have := make(map[CodingAgentCertificationID]struct{})
+	for _, cert := range CodingAgentProviderCertifications(contract.Provider) {
+		have[cert.ID] = struct{}{}
+	}
+	var missing []CodingAgentCertificationID
+	for _, id := range RequiredCodingAgentCertificationIDs(contract) {
+		if _, ok := have[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}

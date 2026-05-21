@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,8 +18,10 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 const (
@@ -28,7 +31,6 @@ const (
 	defaultCodexInteractiveTimeout     = 0
 	defaultCodexInteractiveIdleTimeout = 20 * time.Minute
 	defaultCodexInteractiveRetention   = 30 * time.Minute
-	defaultCodexInteractivePromptWait  = 20 * time.Second
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160
 
@@ -142,7 +144,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 	}()
 
-	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -152,7 +154,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, err
 	}
 	resetCodexPaneForTurn(callCtx, session.tmuxSessionName)
-	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName); err != nil {
+	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -175,7 +177,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	})
 
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan)
-	if err != nil {
+	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	if err != nil && !forcedComplete {
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_wait_response",
 			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
@@ -194,6 +197,9 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	})
 
 	content := parseCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	if forcedComplete && strings.TrimSpace(content) == "" {
+		content = forcedCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
 		func(ctx context.Context) (string, error) {
@@ -228,8 +234,13 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// has no stdout JSON, but ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 	// records token_count event_msgs with per-turn token snapshots.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
-	usage, effectiveModel := readCodexTranscriptUsage(turnStart)
+	handleModel := c.modelID
+	usage, effectiveModel, threadID := readCodexTranscriptUsage(turnStart, session.workingDir)
+	if threadID != "" {
+		additional["codex_thread_id"] = threadID
+	}
 	if effectiveModel != "" {
+		handleModel = effectiveModel
 		additional["codex_effective_model"] = effectiveModel
 	}
 	if usage != nil {
@@ -247,14 +258,23 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			}
 		}
 	}
+	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+		Provider:        "codex-cli",
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: threadID,
+		TmuxSession:     session.tmuxSessionName,
+		WorkingDir:      session.workingDir,
+		Model:           handleModel,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	// Inspector: emit the completion envelope. Token counts are
 	// best-effort from the rollout JSONL; cost may be unavailable on
 	// runs that didn't write a rollout file yet.
 	if inspector.Enabled() {
 		completionMeta := map[string]interface{}{
-			"stop_reason":  "tmux_response_captured",
-			"duration_ms":  time.Since(turnStart).Milliseconds(),
+			"stop_reason":   "tmux_response_captured",
+			"duration_ms":   time.Since(turnStart).Milliseconds(),
 			"content_chars": len(content),
 		}
 		if gi.PromptTokens != nil {
@@ -346,7 +366,19 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 		}
 	}
 
-	args := []string{"codex", "--no-alt-screen"}
+	resumeSessionID := codexResumeSessionIDFromOptions(opts)
+	appendResumeSessionID := func(args []string) []string {
+		if resumeSessionID != "" {
+			args = append(args, resumeSessionID)
+		}
+		return args
+	}
+
+	args := []string{"codex"}
+	if resumeSessionID != "" {
+		args = append(args, "resume")
+	}
+	args = append(args, "--no-alt-screen")
 	if modelToUse != "" && modelToUse != "codex-cli" {
 		args = append(args, "--model", modelToUse)
 	}
@@ -415,9 +447,9 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 			return nil, "", err
 		}
 		args = append(args, "-c", override)
-		return args, systemPromptTempFile, nil
+		return appendResumeSessionID(args), systemPromptTempFile, nil
 	}
-	return args, "", nil
+	return appendResumeSessionID(args), "", nil
 }
 
 func releaseCodexInteractiveSession(session *codexInteractiveSession, logger interfaces.Logger) {
@@ -629,6 +661,16 @@ func codexPersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
 	return ok && enabled
 }
 
+func codexResumeSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if sessionID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
+}
+
 func splitCodexSystemPrompt(messages []llmtypes.MessageContent) (string, []llmtypes.MessageContent) {
 	var systems []string
 	conversation := make([]llmtypes.MessageContent, 0, len(messages))
@@ -734,7 +776,7 @@ func codexInteractiveShellCommand(args []string, workingDir string) string {
 	return shelllaunch.Command(args, workingDir)
 }
 
-func waitForCodexPrompt(ctx context.Context, sessionName string) error {
+func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
 	deadline, cancel := context.WithTimeout(ctx, codexInteractivePromptWait())
 	defer cancel()
 
@@ -742,6 +784,9 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 	defer ticker.Stop()
 	dismissedRateReminder := false
 	dismissedTrustPrompt := false
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
 		case <-deadline.Done():
@@ -754,6 +799,11 @@ func waitForCodexPrompt(ctx context.Context, sessionName string) error {
 			captured, err := captureCodexPane(deadline, sessionName)
 			if err != nil {
 				continue
+			}
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
 			}
 			if hasCodexTrustPrompt(captured) {
 				if !dismissedTrustPrompt {
@@ -832,6 +882,9 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				return "", err
 			}
 			delta := codexCapturedAfterBaseline(captured, baseline)
+			if tmuxcontrol.ConsumeForceComplete(sessionName) {
+				return captured, tmuxcontrol.ErrForceComplete
+			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
@@ -897,6 +950,17 @@ func parseCodexInteractiveResponse(captured, baseline, echoedUserPrompt string, 
 	if isCodexLikelyQueuedUserEcho(text) {
 		return ""
 	}
+	return strings.TrimSpace(text)
+}
+
+func forcedCodexInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	delta := codexCapturedAfterBaseline(captured, baseline)
+	text := parseCodexInteractiveResponseSegmentFallback(delta, echoedUserPrompt, historicalAssistantTexts)
+	if strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	text = stripCodexEchoedUserPrompt(stripCodexANSI(delta), echoedUserPrompt)
+	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
 	return strings.TrimSpace(text)
 }
 
@@ -2045,7 +2109,7 @@ func selectedCodexRateLimitReminderOption(captured string) int {
 }
 
 func streamCodexTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
-	snapshot, err := captureCodexPane(ctx, sessionName)
+	snapshot, err := captureCodexPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
 	}
@@ -2251,6 +2315,9 @@ func captureCodexPane(ctx context.Context, sessionName string) (string, error) {
 	return runCodexCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
 }
 
+func captureCodexPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	return runCodexCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-S", "-3000", "-t", sessionName)
+}
 
 func codexCapturedAfterBaseline(captured, baseline string) string {
 	if baseline != "" {
@@ -2307,7 +2374,7 @@ func codexInteractiveRetention() time.Duration {
 }
 
 func codexInteractivePromptWait() time.Duration {
-	return codexDurationFromEnv(EnvCodexInteractivePromptWaitSeconds, defaultCodexInteractivePromptWait)
+	return tmuxlaunch.PromptWait(EnvCodexInteractivePromptWaitSeconds)
 }
 
 func codexInteractiveStreamTmuxScreenEnabled() bool {

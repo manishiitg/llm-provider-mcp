@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
@@ -34,9 +35,62 @@ func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestClaudeTerminalStreamCapturesRawScreenRows(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/capture-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$*" > "$TMUX_TEST_CAPTURE_ARGS"
+  for arg in "$@"; do
+    if [ "$arg" = "-J" ]; then
+      echo "terminal display capture must not use -J" >&2
+      exit 9
+    fi
+  done
+  printf 'screen row one\nscreen row two\n'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE_ARGS", argsPath)
+
+	stream := make(chan llmtypes.StreamChunk, 1)
+	var last string
+	if !streamClaudeTerminalSnapshot(context.Background(), "raw-display-session", stream, &last) {
+		t.Fatal("streamClaudeTerminalSnapshot returned false")
+	}
+	chunk := <-stream
+	if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+		t.Fatalf("chunk type = %q, want terminal", chunk.Type)
+	}
+	if !strings.Contains(chunk.Content, "screen row one\nscreen row two") {
+		t.Fatalf("chunk content = %q, want raw screen rows", chunk.Content)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read capture args: %v", err)
+	}
+	if strings.Contains(string(args), " -J") {
+		t.Fatalf("terminal display capture used joined rows: %q", string(args))
+	}
+}
+
+func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
+	got := claudePromptSuggestionEnvArgs()
+	want := []string{"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
+	}
+}
+
 func TestClaudeSubmitPromptKeysMoveToEndBeforeEnter(t *testing.T) {
 	got := claudeSubmitPromptKeys()
-	want := []string{"C-e", "C-m"}
+	want := []string{"C-e", "Enter"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude submit keys = %v, want %v", got, want)
 	}
@@ -714,6 +768,35 @@ func TestExperimentalTimeoutEnv(t *testing.T) {
 	}
 }
 
+func TestExperimentalPromptWaitEnv(t *testing.T) {
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
+	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "")
+	if got := promptReadyTimeout(); got != 120*time.Second {
+		t.Fatalf("promptReadyTimeout default = %v, want 120s", got)
+	}
+
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
+	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "")
+	if got := promptReadyTimeout(); got != 3*time.Second {
+		t.Fatalf("promptReadyTimeout global env = %v, want 3s", got)
+	}
+
+	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "2")
+	if got := promptReadyTimeout(); got != 2*time.Second {
+		t.Fatalf("promptReadyTimeout provider env = %v, want 2s", got)
+	}
+
+	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "0")
+	if got := promptReadyTimeout(); got != 3*time.Second {
+		t.Fatalf("promptReadyTimeout zero provider env = %v, want global 3s", got)
+	}
+
+	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "bad")
+	if got := promptReadyTimeout(); got != 3*time.Second {
+		t.Fatalf("promptReadyTimeout invalid provider env = %v, want global 3s", got)
+	}
+}
+
 func TestClaudeCallContextIgnoresParentDeadline(t *testing.T) {
 	parent, cancelParent := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancelParent()
@@ -781,6 +864,9 @@ func TestHasReadyInputPromptAcceptsPromptWithDraftText(t *testing.T) {
 	if !hasReadyInputPrompt(pane) {
 		t.Fatal("hasReadyInputPrompt = false for idle prompt with draft text")
 	}
+	if hasReadyEmptyInputPrompt(pane) {
+		t.Fatal("hasReadyEmptyInputPrompt = true for idle prompt with unsubmitted draft text")
+	}
 }
 
 func TestHasReadyInputPromptAcceptsIdlePromptWithEscFooter(t *testing.T) {
@@ -825,6 +911,9 @@ func TestHasReadyInputPromptAcceptsClaudeSuggestionWithTrailingBlankFill(t *test
 	if !hasReadyInputPrompt(pane) {
 		t.Fatal("hasReadyInputPrompt = false for idle prompt with Claude suggestion text and trailing blank fill")
 	}
+	if !hasReadyEmptyInputPrompt(pane) {
+		t.Fatal("hasReadyEmptyInputPrompt = false for Claude suggestion placeholder")
+	}
 }
 
 func TestWaitForTmuxPromptAcceptsNormalPromptWithoutResumePrompt(t *testing.T) {
@@ -863,13 +952,28 @@ exit 0
 	t.Setenv("TMUX_TEST_CAPTURE", capturePath)
 	t.Setenv("TMUX_TEST_SEND_KEYS", sendKeysPath)
 
+	stream := make(chan llmtypes.StreamChunk, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := waitForTmuxPrompt(ctx, "test-session"); err != nil {
+	if err := waitForTmuxPrompt(ctx, "test-session", stream); err != nil {
 		t.Fatalf("waitForTmuxPrompt returned error for normal ready prompt: %v", err)
 	}
 	if got, err := os.ReadFile(sendKeysPath); err == nil && strings.TrimSpace(string(got)) != "" {
 		t.Fatalf("waitForTmuxPrompt sent resume keys for normal prompt: %q", string(got))
+	}
+	select {
+	case chunk := <-stream:
+		if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+			t.Fatalf("streamed chunk type = %q, want terminal", chunk.Type)
+		}
+		if chunk.Content == "" {
+			t.Fatal("streamed terminal content is empty")
+		}
+		if chunk.Metadata["tmux_session"] != "test-session" {
+			t.Fatalf("tmux_session metadata = %#v, want test-session", chunk.Metadata["tmux_session"])
+		}
+	default:
+		t.Fatal("waitForTmuxPrompt did not stream the startup pane")
 	}
 }
 
@@ -1093,12 +1197,50 @@ func TestClaudePromptDraftToClearBeforePasteIgnoresSuggestedPlaceholder(t *testi
 ✻ Cogitated for 30s
 
 ─────────────────────────────────────────────────────────────────── mcp-agent ──
-❯ go with option B
+❯ Try "go with option B"
 ────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ don't ask on (shift+tab to cycle)
 `
 	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
 		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear for Claude suggestion placeholder", draft)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteIgnoresContextualSuggestion(t *testing.T) {
+	pane := `
+⏺ Workflow finished.
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ show me what it found
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear for Claude contextual suggestion", draft)
+	}
+	if !hasReadyEmptyInputPrompt(pane) {
+		t.Fatal("hasReadyEmptyInputPrompt = false for Claude contextual suggestion")
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteClearsNBSPDraft(t *testing.T) {
+	pane := `
+⏺ Done
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ continue hwere we left
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	draft, ok := claudePromptDraftToClearBeforePaste(pane)
+	if !ok {
+		t.Fatal("claudePromptDraftToClearBeforePaste ok = false, want true for non-breaking-space draft")
+	}
+	if draft != "continue hwere we left" {
+		t.Fatalf("draft = %q, want pasted user draft", draft)
+	}
+	if hasReadyEmptyInputPrompt(pane) {
+		t.Fatal("hasReadyEmptyInputPrompt = true for non-breaking-space user draft")
 	}
 }
 

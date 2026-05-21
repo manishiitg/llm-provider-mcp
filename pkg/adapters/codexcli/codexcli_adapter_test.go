@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 type MockLogger struct{}
@@ -20,9 +21,17 @@ func (l *MockLogger) Debugf(format string, args ...interface{}) {
 	fmt.Printf("DEBUG: "+format+"\n", args...)
 }
 
-// Keep the real CLI transport contract on the cheaper Spark model; model-tier
-// defaults are tested separately from the tmux protocol itself.
-const codexCLIRealContractModel = "gpt-5.3-codex-spark"
+// Keep the real CLI transport contract model configurable because the live CLI
+// can report model capacity or upgrade state independently of the tmux
+// transport. Model-tier defaults are tested separately from the protocol.
+var codexCLIRealContractModel = codexCLIRealContractModelFromEnv()
+
+func codexCLIRealContractModelFromEnv() string {
+	if model := strings.TrimSpace(os.Getenv("CODEX_CLI_REAL_CONTRACT_MODEL")); model != "" {
+		return model
+	}
+	return "gpt-5.3-codex-spark"
+}
 
 func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
@@ -52,6 +61,51 @@ func TestCodexInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+func TestCodexTerminalStreamCapturesRawScreenRows(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/capture-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$*" > "$TMUX_TEST_CAPTURE_ARGS"
+  for arg in "$@"; do
+    if [ "$arg" = "-J" ]; then
+      echo "terminal display capture must not use -J" >&2
+      exit 9
+    fi
+  done
+  printf 'screen row one\nscreen row two\n'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE_ARGS", argsPath)
+
+	stream := make(chan llmtypes.StreamChunk, 1)
+	var last string
+	if !streamCodexTerminalSnapshot(context.Background(), "raw-display-session", stream, &last) {
+		t.Fatal("streamCodexTerminalSnapshot returned false")
+	}
+	chunk := <-stream
+	if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+		t.Fatalf("chunk type = %q, want terminal", chunk.Type)
+	}
+	if !strings.Contains(chunk.Content, "screen row one\nscreen row two") {
+		t.Fatalf("chunk content = %q, want raw screen rows", chunk.Content)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read capture args: %v", err)
+	}
+	if strings.Contains(string(args), " -J") {
+		t.Fatalf("terminal display capture used joined rows: %q", string(args))
+	}
+}
+
 func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "")
 	if got := codexInteractiveTimeout(); got != 0 {
@@ -66,6 +120,25 @@ func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "2")
 	if got := codexInteractiveTimeout(); got != 2*time.Second {
 		t.Fatalf("codexInteractiveTimeout env = %v, want 2s", got)
+	}
+}
+
+func TestCodexInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "")
+	if got := codexInteractivePromptWait(); got != 120*time.Second {
+		t.Fatalf("codexInteractivePromptWait default = %v, want 120s", got)
+	}
+
+	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "")
+	if got := codexInteractivePromptWait(); got != 3*time.Second {
+		t.Fatalf("codexInteractivePromptWait global env = %v, want 3s", got)
+	}
+
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "2")
+	if got := codexInteractivePromptWait(); got != 2*time.Second {
+		t.Fatalf("codexInteractivePromptWait provider env = %v, want 2s", got)
 	}
 }
 
@@ -121,6 +194,24 @@ func TestCodexBridgeOnlyDisablesPluginAndDummyToolSurfaces(t *testing.T) {
 		if !codexArgsContainPair(args, "--disable", feature) {
 			t.Fatalf("args missing --disable %s: %v", feature, args)
 		}
+	}
+}
+
+func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithResumeSessionID("019e2584-a35a-7100-877e-209c4518f957")(opts)
+
+	args, systemPromptFile, err := adapter.buildCodexInteractiveArgs(opts, "")
+	if err != nil {
+		t.Fatalf("buildCodexInteractiveArgs error = %v", err)
+	}
+	if systemPromptFile != "" {
+		t.Fatalf("systemPromptFile = %q, want empty", systemPromptFile)
+	}
+	want := []string{"codex", "resume", "--no-alt-screen", "--model", "gpt-5.5", "019e2584-a35a-7100-877e-209c4518f957"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %v, want %v", args, want)
 	}
 }
 

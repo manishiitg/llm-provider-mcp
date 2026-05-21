@@ -448,7 +448,7 @@ func TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn(t 
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Remember this exact token: " + codeword + ". Reply exactly: saved " + codeword},
+				llmtypes.TextContent{Text: "For this test ticket, the project codename is " + codeword + ". Reply exactly: codename recorded " + codeword},
 			},
 		},
 	}, options...)
@@ -463,7 +463,7 @@ func TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn(t 
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only the token."},
+				llmtypes.TextContent{Text: "What project codename did I give for this test ticket? Reply with only the codename."},
 			},
 		},
 	}, options...)
@@ -968,6 +968,220 @@ func TestClaudeCodeExperimentalIntegrationHaikuWorkingDirectory(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// E2E: Parallel session isolation — two concurrent Claude Code sessions return
+// their own tokens without leaking each other's state.
+// ---------------------------------------------------------------------------
+
+func TestClaudeCodeExperimentalIntegrationParallelIsolation(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	type parallelSpec struct {
+		name         string
+		ownerSession string
+		token        string
+		workDir      string
+	}
+	specs := []parallelSpec{
+		{
+			name:         "left",
+			ownerSession: "claude-parallel-left-" + randomHex(4),
+			token:        "CLAUDE_PAR_LEFT_" + randomHex(4),
+			workDir:      t.TempDir(),
+		},
+		{
+			name:         "right",
+			ownerSession: "claude-parallel-right-" + randomHex(4),
+			token:        "CLAUDE_PAR_RIGHT_" + randomHex(4),
+			workDir:      t.TempDir(),
+		},
+	}
+	for _, spec := range specs {
+		preTrustClaudeWorkspace(t, spec.workDir)
+	}
+
+	type parallelResult struct {
+		spec    parallelSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan parallelResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{
+					Role: llmtypes.ChatMessageTypeSystem,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: "This is a Claude Code transport isolation test. Do not use tools. Keep the reply exact and concise."},
+					},
+				},
+				{
+					Role: llmtypes.ChatMessageTypeHuman,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: fmt.Sprintf("Reply exactly: %s", spec.token)},
+					},
+				},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(spec.workDir),
+				WithEffort("low"),
+			)
+			result := parallelResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]parallelResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		if !strings.Contains(got.content, spec.token) {
+			t.Fatalf("%s content = %q, want token %s", spec.name, got.content, spec.token)
+		}
+		for _, other := range specs {
+			if other.name != spec.name && strings.Contains(got.content, other.token) {
+				t.Fatalf("%s content leaked other session's token %s: %q", spec.name, other.token, got.content)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Shared-workdir MCP isolation — two concurrent Claude Code sessions that
+// share the same working directory still see their own MCP server replies.
+// ---------------------------------------------------------------------------
+
+func TestClaudeCodeExperimentalIntegrationSharedWorkingDirMCPIsolation(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")
+	if err := os.MkdirAll(sharedWorkDir, 0o755); err != nil {
+		t.Fatalf("create shared workdir: %v", err)
+	}
+	preTrustClaudeWorkspace(t, sharedWorkDir)
+
+	type runSpec struct {
+		name          string
+		ownerSession  string
+		sessionMarker string
+		token         string
+		outputPath    string
+		mcpServerPath string
+		mcpConfig     string
+	}
+	specs := []runSpec{
+		{
+			name:          "alpha",
+			ownerSession:  "claude-shared-alpha-" + randomHex(4),
+			sessionMarker: "CLAUDE_SESSION_ALPHA_" + randomHex(4),
+			token:         "CLAUDE_TOKEN_ALPHA_" + randomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "alpha-output.json"),
+		},
+		{
+			name:          "beta",
+			ownerSession:  "claude-shared-beta-" + randomHex(4),
+			sessionMarker: "CLAUDE_SESSION_BETA_" + randomHex(4),
+			token:         "CLAUDE_TOKEN_BETA_" + randomHex(4),
+			outputPath:    filepath.Join(t.TempDir(), "beta-output.json"),
+		},
+	}
+	for i := range specs {
+		specs[i].mcpServerPath = writeClaudeExperimentalIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
+		specs[i].mcpConfig = fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, specs[i].mcpServerPath)
+	}
+
+	type runResult struct {
+		spec    runSpec
+		content string
+		err     error
+	}
+	resultCh := make(chan runResult, len(specs))
+	for _, spec := range specs {
+		spec := spec
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{
+					Role: llmtypes.ChatMessageTypeSystem,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."},
+					},
+				},
+				{
+					Role: llmtypes.ChatMessageTypeHuman,
+					Parts: []llmtypes.ContentPart{
+						llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge write_contract MCP tool with token %s. Then reply exactly with the tool result text.", spec.token)},
+					},
+				},
+			},
+				WithInteractiveSessionID(spec.ownerSession),
+				WithPersistentInteractiveSession(true),
+				WithWorkingDir(sharedWorkDir),
+				WithMCPConfig(spec.mcpConfig),
+				WithClaudeCodeTools(""),
+				WithAllowedTools("mcp__api-bridge__write_contract"),
+				WithEffort("low"),
+			)
+			result := runResult{spec: spec, err: err}
+			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+				result.content = resp.Choices[0].Content
+			}
+			resultCh <- result
+		}()
+	}
+
+	results := make(map[string]runResult, len(specs))
+	for range specs {
+		got := <-resultCh
+		if got.err != nil {
+			t.Fatalf("%s GenerateContent error = %v", got.spec.name, got.err)
+		}
+		results[got.spec.name] = got
+	}
+
+	for _, spec := range specs {
+		got := results[spec.name]
+		want := "ISOLATED_OK_" + spec.sessionMarker + "_" + spec.token
+		if !strings.Contains(got.content, want) {
+			t.Fatalf("%s content = %q, want isolated tool result %q", spec.name, got.content, want)
+		}
+		data, err := os.ReadFile(spec.outputPath)
+		if err != nil {
+			t.Fatalf("%s output file missing at %s: %v", spec.name, spec.outputPath, err)
+		}
+		text := string(data)
+		if !strings.Contains(text, spec.sessionMarker) || !strings.Contains(text, spec.token) {
+			t.Fatalf("%s output = %s, want session %s and token %s", spec.name, text, spec.sessionMarker, spec.token)
+		}
+		for _, other := range specs {
+			if other.name != spec.name && strings.Contains(text, other.sessionMarker) {
+				t.Fatalf("%s output crossed sessions: %s", spec.name, text)
+			}
+		}
+	}
+}
+
 func writeClaudeExperimentalContractMCPServer(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-contract-mcp.js")
@@ -998,6 +1212,48 @@ rl.on("line", (line) => {
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write contract MCP server: %v", err)
+	}
+	return path
+}
+
+func writeClaudeExperimentalIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-isolation-contract-mcp.js")
+	script := fmt.Sprintf(`#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const sessionMarker = %q;
+const outputPath = %q;
+
+function send(message) { process.stdout.write(JSON.stringify(message) + "\n"); }
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch (err) { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "api-bridge", version: "1.0.0" } } });
+    return;
+  }
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "write_contract", description: "Write a deterministic marker proving this MCP server/session was used.", inputSchema: { type: "object", properties: { token: { type: "string" } }, required: ["token"] } }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const token = String(args.token || "");
+    const payload = { session_marker: sessionMarker, token, cwd: process.cwd(), timestamp: new Date().toISOString() };
+    fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "ISOLATED_OK_" + sessionMarker + "_" + token }], isError: false } });
+    return;
+  }
+  if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });
+});
+`, sessionMarker, outputPath)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write isolation MCP server: %v", err)
 	}
 	return path
 }

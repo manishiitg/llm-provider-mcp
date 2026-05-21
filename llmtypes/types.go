@@ -324,6 +324,11 @@ type GenerationInfo struct {
 
 	// Additional fields for extensibility (provider-specific)
 	Additional map[string]interface{} `json:"-"`
+
+	// CodingProviderSessionHandle records provider-native continuation state for
+	// coding-agent transports. It is serialized explicitly so callers can persist
+	// the handle instead of re-parsing provider-specific Additional metadata.
+	CodingProviderSessionHandle *CodingProviderSessionHandle `json:"coding_provider_session_handle,omitempty"`
 }
 
 // ExtractUsageFromGenerationInfo extracts token usage from GenerationInfo in an LLM-agnostic way.

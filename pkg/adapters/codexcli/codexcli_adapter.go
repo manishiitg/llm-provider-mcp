@@ -1025,6 +1025,14 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 			}
 		}
 	}
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+		Provider:        "codex-cli",
+		Transport:       llmtypes.CodingProviderTransportStructured,
+		NativeSessionID: threadID,
+		WorkingDir:      codexWorkingDirFromOptions(opts),
+		Model:           modelToUse,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	finalResponse = &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -26,20 +27,24 @@ import (
 // the LAST token_count event with timestamp >= turnStart — that one
 // reflects the just-completed turn.
 //
-// Selection by recency rather than by session-id because the codex
-// interactive adapter doesn't observe codex's internal UUID from
-// tmux (it lives in the rollout filename and session_meta payload).
-// We pick the freshest rollout file whose mtime is >= turnStart-30s,
-// which is robust as long as we're not racing parallel codex
-// instances.
+// Selection is scoped by cwd when possible because the codex interactive
+// adapter doesn't observe codex's internal UUID from tmux (it lives in the
+// rollout filename and session_meta payload). Recency alone is unsafe when
+// multiple Codex processes are active, including this desktop Codex session.
+// We pick the freshest rollout file whose mtime is >= turnStart-30s and whose
+// session_meta.cwd matches expectedWorkingDir. If expectedWorkingDir is set and
+// no matching rollout exists, we return empty rather than attaching a resume id
+// for the wrong Codex thread.
 //
 // Returns nil/empty on any error — best-effort. The model string is
 // the latest model observed on an in-turn `turn_context` event
-// (codex reports the effective model + reasoning effort there).
-func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, string) {
+// (codex reports the effective model + reasoning effort there). The
+// thread ID is the Codex session UUID from session_meta or the rollout
+// filename.
+func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string) (*llmtypes.GenerationInfo, string, string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
 	root := filepath.Join(home, ".codex", "sessions")
 
@@ -68,15 +73,27 @@ func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, st
 		return nil
 	})
 	if len(cands) == 0 {
-		return nil, ""
+		return nil, "", ""
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
 
-	f, err := os.Open(cands[0].path)
+	for _, candidate := range cands {
+		usage, model, threadID, cwd := readCodexTranscriptUsageFile(candidate.path, turnStart)
+		if strings.TrimSpace(expectedWorkingDir) != "" && !sameCodexWorkingDir(cwd, expectedWorkingDir) {
+			continue
+		}
+		return usage, model, threadID
+	}
+	return nil, "", ""
+}
+
+func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.GenerationInfo, string, string, string) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, ""
+		return nil, "", "", ""
 	}
 	defer f.Close()
+	threadID := codexThreadIDFromRolloutPath(path)
 
 	type tokenSnapshot struct {
 		InputTokens           int `json:"input_tokens"`
@@ -87,6 +104,8 @@ func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, st
 	}
 	type eventPayload struct {
 		Type  string `json:"type"`
+		ID    string `json:"id"`
+		CWD   string `json:"cwd"`
 		Model string `json:"model"`
 		Info  struct {
 			LastTokenUsage tokenSnapshot `json:"last_token_usage"`
@@ -100,12 +119,19 @@ func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, st
 
 	var latest *tokenSnapshot
 	var latestModel string
+	var sessionCWD string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
 		var ev event
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
+		}
+		if ev.Type == "session_meta" && ev.Payload.ID != "" {
+			threadID = ev.Payload.ID
+		}
+		if ev.Type == "session_meta" && ev.Payload.CWD != "" {
+			sessionCWD = ev.Payload.CWD
 		}
 		if !turnStart.IsZero() && ev.Timestamp != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, ev.Timestamp); err == nil && ts.Before(turnStart) {
@@ -121,7 +147,7 @@ func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, st
 		}
 	}
 	if latest == nil || (latest.InputTokens+latest.OutputTokens+latest.CachedInputTokens) == 0 {
-		return nil, latestModel
+		return nil, latestModel, threadID, sessionCWD
 	}
 
 	// codex reports `input_tokens` as the total prompt-side count
@@ -142,7 +168,44 @@ func readCodexTranscriptUsage(turnStart time.Time) (*llmtypes.GenerationInfo, st
 	if latest.ReasoningOutputTokens > 0 {
 		gi.ReasoningTokens = intRef(latest.ReasoningOutputTokens)
 	}
-	return gi, latestModel
+	return gi, latestModel, threadID, sessionCWD
+}
+
+func codexThreadIDFromRolloutPath(path string) string {
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	const prefix = "rollout-"
+	if !strings.HasPrefix(name, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	if len(rest) < 36 {
+		return ""
+	}
+	candidate := rest[len(rest)-36:]
+	if candidate[8] != '-' || candidate[13] != '-' || candidate[18] != '-' || candidate[23] != '-' {
+		return ""
+	}
+	return candidate
 }
 
 func intRef(v int) *int { return &v }
+
+func sameCodexWorkingDir(a, b string) bool {
+	a = canonicalCodexWorkingDir(a)
+	b = canonicalCodexWorkingDir(b)
+	return a != "" && b != "" && a == b
+}
+
+func canonicalCodexWorkingDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return filepath.Clean(path)
+}

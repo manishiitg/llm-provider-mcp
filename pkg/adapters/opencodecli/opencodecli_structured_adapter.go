@@ -74,7 +74,23 @@ type opencodeStepFinishCache struct {
 	Read  int `json:"read"`
 }
 
-func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
+	emitChunk := func(chunk llmtypes.StreamChunk) {
+		if sink != nil {
+			if err := sink.Emit(ctx, chunk); err != nil {
+				c.logDebugf("opencode: stream emit failed: %v", err)
+			}
+			return
+		}
+		if opts == nil || opts.StreamChan == nil {
+			return
+		}
+		select {
+		case opts.StreamChan <- chunk:
+		case <-ctx.Done():
+		}
+	}
+
 	binPath, err := opencodeBinaryPath()
 	if err != nil {
 		return nil, err
@@ -206,7 +222,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 	env := buildOpenCodeEnvForCall(c.apiKey, activeSubProvider, opts)
 
 	c.logInfof("Executing OpenCode CLI structured: opencode %s", strings.Join(args[:3], " "))
-	res, err := c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, opts)
+	res, err := c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, emitChunk)
 	if errors.Is(err, errOpencodeSilentEmpty) {
 		// Retry once. opencode v1.15.4 occasionally exits 0 with only
 		// a step_start event on first invocation in a process (likely
@@ -218,7 +234,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		// attempt — by construction, since textParts was empty — so
 		// retrying does not double-emit chunks.
 		c.logInfof("opencode emitted no text on clean exit; retrying once")
-		res, err = c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, opts)
+		res, err = c.runOpencodeAttempt(ctx, binPath, args, env, workingDir, emitChunk)
 	}
 	if err != nil {
 		return nil, err
@@ -260,7 +276,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 // text part — the caller may retry. All other terminal conditions
 // (start failure, non-zero exit, fatal scanner error) return a normal
 // wrapped error and must not be retried.
-func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath string, args []string, env []string, workingDir string, opts *llmtypes.CallOptions) (*opencodeAttemptResult, error) {
+func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath string, args []string, env []string, workingDir string, emitChunk func(llmtypes.StreamChunk)) (*opencodeAttemptResult, error) {
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if workingDir != "" {
@@ -305,35 +321,31 @@ func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath str
 			var part opencodeTextPart
 			if err := json.Unmarshal(event.Part, &part); err == nil && part.Text != "" {
 				res.textParts = append(res.textParts, part.Text)
-				if opts.StreamChan != nil {
-					select {
-					case opts.StreamChan <- llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeContent,
-						Content: part.Text,
-					}:
-					default:
-					}
-				}
+				emitChunk(llmtypes.StreamChunk{
+					Type:    llmtypes.StreamChunkTypeContent,
+					Content: part.Text,
+				})
 			}
 
 		case "tool_use":
 			var part opencodeToolUsePart
-			if err := json.Unmarshal(event.Part, &part); err == nil && opts.StreamChan != nil {
+			if err := json.Unmarshal(event.Part, &part); err == nil {
 				inputStr := string(part.State.Input)
-				select {
-				case opts.StreamChan <- llmtypes.StreamChunk{
-					Type:    llmtypes.StreamChunkTypeToolCallStart,
-					Content: fmt.Sprintf("%s(%s)", part.Tool, inputStr),
-				}:
-				default:
-				}
-				select {
-				case opts.StreamChan <- llmtypes.StreamChunk{
-					Type:    llmtypes.StreamChunkTypeToolCallEnd,
-					Content: part.State.Output,
-				}:
-				default:
-				}
+				emitChunk(llmtypes.StreamChunk{
+					Type:       llmtypes.StreamChunkTypeToolCallStart,
+					Content:    fmt.Sprintf("%s(%s)", part.Tool, inputStr),
+					ToolName:   part.Tool,
+					ToolCallID: part.CallID,
+					ToolArgs:   inputStr,
+				})
+				emitChunk(llmtypes.StreamChunk{
+					Type:       llmtypes.StreamChunkTypeToolCallEnd,
+					Content:    part.State.Output,
+					ToolName:   part.Tool,
+					ToolCallID: part.CallID,
+					ToolArgs:   inputStr,
+					ToolResult: part.State.Output,
+				})
 			}
 
 		case "step_finish":
