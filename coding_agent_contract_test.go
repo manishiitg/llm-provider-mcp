@@ -122,6 +122,39 @@ func TestClaudeAndCodexCertificationReferencesExistingTests(t *testing.T) {
 	}
 }
 
+func TestClaudeAndCodexSessionLossRecoveryCertificationUsesRealE2E(t *testing.T) {
+	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
+		var found *CodingAgentCertification
+		for _, cert := range CodingAgentProviderCertifications(provider) {
+			if cert.ID == CertSessionLossRecovery {
+				certCopy := cert
+				found = &certCopy
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("%s missing %s certification", provider, CertSessionLossRecovery)
+		}
+		if !found.RealE2E {
+			t.Fatalf("%s %s certification must be marked RealE2E: %#v", provider, CertSessionLossRecovery, *found)
+		}
+		if found.TestFile != "coding_agent_continuation_real_test.go" || found.TestName != "TestCodingAgentContinuationRealE2EAfterTmuxLoss" {
+			t.Fatalf("%s %s points at %s/%s, want real tmux-loss continuation E2E", provider, CertSessionLossRecovery, found.TestFile, found.TestName)
+		}
+		wantEnv := "RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1"
+		hasEnv := false
+		for _, env := range found.Env {
+			if env == wantEnv {
+				hasEnv = true
+				break
+			}
+		}
+		if !hasEnv {
+			t.Fatalf("%s %s missing env guard %q: %#v", provider, CertSessionLossRecovery, wantEnv, found.Env)
+		}
+	}
+}
+
 func TestStructuredCLIAdaptersMirrorAssistantTextToTerminal(t *testing.T) {
 	tests := []struct {
 		name        string

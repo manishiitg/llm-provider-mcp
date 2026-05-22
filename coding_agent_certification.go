@@ -36,6 +36,7 @@ const (
 	CertSharedWorkdirMCPIsolation CodingAgentCertificationID = "shared_workdir_mcp_isolation"
 	CertCleanup                   CodingAgentCertificationID = "cleanup"
 	CertSessionLoss               CodingAgentCertificationID = "session_loss"
+	CertSessionLossRecovery       CodingAgentCertificationID = "session_loss_recovery"
 )
 
 var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
@@ -64,6 +65,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertSharedWorkdirMCPIsolation,
 	CertCleanup,
 	CertSessionLoss,
+	CertSessionLossRecovery,
 }
 
 // CodingAgentCertification records the real or deterministic test that proves a
@@ -93,7 +95,7 @@ var codingAgentCapabilityCertifications = []struct {
 	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput}},
 	{"interrupt", func(c CodingAgentProviderContract) bool { return c.SupportsInterrupt }, []CodingAgentCertificationID{CertCancellation}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
-	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss}},
+	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
@@ -286,6 +288,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestClaudeTmuxSessionLostErrorDetection",
 			Description: "Claude Code classifies missing tmux server/session/pane errors",
 		},
+		{
+			ID:          CertSessionLossRecovery,
+			TestFile:    "coding_agent_continuation_real_test.go",
+			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
+			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1"},
+			Description: "Claude Code recovers a remembered-token conversation after its tmux session is killed",
+			RealE2E:     true,
+		},
 	},
 	ProviderCodexCLI: {
 		{
@@ -459,6 +469,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/codexcli/codexcli_cleanup_test.go",
 			TestName:    "TestCleanupCodexCLIInteractiveSessionsDoesNotBlockOnBusySession",
 			Description: "Codex cleanup path is safe when a session is busy or unavailable",
+		},
+		{
+			ID:          CertSessionLossRecovery,
+			TestFile:    "coding_agent_continuation_real_test.go",
+			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
+			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1"},
+			Description: "Codex CLI recovers a remembered-token conversation after its tmux session is killed",
+			RealE2E:     true,
 		},
 		{
 			ID:          CertParallelIsolation,
