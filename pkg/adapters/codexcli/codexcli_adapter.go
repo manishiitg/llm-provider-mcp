@@ -187,7 +187,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 
 	// 1. Prepare Command Arguments
 	// Use exec subcommand for non-interactive mode with JSON output
-	args := []string{"exec", "--json"}
+	args := appendCodexDisableUpdateArgs([]string{"exec", "--json"})
 
 	if modelToUse != "" && modelToUse != "codex-cli" {
 		args = append(args, "--model", modelToUse)
@@ -348,7 +348,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 	if resumeID != "" {
 		// Resume mode: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox <session_id> "prompt"`
 		// Resume flags go after the `resume` subcommand
-		args = []string{"exec", "resume", "--json"}
+		args = appendCodexDisableUpdateArgs([]string{"exec", "resume", "--json"})
 		if fullAuto {
 			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 		}
@@ -1347,7 +1347,7 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 ) (*llmtypes.ContentResponse, error) {
 	finalizationPrompt := "You have run out of turns. Please provide your final answer now based on what you have accomplished so far. Summarize results, findings, and any remaining work."
 
-	args := []string{"exec", "resume", "--json"}
+	args := appendCodexDisableUpdateArgs([]string{"exec", "resume", "--json"})
 	if fullAuto {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}

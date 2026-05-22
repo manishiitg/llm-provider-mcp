@@ -209,7 +209,7 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	if systemPromptFile != "" {
 		t.Fatalf("systemPromptFile = %q, want empty", systemPromptFile)
 	}
-	want := []string{"codex", "resume", "--no-alt-screen", "--model", "gpt-5.5", "019e2584-a35a-7100-877e-209c4518f957"}
+	want := []string{"codex", "resume", "-c", "check_for_update_on_startup=false", "--no-alt-screen", "--model", "gpt-5.5", "019e2584-a35a-7100-877e-209c4518f957"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %v, want %v", args, want)
 	}

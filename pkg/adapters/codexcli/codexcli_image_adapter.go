@@ -131,6 +131,7 @@ func (a *CodexCLIImageAdapter) runSingleImageCommand(ctx context.Context, workdi
 		"-C", workdir,
 		"-o", lastMessagePath,
 	}
+	args = appendCodexDisableUpdateArgs(args)
 
 	modelToUse := resolveCodexCLIModelID(a.modelID)
 	if modelToUse != "" && modelToUse != "codex-cli" {

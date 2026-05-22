@@ -29,6 +29,10 @@ const (
 	MetadataKeyPersistentInteractive = "codex_persistent_interactive"
 )
 
+func appendCodexDisableUpdateArgs(args []string) []string {
+	return append(args, "-c", "check_for_update_on_startup=false")
+}
+
 var codexBridgeOnlyDisabledFeatures = []string{
 	"shell_tool",
 	"unified_exec",
