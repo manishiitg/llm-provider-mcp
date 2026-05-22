@@ -262,6 +262,7 @@ func extractCostUSD(resp *ContentResponse) float64 {
 //   - Tool args: truncated more aggressively (120 chars).
 func formatConversationLines(messages []MessageContent) []string {
 	const maxLen = 400
+	const maxProseLen = 16000
 	out := make([]string, 0, len(messages))
 	collapse := func(s string) string {
 		return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
@@ -273,22 +274,51 @@ func formatConversationLines(messages []MessageContent) []string {
 		}
 		return s[:max] + "…"
 	}
+	// emitProse splits a multi-line user/assistant text body into pane lines:
+	// the first line gets a "> user: " / "< asst: " prefix, subsequent lines
+	// are emitted with a two-space indent so the frontend parser folds them
+	// back into the same row. This preserves the original markdown structure
+	// (lists, paragraph breaks, fenced code) end-to-end so the synthetic
+	// terminal can render markdown properly. A per-call char budget keeps a
+	// single runaway response from blowing the pane content size.
+	emitProse := func(prefix, text string, budget int) {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			return
+		}
+		if len(trimmed) > budget {
+			trimmed = trimmed[:budget] + "…"
+		}
+		lines := strings.Split(trimmed, "\n")
+		for i, line := range lines {
+			if i == 0 {
+				out = append(out, prefix+line)
+			} else {
+				out = append(out, "  "+line)
+			}
+		}
+	}
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case TextContent:
-				text := collapse(p.Text)
+				text := strings.TrimSpace(p.Text)
 				if text == "" {
 					continue
 				}
 				switch msg.Role {
 				case ChatMessageTypeHuman:
-					// User messages: full, not truncated. The
-					// step's instructions live here; clipping
-					// hides the most useful signal.
-					out = append(out, "> user: "+text)
+					// User messages: full text, multi-line preserved.
+					// The step's instructions live here; collapsing
+					// to one line hides the structure.
+					emitProse("> user: ", text, maxProseLen)
 				case ChatMessageTypeAI:
-					out = append(out, "< asst: "+truncate(text, maxLen))
+					// Assistant text emitted multi-line so the
+					// synthetic terminal can render the model's
+					// markdown (lists, headings, code fences,
+					// paragraph breaks) instead of one collapsed
+					// run-on string.
+					emitProse("< asst: ", text, maxProseLen)
 				case ChatMessageTypeSystem:
 					// Skip system prompts — too long, not useful
 					// inline. They're available in the inspector
