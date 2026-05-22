@@ -101,18 +101,36 @@ func (t *SyntheticTerminal) ToolEnd(name, result string, dur time.Duration) {
 	t.emit()
 }
 
-// AssistantText appends streamed assistant text. Consecutive deltas
-// concatenate onto the same trailing assistant line so the pane reads
-// like a streaming reply rather than one line per token.
+// AssistantText appends streamed assistant text. Token-level deltas
+// concatenate onto the trailing assistant pane line so the pane reads
+// like a streaming reply. When the delta carries newlines, each
+// newline-separated segment becomes its own pane line with the "  "
+// continuation prefix so the frontend parser keeps classifying the
+// whole block as the same assistant row — the row coalesces back
+// together with newlines preserved, which is what ReactMarkdown needs
+// to render structure (lists, headings, paragraph breaks, fenced code)
+// instead of one collapsed run-on string.
 func (t *SyntheticTerminal) AssistantText(delta string) {
 	if !t.Enabled() || delta == "" {
 		return
 	}
 	t.mu.Lock()
-	if len(t.lines) > 0 && strings.HasPrefix(t.lines[len(t.lines)-1], "  ") {
-		t.lines[len(t.lines)-1] += delta
-	} else {
-		t.lines = append(t.lines, "  "+delta)
+	segments := strings.Split(delta, "\n")
+	for i, seg := range segments {
+		if i == 0 {
+			// First segment continues the existing trailing assistant
+			// line (or starts a new one if there isn't one yet).
+			if len(t.lines) > 0 && strings.HasPrefix(t.lines[len(t.lines)-1], "  ") {
+				t.lines[len(t.lines)-1] += seg
+			} else {
+				t.lines = append(t.lines, "  "+seg)
+			}
+			continue
+		}
+		// Subsequent segments are separate pane lines, still tagged as
+		// assistant continuation via the leading two spaces so the
+		// frontend parser keeps coalescing them into the same row.
+		t.lines = append(t.lines, "  "+seg)
 	}
 	t.trim()
 	t.mu.Unlock()
