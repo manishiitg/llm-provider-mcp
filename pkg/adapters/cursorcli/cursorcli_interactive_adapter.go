@@ -221,17 +221,67 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		additional["cursor_interactive_retention_seconds"] = int(cursorInteractiveRetention().Seconds())
 	}
 
+	// Cursor's tmux TUI does not expose exact token counts in a format the
+	// adapter can read (the running counter on the "⠰⠰ Composing 1.87k
+	// tokens" line is cleared once the turn settles). We approximate so the
+	// cost ledger receives a non-zero row rather than a bare timestamp.
+	// The approximation is char-based (≈ 4 chars/token for English prose,
+	// the standard fallback used elsewhere in this codebase); cost is then
+	// computed via the same ComputeUSDCostFromMetadata path the structured
+	// adapter uses. Numbers may be ±20-30% off the true tokenizer counts —
+	// good enough for cost-tracking trends, not for fine-grained per-call
+	// billing reconciliation.
+	inputTokens, outputTokens := estimateCursorTmuxTokens(prompt, content)
+	totalTokens := inputTokens + outputTokens
+	genInfo := &llmtypes.GenerationInfo{
+		InputTokens:  intPtrFromInt(inputTokens),
+		OutputTokens: intPtrFromInt(outputTokens),
+		TotalTokens:  intPtrFromInt(totalTokens),
+		Additional:   additional,
+	}
+	costLookupModel := c.modelID
+	if costLookupModel != "" {
+		if meta, _ := c.GetModelMetadata(costLookupModel); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = costLookupModel
+			}
+		}
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content: content,
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: additional,
-				},
+				Content:        content,
+				GenerationInfo: genInfo,
 			},
 		},
-		Usage: &llmtypes.Usage{},
+		Usage: &llmtypes.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  totalTokens,
+		},
 	}, nil
+}
+
+// estimateCursorTmuxTokens returns (input, output) token counts estimated
+// from prompt/response character lengths. Cursor's tmux TUI does not surface
+// exact token counts in a parseable form, so this is the best the adapter
+// can do without re-implementing the model's tokenizer. The 4-chars-per-
+// token heuristic matches what other tmux adapters fall back to when their
+// CLI's JSON side-stream is unavailable. Both halves round up so a tiny
+// turn still records >0 tokens, otherwise ComputeUSDCostFromMetadata would
+// return 0 and the ledger row stays bare.
+func estimateCursorTmuxTokens(prompt, content string) (int, int) {
+	estimate := func(s string) int {
+		n := len(s)
+		if n == 0 {
+			return 0
+		}
+		// (n + 3) / 4 = ceil(n / 4)
+		return (n + 3) / 4
+	}
+	return estimate(prompt), estimate(content)
 }
 
 // acquireCursorInteractiveSession returns with session.mu held.

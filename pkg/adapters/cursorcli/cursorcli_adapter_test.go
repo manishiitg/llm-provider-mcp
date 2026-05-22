@@ -1358,6 +1358,39 @@ func TestParseCursorResponseFiltersToolNarrationAndKeepsParagraphBreaks(t *testi
 	}
 }
 
+// Cursor's tmux TUI does not write a parseable sidecar with token counts
+// (unlike claude-code's *.jsonl, codex's rollout, or gemini's transcript file)
+// — the only on-disk record is a SQLite blob format we don't read. The
+// adapter therefore estimates tokens from prompt + response character lengths
+// using the 4-chars-per-token English heuristic, so the cost ledger gets a
+// non-zero row instead of a bare timestamp. This test pins the heuristic
+// against a few representative cases; if cursor ever exposes exact tokens we
+// can drop this in favor of the real source.
+func TestEstimateCursorTmuxTokensCharBased(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		prompt           string
+		content          string
+		wantInputTokens  int
+		wantOutputTokens int
+	}{
+		{"both empty", "", "", 0, 0},
+		{"one-char prompt", "x", "", 1, 0},
+		{"4-char prompt rounds to 1 token", "abcd", "", 1, 0},
+		{"5-char prompt rounds up to 2 tokens", "abcde", "", 2, 0},
+		{"typical short prompt + reply", "hi", "Hi — how can I help today?", 1, 7},
+		{"40-char prompt + 80-char reply", strings.Repeat("a", 40), strings.Repeat("b", 80), 10, 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, out := estimateCursorTmuxTokens(tc.prompt, tc.content)
+			if in != tc.wantInputTokens || out != tc.wantOutputTokens {
+				t.Fatalf("estimateCursorTmuxTokens(%q, %q) = (%d, %d), want (%d, %d)",
+					tc.prompt, tc.content, in, out, tc.wantInputTokens, tc.wantOutputTokens)
+			}
+		})
+	}
+}
+
 func cursorArgsContain(args []string, value string) bool {
 	for _, arg := range args {
 		if arg == value {
