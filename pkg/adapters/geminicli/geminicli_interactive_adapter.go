@@ -732,12 +732,15 @@ func activeGeminiInteractiveSession(ownerSessionID string) (string, bool) {
 }
 
 func SendGeminiInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
+	// Send directly into the registered tmux pane in all cases — matches the
+	// claude-code/codex-cli/cursor-cli adapters. Earlier this routed persistent
+	// sessions through an in-memory pendingLiveInputs queue drained inside the
+	// turn polling loop, but that left messages stranded when they arrived in
+	// the gap between the last ready-prompt tick and the loop's idle-stable
+	// exit. Gemini CLI's prompt editor buffers paste-buffer input cleanly even
+	// mid-stream, so direct delivery is safe.
 	if session, ok := geminiPersistentSession(ownerSessionID); ok {
-		if session.mu.TryLock() {
-			session.mu.Unlock()
-			return fmt.Errorf("Gemini interactive session %s is idle; live input should start a normal turn", session.tmuxSessionName)
-		}
-		return enqueueGeminiLiveInput(session, message)
+		return sendGeminiInputToTmux(ctx, session.tmuxSessionName, message)
 	}
 	sessionName, ok := activeGeminiInteractiveSession(ownerSessionID)
 	if !ok {
