@@ -71,12 +71,13 @@ const (
 	// `opencode` binary but with sub-provider-scoped credentials and
 	// a curated model catalog. The catalog lives in
 	// pkg/adapters/opencodecli/opencodecli_subproviders.go.
-	ProviderOpenCodeCLIKimi     Provider = "opencode-cli-kimi"
-	ProviderOpenCodeCLIDeepSeek Provider = "opencode-cli-deepseek"
-	ProviderOpenCodeCLIQwen     Provider = "opencode-cli-qwen"
-	ProviderOpenCodeCLIMiniMax  Provider = "opencode-cli-minimax"
-	ProviderOpenCodeCLIGLM      Provider = "opencode-cli-glm"
-	ProviderOpenCodeCLIFree     Provider = "opencode-cli-free"
+	ProviderOpenCodeCLIKimi       Provider = "opencode-cli-kimi"
+	ProviderOpenCodeCLIDeepSeek   Provider = "opencode-cli-deepseek"
+	ProviderOpenCodeCLIQwen       Provider = "opencode-cli-qwen"
+	ProviderOpenCodeCLIMiniMax    Provider = "opencode-cli-minimax"
+	ProviderOpenCodeCLIGLM        Provider = "opencode-cli-glm"
+	ProviderOpenCodeCLIOpenRouter Provider = "opencode-cli-openrouter"
+	ProviderOpenCodeCLIFree       Provider = "opencode-cli-free"
 	ProviderMiniMax             Provider = "minimax"
 	ProviderMiniMaxCodingPlan   Provider = "minimax-coding-plan"
 	ProviderElevenLabs          Provider = "elevenlabs"
@@ -346,6 +347,7 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		ProviderOpenCodeCLIQwen,
 		ProviderOpenCodeCLIMiniMax,
 		ProviderOpenCodeCLIGLM,
+		ProviderOpenCodeCLIOpenRouter,
 		ProviderOpenCodeCLIFree:
 		llm, err = initializeOpenCodeCLI(config)
 	case ProviderMiniMax:
@@ -2885,10 +2887,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
 	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
-		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIFree:
+		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIOpenRouter, ProviderOpenCodeCLIFree:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-free, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -2904,6 +2906,7 @@ func IsOpenCodeCLIProvider(p Provider) bool {
 		ProviderOpenCodeCLIQwen,
 		ProviderOpenCodeCLIMiniMax,
 		ProviderOpenCodeCLIGLM,
+		ProviderOpenCodeCLIOpenRouter,
 		ProviderOpenCodeCLIFree:
 		return true
 	default:

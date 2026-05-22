@@ -239,6 +239,41 @@ var openCodeSubProviders = []OpenCodeSubProvider{
 		},
 	},
 	{
+		// OpenRouter is a router, not a single-vendor API: a curated catalog of
+		// cross-vendor models accessed through one auth namespace. Users on an
+		// OpenRouter subscription should pick this tile; users with a direct
+		// API key for any single vendor (Anthropic, OpenAI, etc.) should use
+		// that vendor's standalone provider tile instead.
+		//
+		// The model list below is curated for coding-agent work — OpenRouter
+		// itself exposes 200+ models; keeping a small high-signal set here
+		// avoids drowning the tile UI. Add more via this catalog if a workflow
+		// needs them; the underlying OpenCode binary supports any OpenRouter
+		// model id of the form "openrouter/<vendor>/<model>".
+		ID:                 "opencode-cli-openrouter",
+		OpenCodeProviderID: "openrouter",
+		DisplayName:        "OpenRouter",
+		Description:        "Multi-vendor routing through OpenRouter (one key, many models). Curated catalog covers Anthropic, OpenAI, Google, DeepSeek, X.AI flagships plus a few cheaper options for cost-sensitive turns.",
+		APIKeyEnvVar:       "OPENROUTER_API_KEY",
+		APIKeyURL:          "https://openrouter.ai/keys",
+		RequiresAPIKey:     true,
+		DefaultModelID:     "anthropic/claude-sonnet-4.5",
+		TierShortcuts: map[string]string{
+			"high":   "anthropic/claude-sonnet-4.5",
+			"medium": "openai/gpt-5",
+			"low":    "openai/gpt-5-mini",
+		},
+		Models: []OpenCodeSubProviderModel{
+			{ID: "anthropic/claude-sonnet-4.5", DisplayName: "Claude Sonnet 4.5 (OpenRouter)", Group: "Anthropic", ContextWindow: 200000, SupportsTools: true, IsDefault: true},
+			{ID: "anthropic/claude-opus-4.5", DisplayName: "Claude Opus 4.5 (OpenRouter)", Group: "Anthropic", ContextWindow: 200000, SupportsTools: true, SupportsReasoning: true},
+			{ID: "openai/gpt-5", DisplayName: "GPT-5 (OpenRouter)", Group: "OpenAI", ContextWindow: 200000, SupportsTools: true},
+			{ID: "openai/gpt-5-mini", DisplayName: "GPT-5 Mini (OpenRouter)", Group: "OpenAI", ContextWindow: 200000, SupportsTools: true},
+			{ID: "google/gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro (OpenRouter)", Group: "Google", ContextWindow: 1000000, SupportsTools: true},
+			{ID: "deepseek/deepseek-r1", DisplayName: "DeepSeek R1 (OpenRouter)", Group: "DeepSeek", ContextWindow: 128000, SupportsTools: true, SupportsReasoning: true},
+			{ID: "x-ai/grok-4", DisplayName: "Grok 4 (OpenRouter)", Group: "X.AI", ContextWindow: 256000, SupportsTools: true},
+		},
+	},
+	{
 		ID:                 "opencode-cli-free",
 		OpenCodeProviderID: "opencode",
 		DisplayName:        "Free Models",
