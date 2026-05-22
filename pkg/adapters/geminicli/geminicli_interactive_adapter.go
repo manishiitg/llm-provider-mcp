@@ -34,8 +34,8 @@ const (
 	defaultGeminiInteractiveRetention   = 30 * time.Minute
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160
-	geminiPromptPasteVisibleWait        = 5 * time.Second
-	geminiPromptSubmitSettleWait        = 900 * time.Millisecond
+	geminiPromptPasteVisibleWait        = 1500 * time.Millisecond
+	geminiPromptSubmitSettleWait        = 350 * time.Millisecond
 	geminiPromptSubmitMaxAttempts       = 5
 
 	EnvGeminiInteractiveSessionPrefix      = "GEMINI_CLI_INTERACTIVE_SESSION_PREFIX"

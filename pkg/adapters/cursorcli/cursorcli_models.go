@@ -39,14 +39,8 @@ func resolveCursorCLIModelID(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "", "cursor-cli":
 		return "composer-2.5"
-	case "auto":
+	case "auto", "high", "medium", "low":
 		return "auto"
-	case "high":
-		return "gpt-5"
-	case "medium":
-		return "sonnet-4-thinking"
-	case "low":
-		return "sonnet-4"
 	default:
 		return strings.TrimSpace(modelID)
 	}

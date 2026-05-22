@@ -418,7 +418,7 @@ func TestGeminiCLIStructuredModelOverride(t *testing.T) {
 	t.Logf("model override response: %q", content)
 }
 
-func TestGeminiCLIStructuredTierAliasesUseGemini35Flash(t *testing.T) {
+func TestGeminiCLIStructuredTierAliasesResolveModels(t *testing.T) {
 	requireRealGeminiCLIStreamJSONE2E(t)
 
 	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
@@ -426,7 +426,7 @@ func TestGeminiCLIStructuredTierAliasesUseGemini35Flash(t *testing.T) {
 		alias string
 		want  string
 	}{
-		{alias: "high", want: "gemini-3.5-flash"},
+		{alias: "high", want: "gemini-3-pro-preview"},
 		{alias: "medium", want: "gemini-3.5-flash"},
 	}
 
