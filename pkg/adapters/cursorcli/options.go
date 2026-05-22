@@ -55,6 +55,14 @@ func WithSandbox(mode string) llmtypes.CallOption {
 
 // WithMode sets Cursor Agent's --mode flag. Supported values are "plan" and
 // "ask"; leave empty for normal agent mode.
+//
+// CAUTION: "ask" is a conversational stance, not just "block Write/Shell".
+// Cursor in ask mode hard-refuses natural-language write requests with
+// "Switch to Agent mode and ask…", so it is NOT safe for a general chat
+// surface. It is only suitable when the prompt explicitly names an MCP tool
+// to call (e.g. "Call the api-bridge X tool with args …"). For everyday
+// chat, leave mode empty so cursor runs in its default agent mode.
+// "plan" has the same refusal behavior.
 func WithMode(mode string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -88,7 +96,12 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	}
 }
 
-// WithApproveMCPs enables Cursor Agent's --approve-mcps flag.
+// WithApproveMCPs enables Cursor Agent's --approve-mcps flag, which auto-
+// accepts the "approve this MCP server?" TUI consent dialog so bridge tool
+// calls do not stall waiting for a human operator in the cursor TUI.
+//
+// Always pair this with WithMCPConfig — without an MCP config there is
+// nothing to approve, and the flag is a no-op.
 func WithApproveMCPs() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
