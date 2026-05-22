@@ -541,6 +541,67 @@ func TestCursorCLIRealBuiltInReadNotBlockedInAskMode(t *testing.T) {
 	}
 }
 
+// E2E: Cursor in default (no --mode flag) ACCEPTS natural-language write
+// requests and actually performs the write, instead of replying "Switch to
+// Agent mode and ask…". This is the inverse of
+// TestCursorCLIRealBuiltInWriteBlockedInAskMode and pins the post-revert chat
+// behavior — cursor must execute, not refuse.
+func TestCursorCLIRealDefaultModeAcceptsNaturalWriteRequest(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-e2e-default-write-" + cursorRandomHex(4)
+	workDir := t.TempDir()
+	targetFile := workDir + "/default_mode_marker.txt"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	stream := make(chan llmtypes.StreamChunk, 64)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Create a file at %s with the single word DEFAULT_MODE_OK as its only content. Then say done.", targetFile)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithForce(),
+		// Intentionally NO WithMode(...) — chat path must run cursor in
+		// its default agent mode after the ask-mode revert.
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = drainCursorStream(stream)
+
+	content := strings.ToLower(strings.TrimSpace(resp.Choices[0].Content))
+
+	// Cursor must NOT have deflected the request. These phrases appear in
+	// cursor's ask/plan-mode refusals; in default mode they should be absent.
+	for _, deflection := range []string{
+		"switch to agent mode",
+		"switch to agent",
+		"i'm in ask mode",
+		"i am in ask mode",
+	} {
+		if strings.Contains(content, deflection) {
+			t.Fatalf("cursor refused the write request with %q in default mode (should not happen):\n%s", deflection, resp.Choices[0].Content)
+		}
+	}
+
+	// The write must have actually happened. Cursor in default mode is
+	// allowed to use its built-in Write tool — this confirms it did.
+	data, statErr := os.ReadFile(targetFile)
+	if statErr != nil {
+		t.Fatalf("expected cursor to create %s in default mode, got %v\nResponse: %s", targetFile, statErr, resp.Choices[0].Content)
+	}
+	if !strings.Contains(string(data), "DEFAULT_MODE_OK") {
+		t.Fatalf("file content = %q, want it to contain DEFAULT_MODE_OK", string(data))
+	}
+	t.Logf("CONFIRMED: cursor in default mode created %s without refusing", targetFile)
+}
+
 func TestCursorCLIRealBuiltInWriteBlockedInAskMode(t *testing.T) {
 	// ask mode should prevent write operations. Verify Cursor cannot create
 	// or modify files when running in ask mode.
