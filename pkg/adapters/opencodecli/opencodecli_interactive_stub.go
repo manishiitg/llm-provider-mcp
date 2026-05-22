@@ -16,3 +16,9 @@ func CleanupOpenCodeCLIInteractiveSessions(ctx context.Context) error {
 func SendOpenCodeInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
 	return fmt.Errorf("opencode-cli uses structured JSON transport; live tmux input is not supported")
 }
+
+// SendOpenCodeInteractiveControlKey is unsupported for the same reason —
+// OpenCode CLI does not run inside a persistent tmux session.
+func SendOpenCodeInteractiveControlKey(ctx context.Context, ownerSessionID, key string) error {
+	return fmt.Errorf("opencode-cli uses structured JSON transport; tmux control keys are not supported")
+}

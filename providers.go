@@ -162,6 +162,36 @@ func SendGeminiCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return geminicli.SendGeminiInteractiveInput(ctx, sessionID, message)
 }
 
+// SendClaudeCodeExperimentalControlKey injects a tmux control key (e.g.
+// "Escape", "C-c") into a registered Claude Code experimental session.
+func SendClaudeCodeExperimentalControlKey(ctx context.Context, sessionID, key string) error {
+	return claudecodeadapter.SendClaudeCodeExperimentalControlKey(ctx, sessionID, key)
+}
+
+// SendCodexCLIInteractiveControlKey injects a tmux control key into a
+// registered Codex CLI interactive session.
+func SendCodexCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return codexcli.SendCodexInteractiveControlKey(ctx, sessionID, key)
+}
+
+// SendCursorCLIInteractiveControlKey injects a tmux control key into a
+// registered Cursor CLI interactive session.
+func SendCursorCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return cursorcli.SendCursorInteractiveControlKey(ctx, sessionID, key)
+}
+
+// SendGeminiCLIInteractiveControlKey injects a tmux control key into a
+// registered Gemini CLI interactive session.
+func SendGeminiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return geminicli.SendGeminiInteractiveControlKey(ctx, sessionID, key)
+}
+
+// SendOpenCodeCLIInteractiveControlKey is unsupported while OpenCode CLI uses
+// the structured JSON transport.
+func SendOpenCodeCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return opencodecli.SendOpenCodeInteractiveControlKey(ctx, sessionID, key)
+}
+
 // Config holds configuration for LLM initialization
 type Config struct {
 	Provider    Provider
