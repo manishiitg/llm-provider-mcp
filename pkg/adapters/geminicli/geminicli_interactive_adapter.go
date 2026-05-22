@@ -1898,11 +1898,11 @@ func interruptGeminiInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
-	// Do not send Ctrl-L to Gemini CLI here. Recent Gemini CLI builds treat the
-	// shortcut as more than a visual repaint and can drop native conversation
-	// context, breaking persistent multi-turn chat. Clearing tmux scrollback is
-	// enough; per-turn parsing is anchored to the captured baseline.
-	_ = runGeminiCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
+	// Do not clear the pane between turns. Persistent tmux sessions are the
+	// user-visible transcript, and per-turn parsing is anchored to the captured
+	// baseline rather than a wiped scrollback.
+	_ = ctx
+	_ = sessionName
 }
 
 func captureGeminiPane(ctx context.Context, sessionName string) (string, error) {

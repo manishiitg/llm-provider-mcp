@@ -1065,8 +1065,8 @@ func isContextCanceledError(err error) bool {
 }
 
 func resetTmuxPaneForTurn(ctx context.Context, sessionName string) {
-	_ = runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
-	_ = runCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
+	_ = ctx
+	_ = sessionName
 }
 
 func waitForReadyInputPrompt(ctx context.Context, sessionName string) error {
