@@ -837,6 +837,108 @@ func TestCursorCLIRealInteractiveMCPBridgeContractTmux(t *testing.T) {
 	assertCursorInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+// TestCursorTmuxSystemPromptSteersWritesThroughBridge answers a question the
+// previous design assumed away ("cursor's built-in tools cannot be disabled
+// via system prompt" — comment in mcpagent/agent/agent.go). In tmux mode
+// cursor receives the system prompt as an `alwaysApply: true` .mdc rule file
+// written into `.cursor/rules/`. We verify that a rule saying "do NOT use
+// built-in writes; use the declared MCP tool" actually steers cursor.
+//
+// Setup: real cursor-agent, tmux mode, custom MCP bridge with one
+// `write_via_bridge` tool whose RESULT prefixes content with a sentinel only
+// the bridge can produce. If cursor routed through the bridge, the file on
+// disk has the sentinel; if cursor used its built-in editToolCall, it does not.
+func TestCursorTmuxSystemPromptSteersWritesThroughBridge(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-sys-prompt-routing-" + cursorRandomHex(4)
+	workDir := t.TempDir()
+	targetFile := "routing_" + cursorRandomHex(4) + ".txt"
+	targetPath := filepath.Join(workDir, targetFile)
+
+	// Mock MCP bridge exposing a single write_via_bridge tool. The tool's
+	// description is deliberately neutral — no "prefer me over built-ins"
+	// hint. The only steering pressure comes from the system prompt below.
+	mcpServerPath := writeCursorBridgeWriteMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	preApproveCursorMCP(t, workDir, mcpConfig, "api-bridge")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "IMPORTANT: Do NOT use your built-in file write/edit tools (editToolCall or similar). For any file write operation, use the declared MCP tool write_via_bridge on the api-bridge server. Pass the absolute file path and content as arguments. Reply briefly after the call."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Create a file at %s with the content 'hello world'.", targetPath)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithForce(),
+		WithMCPConfig(mcpConfig),
+		WithApproveMCPs(),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	_ = resp
+	_ = drainCursorStream(streamChan)
+
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("expected cursor to create %s, got %v", targetPath, err)
+	}
+	const bridgeSentinel = "BRIDGE_WROTE_THIS:"
+	if !strings.HasPrefix(string(body), bridgeSentinel) {
+		t.Fatalf("file did not have bridge sentinel — cursor used its BUILT-IN write tool despite system prompt nudge. content=%q", string(body))
+	}
+	t.Logf("CONFIRMED: tmux + system prompt steered cursor through MCP bridge (file content starts with sentinel %q)", bridgeSentinel)
+}
+
+// writeCursorBridgeWriteMCPServer writes a tmux-compatible MCP server with a
+// single write tool that prepends "BRIDGE_WROTE_THIS:" to every write — used
+// by TestCursorTmuxSystemPromptSteersWritesThroughBridge to detect which
+// path cursor took.
+func writeCursorBridgeWriteMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bridge-write-mcp.js")
+	script := `#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") return send({jsonrpc:"2.0",id:msg.id,result:{protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"api-bridge",version:"1.0.0"}}});
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") return send({jsonrpc:"2.0",id:msg.id,result:{tools:[{
+    name: "write_via_bridge",
+    description: "Write content to a file at an absolute path.",
+    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path","content"] }
+  }]}});
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    try {
+      fs.writeFileSync(String(args.path), "BRIDGE_WROTE_THIS:" + String(args.content));
+      send({jsonrpc:"2.0",id:msg.id,result:{content:[{type:"text",text:"wrote " + String(args.path)}],isError:false}});
+    } catch (e) {
+      send({jsonrpc:"2.0",id:msg.id,result:{content:[{type:"text",text:String(e)}],isError:true}});
+    }
+    return;
+  }
+  if (msg.id !== undefined) send({jsonrpc:"2.0",id:msg.id,result:{}});
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write bridge MCP server: %v", err)
+	}
+	return path
+}
+
 // ---------------------------------------------------------------------------
 // E2E: Shared working dir MCP isolation — two sessions, same workdir
 // ---------------------------------------------------------------------------
