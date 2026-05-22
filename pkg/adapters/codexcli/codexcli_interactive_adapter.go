@@ -793,7 +793,7 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 		case <-deadline.Done():
 			captured, _ := captureCodexPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Codex CLI prompt; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out waiting for Codex CLI prompt; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out waiting for Codex CLI prompt")
 		case <-ticker.C:
@@ -948,6 +948,11 @@ func parseCodexInteractiveResponse(captured, baseline, echoedUserPrompt string, 
 	}
 	text = stripCodexEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
+	if strings.TrimSpace(text) == "" {
+		text = codexTerminalTailTextFallback(normalizeCodexPaneSnapshot(delta).Segments, 24)
+		text = stripCodexEchoedUserPrompt(text, echoedUserPrompt)
+		text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
+	}
 	if isCodexLikelyQueuedUserEcho(text) {
 		return ""
 	}
@@ -1052,12 +1057,38 @@ func parseCodexInteractiveResponseSegmentFallback(delta, echoedUserPrompt string
 	if strings.TrimSpace(text) == "" {
 		text = snapshot.AssistantText
 	}
+	if strings.TrimSpace(text) == "" {
+		text = codexTerminalTailTextFallback(snapshot.Segments, 24)
+	}
 	text = stripCodexEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
 	if isCodexLikelyQueuedUserEcho(text) {
 		return ""
 	}
 	return strings.TrimSpace(text)
+}
+
+func codexTerminalTailTextFallback(segments []codexSegment, maxLines int) string {
+	if maxLines <= 0 {
+		maxLines = 24
+	}
+	lines := make([]string, 0, maxLines)
+	for _, segment := range segments {
+		if segment.Kind != codexSegmentAssistant {
+			continue
+		}
+		for _, line := range segment.Lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || isCodexPromptBoundaryLine(trimmed) || isCodexTUILine(trimmed) {
+				continue
+			}
+			lines = append(lines, trimmed)
+		}
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func isCodexLikelyQueuedUserEcho(text string) bool {
@@ -1928,6 +1959,7 @@ func hasCodexActivity(captured string) bool {
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
 	seenReadyPrompt := false
+	seenPromptWithInput := false
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < codexActivityScanNonEmptyLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
@@ -1937,12 +1969,18 @@ func hasCodexActivity(captured string) bool {
 		lower := strings.ToLower(line)
 		if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") || strings.HasSuffix(line, "›") {
 			seenReadyPrompt = true
+			if isCodexPromptWithInputLine(line) {
+				seenPromptWithInput = true
+			}
 			continue
 		}
 		if seenReadyPrompt && isCodexCompletedStatusLine(line) {
 			return false
 		}
 		if strings.Contains(lower, "esc to interrupt") || isCodexActiveStatusLine(line) {
+			if seenPromptWithInput {
+				continue
+			}
 			return true
 		}
 	}
@@ -1971,14 +2009,37 @@ func hasCodexReadyPrompt(captured string) bool {
 func hasCodexQueuedInput(captured string) bool {
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
+	seenLaterPromptWithInput := false
+	seenLaterCompletion := false
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 80; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
 		}
 		seenNonEmpty++
+		if isCodexPromptWithInputLine(line) {
+			seenLaterPromptWithInput = true
+			continue
+		}
+		if isCodexCompletedStatusLine(line) {
+			seenLaterCompletion = true
+			continue
+		}
 		if isCodexQueuedInputLine(line) {
-			return true
+			return !seenLaterPromptWithInput && !seenLaterCompletion
+		}
+	}
+	return false
+}
+
+func isCodexPromptWithInputLine(line string) bool {
+	trimmed := strings.TrimSpace(stripCodexANSI(line))
+	if len(trimmed) <= len("› ") {
+		return false
+	}
+	for _, prefix := range []string{"› ", "❯ ", "> "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)) != ""
 		}
 	}
 	return false
@@ -2308,6 +2369,7 @@ func interruptCodexInteractiveSession(sessionName string, logger interfaces.Logg
 }
 
 func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
+	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
 	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
 	_ = runCodexCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }

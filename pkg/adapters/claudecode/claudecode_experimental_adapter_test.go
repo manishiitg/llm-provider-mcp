@@ -677,6 +677,25 @@ func TestExtractTrailingUnmarkedAssistantResponseFromScrolledPaneTail(t *testing
 	}
 }
 
+func TestExtractTailAssistantTextFallbackSkipsClaudeChrome(t *testing.T) {
+	pane := `╭─── Claude Code v2.1.144 ───╮
+❯ user prompt echo
+  Called api-bridge 2 times (ctrl+o to expand)
+  This is the recovered final answer.
+  It spans two lines.
+✻ Churned for 2s
+❯`
+
+	got, ok := extractTailAssistantTextFallback(pane, 24)
+	if !ok {
+		t.Fatal("extractTailAssistantTextFallback ok = false, want true")
+	}
+	want := "This is the recovered final answer.\nIt spans two lines."
+	if got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func TestParseClaudeResumeSessionID(t *testing.T) {
 	pane := `
 Resume this session with:

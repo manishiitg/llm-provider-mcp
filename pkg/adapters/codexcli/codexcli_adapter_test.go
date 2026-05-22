@@ -346,6 +346,17 @@ Here are the steps:
 	}
 }
 
+func TestCodexTerminalTailTextFallbackUsesLatestAssistantLines(t *testing.T) {
+	segments := []codexSegment{
+		{Kind: codexSegmentToolStatus, Lines: []string{"• Called api-bridge.execute_shell_command"}},
+		{Kind: codexSegmentAssistant, Lines: []string{"line 1", "line 2", "line 3", "line 4"}},
+	}
+	got := codexTerminalTailTextFallback(segments, 2)
+	if got != "line 3\nline 4" {
+		t.Fatalf("tail fallback = %q, want last two assistant lines", got)
+	}
+}
+
 func TestStripCodexHistoricalAssistantTextRemovesPaneReplay(t *testing.T) {
 	previous := `Hello! I'm your Workflow Builder agent. I'm currently in the testing
 workspace, where we have a regression test workflow designed to verify the
@@ -987,6 +998,42 @@ func TestCodexQueuedInputKeepsSessionActive(t *testing.T) {
 	}
 	if !isCodexTUILine("Messages to be submitted after next tool call (press esc to interrupt and send immediately)") {
 		t.Fatalf("queued-input banner should be treated as TUI chrome")
+	}
+}
+
+func TestCodexHistoricalQueuedInputDoesNotBlockLaterPrompt(t *testing.T) {
+	pane := `
+• Calling api-bridge.execute_shell_command({"command":"python3 slow.py"})
+
+■ Ctrl+L is disabled while a task is in progress.
+
+• Working (6m 32s • esc to interrupt)
+
+• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
+  ↳ ## Pre-validation failed (retry attempt 3)
+
+    ❌ PRE-VALIDATION FAILED
+
+────────────────────────────────────────────────────────────────────────────────
+
+• Restarted.
+
+  There were no running executions left to cancel, so I started a fresh full workflow run.
+
+────────────────────────────────────────────────────────────────────────────────
+
+› Run /review on my current changes
+
+  gpt-5.5 xhigh · ~/ai-work/mcp-agent-builder-go/workspace-docs/Workflow/instagram
+`
+	if hasCodexQueuedInput(pane) {
+		t.Fatalf("historical queued-input banner must not keep a later prompt blocked")
+	}
+	if hasCodexActivity(pane) {
+		t.Fatalf("historical queued-input banner must not keep the pane active")
+	}
+	if !hasCodexReadyPrompt(pane) {
+		t.Fatalf("later prompt should be considered ready")
 	}
 }
 

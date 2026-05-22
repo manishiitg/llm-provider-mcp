@@ -245,6 +245,13 @@ provider has finished. Provider-specific extraction examples:
 - Gemini CLI: assistant text after provider assistant markers, with TUI and tool
   blocks filtered.
 
+If provider-specific extraction returns no answer after completion detection has
+already proven the pane idle, the adapter may use a bounded terminal-tail
+fallback. This fallback returns only the latest cleaned text lines from the
+current turn, capped at 24 lines, after stripping obvious TUI chrome, prompt
+echoes, tool/status rows, startup banners, borders, and queued validation/user
+text. It must not return the full pane.
+
 Required regression fixtures:
 
 - busy pane with prompt-looking footer must not complete
@@ -252,6 +259,8 @@ Required regression fixtures:
 - old turn plus new turn must extract only the newest assistant answer
 - queued draft after completion must not be extracted as assistant text
 - pre-validation retry feedback must not be extracted as assistant text
+- parser-miss fallback must return a bounded cleaned text tail, not a compact
+  error or full terminal dump
 
 ### 9. Sessions and Resume
 

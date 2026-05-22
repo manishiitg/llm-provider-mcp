@@ -438,6 +438,22 @@ Press Ctrl+O to expand pasted text
 	}
 }
 
+func TestGeminiTerminalTailTextFallbackUsesLatestCleanLines(t *testing.T) {
+	input := `▝▜▄ Gemini CLI v0.42.0
+╭────────────────────╮
+│ ✓ execute_shell_command │
+╰────────────────────╯
+older answer line
+new answer line 1
+new answer line 2
+> Type your message or @path/to/file`
+
+	got := geminiTerminalTailTextFallback(input, 2)
+	if got != "new answer line 1\nnew answer line 2" {
+		t.Fatalf("tail fallback = %q, want latest clean lines", got)
+	}
+}
+
 func TestParseGeminiInteractiveResponsePrefersLatestMarkedAssistantBlock(t *testing.T) {
 	baseline := "Gemini ready\n>"
 	captured := baseline + `
@@ -455,6 +471,54 @@ func TestParseGeminiInteractiveResponsePrefersLatestMarkedAssistantBlock(t *test
 	want := "Final answer:\n- one\n- two"
 	if got != want {
 		t.Fatalf("parsed response = %q, want %q", got, want)
+	}
+}
+
+func TestParseGeminiInteractiveResponseKeepsMarkedAssistantTable(t *testing.T) {
+	baseline := "Gemini ready\n>"
+	captured := baseline + `
+╭────────────────────────────────────────────────────────────────────────────────╮
+│ ✓  execute_shell_command (api-bridge MCP Server) {"command":"find db"}        │
+╰────────────────────────────────────────────────────────────────────────────────╯
+✦ I've analyzed the workspace. Here is the current snapshot:
+
+  ---
+
+  1. Recent Discoveries
+  From the last job search run, 5 jobs were saved:
+
+  ┌───┬────────────────────────────┬───────────┬──────────┐
+  │ # │ Job Title                  │ Fit Score │ Connects │
+  ├───┼────────────────────────────┼───────────┼──────────┤
+  │ 1 │ AI Implementation Engineer │ 13/16     │ 21       │
+  └───┴────────────────────────────┴───────────┴──────────┘
+
+  2. Active Browser State
+  Upwork and Gmail tabs are open.
+
+                                                                                  ? for shortcuts
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits
+────────────────────────────────────────────────────────────────────────────────
+ >   Type your message or @path/to/file
+ workspace (/directory)                                       sandbox /model
+`
+
+	got := parseGeminiInteractiveResponse(captured, baseline, "", nil)
+	for _, want := range []string{
+		"I've analyzed the workspace",
+		"┌───┬────────────────────────────┬───────────┬──────────┐",
+		"│ 1 │ AI Implementation Engineer │ 13/16     │ 21       │",
+		"2. Active Browser State",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("parsed response missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Type your message", "workspace (/directory)", "Shift+Tab"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("parsed response included Gemini footer %q:\n%s", unwanted, got)
+		}
 	}
 }
 

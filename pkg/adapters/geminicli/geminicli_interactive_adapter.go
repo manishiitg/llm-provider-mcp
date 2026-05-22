@@ -895,7 +895,7 @@ func waitForGeminiPrompt(ctx context.Context, sessionName string, streamChan cha
 		case <-deadline.Done():
 			captured, _ := captureGeminiPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Gemini CLI prompt; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out waiting for Gemini CLI prompt; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out waiting for Gemini CLI prompt")
 		case <-ticker.C:
@@ -971,7 +971,7 @@ func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste strin
 		select {
 		case <-deadline.Done():
 			captured, _ := captureGeminiPane(context.Background(), sessionName)
-			return fmt.Errorf("timed out waiting for Gemini CLI prompt paste; latest pane:\n%s", captured)
+			return fmt.Errorf("timed out waiting for Gemini CLI prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 		case <-ticker.C:
 			captured, err := captureGeminiPane(deadline, sessionName)
 			if err != nil {
@@ -1000,7 +1000,7 @@ func ensureGeminiInputSubmitted(ctx context.Context, sessionName string) error {
 	if lastCaptured == "" {
 		lastCaptured, _ = captureGeminiPane(context.Background(), sessionName)
 	}
-	return fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; latest pane:\n%s", geminiPromptSubmitMaxAttempts, lastCaptured)
+	return fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; %s", geminiPromptSubmitMaxAttempts, llmtypes.CompactTerminalPaneForError(sessionName, lastCaptured))
 }
 
 func geminiInputAccepted(ctx context.Context, sessionName string, lastCaptured *string) bool {
@@ -1072,7 +1072,7 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 			if hasGeminiUnsubmittedDraft(captured) {
 				active := hasGeminiActivity(captured)
 				if !active && draftSubmitAttempts >= geminiPromptSubmitMaxAttempts {
-					return captured, fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; latest pane:\n%s", geminiPromptSubmitMaxAttempts, captured)
+					return captured, fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; %s", geminiPromptSubmitMaxAttempts, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 				}
 				if !active && (lastDraftSubmit.IsZero() || time.Since(lastDraftSubmit) >= time.Second) {
 					_ = submitGeminiInputInTmux(ctx, sessionName)
@@ -1210,9 +1210,18 @@ func parseGeminiInteractiveResponse(captured, baseline, echoedUserPrompt string,
 	if strings.TrimSpace(text) == "" {
 		text = extractGeminiVisibleAssistantText(delta)
 	}
+	if strings.TrimSpace(text) == "" {
+		text = geminiTerminalTailTextFallback(delta, 24)
+	}
 	text = stripGeminiEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripGeminiHistoricalAssistantText(text, historicalAssistantTexts)
 	text = stripGeminiLeadingPromptFragments(text, echoedUserPrompt)
+	if strings.TrimSpace(text) == "" {
+		text = geminiTerminalTailTextFallback(delta, 24)
+		text = stripGeminiEchoedUserPrompt(text, echoedUserPrompt)
+		text = stripGeminiHistoricalAssistantText(text, historicalAssistantTexts)
+		text = stripGeminiLeadingPromptFragments(text, echoedUserPrompt)
+	}
 	if isGeminiLikelyQueuedUserEcho(text) {
 		return ""
 	}
@@ -1280,10 +1289,6 @@ func extractLatestGeminiMarkedAssistantText(delta string) string {
 			skipStartupContinuation = true
 			continue
 		}
-		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) {
-			flush()
-			continue
-		}
 		if content, ok := trimGeminiAssistantMarker(trimmed); ok {
 			flush()
 			if content != "" {
@@ -1293,7 +1298,15 @@ func extractLatestGeminiMarkedAssistantText(delta string) string {
 			continue
 		}
 		if inAssistantBlock {
+			if isGeminiAssistantBlockTerminator(trimmed) {
+				flush()
+				continue
+			}
 			current = append(current, trimGeminiBulletPrefix(trimmed))
+			continue
+		}
+		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) {
+			continue
 		}
 	}
 	flush()
@@ -1302,6 +1315,52 @@ func extractLatestGeminiMarkedAssistantText(delta string) string {
 		return ""
 	}
 	return strings.TrimSpace(blocks[len(blocks)-1])
+}
+
+func isGeminiAssistantBlockTerminator(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if trimmed == ">" ||
+		strings.HasPrefix(trimmed, "> ") ||
+		strings.Contains(lower, "type your message") ||
+		strings.Contains(lower, "gemini cli") ||
+		strings.Contains(lower, "authenticated with") ||
+		strings.Contains(lower, "esc to cancel") ||
+		strings.Contains(lower, "esc to interrupt") ||
+		strings.Contains(lower, "ctrl+y") ||
+		strings.Contains(lower, "ctrl+o") ||
+		strings.Contains(lower, "pasted text") ||
+		strings.Contains(lower, "? for shortcuts") ||
+		strings.Contains(lower, "shift+tab") ||
+		strings.Contains(lower, "workspace (/directory)") ||
+		strings.Contains(lower, "no sandbox") ||
+		strings.Contains(lower, "/model") ||
+		isGeminiStartupNoticeLine(trimmed) ||
+		isGeminiStartupContinuationLine(trimmed) ||
+		isGeminiActiveStatusLine(trimmed) {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "╭") || strings.HasPrefix(trimmed, "╰") {
+		return true
+	}
+	return isGeminiLongHorizontalRule(trimmed)
+}
+
+func isGeminiLongHorizontalRule(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len([]rune(trimmed)) < 20 {
+		return false
+	}
+	for _, r := range trimmed {
+		if r == '─' || r == '━' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func extractGeminiVisibleAssistantText(delta string) string {
@@ -1334,6 +1393,46 @@ func extractGeminiVisibleAssistantText(delta string) string {
 		if trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func geminiTerminalTailTextFallback(delta string, maxLines int) string {
+	if maxLines <= 0 {
+		maxLines = 24
+	}
+	lines := strings.Split(delta, "\n")
+	out := make([]string, 0, maxLines)
+	skipStartupContinuation := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(stripGeminiANSI(line))
+		if trimmed == "" {
+			skipStartupContinuation = false
+			continue
+		}
+		if skipStartupContinuation && isGeminiStartupContinuationLine(trimmed) {
+			skipStartupContinuation = false
+			continue
+		}
+		skipStartupContinuation = false
+		if isGeminiStartupNoticeLine(trimmed) {
+			skipStartupContinuation = true
+			continue
+		}
+		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) {
+			continue
+		}
+		if markerContent, ok := trimGeminiAssistantMarker(trimmed); ok {
+			trimmed = markerContent
+		} else {
+			trimmed = trimGeminiBulletPrefix(trimmed)
+		}
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) > maxLines {
+		out = out[len(out)-maxLines:]
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }

@@ -747,7 +747,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; latest pane:\n%s", promptWait, captured)
+				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; %s", promptWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out after %s waiting for Claude Code prompt", promptWait)
 		case <-ticker.C:
@@ -973,7 +973,7 @@ func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) er
 				captured, _ = captureTmuxPane(context.Background(), sessionName)
 			}
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code prompt draft to clear; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out waiting for Claude Code prompt draft to clear; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out waiting for Claude Code prompt draft to clear")
 		case <-ticker.C:
@@ -1246,7 +1246,7 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return false, fmt.Errorf("timed out waiting for Claude Code experimental prompt paste; latest pane:\n%s", captured)
+				return false, fmt.Errorf("timed out waiting for Claude Code experimental prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return false, fmt.Errorf("timed out waiting for Claude Code experimental prompt paste")
 		case <-ticker.C:
@@ -1293,7 +1293,7 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code experimental prompt to start; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out waiting for Claude Code experimental prompt to start; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out waiting for Claude Code experimental prompt to start")
 		case <-ticker.C:
@@ -1330,7 +1330,7 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 				captured, _ = captureTmuxPane(context.Background(), sessionName)
 			}
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code live input draft to clear; latest pane:\n%s", captured)
+				return fmt.Errorf("timed out waiting for Claude Code live input draft to clear; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return fmt.Errorf("timed out waiting for Claude Code live input draft to clear")
 		case <-ticker.C:
@@ -1424,7 +1424,7 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 			return content, nil
 		}
 	}
-	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; latest pane:\n%s", truncateClaudePaneForError(captured))
+	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 }
 
 func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
@@ -1442,6 +1442,9 @@ func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMar
 		if content, ok := extractTrailingUnmarkedAssistantResponse(newOutput); ok {
 			return strings.TrimSpace(content), true
 		}
+	}
+	if content, ok := extractTailAssistantTextFallback(newOutput, 24); ok {
+		return strings.TrimSpace(content), true
 	}
 	return "", false
 }
@@ -1473,7 +1476,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 		case <-ctx.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return captured, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), captured)
+				return captured, fmt.Errorf("%w; %s", ctx.Err(), llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
 			return "", ctx.Err()
 		case <-ticker.C:
@@ -1482,7 +1485,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				if ctx.Err() != nil {
 					latest, _ := captureTmuxPane(context.Background(), sessionName)
 					if strings.TrimSpace(latest) != "" {
-						return latest, fmt.Errorf("%w; latest pane:\n%s", ctx.Err(), latest)
+						return latest, fmt.Errorf("%w; %s", ctx.Err(), llmtypes.CompactTerminalPaneForError(sessionName, latest))
 					}
 					if strings.TrimSpace(lastCaptured) != "" {
 						return lastCaptured, ctx.Err()
@@ -1936,6 +1939,43 @@ func extractTrailingUnmarkedAssistantResponse(text string) (string, bool) {
 	return content, true
 }
 
+func extractTailAssistantTextFallback(text string, maxLines int) (string, bool) {
+	if maxLines <= 0 {
+		maxLines = 24
+	}
+	normalized := strings.ReplaceAll(text, "\u00a0", " ")
+	lines := strings.Split(normalized, "\n")
+	tail := make([]string, 0, maxLines)
+	for i := len(lines) - 1; i >= 0 && len(tail) < maxLines; i-- {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		cleanedProgress := cleanClaudeTerminalProgressLine(trimmed)
+		if trimmed == "" ||
+			isClaudeTUIBoundaryLine(trimmed) ||
+			isClaudePromptEchoLine(trimmed) ||
+			cleanedProgress == "" ||
+			isClaudeToolProgressLine(cleanedProgress) ||
+			isClaudeFatalProgressLine(cleanedProgress) ||
+			isClaudeRunningProgressLine(cleanedProgress) ||
+			strings.Contains(trimmed, "tmux focus-events") ||
+			strings.Contains(trimmed, "set -g focus-events") {
+			continue
+		}
+		tail = append(tail, line)
+	}
+	if len(tail) == 0 {
+		return "", false
+	}
+	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
+		tail[i], tail[j] = tail[j], tail[i]
+	}
+	content := normalizeCapturedAssistantText(strings.Join(tail, "\n"))
+	if content == "" || isClaudeTUIArtifact(content) || isClaudeNonTextAssistantBlock(content) {
+		return "", false
+	}
+	return content, true
+}
+
 func isClaudeTUIBoundaryLine(trimmed string) bool {
 	if trimmed == "" {
 		return false
@@ -1945,6 +1985,9 @@ func isClaudeTUIBoundaryLine(trimmed string) bool {
 		strings.HasPrefix(trimmed, "✶ ") ||
 		strings.HasPrefix(trimmed, "✳ ") ||
 		strings.HasPrefix(trimmed, "✢ ") ||
+		strings.HasPrefix(trimmed, "╭") ||
+		strings.HasPrefix(trimmed, "╰") ||
+		strings.HasPrefix(trimmed, "│") ||
 		strings.HasPrefix(trimmed, "────────────────") ||
 		isClaudeTUIStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "❯") ||
