@@ -475,7 +475,10 @@ func TestParseCursorInteractiveResponseFiltersGreetingAndSlashHints(t *testing.T
   Composer 2 Fast · 5.5%
   ~/ai-work/multi-llm-provider-go · main`,
 			prompt: "hi whats up",
-			want:   "Hey — not much on my side, just here and ready to help.\nWhat are you working on?",
+			// Blank line between sentences in the pane is now preserved as
+			// "\n\n" so the CommonMark renderer treats the second sentence as
+			// its own paragraph instead of running both together.
+			want: "Hey — not much on my side, just here and ready to help.\n\nWhat are you working on?",
 		},
 		{
 			name: "filters Use /plan and Use /skills greeting lines",
@@ -1277,6 +1280,81 @@ func TestParseCursorResponseStripsStaleMultiTurnHistory(t *testing.T) {
 	// existing TestParseCursorResponseDropsToolTranscriptAndUserHeader.)
 	if strings.Contains(got, "Two plus two is four") {
 		t.Fatalf("earlier assistant turn leaked into latest response, got:\n%s", got)
+	}
+}
+
+// Cursor prints a "tool activity" narration block above the actual answer:
+//
+//	Checking where schedules are defined in the workspace.
+//	Read, grepped, globbed 7 files, 4 greps, 2 globs
+//	… 10 earlier items hidden
+//	Read .../Workflow/social-media/workflow.json lines 100-179
+//	Read .../Workflow/social-media/workflow.json lines 63-102
+//	Here's what's configured …
+//
+// The summary, truncation header, and per-file read lines must be filtered;
+// the "Checking …" sentence reads like prose so we don't try to strip it.
+// Paragraph breaks (blank lines in the pane) must survive as "\n\n" so the
+// CommonMark renderer treats them as paragraph breaks rather than wraps.
+func TestParseCursorResponseFiltersToolNarrationAndKeepsParagraphBreaks(t *testing.T) {
+	captured := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+
+  list the schedules
+
+
+  Checking where schedules are defined in the workspace.
+  Read, grepped, globbed 7 files, 4 greps, 2 globs
+  … 10 earlier items hidden
+  Read .../Workflow/social-media/workflow.json lines 100-179
+  Read .../Workflow/social-media/workflow.json lines 63-102
+
+  Here’s what’s configured in the workspace right now.
+
+  1. Multi-agent chat schedules
+  None.
+
+  2. Workflow schedules (enabled)
+  These live in each workflow’s workflow.json under schedules.
+
+
+  → Add a follow-up
+
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 12.0%`
+
+	got := parseCursorInteractiveResponse(captured, "", "list the schedules", nil)
+
+	forbidden := []string{
+		"Read, grepped, globbed",
+		"earlier items hidden",
+		"lines 100-179",
+		"lines 63-102",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(got, bad) {
+			t.Fatalf("response should not contain narration %q, got:\n%s", bad, got)
+		}
+	}
+	keep := []string{
+		"Here’s what’s configured",
+		"Multi-agent chat schedules",
+		"Workflow schedules (enabled)",
+	}
+	for _, want := range keep {
+		if !strings.Contains(got, want) {
+			t.Fatalf("response missing prose %q, got:\n%s", want, got)
+		}
+	}
+	// Paragraph breaks between sections must survive as "\n\n" so the
+	// CommonMark renderer renders them as paragraph breaks (not wraps).
+	if !strings.Contains(got, "\n\n1. Multi-agent chat schedules") {
+		t.Fatalf("paragraph break before '1. Multi-agent' lost, got:\n%s", got)
+	}
+	if !strings.Contains(got, "\n\n2. Workflow schedules") {
+		t.Fatalf("paragraph break before '2. Workflow' lost, got:\n%s", got)
 	}
 }
 

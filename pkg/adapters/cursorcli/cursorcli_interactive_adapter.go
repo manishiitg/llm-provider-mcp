@@ -962,9 +962,6 @@ func extractCursorVisibleAssistantText(delta string) string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := normalizeCursorPaneLine(line)
-		if trimmed == "" {
-			continue
-		}
 		if isCursorPromptBoundaryLine(trimmed) {
 			break
 		}
@@ -977,11 +974,27 @@ func extractCursorVisibleAssistantText(delta string) string {
 			out = out[:0]
 			continue
 		}
+		if trimmed == "" {
+			// Preserve blank lines as paragraph-break markers (collapse runs),
+			// but never start the response with a blank.
+			if len(out) > 0 && out[len(out)-1] != "" {
+				out = append(out, "")
+			}
+			continue
+		}
 		if isCursorTUILine(trimmed) || isCursorToolStatusLine(trimmed) || isCursorBoxDrawingLine(trimmed) {
 			continue
 		}
 		out = append(out, trimmed)
 	}
+	// Drop trailing blank markers introduced by the input-box gap.
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	// Blank lines between non-blank lines are preserved as "" entries, so the
+	// joined output uses "\n\n" between paragraphs — CommonMark renders that as
+	// a real paragraph break, while a single "\n" inside a paragraph (a tmux
+	// hard-wrap) is treated as a soft break and rendered as a space.
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
@@ -1022,6 +1035,23 @@ var cursorShellEchoSuffix = regexp.MustCompile(`\s\d+(?:\.\d+)?(?:ms|s)\s*$`)
 // cursorFoundCountLine matches the tool-result summary Cursor prints after
 // grep/glob/list operations: "Found 33 files", "Found 1,024 matches", etc.
 var cursorFoundCountLine = regexp.MustCompile(`^found\s+[\d,]+\s+(files?|matches?|results?|symbols?)\b`)
+
+// cursorMultiToolSummaryLine matches Cursor's per-turn tool-activity summary:
+//
+//	"Read, grepped, globbed 7 files, 4 greps, 2 globs"
+//
+// The line lists past-tense verbs followed by counts. Always tool narration,
+// never response prose.
+var cursorMultiToolSummaryLine = regexp.MustCompile(`^(?:read|grepped|globbed|listed|searched)[,\s].*\b\d+\s+(?:files?|greps?|globs?|matches?|results?|symbols?|reads?|lists?|searches?)\b`)
+
+// cursorEarlierHiddenLine matches Cursor's truncation header on long tool
+// transcripts, e.g. "… 10 earlier items hidden" or "... 3 earlier tools hidden".
+var cursorEarlierHiddenLine = regexp.MustCompile(`^(?:…|\.\.\.)\s*\d+\s+earlier\s+(?:items?|tools?|results?)\b`)
+
+// cursorReadFileLine matches Cursor's per-file read narration. Cursor truncates
+// long paths with `...`, so a real prose line "Read the docs" is unaffected — the
+// regex requires a path token and either "lines N-M" or a file extension.
+var cursorReadFileLine = regexp.MustCompile(`^read\s+(?:\.\.\.|/|~)\S*\s+(?:lines?\s+\d+(?:-\d+)?|.*\.\w{1,8}\b)`)
 
 func isCursorPromptBoundaryLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
@@ -1099,6 +1129,13 @@ func isCursorToolStatusLine(line string) bool {
 	if cursorFoundCountLine.MatchString(lower) {
 		return true
 	}
+	// Combined per-turn tool-activity summary, truncation header, per-file read
+	// narration — all are tool transcript, never response prose.
+	if cursorMultiToolSummaryLine.MatchString(lower) ||
+		cursorEarlierHiddenLine.MatchString(lower) ||
+		cursorReadFileLine.MatchString(lower) {
+		return true
+	}
 	// Shell-tool command echo: starts with "$ " and ends with a duration
 	// suffix like "407ms" or "1.2s" — distinguishes the tool transcript from a
 	// markdown code block that happens to begin with "$".
@@ -1135,19 +1172,29 @@ func stripCursorEchoedUserPrompt(text, prompt string) string {
 	if text == "" || prompt == "" {
 		return text
 	}
-	textLines := nonEmptyCursorLines(text)
+	// Preserve raw lines (including blank-line paragraph markers) for the
+	// returned text, and compute a parallel non-empty view for prompt matching.
+	rawLines := strings.Split(text, "\n")
+	textNonEmpty := make([]string, 0, len(rawLines))
+	rawIndexFor := make([]int, 0, len(rawLines))
+	for i, line := range rawLines {
+		if strings.TrimSpace(line) != "" {
+			textNonEmpty = append(textNonEmpty, line)
+			rawIndexFor = append(rawIndexFor, i)
+		}
+	}
 	promptLines := nonEmptyCursorLines(prompt)
-	if len(textLines) == 0 || len(promptLines) == 0 {
+	if len(textNonEmpty) == 0 || len(promptLines) == 0 {
 		return text
 	}
 	bestStart := -1
 	bestLen := 0
-	for start := 0; start < len(textLines) && start < 64; start++ {
+	for start := 0; start < len(textNonEmpty) && start < 64; start++ {
 		for promptStart := 0; promptStart < len(promptLines); promptStart++ {
 			matchLen := 0
-			for start+matchLen < len(textLines) &&
+			for start+matchLen < len(textNonEmpty) &&
 				promptStart+matchLen < len(promptLines) &&
-				cursorPromptLinesEqual(textLines[start+matchLen], promptLines[promptStart+matchLen]) {
+				cursorPromptLinesEqual(textNonEmpty[start+matchLen], promptLines[promptStart+matchLen]) {
 				matchLen++
 			}
 			if matchLen > bestLen {
@@ -1159,9 +1206,13 @@ func stripCursorEchoedUserPrompt(text, prompt string) string {
 	if bestLen < 2 && !(len(promptLines) == 1 && bestLen == 1) {
 		return text
 	}
-	out := make([]string, 0, len(textLines)-bestLen)
-	out = append(out, textLines[:bestStart]...)
-	out = append(out, textLines[bestStart+bestLen:]...)
+	// Translate the non-empty match span back to raw-line indices and drop it
+	// (keeps paragraph-break blank lines outside the prompt block intact).
+	startRaw := rawIndexFor[bestStart]
+	endRaw := rawIndexFor[bestStart+bestLen-1] + 1
+	out := make([]string, 0, len(rawLines))
+	out = append(out, rawLines[:startRaw]...)
+	out = append(out, rawLines[endRaw:]...)
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
