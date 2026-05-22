@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -967,6 +968,15 @@ func extractCursorVisibleAssistantText(delta string) string {
 		if isCursorPromptBoundaryLine(trimmed) {
 			break
 		}
+		// "User: …" marks the start of a user turn. Everything previously
+		// collected is from an older assistant turn and must be discarded —
+		// otherwise a multi-turn pane (where baseline-diff falls back to
+		// line-prefix mode and leaves prior turns in the delta) leaks the
+		// stale reply into the new turn's extracted text.
+		if isCursorUserTurnHeader(trimmed) {
+			out = out[:0]
+			continue
+		}
 		if isCursorTUILine(trimmed) || isCursorToolStatusLine(trimmed) || isCursorBoxDrawingLine(trimmed) {
 			continue
 		}
@@ -975,13 +985,43 @@ func extractCursorVisibleAssistantText(delta string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
+// isCursorUserTurnHeader matches Cursor's per-turn user header ("User: <prompt>").
+// Anchored on the colon-space pair to avoid matching prose like "User input is".
+func isCursorUserTurnHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "User:") && !strings.HasPrefix(trimmed, "user:") {
+		return false
+	}
+	// Require the colon to be followed by whitespace OR end-of-line — distinguishes
+	// Cursor's "User: hi" header from prose like "User:enter your username".
+	if len(trimmed) == len("User:") {
+		return true
+	}
+	next := trimmed[len("User:")]
+	return next == ' ' || next == '\t'
+}
+
 func normalizeCursorPaneLine(line string) string {
 	line = strings.TrimSpace(stripCursorANSI(line))
 	line = strings.TrimPrefix(line, "│")
 	line = strings.TrimSuffix(line, "│")
 	line = strings.TrimSpace(line)
-	return strings.TrimSpace(strings.TrimPrefix(line, "• "))
+	line = strings.TrimSpace(strings.TrimPrefix(line, "• "))
+	// Cursor labels each assistant turn with a literal "Assistant:" header. Strip
+	// it so the kept response reads as plain prose (and matches what the user
+	// sees in the chat panel for Claude/Gemini, which have no such label).
+	line = strings.TrimSpace(strings.TrimPrefix(line, "Assistant:"))
+	return line
 }
+
+// cursorShellEchoSuffix matches the duration suffix Cursor appends to shell-tool
+// echoes (e.g. "$ ls -1 /tmp 407ms", "$ sleep 1 1.0s"). Used to distinguish a
+// shell-tool transcript line from a code block that legitimately starts with "$".
+var cursorShellEchoSuffix = regexp.MustCompile(`\s\d+(?:\.\d+)?(?:ms|s)\s*$`)
+
+// cursorFoundCountLine matches the tool-result summary Cursor prints after
+// grep/glob/list operations: "Found 33 files", "Found 1,024 matches", etc.
+var cursorFoundCountLine = regexp.MustCompile(`^found\s+[\d,]+\s+(files?|matches?|results?|symbols?)\b`)
 
 func isCursorPromptBoundaryLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
@@ -1025,12 +1065,16 @@ func isCursorTUILine(line string) bool {
 		strings.Contains(lower, "pasted text") ||
 		strings.HasPrefix(lower, "use /") ||
 		strings.HasPrefix(lower, "add a follow-up") ||
-		strings.HasPrefix(lower, "auto-run")
+		strings.HasPrefix(lower, "auto-run") ||
+		// Cursor labels each user turn with a literal "User:" header. It is a
+		// structural marker, not response prose, so drop it from extraction.
+		strings.HasPrefix(lower, "user:")
 }
 
 func isCursorToolStatusLine(line string) bool {
-	lower := strings.ToLower(strings.TrimSpace(line))
-	return strings.HasPrefix(lower, "thinking") ||
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "thinking") ||
 		strings.HasPrefix(lower, "working") ||
 		strings.HasPrefix(lower, "running") ||
 		strings.HasPrefix(lower, "reading") ||
@@ -1041,11 +1085,35 @@ func isCursorToolStatusLine(line string) bool {
 		strings.HasPrefix(lower, "calling ") ||
 		strings.HasPrefix(lower, "called ") ||
 		strings.HasPrefix(lower, "executing") ||
+		strings.HasPrefix(lower, "globbed ") ||
+		strings.HasPrefix(lower, "listed ") ||
+		strings.HasPrefix(lower, "grepped ") ||
 		strings.Contains(lower, "mcp") && strings.Contains(lower, "tool") ||
 		strings.Contains(lower, "shell(") ||
 		strings.Contains(lower, `"stdout"`) ||
 		strings.Contains(lower, `"stderr"`) ||
-		strings.Contains(lower, `"exit_code"`)
+		strings.Contains(lower, `"exit_code"`) {
+		return true
+	}
+	// Tool-result summary lines: "Found N files", "Found N matches", …
+	if cursorFoundCountLine.MatchString(lower) {
+		return true
+	}
+	// Shell-tool command echo: starts with "$ " and ends with a duration
+	// suffix like "407ms" or "1.2s" — distinguishes the tool transcript from a
+	// markdown code block that happens to begin with "$".
+	if strings.HasPrefix(trimmed, "$ ") && cursorShellEchoSuffix.MatchString(lower) {
+		return true
+	}
+	// Truncation marker that closes a tool-output block:
+	//   "… truncated (36 more lines) · ctrl+o to expand"
+	// (Already filtered by isCursorTUILine's " · " rule in the common case;
+	// handle the no-middot variant defensively.)
+	if strings.Contains(lower, "truncated") &&
+		(strings.Contains(lower, "more lines") || strings.Contains(lower, "more line")) {
+		return true
+	}
+	return false
 }
 
 func isCursorBoxDrawingLine(line string) bool {

@@ -1136,6 +1136,150 @@ func TestIsCursorToolStatusLine(t *testing.T) {
 	}
 }
 
+// TestParseCursorResponseDropsToolTranscriptAndUserHeader locks in the fix for
+// the live-pane bug where extractCursorVisibleAssistantText leaked the prior
+// "User:" turn header and the tool transcript (Globbed/Found N files/$ cmd
+// duration) into the final assistant text.
+func TestParseCursorResponseDropsToolTranscriptAndUserHeader(t *testing.T) {
+	baseline := `  Cursor Agent
+  v2026.05.20-2b5dd59
+  Use /mcp to connect Cursor to your tools and data sources.
+
+
+  → Add a follow-up
+
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 15.0%
+  ~/ai-work/test · main`
+
+	captured := `  Cursor Agent
+  v2026.05.20-2b5dd59
+  Use /mcp to connect Cursor to your tools and data sources.
+
+
+  User: which workflows are there
+
+
+  Listing workflows in the workspace.
+
+    Globbed "*" in /tmp/Workflow
+    Found 33 files
+
+  $ ls -1 /tmp/Workflow | sort 407ms
+    alpha
+    beta
+    … truncated (31 more lines) · ctrl+o to expand
+
+  Assistant: Here are the workflows: alpha, beta, gamma.
+
+
+  → Add a follow-up
+
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 15.8%
+  ~/ai-work/test · main`
+
+	got := parseCursorInteractiveResponse(captured, baseline, "which workflows are there", nil)
+
+	want := "Here are the workflows: alpha, beta, gamma."
+	if !strings.Contains(got, want) {
+		t.Fatalf("response missing final assistant line %q, got:\n%s", want, got)
+	}
+	forbidden := []string{
+		"User:",                 // prior-turn header leaked through
+		"which workflows are",   // echoed user prompt
+		`Globbed "*"`,           // tool transcript
+		"Found 33 files",        // tool result summary
+		"$ ls -1",               // raw shell echo
+		"407ms",                 // shell duration suffix
+		"truncated",             // tool-output ellipsis marker
+		"Assistant:",            // stripped label prefix should not survive
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(got, bad) {
+			t.Fatalf("response should not contain %q, got:\n%s", bad, got)
+		}
+	}
+}
+
+// Documents the known small false-positive in the shell-echo filter: a single
+// line that literally looks like "$ <cmd> NNNms" is treated as a tool
+// transcript line even when the assistant wrote it inside a markdown response.
+// The duration anchor (\d+ms|\d+s at end-of-line) is narrow enough that this
+// only triggers on prose that happens to mimic Cursor's shell echo exactly.
+// Multi-line code blocks where the duration appears on a separate line are
+// unaffected, which is the common case.
+func TestCursorShellEchoFilterDoesNotEatMultilineCodeBlocks(t *testing.T) {
+	captured := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+  User: show me how to run the tests
+
+  Assistant: Here's how to run the test suite:
+
+  $ npm test
+  This prints the results once it finishes.
+
+
+  → Add a follow-up
+
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 12.0%`
+
+	got := parseCursorInteractiveResponse(captured, "", "show me how to run the tests", nil)
+	if !strings.Contains(got, "$ npm test") {
+		t.Fatalf("multi-line code block should keep its $ shell example, got:\n%s", got)
+	}
+	if !strings.Contains(got, "prints the results") {
+		t.Fatalf("multi-line code block should keep follow-up prose, got:\n%s", got)
+	}
+}
+
+// Pins the upgraded turn-boundary behaviour: a multi-turn pane should yield
+// only the most recent assistant turn, with no leakage from earlier User: /
+// Assistant: blocks even when baseline-diff falls back to line-prefix mode.
+func TestParseCursorResponseStripsStaleMultiTurnHistory(t *testing.T) {
+	baseline := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+  → Add a follow-up
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 10.0%`
+
+	captured := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+  User: what is two plus two
+
+  Assistant: Two plus two is four.
+
+  User: and what is three plus three
+
+  Assistant: Three plus three is six.
+
+
+  → Add a follow-up
+
+
+  Ask (shift+tab to cycle)
+  Composer 2.5 · 11.5%`
+
+	got := parseCursorInteractiveResponse(captured, baseline, "and what is three plus three", nil)
+	if !strings.Contains(got, "Three plus three is six.") {
+		t.Fatalf("response should keep the latest assistant turn, got:\n%s", got)
+	}
+	// Earlier-turn assistant prose should NOT survive into the new turn's
+	// extracted text. (User: headers and prompt echoes are covered by the
+	// existing TestParseCursorResponseDropsToolTranscriptAndUserHeader.)
+	if strings.Contains(got, "Two plus two is four") {
+		t.Fatalf("earlier assistant turn leaked into latest response, got:\n%s", got)
+	}
+}
+
 func cursorArgsContain(args []string, value string) bool {
 	for _, arg := range args {
 		if arg == value {
