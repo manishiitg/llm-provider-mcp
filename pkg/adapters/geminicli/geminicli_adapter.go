@@ -144,6 +144,13 @@ func (g *GeminiCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("gemini-cli adapter does not support llmtypes.ImageContent; Gemini CLI has no image attachment flag in the supported headless/tmux transports")
 	}
 
+	// Gemini CLI's contract is now CodingAgentTransportStructured (see
+	// coding_agent_contract.go) because Google is deprecating the CLI. With
+	// that contract flip, IsTmuxCodingAgentProvider returns false and upstream
+	// code in mcpagent stops passing WithGeminiInteractiveSessionID. This
+	// branch therefore stays in place as dead-at-runtime safety: if anyone
+	// re-flips the contract or passes the session ID directly, the interactive
+	// path is still available without code surgery.
 	if geminiInteractiveSessionIDFromOptions(opts) != "" {
 		return g.generateContentInteractive(ctx, messages, opts)
 	}
