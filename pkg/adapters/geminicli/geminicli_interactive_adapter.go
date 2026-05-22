@@ -110,7 +110,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 
 	systemPrompt, conversationMessages := splitGeminiSystemPrompt(messages)
 	historicalAssistantTexts := geminiAssistantHistory(conversationMessages)
-	session, err := g.acquireGeminiInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
+	session, reusedSession, err := g.acquireGeminiInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,8 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		return nil, err
 	}
 
-	prompt := buildGeminiInteractivePrompt(conversationMessages)
+	includePriorContext := !reusedSession && geminiResumeSessionIDFromOptions(opts) == ""
+	prompt := buildGeminiInteractivePrompt(conversationMessages, includePriorContext)
 	baseline, _ := captureGeminiPane(callCtx, session.tmuxSessionName)
 	g.logger.Infof("Executing Gemini CLI interactive tmux session: %s", session.tmuxSessionName)
 	if err := sendGeminiPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
@@ -215,6 +216,10 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	// gemini-cli's tmux TUI does not emit usage on stdout, but its
 	// session JSONL at ~/.gemini/tmp/gemini-cli-project-<projectDirID>/
 	// chats/session-*.jsonl records `tokens` on every `gemini` event.
+	nativeSessionID := firstNonEmpty(readGeminiTranscriptSessionID(session.projectDirID), geminiResumeSessionIDFromOptions(opts))
+	if nativeSessionID != "" {
+		additional["gemini_session_id"] = nativeSessionID
+	}
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	usage := &llmtypes.Usage{}
 	handleModel := g.modelID
@@ -251,13 +256,14 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		}
 	}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
-		Provider:     "gemini-cli",
-		Transport:    llmtypes.CodingProviderTransportTmux,
-		TmuxSession:  session.tmuxSessionName,
-		WorkingDir:   geminiWorkingDirFromOptions(opts),
-		ProjectDirID: session.projectDirID,
-		Model:        handleModel,
-		Status:       llmtypes.CodingProviderSessionStatusIdle,
+		Provider:        "gemini-cli",
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: nativeSessionID,
+		TmuxSession:     session.tmuxSessionName,
+		WorkingDir:      geminiWorkingDirFromOptions(opts),
+		ProjectDirID:    session.projectDirID,
+		Model:           handleModel,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
 	})
 
 	return &llmtypes.ContentResponse{
@@ -274,7 +280,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 // acquireGeminiInteractiveSession returns with session.mu held. The caller must
 // either releaseGeminiInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
-func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*geminiInteractiveSession, error) {
+func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*geminiInteractiveSession, bool, error) {
 	launchFingerprint := g.geminiInteractiveLaunchFingerprint(opts, systemPrompt)
 
 	geminiPersistentRegistry.Lock()
@@ -284,7 +290,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 			err := existing.initErr
 			existing.mu.Unlock()
 			geminiPersistentRegistry.Unlock()
-			return nil, err
+			return nil, false, err
 		}
 		if existing.launchFingerprint != launchFingerprint {
 			existing.mu.Unlock()
@@ -298,7 +304,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		}
 		existing.lastUsed = time.Now()
 		geminiPersistentRegistry.Unlock()
-		return existing, nil
+		return existing, true, nil
 	}
 
 	now := time.Now()
@@ -318,7 +324,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		session.initErr = err
 		session.mu.Unlock()
 		removeGeminiPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	session.projectDir = projectDir
 	session.projectDirID = projectDirID
@@ -332,7 +338,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		}
 		session.mu.Unlock()
 		removeGeminiPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	session.startupSlotRelease = startupRelease
 	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {
@@ -343,10 +349,10 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		}
 		session.mu.Unlock()
 		removeGeminiPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	registerGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
-	return session, nil
+	return session, false, nil
 }
 
 func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, string, string, string, error) {
@@ -781,6 +787,16 @@ func geminiInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
 	return ""
 }
 
+func geminiResumeSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if sessionID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
+}
+
 func geminiPersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return false
@@ -806,12 +822,14 @@ func splitGeminiSystemPrompt(messages []llmtypes.MessageContent) (string, []llmt
 	return strings.Join(systems, "\n\n"), conversation
 }
 
-func buildGeminiInteractivePrompt(messages []llmtypes.MessageContent) string {
+func buildGeminiInteractivePrompt(messages []llmtypes.MessageContent, includePriorContext bool) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == llmtypes.ChatMessageTypeHuman {
 			current := extractTextFromMessage(messages[i])
-			if prior := buildGeminiPriorConversationContext(messages[:i]); prior != "" {
-				return prior + "\n\nCurrent user message:\n" + current
+			if includePriorContext {
+				if prior := buildGeminiPriorConversationContext(messages[:i]); prior != "" {
+					return prior + "\n\nCurrent user message:\n" + current
+				}
 			}
 			return current
 		}

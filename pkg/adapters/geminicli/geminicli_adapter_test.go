@@ -307,7 +307,7 @@ func TestBuildGeminiInteractivePromptCarriesPriorConversation(t *testing.T) {
 				llmtypes.TextContent{Text: "What token did I ask you to remember?"},
 			},
 		},
-	})
+	}, true)
 
 	if !strings.Contains(prompt, "Previous conversation context for this same chat") {
 		t.Fatalf("prompt missing prior conversation header: %q", prompt)
@@ -317,6 +317,37 @@ func TestBuildGeminiInteractivePromptCarriesPriorConversation(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Current user message:") {
 		t.Fatalf("prompt missing current user marker: %q", prompt)
+	}
+}
+
+func TestBuildGeminiInteractivePromptUsesLatestOnlyWithNativeContext(t *testing.T) {
+	token := "GEMINI_CONTEXT_TOKEN"
+	prompt := buildGeminiInteractivePrompt([]llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Take note of " + token},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeAI,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "ACK_" + token},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Run job search"},
+			},
+		},
+	}, false)
+
+	if prompt != "Run job search" {
+		t.Fatalf("prompt = %q, want latest message only", prompt)
+	}
+	if strings.Contains(prompt, "Previous conversation context") || strings.Contains(prompt, token) {
+		t.Fatalf("prompt leaked prior context despite native session context: %q", prompt)
 	}
 }
 

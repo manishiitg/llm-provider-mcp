@@ -83,3 +83,27 @@ func TestReadGeminiTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 		t.Fatalf("expected nil/empty for missing chats dir; got gi=%+v model=%q", gi, model)
 	}
 }
+
+func TestReadGeminiTranscriptSessionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const projectDirID = "interactive-session-id-test"
+	const sessionID = "3e3a9591-c22e-4b59-b2db-978ddbf386d5"
+	chatsDir := filepath.Join(tmpHome, ".gemini", "tmp", "gemini-cli-project-"+projectDirID, "chats")
+	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(chatsDir, "session-2026-05-22T12-00-3e3a9591.jsonl")
+	lines := []string{
+		`{"sessionId":"` + sessionID + `","projectHash":"x","kind":"main"}`,
+		`{"type":"user","timestamp":"2026-05-22T12:00:00Z","content":"hello"}`,
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	if got := readGeminiTranscriptSessionID(projectDirID); got != sessionID {
+		t.Fatalf("session id = %q, want %q", got, sessionID)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -30,44 +31,11 @@ import (
 // in-turn `gemini` event (gemini-cli auto-routes between models, so
 // the value here is the model that ACTUALLY served the request).
 func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
-	if projectDirID == "" {
+	transcriptPath := latestGeminiTranscriptPath(projectDirID)
+	if transcriptPath == "" {
 		return nil, ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, ""
-	}
-	chatsDir := filepath.Join(home, ".gemini", "tmp", "gemini-cli-project-"+projectDirID, "chats")
-	entries, err := os.ReadDir(chatsDir)
-	if err != nil || len(entries) == 0 {
-		return nil, ""
-	}
-	// Pick the most recently modified session-*.jsonl
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	cands := make([]candidate, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if filepath.Ext(name) != ".jsonl" {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		cands = append(cands, candidate{path: filepath.Join(chatsDir, name), mod: info.ModTime()})
-	}
-	if len(cands) == 0 {
-		return nil, ""
-	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
-
-	f, err := os.Open(cands[0].path)
+	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return nil, ""
 	}
@@ -126,6 +94,73 @@ func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) (*llmty
 		gi.ThoughtsTokens = intRef(thoughts)
 	}
 	return gi, latestModel
+}
+
+func readGeminiTranscriptSessionID(projectDirID string) string {
+	transcriptPath := latestGeminiTranscriptPath(projectDirID)
+	if transcriptPath == "" {
+		return ""
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var ev struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			continue
+		}
+		if sessionID := strings.TrimSpace(ev.SessionID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func latestGeminiTranscriptPath(projectDirID string) string {
+	if projectDirID == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "gemini-cli-project-"+projectDirID, "chats")
+	entries, err := os.ReadDir(chatsDir)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	cands := make([]candidate, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if filepath.Ext(name) != ".jsonl" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		cands = append(cands, candidate{path: filepath.Join(chatsDir, name), mod: info.ModTime()})
+	}
+	if len(cands) == 0 {
+		return ""
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
+	return cands[0].path
 }
 
 func intRef(v int) *int { return &v }
