@@ -729,6 +729,17 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				accTextLen := len(accumulatedText.String())
 				accTextTrimmedLen := len(strings.TrimSpace(accumulatedText.String()))
 				g.logger.Infof("[EMPTY_RESULT_DEBUG] result event: accumulatedTextLen=%d trimmedLen=%d sessionID=%q status=%q apiErrMsg=%q", accTextLen, accTextTrimmedLen, sessionID, resultStatus, apiErrMsg)
+				// Dump the full raw result event JSON whenever accumulatedText is
+				// empty so we can see what fields Gemini did populate (response,
+				// candidates, stop_reason, etc.) and decide whether any of them
+				// hold the actual final text the upstream layer is missing.
+				if accumulatedText.String() == "" {
+					if dump, err := json.MarshalIndent(raw, "", "  "); err == nil {
+						g.logger.Infof("[EMPTY_RESULT_DEBUG] raw result event JSON (%d bytes):\n%s", len(dump), string(dump))
+					} else {
+						g.logger.Errorf("[EMPTY_RESULT_DEBUG] failed to marshal raw result event: %v (raw=%+v)", err, raw)
+					}
+				}
 				if accumulatedText.String() == "" && sessionID != "" && resultStatus != "error" {
 					emptyResultSessionID = sessionID
 					g.logger.Infof("Detected empty result with sessionID=%s (status=%s), may need retry", emptyResultSessionID, resultStatus)
