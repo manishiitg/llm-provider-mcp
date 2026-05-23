@@ -156,6 +156,39 @@ Cache-key audit (status at the time of writing):
 | Cursor CLI | structured | ✅ | N/A |
 | Cursor CLI | tmux | char-estimated, no cache data exposed | N/A |
 
+### Reasoning token surfacing contract
+
+Parallel to the cache contract above, but with a key asymmetry:
+
+- **Authoritative path**: `gi.ReasoningTokens` (typed `*int` on
+  `GenerationInfo`). `mcpagent`'s `extractAllTokenTypes(resp)` reads
+  this and accumulates into `cumulativeReasoningTokens`; the
+  resulting `TokenUsageEvent.ReasoningTokens` (a typed event field,
+  not part of Additional) is what the cost ledger's `Entry`
+  reads. **This is what makes reasoning tokens show up in the
+  ledger.**
+- **Belt-and-suspenders**: also set
+  `gi.Additional["reasoning_tokens"]` to the same value. The cost
+  ledger pipeline doesn't currently read this key, but downstream
+  sinks that forward `gi.Additional` verbatim (Langfuse,
+  inspector debug, observability traces) consume it under this
+  canonical name.
+- **Provider-specific diagnostics** (optional): mirror under a
+  prefixed key like `gemini_thoughts_tokens` or
+  `claude_extended_thinking_tokens` for per-provider analysis
+  without conflicting with the canonical pair.
+
+Naming note: Gemini emits both `stats.thoughts_tokens` (the older
+name) and `stats.reasoning_tokens` (the newer name) at the
+result-event level. Adapters should accept both with `thoughts`
+winning when present (it's the typed field on the Gemini schema);
+the typed `gi.ReasoningTokens` and `Additional["reasoning_tokens"]`
+the adapter writes don't expose this internal naming variant.
+
+Reference: `pkg/adapters/geminicli/geminicli_adapter.go` — the
+`thoughts_tokens` / `reasoning_tokens` capture block plus the
+`genInfo.ReasoningTokens` assignment is the canonical pattern.
+
 ### mcpagent's accumulateTokenUsage field-name check
 
 `mcpagent/agent/agent.go:accumulateTokenUsage` gates token
