@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // errOpencodeSilentEmpty is the sentinel returned by runOpencodeAttempt
@@ -300,68 +301,82 @@ func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath str
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-
-		var event opencodeEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			c.logDebugf("opencode: failed to parse event: %v", err)
-			continue
-		}
-
-		if res.sessionID == "" && event.SessionID != "" {
-			res.sessionID = event.SessionID
-		}
-
-		switch event.Type {
-		case "text":
-			var part opencodeTextPart
-			if err := json.Unmarshal(event.Part, &part); err == nil && part.Text != "" {
-				res.textParts = append(res.textParts, part.Text)
-				emitChunk(llmtypes.StreamChunk{
-					Type:    llmtypes.StreamChunkTypeContent,
-					Content: part.Text,
-				})
+	// scannerDone closes when the scanner loop returns — stdout has reached
+	// EOF and the opencode process is gone. Used by procshutdown.Graceful
+	// to observe end-of-life (structured shutdown contract §9). Writes to
+	// `res` inside the loop are made visible to the main goroutine via the
+	// close → receive happens-before.
+	scannerDone := make(chan struct{})
+	go func() {
+		defer close(scannerDone)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
 			}
 
-		case "tool_use":
-			var part opencodeToolUsePart
-			if err := json.Unmarshal(event.Part, &part); err == nil {
-				inputStr := string(part.State.Input)
-				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallStart,
-					Content:    fmt.Sprintf("%s(%s)", part.Tool, inputStr),
-					ToolName:   part.Tool,
-					ToolCallID: part.CallID,
-					ToolArgs:   inputStr,
-				})
-				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallEnd,
-					Content:    part.State.Output,
-					ToolName:   part.Tool,
-					ToolCallID: part.CallID,
-					ToolArgs:   inputStr,
-					ToolResult: part.State.Output,
-				})
+			var event opencodeEvent
+			if err := json.Unmarshal(line, &event); err != nil {
+				c.logDebugf("opencode: failed to parse event: %v", err)
+				continue
 			}
 
-		case "step_finish":
-			var part opencodeStepFinishPart
-			if err := json.Unmarshal(event.Part, &part); err == nil {
-				res.usage.InputTokens += part.Tokens.Input
-				res.usage.OutputTokens += part.Tokens.Output
-				res.usage.TotalTokens += part.Tokens.Total
-				if part.Tokens.Cache.Read > 0 {
-					cacheRead := part.Tokens.Cache.Read
-					res.usage.CacheTokens = &cacheRead
+			if res.sessionID == "" && event.SessionID != "" {
+				res.sessionID = event.SessionID
+			}
+
+			switch event.Type {
+			case "text":
+				var part opencodeTextPart
+				if err := json.Unmarshal(event.Part, &part); err == nil && part.Text != "" {
+					res.textParts = append(res.textParts, part.Text)
+					emitChunk(llmtypes.StreamChunk{
+						Type:    llmtypes.StreamChunkTypeContent,
+						Content: part.Text,
+					})
 				}
-				res.lastFinishReason = part.Reason
+
+			case "tool_use":
+				var part opencodeToolUsePart
+				if err := json.Unmarshal(event.Part, &part); err == nil {
+					inputStr := string(part.State.Input)
+					emitChunk(llmtypes.StreamChunk{
+						Type:       llmtypes.StreamChunkTypeToolCallStart,
+						Content:    fmt.Sprintf("%s(%s)", part.Tool, inputStr),
+						ToolName:   part.Tool,
+						ToolCallID: part.CallID,
+						ToolArgs:   inputStr,
+					})
+					emitChunk(llmtypes.StreamChunk{
+						Type:       llmtypes.StreamChunkTypeToolCallEnd,
+						Content:    part.State.Output,
+						ToolName:   part.Tool,
+						ToolCallID: part.CallID,
+						ToolArgs:   inputStr,
+						ToolResult: part.State.Output,
+					})
+				}
+
+			case "step_finish":
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
+				// grace for opencode session-state flush → SIGKILL.
+				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				var part opencodeStepFinishPart
+				if err := json.Unmarshal(event.Part, &part); err == nil {
+					res.usage.InputTokens += part.Tokens.Input
+					res.usage.OutputTokens += part.Tokens.Output
+					res.usage.TotalTokens += part.Tokens.Total
+					if part.Tokens.Cache.Read > 0 {
+						cacheRead := part.Tokens.Cache.Read
+						res.usage.CacheTokens = &cacheRead
+					}
+					res.lastFinishReason = part.Reason
+				}
 			}
 		}
-	}
+	}()
+	<-scannerDone
 
 	waitErr := cmd.Wait()
 	content := strings.TrimSpace(strings.Join(res.textParts, ""))

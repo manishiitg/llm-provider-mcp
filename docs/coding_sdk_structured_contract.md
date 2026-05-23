@@ -180,6 +180,76 @@ The adapter must:
 - handle malformed JSON lines gracefully (skip and log)
 - close the stream channel on all error paths
 
+### 9. Process Shutdown Contract
+
+Every structured CLI subprocess MUST be torn down by the adapter using
+this exact sequence once a terminal event (`result` / `task_complete` /
+`done` / equivalent) is observed on stdout:
+
+```
+SIGTERM  →  10s  →  SIGTERM  →  10s  →  SIGTERM  →  5s  →  SIGKILL
+```
+
+Up to **25s** total grace, three SIGTERMs, then unconditional SIGKILL.
+
+Adapters MUST use the shared helper
+`pkg/adapters/internal/procshutdown.Graceful(cmd, terminated, logger)`
+rather than open-coding the sequence. The helper owns the timing policy
+— call sites pass no duration. The helper:
+
+1. Sends `SIGTERM #1` to the process group (`-pid`, requires `Setpgid: true`).
+2. Waits up to `FirstGrace` (10s) for `terminated` to close.
+3. If still alive: sends `SIGTERM #2`, waits up to `SecondGrace` (10s).
+4. If still alive: sends `SIGTERM #3`, waits up to `ThirdGrace` (5s).
+5. If still alive: sends `SIGKILL` to the process group.
+6. Returns once the kill has been issued. The adapter's main goroutine
+   remains responsible for `cmd.Wait()` and reaping.
+
+The helper is launched as a goroutine from the decode loop so the scanner
+keeps draining stdout while shutdown is in progress.
+
+**Why three SIGTERMs.** Most well-behaved CLIs exit on the first SIGTERM
+and the second / third are never sent. The repeats exist for CLIs whose
+event loop is briefly starved (e.g. Node.js CLIs blocked in a synchronous
+HTTP call to their MCP bridge) — the second / third SIGTERM lands on a
+warmer loop and tends to be serviced. Each signal also writes a distinct
+log line, so operators can read the logs and see which CLI needed how
+many nudges. After three attempts we stop being polite and SIGKILL.
+
+**What the graces are for.** The total 25s window lets the CLI flush
+state the *next* call depends on:
+
+- session files used by `--resume` (`~/.gemini`, `~/.claude`, `~/.codex`,
+  `~/.cursor`, …)
+- transcript JSONL used for cost reconciliation
+- any provider-specific rollout state
+
+Token usage and pricing data MUST already be captured from the terminal
+event itself — not from on-disk transcripts — so escalating to `SIGKILL`
+after the 25s grace does NOT cost the current turn's billing accuracy.
+It only forfeits `--resume` for that turn.
+
+**What the contract is NOT.**
+
+- It is NOT acceptable to send `SIGTERM` and rely on the CLI to exit
+  "eventually." Adapters MUST escalate to `SIGKILL` after the third
+  SIGTERM's grace expires.
+- The escalation MUST NOT be gated on pending in-flight tool calls. By
+  the time the terminal event has arrived, any tool calls the CLI is
+  still firing are side-effect leakage and MUST be cut off — this is
+  the orphan-subprocess hazard.
+- It is NOT acceptable to extend the total grace past 25s. A CLI that
+  cannot flush state in 25s either has an upstream bug (synchronous
+  I/O blocking signal delivery long enough to outlast three SIGTERMs)
+  or is doing work it shouldn't be doing after terminal.
+
+**Upstream obligation on each CLI.** Each CLI provider promises: "Given
+SIGTERM, I will flush resume state within 25s and exit, OR I accept that
+this turn's `--resume` is forfeit." If a CLI cannot honor this (e.g., a
+synchronous HTTP call to its MCP bridge with a 120s timeout), the fix
+is in that CLI — shorter per-tool timeouts, signal-aware I/O — not in
+the adapter's grace budget.
+
 ## Required Real E2E Certification Matrix
 
 Every structured/JSON coding provider must have opt-in real E2E tests for each
@@ -209,6 +279,7 @@ event format end-to-end.
 | 19 | No internal memory | Fresh session (no resume) cannot recall data from a previous session; agent memory is isolated. |
 | 20 | Graceful cancel | Context cancellation mid-run preserves all streamed chunks; stream channel is closed; partial content is returned if available. |
 | 21 | Sandboxed MCP | Built-in tools disabled while MCP bridge tools remain callable. Proves the production pattern: agent can only use tools you explicitly provide. |
+| 22 | End-of-turn shutdown | On terminal event (result/done/task_complete), adapter calls `procshutdown.Graceful` → 3 SIGTERMs (10s/10s/5s graces) → SIGKILL. Asserts no post-result `tool_use` events leak through after `cmd.Wait()` returns. See §9 Process Shutdown Contract. |
 
 ## Current Test Coverage
 

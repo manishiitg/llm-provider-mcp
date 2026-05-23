@@ -18,6 +18,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // quotaExhaustedEntry records when a model's usage quota was exhausted.
@@ -588,6 +589,10 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 				c.logger.Debugf("Codex turn started")
 
 			case "turn.completed":
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
+				// grace for ~/.codex session/rollout flush → SIGKILL.
+				go procshutdown.Graceful(cmd, decodeDone, c.logger)
 				// Extract usage from turn.completed
 				// Format: {"usage":{"input_tokens":N,"cached_input_tokens":N,"output_tokens":N}}
 				if usage, ok := raw["usage"].(map[string]interface{}); ok {
@@ -1467,6 +1472,8 @@ func (c *CodexCLIAdapter) retryForFinalAnswer(
 				}
 
 			case "turn.completed":
+				// Retry path: same shutdown contract as the primary decode loop.
+				go procshutdown.Graceful(cmd, decodeDone, c.logger)
 				if usage, ok := raw["usage"].(map[string]interface{}); ok {
 					if v, ok := usage["input_tokens"].(float64); ok {
 						retryInputTokens += int(v)

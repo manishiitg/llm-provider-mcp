@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 type cursorEvent struct {
@@ -174,85 +175,100 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-
-		var event cursorEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			c.logDebugf("cursor: failed to parse event: %v", err)
-			continue
-		}
-
-		if sessionID == "" && event.SessionID != "" {
-			sessionID = event.SessionID
-		}
-
-		switch event.Type {
-		case "system":
-			if event.Model != "" {
-				modelName = event.Model
+	// scannerDone closes when the scanner loop returns — i.e. stdout reached
+	// EOF, which means the cursor-agent process has actually exited. Used by
+	// procshutdown.Graceful to observe end-of-life (see structured shutdown
+	// contract §9). Writes to finalContent/totalUsage/sessionID/modelName
+	// inside the loop are made visible to the main goroutine by the
+	// happens-before relationship from close → receive.
+	scannerDone := make(chan struct{})
+	go func() {
+		defer close(scannerDone)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
 			}
-			if event.SessionID != "" {
+
+			var event cursorEvent
+			if err := json.Unmarshal(line, &event); err != nil {
+				c.logDebugf("cursor: failed to parse event: %v", err)
+				continue
+			}
+
+			if sessionID == "" && event.SessionID != "" {
 				sessionID = event.SessionID
 			}
 
-		case "thinking":
-			if event.Subtype == "delta" && event.Text != "" {
-				emitChunk(llmtypes.StreamChunk{
-					Type:    llmtypes.StreamChunkTypeContent,
-					Content: event.Text,
-				})
-			}
+			switch event.Type {
+			case "system":
+				if event.Model != "" {
+					modelName = event.Model
+				}
+				if event.SessionID != "" {
+					sessionID = event.SessionID
+				}
 
-		case "assistant":
-			if event.Message != nil {
-				text := cursorEventMessageText(event.Message)
-				if text != "" {
-					finalContent = text
+			case "thinking":
+				if event.Subtype == "delta" && event.Text != "" {
 					emitChunk(llmtypes.StreamChunk{
 						Type:    llmtypes.StreamChunkTypeContent,
-						Content: text,
+						Content: event.Text,
 					})
 				}
-			}
 
-		case "tool_call":
-			switch event.Subtype {
-			case "started":
-				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallStart,
-					Content:    fmt.Sprintf("tool_call(%s)", event.CallID),
-					ToolCallID: event.CallID,
-				})
-			case "completed":
-				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallEnd,
-					Content:    event.CallID,
-					ToolCallID: event.CallID,
-				})
-			}
+			case "assistant":
+				if event.Message != nil {
+					text := cursorEventMessageText(event.Message)
+					if text != "" {
+						finalContent = text
+						emitChunk(llmtypes.StreamChunk{
+							Type:    llmtypes.StreamChunkTypeContent,
+							Content: text,
+						})
+					}
+				}
 
-		case "result":
-			if event.Result != "" {
-				finalContent = event.Result
-			}
-			if event.Usage != nil {
-				totalUsage.InputTokens += event.Usage.InputTokens
-				totalUsage.OutputTokens += event.Usage.OutputTokens
-				totalUsage.TotalTokens += event.Usage.InputTokens + event.Usage.OutputTokens
-				if event.Usage.CacheReadTokens > 0 {
-					cacheRead := event.Usage.CacheReadTokens
-					totalUsage.CacheTokens = &cacheRead
+			case "tool_call":
+				switch event.Subtype {
+				case "started":
+					emitChunk(llmtypes.StreamChunk{
+						Type:       llmtypes.StreamChunkTypeToolCallStart,
+						Content:    fmt.Sprintf("tool_call(%s)", event.CallID),
+						ToolCallID: event.CallID,
+					})
+				case "completed":
+					emitChunk(llmtypes.StreamChunk{
+						Type:       llmtypes.StreamChunkTypeToolCallEnd,
+						Content:    event.CallID,
+						ToolCallID: event.CallID,
+					})
+				}
+
+			case "result":
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
+				// grace for ~/.cursor state flush → SIGKILL.
+				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				if event.Result != "" {
+					finalContent = event.Result
+				}
+				if event.Usage != nil {
+					totalUsage.InputTokens += event.Usage.InputTokens
+					totalUsage.OutputTokens += event.Usage.OutputTokens
+					totalUsage.TotalTokens += event.Usage.InputTokens + event.Usage.OutputTokens
+					if event.Usage.CacheReadTokens > 0 {
+						cacheRead := event.Usage.CacheReadTokens
+						totalUsage.CacheTokens = &cacheRead
+					}
+				}
+				if event.SessionID != "" {
+					sessionID = event.SessionID
 				}
 			}
-			if event.SessionID != "" {
-				sessionID = event.SessionID
-			}
 		}
-	}
+	}()
+	<-scannerDone
 
 	waitErr := cmd.Wait()
 

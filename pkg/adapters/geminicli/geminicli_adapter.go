@@ -16,6 +16,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // pendingToolCall tracks a tool call that has started but hasn't received its result yet
@@ -752,13 +753,19 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 					emptyResultSessionID = sessionID
 					g.logger.Infof("Detected empty result with sessionID=%s (status=%s), may need retry", emptyResultSessionID, resultStatus)
 				}
-				// Send SIGTERM to let the CLI write session files before exiting.
-				// SIGKILL would destroy session state and break --resume on next call.
-				// If it doesn't exit within 5s, the watchdog or ctx cancellation will SIGKILL.
-				g.logger.Infof("Gemini CLI result received, sending SIGTERM for graceful shutdown")
-				if cmd.Process != nil {
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-				}
+				// End-of-turn teardown follows the structured-CLI shutdown
+				// contract (docs/coding_sdk_structured_contract.md §"Process
+				// Shutdown Contract", matrix row #22):
+				//
+				//   SIGTERM  →  5s grace for ~/.gemini session-file flush  →  SIGKILL
+				//
+				// Run as a goroutine so the scanner loop keeps draining stdout
+				// in the meantime. decodeDone closes when the scanner sees EOF
+				// (process actually gone); the helper escalates to SIGKILL if
+				// gemini-cli ignores SIGTERM — which it will if it's blocked
+				// in a synchronous MCP HTTP call.
+				g.logger.Infof("Gemini CLI result received, starting shutdown sequence")
+				go procshutdown.Graceful(cmd, decodeDone, g.logger)
 			}
 		}
 
@@ -1384,11 +1391,12 @@ func (g *GeminiCLIAdapter) retryForFinalAnswer(
 					retrySessionID = sid
 				}
 				retryResponse = g.mapResultToContentResponse(raw, retrySessionID, retryResolvedModel, sanitizeGeminiStreamJSONContent(retryAccumulatedText.String()), "")
-				// Send SIGTERM to let the CLI write session files before exiting.
-				g.logger.Infof("Retry: Gemini CLI result received, sending SIGTERM for graceful shutdown")
-				if cmd.Process != nil {
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-				}
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §"Process Shutdown
+				// Contract"). Same SIGTERM → 5s → SIGKILL sequence as the
+				// primary path above.
+				g.logger.Infof("Retry: Gemini CLI result received, starting shutdown sequence")
+				go procshutdown.Graceful(cmd, decodeDone, g.logger)
 			}
 		}
 		close(decodeDone) // broadcast to all goroutines waiting on decodeDone

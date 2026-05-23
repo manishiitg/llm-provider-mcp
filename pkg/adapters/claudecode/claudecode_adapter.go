@@ -13,6 +13,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // pendingToolCall tracks a tool call that has started but hasn't received its result yet
@@ -436,8 +437,11 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 	}
 	aiSeenCount := 0
 
-	// Create a channel to signal completion of decoding
-	decodeDone := make(chan bool)
+	// Closed by the decode goroutine when stdout reaches EOF (process exited
+	// AND scanner has drained). Used both by the main goroutine's lifecycle
+	// select below and by procshutdown.Graceful so the shutdown helper can
+	// observe that the CLI has actually gone away.
+	decodeDone := make(chan struct{})
 
 	var currentToolName string
 	var currentToolID string
@@ -629,6 +633,12 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 					}
 				}
 			case "result":
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
+				// grace for ~/.claude session flush → SIGKILL. Runs as a
+				// goroutine so this decode loop keeps draining stdout while
+				// shutdown is in progress.
+				go procshutdown.Graceful(cmd, decodeDone, c.logger)
 				// Flush any remaining pending tool calls that never got a tool_result
 				for _, pt := range pendingTools {
 					if opts.StreamChan != nil {
@@ -669,7 +679,7 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 				}
 			}
 		}
-		decodeDone <- true
+		close(decodeDone)
 	}()
 
 	// Wait for command completion or context cancellation
@@ -1130,7 +1140,9 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	// Simplified decode loop: only care about result event and text streaming
 	var retryResponse *llmtypes.ContentResponse
 	decoder := json.NewDecoder(stdoutPipe)
-	decodeDone := make(chan bool)
+	// See main path: closed (not sent) so procshutdown.Graceful and the main
+	// goroutine can both observe scanner EOF.
+	decodeDone := make(chan struct{})
 
 	go func() {
 		for decoder.More() {
@@ -1186,6 +1198,8 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 				}
 
 			case "result":
+				// Retry path: same shutdown contract as the primary decode loop.
+				go procshutdown.Graceful(cmd, decodeDone, c.logger)
 				var claudeResp ClaudeCodeResponse
 				jsonBytes, _ := json.Marshal(raw)
 				if err := json.Unmarshal(jsonBytes, &claudeResp); err == nil {
@@ -1193,7 +1207,7 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 				}
 			}
 		}
-		decodeDone <- true
+		close(decodeDone)
 	}()
 
 	// Wait for completion
