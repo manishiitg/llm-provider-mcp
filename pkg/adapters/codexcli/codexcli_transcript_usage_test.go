@@ -70,6 +70,16 @@ func TestReadCodexTranscriptUsageTakesLatestEventInTurn(t *testing.T) {
 	if gi.CachedContentTokens == nil || *gi.CachedContentTokens != 120 {
 		t.Fatalf("CachedContentTokens = %v, want 120", gi.CachedContentTokens)
 	}
+	// Cache hit count must also surface in Additional under the raw
+	// Anthropic-style key the cost ledger's extractCacheTokens looks
+	// for. Without this mirror, claude-code-style ledger entries got
+	// the cache breakdown but codex entries showed cache_read=0.
+	if gi.Additional == nil {
+		t.Fatalf("gi.Additional must surface raw cache_read_input_tokens key; got nil")
+	}
+	if v, ok := gi.Additional["cache_read_input_tokens"]; !ok || v.(int) != 120 {
+		t.Fatalf("gi.Additional[cache_read_input_tokens] = %v, want 120", v)
+	}
 	if gi.ReasoningTokens == nil || *gi.ReasoningTokens != 20 {
 		t.Fatalf("ReasoningTokens = %v, want 20", gi.ReasoningTokens)
 	}

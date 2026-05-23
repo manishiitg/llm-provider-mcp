@@ -249,6 +249,13 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		gi.TotalTokens = usage.TotalTokens
 		gi.CachedContentTokens = usage.CachedContentTokens
 		gi.ReasoningTokens = usage.ReasoningTokens
+		// Forward raw cache-token keys from the parser into the
+		// adapter's local Additional map so they survive to the cost
+		// ledger's extractCacheTokens (keyed off raw Anthropic-style
+		// names rather than the typed CachedContentTokens field).
+		for k, v := range usage.Additional {
+			additional[k] = v
+		}
 	}
 	if effectiveModel != "" {
 		if meta, _ := c.GetModelMetadata(effectiveModel); meta != nil {

@@ -164,6 +164,14 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	}
 	if latest.CachedInputTokens > 0 {
 		gi.CachedContentTokens = intRef(latest.CachedInputTokens)
+		// Mirror the cache hit count under the raw Anthropic-style
+		// key the cost ledger's extractCacheTokens looks for. OpenAI's
+		// prompt caching is automatic and read-only (no separate
+		// "creation" event), so cache_write stays zero — only
+		// cache_read_input_tokens needs surfacing.
+		gi.Additional = map[string]interface{}{
+			"cache_read_input_tokens": latest.CachedInputTokens,
+		}
 	}
 	if latest.ReasoningOutputTokens > 0 {
 		gi.ReasoningTokens = intRef(latest.ReasoningOutputTokens)
