@@ -716,6 +716,14 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				if resultStatus == "error" {
 					errObj, _ := raw["error"].(map[string]interface{})
 					apiErrMsg, _ = errObj["message"].(string)
+					if strings.TrimSpace(apiErrMsg) == "" {
+						// Gemini CLI emits status=error with no error.message
+						// in some failure modes (length-limit edge case mid-
+						// stream, safety filter, transient 5xx). Synthesize a
+						// hint from stats so the upstream "choice.Content is
+						// empty" surface gives the user actionable info.
+						apiErrMsg = synthesizeGeminiErrorHint(raw)
+					}
 					g.logger.Errorf("Gemini CLI result error (status=error), skipping retry: %s", apiErrMsg)
 				}
 				finalResponse = g.mapResultToContentResponse(raw, sessionID, resolvedModel, sanitizeGeminiStreamJSONContent(accumulatedText.String()), apiErrMsg)
@@ -964,6 +972,40 @@ func containsGeminiImageContent(messages []llmtypes.MessageContent) bool {
 	return false
 }
 
+// synthesizeGeminiErrorHint crafts a user-actionable error message when
+// Gemini CLI emits a bare `status:"error"` result with no error.message
+// detail (a real production failure mode — observed on large-context
+// turns, safety filters, and transient backend errors). Reads whatever
+// stats Gemini did populate (token counts, tool calls, duration) so the
+// upstream "choice.Content is empty" surface gives the user something
+// they can act on instead of an opaque framework string.
+func synthesizeGeminiErrorHint(raw map[string]interface{}) string {
+	var bits []string
+	if stats, ok := raw["stats"].(map[string]interface{}); ok {
+		if v, ok := stats["input_tokens"].(float64); ok {
+			bits = append(bits, fmt.Sprintf("input_tokens=%d", int(v)))
+		}
+		if v, ok := stats["output_tokens"].(float64); ok {
+			bits = append(bits, fmt.Sprintf("output_tokens=%d", int(v)))
+		}
+		if v, ok := stats["tool_calls"].(float64); ok && v > 0 {
+			bits = append(bits, fmt.Sprintf("tool_calls=%d", int(v)))
+		}
+		if v, ok := stats["duration_ms"].(float64); ok && v > 0 {
+			bits = append(bits, fmt.Sprintf("duration_ms=%d", int(v)))
+		}
+		if v, ok := stats["cached"].(float64); ok && v > 0 {
+			bits = append(bits, fmt.Sprintf("cached_tokens=%d", int(v)))
+		}
+	}
+	hint := "Gemini CLI returned status=error with no detail from the upstream API. " +
+		"Common causes: input context too large, model safety filter, transient Gemini backend failure (5xx/quota), or output token cap reached mid-stream."
+	if len(bits) > 0 {
+		hint += " [" + strings.Join(bits, " ") + "]"
+	}
+	return hint
+}
+
 func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}, sessionID string, resolvedModel string, accumulatedText string, apiErrMsg string) *llmtypes.ContentResponse {
 	// Prefer text accumulated from streaming `content` events; fall back to
 	// the result event's own `response` field when present. Some Gemini CLI
@@ -1054,6 +1096,8 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	// Set cache tokens in GenerationInfo if available
 	if cachedTokens > 0 {
 		genInfo.CachedContentTokens = &cachedTokens
+		// Mirror under the raw Anthropic-style key the cost ledger reads.
+		additional["cache_read_input_tokens"] = cachedTokens
 	}
 	if resolvedModel != "" {
 		if meta, _ := g.GetModelMetadata(resolvedModel); meta != nil {

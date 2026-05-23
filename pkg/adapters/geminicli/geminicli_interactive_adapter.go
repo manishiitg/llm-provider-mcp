@@ -234,6 +234,12 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		gi.TotalTokens = turnUsage.TotalTokens
 		gi.CachedContentTokens = turnUsage.CachedContentTokens
 		gi.ThoughtsTokens = turnUsage.ThoughtsTokens
+		// Forward raw cache-token keys from the transcript parser
+		// into the adapter's local Additional map so they survive
+		// to the cost ledger's extractCacheTokens.
+		for k, v := range turnUsage.Additional {
+			additional[k] = v
+		}
 		if turnUsage.PromptTokens != nil {
 			usage.InputTokens = *turnUsage.PromptTokens
 		}

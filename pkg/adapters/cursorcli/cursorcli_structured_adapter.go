@@ -285,6 +285,8 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	if totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0 {
 		v := *totalUsage.CacheTokens
 		genInfo.CachedContentTokens = &v
+		// Mirror under the raw Anthropic-style key the cost ledger reads.
+		additional["cache_read_input_tokens"] = v
 	}
 	// Cost lookup: prefer the cursor-reported effective model name, fall
 	// back to the requested model alias.

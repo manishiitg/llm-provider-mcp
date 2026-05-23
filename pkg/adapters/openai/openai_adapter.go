@@ -872,6 +872,11 @@ func (o *OpenAIAdapter) generateContentStreaming(ctx context.Context, modelID st
 			}
 			choice.GenerationInfo.Additional["cached_tokens"] = cachedTokens
 			choice.GenerationInfo.Additional["cache_tokens"] = cachedTokens
+			// Also surface under the raw Anthropic-style key the cost
+			// ledger's extractCacheTokens reads (it doesn't know about
+			// OpenAI's "cached_tokens" alias). OpenAI's prompt caching
+			// is read-only — no separate cache-creation event.
+			choice.GenerationInfo.Additional["cache_read_input_tokens"] = cachedTokens
 		} else {
 			choice.GenerationInfo.Additional["cached_tokens"] = 0
 		}
@@ -1478,6 +1483,10 @@ func convertResponse(result *openai.ChatCompletion, logger interfaces.Logger, is
 			// Also store in Additional map for consistency
 			langChoice.GenerationInfo.Additional["cached_tokens"] = cachedTokens
 			langChoice.GenerationInfo.Additional["cache_tokens"] = cachedTokens
+			// Surface under the raw Anthropic-style key the cost
+			// ledger's extractCacheTokens reads. OpenAI's prompt
+			// caching is read-only — no cache_creation event.
+			langChoice.GenerationInfo.Additional["cache_read_input_tokens"] = cachedTokens
 
 			if logger != nil {
 				if isOpenRouter {

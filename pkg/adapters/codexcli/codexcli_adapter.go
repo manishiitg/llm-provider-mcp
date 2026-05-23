@@ -1015,6 +1015,9 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 	}
 	if totalCachedInputTokens > 0 {
 		genInfo.CachedContentTokens = &totalCachedInputTokens
+		// Mirror under the raw Anthropic-style key the cost ledger reads.
+		// OpenAI/Codex prompt caching is read-only — no cache_creation.
+		additional["cache_read_input_tokens"] = totalCachedInputTokens
 	}
 	if modelToUse != "" {
 		additional["codex_effective_model"] = modelToUse

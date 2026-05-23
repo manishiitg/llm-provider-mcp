@@ -988,9 +988,13 @@ func (c *ClaudeCodeAdapter) mapResponseToContentResponse(resp *ClaudeCodeRespons
 	}
 	if cacheReadTokens > 0 {
 		genInfo.Additional["CacheReadInputTokens"] = cacheReadTokens
+		// Also under the raw Anthropic key the cost ledger reads.
+		// Old PascalCase key is kept for callers that already consume it.
+		genInfo.Additional["cache_read_input_tokens"] = cacheReadTokens
 	}
 	if cacheCreationTokens > 0 {
 		genInfo.Additional["CacheCreationInputTokens"] = cacheCreationTokens
+		genInfo.Additional["cache_creation_input_tokens"] = cacheCreationTokens
 	}
 
 	// Add duration and turn count from result event

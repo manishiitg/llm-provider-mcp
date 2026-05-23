@@ -89,6 +89,10 @@ func readGeminiTranscriptUsage(projectDirID string, turnStart time.Time) (*llmty
 	}
 	if cached > 0 {
 		gi.CachedContentTokens = intRef(cached)
+		// Mirror under the raw Anthropic-style key the cost ledger reads.
+		gi.Additional = map[string]interface{}{
+			"cache_read_input_tokens": cached,
+		}
 	}
 	if thoughts > 0 {
 		gi.ThoughtsTokens = intRef(thoughts)
