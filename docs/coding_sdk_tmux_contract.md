@@ -262,6 +262,32 @@ Required regression fixtures:
 - parser-miss fallback must return a bounded cleaned text tail, not a compact
   error or full terminal dump
 
+### 8a. Token & Cache Surfacing
+
+The adapter must:
+
+- populate `gi.PromptTokens` / `gi.CompletionTokens` / `gi.TotalTokens`
+  (modern naming) from the sidecar transcript. Mcpagent's
+  `accumulateTokenUsage` honors both `PromptTokens/CompletionTokens`
+  and legacy `InputTokens/OutputTokens`, so either pair works — but
+  one of the pairs MUST be populated or the cost ledger will record
+  zero-token entries.
+- when the provider reports cache hits, populate both:
+  - **typed**: `gi.CachedContentTokens`
+  - **raw key**: `gi.Additional["cache_read_input_tokens"]`
+- for Anthropic-style providers that bill cache writes separately
+  (Claude Code only among the tmux providers), also populate
+  `gi.Additional["cache_creation_input_tokens"]`.
+- when a sidecar parser fills `usage.Additional`, the adapter MUST
+  merge that map into its own local Additional before constructing
+  the response, or the raw cache keys won't reach the consumer.
+
+Why: the cost ledger's `extractCacheTokens` keys off the raw
+Anthropic-style names in the Additional map, not the typed field.
+See [`docs/COSTS_AND_CONVERSATION_HISTORY.md`](COSTS_AND_CONVERSATION_HISTORY.md)
+→ "Cache token surfacing contract" for the full audit table and
+canonical adapter idiom.
+
 ### 9. Sessions and Resume
 
 The adapter must:

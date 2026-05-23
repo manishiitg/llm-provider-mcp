@@ -142,6 +142,13 @@ The adapter must:
 - normalize to `InputTokens`, `OutputTokens`, `TotalTokens`
 - propagate `CacheTokens` when the provider reports cache read/write
 - sum across multiple step/result events for multi-step agent runs
+- **also surface cache totals in `gi.Additional` under the raw
+  Anthropic-style keys `cache_read_input_tokens` and (Anthropic
+  only) `cache_creation_input_tokens`** — the cost-ledger
+  pipeline reads these from Additional, not from the typed
+  `CachedContentTokens` field. See
+  [`docs/COSTS_AND_CONVERSATION_HISTORY.md`](COSTS_AND_CONVERSATION_HISTORY.md)
+  → "Cache token surfacing contract".
 
 ### 6. Session Metadata
 

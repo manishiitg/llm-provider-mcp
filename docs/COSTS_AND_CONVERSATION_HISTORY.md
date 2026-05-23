@@ -92,6 +92,111 @@ fixture.
 If you see Claude cost looking 2× higher than expected, the first
 hypothesis should be: someone re-introduced summing across blocks.
 
+### Cache token surfacing contract
+
+**Every adapter that exposes cache tokens MUST also write the raw
+Anthropic-style key into `gi.Additional`**, not just the typed
+`gi.CachedContentTokens` field.
+
+Why: the cost ledger pipeline in `mcp-agent-builder-go`
+(`extractCacheTokens` in `cost_routes.go`) reads `tu.GenerationInfo`,
+which is the **Additional map only** — the typed `*GenerationInfo`
+struct doesn't ride on `TokenUsageEvent`. An adapter that writes
+only `gi.CachedContentTokens` will land ledger entries with
+`cache_read_tokens=0` even when the provider served most of the
+prompt from cache.
+
+Required keys, regardless of provider:
+
+| Key | Meaning | Set when |
+|---|---|---|
+| `cache_read_input_tokens` | Tokens served from prompt cache (cheap) | Provider reports any cache hit |
+| `cache_creation_input_tokens` | Tokens billed at creation rate | Anthropic-only (the rest don't have a separate write event) |
+
+Adapter idiom (see `claudecode_transcript_usage.go:115-128` or
+`codexcli_transcript_usage.go:165-175` for canonical examples):
+
+```go
+if cacheRead > 0 {
+    gi.CachedContentTokens = intRef(cacheRead)        // typed
+    if gi.Additional == nil {
+        gi.Additional = map[string]interface{}{}
+    }
+    gi.Additional["cache_read_input_tokens"] = cacheRead   // raw
+}
+if cacheCreate > 0 { // Anthropic-style providers only
+    gi.Additional["cache_creation_input_tokens"] = cacheCreate
+}
+```
+
+For tmux adapters that get cache numbers from a sidecar parser, the
+adapter must also **merge** `usage.Additional` into its local
+`additional` map (the parser's keys won't reach the consumer
+otherwise). See `codexcli_interactive_adapter.go:250-263` for the
+merge pattern.
+
+Aliases like `cached_tokens` / `CacheReadInputTokens` (PascalCase)
+are accepted for callers that already consume them, but the
+lowercase Anthropic-style names are the **authoritative ledger
+contract**. New adapters should write the lowercase names; legacy
+adapters keep both for backward compatibility.
+
+Cache-key audit (status at the time of writing):
+
+| Provider | Transport | `cache_read_input_tokens` | `cache_creation_input_tokens` |
+|---|---|---|---|
+| Anthropic | API | ✅ | ✅ |
+| OpenAI / OpenRouter | API | ✅ | N/A — caching is read-only |
+| Claude Code | structured (`-p`) | ✅ | ✅ |
+| Claude Code | tmux | ✅ | ✅ |
+| Codex CLI | structured (`exec --json`) | ✅ | N/A |
+| Codex CLI | tmux | ✅ | N/A |
+| Gemini CLI | structured | ✅ | N/A |
+| Gemini CLI | tmux | ✅ | N/A |
+| Cursor CLI | structured | ✅ | N/A |
+| Cursor CLI | tmux | char-estimated, no cache data exposed | N/A |
+
+### mcpagent's accumulateTokenUsage field-name check
+
+`mcpagent/agent/agent.go:accumulateTokenUsage` gates token
+accumulation on whether the response looks like real usage (not an
+estimation). The check used to only inspect `gi.InputTokens` /
+`gi.OutputTokens` (legacy naming). Adapters that populate the
+modern `gi.PromptTokens` / `gi.CompletionTokens` (Claude Code
+experimental, codex, gemini transcript readers) without also
+populating the legacy pair OR setting `resp.Usage` fell through
+to the "skip estimated" branch — and the cumulative counters
+that drive `TokenUsageEvent.PromptTokens/CompletionTokens` stayed
+at zero, so the cost ledger received zero-token entries.
+
+The check now accepts either pair as evidence of real usage. The
+single-turn cost HTTP e2es did not catch this because they bypass
+mcpagent and build the `TokenUsageEvent` themselves from
+`gi.PromptTokens` directly. The **comprehensive multi-turn e2e**
+(see `cmd/server/multi_turn_chat_e2e_real_test.go` in
+mcp-agent-builder-go) drives through mcpagent so it does cover this
+path — that's where this regression would land.
+
+If you ever see cost ledger entries with no `prompt_tokens` /
+`completion_tokens` fields but the adapter logs show real
+`input_tokens=N` numbers, this is the failure mode to check first.
+
+### Claude Code CLI upgrade-notice false-busy
+
+When the Claude Code CLI has a new release available, the TUI
+parks a `current: X · latest: Y` line at the very bottom of the
+pane. `hasReadyInputPrompt` scans from the last line backward
+looking for `❯` and rejected as "not ready" when it hit this
+line first — so the wait loop polled the same idle pane forever
+and the adapter never returned (terminal view showed Claude done,
+chat tree never showed completion, no cost ledger entry was
+written).
+
+`isIgnorableClaudePromptFooterLine` now also skips lines containing
+both "current:" and "latest:". If Claude CLI ever ships a new
+footer-style notice, replicate this pattern. Regression fixture
+is `TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice`.
+
 ### Cursor pricing gotcha
 
 The cursor structured adapter emits `cost_usd_estimated` only when the
