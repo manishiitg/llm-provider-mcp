@@ -1212,6 +1212,56 @@ func TestMapResultToContentResponse_EmptyResult(t *testing.T) {
 	}
 }
 
+// TestMapResultToContentResponse_FallsBackToResponseField guards the specific
+// production case where Gemini emits its final text directly on the result
+// event's `response` field with no streaming `content` events. Pre-fix the
+// adapter only read accumulatedText and ignored raw["response"], so this
+// turn would surface as "choice.Content is empty" upstream even though
+// Gemini's response is right there on the wire.
+func TestMapResultToContentResponse_FallsBackToResponseField(t *testing.T) {
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
+
+	raw := map[string]interface{}{
+		"type":     "result",
+		"response": "Final answer from result event",
+		"status":   "success",
+	}
+
+	// accumulatedText is intentionally empty — simulates a turn where Gemini
+	// only used tools (or otherwise skipped the streaming content channel)
+	// and put the final text directly on the result event.
+	resp := adapter.mapResultToContentResponse(raw, "session-abc", "gemini-3.5-flash", "", "")
+
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatalf("expected non-empty response, got %+v", resp)
+	}
+	if resp.Choices[0].Content != "Final answer from result event" {
+		t.Errorf("expected adapter to fall back to raw['response'] when accumulatedText is empty, got %q",
+			resp.Choices[0].Content)
+	}
+}
+
+// TestMapResultToContentResponse_AccumulatedTextWinsOverResponse confirms the
+// fallback only kicks in when accumulatedText is empty. When the streaming
+// channel produced text, that text is the source of truth even if the result
+// event also carries a `response` field (which Gemini can include as a
+// final summary).
+func TestMapResultToContentResponse_AccumulatedTextWinsOverResponse(t *testing.T) {
+	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
+
+	raw := map[string]interface{}{
+		"type":     "result",
+		"response": "Should NOT be used",
+		"status":   "success",
+	}
+
+	resp := adapter.mapResultToContentResponse(raw, "session-abc", "gemini-3.5-flash", "Streamed content from the model", "")
+
+	if resp.Choices[0].Content != "Streamed content from the model" {
+		t.Errorf("expected streamed accumulatedText to win, got %q", resp.Choices[0].Content)
+	}
+}
+
 func TestGetModelMetadata(t *testing.T) {
 	adapter := NewGeminiCLIAdapter("", "gemini-3.5-flash", &MockLogger{})
 

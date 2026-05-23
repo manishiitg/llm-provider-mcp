@@ -954,8 +954,19 @@ func containsGeminiImageContent(messages []llmtypes.MessageContent) bool {
 }
 
 func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}, sessionID string, resolvedModel string, accumulatedText string, apiErrMsg string) *llmtypes.ContentResponse {
-	// The result event doesn't contain response text — use accumulated text from message events
+	// Prefer text accumulated from streaming `content` events; fall back to
+	// the result event's own `response` field when present. Some Gemini CLI
+	// output paths skip the streaming-content channel and put the final text
+	// directly on the result event — without this fallback those turns end up
+	// with empty Content and trigger the upstream "choice.Content is empty"
+	// error even though Gemini did produce a response.
 	resultText := accumulatedText
+	if strings.TrimSpace(resultText) == "" {
+		if responseField, ok := raw["response"].(string); ok && strings.TrimSpace(responseField) != "" {
+			g.logger.Infof("[EMPTY_RESULT_FALLBACK] accumulatedText empty; using raw['response'] from result event (len=%d)", len(responseField))
+			resultText = responseField
+		}
+	}
 
 	// Extract usage stats from "stats" object
 	// Gemini CLI result stats: total_tokens, input_tokens, output_tokens, cached, input, duration_ms, tool_calls
