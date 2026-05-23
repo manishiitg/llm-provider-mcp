@@ -723,6 +723,12 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 				// Detect empty result: only retry if status is "success" and text is empty.
 				// If status is "error" (e.g. 503 API failure), retrying with a finalization
 				// prompt is pointless — there's no session content to summarize.
+				// Diagnostic: log every result event's three retry-decision inputs so we
+				// can tell which branch is preventing a finalization retry when an
+				// empty-content error surfaces upstream.
+				accTextLen := len(accumulatedText.String())
+				accTextTrimmedLen := len(strings.TrimSpace(accumulatedText.String()))
+				g.logger.Infof("[EMPTY_RESULT_DEBUG] result event: accumulatedTextLen=%d trimmedLen=%d sessionID=%q status=%q apiErrMsg=%q", accTextLen, accTextTrimmedLen, sessionID, resultStatus, apiErrMsg)
 				if accumulatedText.String() == "" && sessionID != "" && resultStatus != "error" {
 					emptyResultSessionID = sessionID
 					g.logger.Infof("Detected empty result with sessionID=%s (status=%s), may need retry", emptyResultSessionID, resultStatus)
