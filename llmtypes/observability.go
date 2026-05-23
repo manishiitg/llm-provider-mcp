@@ -15,11 +15,11 @@ import (
 // events, synthetic-terminal banner + done line, error reporting) so
 // each new provider gets observability for free.
 type ObservabilityConfig struct {
-	Provider     string        // canonical provider name: "anthropic", "openai", "vertex", "azure", "claudecode", "codex-cli", etc.
-	Model        string        // model ID actually being called (post-resolution)
-	Opts         *CallOptions  // the caller's CallOptions; carries InspectorSink + StreamChan
-	MessageCount int           // len(messages) before any provider-specific conversion
-	HeaderLine   string        // a single-line "command" string for the terminal banner (e.g. "openai.chat.completions model=gpt-5 msgs=3")
+	Provider     string       // canonical provider name: "anthropic", "openai", "vertex", "azure", "claudecode", "codex-cli", etc.
+	Model        string       // model ID actually being called (post-resolution)
+	Opts         *CallOptions // the caller's CallOptions; carries InspectorSink + StreamChan
+	MessageCount int          // len(messages) before any provider-specific conversion
+	HeaderLine   string       // a single-line "command" string for the terminal banner (e.g. "openai.chat.completions model=gpt-5 msgs=3")
 	// Optional: full message list. When set, WithObservability extracts
 	// the last user/human message and emits a "> user: ..." line
 	// into the synthetic terminal so the pane shows the prompt that
@@ -61,20 +61,20 @@ type AdapterBody func(sink *StreamSink) (*ContentResponse, error)
 //
 // Contract for adapter authors:
 //
-//   func (a *MyAdapter) GenerateContent(ctx, messages, options...) (*ContentResponse, error) {
-//       opts := parseOptions(options...)
-//       return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
-//           Provider:     "myprovider",
-//           Model:        modelID,
-//           Opts:         opts,
-//           MessageCount: len(messages),
-//           HeaderLine:   fmt.Sprintf("myprovider.call model=%s msgs=%d", modelID, len(messages)),
-//       }, func(term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
-//           // ... adapter body. Call term.AssistantText/ToolStart and
-//           // inspector.EmitEvent inside the stream loop.
-//           return resp, nil
-//       })
-//   }
+//	func (a *MyAdapter) GenerateContent(ctx, messages, options...) (*ContentResponse, error) {
+//	    opts := parseOptions(options...)
+//	    return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
+//	        Provider:     "myprovider",
+//	        Model:        modelID,
+//	        Opts:         opts,
+//	        MessageCount: len(messages),
+//	        HeaderLine:   fmt.Sprintf("myprovider.call model=%s msgs=%d", modelID, len(messages)),
+//	    }, func(term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
+//	        // ... adapter body. Call term.AssistantText/ToolStart and
+//	        // inspector.EmitEvent inside the stream loop.
+//	        return resp, nil
+//	    })
+//	}
 //
 // New providers added under this contract get inspector + terminal
 // for free. Don't reimplement these boundaries by hand — drift across
@@ -131,10 +131,10 @@ func WithObservability(ctx context.Context, cfg ObservabilityConfig, body Adapte
 	// to surface step name + index + attempt + agent without
 	// crowding the panel title.
 	if line := formatWorkflowContextLine(InspectorSinkStepContext(cfg.Opts.InspectorSink)); line != "" {
-		term.Line("%s", line)
+		term.Context(line)
 	}
-	for _, line := range formatConversationLines(cfg.Messages) {
-		term.Line("%s", line)
+	for _, row := range formatConversationRows(cfg.Messages) {
+		term.Row(row)
 	}
 
 	sink := &StreamSink{
@@ -247,11 +247,9 @@ func extractCostUSD(resp *ContentResponse) float64 {
 	return 0
 }
 
-// formatConversationLines renders the message history as a list of
-// pane lines: user → "> user: ...", assistant → "< asst: ...",
-// tool call → "→ tool: name(args)", tool result → "✓ result: ...".
-// Each line ends up in the synthetic terminal's buffer so the pane
-// shows the whole step's activity, not just the latest LLM call.
+// formatConversationRows renders the message history as role-aware terminal
+// rows. The SyntheticTerminal still mirrors rows into the legacy text buffer,
+// but user/assistant/tool identity is carried structurally in metadata.
 //
 // Truncation rules:
 //   - User messages: shown in full (debug visibility — they're
@@ -260,10 +258,10 @@ func extractCostUSD(resp *ContentResponse) float64 {
 //     pane stays scannable. Full text remains in the inspector
 //     request event.
 //   - Tool args: truncated more aggressively (120 chars).
-func formatConversationLines(messages []MessageContent) []string {
+func formatConversationRows(messages []MessageContent) []TerminalRow {
 	const maxLen = 400
 	const maxProseLen = 16000
-	out := make([]string, 0, len(messages))
+	out := make([]TerminalRow, 0, len(messages))
 	collapse := func(s string) string {
 		return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	}
@@ -274,14 +272,7 @@ func formatConversationLines(messages []MessageContent) []string {
 		}
 		return s[:max] + "…"
 	}
-	// emitProse splits a multi-line user/assistant text body into pane lines:
-	// the first line gets a "> user: " / "< asst: " prefix, subsequent lines
-	// are emitted with a two-space indent so the frontend parser folds them
-	// back into the same row. This preserves the original markdown structure
-	// (lists, paragraph breaks, fenced code) end-to-end so the synthetic
-	// terminal can render markdown properly. A per-call char budget keeps a
-	// single runaway response from blowing the pane content size.
-	emitProse := func(prefix, text string, budget int) {
+	emitProse := func(kind, text string, budget int) {
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
 			return
@@ -289,14 +280,7 @@ func formatConversationLines(messages []MessageContent) []string {
 		if len(trimmed) > budget {
 			trimmed = trimmed[:budget] + "…"
 		}
-		lines := strings.Split(trimmed, "\n")
-		for i, line := range lines {
-			if i == 0 {
-				out = append(out, prefix+line)
-			} else {
-				out = append(out, "  "+line)
-			}
-		}
+		out = append(out, TerminalRow{Kind: kind, Text: trimmed})
 	}
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
@@ -311,20 +295,20 @@ func formatConversationLines(messages []MessageContent) []string {
 					// User messages: full text, multi-line preserved.
 					// The step's instructions live here; collapsing
 					// to one line hides the structure.
-					emitProse("> user: ", text, maxProseLen)
+					emitProse("user", text, maxProseLen)
 				case ChatMessageTypeAI:
 					// Assistant text emitted multi-line so the
 					// synthetic terminal can render the model's
 					// markdown (lists, headings, code fences,
 					// paragraph breaks) instead of one collapsed
 					// run-on string.
-					emitProse("< asst: ", text, maxProseLen)
+					emitProse("asst", text, maxProseLen)
 				case ChatMessageTypeSystem:
 					// Skip system prompts — too long, not useful
 					// inline. They're available in the inspector
 					// request event.
 				default:
-					out = append(out, "  "+truncate(text, maxLen))
+					out = append(out, TerminalRow{Kind: "plain", Text: truncate(text, maxLen)})
 				}
 			case ToolCall:
 				name := ""
@@ -333,7 +317,7 @@ func formatConversationLines(messages []MessageContent) []string {
 					name = p.FunctionCall.Name
 					args = p.FunctionCall.Arguments
 				}
-				out = append(out, fmt.Sprintf("→ tool: %s(%s)", name, truncate(args, 120)))
+				out = append(out, TerminalRow{Kind: "tool", Name: name, Args: truncate(args, 120)})
 			case ToolCallResponse:
 				prefix := "✓"
 				if p.IsError {
@@ -343,22 +327,27 @@ func formatConversationLines(messages []MessageContent) []string {
 				if name == "" {
 					name = p.ToolCallID
 				}
-				out = append(out, fmt.Sprintf("%s result %s: %s", prefix, name, truncate(p.Content, 300)))
+				out = append(out, TerminalRow{
+					Kind:         "tool",
+					Name:         name,
+					Result:       truncate(p.Content, 300),
+					ResultPrefix: prefix,
+				})
 				if len(p.Images) > 0 {
-					out = append(out, fmt.Sprintf("    + %d image(s) attached to result", len(p.Images)))
+					out = append(out, TerminalRow{Kind: "plain", Text: fmt.Sprintf("+ %d image(s) attached to result", len(p.Images))})
 				}
 			case ImageContent:
 				ref := p.Data
 				if p.SourceType == "base64" {
 					ref = fmt.Sprintf("base64 %d bytes", len(p.Data))
 				}
-				out = append(out, fmt.Sprintf("[image %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80)))
+				out = append(out, TerminalRow{Kind: "attachment", Text: fmt.Sprintf("[image %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80))})
 			case DocumentContent:
 				ref := p.Data
 				if p.SourceType == "base64" {
 					ref = fmt.Sprintf("base64 %d bytes", len(p.Data))
 				}
-				out = append(out, fmt.Sprintf("[document %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80)))
+				out = append(out, TerminalRow{Kind: "attachment", Text: fmt.Sprintf("[document %s %s %s]", p.SourceType, p.MediaType, truncate(ref, 80))})
 			}
 			// Reasoning / thinking blocks (Claude extended thinking,
 			// Gemini thinking) don't ride as their own ContentPart in
