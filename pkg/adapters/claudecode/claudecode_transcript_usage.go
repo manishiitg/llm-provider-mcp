@@ -47,6 +47,11 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes
 
 	var input, output, cacheCreate, cacheRead int
 	var latestModel string
+	// Claude CLI writes one JSONL row per assistant content block (text
+	// chunks + each tool_use), but every row from a single LLM call shares
+	// the same message.id and carries the call's total usage. Sum per
+	// unique message.id, not per row, or we multi-count by ~5-10x.
+	seenMessageID := make(map[string]struct{})
 	scanner := bufio.NewScanner(f)
 	// Assistant events can carry long tool-use payloads; bump line limit.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -54,7 +59,9 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes
 		var ev struct {
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
+			RequestID string `json:"requestId"`
 			Message   struct {
+				ID    string `json:"id"`
 				Model string `json:"model"`
 				Usage struct {
 					InputTokens              int `json:"input_tokens"`
@@ -71,6 +78,16 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes
 			if ts, err := time.Parse(time.RFC3339Nano, ev.Timestamp); err == nil && ts.Before(turnStart) {
 				continue
 			}
+		}
+		dedupKey := ev.Message.ID
+		if dedupKey == "" {
+			dedupKey = ev.RequestID
+		}
+		if dedupKey != "" {
+			if _, ok := seenMessageID[dedupKey]; ok {
+				continue
+			}
+			seenMessageID[dedupKey] = struct{}{}
 		}
 		input += ev.Message.Usage.InputTokens
 		output += ev.Message.Usage.OutputTokens

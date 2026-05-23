@@ -329,6 +329,16 @@ type GenerationInfo struct {
 	// coding-agent transports. It is serialized explicitly so callers can persist
 	// the handle instead of re-parsing provider-specific Additional metadata.
 	CodingProviderSessionHandle *CodingProviderSessionHandle `json:"coding_provider_session_handle,omitempty"`
+
+	// CodingProviderIntermediateMessages captures the agent's internal
+	// turn-by-turn trail (text chunks, tool_use calls, tool_result
+	// responses) that occurred inside the provider during this
+	// GenerateContent. Populated by adapters whose underlying
+	// transport hides the loop from the caller (tmux CLIs read their
+	// sidecar transcript; structured/API transports typically leave
+	// this empty since the agent layer already sees those turns).
+	// See coding_provider_intermediate_messages.go for helpers.
+	CodingProviderIntermediateMessages *CodingProviderIntermediateMessages `json:"coding_provider_intermediate_messages,omitempty"`
 }
 
 // ExtractUsageFromGenerationInfo extracts token usage from GenerationInfo in an LLM-agnostic way.

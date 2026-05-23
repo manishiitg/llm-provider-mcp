@@ -84,6 +84,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	if ownerSessionID == "" {
 		ownerSessionID = "cursor-bounded-" + cursorRandomHex(8)
 	}
+	// Capture turn start before doing any I/O so the sidecar parser
+	// can scope its store.db pick to a freshly-modified session.
+	turnStart := time.Now()
 
 	callCtx, cancel := cursorInteractiveCallContext(ctx)
 	defer cancel()
@@ -247,6 +250,20 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 				additional["cost_model_id"] = costLookupModel
 			}
 		}
+	}
+
+	// Reconstruct the CLI's internal tool-use trail from cursor's
+	// local sqlite store at ~/.cursor/chats/<md5(cwd)>/<agentId>/store.db.
+	// Cursor doesn't expose tokens (subscription-priced) but stores
+	// the full conversation including tool-call / tool-result blocks,
+	// so workflow conversation logs gain the same richness as the
+	// claude-code / codex tmux flows.
+	if sidecarMsgs := readCursorTranscriptMessages(turnStart, session.workingDir, ownerSessionID); len(sidecarMsgs) > 0 {
+		llmtypes.AttachCodingProviderIntermediateMessages(genInfo, llmtypes.CodingProviderIntermediateMessages{
+			Provider:  "cursor-cli",
+			Transport: llmtypes.CodingProviderTransportTmux,
+			Messages:  sidecarMsgs,
+		})
 	}
 
 	return &llmtypes.ContentResponse{
@@ -944,7 +961,16 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				lastCaptured = captured
 				continue
 			}
-			if hasCursorActivity(captured) {
+			// Reset idle only when we have activity AND we're not yet
+			// at the ready prompt. Cursor's TUI leaves stale status
+			// lines ("Running...", "Thinking...") visible for several
+			// seconds after the → prompt reappears; those used to
+			// keep restarting the idle timer and added 5-10s of
+			// avoidable wait to every turn. hasCursorReadyPrompt
+			// already handles the "→ visible + stale status" case
+			// correctly (returns true), so once we're ready we let
+			// the stable-window check drive completion.
+			if !hasCursorReadyPrompt(captured) && hasCursorActivity(captured) {
 				sawActivity = true
 				idleSince = time.Time{}
 				lastCaptured = captured

@@ -806,7 +806,8 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Slow tool false-idle guard | While a real slow MCP tool is still running, captured pane classification remains active even if a prompt-looking input/footer is visible. `GenerateContent` must not return until the tool has finished and the provider is genuinely idle. |
 | Done detection | Completion requires idle prompt, no activity anywhere in the current captured turn, no queued input, no modal, and a stable pane. |
 | Final extraction | Final text excludes TUI chrome, tool progress, raw tool payloads, queued user text, validation feedback, and stale scrollback. |
-| Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. |
+| Multi-turn | Turn 2 reuses the same native tmux session and proves memory with a random canary not present in the turn-2 submitted prompt. See also: **Comprehensive multi-turn**. |
+| Comprehensive multi-turn | 5+ sequential turns on one persistent session jointly cover sending user messages, completion detection (each turn returns within a bounded time without false idle), final text extraction (Content non-empty + contains expected per-turn token), token tracking (PromptTokens > 0 and CompletionTokens > 0 for each turn), conversation reconstruction (`CodingProviderIntermediateMessages` populated and contains only NEW content beyond the prior turn's tail), and cost ledger accumulation (one entry per turn; total tokens roll up correctly). See "Comprehensive Multi-Turn E2E" below. |
 | Stale draft cleanup | Seed an idle provider prompt with an untracked draft such as `go with option B`, then submit a different backend turn. The adapter must clear the stale draft, submit only the new turn, and ignore provider suggestion placeholders. |
 | Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. The adapter must not leave pasted live input sitting as an unsubmitted draft when the provider TUI is actively thinking. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
@@ -838,6 +839,55 @@ Minimum release gate for any new tmux provider:
 Cursor or any future provider must not be marked as a complete tmux coding
 agent in `coding_agent_contract.go` until the provider has these real E2E tests
 or an explicit documented exception for a capability it does not claim.
+
+### Comprehensive Multi-Turn E2E
+
+Single-turn coverage misses regressions that only surface across turns
+(cumulative sidecar roots, splice deduplication, false-idle on
+between-turn TUI animations, choice.Content corruption from multi-turn
+panes). Every tmux coding provider must have one opt-in real e2e that
+drives 5 or more sequential turns on a single persistent tmux session
+and jointly verifies all of the following on each turn:
+
+1. **Sending user messages**: the test appends a new `Human`
+   `MessageContent` to a growing local history slice before each
+   `GenerateContent` call. Later turns must include reference tokens
+   from earlier turns in their text — proves prior messages reached
+   the CLI.
+2. **Completion detection**: each call returns inside a bounded wall
+   clock (default 90 s). A turn exceeding the bound is a regression
+   against the wait-loop / settle-window contract — for example
+   stale `Running.../Thinking...` status lines must not keep
+   resetting the idle timer once the input prompt is visible.
+3. **Final text extraction**: `resp.Choices[0].Content` is non-empty
+   and (for content-checking turns) contains the expected token.
+   `choice.Content` for a tmux pane that has multiple turns visible
+   must not bleed prior turns' input into the latest answer.
+4. **Token tracking**: `GenerationInfo.PromptTokens > 0` and
+   `CompletionTokens > 0` per turn (`resp.Usage` is an acceptable
+   fallback). Char-based estimation is allowed for subscription
+   providers (e.g. cursor) but must still produce positive counts.
+5. **Conversation reconstruction**: `CodingProviderIntermediateMessages`
+   is populated on every turn (best-effort for cursor's async commit;
+   document the gap if a fast turn legitimately returns empty), and
+   each later turn's `Messages` slice contains only NEW content —
+   not the cumulative history of all prior turns. The last spliced
+   AI message must reference the current turn's user input.
+6. **Cost ledger accumulation**: after N turns the global ledger has
+   exactly N entries for this owner session, prompt/completion token
+   sums match the per-turn totals, and `TotalCostUSD` is greater than
+   zero for metered providers (subscription providers may stay at
+   zero — the test must document why).
+
+Reference implementation:
+`mcp-agent-builder-go/agent_go/cmd/server/multi_turn_chat_e2e_real_test.go`
+— the `runMultiTurnChatE2E` helper plus
+`TestMultiTurnChatE2E_{ClaudeCode,Codex,Cursor}` entry points, gated
+on the same env vars as the per-provider single-turn cost e2es.
+
+When the canonical doc lists a new tmux provider, add a matching
+`TestMultiTurnChatE2E_<Provider>` function to that file before
+flipping the contract row to `production-ready`.
 
 ### P1/P2 Hardening E2E Matrix
 

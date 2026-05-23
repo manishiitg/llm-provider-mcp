@@ -22,9 +22,17 @@ type TrailingCaptureScraper func(ctx context.Context) (string, error)
 // soon as completion is detected, and the StreamChan would close
 // before any late output could be captured.
 //
+// Early-exit: once we've seen the same snapshot
+// trailingCaptureStableSnapshots times in a row, we treat the pane as
+// idle and return rather than padding the full TmuxKillDelay. For
+// CLIs like cursor that produce no late output after the answer is
+// rendered, this saves 20+ seconds per turn.
+//
 // Caller supplies the metadata that should ride on each chunk so
 // downstream consumers (terminals store, frontend) can attribute the
 // snapshot to the right pane.
+const trailingCaptureStableSnapshots = 2
+
 func RunTrailingPaneCapture(
 	ctx context.Context,
 	streamChan chan<- StreamChunk,
@@ -38,6 +46,7 @@ func RunTrailingPaneCapture(
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	var lastSnapshot string
+	stableCount := 0
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -48,9 +57,19 @@ func RunTrailingPaneCapture(
 		if err != nil {
 			continue
 		}
-		if snapshot == "" || snapshot == lastSnapshot {
+		if snapshot == "" {
 			continue
 		}
+		if snapshot == lastSnapshot {
+			stableCount++
+			if stableCount >= trailingCaptureStableSnapshots {
+				// Pane idle — no point waiting for the full
+				// TmuxKillDelay just to never send anything.
+				return
+			}
+			continue
+		}
+		stableCount = 0
 		lastSnapshot = snapshot
 		select {
 		case streamChan <- StreamChunk{

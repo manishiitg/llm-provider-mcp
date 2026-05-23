@@ -71,6 +71,60 @@ func TestReadClaudeTranscriptUsageAggregatesTurn(t *testing.T) {
 	}
 }
 
+// TestReadClaudeTranscriptUsageDedupesByMessageID proves that when the
+// CLI writes the same LLM call as multiple JSONL rows (one per content
+// block: text chunks + each tool_use), we count its usage exactly once.
+// Real claude-code transcripts repeat the call's total usage on every
+// row that shares a message.id; summing per-row inflates by 5-10x.
+func TestReadClaudeTranscriptUsageDedupesByMessageID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "cafef00d-1111-2222-3333-444455556666"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-fake")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+
+	turnStart := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(1 * time.Second).Format(time.RFC3339Nano)
+
+	// Three rows from ONE LLM call (msg_A) — same usage repeated — plus
+	// one row from a SECOND LLM call (msg_B). Correct totals must reflect
+	// msg_A once + msg_B once, not msg_A three times.
+	usageA := `"usage":{"input_tokens":3,"output_tokens":100,"cache_creation_input_tokens":42339,"cache_read_input_tokens":0}`
+	usageB := `"usage":{"input_tokens":1,"output_tokens":50,"cache_creation_input_tokens":1000,"cache_read_input_tokens":42442}`
+
+	lines := []string{
+		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
+		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
+		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
+		`{"type":"user","timestamp":"` + ts + `","message":{"content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_B","message":{"id":"msg_B","model":"claude-opus-4-7",` + usageB + `}}`,
+	}
+	if err := os.WriteFile(transcript, []byte(joinLines(lines)), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	gi, _ := readClaudeTranscriptUsage(sessionID, turnStart)
+	if gi == nil {
+		t.Fatal("expected non-nil GenerationInfo")
+	}
+	// PromptTokens = (3 + 42339) + (1 + 1000) = 43343
+	if gi.PromptTokens == nil || *gi.PromptTokens != 43343 {
+		t.Fatalf("PromptTokens = %v, want 43343 (msg_A counted once + msg_B)", gi.PromptTokens)
+	}
+	// CompletionTokens = 100 + 50 = 150
+	if gi.CompletionTokens == nil || *gi.CompletionTokens != 150 {
+		t.Fatalf("CompletionTokens = %v, want 150", gi.CompletionTokens)
+	}
+	// CachedContentTokens = 0 + 42442 = 42442
+	if gi.CachedContentTokens == nil || *gi.CachedContentTokens != 42442 {
+		t.Fatalf("CachedContentTokens = %v, want 42442", gi.CachedContentTokens)
+	}
+}
+
 // TestReadClaudeTranscriptUsageReturnsNilWhenMissing makes sure the
 // extractor is silent (no panics, no logging) when the transcript
 // doesn't exist.

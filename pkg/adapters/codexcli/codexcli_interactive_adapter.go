@@ -268,6 +268,20 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		Status:          llmtypes.CodingProviderSessionStatusIdle,
 	})
 
+	// Reconstruct the CLI's internal tool-use trail (assistant text,
+	// function/custom tool calls + outputs) from the same rollout
+	// JSONL we read tokens from, so workflow conversation logs can
+	// splice the in-CLI turn-by-turn record into their persisted
+	// history. Best-effort: empty when the rollout is missing or has
+	// not been flushed yet.
+	if sidecarMsgs := readCodexTranscriptMessages(turnStart, session.workingDir); len(sidecarMsgs) > 0 {
+		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
+			Provider:  "codex-cli",
+			Transport: llmtypes.CodingProviderTransportTmux,
+			Messages:  sidecarMsgs,
+		})
+	}
+
 	// Inspector: emit the completion envelope. Token counts are
 	// best-effort from the rollout JSONL; cost may be unavailable on
 	// runs that didn't write a rollout file yet.
@@ -752,13 +766,26 @@ func codexAssistantHistory(messages []llmtypes.MessageContent) []string {
 }
 
 func codexWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
-	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if dir, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok {
+			if trimmed := strings.TrimSpace(dir); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	// Fallback to the process cwd. WITHOUT this, the sidecar
+	// parsers (readCodexTranscriptUsage / readCodexTranscriptMessages)
+	// get expectedWorkingDir="" and skip their session_meta.cwd
+	// filter — which means they happily pick up the freshest
+	// rollout from a parallel codex process (Codex Desktop / VS
+	// Code Codex), leaking that other process's conversation +
+	// tokens into this session. cursor's adapter has the same
+	// fallback via cursorMustGetwd().
+	wd, err := os.Getwd()
+	if err != nil {
 		return ""
 	}
-	if dir, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok {
-		return strings.TrimSpace(dir)
-	}
-	return ""
+	return wd
 }
 
 func startCodexTmuxSession(ctx context.Context, sessionName string, args []string, workingDir string) error {

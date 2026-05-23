@@ -370,6 +370,20 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		Status:          llmtypes.CodingProviderSessionStatusIdle,
 	})
 
+	// Reconstruct the CLI's internal tool-use loop from the same
+	// sidecar JSONL we read usage from, so workflow conversation logs
+	// can splice the in-CLI text/tool_use/tool_result trail into
+	// their persisted history. Best-effort: empty when the transcript
+	// is missing, unparsable, or only contains the final assistant
+	// text with no internal loop.
+	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, turnStart); len(sidecarMsgs) > 0 {
+		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
+			Provider:  "claude-code",
+			Transport: llmtypes.CodingProviderTransportTmux,
+			Messages:  sidecarMsgs,
+		})
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
