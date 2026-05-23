@@ -37,7 +37,6 @@ const (
 	EnvCodexInteractiveSessionPrefix      = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCodexInteractiveTimeoutSeconds     = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvCodexInteractiveIdleTimeoutSeconds = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCodexInteractiveRetentionSeconds   = "CODEX_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvCodexInteractivePromptWaitSeconds  = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCodexInteractiveStreamTmuxScreen   = "CODEX_CLI_STREAM_TMUX_SCREEN"
 )
@@ -2465,7 +2464,7 @@ func codexInteractiveIdleTimeout() time.Duration {
 }
 
 func codexInteractiveRetention() time.Duration {
-	return codexDurationFromEnv(EnvCodexInteractiveRetentionSeconds, defaultCodexInteractiveRetention)
+	return tmuxlaunch.Retention(defaultCodexInteractiveRetention)
 }
 
 func codexInteractivePromptWait() time.Duration {

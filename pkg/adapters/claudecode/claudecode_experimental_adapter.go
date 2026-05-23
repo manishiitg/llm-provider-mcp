@@ -43,7 +43,6 @@ const (
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalRetentionSeconds   = "CLAUDE_CODE_EXPERIMENTAL_RETENTION_SECONDS"
 	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
 	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 )
@@ -2079,15 +2078,7 @@ func persistentInteractiveIdleTimeout() time.Duration {
 }
 
 func boundedRetentionTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalRetentionSeconds))
-	if raw == "" {
-		return defaultBoundedRetention
-	}
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds <= 0 {
-		return defaultBoundedRetention
-	}
-	return time.Duration(seconds) * time.Second
+	return tmuxlaunch.Retention(defaultBoundedRetention)
 }
 
 func ensureTmuxAvailable(ctx context.Context) error {

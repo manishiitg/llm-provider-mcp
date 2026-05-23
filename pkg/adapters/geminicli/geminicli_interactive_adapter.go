@@ -41,7 +41,6 @@ const (
 	EnvGeminiInteractiveSessionPrefix      = "GEMINI_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvGeminiInteractiveTimeoutSeconds     = "GEMINI_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvGeminiInteractiveIdleTimeoutSeconds = "GEMINI_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvGeminiInteractiveRetentionSeconds   = "GEMINI_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvGeminiInteractivePromptWaitSeconds  = "GEMINI_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvGeminiInteractiveStreamTmuxScreen   = "GEMINI_CLI_STREAM_TMUX_SCREEN"
 )
@@ -1975,7 +1974,7 @@ func geminiInteractiveIdleTimeout() time.Duration {
 }
 
 func geminiInteractiveRetention() time.Duration {
-	return geminiDurationFromEnv(EnvGeminiInteractiveRetentionSeconds, defaultGeminiInteractiveRetention)
+	return tmuxlaunch.Retention(defaultGeminiInteractiveRetention)
 }
 
 func geminiInteractivePromptWait() time.Duration {

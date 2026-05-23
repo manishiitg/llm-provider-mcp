@@ -12,6 +12,7 @@ import (
 
 const EnvStartConcurrency = "CODING_SDK_TMUX_START_CONCURRENCY"
 const EnvPromptWaitSeconds = "CODING_SDK_TMUX_PROMPT_WAIT_SECONDS"
+const EnvRetentionSeconds = "CODING_SDK_TMUX_RETENTION_SECONDS"
 
 const defaultStartConcurrency = 1
 const defaultPromptWait = 120 * time.Second
@@ -63,6 +64,13 @@ func PromptWait(providerEnvKey string) time.Duration {
 		return parsed
 	}
 	return defaultPromptWait
+}
+
+func Retention(fallback time.Duration) time.Duration {
+	if parsed, ok := durationFromEnv(EnvRetentionSeconds); ok {
+		return parsed
+	}
+	return fallback
 }
 
 func durationFromEnv(key string) (time.Duration, bool) {

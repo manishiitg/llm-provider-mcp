@@ -38,7 +38,6 @@ const (
 	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvCursorInteractiveIdleTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCursorInteractiveRetentionSeconds   = "CURSOR_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvCursorInteractivePromptWaitSeconds  = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCursorInteractiveStreamTmuxScreen   = "CURSOR_CLI_STREAM_TMUX_SCREEN"
 )
@@ -1615,7 +1614,7 @@ func cursorInteractiveIdleTimeout() time.Duration {
 }
 
 func cursorInteractiveRetention() time.Duration {
-	return cursorDurationFromEnv(EnvCursorInteractiveRetentionSeconds, defaultCursorInteractiveRetention)
+	return tmuxlaunch.Retention(defaultCursorInteractiveRetention)
 }
 
 func cursorInteractivePromptWait() time.Duration {
