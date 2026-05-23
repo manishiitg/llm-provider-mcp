@@ -1022,9 +1022,14 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	}
 
 	// Extract usage stats from "stats" object
-	// Gemini CLI result stats: total_tokens, input_tokens, output_tokens, cached, input, duration_ms, tool_calls
+	// Gemini CLI result stats observed in the wild:
+	//   total_tokens, input_tokens, output_tokens, cached, input,
+	//   duration_ms, tool_calls, thoughts_tokens, reasoning_tokens,
+	//   models{<model_id>{...same fields per-model}}
 	var inputTokens, outputTokens, totalTokens, cachedTokens, toolCalls int
+	var uncachedInputTokens, thoughtsTokens, reasoningTokens int
 	var durationMs float64
+	var modelsBreakdown map[string]interface{}
 	if stats, ok := raw["stats"].(map[string]interface{}); ok {
 		if v, ok := stats["input_tokens"].(float64); ok {
 			inputTokens = int(v)
@@ -1038,11 +1043,25 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 		if v, ok := stats["cached"].(float64); ok {
 			cachedTokens = int(v)
 		}
+		if v, ok := stats["input"].(float64); ok {
+			// `input` = the non-cached portion of input_tokens (Gemini CLI splits
+			// input into cached vs. uncached for billing).
+			uncachedInputTokens = int(v)
+		}
 		if v, ok := stats["duration_ms"].(float64); ok {
 			durationMs = v
 		}
 		if v, ok := stats["tool_calls"].(float64); ok {
 			toolCalls = int(v)
+		}
+		if v, ok := stats["thoughts_tokens"].(float64); ok {
+			thoughtsTokens = int(v)
+		}
+		if v, ok := stats["reasoning_tokens"].(float64); ok {
+			reasoningTokens = int(v)
+		}
+		if m, ok := stats["models"].(map[string]interface{}); ok && len(m) > 0 {
+			modelsBreakdown = m
 		}
 	}
 	// Also check top-level usage field (fallback)
@@ -1083,6 +1102,23 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 	if toolCalls > 0 {
 		additional["gemini_tool_calls"] = toolCalls
 	}
+	if uncachedInputTokens > 0 {
+		additional["gemini_uncached_input_tokens"] = uncachedInputTokens
+	}
+	if thoughtsTokens > 0 {
+		additional["gemini_thoughts_tokens"] = thoughtsTokens
+		// Mirror under the canonical key the cost ledger / token-usage logs
+		// already inspect so reasoning surfaces in dashboards without a
+		// per-provider special case.
+		additional["reasoning_tokens"] = thoughtsTokens
+	}
+	if reasoningTokens > 0 && thoughtsTokens == 0 {
+		additional["gemini_reasoning_tokens"] = reasoningTokens
+		additional["reasoning_tokens"] = reasoningTokens
+	}
+	if modelsBreakdown != nil {
+		additional["gemini_models_breakdown"] = modelsBreakdown
+	}
 	if apiErrMsg != "" {
 		additional["gemini_api_error"] = apiErrMsg
 	}
@@ -1091,6 +1127,11 @@ func (g *GeminiCLIAdapter) mapResultToContentResponse(raw map[string]interface{}
 		OutputTokens: &outputTokens,
 		TotalTokens:  &totalTokens,
 		Additional:   additional,
+	}
+	if thoughtsTokens > 0 {
+		genInfo.ReasoningTokens = &thoughtsTokens
+	} else if reasoningTokens > 0 {
+		genInfo.ReasoningTokens = &reasoningTokens
 	}
 
 	// Set cache tokens in GenerationInfo if available
