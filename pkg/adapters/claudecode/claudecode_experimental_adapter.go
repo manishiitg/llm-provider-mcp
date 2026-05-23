@@ -346,6 +346,14 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 			gi.CompletionTokens = usage.CompletionTokens
 			gi.TotalTokens = usage.TotalTokens
 			gi.CachedContentTokens = usage.CachedContentTokens
+			// Forward raw cache token keys (cache_read_input_tokens /
+			// cache_creation_input_tokens) into the adapter's local
+			// Additional map so they survive to the cost ledger's
+			// extractCacheTokens, which keys off those raw names
+			// rather than the typed CachedContentTokens field.
+			for k, v := range usage.Additional {
+				additional[k] = v
+			}
 		}
 		if transcriptModel != "" {
 			effectiveModel = transcriptModel

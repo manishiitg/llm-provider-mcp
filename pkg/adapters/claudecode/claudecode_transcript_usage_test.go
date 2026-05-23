@@ -123,6 +123,20 @@ func TestReadClaudeTranscriptUsageDedupesByMessageID(t *testing.T) {
 	if gi.CachedContentTokens == nil || *gi.CachedContentTokens != 42442 {
 		t.Fatalf("CachedContentTokens = %v, want 42442", gi.CachedContentTokens)
 	}
+	// Cache fields must also surface in Additional under the raw
+	// Anthropic key names — that is the contract the cost ledger's
+	// extractCacheTokens relies on to populate CacheReadTokens /
+	// CacheWriteTokens. Skipping either dropped cache tokens from
+	// the per-turn ledger entry for real claude-code chats.
+	if gi.Additional == nil {
+		t.Fatalf("gi.Additional must surface raw cache keys; got nil")
+	}
+	if v, ok := gi.Additional["cache_read_input_tokens"]; !ok || v.(int) != 42442 {
+		t.Fatalf("gi.Additional[cache_read_input_tokens] = %v, want 42442", v)
+	}
+	if v, ok := gi.Additional["cache_creation_input_tokens"]; !ok || v.(int) != 43339 {
+		t.Fatalf("gi.Additional[cache_creation_input_tokens] = %v, want 43339 (42339 from msg_A + 1000 from msg_B)", v)
+	}
 }
 
 // TestReadClaudeTranscriptUsageReturnsNilWhenMissing makes sure the

@@ -111,6 +111,22 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes
 	if cacheRead > 0 {
 		gi.CachedContentTokens = intRef(cacheRead)
 	}
+	// Mirror cache numbers into Additional under the raw Anthropic
+	// key names so the downstream cost ledger pipeline (which keys
+	// off `cache_read_input_tokens` / `cache_creation_input_tokens`
+	// rather than the typed CachedContentTokens field) can populate
+	// CacheReadTokens / CacheWriteTokens per turn. Without this,
+	// claude-code chat ledger entries showed cache_read/write=0
+	// even though the turn was largely cache-served.
+	if cacheRead > 0 || cacheCreate > 0 {
+		gi.Additional = map[string]interface{}{}
+		if cacheRead > 0 {
+			gi.Additional["cache_read_input_tokens"] = cacheRead
+		}
+		if cacheCreate > 0 {
+			gi.Additional["cache_creation_input_tokens"] = cacheCreate
+		}
+	}
 	return gi, latestModel
 }
 
