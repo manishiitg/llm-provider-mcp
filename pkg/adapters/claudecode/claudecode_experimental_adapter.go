@@ -1155,7 +1155,16 @@ func hasReadyInputPrompt(captured string) bool {
 func isIgnorableClaudePromptFooterLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "⏵") ||
 		strings.Contains(trimmed, "tmux focus-events") ||
-		strings.Contains(trimmed, "set -g focus-events")
+		strings.Contains(trimmed, "set -g focus-events") ||
+		// Claude Code CLI's upgrade-notice footer: "current: X · latest: Y".
+		// When a new release is available the TUI parks this line at the
+		// very bottom of the pane, between the input box and end of screen.
+		// Without recognizing it, hasReadyInputPrompt walks up from the
+		// end, hits this non-prompt line before finding ❯, and returns
+		// false — so the wait loop never sees the agent as ready and
+		// the adapter hangs indefinitely on every turn until the user
+		// upgrades the CLI.
+		(strings.Contains(trimmed, "current:") && strings.Contains(trimmed, "latest:"))
 }
 
 func hasClaudeActivity(captured string) bool {

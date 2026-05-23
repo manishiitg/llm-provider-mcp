@@ -901,6 +901,32 @@ func TestHasReadyInputPromptAcceptsIdlePromptWithEscFooter(t *testing.T) {
 	}
 }
 
+// TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice locks in
+// a fix for a real production hang. Claude Code CLI shows an upgrade
+// notice line at the very bottom of the TUI when a newer release is
+// available ("current: 2.1.149 · latest: 2.1.150"). Before the fix,
+// hasReadyInputPrompt walked up from the last line, hit this line
+// BEFORE finding ❯, and returned false — so every chat turn hung
+// indefinitely (terminal view showed claude was done, but mcpagent's
+// wait loop never saw the agent as ready and never returned). The
+// fix recognizes the "current:/latest:" pair as an ignorable footer.
+func TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice(t *testing.T) {
+	pane := `
+⏺ Hi! How can I help you today?
+
+✻ Baked for 2s
+
+─────────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents            14048 tokens
+                                                                                              current: 2.1.149 · latest: 2.1.150
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false when CLI shows upgrade notice — wait loop will hang indefinitely")
+	}
+}
+
 func TestHasReadyInputPromptAcceptsClaudeSuggestionWithTrailingBlankFill(t *testing.T) {
 	pane := `
  ▐▛███▜▌   Claude Code v2.1.141
