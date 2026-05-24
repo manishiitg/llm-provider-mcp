@@ -558,9 +558,98 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			}
 			addCleanup(cleanup)
 		}
+		if denyBuiltin, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && denyBuiltin {
+			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			addCleanup(cleanup)
+		}
 	}
 
 	return cleanupAll, nil
+}
+
+// writeCursorDenyBuiltinHooks installs a .cursor/hooks.json + deny script
+// that blocks cursor's built-in Shell and Read tools via cursor's hook
+// system (https://cursor.com/docs/hooks). The model is forced to call the
+// MCP bridge instead (api-bridge.execute_shell_command, api-bridge.read_file)
+// when the orchestrator has injected the bridge mcp.json.
+//
+// Cleanup restores any pre-existing hooks.json the operator had in their
+// workspace and removes our deny script + the hooks/ subdir if we created
+// them. Order matters: write-then-restore composes cleanly with the rest
+// of prepareCursorProjectFiles's cleanup stack.
+func writeCursorDenyBuiltinHooks(cursorDir string) (func(), error) {
+	hooksDir := filepath.Join(cursorDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create cursor hooks dir: %w", err)
+	}
+	scriptPath := filepath.Join(hooksDir, "mlp-deny-builtin.sh")
+	// Heredoc emits the deny JSON cursor expects on stdout per its hook
+	// schema (https://cursor.com/docs/hooks). Exit code 0 + valid JSON
+	// tells cursor to obey the permission verdict. Exit code 2 would
+	// also deny, but emitting the verdict explicitly lets us include a
+	// user_message that helps debug "why didn't cursor run my command".
+	script := `#!/bin/bash
+# Installed by the multi-llm-provider-go cursor adapter when
+# WithDenyBuiltinTools is enabled. Denies cursor's built-in Shell/Read
+# so the agent routes through the MCP bridge (api-bridge.*) instead.
+cat <<'JSON'
+{"permission":"deny","user_message":"Built-in Read/Shell are disabled in this session. Call the api-bridge MCP tool instead (api-bridge.execute_shell_command for shell, api-bridge.read_file for reads).","agent_message":"This action is gated by the orchestrator. Call the api-bridge MCP tool instead of the built-in."}
+JSON
+exit 0
+`
+	previousScript, scriptExisted := readPreviousCursorFile(scriptPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to write cursor deny-builtin script: %w", err)
+	}
+	hooksConfig := `{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh"}],
+    "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh"}]
+  }
+}
+`
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	previousHooks, hooksExisted := readPreviousCursorFile(hooksPath)
+	if err := os.WriteFile(hooksPath, []byte(hooksConfig), 0o600); err != nil {
+		_ = os.Remove(scriptPath)
+		if !scriptExisted {
+			_ = os.Remove(hooksDir)
+		}
+		return nil, fmt.Errorf("failed to write cursor hooks.json: %w", err)
+	}
+	return func() {
+		// Restore (or remove) hooks.json first so cursor stops obeying our
+		// deny verdict immediately, then clean the script + dirs.
+		if hooksExisted {
+			_ = os.WriteFile(hooksPath, previousHooks, 0o600)
+		} else {
+			_ = os.Remove(hooksPath)
+		}
+		if scriptExisted {
+			_ = os.WriteFile(scriptPath, previousScript, 0o755)
+		} else {
+			_ = os.Remove(scriptPath)
+			_ = os.Remove(hooksDir)
+		}
+		_ = os.Remove(cursorDir)
+	}, nil
+}
+
+// readPreviousCursorFile reads an existing file or returns nil + false if
+// it doesn't exist. Errors other than ENOENT are treated as "didn't exist"
+// — cleanup must be best-effort; we never want a hook-restore step to fail
+// session teardown.
+func readPreviousCursorFile(path string) ([]byte, bool) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return content, true
 }
 
 func writeCursorRestoredFile(path string, content []byte) (func(), error) {

@@ -17,6 +17,7 @@ const (
 	MetadataKeyAutoApproveWebSearch  = "cursor_auto_approve_web_search"
 	MetadataKeyInteractiveSessionID  = "cursor_interactive_session_id"
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
+	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
 )
 
 // WithCursorModel sets the Cursor Agent CLI --model flag. Use "cursor-cli" or
@@ -150,6 +151,25 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithDenyBuiltinTools installs a per-session .cursor/hooks.json that
+// denies cursor's built-in Shell and Read tools via the beforeShellExecution
+// and beforeReadFile events. Cursor will then route those actions through
+// the MCP bridge (api-bridge.execute_shell_command / api-bridge.read_file)
+// instead — provided the bridge MCP config is also installed via
+// WithMCPConfig. Cleanup restores any pre-existing hooks.json on session
+// teardown so the operator's own hooks aren't disturbed.
+//
+// This is the "hard lever" for bridge-only tool usage. The "soft lever" is
+// to coach the model via system prompt; that has slow-failing edges where
+// cursor falls back to built-in tools. The hook denies the call before it
+// runs, so the model has no choice but to use the MCP bridge.
+func WithDenyBuiltinTools(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDenyBuiltinTools] = enabled
 	}
 }
 

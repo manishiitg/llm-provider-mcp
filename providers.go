@@ -3925,6 +3925,19 @@ func WithCursorApproveMCPs() llmtypes.CallOption {
 	return cursorcli.WithApproveMCPs()
 }
 
+// WithCursorDenyBuiltinTools installs a per-session .cursor/hooks.json
+// that denies cursor's built-in Shell and Read tools via the
+// beforeShellExecution + beforeReadFile hook events. The agent must then
+// route those actions through the MCP bridge instead — pair with
+// WithCursorMCPConfig so api-bridge.execute_shell_command and
+// api-bridge.read_file are available. Cleanup at session teardown
+// restores any pre-existing hooks.json the operator had in their
+// workspace. This is the "hard lever" for bridge-only tool usage that
+// the soft system-prompt coaching can't enforce reliably.
+func WithCursorDenyBuiltinTools(enabled bool) llmtypes.CallOption {
+	return cursorcli.WithDenyBuiltinTools(enabled)
+}
+
 // WithCursorMode sets Cursor Agent CLI's --mode flag. "ask" and "plan" are
 // both read-only at the CLI level. Leave empty for normal agent mode.
 //
@@ -3964,6 +3977,12 @@ func WithAgyPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 // .agents/mcp_config.json for the adapter-owned working directory.
 func WithAgyMCPConfig(config string) llmtypes.CallOption {
 	return agycli.WithMCPConfig(config)
+}
+
+// WithAgyBridgeOnlyTools writes an Antigravity workspace hook that denies
+// built-in tools while leaving configured MCP bridge tools available.
+func WithAgyBridgeOnlyTools(enabled bool) llmtypes.CallOption {
+	return agycli.WithBridgeOnlyTools(enabled)
 }
 
 // WithAgyDangerouslySkipPermissions controls agy's
