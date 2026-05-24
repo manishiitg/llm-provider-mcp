@@ -130,6 +130,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "stream-json",
+		AdapterReadsTranscript:  false,
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -159,6 +162,15 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
+		SurfacesTokenUsage:      true,
+		// Cursor's structured (--print) path parses stream-json exactly; the
+		// tmux interactive path falls back to a 4-chars-per-token heuristic
+		// in estimateCursorTmuxTokens. We classify by the higher-fidelity
+		// canonical path. Reports from tmux-mode runs should be flagged as
+		// approximate at the cost-ledger layer.
+		TokenUsageSource:       "stream-json",
+		AdapterReadsTranscript: true,
+		TranscriptPathTemplate: "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
 	},
 	ProviderGeminiCLI: {
 		Provider:    ProviderGeminiCLI,
@@ -184,6 +196,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   false,
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "transcript-file",
+		AdapterReadsTranscript:  true,
+		TranscriptPathTemplate:  "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
 	},
 	ProviderOpenCodeCLI: {
 		Provider:                ProviderOpenCodeCLI,
@@ -206,6 +222,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "stream-json",
+		AdapterReadsTranscript:  false,
 	},
 }
 

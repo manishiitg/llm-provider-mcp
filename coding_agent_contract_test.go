@@ -106,6 +106,75 @@ func TestNativeResumeContractMatchesRegistry(t *testing.T) {
 	}
 }
 
+// TestTokenUsageContractIsWellFormed catches two classes of drift on the
+// SurfacesTokenUsage / TokenUsageSource pair:
+//
+//  1. A contract that claims SurfacesTokenUsage:true must also name a
+//     TokenUsageSource from validTokenUsageSources. Empty or freeform
+//     strings fail. This stops "well we surface SOMETHING" claims with
+//     no audit trail of where the data comes from.
+//  2. A contract that claims SurfacesTokenUsage:false must NOT name a
+//     source — if there's no usage, there's no source to declare. Stops
+//     the inverse drift where someone fills in the source but forgets
+//     to flip the bool.
+//
+// Add new TokenUsageSource values to validTokenUsageSources first; the
+// test will then accept them.
+func TestTokenUsageContractIsWellFormed(t *testing.T) {
+	for _, c := range CodingAgentProviderContracts() {
+		if c.SurfacesTokenUsage {
+			if c.TokenUsageSource == "" {
+				t.Errorf("%s claims SurfacesTokenUsage but TokenUsageSource is empty — declare one of stream-json|transcript-file|estimated", c.Provider)
+				continue
+			}
+			if !IsValidTokenUsageSource(c.TokenUsageSource) {
+				t.Errorf("%s declares TokenUsageSource=%q which is not in validTokenUsageSources — add it there first or fix the typo", c.Provider, c.TokenUsageSource)
+			}
+		} else if c.TokenUsageSource != "" {
+			t.Errorf("%s has TokenUsageSource=%q but SurfacesTokenUsage=false — flip the bool or clear the source", c.Provider, c.TokenUsageSource)
+		}
+	}
+}
+
+// TestTranscriptReaderContractMatchesRegistry mirrors the resume drift
+// test for AdapterReadsTranscript. Contract claim must match registry
+// membership in both directions, AND the contract's TranscriptPathTemplate
+// must equal the registry's PathTemplate when both are set — so docs in
+// the contract stay aligned with what the registry advertises.
+func TestTranscriptReaderContractMatchesRegistry(t *testing.T) {
+	for _, c := range CodingAgentProviderContracts() {
+		info, hasReader := TranscriptReaderFor(c.Provider)
+		if c.AdapterReadsTranscript != hasReader {
+			t.Errorf("transcript-reader contract drift for %s: contract.AdapterReadsTranscript=%v but transcriptReaderRegistry presence=%v. Update coding_agent_contract.go and coding_agent_transcript_registry.go together — see the comment block in coding_agent_transcript_registry.go for the 3-step checklist.",
+				c.Provider, c.AdapterReadsTranscript, hasReader)
+			continue
+		}
+		if hasReader && info.PathTemplate != c.TranscriptPathTemplate {
+			t.Errorf("transcript path template drift for %s: contract=%q registry=%q. Keep them in sync.",
+				c.Provider, c.TranscriptPathTemplate, info.PathTemplate)
+		}
+		if !hasReader && c.TranscriptPathTemplate != "" {
+			t.Errorf("%s has TranscriptPathTemplate=%q but no entry in transcriptReaderRegistry — register the reader or clear the template",
+				c.Provider, c.TranscriptPathTemplate)
+		}
+	}
+	// Inverse: any registry entry must have its contract flag flipped to true.
+	for provider, info := range transcriptReaderRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("transcriptReaderRegistry has %s but no coding-agent contract is registered for it", provider)
+			continue
+		}
+		if !contract.AdapterReadsTranscript {
+			t.Errorf("transcriptReaderRegistry has %s but its contract.AdapterReadsTranscript is false — flip the contract", provider)
+		}
+		if contract.TranscriptPathTemplate != info.PathTemplate {
+			t.Errorf("registry path template for %s (%q) does not match contract.TranscriptPathTemplate (%q)",
+				provider, info.PathTemplate, contract.TranscriptPathTemplate)
+		}
+	}
+}
+
 func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 	contracts := CodingAgentProviderContracts()
 	if len(contracts) == 0 {
