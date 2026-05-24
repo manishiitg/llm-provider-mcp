@@ -1268,6 +1268,23 @@ func TestClaudePromptDraftToClearBeforePasteIgnoresContextualSuggestion(t *testi
 	}
 }
 
+func TestClaudePromptDraftToClearBeforePasteIgnoresQueuedMessagesHint(t *testing.T) {
+	pane := `
+⏺ Done
+
+─────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear for Claude queued-message hint", draft)
+	}
+	if !hasReadyEmptyInputPrompt(pane) {
+		t.Fatal("hasReadyEmptyInputPrompt = false for Claude queued-message hint")
+	}
+}
+
 func TestClaudePromptDraftToClearBeforePasteClearsNBSPDraft(t *testing.T) {
 	pane := `
 ⏺ Done
@@ -1300,6 +1317,25 @@ func TestClaudePromptDraftToClearBeforePasteIgnoresRunningPrompt(t *testing.T) {
 `
 	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
 		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear while Claude is active", draft)
+	}
+}
+
+func TestClaudePromptDraftToClearBeforePasteIgnoresRunningCreatingPrompt(t *testing.T) {
+	pane := `
+⏺ Acknowledged — all review pipeline sub-agents and the eval step are running.
+
+✻ Churned for 12s
+
+❯ continue
+
+⏺ api-bridge - execute_shell_command (MCP)
+
+✢ Creating… (4s · ↓ 15 tokens)
+
+❯ continue
+`
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("claudePromptDraftToClearBeforePaste = (%q, true), want no clear while Claude is creating", draft)
 	}
 }
 

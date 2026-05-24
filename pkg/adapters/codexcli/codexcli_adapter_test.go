@@ -357,6 +357,25 @@ func TestCodexTerminalTailTextFallbackUsesLatestAssistantLines(t *testing.T) {
 	}
 }
 
+func TestCodexPolicyInvalidPromptDetection(t *testing.T) {
+	pane := `
+■ Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt:
+https://platform.openai.com/docs/guides/reasoning#advice-on-prompting
+
+›
+`
+	if err := codexPolicyInvalidPromptError(pane); err == nil {
+		t.Fatal("codexPolicyInvalidPromptError() error = nil, want policy rejection")
+	}
+}
+
+func TestCodexPolicyInvalidPromptDetectionFromExtractedTail(t *testing.T) {
+	text := "https://platform.openai.com/docs/guides/reasoning#advice-on-prompting"
+	if err := codexPolicyInvalidPromptTextError(text); err == nil {
+		t.Fatal("codexPolicyInvalidPromptTextError() error = nil, want policy rejection")
+	}
+}
+
 func TestStripCodexHistoricalAssistantTextRemovesPaneReplay(t *testing.T) {
 	previous := `Hello! I'm your Workflow Builder agent. I'm currently in the testing
 workspace, where we have a regression test workflow designed to verify the

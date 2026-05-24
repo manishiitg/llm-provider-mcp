@@ -583,9 +583,8 @@ func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, l
 	if session == nil {
 		return
 	}
-	// tmux kill delay is short (30s grace for trailing output);
-	// cursorInteractiveRetention() drives the rail-display retention
-	// passed through metadata so the snapshot persists after kill.
+	// Keep the real tmux pane alive for the shared bounded retention window so
+	// the UI terminal remains inspectable/debuggable while it is visible.
 	retention := llmtypes.TmuxKillDelay
 	session.lastUsed = time.Now()
 	if retention <= 0 {

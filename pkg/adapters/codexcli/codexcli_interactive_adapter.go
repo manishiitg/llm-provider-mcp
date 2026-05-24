@@ -190,6 +190,16 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 		return nil, err
 	}
+	if err := codexPolicyInvalidPromptError(captured); err != nil {
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":      "tmux_wait_response",
+			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
+		})
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
 	inspector.EmitEvent("tmux_response_captured", map[string]interface{}{
 		"response_chars": len(captured),
 		"elapsed_ms":     time.Since(promptSentAt).Milliseconds(),
@@ -198,6 +208,16 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	content := parseCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	if forcedComplete && strings.TrimSpace(content) == "" {
 		content = forcedCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	}
+	if err := codexPolicyInvalidPromptTextError(content); err != nil {
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":      "tmux_parse_response",
+			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
+		})
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
 	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
@@ -488,10 +508,8 @@ func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, log
 	if session == nil {
 		return
 	}
-	// tmux kill delay is short (30s grace for trailing output);
-	// codexInteractiveRetention() is the rail-display retention sent
-	// through metadata so the snapshot survives in the terminals store
-	// after the tmux process is gone.
+	// Keep the real tmux pane alive for the shared bounded retention window so
+	// the UI terminal remains inspectable/debuggable while it is visible.
 	retention := llmtypes.TmuxKillDelay
 	session.lastUsed = time.Now()
 	if retention <= 0 {
@@ -1001,6 +1019,43 @@ func forcedCodexInteractiveResponse(captured, baseline, echoedUserPrompt string,
 	text = stripCodexEchoedUserPrompt(stripCodexANSI(delta), echoedUserPrompt)
 	text = stripCodexHistoricalAssistantText(text, historicalAssistantTexts)
 	return strings.TrimSpace(text)
+}
+
+func codexPolicyInvalidPromptError(captured string) error {
+	if hasCodexPolicyInvalidPrompt(captured) {
+		return errors.New("Codex CLI rejected the prompt as policy invalid")
+	}
+	return nil
+}
+
+func codexPolicyInvalidPromptTextError(text string) error {
+	if hasCodexPolicyInvalidPromptText(text) {
+		return errors.New("Codex CLI rejected the prompt as policy invalid")
+	}
+	return nil
+}
+
+func hasCodexPolicyInvalidPrompt(captured string) bool {
+	return hasCodexPolicyInvalidPromptText(stripCodexANSI(captured))
+}
+
+func hasCodexPolicyInvalidPromptText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "invalid prompt") &&
+		(strings.Contains(lower, "usage policy") || strings.Contains(lower, "violating our usage policy")) {
+		return true
+	}
+	if strings.Contains(lower, "potentially violating our usage policy") {
+		return true
+	}
+	// Codex sometimes leaves only the tail URL visible/extracted after the
+	// invalid-prompt banner scrolls. Treat a short answer containing only that
+	// docs pointer as the same fatal provider rejection, not a real answer.
+	return strings.Contains(lower, "platform.openai.com/docs/guides/reasoning#advice-on-prompting") &&
+		len([]rune(lower)) < 260
 }
 
 func rawFramedCodexAnswer(delta string) string {

@@ -974,6 +974,7 @@ func isClaudePromptPlaceholder(draft string) bool {
 		return false
 	}
 	return strings.HasPrefix(normalized, "type your message") ||
+		strings.HasPrefix(normalized, "press up to edit queued messages") ||
 		(strings.HasPrefix(normalized, "try ") && strings.Contains(normalized, "\"")) ||
 		normalized == "show me what it found"
 }
@@ -1287,7 +1288,11 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 				}
 				continue
 			}
-			if hasClaudeActivity(captured) && (!baselineActive || captured != paneBeforePaste || sawPaste) {
+			// If the pane already showed activity before paste, a changed screen can
+			// just be the pasted draft appearing while the old activity is still
+			// visible. Do not treat that as implicit submission; let the caller send
+			// the explicit submit keys after paste stabilizes.
+			if hasClaudeActivity(captured) && !baselineActive && (captured != paneBeforePaste || sawPaste) {
 				return true, nil
 			}
 			if captured != paneBeforePaste || strings.Contains(captured, "[Pasted text") {
