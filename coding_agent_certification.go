@@ -37,6 +37,13 @@ const (
 	CertCleanup                   CodingAgentCertificationID = "cleanup"
 	CertSessionLoss               CodingAgentCertificationID = "session_loss"
 	CertSessionLossRecovery       CodingAgentCertificationID = "session_loss_recovery"
+	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
+	// in tmux mode, SIGINT for structured mode) interrupts the current turn
+	// WITHOUT corrupting the CLI's persisted chat state. The next launch
+	// with --resume <id> must still see the prior conversation intact.
+	// This is distinct from CertCancellation, which only proves the
+	// interrupt is RECEIVED — not that state survives it.
+	CertCtrlCStatePreserved CodingAgentCertificationID = "ctrl_c_state_preserved"
 )
 
 var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
@@ -96,6 +103,7 @@ var codingAgentCapabilityCertifications = []struct {
 	{"persistent session", func(c CodingAgentProviderContract) bool { return c.UsesPersistentSession }, []CodingAgentCertificationID{CertMultiTurn, CertStaleDraftCleanup}},
 	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput}},
 	{"interrupt", func(c CodingAgentProviderContract) bool { return c.SupportsInterrupt }, []CodingAgentCertificationID{CertCancellation}},
+	{"ctrl-c state preserved", func(c CodingAgentProviderContract) bool { return c.HandlesCtrlCCleanExit }, []CodingAgentCertificationID{CertCtrlCStatePreserved}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
 }
@@ -587,6 +595,22 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/agycli/agycli_cleanup_test.go",
 			TestName:    "TestCleanupAgyCLIInteractiveSessionsDoesNotBlockOnBusySession",
 			Description: "cleanup does not deadlock on busy persistent Antigravity CLI sessions",
+		},
+		{
+			ID:          CertSessionLoss,
+			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
+			TestName:    "TestAgyCLIRealNativeResumeAfterTmuxLossContract",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
+			Description: "simulates Antigravity tmux loss after capturing a provider-native conversation id",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSessionLossRecovery,
+			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
+			TestName:    "TestAgyCLIRealNativeResumeAfterTmuxLossContract",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
+			Description: "relaunches Antigravity with --conversation and recalls a canary without app history replay",
+			RealE2E:     true,
 		},
 		{
 			ID:          CertParallelStartupQueue,

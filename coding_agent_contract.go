@@ -111,30 +111,45 @@ type CodingAgentProviderContract struct {
 	// vars only (e.g. ANTHROPIC_API_KEY for the anthropic sub-provider);
 	// sub-provider routing lives in adapter-specific configuration.
 	APIKeyEnvVars []string
+
+	// HandlesCtrlCCleanExit reports whether sending Ctrl+C (0x03 keystroke
+	// in tmux mode, SIGINT in structured mode) leaves the CLI's persisted
+	// chat state intact and resumable. Distinct from SupportsInterrupt,
+	// which only proves the interrupt is RECEIVED — this stronger claim
+	// is that --resume <id> on the next launch still loads the prior
+	// conversation without corruption.
+	//
+	// Pairs with CertCtrlCStatePreserved. Default is false on every
+	// provider today: we haven't yet written the e2e tests that prove
+	// state survives a cancel for any CLI. Flip true together with
+	// landing the test entry — the drift test in
+	// TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification will
+	// fail otherwise.
+	HandlesCtrlCCleanExit bool
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 	ProviderClaudeCode: {
-		Provider:                ProviderClaudeCode,
-		DisplayName:             "Claude Code",
-		CLIName:                 "claude",
-		Transport:               CodingAgentTransportTmux,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  true,
-		UsesPersistentSession:   true,
-		SupportsLiveInput:       true,
-		SupportsInterrupt:       true,
-		SupportsTerminalStream:  true,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   true,
-		ProcessScopedCleanup:    true,
-		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      true,
-		ImageInputInteractive:   true,
+		Provider:                      ProviderClaudeCode,
+		DisplayName:                   "Claude Code",
+		CLIName:                       "claude",
+		Transport:                     CodingAgentTransportTmux,
+		RequiresWorkingDir:            true,
+		RequiresOwnerSessionID:        true,
+		UsesPersistentSession:         true,
+		SupportsLiveInput:             true,
+		SupportsInterrupt:             true,
+		SupportsTerminalStream:        true,
+		SupportsFinalExtraction:       true,
+		SupportsNativeResume:          true,
+		UsesMCPBridge:                 true,
+		SupportsBridgeOnlyTools:       true,
+		UsesNativeSystemPrompt:        true,
+		LaunchesViaLoginShell:         true,
+		ProcessScopedCleanup:          true,
+		HandlesTmuxSessionLoss:        true,
+		StructuredFallback:            true,
+		ImageInputInteractive:         true,
 		SurfacesTokenUsage:            true,
 		TokenUsageSource:              "stream-json",
 		AdapterReadsTranscript:        false,
@@ -169,11 +184,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
-		SurfacesTokenUsage:     true,
-		TokenUsageSource:       "stream-json",
-		AdapterReadsTranscript: false,
-		RequiresWorkspaceTrust: true,
-		APIKeyEnvVars:          []string{"CODEX_API_KEY"},
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "stream-json",
+		AdapterReadsTranscript:  false,
+		RequiresWorkspaceTrust:  true,
+		APIKeyEnvVars:           []string{"CODEX_API_KEY"},
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -239,11 +254,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   false,
-		SurfacesTokenUsage:     true,
-		TokenUsageSource:       "transcript-file",
-		AdapterReadsTranscript: true,
-		TranscriptPathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
-		APIKeyEnvVars:          []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "transcript-file",
+		AdapterReadsTranscript:  true,
+		TranscriptPathTemplate:  "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
+		APIKeyEnvVars:           []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 	},
 	ProviderAgyCLI: {
 		Provider:                ProviderAgyCLI,
@@ -257,7 +272,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsInterrupt:       true,
 		SupportsTerminalStream:  true,
 		SupportsFinalExtraction: true,
-		SupportsNativeResume:    false,
+		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
 		SupportsBridgeOnlyTools: false,
 		UsesNativeSystemPrompt:  true,
@@ -266,11 +281,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      false,
 		ImageInputInteractive:   false,
-		SurfacesTokenUsage:     true,
-		TokenUsageSource:       "estimated",
-		AdapterReadsTranscript: false,
-		RequiresWorkspaceTrust: true,
-		APIKeyEnvVars:          []string{"AGY_API_KEY"},
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "estimated",
+		AdapterReadsTranscript:  false,
+		RequiresWorkspaceTrust:  true,
+		APIKeyEnvVars:           []string{"AGY_API_KEY"},
 	},
 	ProviderOpenCodeCLI: {
 		Provider:                ProviderOpenCodeCLI,
@@ -293,10 +308,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
-		SurfacesTokenUsage:     true,
-		TokenUsageSource:       "stream-json",
-		AdapterReadsTranscript: false,
-		APIKeyEnvVars:          []string{"OPENCODE_API_KEY"},
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "stream-json",
+		AdapterReadsTranscript:  false,
+		APIKeyEnvVars:           []string{"OPENCODE_API_KEY"},
 	},
 }
 
