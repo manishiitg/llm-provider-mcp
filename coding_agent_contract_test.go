@@ -204,14 +204,13 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // Drain this map by writing the missing e2e tests + registering them in
 // codingAgentProviderCertifications.
 var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
-	// Cursor CLI is fully wired in the orchestrator but lacks ANY e2e
-	// certification entries. Most urgent gap: CertMCPBridge — proven by the
-	// read-credentials workflow run that produced 0 tokens / 0 tool calls.
-	// Tracked in tasks #11 (CertMCPBridge for cursor) and #10 follow-ups.
+	// Cursor CLI is fully wired in the orchestrator. CertMCPBridge has
+	// landed (TestCursorCLIStructuredMCPBridge); remaining IDs are real
+	// gaps that need their own e2e tests, tracked as follow-up tasks.
 	ProviderCursorCLI: {
 		CertBoundedRetention, CertBridgeOnlyTools, CertCancellation, CertCleanup,
 		CertDoneDetection, CertFinalExtraction, CertFreshLaunch, CertLifecyclePolicy,
-		CertLiveInput, CertMCPBridge, CertMultiTurn, CertNativeSystemPrompt,
+		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
 		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
 		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
 		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
@@ -223,15 +222,16 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// the cursor block above — same set of missing IDs is expected for a new
 	// tmux-mode CLI without any e2e tests written yet.
 	//
-	// Gemini + OpenCode are structured-only (no tmux suite required), but
-	// still claim the structured-relevant capabilities below with no e2e.
+	// Gemini + OpenCode are structured-only (no tmux suite required).
+	// CertMCPBridge has landed for both; remaining IDs await their own
+	// e2e tests.
 	ProviderGeminiCLI: {
 		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
-		CertMCPBridge, CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
+		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 	ProviderOpenCodeCLI: {
 		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
-		CertMCPBridge, CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
+		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 }
 

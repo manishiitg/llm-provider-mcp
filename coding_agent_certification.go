@@ -495,6 +495,48 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 	},
+	ProviderCursorCLI: {
+		// CertMCPBridge — first cursor certification on file. Proves the
+		// adapter actually wires cursor's structured (--print) path through
+		// an MCP bridge subprocess and surfaces the tool's output. Until
+		// this was registered, cursor's UsesMCPBridge:true claim was
+		// unverified, and a real workflow run (HDFC read-credentials,
+		// 2026-05-24) silently produced 0 tokens / 0 tool calls because
+		// nobody noticed the bridge path wasn't being exercised.
+		//
+		// More cursor certifications (tmux suite, working dir, trust,
+		// resume, native system prompt, etc.) are tracked as
+		// knownCertificationGaps in coding_agent_contract_test.go and will
+		// be added as their e2e tests are written.
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
+			TestName:    "TestCursorCLIStructuredMCPBridge",
+			Env:         []string{"RUN_CURSOR_CLI_STREAM_JSON_E2E=1"},
+			Description: "Cursor CLI calls a real MCP bridge tool through its structured (--print) path",
+			RealE2E:     true,
+		},
+	},
+	ProviderGeminiCLI: {
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/geminicli/geminicli_stream_integration_test.go",
+			TestName:    "TestGeminiCLIRealStreamJSONMCPBridgeContract",
+			Env:         []string{"RUN_GEMINI_CLI_STREAM_JSON_E2E=1"},
+			Description: "Gemini CLI calls a real MCP bridge tool through its stream-json path",
+			RealE2E:     true,
+		},
+	},
+	ProviderOpenCodeCLI: {
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/opencodecli/opencodecli_structured_integration_test.go",
+			TestName:    "TestOpenCodeCLIStructuredMCPBridge",
+			Env:         []string{"RUN_OPENCODE_CLI_REAL_E2E=1"},
+			Description: "OpenCode CLI calls a real MCP bridge tool through its structured run path",
+			RealE2E:     true,
+		},
+	},
 }
 
 // RequiredCodingAgentCertificationIDs returns the proof IDs implied by the
