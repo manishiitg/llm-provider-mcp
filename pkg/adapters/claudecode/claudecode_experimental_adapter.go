@@ -579,14 +579,26 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 				tempFiles = append(tempFiles, rulePath)
 			}
 		}
-		if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
-			if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig); err != nil {
-				// Best-effort: --mcp-config above already loaded the
-				// MCP servers via the temp file; the workspace .mcp.json
-				// is purely additive (visible to downstream tooling).
-				_ = err
-			} else if mcpPath != "" {
-				tempFiles = append(tempFiles, mcpPath)
+		// .mcp.json projection is intentionally gated behind an env
+		// var: dropping it triggers Claude Code's "New MCP server found
+		// in .mcp.json — approve?" discovery prompt at startup, which
+		// the tmux adapter cannot dismiss. Pre-recording approval in
+		// ~/.claude.json (enabledMcpjsonServers + mcpServers) was
+		// verified NOT to suppress the prompt on Claude Code v2.1.150.
+		// The --mcp-config <temp> + --strict-mcp-config flags above
+		// already load the MCP servers without triggering the prompt,
+		// so disabling this projection by default loses only the
+		// workspace-visibility belt-and-suspenders, not the actual MCP
+		// loading. Set MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS=1 to
+		// turn it back on if you have a way to handle the prompt
+		// (e.g. a tmux send-keys post-launch dismissal).
+		if os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
+			if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
+				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig); err != nil {
+					_ = err
+				} else if mcpPath != "" {
+					tempFiles = append(tempFiles, mcpPath)
+				}
 			}
 		}
 	}

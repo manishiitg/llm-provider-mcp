@@ -481,6 +481,16 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	}
 
 	args := []string{"codex"}
+	// --dangerously-bypass-hook-trust is paired with the
+	// .codex/hooks.json projection in writeCodexProjectArtifacts,
+	// which is gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
+	// because the flag enables hook EXECUTION but does NOT dismiss
+	// codex's interactive review screen on v0.131.0. Only emit the
+	// flag when the projection is actually happening, so the trust-
+	// bypass warning doesn't appear in normal sessions.
+	if writeProjectInstructionFromOptions(opts) && os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
+		args = append(args, "--dangerously-bypass-hook-trust")
+	}
 	if resumeSessionID != "" {
 		args = append(args, "resume")
 	}
@@ -745,6 +755,18 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 		unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 		if session.systemPromptTempFile != "" {
 			_ = os.Remove(session.systemPromptTempFile)
+		}
+		// Honor the WithWriteProjectInstructionFile byte-restore
+		// promise: when the global cleanup path tears down sessions
+		// without going through closeCodexPersistentSession (e.g.
+		// process exit, test teardown, explicit
+		// CleanupCodexCLIInteractiveSessions call), the project
+		// artifact restore must still run. Without this, operator-
+		// owned AGENTS.md / .codex/config.toml content stays
+		// destroyed after persistent-session shutdown.
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
 		}
 		if err := killCodexTmuxSession(ctx, session.tmuxSessionName); err != nil {
 			failures = append(failures, err.Error())

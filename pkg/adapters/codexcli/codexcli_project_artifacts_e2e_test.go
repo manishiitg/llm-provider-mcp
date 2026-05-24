@@ -12,20 +12,26 @@ import (
 
 // TestCodexCLIRealProjectArtifactsLifecycle is an end-to-end test that
 // proves the WithWriteProjectInstructionFile lifecycle against a real
-// `codex` binary: pre-seed an operator-owned AGENTS.md + .codex/hooks.json,
-// run a tiny adapter call with the flag + WithMCPServers + WithProjectDirID
-// pointing at a tempdir, then verify after the call:
+// `codex` binary by exercising the SAFE projections (the ones not
+// gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS).
 //
+// The current safe set for codex is AGENTS.md and .codex/config.toml
+// ([mcp_servers.NAME] tables). The hooks.json + deny-builtin.sh drop
+// is disabled by default because it triggers codex v0.131.0's
+// interactive hook-review screen ("⚠ 1 hook needs review before it
+// can run.") that the tmux adapter cannot dismiss — the documented
+// --dangerously-bypass-hook-trust flag enables hook execution but
+// does NOT auto-dismiss the visual review screen. See
+// codexcli_project_artifacts.go for the gate explanation.
+//
+// Verifications after the call returns:
 //   - <workingDir>/AGENTS.md byte-restored to operator pre-seed
-//     (proves codex's per-session AGENTS.md write + restore lifecycle)
-//   - <workingDir>/.codex/hooks.json byte-restored to operator pre-seed
-//     (proves the hooks.json projection cleanup runs even when the
-//     hooks.json was operator-owned, not freshly created)
-//   - mtime advanced past pre-seed on at least one artifact (proves
-//     the adapter actually touched the workspace mid-session vs the
-//     null hypothesis of "writer was never invoked")
-//   - .codex/hooks/deny-builtin.sh is gone (we created the dir, so
-//     cleanup must remove it — proves dir-removal heuristic works)
+//   - mtime advanced past pre-seed (proves the writer fired and
+//     then restored — without this, byte-restore would pass via
+//     the null hypothesis of "writer never ran")
+//   - .codex/hooks.json was NOT created (proves the unsafe drop
+//     stays disabled when MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
+//     is unset)
 //
 // Skipped unless RUN_CODEX_CLI_REAL_E2E=1 (or RUN_CODEX_CLI_INTERACTIVE_E2E=1)
 // and codex+tmux are on PATH.
@@ -35,18 +41,10 @@ func TestCodexCLIRealProjectArtifactsLifecycle(t *testing.T) {
 
 	tmp := t.TempDir()
 	agentsPath := filepath.Join(tmp, "AGENTS.md")
-	hooksPath := filepath.Join(tmp, ".codex", "hooks.json")
-	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
-		t.Fatalf("seed .codex dir: %v", err)
-	}
 
 	operatorAGENTS := []byte("# Operator AGENTS.md\n\nThis content MUST be restored on cleanup.\n")
-	operatorHooks := []byte(`{"hooks":{"PreToolUse":[{"matcher":"operator-only","hooks":[{"type":"command","command":"/opt/operator-deny.sh"}]}]}}`)
 	if err := os.WriteFile(agentsPath, operatorAGENTS, 0o600); err != nil {
 		t.Fatalf("seed AGENTS.md: %v", err)
-	}
-	if err := os.WriteFile(hooksPath, operatorHooks, 0o600); err != nil {
-		t.Fatalf("seed hooks.json: %v", err)
 	}
 	preAgents, _ := os.Stat(agentsPath)
 	preMTime := preAgents.ModTime()
@@ -59,6 +57,10 @@ func TestCodexCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	mcpJSON := `{"orchestrator-bridge":{"command":"/tmp/mcpbridge","env":{"MCP_API_URL":"http://localhost:9999"}}}`
 
 	_, callErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply concisely."}},
+		},
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
@@ -78,6 +80,14 @@ func TestCodexCLIRealProjectArtifactsLifecycle(t *testing.T) {
 		t.Fatalf("GenerateContent error = %v", callErr)
 	}
 
+	// Persistent session mode keeps the tmux session alive across
+	// turns and defers cleanup until the session is torn down. The
+	// byte-restore lifecycle assertions below depend on cleanup
+	// having run, so force-close the persistent session here.
+	if err := CleanupCodexCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("force-cleanup of persistent codex session: %v", err)
+	}
+
 	postAgents, err := os.ReadFile(agentsPath)
 	if err != nil {
 		t.Fatalf("AGENTS.md must still exist after cleanup (byte-restored): %v", err)
@@ -86,26 +96,15 @@ func TestCodexCLIRealProjectArtifactsLifecycle(t *testing.T) {
 		t.Errorf("cleanup must restore operator AGENTS.md byte-for-byte\n  want: %s\n  got:  %s", operatorAGENTS, postAgents)
 	}
 
-	postHooks, err := os.ReadFile(hooksPath)
-	if err != nil {
-		t.Fatalf("hooks.json must still exist after cleanup (byte-restored): %v", err)
-	}
-	if string(postHooks) != string(operatorHooks) {
-		t.Errorf("cleanup must restore operator hooks.json byte-for-byte\n  want: %s\n  got:  %s", operatorHooks, postHooks)
-	}
-
 	postInfo, _ := os.Stat(agentsPath)
 	if !postInfo.ModTime().After(preMTime) {
 		t.Errorf("AGENTS.md mtime must advance past pre-seed (proves the adapter touched the file mid-session and then restored); preSeed=%v post=%v", preMTime, postInfo.ModTime())
 	}
 
-	// Deny script: pre-seed didn't include it, so we created the
-	// .codex/hooks/ dir + script. Cleanup must remove both.
-	scriptPath := filepath.Join(tmp, ".codex", "hooks", "deny-builtin.sh")
-	if _, err := os.Stat(scriptPath); !os.IsNotExist(err) {
-		t.Errorf("deny-builtin.sh leaked past cleanup; stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(tmp, ".codex", "hooks")); !os.IsNotExist(err) {
-		t.Errorf(".codex/hooks/ leaked past cleanup; the directory we created should be removed when empty")
+	// .codex/hooks.json MUST NOT have been written — this projection
+	// is gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS, which
+	// is not set during the test.
+	if _, err := os.Stat(filepath.Join(tmp, ".codex", "hooks.json")); err == nil {
+		t.Errorf(".codex/hooks.json was created despite MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS being unset; the unsafe-projection gate is broken")
 	}
 }

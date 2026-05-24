@@ -205,10 +205,14 @@ func TestWriteCodexProjectDenyBuiltinHooksRestoresOperatorScript(t *testing.T) {
 }
 
 // TestWriteCodexProjectArtifactsComposesAllArtifacts exercises the
-// top-level composite writer: AGENTS.md + .codex/config.toml +
-// .codex/hooks.json + .codex/hooks/deny-builtin.sh all land, and a
-// single cleanup tears all four down in LIFO order.
+// top-level composite writer with MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
+// set, so all four artifacts (AGENTS.md + .codex/config.toml +
+// .codex/hooks.json + .codex/hooks/deny-builtin.sh) land and the
+// composite cleanup tears all four down in LIFO order. Without the
+// env var the hooks projection is intentionally skipped — see
+// TestWriteCodexProjectArtifactsHooksGatedByEnvVar.
 func TestWriteCodexProjectArtifactsComposesAllArtifacts(t *testing.T) {
+	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "1")
 	tmp := t.TempDir()
 	prompt := "Run cargo test before committing."
 	mcpJSON := `{"api-bridge":{"command":"/opt/mcpbridge"}}`
@@ -234,6 +238,44 @@ func TestWriteCodexProjectArtifactsComposesAllArtifacts(t *testing.T) {
 	for _, path := range expected {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("cleanup must remove artifact %q created from nothing; stat err=%v", path, err)
+		}
+	}
+}
+
+// TestWriteCodexProjectArtifactsHooksGatedByEnvVar locks in the gate:
+// without MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS set, the hooks
+// projection (.codex/hooks.json + .codex/hooks/deny-builtin.sh) must
+// NOT land. AGENTS.md and .codex/config.toml are unaffected by the
+// gate and still drop.
+func TestWriteCodexProjectArtifactsHooksGatedByEnvVar(t *testing.T) {
+	// Explicitly UNSET the env var in case the host shell has it set;
+	// t.Setenv handles cleanup automatically.
+	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "")
+	tmp := t.TempDir()
+
+	cleanup, err := writeCodexProjectArtifacts(tmp, "system prompt", `{"x":{"command":"y"}}`, true)
+	if err != nil {
+		t.Fatalf("writeCodexProjectArtifacts: %v", err)
+	}
+	defer cleanup()
+
+	// Safe artifacts still land.
+	for _, path := range []string{
+		filepath.Join(tmp, "AGENTS.md"),
+		filepath.Join(tmp, ".codex", "config.toml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("safe artifact %q must still land without the env var: %v", path, err)
+		}
+	}
+
+	// Unsafe artifacts MUST NOT land.
+	for _, path := range []string{
+		filepath.Join(tmp, ".codex", "hooks.json"),
+		filepath.Join(tmp, ".codex", "hooks", "deny-builtin.sh"),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("unsafe artifact %q was created despite the env var being unset; the gate is broken", path)
 		}
 	}
 }

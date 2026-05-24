@@ -73,7 +73,19 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 		}
 	}
 
-	if denyBuiltins {
+	// .codex/hooks.json projection is intentionally gated behind an
+	// env var: dropping it triggers codex's interactive hook review
+	// screen at startup ("⚠ 1 hook needs review before it can run.").
+	// The documented --dangerously-bypass-hook-trust flag enables hook
+	// EXECUTION without trust but does NOT auto-dismiss the visual
+	// review screen on codex v0.131.0 — the tmux adapter blocks
+	// waiting for ready state. Disabling this projection by default
+	// removes the deny-builtin lever from codex; the trade-off is
+	// acceptable because the alternative (a session that always times
+	// out) is strictly worse. Set MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS=1
+	// to turn it back on if you have a way to dismiss the review screen
+	// (e.g. send-keys "t" post-launch).
+	if denyBuiltins && os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
 		cu, err := writeCodexProjectDenyBuiltinHooks(workingDir)
 		if err != nil {
 			rollback()

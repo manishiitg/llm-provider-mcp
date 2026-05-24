@@ -46,8 +46,10 @@ func TestOpenCodeCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	if err := os.WriteFile(pluginPath, operatorPlugin, 0o600); err != nil {
 		t.Fatalf("seed deny-builtin.js: %v", err)
 	}
-	preInfo, _ := os.Stat(agentsPath)
-	preMTime := preInfo.ModTime()
+	preInfoAgents, _ := os.Stat(agentsPath)
+	preMTimeAgents := preInfoAgents.ModTime()
+	preInfoPlugin, _ := os.Stat(pluginPath)
+	preMTimePlugin := preInfoPlugin.ModTime()
 	time.Sleep(10 * time.Millisecond)
 
 	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
@@ -60,7 +62,15 @@ func TestOpenCodeCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	// covered by existing tests.
 	mcpJSON := `{"mcpServers":{"orchestrator-bridge":{"command":"/tmp/mcpbridge","env":{"MCP_API_URL":"http://localhost:9999"}}}}`
 
+	// System message ensures the AGENTS.md write path inside the
+	// structured adapter fires (it's gated on a non-empty systemPrompt).
+	// Without this, the AGENTS.md writer would be skipped and mtime
+	// would never advance, masking whether the wiring works.
 	_, callErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply concisely."}},
+		},
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
@@ -92,8 +102,12 @@ func TestOpenCodeCLIRealProjectArtifactsLifecycle(t *testing.T) {
 		t.Errorf("cleanup must restore operator deny-builtin.js byte-for-byte\n  want: %s\n  got:  %s", operatorPlugin, postPlugin)
 	}
 
-	postInfo, _ := os.Stat(agentsPath)
-	if !postInfo.ModTime().After(preMTime) {
-		t.Errorf("AGENTS.md mtime must advance past pre-seed (proves the adapter touched the file mid-session and then restored); preSeed=%v post=%v", preMTime, postInfo.ModTime())
+	postInfoAgents, _ := os.Stat(agentsPath)
+	if !postInfoAgents.ModTime().After(preMTimeAgents) {
+		t.Errorf("AGENTS.md mtime must advance past pre-seed (proves the writer touched the file mid-session and then restored); preSeed=%v post=%v", preMTimeAgents, postInfoAgents.ModTime())
+	}
+	postInfoPlugin, _ := os.Stat(pluginPath)
+	if !postInfoPlugin.ModTime().After(preMTimePlugin) {
+		t.Errorf("deny-builtin.js mtime must advance past pre-seed (proves the deny-plugin writer fired and then restored); preSeed=%v post=%v", preMTimePlugin, postInfoPlugin.ModTime())
 	}
 }
