@@ -126,6 +126,43 @@ type CodingAgentProviderContract struct {
 	// TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification will
 	// fail otherwise.
 	HandlesCtrlCCleanExit bool
+
+	// WorkingDirInstructionFile names the file the CLI auto-loads as
+	// project-level guidance when present in the working directory (e.g.
+	// "CLAUDE.md", "AGENTS.md", "GEMINI.md", or for cursor the directory
+	// "<workingDir>/.cursor/rules"). Workflow authors can drop this file
+	// in their step folders and the CLI follows it without going through
+	// the orchestrator's per-session system-prompt injection.
+	//
+	// DOCUMENTATION ONLY — the orchestrator does NOT write to this path.
+	// Per-session system prompts go through each CLI's runtime mechanism
+	// (Claude --system-prompt-file, Codex -c model_instructions_file,
+	// Cursor .cursor/rules/mlp-system-*.mdc). Confusing the two paths
+	// would either leak ephemeral session content into persistent files
+	// or block authors from contributing their own static guidance.
+	WorkingDirInstructionFile string
+
+	// UserInstructionFile names the home-directory file the CLI auto-loads
+	// for the operator's persistent style preferences (e.g.
+	// "~/.claude/CLAUDE.md", "~/.codex/AGENTS.md"). DOCUMENTATION ONLY —
+	// the orchestrator must never write here. The operator owns this
+	// file because it applies to every invocation across every workspace.
+	UserInstructionFile string
+
+	// WorkingDirMCPConfigFile names the file/directory the CLI auto-loads
+	// for project-scoped MCP server configuration (e.g. ".cursor/mcp.json",
+	// ".gemini/settings.json", "opencode.jsonc"). The orchestrator writes
+	// to these paths today as part of bridge injection — adapters resolve
+	// them via package-local helpers (WithCursorMCPConfig, etc.), this
+	// field is purely documentation so workflow authors know which files
+	// in their step folder are conventionally owned by the orchestrator.
+	WorkingDirMCPConfigFile string
+
+	// UserMCPConfigFile names the home-directory file where the operator
+	// can register MCP servers that should be visible to every invocation
+	// of this CLI (e.g. "~/.codex/config.toml", "~/.gemini/settings.json").
+	// DOCUMENTATION ONLY — the orchestrator does not write here.
+	UserMCPConfigFile string
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
@@ -156,6 +193,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresWorkspaceTrust:        true,
 		RestoreAsksInteractivePrompts: true,
 		APIKeyEnvVars:                 []string{"ANTHROPIC_API_KEY"},
+		WorkingDirInstructionFile:     "CLAUDE.md",
+		UserInstructionFile:           "~/.claude/CLAUDE.md",
+		WorkingDirMCPConfigFile:       ".mcp.json",
+		UserMCPConfigFile:             "~/.claude/settings.json",
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -188,7 +229,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:        "stream-json",
 		AdapterReadsTranscript:  false,
 		RequiresWorkspaceTrust:  true,
-		APIKeyEnvVars:           []string{"CODEX_API_KEY"},
+		APIKeyEnvVars:             []string{"CODEX_API_KEY"},
+		WorkingDirInstructionFile: "AGENTS.md",
+		UserInstructionFile:       "~/.codex/AGENTS.md",
+		WorkingDirMCPConfigFile:   "", // Codex has no project-scoped MCP config file; per-invocation MCP comes via `-c` config overrides.
+		UserMCPConfigFile:         "~/.codex/config.toml",
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -228,7 +273,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		AdapterReadsTranscript: true,
 		TranscriptPathTemplate: "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
 		RequiresWorkspaceTrust: true,
-		APIKeyEnvVars:          []string{"CURSOR_API_KEY"},
+		APIKeyEnvVars:             []string{"CURSOR_API_KEY"},
+		WorkingDirInstructionFile: ".cursor/rules",        // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
+		UserInstructionFile:       "~/.cursor/rules",      // same directory layout at the user level
+		WorkingDirMCPConfigFile:   ".cursor/mcp.json",     // adapter writes this when WithCursorMCPConfig is provided
+		UserMCPConfigFile:         "~/.cursor/mcp.json",
 	},
 	ProviderGeminiCLI: {
 		Provider:    ProviderGeminiCLI,
@@ -258,7 +307,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:        "transcript-file",
 		AdapterReadsTranscript:  true,
 		TranscriptPathTemplate:  "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
-		APIKeyEnvVars:           []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+		APIKeyEnvVars:             []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+		WorkingDirInstructionFile: "GEMINI.md",
+		UserInstructionFile:       "~/.gemini/GEMINI.md",
+		WorkingDirMCPConfigFile:   ".gemini/settings.json", // adapter writes scoped settings here per the Gemini contract doc
+		UserMCPConfigFile:         "~/.gemini/settings.json",
 	},
 	ProviderAgyCLI: {
 		Provider:                ProviderAgyCLI,
@@ -285,7 +338,15 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:        "estimated",
 		AdapterReadsTranscript:  false,
 		RequiresWorkspaceTrust:  true,
-		APIKeyEnvVars:           []string{"AGY_API_KEY"},
+		APIKeyEnvVars:             []string{"AGY_API_KEY"},
+		// Antigravity CLI conventions still being verified; leaving blank
+		// rather than guessing. Populate when the adapter's working-dir
+		// and user-dir layouts are confirmed (likely follows Gemini-style
+		// under ~/.gemini/antigravity-cli/, per docs/AGY_CLI_PENDING.md).
+		WorkingDirInstructionFile: "",
+		UserInstructionFile:       "",
+		WorkingDirMCPConfigFile:   "",
+		UserMCPConfigFile:         "",
 	},
 	ProviderOpenCodeCLI: {
 		Provider:                ProviderOpenCodeCLI,
@@ -311,7 +372,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SurfacesTokenUsage:      true,
 		TokenUsageSource:        "stream-json",
 		AdapterReadsTranscript:  false,
-		APIKeyEnvVars:           []string{"OPENCODE_API_KEY"},
+		APIKeyEnvVars:             []string{"OPENCODE_API_KEY"},
+		WorkingDirInstructionFile: "AGENTS.md", // OpenCode follows the OpenAI-style AGENTS.md convention.
+		UserInstructionFile:       "~/.opencode/AGENTS.md",
+		WorkingDirMCPConfigFile:   "opencode.jsonc", // adapter writes this when WithOpenCodeMCPConfig is provided
+		UserMCPConfigFile:         "~/.opencode/opencode.jsonc",
 	},
 }
 
