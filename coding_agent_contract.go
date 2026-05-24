@@ -76,12 +76,13 @@ type CodingAgentProviderContract struct {
 	// string-formatting this value.
 	TranscriptPathTemplate string
 
-	// RequiresWorkspaceTrust reports whether the CLI shows a "do you trust
-	// the files in this folder?" dialog on first launch in a fresh working
-	// directory, which the adapter must dismiss before any user prompt can
-	// be submitted. Every tmux-mode coding CLI on this codebase (Claude
-	// Code, Codex, Cursor, Agy) needs this; structured-only CLIs (Gemini,
-	// OpenCode) do not because they never render a TUI dialog.
+	// RequiresWorkspaceTrust reports whether the CLI can block startup on a
+	// trust/auth TUI prompt before any user prompt can be submitted. Some CLIs
+	// show a "do you trust the files in this folder?" dialog; Agy 1.0.2 creates
+	// fresh projects without that dialog in our E2E environment, but still has a
+	// startup login picker that the adapter must detect and surface instead of
+	// parsing as ready/output. Structured-only CLIs (Gemini, OpenCode) do not
+	// render these TUI prompts.
 	//
 	// Pairs with CertTrustAuthPrompts in codingAgentCapabilityCertifications:
 	// when RequiresWorkspaceTrust=true, the provider must have a registered
@@ -216,19 +217,19 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// it back via `case "codex-cli":` (server.go:6270). Contract used to
 		// say false; the drift test in coding_agent_contract_test.go now
 		// enforces this matches the actual wiring.
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   true,
-		ProcessScopedCleanup:    true,
-		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      true,
-		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "stream-json",
-		AdapterReadsTranscript:  false,
-		RequiresWorkspaceTrust:  true,
+		SupportsNativeResume:      true,
+		UsesMCPBridge:             true,
+		SupportsBridgeOnlyTools:   true,
+		UsesNativeSystemPrompt:    true,
+		LaunchesViaLoginShell:     true,
+		ProcessScopedCleanup:      true,
+		HandlesTmuxSessionLoss:    true,
+		StructuredFallback:        true,
+		ImageInputInteractive:     true,
+		SurfacesTokenUsage:        true,
+		TokenUsageSource:          "stream-json",
+		AdapterReadsTranscript:    false,
+		RequiresWorkspaceTrust:    true,
 		APIKeyEnvVars:             []string{"CODEX_API_KEY"},
 		WorkingDirInstructionFile: "AGENTS.md",
 		UserInstructionFile:       "~/.codex/AGENTS.md",
@@ -269,14 +270,14 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// in estimateCursorTmuxTokens. We classify by the higher-fidelity
 		// canonical path. Reports from tmux-mode runs should be flagged as
 		// approximate at the cost-ledger layer.
-		TokenUsageSource:       "stream-json",
-		AdapterReadsTranscript: true,
-		TranscriptPathTemplate: "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
-		RequiresWorkspaceTrust: true,
+		TokenUsageSource:          "stream-json",
+		AdapterReadsTranscript:    true,
+		TranscriptPathTemplate:    "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
+		RequiresWorkspaceTrust:    true,
 		APIKeyEnvVars:             []string{"CURSOR_API_KEY"},
-		WorkingDirInstructionFile: ".cursor/rules",        // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
-		UserInstructionFile:       "~/.cursor/rules",      // same directory layout at the user level
-		WorkingDirMCPConfigFile:   ".cursor/mcp.json",     // adapter writes this when WithCursorMCPConfig is provided
+		WorkingDirInstructionFile: ".cursor/rules",    // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
+		UserInstructionFile:       "~/.cursor/rules",  // same directory layout at the user level
+		WorkingDirMCPConfigFile:   ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
 		UserMCPConfigFile:         "~/.cursor/mcp.json",
 	},
 	ProviderGeminiCLI: {
@@ -286,27 +287,27 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// Gemini CLI is being deprecated by Google. We pin it to the structured
 		// transport so we don't carry tmux-specific bug surface for a CLI that's
 		// going away — matches the OpenCode CLI contract shape.
-		Transport:               CodingAgentTransportStructured,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  false,
-		UsesPersistentSession:   false,
-		SupportsLiveInput:       false,
-		SupportsInterrupt:       false,
-		SupportsTerminalStream:  false,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   false,
-		ProcessScopedCleanup:    false,
-		HandlesTmuxSessionLoss:  false,
-		StructuredFallback:      true,
-		ImageInputInteractive:   false,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "transcript-file",
-		AdapterReadsTranscript:  true,
-		TranscriptPathTemplate:  "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
+		Transport:                 CodingAgentTransportStructured,
+		RequiresWorkingDir:        true,
+		RequiresOwnerSessionID:    false,
+		UsesPersistentSession:     false,
+		SupportsLiveInput:         false,
+		SupportsInterrupt:         false,
+		SupportsTerminalStream:    false,
+		SupportsFinalExtraction:   true,
+		SupportsNativeResume:      true,
+		UsesMCPBridge:             true,
+		SupportsBridgeOnlyTools:   true,
+		UsesNativeSystemPrompt:    true,
+		LaunchesViaLoginShell:     false,
+		ProcessScopedCleanup:      false,
+		HandlesTmuxSessionLoss:    false,
+		StructuredFallback:        true,
+		ImageInputInteractive:     false,
+		SurfacesTokenUsage:        true,
+		TokenUsageSource:          "transcript-file",
+		AdapterReadsTranscript:    true,
+		TranscriptPathTemplate:    "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
 		APIKeyEnvVars:             []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		WorkingDirInstructionFile: "GEMINI.md",
 		UserInstructionFile:       "~/.gemini/GEMINI.md",
@@ -327,7 +328,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsFinalExtraction: true,
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: false,
+		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
 		LaunchesViaLoginShell:   true,
 		ProcessScopedCleanup:    true,
@@ -338,40 +339,41 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:        "estimated",
 		AdapterReadsTranscript:  false,
 		RequiresWorkspaceTrust:  true,
-		APIKeyEnvVars:             []string{"AGY_API_KEY"},
-		// Antigravity CLI conventions still being verified; leaving blank
-		// rather than guessing. Populate when the adapter's working-dir
-		// and user-dir layouts are confirmed (likely follows Gemini-style
-		// under ~/.gemini/antigravity-cli/, per docs/AGY_CLI_PENDING.md).
-		WorkingDirInstructionFile: "",
-		UserInstructionFile:       "",
-		WorkingDirMCPConfigFile:   "",
-		UserMCPConfigFile:         "",
+		APIKeyEnvVars:           []string{"AGY_API_KEY"},
+		// Antigravity CLI conventions confirmed by the agycli adapter
+		// implementation. Same layering as cursor: adapter writes
+		// session-scoped files under <workingDir>/.agents/, cleans
+		// them up on teardown. The directory pattern mirrors cursor's
+		// .cursor/{rules,mcp.json,hooks.json} but namespaced to .agents.
+		WorkingDirInstructionFile: ".agents/rules",          // directory of .md rule files (mlp-system-*.md per session)
+		UserInstructionFile:       "~/.agents/rules",        // user-level mirror
+		WorkingDirMCPConfigFile:   ".agents/mcp_config.json",
+		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},
 	ProviderOpenCodeCLI: {
-		Provider:                ProviderOpenCodeCLI,
-		DisplayName:             "OpenCode CLI",
-		CLIName:                 "opencode",
-		Transport:               CodingAgentTransportStructured,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  false,
-		UsesPersistentSession:   false,
-		SupportsLiveInput:       false,
-		SupportsInterrupt:       false,
-		SupportsTerminalStream:  false,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   false,
-		ProcessScopedCleanup:    false,
-		HandlesTmuxSessionLoss:  false,
-		StructuredFallback:      true,
-		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "stream-json",
-		AdapterReadsTranscript:  false,
+		Provider:                  ProviderOpenCodeCLI,
+		DisplayName:               "OpenCode CLI",
+		CLIName:                   "opencode",
+		Transport:                 CodingAgentTransportStructured,
+		RequiresWorkingDir:        true,
+		RequiresOwnerSessionID:    false,
+		UsesPersistentSession:     false,
+		SupportsLiveInput:         false,
+		SupportsInterrupt:         false,
+		SupportsTerminalStream:    false,
+		SupportsFinalExtraction:   true,
+		SupportsNativeResume:      true,
+		UsesMCPBridge:             true,
+		SupportsBridgeOnlyTools:   true,
+		UsesNativeSystemPrompt:    true,
+		LaunchesViaLoginShell:     false,
+		ProcessScopedCleanup:      false,
+		HandlesTmuxSessionLoss:    false,
+		StructuredFallback:        true,
+		ImageInputInteractive:     true,
+		SurfacesTokenUsage:        true,
+		TokenUsageSource:          "stream-json",
+		AdapterReadsTranscript:    false,
 		APIKeyEnvVars:             []string{"OPENCODE_API_KEY"},
 		WorkingDirInstructionFile: "AGENTS.md", // OpenCode follows the OpenAI-style AGENTS.md convention.
 		UserInstructionFile:       "~/.opencode/AGENTS.md",
