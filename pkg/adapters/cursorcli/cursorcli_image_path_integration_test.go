@@ -35,7 +35,7 @@ func TestCursorCLIRealImagePathAnalysis(t *testing.T) {
 				llmtypes.TextContent{Text: prompt},
 			},
 		},
-	}, WithWorkingDir(workspaceDir), WithMode("ask"))
+	}, WithWorkingDir(workspaceDir), WithDenyBuiltinTools(true))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}

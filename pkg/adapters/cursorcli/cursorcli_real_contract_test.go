@@ -24,7 +24,7 @@ func TestCursorCLIRealInteractiveTmuxFullContract(t *testing.T) {
 	options := []llmtypes.CallOption{
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 	}
 
 	largeSystemPrompt := strings.Repeat("You are testing the Cursor Agent CLI tmux transport. Do not use tools. Keep exact-token replies concise.\n", 80)
@@ -121,7 +121,7 @@ func TestCursorCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 		},
 			WithInteractiveSessionID(ownerSessionID),
 			WithPersistentInteractiveSession(true),
-			WithMode("ask"),
+			WithDenyBuiltinTools(true),
 			llmtypes.WithStreamingChan(streamChan),
 		)
 		errCh <- err
@@ -263,7 +263,7 @@ func TestCursorCLIRealResponseHasNoTUIChrome(t *testing.T) {
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 		llmtypes.WithStreamingChan(stream),
 	)
 	if err != nil {
@@ -317,7 +317,7 @@ func TestCursorCLIRealMultiTurnNoHistoryLeakage(t *testing.T) {
 	options := []llmtypes.CallOption{
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 	}
 
 	// Turn 1
@@ -408,7 +408,7 @@ func TestCursorCLIRealCompletionDetection(t *testing.T) {
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 		llmtypes.WithStreamingChan(stream),
 	)
 	if err != nil {
@@ -982,7 +982,7 @@ func TestCursorCLIRealInteractiveParallelIsolation(t *testing.T) {
 				WithInteractiveSessionID(spec.ownerSession),
 				WithPersistentInteractiveSession(true),
 				WithWorkingDir(workDir),
-				WithMode("ask"),
+				WithDenyBuiltinTools(true),
 			)
 			result := parallelResult{spec: spec, err: err}
 			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
@@ -1040,7 +1040,7 @@ func TestCursorCLIRealInteractiveCleanup(t *testing.T) {
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 		llmtypes.WithStreamingChan(stream),
 	)
 	if err != nil {

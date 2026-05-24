@@ -17,7 +17,7 @@ func TestCursorCLIRealSearchWeb(t *testing.T) {
 
 	result, err := adapter.SearchWeb(ctx,
 		"What is the capital of France? Use web search and reply with the city and country only.",
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 	)
 	if err != nil {
 		t.Fatalf("SearchWeb() error = %v", err)
@@ -37,7 +37,7 @@ func TestCursorCLIRealSearchWebLiveData(t *testing.T) {
 
 	result, err := adapter.SearchWeb(ctx,
 		"Search the web for the latest cursor-agent CLI version number released in 2026. Reply with just the version string.",
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 	)
 	if err != nil {
 		t.Fatalf("SearchWeb() error = %v", err)

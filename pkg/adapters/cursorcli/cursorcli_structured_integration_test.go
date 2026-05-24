@@ -325,7 +325,7 @@ func TestCursorCLIStructuredToolDisable(t *testing.T) {
 			},
 		},
 	},
-		WithMode("ask"),
+		WithDenyBuiltinTools(true),
 		WithWorkingDir(workspaceDir),
 		llmtypes.WithStreamingChan(stream),
 	)
@@ -736,7 +736,7 @@ func TestCursorCLIStructuredSandboxedMCP(t *testing.T) {
 		},
 			WithMCPConfig(mcpConfig),
 			WithApproveMCPs(),
-			WithMode("ask"),
+			WithDenyBuiltinTools(true),
 			WithWorkingDir(workspaceDir),
 			llmtypes.WithStreamingChan(stream),
 		)
