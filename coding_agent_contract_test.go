@@ -188,14 +188,100 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 	}
 }
 
-func TestClaudeAndCodexCapabilityClaimsHaveRegisteredCertification(t *testing.T) {
-	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
-		contract, ok := GetCodingAgentProviderContract(provider, "")
-		if !ok {
-			t.Fatalf("missing coding-agent contract for %s", provider)
+// knownCertificationGaps tracks certifications a coding-agent contract
+// CLAIMS via its capability bools but has not yet provided an e2e test for.
+// Listed IDs are TOLERATED — they're a public TODO list, not silently
+// ignored. Removing an ID from this map without adding the certification
+// entry will fail TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification.
+//
+// History: every provider's coding-agent capability claims were originally
+// enforced only for Claude Code + Codex. Cursor, Agy, Gemini, OpenCode
+// declared the same capabilities without proof, which let real bugs ship
+// (e.g. cursor's "claims UsesMCPBridge=true" while in --print mode it
+// returned zero tokens / zero tool calls on a real workflow run). The
+// allowance below makes that drift visible to anyone touching the file.
+//
+// Drain this map by writing the missing e2e tests + registering them in
+// codingAgentProviderCertifications.
+var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
+	// Cursor CLI is fully wired in the orchestrator but lacks ANY e2e
+	// certification entries. Most urgent gap: CertMCPBridge — proven by the
+	// read-credentials workflow run that produced 0 tokens / 0 tool calls.
+	// Tracked in tasks #11 (CertMCPBridge for cursor) and #10 follow-ups.
+	ProviderCursorCLI: {
+		CertBoundedRetention, CertBridgeOnlyTools, CertCancellation, CertCleanup,
+		CertDoneDetection, CertFinalExtraction, CertFreshLaunch, CertLifecyclePolicy,
+		CertLiveInput, CertMCPBridge, CertMultiTurn, CertNativeSystemPrompt,
+		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
+		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
+		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
+		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
+		CertTrustAuthPrompts, CertWorkingDirectory,
+	},
+	// NOTE: Antigravity CLI (ProviderAgyCLI) is being wired in a separate
+	// branch. When that lands, add its certification gap entry here mirroring
+	// the cursor block above — same set of missing IDs is expected for a new
+	// tmux-mode CLI without any e2e tests written yet.
+	//
+	// Gemini + OpenCode are structured-only (no tmux suite required), but
+	// still claim the structured-relevant capabilities below with no e2e.
+	ProviderGeminiCLI: {
+		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
+		CertMCPBridge, CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
+	},
+	ProviderOpenCodeCLI: {
+		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
+		CertMCPBridge, CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
+	},
+}
+
+// TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification iterates every
+// coding-agent contract and asserts that every capability the contract claims
+// has a corresponding entry in codingAgentProviderCertifications — proving an
+// actual e2e test exists for that claim instead of trusting the bool blindly.
+//
+// Providers in knownCertificationGaps are allowed to have ALL listed IDs
+// missing; any deviation (different missing set, or new gap) fails the test.
+// The allowance is intentionally low-friction so adding a new provider
+// surfaces its gap immediately rather than silently skipping checks.
+func TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		missing := MissingCodingAgentCertifications(contract)
+		if len(missing) == 0 {
+			continue
 		}
-		if missing := MissingCodingAgentCertifications(contract); len(missing) > 0 {
-			t.Fatalf("%s claims capabilities without registered certification: %v", provider, missing)
+		allowed := knownCertificationGaps[contract.Provider]
+		// Build a set of allowed IDs for fast lookup.
+		allowedSet := make(map[CodingAgentCertificationID]struct{}, len(allowed))
+		for _, id := range allowed {
+			allowedSet[id] = struct{}{}
+		}
+		// missing IDs not in allowedSet → real new failures.
+		var unexpected []CodingAgentCertificationID
+		for _, id := range missing {
+			if _, ok := allowedSet[id]; !ok {
+				unexpected = append(unexpected, id)
+			}
+		}
+		if len(unexpected) > 0 {
+			t.Errorf("%s claims capabilities without registered certification: %v. If this is intentional, add the IDs to knownCertificationGaps and file a follow-up task to write the e2e tests.",
+				contract.Provider, unexpected)
+		}
+		// Also flag stale allowances — an ID listed in knownCertificationGaps
+		// that is no longer missing means somebody added the cert entry but
+		// forgot to remove the allowance. Drop it to keep the gap list honest.
+		for _, id := range allowed {
+			stillMissing := false
+			for _, m := range missing {
+				if m == id {
+					stillMissing = true
+					break
+				}
+			}
+			if !stillMissing {
+				t.Errorf("%s knownCertificationGaps still lists %s but the certification is now registered — remove the allowance",
+					contract.Provider, id)
+			}
 		}
 	}
 }
