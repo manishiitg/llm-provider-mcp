@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,6 +46,11 @@ type codexInteractiveSession struct {
 	ownerSessionID       string
 	tmuxSessionName      string
 	systemPromptTempFile string
+	// projectInstructionCleanup runs at session teardown when the
+	// opt-in WithWriteProjectInstructionFile flag was set. It restores
+	// any pre-existing operator AGENTS.md byte-for-byte. nil if the
+	// flag wasn't enabled for this session.
+	projectInstructionCleanup func()
 	workingDir           string
 	idleTimer            *time.Timer
 	initErr              error
@@ -417,10 +423,25 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, err
 	}
 	session.systemPromptTempFile = systemPromptTempFile
+	// Opt-in: also project the system prompt into <workingDir>/AGENTS.md
+	// for codex's project-instructions convention. Off by default; the
+	// -c model_instructions_file flag already injects the prompt.
+	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(systemPrompt) != "" && workingDir != "" {
+		if cleanup, perr := writeCodexProjectAgentsFile(workingDir, systemPrompt); perr == nil {
+			session.projectInstructionCleanup = cleanup
+		}
+		// Best-effort: a failure here is not a session-killer. The
+		// primary injection succeeded; the workspace file is purely
+		// additive belt-and-suspenders.
+	}
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
 		session.initErr = err
 		if systemPromptTempFile != "" {
 			_ = os.Remove(systemPromptTempFile)
+		}
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
 		}
 		session.mu.Unlock()
 		removeCodexPersistentSession(ownerSessionID, session)
@@ -599,7 +620,60 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 		_ = os.Remove(session.systemPromptTempFile)
 		session.systemPromptTempFile = ""
 	}
+	if session.projectInstructionCleanup != nil {
+		session.projectInstructionCleanup()
+		session.projectInstructionCleanup = nil
+	}
 	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+}
+
+// writeProjectInstructionFromOptions reads the opt-in feature flag for
+// writing the per-session system prompt to AGENTS.md. Returns false on
+// any malformed value so default behavior is unchanged.
+func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool)
+	return enabled
+}
+
+// writeCodexProjectAgentsFile writes the per-session system prompt to
+// <workingDir>/AGENTS.md (codex's project-instructions convention). If
+// a pre-existing AGENTS.md is present, its bytes are captured and the
+// returned cleanup restores them on session teardown.
+//
+// Unlike claude code's .claude/rules/ subdirectory which lets us drop
+// a unique session file alongside operator-owned content, AGENTS.md
+// is a single conventional path. The byte-restore lifecycle keeps
+// operator content safe across successful runs; a process crash
+// between write and cleanup destroys the prior content (documented
+// risk for the opt-in flag).
+func writeCodexProjectAgentsFile(workingDir, systemPrompt string) (func(), error) {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return nil, fmt.Errorf("ensure codex working dir: %w", err)
+	}
+	path := filepath.Join(workingDir, "AGENTS.md")
+	previous, readErr := os.ReadFile(path)
+	existed := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
+	}
+	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return nil, fmt.Errorf("write AGENTS.md: %w", err)
+	}
+	return func() {
+		if existed {
+			_ = os.WriteFile(path, previous, 0o600)
+		} else {
+			_ = os.Remove(path)
+		}
+	}, nil
 }
 
 func markCodexInteractiveSessionFailedLocked(session *codexInteractiveSession, err error, logger interfaces.Logger) {

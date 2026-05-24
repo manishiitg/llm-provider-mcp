@@ -3850,6 +3850,21 @@ func WithCodexPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return codexcli.WithPersistentInteractiveSession(enabled)
 }
 
+// WithCodexWriteProjectInstructionFile is an OFF-by-default feature
+// flag that asks the codex adapter to ALSO project the per-session
+// system prompt into <workingDir>/AGENTS.md (codex's project-
+// instructions convention), in addition to the existing -c
+// model_instructions_file injection. Cleanup at session teardown
+// byte-restores any pre-existing operator AGENTS.md.
+//
+// Off by default because AGENTS.md is a single-file convention with
+// a non-zero collision risk if the orchestrator process crashes
+// between write and cleanup; the existing -c model_instructions_file
+// flag already injects the prompt without touching workspace files.
+func WithCodexWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return codexcli.WithWriteProjectInstructionFile(enabled)
+}
+
 // WithCodexApprovalPolicy sets the approval_policy config override for the Codex CLI.
 // Values: "never" (auto-approve all), "on-request" (model decides), "untrusted" (most restrictive)
 func WithCodexApprovalPolicy(policy string) llmtypes.CallOption {

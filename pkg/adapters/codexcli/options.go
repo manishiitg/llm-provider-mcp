@@ -27,6 +27,15 @@ const (
 	MetadataKeyApprovalPolicy        = "codex_approval_policy"
 	MetadataKeyInteractiveSessionID  = "codex_interactive_session_id"
 	MetadataKeyPersistentInteractive = "codex_persistent_interactive"
+	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
+	// flag for ALSO writing the per-session system prompt to
+	// <workingDir>/AGENTS.md (Codex's project-instructions convention,
+	// https://github.com/openai/codex/blob/main/AGENTS.md). Default off;
+	// codex already injects the prompt via -c model_instructions_file.
+	// When enabled, the adapter byte-restores any pre-existing AGENTS.md
+	// on session teardown so operator-owned content is preserved across
+	// successful runs.
+	MetadataKeyWriteProjectInstructionFile = "codex_write_project_instruction_file"
 )
 
 func appendCodexDisableUpdateArgs(args []string) []string {
@@ -235,6 +244,27 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithWriteProjectInstructionFile is an OFF-by-default feature flag that
+// asks the adapter to ALSO write the per-session system prompt to
+// <workingDir>/AGENTS.md (Codex's project-instructions convention), in
+// addition to the existing -c model_instructions_file injection. Useful
+// when the operator wants the prompt visible inside the workspace for
+// debugging or when downstream tooling reads AGENTS.md. Cleanup at
+// session teardown byte-restores any pre-existing AGENTS.md so
+// operator-owned content survives successful runs.
+//
+// Risk caveat (vs cursor's .cursor/rules/ multi-file): Codex's
+// convention is a single AGENTS.md file. If the orchestrator process
+// crashes between write and cleanup, the operator's pre-existing
+// AGENTS.md is destroyed. Off-by-default keeps the blast radius bounded
+// to callers that explicitly accept the trade-off.
+func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
 	}
 }
 
