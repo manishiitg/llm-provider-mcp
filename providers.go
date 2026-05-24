@@ -13,6 +13,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
@@ -99,6 +100,15 @@ const (
 	ClaudeCodeTransportExperimental = "experimental"
 	ClaudeCodeTransportPrint        = "print"
 )
+
+// SetCodingAgentTmuxSize records the operator's last-known terminal viewport
+// (cols × rows) for any newly-launched coding-agent tmux session (Claude
+// Code, Codex CLI, Cursor CLI, Gemini CLI). Pass <=0 for either axis to clear
+// that axis's override and fall back to the env/default value. Sizes outside
+// the package's safe band are clamped, not rejected.
+func SetCodingAgentTmuxSize(columns, rows int) {
+	tmuxsize.SetPreferredSize(columns, rows)
+}
 
 // CleanupClaudeCodeExperimentalSessions removes Claude Code tmux sessions
 // registered by this process. It intentionally does not kill every tmux session

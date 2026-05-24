@@ -470,13 +470,30 @@ func (c *CursorCLIAdapter) cursorInteractiveLaunchFingerprint(opts *llmtypes.Cal
 	}
 
 	write("model", modelToUse)
-	write("system_prompt", systemPrompt)
+	// Persistent interactive sessions pin the system prompt at session startup
+	// via .cursor/rules/mlp-system-*.mdc. Do not include the full prompt text
+	// in the reuse fingerprint: app-level prompts can contain per-turn dynamic
+	// context (e.g. background-agent role labels vs chat-agent labels), and
+	// restarting the TUI would tear down the live Cursor pane mid-conversation.
+	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
 	writeString(MetadataKeyWorkingDir)
 	writeString(MetadataKeyResumeSessionID)
 	writeString(MetadataKeySandbox)
 	writeString(MetadataKeyMode)
-	writeString(MetadataKeyProjectConfig)
-	writeString(MetadataKeyMCPConfig)
+	// Project config (.cursor/cli.json) and MCP config (.cursor/mcp.json) are
+	// re-written into the workspace on every call by prepareCursorProjectFiles.
+	// The running TUI does not reload them — Cursor reads both at startup only.
+	// Hashing the JSON contents here would force a TUI restart whenever the
+	// caller's MCP config embeds per-turn data (e.g. a Langfuse TraceID inside
+	// MCP_VIRTUAL_SCOPE_ID), which it always does for the bridge config built
+	// by mcpagent. Hash only "is config provided" so a session that started
+	// without an MCP config still gets restarted when one is added later.
+	hasStringValue := func(key string) bool {
+		v, ok := custom[key].(string)
+		return ok && strings.TrimSpace(v) != ""
+	}
+	write("project_config_present", strconv.FormatBool(hasStringValue(MetadataKeyProjectConfig)))
+	write("mcp_config_present", strconv.FormatBool(hasStringValue(MetadataKeyMCPConfig)))
 	writeBool(MetadataKeyForce)
 	writeBool(MetadataKeyApproveMCPs)
 	writeStringSlice(MetadataKeyHeaders)
@@ -864,10 +881,21 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	}
 }
 
+// cursorTypedInputMaxLen is the upper bound under which a single-line message
+// is typed via `tmux send-keys -l` (keystroke injection) instead of
+// paste-buffer + bracketed paste. Keeping short, single-line input out of the
+// bracketed-paste path stops Cursor's TUI from rendering normal chat turns as
+// "[Pasted text #N]". Multi-line or longer payloads still go through
+// paste-buffer to preserve newlines and avoid premature submission.
+const cursorTypedInputMaxLen = 240
+
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
+	}
+	if !strings.ContainsAny(message, "\n\r") && len(message) <= cursorTypedInputMaxLen {
+		return typeCursorInputToTmux(ctx, sessionName, message)
 	}
 	bufferName := "mlp-cursor-input-" + cursorRandomHex(6)
 	tmp, err := os.CreateTemp("", "cursor-tmux-input-*.txt")
@@ -893,7 +921,59 @@ func sendCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit input to Cursor interactive session: %w", err)
 	}
+	// Cursor consumes the first Enter when the follow-ups suggestion box is
+	// showing (it dismisses the menu but does NOT submit the text — the text
+	// stays in the input draft). One extra Enter is needed to actually send.
+	// We don't know up front whether the menu was shown, so probe: if after
+	// the first Enter the draft is still in the input field, send another.
+	ensureCursorInputSubmitted(ctx, sessionName, message)
 	return nil
+}
+
+// typeCursorInputToTmux delivers a short single-line message to Cursor's TUI
+// as keystrokes via `tmux send-keys -l` instead of paste-buffer. The TUI then
+// treats it as normal typed input and does not show the "[Pasted text]"
+// marker. Used only for messages that have no embedded newlines and fit under
+// cursorTypedInputMaxLen — multi-line or longer payloads stay on the
+// paste-buffer/bracketed-paste path so Cursor doesn't submit on every \n.
+func typeCursorInputToTmux(ctx context.Context, sessionName, message string) error {
+	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", message); err != nil {
+		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
+	}
+	waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second)
+	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
+	}
+	ensureCursorInputSubmitted(ctx, sessionName, message)
+	return nil
+}
+
+// ensureCursorInputSubmitted polls briefly after the initial C-m and sends a
+// second C-m if the pasted text is still sitting in the input draft (which
+// happens when the follow-ups menu, or any other modal overlay, swallows the
+// first Enter). Best-effort: errors are ignored because the first submit may
+// have succeeded and the pane just hasn't repainted yet.
+func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) {
+	deadline, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
+			captured, err := captureCursorPane(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			if !cursorPaneShowsPromptDraft(captured, message) {
+				return
+			}
+			_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+			return
+		}
+	}
 }
 
 func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) {
@@ -1506,7 +1586,12 @@ func interruptCursorInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetCursorPaneForTurn(ctx context.Context, sessionName string) {
-	_ = runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
+	// Only trim tmux's external scrollback to bound memory growth. We
+	// intentionally do NOT send C-l (0x0C) anymore: Cursor's raw-mode TUI
+	// catches that keystroke as "clear display", which wipes the visible
+	// chat history the operator is watching in the browser terminal pane.
+	// Baseline-diff logic in cursorCapturedAfterBaseline tolerates an
+	// already-populated pane via LastIndex(captured, baseline).
 	_ = runCursorCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
