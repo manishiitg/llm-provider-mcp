@@ -76,7 +76,15 @@ func TestGeminiCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	// file on cleanup.
 	orchestratorProjectSettings := `{"mcpServers":{"orchestrator-bridge":{"command":"/tmp/mcpbridge"}}}`
 
+	// System message ensures the GEMINI.md write path inside the
+	// adapter fires (gated on a non-empty systemPrompt). Without
+	// this, the writer would be skipped and mtime would never
+	// advance, masking whether the wiring actually works.
 	_, callErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply concisely."}},
+		},
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
@@ -93,6 +101,16 @@ func TestGeminiCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	)
 	if callErr != nil {
 		t.Fatalf("GenerateContent error = %v", callErr)
+	}
+
+	// Persistent session mode keeps the tmux session alive across
+	// turns and defers cleanup until the session is torn down. The
+	// byte-restore lifecycle assertions below depend on cleanup
+	// having run, so force-close the persistent session here. (The
+	// t.Cleanup() above also calls this but runs AFTER assertions,
+	// which is too late.)
+	if err := CleanupGeminiCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("force-cleanup of persistent gemini session: %v", err)
 	}
 
 	postMD, err := os.ReadFile(geminiMDPath)
