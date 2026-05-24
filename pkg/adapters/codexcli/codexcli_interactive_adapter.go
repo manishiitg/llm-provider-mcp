@@ -423,16 +423,29 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, err
 	}
 	session.systemPromptTempFile = systemPromptTempFile
-	// Opt-in: also project the system prompt into <workingDir>/AGENTS.md
-	// for codex's project-instructions convention. Off by default; the
-	// -c model_instructions_file flag already injects the prompt.
-	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(systemPrompt) != "" && workingDir != "" {
-		if cleanup, perr := writeCodexProjectAgentsFile(workingDir, systemPrompt); perr == nil {
+	// Opt-in: project up to four artifacts into the working dir for
+	// codex's project conventions: AGENTS.md (system prompt),
+	// .codex/config.toml ([mcp_servers] tables), .codex/hooks.json
+	// (PreToolUse deny entry), .codex/hooks/deny-builtin.sh (the deny
+	// script itself). Off by default; the existing -c model_instructions_file
+	// and -c mcp_servers.* overrides already inject equivalent
+	// configuration. The workspace projection is additive and useful
+	// when downstream tooling reads codex's on-disk conventions
+	// directly, and the deny hook is the strong lever for forcing
+	// MCP-only tool routing.
+	if writeProjectInstructionFromOptions(opts) && workingDir != "" {
+		mcpServersJSON := ""
+		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+			if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
+				mcpServersJSON = v
+			}
+		}
+		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true); perr == nil {
 			session.projectInstructionCleanup = cleanup
 		}
 		// Best-effort: a failure here is not a session-killer. The
-		// primary injection succeeded; the workspace file is purely
-		// additive belt-and-suspenders.
+		// primary injection paths succeeded; the workspace projection
+		// is purely additive belt-and-suspenders.
 	}
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
 		session.initErr = err

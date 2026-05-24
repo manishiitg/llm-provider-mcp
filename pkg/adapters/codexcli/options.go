@@ -248,19 +248,31 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 }
 
 // WithWriteProjectInstructionFile is an OFF-by-default feature flag that
-// asks the adapter to ALSO write the per-session system prompt to
-// <workingDir>/AGENTS.md (Codex's project-instructions convention), in
-// addition to the existing -c model_instructions_file injection. Useful
-// when the operator wants the prompt visible inside the workspace for
-// debugging or when downstream tooling reads AGENTS.md. Cleanup at
-// session teardown byte-restores any pre-existing AGENTS.md so
-// operator-owned content survives successful runs.
+// asks the adapter to ALSO project codex's project-convention files into
+// the working dir at session start (and byte-restore them at teardown):
 //
-// Risk caveat (vs cursor's .cursor/rules/ multi-file): Codex's
-// convention is a single AGENTS.md file. If the orchestrator process
-// crashes between write and cleanup, the operator's pre-existing
-// AGENTS.md is destroyed. Off-by-default keeps the blast radius bounded
-// to callers that explicitly accept the trade-off.
+//   - <workingDir>/AGENTS.md
+//     The per-session system prompt, mirroring what -c
+//     model_instructions_file already injects.
+//
+//   - <workingDir>/.codex/config.toml
+//     [mcp_servers.NAME] tables synthesized from WithMCPServers JSON.
+//     Only landed when an MCP config was actually provided; redundant
+//     with -c mcp_servers.* overrides but visible to downstream tools
+//     that read codex's on-disk convention.
+//
+//   - <workingDir>/.codex/hooks.json
+//   - <workingDir>/.codex/hooks/deny-builtin.sh
+//     The PreToolUse deny hook (matcher ^(Bash|apply_patch)$) and its
+//     exit-2 deny script. Forces the model to route through MCP servers
+//     by blocking codex's built-in shell + edit tools. Per
+//     developers.openai.com/codex/hooks, exit 2 == "System Block".
+//
+// Risk caveat: AGENTS.md, .codex/config.toml, and .codex/hooks.json are
+// all single-file conventions. If the orchestrator process crashes
+// between write and cleanup, the operator's pre-existing copies are
+// destroyed. Off-by-default keeps the blast radius bounded to callers
+// that explicitly accept the trade-off.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
