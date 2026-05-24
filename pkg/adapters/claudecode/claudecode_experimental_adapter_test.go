@@ -765,6 +765,120 @@ func TestIsClaudeResumeCompressionPromptIgnoresNormalPrompt(t *testing.T) {
 	}
 }
 
+func TestIsClaudeResumeSelectMenuCursorOnCompact(t *testing.T) {
+	// ❯ is on the compact option — adapter should navigate down to "run as is".
+	pane := `
+──────────────────────────────────────────────────────── mcp-agent ──
+
+  Your conversation history is using a substantial portion of the context window.
+
+  ❯ Compact conversation (recommended)
+    Continue without compacting
+
+  ↑↓ to navigate · Enter to select
+`
+	if !isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = false, want true")
+	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"Down", "C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
+}
+
+func TestIsClaudeResumeSelectMenuCursorOnRunAsIs(t *testing.T) {
+	// ❯ is already on the "run as is" option — Enter is enough.
+	pane := `
+──────────────────────────────────────────────────────── mcp-agent ──
+
+  Your conversation history is using a substantial portion of the context window.
+
+    Compact conversation
+  ❯ Continue without compacting
+
+  ↑↓ to navigate · Enter to select
+`
+	if !isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = false, want true")
+	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
+}
+
+func TestIsClaudeResumeSelectMenuRunAsIsVariant(t *testing.T) {
+	// "run as is" phrasing instead of "continue without compacting".
+	pane := `
+──────────────────────────────────────────────────────── mcp-agent ──
+
+  ❯ Compact and summarize
+    Run as is
+
+  ↑↓ to navigate · Enter to select
+`
+	if !isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = false for run-as-is variant")
+	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"Down", "C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
+}
+
+func TestIsClaudeResumeSelectMenuDoesNotMatchNormalPrompt(t *testing.T) {
+	pane := `
+─────────────────────────────────────────────────── mcp-agent ──
+❯
+`
+	if isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = true for normal ready prompt")
+	}
+}
+
+func TestIsClaudeResumeSelectMenuDoesNotMatchSummaryMenu(t *testing.T) {
+	// The old summary menu has ❯ but no compact/compress option — must not match.
+	pane := `
+────────────────────────────────────────────────────────────────────────────────────────────────── mcp-agent ──
+
+  This session is 2h 17m old and 167.9k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
+
+  ❯ 1. Resume from summary (recommended)
+    2. Resume full session as-is
+    3. Don't ask me again
+
+  Enter to confirm · Esc to cancel
+`
+	if isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = true for summary menu (no compact option)")
+	}
+}
+
+func TestOldTextBasedCompressionPromptStillHandled(t *testing.T) {
+	// The older text-based format (no ❯ cursor) must still route to the
+	// text-input path, not the new TUI select-menu path.
+	pane := `
+This resumed conversation is large.
+Would you like to compact the conversation or continue without compacting?
+`
+	if isClaudeResumeSelectMenu(pane) {
+		t.Fatal("isClaudeResumeSelectMenu = true for old text-based prompt (no ❯)")
+	}
+	if !isClaudeResumeCompressionPrompt(pane) {
+		t.Fatal("isClaudeResumeCompressionPrompt = false for old text-based prompt")
+	}
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"continue", "C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+	}
+}
+
 func TestExperimentalTimeoutEnv(t *testing.T) {
 	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "")
 	if got := tmuxTimeout(); got != 0 {

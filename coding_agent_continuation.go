@@ -98,6 +98,66 @@ func ContinueCodingAgentSession(ctx context.Context, model llmtypes.Model, handl
 	return resp, nil
 }
 
+// StartCodingAgentTransportSession starts or reacquires the provider's
+// launchable coding-agent transport without sending a user prompt. The current
+// launchable terminal transport is tmux; callers should gate on the persisted
+// handle/contract transport instead of checking provider names.
+func StartCodingAgentTransportSession(ctx context.Context, model llmtypes.Model, handle llmtypes.CodingProviderSessionHandle, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	if model == nil {
+		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Reason: "model is nil"}
+	}
+	provider := Provider(strings.ToLower(strings.TrimSpace(handle.Provider)))
+	if provider == "" {
+		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Reason: "provider handle is missing provider"}
+	}
+	contract, ok := GetCodingAgentProviderContract(provider, strings.TrimSpace(handle.Model))
+	if !ok {
+		return nil, &CodingAgentContinuationError{
+			Kind:     CodingAgentContinuationErrorNonApplicable,
+			Provider: provider,
+			Reason:   "provider is not a coding-agent provider",
+		}
+	}
+
+	transport := contract.Transport
+	if handleTransport := strings.TrimSpace(handle.Transport); handleTransport != "" {
+		transport = CodingAgentTransport(handleTransport)
+	}
+	switch transport {
+	case CodingAgentTransportTmux:
+		return startCodingAgentTmuxTransportSession(ctx, model, provider, handle, options...)
+	default:
+		return nil, &CodingAgentContinuationError{
+			Kind:     CodingAgentContinuationErrorNonApplicable,
+			Provider: provider,
+			Reason:   fmt.Sprintf("transport %q does not expose a launchable terminal session", transport),
+		}
+	}
+}
+
+// StartCodingAgentTmuxSession starts or reacquires a tmux-backed coding-agent
+// TUI for a provider-native continuation handle without sending a user prompt.
+func StartCodingAgentTmuxSession(ctx context.Context, model llmtypes.Model, handle llmtypes.CodingProviderSessionHandle, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	return StartCodingAgentTransportSession(ctx, model, handle, options...)
+}
+
+func startCodingAgentTmuxTransportSession(ctx context.Context, model llmtypes.Model, provider Provider, handle llmtypes.CodingProviderSessionHandle, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	if strings.TrimSpace(handle.NativeSessionID) == "" {
+		return nil, &CodingAgentContinuationError{
+			Kind:     CodingAgentContinuationErrorNonContinuable,
+			Provider: provider,
+			Reason:   "provider handle is missing native session id",
+		}
+	}
+
+	launchOptions, err := appendCodingAgentContinuationOptions(provider, handle, options)
+	if err != nil {
+		return nil, err
+	}
+	launchOptions = append(launchOptions, llmtypes.WithCodingProviderLaunchOnly())
+	return model.GenerateContent(ctx, nil, launchOptions...)
+}
+
 func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.CodingProviderSessionHandle, options []llmtypes.CallOption) ([]llmtypes.CallOption, error) {
 	resumeID := strings.TrimSpace(handle.NativeSessionID)
 	workingDir := strings.TrimSpace(handle.WorkingDir)

@@ -16,6 +16,7 @@ const (
 	CodingProviderSessionStatusClosed = "closed"
 
 	CodingProviderSessionHandleAdditionalKey = "coding_provider_session_handle"
+	CodingProviderLaunchOnlyMetadataKey      = "coding_provider_launch_only"
 )
 
 // CodingProviderSessionHandle is the provider-owned continuation state for a

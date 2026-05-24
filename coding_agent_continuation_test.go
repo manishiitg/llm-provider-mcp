@@ -187,6 +187,51 @@ func TestContinueCodingAgentSessionRetriesOnceAfterTmuxLoss(t *testing.T) {
 	}
 }
 
+func TestStartCodingAgentTransportSessionSetsLaunchOnlyWithoutPrompt(t *testing.T) {
+	model := &continuationTestModel{}
+	_, err := StartCodingAgentTransportSession(context.Background(), model, llmtypes.CodingProviderSessionHandle{
+		Provider:        string(ProviderCodexCLI),
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: "codex-thread",
+		WorkingDir:      "/tmp/work",
+		Model:           DefaultCodexCLIModel,
+	})
+	if err != nil {
+		t.Fatalf("StartCodingAgentTransportSession() error = %v", err)
+	}
+	if len(model.messages) != 1 {
+		t.Fatalf("GenerateContent calls = %d, want 1", len(model.messages))
+	}
+	if model.messages[0] != nil {
+		t.Fatalf("messages = %#v, want nil launch-only prompt", model.messages[0])
+	}
+	if model.opts[0].Metadata == nil || model.opts[0].Metadata.Custom == nil {
+		t.Fatal("metadata custom options not set")
+	}
+	if got := model.opts[0].Metadata.Custom["codex_resume_session_id"]; got != "codex-thread" {
+		t.Fatalf("codex_resume_session_id = %#v, want codex-thread", got)
+	}
+	if !llmtypes.CodingProviderLaunchOnlyFromOptions(&model.opts[0]) {
+		t.Fatalf("launch-only option not set")
+	}
+}
+
+func TestStartCodingAgentTransportSessionRejectsStructuredTransport(t *testing.T) {
+	model := &continuationTestModel{}
+	_, err := StartCodingAgentTransportSession(context.Background(), model, llmtypes.CodingProviderSessionHandle{
+		Provider:        string(ProviderGeminiCLI),
+		Transport:       llmtypes.CodingProviderTransportStructured,
+		NativeSessionID: "gemini-native",
+		Model:           "auto",
+	})
+	if !IsCodingAgentContinuationError(err, CodingAgentContinuationErrorNonApplicable) {
+		t.Fatalf("err = %v, want non-applicable continuation error", err)
+	}
+	if len(model.messages) != 0 {
+		t.Fatalf("GenerateContent calls = %d, want 0", len(model.messages))
+	}
+}
+
 func textFromMessage(msg llmtypes.MessageContent) string {
 	for _, part := range msg.Parts {
 		switch typed := part.(type) {

@@ -2,13 +2,11 @@ package claudecode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -969,6 +967,42 @@ func TestClaudeCodeExperimentalIntegrationHaikuWorkingDirectory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// E2E: Trust-prompt auto-dismiss — the adapter pre-trusts a fresh working
+// directory so Claude Code's "Do you trust the files in this folder?" dialog
+// never appears and the session starts without timing out.
+// ---------------------------------------------------------------------------
+
+func TestClaudeCodeExperimentalIntegrationTrustPromptAutoDismiss(t *testing.T) {
+	skipClaudeExperimentalIntegration(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	// Intentionally do NOT call preTrustClaudeWorkspace — the adapter must
+	// handle the trust dialog itself via preTrustClaudeWorkingDir.
+	workDir := t.TempDir()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly: TRUST_OK"}},
+		},
+	},
+		WithWorkingDir(workDir),
+		WithClaudeCodeTools(""),
+		WithEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent in untrusted workdir error = %v (trust prompt was not auto-dismissed)", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, "TRUST_OK") {
+		t.Fatalf("content = %q, want TRUST_OK", resp.Choices[0].Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // E2E: Parallel session isolation — two concurrent Claude Code sessions return
 // their own tokens without leaking each other's state.
 // ---------------------------------------------------------------------------
@@ -1291,69 +1325,12 @@ rl.on("line", (line) => {
 	return path
 }
 
-// preTrustClaudeWorkspace marks the workspace as trusted in ~/.claude.json so
-// Claude Code does not show its interactive "trust this folder" dialog when
-// launched there for the first time. Without this, tests that pass
-// WithWorkingDir to a fresh t.TempDir() get stuck on the trust prompt because
-// the adapter does not yet auto-dismiss it in tmux mode.
-//
-// Per-workspace trust is recorded under projects.<path>.hasTrustDialogAccepted.
-// Claude resolves the workspace path through symlinks (/var -> /private/var on
-// macOS), so we record entries under both the raw and resolved paths.
-var preTrustClaudeMu sync.Mutex
-
+// preTrustClaudeWorkspace is kept for tests that pre-trust a directory before
+// launching the adapter. New tests should rely on the adapter's own
+// preTrustClaudeWorkingDir instead (see TestClaudeCodeExperimentalIntegrationTrustPromptAutoDismiss).
 func preTrustClaudeWorkspace(t *testing.T, workDir string) {
 	t.Helper()
-	paths := []string{workDir}
-	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
-		paths = append(paths, resolved)
-	}
-
-	preTrustClaudeMu.Lock()
-	defer preTrustClaudeMu.Unlock()
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("user home dir: %v", err)
-	}
-	configPath := filepath.Join(home, ".claude.json")
-
-	raw, readErr := os.ReadFile(configPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatalf("read claude config: %v", readErr)
-	}
-	var config map[string]interface{}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &config); err != nil {
-			t.Fatalf("parse claude config: %v", err)
-		}
-	}
-	if config == nil {
-		config = map[string]interface{}{}
-	}
-
-	projects, _ := config["projects"].(map[string]interface{})
-	if projects == nil {
-		projects = map[string]interface{}{}
-	}
-	for _, p := range paths {
-		entry, _ := projects[p].(map[string]interface{})
-		if entry == nil {
-			entry = map[string]interface{}{}
-		}
-		entry["hasTrustDialogAccepted"] = true
-		entry["hasCompletedProjectOnboarding"] = true
-		projects[p] = entry
-	}
-	config["projects"] = projects
-
-	out, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal claude config: %v", err)
-	}
-	if err := os.WriteFile(configPath, out, 0o600); err != nil {
-		t.Fatalf("write claude config: %v", err)
-	}
+	preTrustClaudeWorkingDir(workDir)
 }
 
 func containsFold(s, substr string) bool {

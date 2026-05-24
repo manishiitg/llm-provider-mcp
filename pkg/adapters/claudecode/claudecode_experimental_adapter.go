@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,6 +250,39 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 	if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan); err != nil {
 		discardPersistentSession(err)
 		return nil, err
+	}
+
+	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+		var lastSnapshot string
+		streamClaudeTerminalSnapshot(callCtx, sessionName, opts.StreamChan, &lastSnapshot)
+		additional := map[string]interface{}{
+			"provider":                           "claude-code",
+			"claude_code_mode":                   "experimental",
+			"claude_code_run_id":                 runID,
+			"claude_code_session":                sessionName,
+			"claude_code_session_id":             nativeSessionID,
+			"claude_code_native_session_id":      nativeSessionID,
+			"claude_code_resumed_session_id":     resumeID,
+			"claude_code_uses_print_flag":        false,
+			"claude_code_structured_streaming":   false,
+			"claude_code_persistent_interactive": persistentInteractive,
+		}
+		gi := &llmtypes.GenerationInfo{Additional: additional}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:        "claude-code",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			NativeSessionID: nativeSessionID,
+			TmuxSession:     sessionName,
+			WorkingDir:      workingDir,
+			Model:           c.modelID,
+			Status:          llmtypes.CodingProviderSessionStatusIdle,
+		})
+		return &llmtypes.ContentResponse{
+			Choices: []*llmtypes.ContentChoice{{
+				Content:        "",
+				GenerationInfo: gi,
+			}},
+		}, nil
 	}
 
 	prompt, err := buildTmuxPrompt(conversationMessages, opts, resumeID, persistentInteractive)
@@ -528,6 +562,12 @@ func (c *ClaudeCodeExperimentalAdapter) shouldPassModelFlag() bool {
 }
 
 func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+	if workingDir != "" {
+		// Pre-trust the working directory so Claude Code does not show its
+		// interactive "Do you trust the files in this folder?" dialog, which
+		// the adapter cannot dismiss in tmux mode and would cause a timeout.
+		preTrustClaudeWorkingDir(workingDir)
+	}
 	shellCommand := claudeExperimentalShellCommand(args, workingDir)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
@@ -540,6 +580,73 @@ func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessio
 		return fmt.Errorf("failed to configure Claude Code experimental session %q: %w", sessionName, err)
 	}
 	return nil
+}
+
+var preTrustClaudeMu sync.Mutex
+
+// preTrustClaudeWorkingDir marks workingDir as trusted in ~/.claude.json so
+// Claude Code skips its interactive "Do you trust the files in this folder?"
+// dialog. Trust is recorded under projects.<path>.hasTrustDialogAccepted.
+// On macOS /var is a symlink to /private/var, so we record both the raw and
+// resolved paths. Errors are silently ignored — the session will still launch
+// and the adapter will time out on the trust prompt rather than failing here.
+func preTrustClaudeWorkingDir(workingDir string) {
+	paths := []string{workingDir}
+	if resolved, err := os.Readlink(workingDir); err == nil && resolved != workingDir {
+		paths = append(paths, resolved)
+	}
+	// EvalSymlinks resolves the full chain (handles /var -> /private/var on macOS).
+	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
+		seen := false
+		for _, p := range paths {
+			if p == resolved {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			paths = append(paths, resolved)
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	configPath := filepath.Join(home, ".claude.json")
+
+	preTrustClaudeMu.Lock()
+	defer preTrustClaudeMu.Unlock()
+
+	raw, readErr := os.ReadFile(configPath)
+	var config map[string]interface{}
+	if readErr == nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &config)
+	}
+	if config == nil {
+		config = map[string]interface{}{}
+	}
+
+	projects, _ := config["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = map[string]interface{}{}
+	}
+	for _, p := range paths {
+		entry, _ := projects[p].(map[string]interface{})
+		if entry == nil {
+			entry = map[string]interface{}{}
+		}
+		entry["hasTrustDialogAccepted"] = true
+		entry["hasCompletedProjectOnboarding"] = true
+		projects[p] = entry
+	}
+	config["projects"] = projects
+
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(configPath, out, 0o600)
 }
 
 func claudePromptSuggestionEnvArgs() []string {
@@ -806,6 +913,11 @@ func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
 	if isClaudeResumeSummaryMenu(captured) {
 		return []string{"C-m"}
 	}
+	// Check TUI selection menu before the older text-based format \u2014 both may
+	// contain "compact"+"continue", but the TUI menu needs arrow keys, not typing.
+	if isClaudeResumeSelectMenu(captured) {
+		return claudeResumeSelectMenuKeys(captured)
+	}
 	if isClaudeResumeCompressionPrompt(captured) {
 		return []string{"continue", "C-m"}
 	}
@@ -819,6 +931,59 @@ func isClaudeResumeSummaryMenu(captured string) bool {
 		(strings.Contains(normalized, "resume full session") ||
 			strings.Contains(normalized, "usage limits") ||
 			strings.Contains(normalized, "substantial portion"))
+}
+
+// isClaudeResumeSelectMenu detects the interactive TUI selection menu Claude Code
+// shows on resume when the conversation is long: a \u276f-cursor menu with a compact
+// option and a "run/continue as is" option. The \u276f distinguishes it from the older
+// text-based prompt where the user types "continue".
+func isClaudeResumeSelectMenu(captured string) bool {
+	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
+	lower := strings.ToLower(normalized)
+	if !strings.Contains(normalized, "\u276f") {
+		return false
+	}
+	hasCompact := strings.Contains(lower, "compact") || strings.Contains(lower, "compress")
+	hasRunAsIs := strings.Contains(lower, "as is") ||
+		strings.Contains(lower, "without compact") ||
+		strings.Contains(lower, "without compress") ||
+		strings.Contains(lower, "run as") ||
+		strings.Contains(lower, "continue as") ||
+		strings.Contains(lower, "continue without")
+	return hasCompact && hasRunAsIs
+}
+
+// claudeResumeSelectMenuKeys returns the tmux key sequence to choose the
+// "continue without compacting / run as is" option from the TUI selection menu.
+// It checks which option the \u276f cursor is on: if it's already on the
+// continue/as-is option, Enter is enough; if it's on the compact option,
+// navigate down first.
+func claudeResumeSelectMenuKeys(captured string) []string {
+	lines := strings.Split(strings.ReplaceAll(captured, "\u00a0", " "), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, "\u276f") {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		// A line is the "continue/run-as-is" option when it has qualifier words
+		// like "without", "as is", "run as", or "continue as". These take
+		// priority over "compact" appearing in the same line (e.g. "without compacting").
+		isRunAsIs := strings.Contains(lower, "without") ||
+			strings.Contains(lower, "as is") ||
+			strings.Contains(lower, "run as") ||
+			strings.Contains(lower, "continue as") ||
+			strings.Contains(lower, "continue without")
+		isCompact := (strings.Contains(lower, "compact") || strings.Contains(lower, "compress")) && !isRunAsIs
+		if isCompact {
+			// Cursor is on the compact option \u2014 move to the continue/as-is option below.
+			return []string{"Down", "C-m"}
+		}
+		// Cursor is already on continue/run-as-is.
+		return []string{"C-m"}
+	}
+	// Fallback: accept whatever is selected.
+	return []string{"C-m"}
 }
 
 func isClaudeResumeCompressionPrompt(captured string) bool {

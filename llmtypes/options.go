@@ -121,6 +121,29 @@ func WithStreamingChan(ch chan<- StreamChunk) CallOption {
 	}
 }
 
+// WithCodingProviderLaunchOnly asks tmux-backed coding-agent adapters to start
+// or reacquire their interactive TUI and return once the prompt is ready,
+// without sending a user message.
+func WithCodingProviderLaunchOnly() CallOption {
+	return func(opts *CallOptions) {
+		if opts.Metadata == nil {
+			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
+		}
+		if opts.Metadata.Custom == nil {
+			opts.Metadata.Custom = make(map[string]interface{})
+		}
+		opts.Metadata.Custom[CodingProviderLaunchOnlyMetadataKey] = true
+	}
+}
+
+func CodingProviderLaunchOnlyFromOptions(opts *CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[CodingProviderLaunchOnlyMetadataKey].(bool)
+	return enabled
+}
+
 // WithStreamingFunc is a convenience function that creates a channel and callback
 // This maintains backward compatibility for simple use cases
 // For better control, use WithStreamingChan directly

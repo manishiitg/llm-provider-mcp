@@ -163,6 +163,38 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, err
 	}
 
+	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+		var lastSnapshot string
+		streamCodexTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
+		additional := map[string]interface{}{
+			"provider":                     "codex-cli",
+			"codex_mode":                   "interactive",
+			"codex_interactive_session":    session.tmuxSessionName,
+			"codex_persistent_interactive": persistent,
+			"codex_uses_exec_json":         false,
+		}
+		gi := &llmtypes.GenerationInfo{Additional: additional}
+		handleModel := c.modelID
+		if modelToUse := resolveCodexCLIModelID(c.modelID); modelToUse != "" {
+			handleModel = modelToUse
+		}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:        "codex-cli",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			NativeSessionID: codexResumeSessionIDFromOptions(opts),
+			TmuxSession:     session.tmuxSessionName,
+			WorkingDir:      session.workingDir,
+			Model:           handleModel,
+			Status:          llmtypes.CodingProviderSessionStatusIdle,
+		})
+		return &llmtypes.ContentResponse{
+			Choices: []*llmtypes.ContentChoice{{
+				Content:        "",
+				GenerationInfo: gi,
+			}},
+		}, nil
+	}
+
 	prompt := buildCodexInteractivePrompt(conversationMessages)
 	baseline, _ := captureCodexPane(callCtx, session.tmuxSessionName)
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
