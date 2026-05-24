@@ -558,15 +558,36 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 	// belt-and-suspenders is useful when the operator wants the prompt
 	// visible inside the workspace for debugging or for downstream
 	// tooling that reads project rules.
-	if strings.TrimSpace(systemPrompt) != "" && writeProjectInstructionFromOptions(opts) {
+	//
+	// When the same flag is on AND an MCP config was provided via
+	// WithMCPConfig, we also project the MCP servers into
+	// <workingDir>/.mcp.json (Claude Code's project-scoped MCP
+	// convention) with byte-restore on cleanup so operator-owned
+	// .mcp.json content survives the session. The restore cleanup is
+	// appended to tempFiles as a path that removeFiles is patched to
+	// honor via an out-of-band restoration map.
+	if writeProjectInstructionFromOptions(opts) {
 		workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string)
-		if rulePath, err := writeClaudeCodeProjectRuleFile(workingDir, systemPrompt); err != nil {
-			// Best-effort: a write failure here must not block the session.
-			// The primary injection via --system-prompt-file already
-			// succeeded; the project-rule file is purely additive.
-			_ = err
-		} else if rulePath != "" {
-			tempFiles = append(tempFiles, rulePath)
+		if strings.TrimSpace(systemPrompt) != "" {
+			if rulePath, err := writeClaudeCodeProjectRuleFile(workingDir, systemPrompt); err != nil {
+				// Best-effort: a write failure here must not block the
+				// session. The primary --system-prompt-file injection
+				// already succeeded; the project-rule file is purely
+				// additive.
+				_ = err
+			} else if rulePath != "" {
+				tempFiles = append(tempFiles, rulePath)
+			}
+		}
+		if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
+			if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig); err != nil {
+				// Best-effort: --mcp-config above already loaded the
+				// MCP servers via the temp file; the workspace .mcp.json
+				// is purely additive (visible to downstream tooling).
+				_ = err
+			} else if mcpPath != "" {
+				tempFiles = append(tempFiles, mcpPath)
+			}
 		}
 	}
 
@@ -2797,6 +2818,18 @@ func writeTempFile(pattern, value string) (string, error) {
 
 func removeFiles(paths []string) {
 	for _, path := range paths {
+		// Honor byte-restore registrations from
+		// writeClaudeCodeProjectMCPFile (and any future opt-in
+		// project-artifact writer): if the path is in
+		// claudeProjectFileRestores, write the prior bytes back instead
+		// of deleting the file. Files we created from nothing fall
+		// through to the unconditional os.Remove path.
+		if restored, ok := claudeProjectFileRestores.LoadAndDelete(path); ok {
+			if bs, isBytes := restored.([]byte); isBytes {
+				_ = os.WriteFile(path, bs, 0o600)
+				continue
+			}
+		}
 		_ = os.Remove(path)
 	}
 }

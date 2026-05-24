@@ -255,6 +255,16 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 // sessions in the same working dir don't collide, and so cleanup never
 // removes an operator-owned .claude/rules/*.md. Restored to the pre-
 // session state on adapter teardown.
+//
+// When this flag is on AND WithMCPConfig was also set, the adapter
+// ALSO projects the MCP servers JSON into <workingDir>/.mcp.json
+// (Claude Code's project-scoped MCP convention). Unlike the .md path,
+// .mcp.json is a single canonical file: cleanup byte-restores any
+// pre-existing operator .mcp.json so user-owned configuration is
+// preserved on successful runs. Crash-window caveat applies: if the
+// orchestrator process crashes between write and cleanup, the
+// operator's prior .mcp.json is destroyed. Off-by-default keeps the
+// blast radius bounded.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
