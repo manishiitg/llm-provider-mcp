@@ -6,6 +6,7 @@ const (
 	MetadataKeyWorkingDir            = "agy_working_dir"
 	MetadataKeyResumeSessionID       = "agy_resume_session_id"
 	MetadataKeyMCPConfig             = "agy_mcp_config"
+	MetadataKeyBridgeOnlyTools       = "agy_bridge_only_tools"
 	MetadataKeyAutoApproveWebSearch  = "agy_auto_approve_web_search"
 	MetadataKeyInteractiveSessionID  = "agy_interactive_session_id"
 	MetadataKeyPersistentInteractive = "agy_persistent_interactive"
@@ -52,6 +53,16 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMCPConfig] = configJSON
+	}
+}
+
+// WithBridgeOnlyTools writes an Antigravity workspace hook that denies built-in
+// mutation/execution tools so required actions must route through MCP bridge
+// tools instead.
+func WithBridgeOnlyTools(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyBridgeOnlyTools] = enabled
 	}
 }
 

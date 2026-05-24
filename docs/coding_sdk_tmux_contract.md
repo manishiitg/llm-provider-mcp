@@ -1264,7 +1264,7 @@ Gemini CLI real contract coverage is structured-only; see
 Current Antigravity CLI real contract command:
 
 ```sh
-RUN_AGY_CLI_REAL_E2E=1 RUN_AGY_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/agycli -run 'TestAgyCLIReal(Interactive|SystemPrompt|MCPBridge|BridgeOnly|NativeResume)' -v -timeout 8m
+RUN_AGY_CLI_REAL_E2E=1 RUN_AGY_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/agycli -run 'TestAgyCLIReal(Interactive|SystemPrompt|MCPBridge|BridgeOnly|WorkingDirectory|NativeResume)' -v -timeout 8m
 ```
 
 Current Codex CLI real contract command:

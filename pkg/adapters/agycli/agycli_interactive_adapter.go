@@ -50,6 +50,7 @@ type agyInteractiveSession struct {
 	launchFingerprint string
 	persistent        bool
 	cleanupFiles      func()
+	releaseMCPLease   func()
 	idleTimer         *time.Timer
 	initErr           error
 	createdAt         time.Time
@@ -70,6 +71,15 @@ var agyPersistentRegistry = struct {
 }{
 	sessions: map[string]*agyInteractiveSession{},
 }
+
+var agyWorkspaceMCPConfigRegistry = struct {
+	sync.Mutex
+	leases map[string]map[*agyInteractiveSession]string
+}{
+	leases: map[string]map[*agyInteractiveSession]string{},
+}
+
+var errAgyAuthRequired = errors.New("Antigravity CLI authentication required")
 
 func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -140,6 +150,18 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 	}
 	resetAgyPaneForTurn(callCtx, session.tmuxSessionName)
 	if err := waitForAgyPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+		markAgyInteractiveSessionFailedLocked(session, err, c.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedAgyInteractiveSession(failedSession)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+	if err := clearAgyPromptDraftBeforePaste(callCtx, session.tmuxSessionName); err != nil {
 		markAgyInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -403,11 +425,28 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 	}
 	session.workingDir = workingDir
 	session.cleanupFiles = cleanupFiles
+	releaseMCPLease, err := acquireAgyWorkspaceMCPConfigLease(workingDir, opts, session)
+	if err != nil {
+		session.initErr = err
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
+		session.mu.Unlock()
+		if persistent {
+			removeAgyPersistentSession(ownerSessionID, session)
+		}
+		return nil, err
+	}
+	session.releaseMCPLease = releaseMCPLease
 
 	if err := startAgyTmuxSession(ctx, session.tmuxSessionName, args, env, workingDir); err != nil {
 		session.initErr = err
 		if cleanupFiles != nil {
 			cleanupFiles()
+		}
+		if releaseMCPLease != nil {
+			releaseMCPLease()
+			session.releaseMCPLease = nil
 		}
 		session.mu.Unlock()
 		if persistent {
@@ -491,6 +530,7 @@ func (c *AgyCLIAdapter) agyInteractiveLaunchFingerprint(opts *llmtypes.CallOptio
 		return ok && strings.TrimSpace(v) != ""
 	}
 	write("mcp_config_present", strconv.FormatBool(hasStringValue(MetadataKeyMCPConfig)))
+	writeBool(MetadataKeyBridgeOnlyTools)
 	writeBool("agy_dangerously_skip_permissions")
 
 	return hex.EncodeToString(hash.Sum(nil))
@@ -541,9 +581,76 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 			}
 			addCleanup(cleanup)
 		}
+		if enabled, ok := opts.Metadata.Custom[MetadataKeyBridgeOnlyTools].(bool); ok && enabled {
+			cleanup, err := writeAgyBridgeOnlyHookFiles(agentsDir)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			addCleanup(cleanup)
+		}
 	}
 
 	return cleanupAll, nil
+}
+
+const agyBridgeOnlyDeniedToolMatcher = "view_file|write_to_file|replace_file_content|multi_replace_file_content|list_dir|find_by_name|grep_search|search_web|read_url_content|run_command|manage_task|schedule|list_permissions|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|ask_question|generate_image"
+
+func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
+	scriptPath := filepath.Join(agentsDir, "mlp-bridge-only-hook.sh")
+	logPath := filepath.Join(agentsDir, "mlp-bridge-only-denials.jsonl")
+	script := "#!/bin/sh\n" +
+		"input=$(cat)\n" +
+		"printf '%s\\n' \"$input\" >> " + agyShellQuote(logPath) + "\n" +
+		"printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"MCP bridge-only mode blocks Antigravity built-in tools; use the configured MCP bridge tool instead.\"}'\n"
+	scriptCleanup, err := writeAgyRestoredFile(scriptPath, []byte(script))
+	if err != nil {
+		return nil, err
+	}
+
+	hooksPath := filepath.Join(agentsDir, "hooks.json")
+	hooksConfig := map[string]interface{}{}
+	existingHooks, readErr := os.ReadFile(hooksPath)
+	if readErr == nil && strings.TrimSpace(string(existingHooks)) != "" {
+		if err := json.Unmarshal(existingHooks, &hooksConfig); err != nil {
+			scriptCleanup()
+			return nil, fmt.Errorf("failed to parse existing Agy hooks.json: %w", err)
+		}
+	} else if readErr != nil && !os.IsNotExist(readErr) {
+		scriptCleanup()
+		return nil, fmt.Errorf("failed to read existing Agy hooks.json: %w", readErr)
+	}
+	hooksConfig["mlp-bridge-only-tools"] = map[string]interface{}{
+		"PreToolUse": []map[string]interface{}{
+			{
+				"matcher": agyBridgeOnlyDeniedToolMatcher,
+				"hooks": []map[string]interface{}{
+					{
+						"type":    "command",
+						"command": "sh " + agyShellQuote(scriptPath),
+						"timeout": 10,
+					},
+				},
+			},
+		},
+	}
+	hooksBody, err := json.MarshalIndent(hooksConfig, "", "  ")
+	if err != nil {
+		scriptCleanup()
+		return nil, fmt.Errorf("failed to encode Agy bridge-only hooks: %w", err)
+	}
+	hooksBody = append(hooksBody, '\n')
+	hooksCleanup, err := writeAgyRestoredFile(hooksPath, hooksBody)
+	if err != nil {
+		scriptCleanup()
+		return nil, err
+	}
+
+	return func() {
+		hooksCleanup()
+		_ = os.Remove(logPath)
+		scriptCleanup()
+	}, nil
 }
 
 func writeAgyRestoredFile(path string, content []byte) (func(), error) {
@@ -789,11 +896,15 @@ func closeAgySessionLocked(session *agyInteractiveSession, reason string, logger
 	removeAgyPersistentSession(session.ownerSessionID, session)
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = runAgyCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
+	requestAgyGracefulExit(closeCtx, session.tmuxSessionName)
 	_ = killAgyTmuxSession(closeCtx, session.tmuxSessionName)
 	if session.cleanupFiles != nil {
 		session.cleanupFiles()
 		session.cleanupFiles = nil
+	}
+	if session.releaseMCPLease != nil {
+		session.releaseMCPLease()
+		session.releaseMCPLease = nil
 	}
 	unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
@@ -821,10 +932,15 @@ func cleanupFailedAgyInteractiveSession(session *agyInteractiveSession) {
 	removeAgyPersistentSession(session.ownerSessionID, session)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	requestAgyGracefulExit(cleanupCtx, session.tmuxSessionName)
 	_ = killAgyTmuxSession(cleanupCtx, session.tmuxSessionName)
 	unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 	if session.cleanupFiles != nil {
 		session.cleanupFiles()
+	}
+	if session.releaseMCPLease != nil {
+		session.releaseMCPLease()
+		session.releaseMCPLease = nil
 	}
 }
 
@@ -834,6 +950,69 @@ func removeAgyPersistentSession(ownerSessionID string, session *agyInteractiveSe
 	if current := agyPersistentRegistry.sessions[ownerSessionID]; current == session {
 		delete(agyPersistentRegistry.sessions, ownerSessionID)
 	}
+}
+
+func acquireAgyWorkspaceMCPConfigLease(workingDir string, opts *llmtypes.CallOptions, session *agyInteractiveSession) (func(), error) {
+	mcpConfig := ""
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if raw, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok {
+			mcpConfig = strings.TrimSpace(raw)
+		}
+	}
+	if mcpConfig == "" || session == nil {
+		return nil, nil
+	}
+	key := cleanAgyWorkingDirKey(workingDir)
+	fingerprint := agyMCPConfigFingerprint(mcpConfig)
+
+	agyWorkspaceMCPConfigRegistry.Lock()
+	defer agyWorkspaceMCPConfigRegistry.Unlock()
+	leases := agyWorkspaceMCPConfigRegistry.leases[key]
+	for existing, existingFingerprint := range leases {
+		if existing == nil || existing == session {
+			continue
+		}
+		if existingFingerprint != fingerprint {
+			return nil, fmt.Errorf("agy-cli does not support concurrent sessions in working directory %s with different MCP configs; use separate working directories or the same bridge config", workingDir)
+		}
+	}
+	if leases == nil {
+		leases = map[*agyInteractiveSession]string{}
+		agyWorkspaceMCPConfigRegistry.leases[key] = leases
+	}
+	leases[session] = fingerprint
+	released := false
+	return func() {
+		agyWorkspaceMCPConfigRegistry.Lock()
+		defer agyWorkspaceMCPConfigRegistry.Unlock()
+		if released {
+			return
+		}
+		released = true
+		current := agyWorkspaceMCPConfigRegistry.leases[key]
+		delete(current, session)
+		if len(current) == 0 {
+			delete(agyWorkspaceMCPConfigRegistry.leases, key)
+		}
+	}, nil
+}
+
+func cleanAgyWorkingDirKey(workingDir string) string {
+	if abs, err := filepath.Abs(strings.TrimSpace(workingDir)); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(strings.TrimSpace(workingDir))
+}
+
+func agyMCPConfigFingerprint(config string) string {
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(config), &decoded); err == nil {
+		if canonical, err := json.Marshal(decoded); err == nil {
+			config = string(canonical)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(config)))
+	return hex.EncodeToString(sum[:])
 }
 
 func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
@@ -852,8 +1031,13 @@ func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
 	for _, session := range sessions {
 		cleanupFiles := stopAgyIdleTimerAndSnapshotCleanupIfAvailable(session)
 		unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		requestAgyGracefulExit(ctx, session.tmuxSessionName)
 		if cleanupFiles != nil {
 			cleanupFiles()
+		}
+		if session.releaseMCPLease != nil {
+			session.releaseMCPLease()
+			session.releaseMCPLease = nil
 		}
 		if err := killAgyTmuxSession(ctx, session.tmuxSessionName); err != nil {
 			failures = append(failures, err.Error())
@@ -876,6 +1060,10 @@ func stopAgyIdleTimerAndSnapshotCleanupIfAvailable(session *agyInteractiveSessio
 	}
 	cleanupFiles := session.cleanupFiles
 	session.cleanupFiles = nil
+	if session.releaseMCPLease != nil {
+		session.releaseMCPLease()
+		session.releaseMCPLease = nil
+	}
 	return cleanupFiles
 }
 
@@ -982,12 +1170,19 @@ func startAgyTmuxSession(ctx context.Context, sessionName string, args []string,
 }
 
 func waitForAgyPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	_, err := waitForAgyPromptWithTrustSignal(ctx, sessionName, streamChan)
+	return err
+}
+
+func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) (bool, error) {
 	deadline, cancel := context.WithTimeout(ctx, agyInteractivePromptWait())
 	defer cancel()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	var trustSeen bool
 	var trustSubmitted bool
+	var feedbackSkipped bool
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
@@ -996,14 +1191,14 @@ func waitForAgyPrompt(ctx context.Context, sessionName string, streamChan chan<-
 		case <-deadline.Done():
 			captured, _ := captureAgyPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Antigravity CLI prompt; latest pane:\n%s", captured)
+				return trustSeen, fmt.Errorf("timed out waiting for Antigravity CLI prompt; latest pane:\n%s", captured)
 			}
-			return fmt.Errorf("timed out waiting for Antigravity CLI prompt")
+			return trustSeen, fmt.Errorf("timed out waiting for Antigravity CLI prompt")
 		case <-ticker.C:
 			captured, err := captureAgyPane(deadline, sessionName)
 			if err != nil {
 				if isAgyTmuxSessionLostError(err) {
-					return fmt.Errorf("Antigravity CLI tmux session ended while waiting for prompt: %w", err)
+					return trustSeen, fmt.Errorf("Antigravity CLI tmux session ended while waiting for prompt: %w", err)
 				}
 				continue
 			}
@@ -1013,12 +1208,21 @@ func waitForAgyPrompt(ctx context.Context, sessionName string, streamChan chan<-
 				}
 			}
 			if hasAgyTrustPrompt(captured) && !trustSubmitted {
+				trustSeen = true
 				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, agyTrustPromptResponse(captured))
 				trustSubmitted = true
 				continue
 			}
+			if hasAgyAuthPrompt(captured) {
+				return trustSeen, agyAuthPromptError(captured)
+			}
+			if hasAgyFeedbackPrompt(captured) && !feedbackSkipped {
+				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "0")
+				feedbackSkipped = true
+				continue
+			}
 			if hasAgyReadyPrompt(captured) {
-				return nil
+				return trustSeen, nil
 			}
 		}
 	}
@@ -1119,6 +1323,120 @@ func ensureAgyInputSubmitted(ctx context.Context, sessionName, message string) {
 	}
 }
 
+func clearAgyPromptDraftBeforePaste(ctx context.Context, sessionName string) error {
+	captured, err := captureAgyPane(ctx, sessionName)
+	if err != nil {
+		if isAgyTmuxSessionLostError(err) {
+			return err
+		}
+		return nil
+	}
+	draft, shouldClear := agyPromptDraftToClearBeforePaste(captured)
+	if !shouldClear {
+		return nil
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u"); err != nil {
+		return fmt.Errorf("failed to clear stale Agy prompt draft %q: %w", truncateAgyDraftForError(draft, 120), err)
+	}
+	if err := waitForAgyPromptDraftCleared(ctx, sessionName); err == nil {
+		return nil
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-a", "C-k"); err != nil {
+		return fmt.Errorf("failed to clear stale Agy prompt draft %q: %w", truncateAgyDraftForError(draft, 120), err)
+	}
+	if err := waitForAgyPromptDraftCleared(ctx, sessionName); err != nil {
+		return fmt.Errorf("failed to clear stale Agy prompt draft %q: %w", truncateAgyDraftForError(draft, 120), err)
+	}
+	return nil
+}
+
+func agyPromptDraftToClearBeforePaste(captured string) (string, bool) {
+	if hasAgyTrustPrompt(captured) || hasAgyWebSearchApprovalPrompt(captured) || hasAgyActivity(captured) {
+		return "", false
+	}
+	draft, placeholder, ok := latestAgyPromptDraftRaw(captured)
+	if !ok {
+		return "", false
+	}
+	draft = strings.TrimSpace(draft)
+	return draft, draft != "" && !placeholder
+}
+
+func latestAgyPromptDraftRaw(captured string) (draft string, placeholder bool, ok bool) {
+	lines := strings.Split(captured, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(strings.ReplaceAll(stripAgyANSI(lines[i]), "\u00a0", " "))
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "│"))
+		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, "│"))
+		for _, marker := range []string{">", "→", "›", "❯"} {
+			if trimmed == marker {
+				return "", false, true
+			}
+			if strings.HasPrefix(trimmed, marker+" ") || strings.HasPrefix(trimmed, marker+"\t") {
+				draft := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+				return draft, isAgyPromptPlaceholder(draft), true
+			}
+		}
+	}
+	return "", false, false
+}
+
+func isAgyPromptPlaceholder(draft string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.ReplaceAll(draft, "\u00a0", " ")), " "))
+	if normalized == "" {
+		return false
+	}
+	return strings.HasPrefix(normalized, "type your message") ||
+		strings.HasPrefix(normalized, "ask me anything") ||
+		strings.HasPrefix(normalized, "plan, search, build anything") ||
+		strings.HasPrefix(normalized, "message agy") ||
+		strings.HasPrefix(normalized, "add a follow-up") ||
+		(strings.HasPrefix(normalized, "try ") && strings.Contains(normalized, "\""))
+}
+
+func waitForAgyPromptDraftCleared(ctx context.Context, sessionName string) error {
+	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastCaptured string
+	for {
+		select {
+		case <-deadline.Done():
+			captured := lastCaptured
+			if strings.TrimSpace(captured) == "" {
+				captured, _ = captureAgyPane(context.Background(), sessionName)
+			}
+			draft, _, ok := latestAgyPromptDraftRaw(captured)
+			if !ok {
+				return fmt.Errorf("prompt draft still could not be inspected; latest pane:\n%s", captured)
+			}
+			return fmt.Errorf("prompt draft still present: %q; latest pane:\n%s", draft, captured)
+		case <-ticker.C:
+			captured, err := captureAgyPane(deadline, sessionName)
+			if err != nil {
+				if isAgyTmuxSessionLostError(err) {
+					return err
+				}
+				continue
+			}
+			lastCaptured = captured
+			draft, placeholder, ok := latestAgyPromptDraftRaw(captured)
+			if ok && (strings.TrimSpace(draft) == "" || placeholder) {
+				return nil
+			}
+		}
+	}
+}
+
+func truncateAgyDraftForError(draft string, maxRunes int) string {
+	runes := []rune(draft)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return draft
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
 func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) {
 	if strings.TrimSpace(message) == "" {
 		return
@@ -1152,6 +1470,7 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var lastWebSearchApprovalAt time.Time
+	var lastFeedbackSkipAt time.Time
 	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1181,6 +1500,19 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 				idleSince = time.Time{}
 				lastCaptured = captured
 				continue
+			}
+			if hasAgyFeedbackPrompt(captured) {
+				if lastFeedbackSkipAt.IsZero() || time.Since(lastFeedbackSkipAt) >= 2*time.Second {
+					if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "0"); err == nil {
+						lastFeedbackSkipAt = time.Now()
+					}
+				}
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			if hasAgyAuthPrompt(captured) {
+				return captured, agyAuthPromptError(captured)
 			}
 			// Reset idle only when we have activity AND we're not yet
 			// at the ready prompt. Agy's TUI leaves stale status
@@ -1603,7 +1935,13 @@ func hasAgyReadyPrompt(captured string) bool {
 	if hasAgyTrustPrompt(captured) {
 		return false
 	}
+	if hasAgyAuthPrompt(captured) {
+		return false
+	}
 	if hasAgyWebSearchApprovalPrompt(captured) {
+		return false
+	}
+	if hasAgyFeedbackPrompt(captured) {
 		return false
 	}
 	cleaned := strings.ToLower(stripAgyANSI(captured))
@@ -1626,6 +1964,8 @@ func hasAgyReadyPrompt(captured string) bool {
 
 func hasAgyLiveGenerationActivity(cleaned string) bool {
 	return strings.Contains(cleaned, "ctrl+c to stop") ||
+		strings.Contains(cleaned, "esc to cancel") ||
+		strings.Contains(cleaned, "generating") ||
 		strings.Contains(cleaned, "composing")
 }
 
@@ -1660,11 +2000,31 @@ func hasAgyTrustPrompt(captured string) bool {
 				strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "[w]"))
 }
 
+func hasAgyAuthPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	return strings.Contains(cleaned, "welcome to the antigravity cli") &&
+		strings.Contains(cleaned, "not signed in") &&
+		(strings.Contains(cleaned, "select login method") ||
+			strings.Contains(cleaned, "google oauth") ||
+			strings.Contains(cleaned, "google cloud project"))
+}
+
+func agyAuthPromptError(captured string) error {
+	return fmt.Errorf("%w; run `agy` locally and sign in before using the agy-cli provider; latest pane:\n%s", errAgyAuthRequired, captured)
+}
+
 func hasAgyWebSearchApprovalPrompt(captured string) bool {
 	cleaned := strings.ToLower(stripAgyANSI(captured))
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
 		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
+}
+
+func hasAgyFeedbackPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	return strings.Contains(cleaned, "how's the cli experience so far") &&
+		strings.Contains(cleaned, "help us improve") &&
+		strings.Contains(cleaned, "[0] skip")
 }
 
 func agyTrustPromptResponse(captured string) string {
@@ -1686,12 +2046,14 @@ func hasAgyActivity(captured string) bool {
 			continue
 		}
 		if strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "esc to cancel") ||
 			strings.Contains(lower, "ctrl+c to cancel") ||
 			strings.Contains(lower, "ctrl+c to stop") ||
 			strings.Contains(lower, "composing") ||
 			strings.HasPrefix(lower, "thinking") ||
 			strings.HasPrefix(lower, "working") ||
 			strings.HasPrefix(lower, "running") ||
+			strings.HasPrefix(lower, "generating") ||
 			strings.HasPrefix(lower, "editing") ||
 			strings.HasPrefix(lower, "applying") ||
 			strings.HasPrefix(lower, "calling ") {
@@ -1731,6 +2093,47 @@ func interruptAgyInteractiveSession(sessionName string, logger interfaces.Logger
 	defer cancel()
 	if err := runAgyCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil && logger != nil {
 		logger.Debugf("Failed to send Escape to Agy interactive session %s: %v", sessionName, err)
+	}
+}
+
+func requestAgyGracefulExit(ctx context.Context, sessionName string) {
+	if strings.TrimSpace(sessionName) == "" {
+		return
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+		return
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", "/exit"); err != nil {
+		return
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		return
+	}
+	waitForAgyTmuxSessionGone(ctx, sessionName, 2*time.Second)
+}
+
+func waitForAgyTmuxSessionGone(ctx context.Context, sessionName string, timeout time.Duration) bool {
+	if strings.TrimSpace(sessionName) == "" {
+		return true
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return false
+		case <-ticker.C:
+			err := runAgyCommand(deadline, nil, "tmux", "has-session", "-t", sessionName)
+			if err == nil {
+				continue
+			}
+			if isAgyTmuxSessionLostError(err) {
+				return true
+			}
+			return false
+		}
 	}
 }
 
