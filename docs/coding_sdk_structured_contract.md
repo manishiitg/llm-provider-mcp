@@ -11,14 +11,17 @@ Covered providers:
 - `gemini-cli` — `gemini --output-format stream-json`
 - `opencode-cli` — `opencode run --format json` (structured-only, no tmux)
 
-Every coding agent provider supports both the tmux interactive transport and the
-structured JSON transport. OpenCode CLI is the exception: it uses structured JSON
-only. The two transports are complementary:
+The provider-level coding-agent contract in `coding_agent_contract.go` decides
+which transport host applications should use by default. Claude Code, Codex CLI,
+and Cursor CLI use the tmux interactive transport. Gemini CLI and OpenCode CLI
+use structured JSON only. The two transports are complementary:
 
 - Tmux: persistent chat, live input, terminal streaming, interrupt, multi-turn.
 - Structured: per-turn, native token/cost, clean tool events, no tmux dependency.
 
-Both transports must have full e2e test coverage. Neither is legacy.
+Declared provider capabilities must have matching test coverage. Neither
+transport is legacy, but not every CLI provider exposes both transports through
+the provider-level contract.
 
 ## Provider CLI Commands
 

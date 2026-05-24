@@ -3705,6 +3705,22 @@ func WithCodexResumeSessionID(id string) llmtypes.CallOption {
 	return codexcli.WithResumeSessionID(id)
 }
 
+// WithCursorResumeSessionID sets the --resume flag so cursor-agent resumes
+// the chat by session id (the value cursor emits in its stream-json init
+// event, also the directory name under ~/.cursor/chats/<md5(cwd)>/<id>).
+// Mirrors the claude-code / gemini / codex equivalents.
+func WithCursorResumeSessionID(id string) llmtypes.CallOption {
+	return cursorcli.WithResumeSessionID(id)
+}
+
+// WithOpenCodeResumeSessionID sets the --session <id> flag so opencode
+// resumes a chat by its session id (the value opencode emits in its
+// structured output). Mirrors the claude-code / gemini / codex / cursor
+// equivalents.
+func WithOpenCodeResumeSessionID(id string) llmtypes.CallOption {
+	return opencodecli.WithResumeSessionID(id)
+}
+
 // WithCodexInteractiveSessionID links a Codex CLI interactive run to the
 // owning application session so live follow-up input can be sent to it.
 func WithCodexInteractiveSessionID(id string) llmtypes.CallOption {

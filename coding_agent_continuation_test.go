@@ -88,6 +88,18 @@ func TestContinueCodingAgentSessionSendsOnlyLatestMessageAndResumeOptions(t *tes
 			workdirKey:    "gemini_working_dir",
 			projectDirKey: "gemini_project_dir_id",
 		},
+		{
+			name: "cursor cli",
+			handle: llmtypes.CodingProviderSessionHandle{
+				Provider:        string(ProviderCursorCLI),
+				Transport:       llmtypes.CodingProviderTransportTmux,
+				NativeSessionID: "cursor-native",
+				WorkingDir:      "/tmp/work",
+				Model:           DefaultCursorCLIModel,
+			},
+			resumeKey:  "cursor_resume_session_id",
+			workdirKey: "cursor_working_dir",
+		},
 	}
 
 	for _, tt := range tests {

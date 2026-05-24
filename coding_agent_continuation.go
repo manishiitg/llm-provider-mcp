@@ -126,7 +126,10 @@ func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.Cod
 			out = append(out, WithGeminiWorkingDir(workingDir))
 		}
 	case ProviderCursorCLI:
-		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Provider: provider, Reason: "cursor-cli provider-native continuation is not certified yet"}
+		out = append(out, WithCursorResumeSessionID(resumeID))
+		if workingDir != "" {
+			out = append(out, WithCursorWorkingDir(workingDir))
+		}
 	case ProviderOpenCodeCLI:
 		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Provider: provider, Reason: "opencode-cli has no provider-native continuation handle yet"}
 	default:

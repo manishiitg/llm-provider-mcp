@@ -45,6 +45,36 @@ type CodingAgentProviderContract struct {
 	HandlesTmuxSessionLoss  bool
 	StructuredFallback      bool
 	ImageInputInteractive   bool
+
+	// SurfacesTokenUsage reports whether the adapter consumes input/output/cache
+	// token counts from the CLI's output (stream-json events, transcript files,
+	// etc.) and reports them through GenerationInfo. False means the orchestrator
+	// gets no usage data and the cost ledger writes a bare row.
+	SurfacesTokenUsage bool
+
+	// TokenUsageSource describes WHERE the adapter obtains usage data so cost
+	// auditing knows the fidelity floor. One of:
+	//   "stream-json"     — exact, parsed from the CLI's structured output.
+	//   "transcript-file" — exact, parsed from a CLI-written transcript on disk.
+	//   "estimated"       — approximate; the adapter heuristically guesses.
+	// "estimated" callers (e.g. cursor's tmux mode at ~4 chars/token) MUST mark
+	// the source so cost reports can be flagged as approximate.
+	TokenUsageSource string
+
+	// AdapterReadsTranscript reports whether the adapter has code that reads
+	// the CLI's on-disk conversation transcript directly — used for sidecar
+	// features (token extraction for tmux mode, replay, forensic audit). This
+	// is independent of SupportsNativeResume: a CLI can fully support --resume
+	// without us ever reading its files. Only flip true if a transcript
+	// reader function is registered in transcriptReaderRegistry.
+	AdapterReadsTranscript bool
+
+	// TranscriptPathTemplate is a human-readable hint of where the CLI writes
+	// its transcript (e.g. "~/.cursor/chats/<md5(cwd)>/<id>/store.db"). Empty
+	// if the adapter doesn't read transcripts. Documentation only — adapters
+	// should resolve the actual path via package-local helpers, never by
+	// string-formatting this value.
+	TranscriptPathTemplate string
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
@@ -69,6 +99,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
+		SurfacesTokenUsage:      true,
+		TokenUsageSource:        "stream-json",
+		AdapterReadsTranscript:  false,
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -82,7 +115,13 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsInterrupt:       true,
 		SupportsTerminalStream:  true,
 		SupportsFinalExtraction: true,
-		SupportsNativeResume:    false,
+		// Wired end-to-end: mcpagent.Agent.CodexSessionID is populated by the
+		// adapter, session_handle persists it, llmproviders.WithCodexResumeSessionID
+		// re-exports the resume option, and server.go's restore switch reads
+		// it back via `case "codex-cli":` (server.go:6270). Contract used to
+		// say false; the drift test in coding_agent_contract_test.go now
+		// enforces this matches the actual wiring.
+		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
@@ -104,7 +143,14 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsInterrupt:       true,
 		SupportsTerminalStream:  true,
 		SupportsFinalExtraction: true,
-		SupportsNativeResume:    false,
+		// Wired end-to-end: mcpagent.Agent.CursorSessionID is populated by
+		// the structured adapter from cursor's stream-json init event,
+		// session_handle persists it, llmproviders.WithCursorResumeSessionID
+		// re-exports the resume option, and server.go's restore switch
+		// reads it back via `case "cursor-cli":`. The drift test in
+		// coding_agent_contract_test.go enforces this matches the actual
+		// wiring (nativeResumeRegistry membership).
+		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
@@ -151,7 +197,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsInterrupt:       false,
 		SupportsTerminalStream:  false,
 		SupportsFinalExtraction: true,
-		SupportsNativeResume:    false,
+		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,

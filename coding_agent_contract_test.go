@@ -18,7 +18,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
-		{name: "gemini cli", provider: ProviderGeminiCLI, wantTmux: true, wantFound: true},
+		{name: "gemini cli", provider: ProviderGeminiCLI, wantFound: true},
 		{name: "opencode cli", provider: ProviderOpenCodeCLI, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
@@ -64,6 +64,45 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestNativeResumeContractMatchesRegistry guards against drift between
+// contract.SupportsNativeResume and the actual end-to-end wiring (Agent
+// session-id field → adapter populator → public WithXxxResumeSessionID
+// re-export → server.go restore switch case).
+//
+// nativeResumeRegistry in coding_agent_resume_registry.go is the single
+// source of truth for "this provider has a public resume option func".
+// A contract that claims SupportsNativeResume=true must have a registry
+// entry; a registry entry implies the contract must be true. Any mismatch
+// fails this test — that's the whole point.
+//
+// In the past, two contract drifts went undetected for months: Codex was
+// fully wired but contract.SupportsNativeResume said false, hiding the
+// feature from any caller that gated on the contract value; Cursor's
+// contract honestly said false but the adapter quietly accepted --resume
+// metadata that nobody plumbed in. Either kind of drift now fails CI.
+func TestNativeResumeContractMatchesRegistry(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		_, hasRegistry := nativeResumeRegistry[contract.Provider]
+		if contract.SupportsNativeResume != hasRegistry {
+			t.Errorf("native-resume contract drift for %s: contract.SupportsNativeResume=%v but nativeResumeRegistry presence=%v. Update coding_agent_contract.go and coding_agent_resume_registry.go together — see the comment block in coding_agent_resume_registry.go for the 4-layer wiring checklist.",
+				contract.Provider, contract.SupportsNativeResume, hasRegistry)
+		}
+	}
+	// Inverse: registry must not list a provider whose contract is missing
+	// or already says false. Catches the case where someone adds a registry
+	// entry but forgets to flip the contract.
+	for provider := range nativeResumeRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("nativeResumeRegistry has %s but no coding-agent contract is registered for it", provider)
+			continue
+		}
+		if !contract.SupportsNativeResume {
+			t.Errorf("nativeResumeRegistry has %s but its contract.SupportsNativeResume is false — flip the contract", provider)
+		}
 	}
 }
 
