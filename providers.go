@@ -3243,6 +3243,11 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 			p.logger.Infof("✅ Valid function call response detected - Content is empty but FuncCall present")
 			p.logger.Infof("   Function Call: Name=%s", firstChoice.FuncCall.Name)
 			// This is a valid response, continue processing
+		} else if handle, ok := llmtypes.ExtractCodingProviderSessionHandle(firstChoice.GenerationInfo); ok && !handle.Empty() {
+			// LaunchOnly response: the adapter successfully started/reacquired the tmux transport
+			// and embedded the session handle in GenerationInfo. Empty Content is intentional here.
+			p.logger.Infof("✅ Valid coding-agent launch-only response - Content is empty but session handle present (provider=%s, tmux=%s)", handle.Provider, handle.TmuxSession)
+			// This is a valid response, continue processing
 		} else {
 			// This is actually an empty content error
 			p.logger.Infof("❌ Choice.Content is empty - this will cause 'no results' error")
