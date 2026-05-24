@@ -75,6 +75,42 @@ type CodingAgentProviderContract struct {
 	// should resolve the actual path via package-local helpers, never by
 	// string-formatting this value.
 	TranscriptPathTemplate string
+
+	// RequiresWorkspaceTrust reports whether the CLI shows a "do you trust
+	// the files in this folder?" dialog on first launch in a fresh working
+	// directory, which the adapter must dismiss before any user prompt can
+	// be submitted. Every tmux-mode coding CLI on this codebase (Claude
+	// Code, Codex, Cursor, Agy) needs this; structured-only CLIs (Gemini,
+	// OpenCode) do not because they never render a TUI dialog.
+	//
+	// Pairs with CertTrustAuthPrompts in codingAgentCapabilityCertifications:
+	// when RequiresWorkspaceTrust=true, the provider must have a registered
+	// cert (or known-gap allowance) proving the trust handler works in a
+	// fresh workspace.
+	RequiresWorkspaceTrust bool
+
+	// RestoreAsksInteractivePrompts reports whether the CLI shows an
+	// interactive menu (e.g. "Resume from summary? Compact? Discard?")
+	// when launched with --resume, which the adapter must navigate before
+	// the new prompt can flow. Today only Claude Code does this (its
+	// resume-summary menu, dismissed via isClaudeResumeSummaryMenu); other
+	// coding CLIs resume silently.
+	//
+	// Pairs with CertResumeCompactionStartup so adapters that genuinely
+	// face this dialog must prove they navigate it. The pairing also lets
+	// CLIs that DON'T show the dialog skip an irrelevant cert instead of
+	// dragging it into knownCertificationGaps.
+	RestoreAsksInteractivePrompts bool
+
+	// APIKeyEnvVars lists the environment variables the CLI accepts to
+	// authenticate. Empty means the CLI relies on its own native auth
+	// flow (stored credentials, OAuth, etc.) and no env-based shortcut
+	// works — e.g. cursor-agent uses cursor.sh's logged-in identity.
+	//
+	// For OpenCode-style multi-provider CLIs, list the canonical primary
+	// vars only (e.g. ANTHROPIC_API_KEY for the anthropic sub-provider);
+	// sub-provider routing lives in adapter-specific configuration.
+	APIKeyEnvVars []string
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
@@ -99,9 +135,12 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "stream-json",
-		AdapterReadsTranscript:  false,
+		SurfacesTokenUsage:            true,
+		TokenUsageSource:              "stream-json",
+		AdapterReadsTranscript:        false,
+		RequiresWorkspaceTrust:        true,
+		RestoreAsksInteractivePrompts: true,
+		APIKeyEnvVars:                 []string{"ANTHROPIC_API_KEY"},
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -130,9 +169,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  true,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "stream-json",
-		AdapterReadsTranscript:  false,
+		SurfacesTokenUsage:     true,
+		TokenUsageSource:       "stream-json",
+		AdapterReadsTranscript: false,
+		RequiresWorkspaceTrust: true,
+		APIKeyEnvVars:          []string{"CODEX_API_KEY"},
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -171,6 +212,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:       "stream-json",
 		AdapterReadsTranscript: true,
 		TranscriptPathTemplate: "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
+		RequiresWorkspaceTrust: true,
+		APIKeyEnvVars:          []string{"CURSOR_API_KEY"},
 	},
 	ProviderGeminiCLI: {
 		Provider:    ProviderGeminiCLI,
@@ -196,10 +239,38 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   false,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "transcript-file",
-		AdapterReadsTranscript:  true,
-		TranscriptPathTemplate:  "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
+		SurfacesTokenUsage:     true,
+		TokenUsageSource:       "transcript-file",
+		AdapterReadsTranscript: true,
+		TranscriptPathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
+		APIKeyEnvVars:          []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+	},
+	ProviderAgyCLI: {
+		Provider:                ProviderAgyCLI,
+		DisplayName:             "Antigravity CLI",
+		CLIName:                 "agy",
+		Transport:               CodingAgentTransportTmux,
+		RequiresWorkingDir:      true,
+		RequiresOwnerSessionID:  true,
+		UsesPersistentSession:   true,
+		SupportsLiveInput:       true,
+		SupportsInterrupt:       true,
+		SupportsTerminalStream:  true,
+		SupportsFinalExtraction: true,
+		SupportsNativeResume:    false,
+		UsesMCPBridge:           true,
+		SupportsBridgeOnlyTools: false,
+		UsesNativeSystemPrompt:  true,
+		LaunchesViaLoginShell:   true,
+		ProcessScopedCleanup:    true,
+		HandlesTmuxSessionLoss:  true,
+		StructuredFallback:      false,
+		ImageInputInteractive:   false,
+		SurfacesTokenUsage:     true,
+		TokenUsageSource:       "estimated",
+		AdapterReadsTranscript: false,
+		RequiresWorkspaceTrust: true,
+		APIKeyEnvVars:          []string{"AGY_API_KEY"},
 	},
 	ProviderOpenCodeCLI: {
 		Provider:                ProviderOpenCodeCLI,
@@ -222,9 +293,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:  false,
 		StructuredFallback:      true,
 		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "stream-json",
-		AdapterReadsTranscript:  false,
+		SurfacesTokenUsage:     true,
+		TokenUsageSource:       "stream-json",
+		AdapterReadsTranscript: false,
+		APIKeyEnvVars:          []string{"OPENCODE_API_KEY"},
 	},
 }
 

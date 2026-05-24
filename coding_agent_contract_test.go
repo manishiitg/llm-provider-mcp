@@ -18,6 +18,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
+		{name: "agy cli", provider: ProviderAgyCLI, wantTmux: true, wantFound: true},
 		{name: "gemini cli", provider: ProviderGeminiCLI, wantFound: true},
 		{name: "opencode cli", provider: ProviderOpenCodeCLI, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
@@ -175,6 +176,43 @@ func TestTranscriptReaderContractMatchesRegistry(t *testing.T) {
 	}
 }
 
+// TestAPIKeyEnvVarsContractIsWellFormed catches drift in the APIKeyEnvVars
+// dimension by enforcing two invariants:
+//
+//  1. Every coding-agent contract must declare APIKeyEnvVars. nil is
+//     treated as "the operator forgot to populate the field" and fails the
+//     test. To declare "CLI uses native auth, no env shortcut", use an
+//     explicit empty slice ([]string{}). The distinction matters because
+//     a nil here is almost always an oversight when adding a new CLI.
+//  2. Listed env var names must be SHOUT_SNAKE_CASE letters/digits/_ — no
+//     spaces, hyphens, or accidentally-pasted values. Catches typos like
+//     "ANTHROPIC API KEY" or "ANTHROPIC-API-KEY".
+//
+// This intentionally does NOT verify the adapter actually reads each
+// listed env var (that needs adapter-level integration tests we may add
+// later). It only enforces the contract's own internal consistency.
+func TestAPIKeyEnvVarsContractIsWellFormed(t *testing.T) {
+	for _, c := range CodingAgentProviderContracts() {
+		if c.APIKeyEnvVars == nil {
+			t.Errorf("%s has APIKeyEnvVars=nil — declare an explicit []string (use []string{} if the CLI uses native auth only, never nil)", c.Provider)
+			continue
+		}
+		for _, name := range c.APIKeyEnvVars {
+			if strings.TrimSpace(name) == "" {
+				t.Errorf("%s APIKeyEnvVars contains empty entry: %v", c.Provider, c.APIKeyEnvVars)
+				continue
+			}
+			for _, r := range name {
+				ok := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+				if !ok {
+					t.Errorf("%s APIKeyEnvVars entry %q contains invalid character %q — env vars must be SHOUT_SNAKE_CASE", c.Provider, name, string(r))
+					break
+				}
+			}
+		}
+	}
+}
+
 func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 	contracts := CodingAgentProviderContracts()
 	if len(contracts) == 0 {
@@ -217,11 +255,13 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
 		CertTrustAuthPrompts, CertWorkingDirectory,
 	},
-	// NOTE: Antigravity CLI (ProviderAgyCLI) is being wired in a separate
-	// branch. When that lands, add its certification gap entry here mirroring
-	// the cursor block above — same set of missing IDs is expected for a new
-	// tmux-mode CLI without any e2e tests written yet.
-	//
+	ProviderAgyCLI: {
+		CertBridgeOnlyTools, CertCancellation, CertDoneDetection, CertMCPBridge,
+		CertParallelIsolation, CertPersistentCancelReuse, CertPromptPaste,
+		CertResumeCompactionStartup, CertSessionLoss, CertSessionLossRecovery,
+		CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle, CertSlowToolLiveInput,
+		CertStaleDraftCleanup, CertTrustAuthPrompts, CertWorkingDirectory,
+	},
 	// Gemini + OpenCode are structured-only (no tmux suite required).
 	// CertMCPBridge has landed for both; remaining IDs await their own
 	// e2e tests.
