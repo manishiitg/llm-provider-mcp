@@ -143,17 +143,31 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 }
 
 // WithWriteProjectInstructionFile is an OFF-by-default feature flag that
-// asks the adapter to ALSO write the per-session system prompt to
-// <workingDir>/GEMINI.md (Gemini CLI's project-context convention), in
-// addition to any GEMINI_SYSTEM_MD injection. Cleanup at session
-// teardown byte-restores any pre-existing GEMINI.md so operator-owned
-// content survives successful runs.
+// asks the adapter to ALSO project gemini's project-convention files
+// into the working dir at session start (and byte-restore them at
+// teardown):
 //
-// Risk caveat (vs cursor's .cursor/rules/ multi-file): Gemini's
-// convention is a single GEMINI.md file. If the orchestrator process
-// crashes between write and cleanup, the operator's pre-existing
-// GEMINI.md is destroyed. Off-by-default keeps the blast radius
-// bounded to callers that explicitly accept the trade-off.
+//   - <workingDir>/GEMINI.md
+//     Per-session system prompt, mirroring GEMINI_SYSTEM_MD env
+//     injection.
+//
+//   - <workingDir>/.gemini/settings.json
+//     The operator-supplied projectSettingsJSON (from
+//     WithProjectSettings) MERGED with a synthesized
+//     hooks.BeforeTool deny entry. mcpServers is preserved verbatim;
+//     hooks.BeforeTool is appended, not replaced.
+//
+//   - <workingDir>/.gemini/hooks/deny-builtin.sh
+//     POSIX deny script that exits 2 (Gemini's "System Block" per
+//     geminicli.com/docs/hooks) on built-in tool calls
+//     (read_file, write_file, shell, edit, grep, search_file_content,
+//     web_fetch). MCP server tools are NOT in the matcher.
+//
+// Risk caveat: GEMINI.md and .gemini/settings.json are single-file
+// conventions. If the orchestrator process crashes between write and
+// cleanup, the operator's pre-existing copies are destroyed.
+// Off-by-default keeps the blast radius bounded to callers that
+// explicitly accept the trade-off.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

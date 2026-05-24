@@ -363,18 +363,27 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 	}
 	registerGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
 
-	// OFF-by-default project-instruction file: write GEMINI.md into the
-	// caller's working directory with byte-restore on session teardown.
-	// We do this AFTER tmux launch succeeded so we never leave a stray
-	// GEMINI.md behind on a failed startup. Errors here are non-fatal:
-	// the session still has GEMINI_SYSTEM_MD injected via env, so the
-	// system prompt is still in effect even if we couldn't drop the
-	// workspace-visible companion file.
+	// OFF-by-default project-artifact projection: write GEMINI.md +
+	// .gemini/settings.json (merged mcpServers + hooks.BeforeTool deny
+	// entry) + .gemini/hooks/deny-builtin.sh into the caller's working
+	// directory with byte-restore on session teardown. We do this AFTER
+	// tmux launch succeeded so we never leave stray artifacts behind on
+	// a failed startup. Errors here are non-fatal: the session still
+	// has GEMINI_SYSTEM_MD env injection AND the temp-dir
+	// .gemini/settings.json (via --include-directories), so the
+	// system prompt and MCP servers are still in effect even if we
+	// couldn't drop the workspace-visible companion files.
 	if geminiWriteProjectInstructionFromOptions(opts) {
 		workingDir := geminiWorkingDirFromOptions(opts)
-		cleanup, writeErr := writeGeminiProjectInstructionFile(workingDir, systemPrompt)
+		projectSettingsJSON := ""
+		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+			if v, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok {
+				projectSettingsJSON = v
+			}
+		}
+		cleanup, writeErr := writeGeminiProjectArtifacts(workingDir, systemPrompt, projectSettingsJSON, true)
 		if writeErr != nil {
-			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but writing GEMINI.md failed (continuing without workspace file): %v", writeErr)
+			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but projecting workspace artifacts failed (continuing without workspace files): %v", writeErr)
 		} else if cleanup != nil {
 			session.projectInstructionCleanup = cleanup
 		}
