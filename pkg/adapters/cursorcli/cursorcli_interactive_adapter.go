@@ -1392,8 +1392,20 @@ func stripCursorHistoricalPrefix(text, historical string) (string, bool) {
 	if text == historical {
 		return "", true
 	}
+	// A "historical reply" leaks into the new turn's extracted text as a
+	// complete leading chunk that ends at a line boundary (because each
+	// turn renders on its own line in cursor's pane). A prefix match that
+	// runs INTO more characters on the same line is not a leak — it's
+	// legitimate new content that happens to start with the same tokens
+	// as a prior reply. Without this boundary check, a reply like
+	// "WIDGET_A47, WIDGET_B23" got eaten down to ", WIDGET_B23" because
+	// "WIDGET_A47" matched a prior turn (observed in
+	// TestMultiTurnChatE2E_Cursor before this guard).
 	if strings.HasPrefix(text, historical) {
-		return text[len(historical):], true
+		remainder := text[len(historical):]
+		if remainder == "" || strings.HasPrefix(remainder, "\n") {
+			return remainder, true
+		}
 	}
 	historicalLines := nonEmptyCursorLines(historical)
 	for start := 0; start < len(historicalLines); start++ {
@@ -1405,7 +1417,10 @@ func stripCursorHistoricalPrefix(text, historical string) (string, bool) {
 			return "", true
 		}
 		if strings.HasPrefix(text, suffix) {
-			return text[len(suffix):], true
+			remainder := text[len(suffix):]
+			if remainder == "" || strings.HasPrefix(remainder, "\n") {
+				return remainder, true
+			}
 		}
 	}
 	return text, false
