@@ -550,10 +550,77 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 		tempFiles = append(tempFiles, systemPromptPath)
 		args = append(args, "--system-prompt-file", systemPromptPath)
 	}
+
+	// Opt-in: also project the system prompt into <workingDir>/.claude/rules/
+	// as an additional load path Claude Code's memory layer picks up
+	// (https://code.claude.com/docs/en/memory). Off by default — the
+	// --system-prompt-file flag above already injects the prompt; this
+	// belt-and-suspenders is useful when the operator wants the prompt
+	// visible inside the workspace for debugging or for downstream
+	// tooling that reads project rules.
+	if strings.TrimSpace(systemPrompt) != "" && writeProjectInstructionFromOptions(opts) {
+		workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string)
+		if rulePath, err := writeClaudeCodeProjectRuleFile(workingDir, systemPrompt); err != nil {
+			// Best-effort: a write failure here must not block the session.
+			// The primary injection via --system-prompt-file already
+			// succeeded; the project-rule file is purely additive.
+			_ = err
+		} else if rulePath != "" {
+			tempFiles = append(tempFiles, rulePath)
+		}
+	}
+
 	args = append(args, "--tools", toolsArg)
 	args = append(args, extraArgs...)
 
 	return args, tempFiles, nil
+}
+
+// writeProjectInstructionFromOptions reads the opt-in feature flag for
+// writing the per-session system prompt to .claude/rules/. Returns false
+// by default (and on any malformed value) so existing callers are unaffected.
+func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool)
+	return enabled
+}
+
+// writeClaudeCodeProjectRuleFile installs the per-session system prompt
+// at <workingDir>/.claude/rules/mlp-session-<hex>.md. The unique hex
+// suffix ensures no collision with operator-owned project rules and lets
+// concurrent sessions in the same workspace coexist. Returns the absolute
+// path so the caller can register it for os.Remove on session cleanup.
+//
+// Returns "" with nil error when no work needs doing (empty workingDir);
+// returns a non-empty path with non-nil error only when the write itself
+// failed. The caller treats any error as best-effort and continues; the
+// primary --system-prompt-file injection has already succeeded.
+func writeClaudeCodeProjectRuleFile(workingDir, systemPrompt string) (string, error) {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return "", nil
+	}
+	rulesDir := filepath.Join(workingDir, ".claude", "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create .claude/rules dir: %w", err)
+	}
+	rulePath := filepath.Join(rulesDir, "mlp-session-"+claudeProjectRuleNonce()+".md")
+	// Wrap the system prompt with a marker line so future readers
+	// (operators auditing the workspace) can tell at a glance that the
+	// file came from the orchestrator, not from human authorship.
+	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt
+	if err := os.WriteFile(rulePath, []byte(body), 0o600); err != nil {
+		return "", fmt.Errorf("write .claude/rules session file: %w", err)
+	}
+	return rulePath, nil
+}
+
+func claudeProjectRuleNonce() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (c *ClaudeCodeExperimentalAdapter) shouldPassModelFlag() bool {

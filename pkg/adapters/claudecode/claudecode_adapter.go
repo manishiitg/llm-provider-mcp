@@ -37,7 +37,14 @@ const (
 	MetadataKeyInteractiveSessionID       = "claude_code_interactive_session_id"
 	MetadataKeyPersistentInteractive      = "claude_code_persistent_interactive"
 	MetadataKeyWorkingDir                 = "claude_code_working_dir"
-	claudeCodeDisableAutoMemoryEnv        = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
+	// flag for writing the per-session system prompt to .claude/rules/
+	// as a markdown file the CLI auto-loads. Default off because the
+	// adapter already injects via --system-prompt-file <tmp>, and
+	// duplicating into a workspace file is belt-and-suspenders only useful
+	// when the operator wants the prompt visible inside the cwd.
+	MetadataKeyWriteProjectInstructionFile = "claude_code_write_project_instruction_file"
+	claudeCodeDisableAutoMemoryEnv         = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -227,6 +234,31 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithWriteProjectInstructionFile is an OFF-by-default feature flag that
+// asks the adapter to ALSO write the per-session system prompt to
+// <workingDir>/.claude/rules/mlp-session-<hex>.md, in addition to the
+// existing --system-prompt-file flag injection. Per Claude Code's docs
+// (https://code.claude.com/docs/en/memory), files in .claude/rules/ are
+// auto-loaded as project rules with the same priority as .claude/CLAUDE.md.
+//
+// Useful when the operator wants the system prompt VISIBLE inside the
+// working dir for debugging or transparency, or when downstream tooling
+// (other agents, IDE plugins) reads project rules and you want them to
+// see the same instructions. Off by default because the --system-prompt-
+// file flag already injects the prompt; duplicating into a workspace
+// file is belt-and-suspenders.
+//
+// The session file uses a unique hex suffix so multiple concurrent
+// sessions in the same working dir don't collide, and so cleanup never
+// removes an operator-owned .claude/rules/*.md. Restored to the pre-
+// session state on adapter teardown.
+func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
 	}
 }
 

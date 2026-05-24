@@ -3725,6 +3725,16 @@ func WithClaudeCodeWorkingDir(dir string) llmtypes.CallOption {
 	return claudecodeadapter.WithWorkingDir(dir)
 }
 
+// WithClaudeCodeWriteProjectInstructionFile is an OFF-by-default feature
+// flag that asks the adapter to ALSO project the per-session system
+// prompt into <workingDir>/.claude/rules/mlp-session-<hex>.md, in
+// addition to the existing --system-prompt-file injection. Each session
+// uses a unique hex suffix so the file never collides with an
+// operator-owned project rule. Auto-removed at session cleanup.
+func WithClaudeCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return claudecodeadapter.WithWriteProjectInstructionFile(enabled)
+}
+
 // WithClaudeCodeEffort sets the --effort flag for the Claude Code CLI.
 // Values: "low", "medium", "high", "max"
 func WithClaudeCodeEffort(level string) llmtypes.CallOption {
