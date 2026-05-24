@@ -493,54 +493,6 @@ func TestCursorCLIRealMCPBridgeToolCall(t *testing.T) {
 // E2E: Built-in tool behavior — documents what Cursor actually blocks
 // ---------------------------------------------------------------------------
 
-func TestCursorCLIRealBuiltInReadNotBlockedInAskMode(t *testing.T) {
-	// KNOWN LIMITATION: Cursor auto-approves Read in ask mode despite system
-	// prompt instructions to avoid built-in tools. cursor-agent has no CLI
-	// flag to disable built-in tools. This test documents that behavior so
-	// we catch if it changes in a future Cursor version.
-	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	ownerSessionID := "cursor-e2e-read-" + cursorRandomHex(4)
-	workDir := t.TempDir()
-
-	marker := "READ_CHECK_" + cursorRandomHex(8)
-	if err := os.WriteFile(workDir+"/marker.txt", []byte(marker), 0644); err != nil {
-		t.Fatalf("write marker file: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	stream := make(chan llmtypes.StreamChunk, 64)
-	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "IMPORTANT: Do NOT use your built-in tools — only use the tools declared in this session."}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Read the file %s/marker.txt and tell me its exact contents.", workDir)}}},
-	},
-		WithInteractiveSessionID(ownerSessionID),
-		WithPersistentInteractiveSession(true),
-		WithWorkingDir(workDir),
-		WithMode("ask"),
-		llmtypes.WithStreamingChan(stream),
-	)
-	if err != nil {
-		t.Fatalf("GenerateContent error = %v", err)
-	}
-	_ = drainCursorStream(stream)
-
-	content := strings.TrimSpace(resp.Choices[0].Content)
-
-	// Document: Cursor reads the file with its built-in tool in ask mode
-	// despite being told not to. This is expected with current Cursor CLI.
-	if strings.Contains(content, marker) {
-		t.Logf("CONFIRMED: Cursor used built-in Read in ask mode (marker found in response)")
-	} else {
-		// If this starts passing, Cursor has added built-in tool blocking!
-		t.Logf("Cursor did NOT return file contents — built-in Read may now be blocked. Response: %s", content)
-	}
-}
-
 // E2E: Cursor in default (no --mode flag) ACCEPTS natural-language write
 // requests and actually performs the write, instead of replying "Switch to
 // Agent mode and ask…". This is the inverse of
@@ -602,83 +554,12 @@ func TestCursorCLIRealDefaultModeAcceptsNaturalWriteRequest(t *testing.T) {
 	t.Logf("CONFIRMED: cursor in default mode created %s without refusing", targetFile)
 }
 
-func TestCursorCLIRealBuiltInWriteBlockedInAskMode(t *testing.T) {
-	// ask mode should prevent write operations. Verify Cursor cannot create
-	// or modify files when running in ask mode.
-	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	ownerSessionID := "cursor-e2e-write-" + cursorRandomHex(4)
-	workDir := t.TempDir()
-	targetFile := workDir + "/should_not_exist.txt"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	stream := make(chan llmtypes.StreamChunk, 64)
-	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do NOT use your built-in tools. Only use declared session tools."}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Create a file at %s with the content WRITE_TEST_MARKER", targetFile)}}},
-	},
-		WithInteractiveSessionID(ownerSessionID),
-		WithPersistentInteractiveSession(true),
-		WithWorkingDir(workDir),
-		WithMode("ask"),
-		llmtypes.WithStreamingChan(stream),
-	)
-	if err != nil {
-		t.Fatalf("GenerateContent error = %v", err)
-	}
-	_ = drainCursorStream(stream)
-
-	// In ask mode, Cursor should not write files.
-	if _, statErr := os.Stat(targetFile); statErr == nil {
-		data, _ := os.ReadFile(targetFile)
-		t.Errorf("Cursor created a file in ask mode! Contents: %s", string(data))
-	} else {
-		t.Logf("CONFIRMED: Cursor did not create the file in ask mode (write blocked)")
-	}
-}
-
-func TestCursorCLIRealBuiltInShellBlockedInAskMode(t *testing.T) {
-	// ask mode should prevent shell execution. Verify Cursor cannot run
-	// arbitrary commands when in ask mode.
-	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	ownerSessionID := "cursor-e2e-shell-" + cursorRandomHex(4)
-	workDir := t.TempDir()
-	markerFile := workDir + "/shell_marker.txt"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	stream := make(chan llmtypes.StreamChunk, 64)
-	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do NOT use your built-in tools. Only use declared session tools."}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Run this shell command: echo SHELL_EXEC_MARKER > %s", markerFile)}}},
-	},
-		WithInteractiveSessionID(ownerSessionID),
-		WithPersistentInteractiveSession(true),
-		WithWorkingDir(workDir),
-		WithMode("ask"),
-		llmtypes.WithStreamingChan(stream),
-	)
-	if err != nil {
-		t.Fatalf("GenerateContent error = %v", err)
-	}
-	_ = drainCursorStream(stream)
-
-	// In ask mode, Cursor should not execute shell commands.
-	if _, statErr := os.Stat(markerFile); statErr == nil {
-		data, _ := os.ReadFile(markerFile)
-		t.Errorf("Cursor executed a shell command in ask mode! File contents: %s", string(data))
-	} else {
-		t.Logf("CONFIRMED: Cursor did not execute shell command in ask mode (shell blocked)")
-	}
-}
+// Note: ask-mode-specific tests deleted. They documented a lever the
+// codebase no longer relies on (cursor's --mode ask). The replacement
+// is WithDenyBuiltinTools (cursor hooks), tested in
+// cursorcli_deny_builtin_hooks_test.go for write-side correctness.
+// Follow-up: real-LLM e2e tests that prove hooks actually block
+// built-in Read + Shell are tracked in the test-followups task.
 
 // ---------------------------------------------------------------------------
 // E2E: Slow MCP tool — adapter must not complete while tool is active

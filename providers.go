@@ -3941,11 +3941,13 @@ func WithCursorDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 // WithCursorMode sets Cursor Agent CLI's --mode flag. "ask" and "plan" are
 // both read-only at the CLI level. Leave empty for normal agent mode.
 //
-// CAUTION: "ask"/"plan" do MORE than block built-in Write/Shell — they put
-// cursor into a conversational stance that hard-refuses natural-language
-// write requests with "Switch to Agent mode and ask…". Safe only when the
-// prompt explicitly names an MCP tool to call. For a general chat surface,
-// pass an empty mode (or do not call this option at all).
+// DEPRECATED FOR "ask" — prefer WithCursorDenyBuiltinTools(true) instead.
+// Ask mode is a conversational stance that hard-refuses natural-language
+// write requests with "Switch to Agent mode and ask…"; the orchestrator
+// no longer uses it. To force the agent through the MCP bridge instead
+// of cursor's built-in Read/Shell, install cursor hooks via
+// WithCursorDenyBuiltinTools(true). "plan" mode remains a valid use of
+// this option for read-only planning sessions.
 func WithCursorMode(mode string) llmtypes.CallOption {
 	return cursorcli.WithMode(mode)
 }

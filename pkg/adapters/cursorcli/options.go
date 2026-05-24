@@ -57,13 +57,14 @@ func WithSandbox(mode string) llmtypes.CallOption {
 // WithMode sets Cursor Agent's --mode flag. Supported values are "plan" and
 // "ask"; leave empty for normal agent mode.
 //
-// CAUTION: "ask" is a conversational stance, not just "block Write/Shell".
-// Cursor in ask mode hard-refuses natural-language write requests with
-// "Switch to Agent mode and ask…", so it is NOT safe for a general chat
-// surface. It is only suitable when the prompt explicitly names an MCP tool
-// to call (e.g. "Call the api-bridge X tool with args …"). For everyday
-// chat, leave mode empty so cursor runs in its default agent mode.
-// "plan" has the same refusal behavior.
+// DEPRECATED FOR "ask" — prefer WithDenyBuiltinTools(true) instead.
+// Ask mode is a conversational stance that hard-refuses natural-language
+// write requests with "Switch to Agent mode and ask…", which makes it
+// unsuitable for any chat surface that needs writes. The orchestrator no
+// longer uses ask mode anywhere; the bridge-only-tools intent is now
+// achieved via cursor hooks (https://cursor.com/docs/hooks) installed by
+// WithDenyBuiltinTools. WithMode is retained because callers may still
+// want "plan" mode, and "ask" remains a valid cursor CLI flag.
 func WithMode(mode string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
