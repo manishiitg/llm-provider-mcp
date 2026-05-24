@@ -69,6 +69,8 @@ func SendCodingAgentControlKey(ctx context.Context, provider Provider, modelID, 
 		return SendGeminiCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderCursorCLI:
 		return SendCursorCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
+	case ProviderAgyCLI:
+		return SendAgyCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderOpenCodeCLI:
 		return SendOpenCodeCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	default:

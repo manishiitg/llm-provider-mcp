@@ -547,9 +547,25 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertNativeSystemPrompt,
 			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
-			TestName:    "TestAgyCLIRealInteractiveTmuxFullContract",
+			TestName:    "TestAgyCLIRealSystemPromptRulesContract",
 			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
-			Description: "system instructions are carried into the Antigravity tmux turn prompt",
+			Description: "system instructions are loaded from workspace-scoped Antigravity rules, not pasted as user text",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
+			TestName:    "TestAgyCLIRealMCPBridgeContract",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
+			Description: "Antigravity CLI loads workspace-scoped .agents/mcp_config.json and calls a real MCP bridge tool",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBridgeOnlyTools,
+			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
+			TestName:    "TestAgyCLIRealBridgeOnlyWriteContract",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
+			Description: "system rules steer Antigravity file writes through the MCP bridge instead of built-in write tools",
 			RealE2E:     true,
 		},
 		{

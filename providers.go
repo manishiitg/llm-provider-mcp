@@ -15,6 +15,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
@@ -66,6 +67,7 @@ const (
 	ProviderGeminiCLI   Provider = "gemini-cli"
 	ProviderCodexCLI    Provider = "codex-cli"
 	ProviderCursorCLI   Provider = "cursor-cli"
+	ProviderAgyCLI      Provider = "agy-cli"
 	ProviderOpenCodeCLI Provider = "opencode-cli"
 
 	// OpenCode CLI sub-provider tiles. Each routes through the same
@@ -79,13 +81,14 @@ const (
 	ProviderOpenCodeCLIGLM        Provider = "opencode-cli-glm"
 	ProviderOpenCodeCLIOpenRouter Provider = "opencode-cli-openrouter"
 	ProviderOpenCodeCLIFree       Provider = "opencode-cli-free"
-	ProviderMiniMax             Provider = "minimax"
-	ProviderMiniMaxCodingPlan   Provider = "minimax-coding-plan"
-	ProviderElevenLabs          Provider = "elevenlabs"
-	ProviderDeepgram            Provider = "deepgram"
+	ProviderMiniMax               Provider = "minimax"
+	ProviderMiniMaxCodingPlan     Provider = "minimax-coding-plan"
+	ProviderElevenLabs            Provider = "elevenlabs"
+	ProviderDeepgram              Provider = "deepgram"
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "cursor-cli"
+	DefaultAgyCLIModel    = "agy-cli"
 	DefaultOpenCodeModel  = "opencode-cli"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
@@ -103,7 +106,7 @@ const (
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
 // (cols × rows) for any newly-launched coding-agent tmux session (Claude
-// Code, Codex CLI, Cursor CLI, Gemini CLI). Pass <=0 for either axis to clear
+// Code, Codex CLI, Cursor CLI, Gemini CLI, Agy CLI). Pass <=0 for either axis to clear
 // that axis's override and fall back to the env/default value. Sizes outside
 // the package's safe band are clamped, not rejected.
 func SetCodingAgentTmuxSize(columns, rows int) {
@@ -128,6 +131,12 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 // registered by this process.
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
+}
+
+// CleanupAgyCLIInteractiveSessions removes Antigravity CLI tmux sessions
+// registered by this process.
+func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
+	return agycli.CleanupAgyCLIInteractiveSessions(ctx)
 }
 
 // CleanupOpenCodeCLIInteractiveSessions is retained for callers that still
@@ -161,6 +170,12 @@ func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
 }
 
+// SendAgyCLIInteractiveInput sends user input to a live Antigravity CLI
+// interactive tmux session registered for the owning application session.
+func SendAgyCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return agycli.SendAgyInteractiveInput(ctx, sessionID, message)
+}
+
 // SendOpenCodeCLIInteractiveInput is unsupported while OpenCode CLI uses the
 // structured JSON transport.
 func SendOpenCodeCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
@@ -189,6 +204,12 @@ func SendCodexCLIInteractiveControlKey(ctx context.Context, sessionID, key strin
 // registered Cursor CLI interactive session.
 func SendCursorCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
 	return cursorcli.SendCursorInteractiveControlKey(ctx, sessionID, key)
+}
+
+// SendAgyCLIInteractiveControlKey injects a tmux control key into a registered
+// Antigravity CLI interactive session.
+func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return agycli.SendAgyInteractiveControlKey(ctx, sessionID, key)
 }
 
 // SendGeminiCLIInteractiveControlKey injects a tmux control key into a
@@ -236,6 +257,7 @@ type ProviderAPIKeys struct {
 	GeminiCLI         *string
 	CodexCLI          *string
 	CursorCLI         *string
+	AgyCLI            *string
 	OpenCodeCLI       *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
@@ -286,6 +308,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.CodexCLI = key
 	case ProviderCursorCLI:
 		k.CursorCLI = key
+	case ProviderAgyCLI:
+		k.AgyCLI = key
 	case ProviderOpenCodeCLI:
 		k.OpenCodeCLI = key
 	case ProviderMiniMax:
@@ -351,6 +375,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCodexCLI(config)
 	case ProviderCursorCLI:
 		llm, err = initializeCursorCLI(config)
+	case ProviderAgyCLI:
+		llm, err = initializeAgyCLI(config)
 	case ProviderOpenCodeCLI,
 		ProviderOpenCodeCLIKimi,
 		ProviderOpenCodeCLIDeepSeek,
@@ -2386,6 +2412,60 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// initializeAgyCLI creates and configures an Antigravity CLI adapter instance.
+func initializeAgyCLI(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "agy_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "agy-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = DefaultAgyCLIModel
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Antigravity CLI adapter - model_id: %s", modelID)
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.AgyCLI != nil {
+		apiKey = *config.APIKeys.AgyCLI
+		logger.Infof("Antigravity CLI: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("AGY_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Antigravity CLI: using API key from AGY_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Antigravity CLI: no explicit API key — will use agy's own stored auth")
+	}
+
+	llm := agycli.NewAgyCLIAdapter(apiKey, modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "agy_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "agy-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Antigravity CLI adapter - model_id: %s", modelID)
+	return llm, nil
+}
+
 // initializeOpenCodeCLI creates and configures an OpenCode CLI adapter
 // instance. When `config.Provider` is one of the OpenCode sub-provider
 // tiles (opencode-cli-kimi, ..., opencode-cli-free), the returned adapter
@@ -2544,6 +2624,14 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return DefaultCursorCLIModel
+	case ProviderAgyCLI:
+		if primaryModel := os.Getenv("AGY_CLI_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		if primaryModel := os.Getenv("AGY_PRIMARY_MODEL"); primaryModel != "" {
+			return primaryModel
+		}
+		return DefaultAgyCLIModel
 	case ProviderOpenCodeCLI:
 		if primaryModel := os.Getenv("OPENCODE_CLI_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
@@ -2874,6 +2962,20 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("CURSORCLI_CROSS_FALLBACK_PROVIDER")
 		}
 		return prefixModelsWithProvider(models, crossProvider)
+	case ProviderAgyCLI:
+		crossFallbackEnv := os.Getenv("AGY_CLI_CROSS_FALLBACK_MODELS")
+		if crossFallbackEnv == "" {
+			crossFallbackEnv = os.Getenv("AGY_CROSS_FALLBACK_MODELS")
+		}
+		models := parseFallbackModelsEnv(crossFallbackEnv)
+		if len(models) == 0 {
+			return []string{}
+		}
+		crossProvider := os.Getenv("AGY_CLI_CROSS_FALLBACK_PROVIDER")
+		if crossProvider == "" {
+			crossProvider = os.Getenv("AGY_CROSS_FALLBACK_PROVIDER")
+		}
+		return prefixModelsWithProvider(models, crossProvider)
 	case ProviderOpenCodeCLI:
 		crossFallbackEnv := os.Getenv("OPENCODE_CLI_CROSS_FALLBACK_MODELS")
 		if crossFallbackEnv == "" {
@@ -2896,11 +2998,11 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
 		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIOpenRouter, ProviderOpenCodeCLIFree:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan", provider)
 	}
 }
 
@@ -3713,6 +3815,11 @@ func WithCursorResumeSessionID(id string) llmtypes.CallOption {
 	return cursorcli.WithResumeSessionID(id)
 }
 
+// WithAgyResumeSessionID resumes an Antigravity CLI conversation by id.
+func WithAgyResumeSessionID(id string) llmtypes.CallOption {
+	return agycli.WithResumeSessionID(id)
+}
+
 // WithOpenCodeResumeSessionID sets the --session <id> flag so opencode
 // resumes a chat by its session id (the value opencode emits in its
 // structured output). Mirrors the claude-code / gemini / codex / cursor
@@ -3834,6 +3941,40 @@ func WithCursorMode(mode string) llmtypes.CallOption {
 // are "enabled" and "disabled".
 func WithCursorSandbox(mode string) llmtypes.CallOption {
 	return cursorcli.WithSandbox(mode)
+}
+
+// WithAgyWorkingDir sets the Antigravity CLI workspace/cwd for tmux launch.
+func WithAgyWorkingDir(dir string) llmtypes.CallOption {
+	return agycli.WithWorkingDir(dir)
+}
+
+// WithAgyInteractiveSessionID links an Antigravity CLI tmux run to the owning
+// application session for live follow-up input.
+func WithAgyInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return agycli.WithInteractiveSessionID(sessionID)
+}
+
+// WithAgyPersistentInteractiveSession keeps the Antigravity CLI tmux session
+// alive across turns.
+func WithAgyPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return agycli.WithPersistentInteractiveSession(enabled)
+}
+
+// WithAgyMCPConfig writes an Antigravity workspace MCP config candidate into
+// .agents/mcp_config.json for the adapter-owned working directory.
+func WithAgyMCPConfig(config string) llmtypes.CallOption {
+	return agycli.WithMCPConfig(config)
+}
+
+// WithAgyDangerouslySkipPermissions controls agy's
+// --dangerously-skip-permissions launch flag.
+func WithAgyDangerouslySkipPermissions(enabled bool) llmtypes.CallOption {
+	return agycli.WithDangerouslySkipPermissions(enabled)
+}
+
+// WithAgySandbox sets Antigravity CLI's --sandbox flag.
+func WithAgySandbox(mode string) llmtypes.CallOption {
+	return agycli.WithSandbox(mode)
 }
 
 // WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd.

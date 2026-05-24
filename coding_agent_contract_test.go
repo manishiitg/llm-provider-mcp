@@ -256,11 +256,11 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertTrustAuthPrompts, CertWorkingDirectory,
 	},
 	ProviderAgyCLI: {
-		CertBridgeOnlyTools, CertCancellation, CertDoneDetection, CertMCPBridge,
-		CertParallelIsolation, CertPersistentCancelReuse, CertPromptPaste,
-		CertResumeCompactionStartup, CertSessionLoss, CertSessionLossRecovery,
-		CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle, CertSlowToolLiveInput,
-		CertStaleDraftCleanup, CertTrustAuthPrompts, CertWorkingDirectory,
+		CertCancellation, CertDoneDetection, CertParallelIsolation,
+		CertPersistentCancelReuse, CertPromptPaste,
+		CertResumeCompactionStartup, CertSharedWorkdirMCPIsolation,
+		CertSlowToolFalseIdle, CertSlowToolLiveInput, CertStaleDraftCleanup,
+		CertTrustAuthPrompts, CertWorkingDirectory,
 	},
 	// Gemini + OpenCode are structured-only (no tmux suite required).
 	// CertMCPBridge has landed for both; remaining IDs await their own

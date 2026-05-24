@@ -8,7 +8,7 @@ Covered providers:
 - `claude-code`
 - `codex-cli`
 - `cursor-cli`
-- `gemini-cli`
+- `agy-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -369,12 +369,36 @@ Cursor CLI:
   `cursor_interactive_session_id` plus `cursor_persistent_interactive=true` are
   provided.
 
+Antigravity CLI:
+
+- Interactive transport: `agy --prompt-interactive` TUI inside tmux.
+- The adapter must place flags such as `--dangerously-skip-permissions` before
+  `--prompt-interactive`; args after `--prompt-interactive` are interpreted by
+  `agy` as prompt text.
+- Default model selector: `agy-cli`, which means "let Antigravity use its
+  configured/account default".
+- Bounded per-turn calls launch `agy` in tmux, paste one turn, parse the final
+  TUI output, and close the owned tmux session after retention.
+- Persistent chat keeps the same tmux session alive when
+  `agy_interactive_session_id` plus `agy_persistent_interactive=true` are
+  provided.
+- Native/system instructions are written as workspace-scoped Agy rules under
+  `.agents/rules/mlp-system-*.md`; they must not be pasted into the user turn.
+- MCP config is written to workspace-scoped `.agents/mcp_config.json` when
+  `WithAgyMCPConfig(json)` is provided.
+- Native resume uses `agy --conversation <conversationId>` before
+  `--prompt-interactive`. The adapter captures the conversation id from
+  Antigravity's local conversation state/history and surfaces it as
+  `agy_session_id`.
+- MCP bridge behavior is not certified until a real Agy bridge E2E proves the
+  workspace config is loaded and callable.
+
 Gemini CLI:
 
 - Legacy structured transport: `gemini --output-format stream-json --prompt ...`.
-- Interactive transport: `gemini` TUI inside tmux.
-- Workflow and chat both use the tmux transport when an owner session id is
-  available.
+- Gemini is currently pinned to the structured coding-agent contract, not the
+  tmux contract, because the CLI is being deprecated and the project is not
+  carrying new tmux-specific surface for it.
 
 OpenCode CLI:
 
@@ -459,6 +483,19 @@ Provider-specific launch requirements:
     shell cwd
   - never concatenate system/developer instructions into the pasted user
     message
+- Antigravity CLI:
+  - launch `agy --prompt-interactive` in tmux from the caller-provided workspace
+    directory
+  - pass `--add-dir <working-dir>` and keep process cwd aligned with the MCP
+    bridge shell cwd
+  - pass `--dangerously-skip-permissions` before `--prompt-interactive` when
+    the caller opts into non-interactive trust/approval bypass
+  - pass system/developer instructions through a temporary
+    `.agents/rules/mlp-system-*.md` workspace rule
+  - never concatenate system/developer instructions into the pasted user
+    message
+  - pass MCP bridge servers through a temporary/restored
+    `.agents/mcp_config.json`
 - Gemini CLI:
   - pass system instructions with `GEMINI_SYSTEM_MD`
   - pass MCP bridge and policy through scoped `.gemini/settings.json` and
@@ -750,6 +787,9 @@ Native resume metadata:
 - Codex CLI: `codex_thread_id`, resumed with `codex exec resume`.
 - Cursor CLI: `cursor_session_id` when available from Cursor-native session
   state, resumed with `cursor-agent --resume <chatId>` from the same workspace.
+- Antigravity CLI: `agy_session_id`, resumed with
+  `agy --conversation <conversationId> --prompt-interactive` from the same
+  workspace.
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project/settings dir and the same
   caller workspace supplied via `--include-directories`.
@@ -1218,10 +1258,13 @@ The full Cursor CLI tmux test set after these additions:
 - `TestCursorCLIRealInteractiveParallelIsolation`
 - `TestCursorCLIRealInteractiveCleanup`
 
-Current Gemini CLI real contract command:
+Gemini CLI real contract coverage is structured-only; see
+`docs/coding_sdk_structured_contract.md`.
+
+Current Antigravity CLI real contract command:
 
 ```sh
-RUN_GEMINI_CLI_REAL_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLIRealInteractive|TestGeminiCLIInteractiveIntegrationFlashLite' -v -timeout 6m
+RUN_AGY_CLI_REAL_E2E=1 RUN_AGY_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/agycli -run 'TestAgyCLIReal(Interactive|SystemPrompt|MCPBridge|BridgeOnly|NativeResume)' -v -timeout 8m
 ```
 
 Current Codex CLI real contract command:

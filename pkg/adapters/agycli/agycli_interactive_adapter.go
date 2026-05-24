@@ -1,0 +1,1976 @@
+package agycli
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+)
+
+const (
+	// Default to no provider-level turn timeout. Workflow/background callers own
+	// their execution deadline; the adapter should not cancel a still-running tmux
+	// coding agent before the outer workflow timeout.
+	defaultAgyInteractiveTimeout     = 0
+	defaultAgyInteractiveIdleTimeout = 20 * time.Minute
+	defaultAgyInteractiveRetention   = 30 * time.Minute
+	agyInteractiveStableWindow       = 1200 * time.Millisecond
+
+	EnvAgyInteractiveSessionPrefix      = "AGY_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvAgyInteractiveTimeoutSeconds     = "AGY_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvAgyInteractiveIdleTimeoutSeconds = "AGY_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvAgyInteractivePromptWaitSeconds  = "AGY_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvAgyInteractiveStreamTmuxScreen   = "AGY_CLI_STREAM_TMUX_SCREEN"
+)
+
+type agyInteractiveSession struct {
+	ownerSessionID    string
+	tmuxSessionName   string
+	workingDir        string
+	launchFingerprint string
+	persistent        bool
+	cleanupFiles      func()
+	idleTimer         *time.Timer
+	initErr           error
+	createdAt         time.Time
+	lastUsed          time.Time
+	mu                sync.Mutex
+}
+
+var agyInteractiveRegistry = struct {
+	sync.RWMutex
+	sessions map[string]string
+}{
+	sessions: map[string]string{},
+}
+
+var agyPersistentRegistry = struct {
+	sync.Mutex
+	sessions map[string]*agyInteractiveSession
+}{
+	sessions: map[string]*agyInteractiveSession{},
+}
+
+func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil, fmt.Errorf("tmux not found in PATH; agy-cli tmux mode requires tmux")
+	}
+	if _, err := exec.LookPath("agy"); err != nil {
+		return nil, fmt.Errorf("agy not found in PATH. Install Antigravity CLI with `curl https://agy.com/install -fsS | bash`")
+	}
+
+	persistent := agyPersistentInteractiveFromOptions(opts)
+	ownerSessionID := agyInteractiveSessionIDFromOptions(opts)
+	if ownerSessionID == "" {
+		ownerSessionID = "agy-bounded-" + agyRandomHex(8)
+	}
+	callCtx, cancel := agyInteractiveCallContext(ctx)
+	defer cancel()
+
+	// On user-initiated cancellation, tear down the persistent tmux
+	// session so the live pane closes alongside the workflow step.
+	defer func() {
+		if ctx.Err() != context.Canceled {
+			return
+		}
+		closeAgyPersistentSession(ownerSessionID, "workflow context canceled", c.logger)
+	}()
+
+	systemPrompt, conversationMessages := splitAgySystemPrompt(messages)
+	historicalAssistantTexts := agyAssistantHistory(conversationMessages)
+	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
+	prompt := buildAgyPrompt(conversationMessages)
+	if !launchOnly && strings.TrimSpace(prompt) == "" {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("agy-cli prompt is empty")
+	}
+
+	session, err := c.acquireAgyInteractiveSession(callCtx, ownerSessionID, persistent, opts, systemPrompt)
+	if err != nil {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+	releaseSession := true
+	defer func() {
+		if !releaseSession || session == nil {
+			return
+		}
+		if persistent {
+			releaseAgyInteractiveSession(session, c.logger)
+		} else {
+			releaseAgyBoundedInteractiveSession(session, c.logger)
+		}
+	}()
+
+	if err := waitForAgyPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+		markAgyInteractiveSessionFailedLocked(session, err, c.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedAgyInteractiveSession(failedSession)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+	resetAgyPaneForTurn(callCtx, session.tmuxSessionName)
+	if err := waitForAgyPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+		markAgyInteractiveSessionFailedLocked(session, err, c.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedAgyInteractiveSession(failedSession)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+
+	if launchOnly {
+		var lastSnapshot string
+		streamAgyTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		nativeSessionID := firstNonEmptyAgy(agyResumeSessionIDFromOptions(opts), waitForAgyConversationID(callCtx, session.workingDir, ""))
+		additional := map[string]interface{}{
+			"provider":                   "agy-cli",
+			"agy_mode":                   "tmux",
+			"agy_interactive_session":    session.tmuxSessionName,
+			"agy_persistent_interactive": persistent,
+			"agy_uses_print_json":        false,
+			"agy_working_dir":            session.workingDir,
+		}
+		if nativeSessionID != "" {
+			additional["agy_session_id"] = nativeSessionID
+		}
+		gi := &llmtypes.GenerationInfo{Additional: additional}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:        "agy-cli",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			NativeSessionID: nativeSessionID,
+			TmuxSession:     session.tmuxSessionName,
+			WorkingDir:      session.workingDir,
+			Model:           c.modelID,
+			Status:          llmtypes.CodingProviderSessionStatusIdle,
+		})
+		return &llmtypes.ContentResponse{
+			Choices: []*llmtypes.ContentChoice{{
+				Content:        "",
+				GenerationInfo: gi,
+			}},
+		}, nil
+	}
+
+	baseline, _ := captureAgyPane(callCtx, session.tmuxSessionName)
+	c.logInfof("Executing Antigravity CLI tmux session: %s", session.tmuxSessionName)
+	if err := sendAgyInputToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+
+	captured, err := waitForAgyInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, agyAutoApproveWebSearchFromOptions(opts))
+	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	if err != nil && !forcedComplete {
+		if isAgyTmuxSessionLostError(err) {
+			markAgyInteractiveSessionFailedLocked(session, err, c.logger)
+			releaseSession = false
+			failedSession := session
+			session.mu.Unlock()
+			session = nil
+			cleanupFailedAgyInteractiveSession(failedSession)
+		} else if ctx.Err() != nil {
+			interruptAgyInteractiveSession(session.tmuxSessionName, c.logger)
+		}
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, err
+	}
+
+	content := parseAgyInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	if forcedComplete && strings.TrimSpace(content) == "" {
+		content = forcedAgyInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	}
+	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
+	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+		func(ctx context.Context) (string, error) {
+			snap, err := captureAgyPane(ctx, session.tmuxSessionName)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(stripAgyANSI(snap), "\n"), nil
+		},
+		map[string]interface{}{
+			"tmux_session":            session.tmuxSessionName,
+			"agy_interactive_session": session.tmuxSessionName,
+		},
+	)
+	if opts.StreamChan != nil {
+		close(opts.StreamChan)
+	}
+
+	additional := map[string]interface{}{
+		"provider":                   "agy-cli",
+		"agy_mode":                   "tmux",
+		"agy_interactive_session":    session.tmuxSessionName,
+		"agy_persistent_interactive": persistent,
+		"agy_uses_print_json":        false,
+		"agy_working_dir":            session.workingDir,
+	}
+	nativeSessionID := agyResumeSessionIDFromOptions(opts)
+	if nativeSessionID == "" {
+		nativeSessionID = waitForAgyConversationID(callCtx, session.workingDir, prompt)
+	}
+	if nativeSessionID != "" {
+		additional["agy_session_id"] = nativeSessionID
+	}
+	if !persistent {
+		// terminal_retention_seconds intentionally not set: the rail
+		// snapshot stays read-only until the user dismisses it via the
+		// X button. Tmux itself is killed quickly after the turn via
+		// the bounded-session cleanup using llmtypes.TmuxKillDelay.
+		// The agy_interactive_retention_seconds value is kept for
+		// any backend code that still tracks it for diagnostics.
+		additional["agy_interactive_retention_seconds"] = int(agyInteractiveRetention().Seconds())
+	}
+
+	// Agy's tmux TUI does not expose exact token counts in a format the
+	// adapter can read (the running counter on the "⠰⠰ Composing 1.87k
+	// tokens" line is cleared once the turn settles). We approximate so the
+	// cost ledger receives a non-zero row rather than a bare timestamp.
+	// The approximation is char-based (≈ 4 chars/token for English prose,
+	// the standard fallback used elsewhere in this codebase); cost is then
+	// computed via the same ComputeUSDCostFromMetadata path the structured
+	// adapter uses. Numbers may be ±20-30% off the true tokenizer counts —
+	// good enough for cost-tracking trends, not for fine-grained per-call
+	// billing reconciliation.
+	inputTokens, outputTokens := estimateAgyTmuxTokens(prompt, content)
+	totalTokens := inputTokens + outputTokens
+	genInfo := &llmtypes.GenerationInfo{
+		InputTokens:  intPtrFromInt(inputTokens),
+		OutputTokens: intPtrFromInt(outputTokens),
+		TotalTokens:  intPtrFromInt(totalTokens),
+		Additional:   additional,
+	}
+	costLookupModel := c.modelID
+	if costLookupModel != "" {
+		if meta, _ := c.GetModelMetadata(costLookupModel); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = costLookupModel
+			}
+		}
+	}
+
+	llmtypes.AttachCodingProviderIntermediateMessages(genInfo, llmtypes.CodingProviderIntermediateMessages{
+		Provider:  "agy-cli",
+		Transport: llmtypes.CodingProviderTransportTmux,
+		Messages: []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: content}}},
+		},
+	})
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+		Provider:        "agy-cli",
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: nativeSessionID,
+		TmuxSession:     session.tmuxSessionName,
+		WorkingDir:      session.workingDir,
+		Model:           c.modelID,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
+
+	return &llmtypes.ContentResponse{
+		Choices: []*llmtypes.ContentChoice{
+			{
+				Content:        content,
+				GenerationInfo: genInfo,
+			},
+		},
+		Usage: &llmtypes.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  totalTokens,
+		},
+	}, nil
+}
+
+// estimateAgyTmuxTokens returns (input, output) token counts estimated
+// from prompt/response character lengths. Agy's tmux TUI does not surface
+// exact token counts in a parseable form, so this is the best the adapter
+// can do without re-implementing the model's tokenizer. The 4-chars-per-
+// token heuristic matches what other tmux adapters fall back to when their
+// CLI's JSON side-stream is unavailable. Both halves round up so a tiny
+// turn still records >0 tokens, otherwise ComputeUSDCostFromMetadata would
+// return 0 and the ledger row stays bare.
+func estimateAgyTmuxTokens(prompt, content string) (int, int) {
+	estimate := func(s string) int {
+		n := len(s)
+		if n == 0 {
+			return 0
+		}
+		// (n + 3) / 4 = ceil(n / 4)
+		return (n + 3) / 4
+	}
+	return estimate(prompt), estimate(content)
+}
+
+func intPtrFromInt(v int) *int {
+	return &v
+}
+
+// acquireAgyInteractiveSession returns with session.mu held.
+func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*agyInteractiveSession, error) {
+	launchFingerprint := c.agyInteractiveLaunchFingerprint(opts, systemPrompt)
+
+	if persistent {
+		agyPersistentRegistry.Lock()
+		if existing := agyPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+			existing.mu.Lock()
+			if existing.initErr != nil {
+				err := existing.initErr
+				existing.mu.Unlock()
+				agyPersistentRegistry.Unlock()
+				return nil, err
+			}
+			if existing.launchFingerprint != launchFingerprint {
+				existing.mu.Unlock()
+				agyPersistentRegistry.Unlock()
+				closeAgyPersistentSession(ownerSessionID, "launch configuration changed", c.logger)
+				return c.acquireAgyInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
+			}
+			if existing.idleTimer != nil {
+				existing.idleTimer.Stop()
+				existing.idleTimer = nil
+			}
+			existing.lastUsed = time.Now()
+			agyPersistentRegistry.Unlock()
+			return existing, nil
+		}
+	}
+
+	now := time.Now()
+	session := &agyInteractiveSession{
+		ownerSessionID:    ownerSessionID,
+		tmuxSessionName:   newAgyTmuxSessionName(),
+		launchFingerprint: launchFingerprint,
+		persistent:        persistent,
+		createdAt:         now,
+		lastUsed:          now,
+	}
+	session.mu.Lock()
+	if persistent {
+		agyPersistentRegistry.sessions[ownerSessionID] = session
+		agyPersistentRegistry.Unlock()
+	}
+
+	args, env, workingDir, cleanupFiles, err := c.buildAgyInteractiveLaunch(opts, systemPrompt)
+	if err != nil {
+		session.initErr = err
+		session.mu.Unlock()
+		if persistent {
+			removeAgyPersistentSession(ownerSessionID, session)
+		}
+		return nil, err
+	}
+	session.workingDir = workingDir
+	session.cleanupFiles = cleanupFiles
+
+	if err := startAgyTmuxSession(ctx, session.tmuxSessionName, args, env, workingDir); err != nil {
+		session.initErr = err
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
+		session.mu.Unlock()
+		if persistent {
+			removeAgyPersistentSession(ownerSessionID, session)
+		}
+		return nil, err
+	}
+	registerAgyInteractiveSession(ownerSessionID, session.tmuxSessionName)
+	return session, nil
+}
+
+func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, func(), error) {
+	workingDir := agyWorkingDirFromOptions(opts)
+	if workingDir == "" {
+		workingDir = agyMustGetwd()
+	}
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return nil, nil, "", nil, fmt.Errorf("failed to create Antigravity CLI working directory: %w", err)
+	}
+
+	cleanupFiles, err := prepareAgyProjectFiles(workingDir, systemPrompt, opts)
+	if err != nil {
+		return nil, nil, "", nil, err
+	}
+
+	args := []string{"agy"}
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if enabled, ok := opts.Metadata.Custom["agy_dangerously_skip_permissions"].(bool); !ok || enabled {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+		if sandbox, ok := opts.Metadata.Custom["agy_sandbox"].(string); ok && strings.TrimSpace(sandbox) != "" {
+			args = append(args, "--sandbox", strings.TrimSpace(sandbox))
+		}
+		if resumeID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(resumeID) != "" {
+			args = append(args, "--conversation", strings.TrimSpace(resumeID))
+		}
+	}
+	args = append(args, "--add-dir", workingDir, "--prompt-interactive", "")
+
+	env := []string{}
+	if strings.TrimSpace(c.apiKey) != "" {
+		env = append(env, "AGY_API_KEY="+strings.TrimSpace(c.apiKey))
+	}
+	return args, env, workingDir, cleanupFiles, nil
+}
+
+func (c *AgyCLIAdapter) agyInteractiveLaunchFingerprint(opts *llmtypes.CallOptions, systemPrompt string) string {
+	custom := map[string]interface{}{}
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		custom = opts.Metadata.Custom
+	}
+	hash := sha256.New()
+	write := func(key, value string) {
+		_, _ = io.WriteString(hash, key)
+		_, _ = io.WriteString(hash, "\x00")
+		_, _ = io.WriteString(hash, value)
+		_, _ = io.WriteString(hash, "\x00")
+	}
+	writeBool := func(key string) {
+		if value, ok := custom[key].(bool); ok {
+			write(key, strconv.FormatBool(value))
+		}
+	}
+	writeString := func(key string) {
+		if value, ok := custom[key].(string); ok {
+			write(key, strings.TrimSpace(value))
+		}
+	}
+	write("model", strings.TrimSpace(c.modelID))
+	// Persistent interactive sessions pin the system prompt at session startup
+	// via .agents/rules/mlp-system-*.md. Do not include the full prompt text
+	// in the reuse fingerprint: app-level prompts can contain per-turn dynamic
+	// context (e.g. background-agent role labels vs chat-agent labels), and
+	// restarting the TUI would tear down the live Agy pane mid-conversation.
+	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
+	writeString(MetadataKeyWorkingDir)
+	writeString(MetadataKeyResumeSessionID)
+	writeString("agy_sandbox")
+	hasStringValue := func(key string) bool {
+		v, ok := custom[key].(string)
+		return ok && strings.TrimSpace(v) != ""
+	}
+	write("mcp_config_present", strconv.FormatBool(hasStringValue(MetadataKeyMCPConfig)))
+	writeBool("agy_dangerously_skip_permissions")
+
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions) (func(), error) {
+	cleanups := make([]func(), 0, 2)
+	addCleanup := func(cleanup func()) {
+		if cleanup != nil {
+			cleanups = append(cleanups, cleanup)
+		}
+	}
+	cleanupAll := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+
+	agentsDir := filepath.Join(workingDir, ".agents")
+	if strings.TrimSpace(systemPrompt) != "" {
+		rulesDir := filepath.Join(agentsDir, "rules")
+		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create Agy rules dir: %w", err)
+		}
+		rulePath := filepath.Join(rulesDir, "mlp-system-"+agyRandomHex(6)+".md")
+		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
+		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
+			cleanupAll()
+			return nil, fmt.Errorf("failed to write Agy system rule: %w", err)
+		}
+		addCleanup(func() {
+			_ = os.Remove(rulePath)
+			_ = os.Remove(rulesDir)
+			_ = os.Remove(agentsDir)
+		})
+	}
+
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
+			if !json.Valid([]byte(mcpJSON)) {
+				cleanupAll()
+				return nil, fmt.Errorf("agy MCP config is not valid JSON")
+			}
+			cleanup, err := writeAgyRestoredFile(filepath.Join(agentsDir, "mcp_config.json"), []byte(mcpJSON))
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			addCleanup(cleanup)
+		}
+	}
+
+	return cleanupAll, nil
+}
+
+func writeAgyRestoredFile(path string, content []byte) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create Agy config dir: %w", err)
+	}
+	previous, readErr := os.ReadFile(path)
+	existed := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("failed to read existing Agy config %s: %w", path, readErr)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write Agy config %s: %w", path, err)
+	}
+	return func() {
+		if existed {
+			_ = os.WriteFile(path, previous, 0o600)
+		} else {
+			_ = os.Remove(path)
+			_ = os.Remove(filepath.Dir(path))
+		}
+	}, nil
+}
+
+func readAgyConversationIDForTurn(workingDir, prompt string) string {
+	workingDir = filepath.Clean(strings.TrimSpace(workingDir))
+	if workingDir == "." || workingDir == "" {
+		return ""
+	}
+	prompt = strings.TrimSpace(prompt)
+	raw, err := os.ReadFile(agyHistoryPath())
+	if err != nil {
+		return ""
+	}
+	type historyEntry struct {
+		Display        string `json:"display"`
+		Workspace      string `json:"workspace"`
+		ConversationID string `json:"conversationId"`
+	}
+	lines := bytes.Split(raw, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var entry historyEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if filepath.Clean(strings.TrimSpace(entry.Workspace)) != workingDir {
+			continue
+		}
+		if prompt != "" && strings.TrimSpace(entry.Display) != prompt {
+			continue
+		}
+		if id := strings.TrimSpace(entry.ConversationID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func readAgyLatestConversationID(workingDir string) string {
+	workingDir = filepath.Clean(strings.TrimSpace(workingDir))
+	if workingDir == "." || workingDir == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(agyLastConversationsPath())
+	if err != nil {
+		return ""
+	}
+	var conversations map[string]string
+	if err := json.Unmarshal(raw, &conversations); err != nil {
+		return ""
+	}
+	for workspace, conversationID := range conversations {
+		if filepath.Clean(strings.TrimSpace(workspace)) == workingDir {
+			return strings.TrimSpace(conversationID)
+		}
+	}
+	return ""
+}
+
+var agyConversationLogIDPattern = regexp.MustCompile(`(?:Created conversation|Streaming conversation|Forwarding user message to conversation|Sending user message to conversation) ([0-9a-fA-F-]{36})`)
+
+func readAgyConversationIDFromLogs(workingDir string) string {
+	workingDir = filepath.Clean(strings.TrimSpace(workingDir))
+	if workingDir == "." || workingDir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(agyLogDir())
+	if err != nil {
+		return ""
+	}
+	type logEntry struct {
+		path    string
+		modTime time.Time
+	}
+	logs := make([]logEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		logs = append(logs, logEntry{
+			path:    filepath.Join(agyLogDir(), entry.Name()),
+			modTime: info.ModTime(),
+		})
+	}
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].modTime.After(logs[j].modTime)
+	})
+	for _, logFile := range logs {
+		raw, err := os.ReadFile(logFile.path)
+		if err != nil {
+			continue
+		}
+		text := string(raw)
+		if !strings.Contains(text, workingDir) {
+			continue
+		}
+		matches := agyConversationLogIDPattern.FindAllStringSubmatch(text, -1)
+		for i := len(matches) - 1; i >= 0; i-- {
+			if len(matches[i]) > 1 {
+				if id := strings.TrimSpace(matches[i][1]); id != "" {
+					return id
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func agyLastConversationsPath() string {
+	return filepath.Join(agyAppDataDir(), "cache", "last_conversations.json")
+}
+
+func agyHistoryPath() string {
+	return filepath.Join(agyAppDataDir(), "history.jsonl")
+}
+
+func agyLogDir() string {
+	return filepath.Join(agyAppDataDir(), "log")
+}
+
+func agyAppDataDir() string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".gemini", "antigravity-cli")
+	}
+	return filepath.Join(".gemini", "antigravity-cli")
+}
+
+func firstNonEmptyAgy(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func waitForAgyConversationID(ctx context.Context, workingDir, prompt string) string {
+	if id := firstNonEmptyAgy(readAgyConversationIDForTurn(workingDir, prompt), readAgyLatestConversationID(workingDir), readAgyConversationIDFromLogs(workingDir)); id != "" {
+		return id
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return ""
+		case <-ticker.C:
+			if id := firstNonEmptyAgy(readAgyConversationIDForTurn(workingDir, prompt), readAgyLatestConversationID(workingDir), readAgyConversationIDFromLogs(workingDir)); id != "" {
+				return id
+			}
+		}
+	}
+}
+
+func releaseAgyInteractiveSession(session *agyInteractiveSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	session.lastUsed = time.Now()
+	session.idleTimer = time.AfterFunc(agyInteractiveIdleTimeout(), func() {
+		closeAgyPersistentSession(session.ownerSessionID, "idle timeout", logger)
+	})
+	session.mu.Unlock()
+}
+
+func releaseAgyBoundedInteractiveSession(session *agyInteractiveSession, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	// Keep the real tmux pane alive for the shared bounded retention window so
+	// the UI terminal remains inspectable/debuggable while it is visible.
+	retention := llmtypes.TmuxKillDelay
+	session.lastUsed = time.Now()
+	if retention <= 0 {
+		closeAgySessionLocked(session, "bounded turn complete", logger)
+		return
+	}
+	if logger != nil {
+		logger.Debugf("Retaining completed Agy interactive session %s for owner %s for %s (then kill)", session.tmuxSessionName, session.ownerSessionID, retention)
+	}
+	session.idleTimer = time.AfterFunc(retention, func() {
+		closeAgyPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
+	})
+	session.mu.Unlock()
+}
+
+func closeAgyPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
+	agyPersistentRegistry.Lock()
+	session := agyPersistentRegistry.sessions[ownerSessionID]
+	if session == nil {
+		agyPersistentRegistry.Unlock()
+		return
+	}
+	delete(agyPersistentRegistry.sessions, ownerSessionID)
+	agyPersistentRegistry.Unlock()
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	closeAgySessionLocked(session, reason, logger)
+}
+
+func closeAgySessionLocked(session *agyInteractiveSession, reason string, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Closing Agy interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
+	}
+	removeAgyPersistentSession(session.ownerSessionID, session)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = runAgyCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
+	_ = killAgyTmuxSession(closeCtx, session.tmuxSessionName)
+	if session.cleanupFiles != nil {
+		session.cleanupFiles()
+		session.cleanupFiles = nil
+	}
+	unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+}
+
+func markAgyInteractiveSessionFailedLocked(session *agyInteractiveSession, err error, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	if err != nil {
+		session.initErr = err
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	if logger != nil {
+		logger.Debugf("Discarding Agy interactive session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
+	}
+}
+
+func cleanupFailedAgyInteractiveSession(session *agyInteractiveSession) {
+	if session == nil {
+		return
+	}
+	removeAgyPersistentSession(session.ownerSessionID, session)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = killAgyTmuxSession(cleanupCtx, session.tmuxSessionName)
+	unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+	if session.cleanupFiles != nil {
+		session.cleanupFiles()
+	}
+}
+
+func removeAgyPersistentSession(ownerSessionID string, session *agyInteractiveSession) {
+	agyPersistentRegistry.Lock()
+	defer agyPersistentRegistry.Unlock()
+	if current := agyPersistentRegistry.sessions[ownerSessionID]; current == session {
+		delete(agyPersistentRegistry.sessions, ownerSessionID)
+	}
+}
+
+func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil
+	}
+	agyPersistentRegistry.Lock()
+	sessions := make([]*agyInteractiveSession, 0, len(agyPersistentRegistry.sessions))
+	for _, session := range agyPersistentRegistry.sessions {
+		sessions = append(sessions, session)
+	}
+	agyPersistentRegistry.sessions = map[string]*agyInteractiveSession{}
+	agyPersistentRegistry.Unlock()
+
+	var failures []string
+	for _, session := range sessions {
+		cleanupFiles := stopAgyIdleTimerAndSnapshotCleanupIfAvailable(session)
+		unregisterAgyInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
+		if err := killAgyTmuxSession(ctx, session.tmuxSessionName); err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to clean up Agy interactive sessions: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func stopAgyIdleTimerAndSnapshotCleanupIfAvailable(session *agyInteractiveSession) func() {
+	if session == nil || !session.mu.TryLock() {
+		return nil
+	}
+	defer session.mu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	cleanupFiles := session.cleanupFiles
+	session.cleanupFiles = nil
+	return cleanupFiles
+}
+
+func registerAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if ownerSessionID == "" || tmuxSessionName == "" {
+		return
+	}
+	agyInteractiveRegistry.Lock()
+	defer agyInteractiveRegistry.Unlock()
+	agyInteractiveRegistry.sessions[ownerSessionID] = tmuxSessionName
+}
+
+func unregisterAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
+	agyInteractiveRegistry.Lock()
+	defer agyInteractiveRegistry.Unlock()
+	if current := agyInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
+		delete(agyInteractiveRegistry.sessions, ownerSessionID)
+	}
+}
+
+func activeAgyInteractiveSession(ownerSessionID string) (string, bool) {
+	agyInteractiveRegistry.RLock()
+	defer agyInteractiveRegistry.RUnlock()
+	sessionName, ok := agyInteractiveRegistry.sessions[strings.TrimSpace(ownerSessionID)]
+	return sessionName, ok && strings.TrimSpace(sessionName) != ""
+}
+
+func SendAgyInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
+	sessionName, ok := activeAgyInteractiveSession(ownerSessionID)
+	if !ok {
+		return fmt.Errorf("no active Agy interactive session registered for owner session %s", ownerSessionID)
+	}
+	return sendAgyInputToTmux(ctx, sessionName, message)
+}
+
+func agyInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if sessionID, ok := opts.Metadata.Custom[MetadataKeyInteractiveSessionID].(string); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
+}
+
+func agyPersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, ok := opts.Metadata.Custom[MetadataKeyPersistentInteractive].(bool)
+	return ok && enabled
+}
+
+func agyWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if dir, ok := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); ok {
+		if trimmed := strings.TrimSpace(dir); trimmed != "" {
+			return filepath.Clean(trimmed)
+		}
+	}
+	return ""
+}
+
+func agyResumeSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	if sessionID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
+}
+
+func agyAutoApproveWebSearchFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyAutoApproveWebSearch].(bool)
+	return enabled
+}
+
+func startAgyTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
+	if workingDir == "" {
+		workingDir = agyMustGetwd()
+	}
+	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
+	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
+	for _, entry := range env {
+		if strings.TrimSpace(entry) != "" {
+			tmuxArgs = append(tmuxArgs, "-e", entry)
+		}
+	}
+	shellCommand := "cd " + agyShellQuote(workingDir) + " && exec " + agyShellJoin(args)
+	tmuxArgs = append(tmuxArgs, shellCommand)
+	if err := runAgyCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		return fmt.Errorf("failed to start Agy interactive session %q: %w", sessionName, err)
+	}
+	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	return nil
+}
+
+func waitForAgyPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	deadline, cancel := context.WithTimeout(ctx, agyInteractivePromptWait())
+	defer cancel()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	var trustSubmitted bool
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
+	for {
+		select {
+		case <-deadline.Done():
+			captured, _ := captureAgyPane(context.Background(), sessionName)
+			if strings.TrimSpace(captured) != "" {
+				return fmt.Errorf("timed out waiting for Antigravity CLI prompt; latest pane:\n%s", captured)
+			}
+			return fmt.Errorf("timed out waiting for Antigravity CLI prompt")
+		case <-ticker.C:
+			captured, err := captureAgyPane(deadline, sessionName)
+			if err != nil {
+				if isAgyTmuxSessionLostError(err) {
+					return fmt.Errorf("Antigravity CLI tmux session ended while waiting for prompt: %w", err)
+				}
+				continue
+			}
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamAgyTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
+			}
+			if hasAgyTrustPrompt(captured) && !trustSubmitted {
+				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, agyTrustPromptResponse(captured))
+				trustSubmitted = true
+				continue
+			}
+			if hasAgyReadyPrompt(captured) {
+				return nil
+			}
+		}
+	}
+}
+
+// agyTypedInputMaxLen is the upper bound under which a single-line message
+// is typed via `tmux send-keys -l` (keystroke injection) instead of
+// paste-buffer + bracketed paste. Keeping short, single-line input out of the
+// bracketed-paste path stops Agy's TUI from rendering normal chat turns as
+// "[Pasted text #N]". Multi-line or longer payloads still go through
+// paste-buffer to preserve newlines and avoid premature submission.
+const agyTypedInputMaxLen = 240
+
+func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error {
+	message = strings.TrimRight(message, "\r\n")
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("Agy interactive input is empty")
+	}
+	if !strings.ContainsAny(message, "\n\r") && len(message) <= agyTypedInputMaxLen {
+		return typeAgyInputToTmux(ctx, sessionName, message)
+	}
+	bufferName := "mlp-agy-input-" + agyRandomHex(6)
+	tmp, err := os.CreateTemp("", "agy-tmux-input-*.txt")
+	if err != nil {
+		return fmt.Errorf("failed to create Agy tmux input temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(message); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write Agy tmux input temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close Agy tmux input temp file: %w", err)
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
+		return fmt.Errorf("failed to load Agy input into tmux buffer: %w", err)
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+		return fmt.Errorf("failed to paste input into Agy interactive session: %w", err)
+	}
+	waitForAgyInputDraftVisible(ctx, sessionName, message, 2*time.Second)
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		return fmt.Errorf("failed to submit input to Agy interactive session: %w", err)
+	}
+	// Agy consumes the first Enter when the follow-ups suggestion box is
+	// showing (it dismisses the menu but does NOT submit the text — the text
+	// stays in the input draft). One extra Enter is needed to actually send.
+	// We don't know up front whether the menu was shown, so probe: if after
+	// the first Enter the draft is still in the input field, send another.
+	ensureAgyInputSubmitted(ctx, sessionName, message)
+	return nil
+}
+
+// typeAgyInputToTmux delivers a short single-line message to Agy's TUI
+// as keystrokes via `tmux send-keys -l` instead of paste-buffer. The TUI then
+// treats it as normal typed input and does not show the "[Pasted text]"
+// marker. Used only for messages that have no embedded newlines and fit under
+// agyTypedInputMaxLen — multi-line or longer payloads stay on the
+// paste-buffer/bracketed-paste path so Agy doesn't submit on every \n.
+func typeAgyInputToTmux(ctx context.Context, sessionName, message string) error {
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", message); err != nil {
+		return fmt.Errorf("failed to type input into Agy interactive session: %w", err)
+	}
+	waitForAgyInputDraftVisible(ctx, sessionName, message, 2*time.Second)
+	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		return fmt.Errorf("failed to submit typed input to Agy interactive session: %w", err)
+	}
+	ensureAgyInputSubmitted(ctx, sessionName, message)
+	return nil
+}
+
+// ensureAgyInputSubmitted polls briefly after the initial C-m and sends a
+// second C-m if the pasted text is still sitting in the input draft (which
+// happens when the follow-ups menu, or any other modal overlay, swallows the
+// first Enter). Best-effort: errors are ignored because the first submit may
+// have succeeded and the pane just hasn't repainted yet.
+func ensureAgyInputSubmitted(ctx context.Context, sessionName, message string) {
+	deadline, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
+			captured, err := captureAgyPane(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			if !agyPaneShowsPromptDraft(captured, message) {
+				return
+			}
+			_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+			return
+		}
+	}
+}
+
+func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) {
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
+			captured, err := captureAgyPane(deadline, sessionName)
+			if err == nil && agyPaneShowsPromptDraft(captured, message) {
+				return
+			}
+		}
+	}
+}
+
+func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool) (string, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var sawActivity bool
+	var idleSince time.Time
+	var readyWithoutContentSince time.Time
+	var submitRetryCount int
+	var lastSubmitRetryAt time.Time
+	var lastCaptured string
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	var lastWebSearchApprovalAt time.Time
+	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
+	for {
+		select {
+		case <-ctx.Done():
+			captured, _ := captureAgyPane(context.Background(), sessionName)
+			return captured, ctx.Err()
+		case <-ticker.C:
+			captured, err := captureAgyPane(ctx, sessionName)
+			if err != nil {
+				return "", err
+			}
+			delta := agyCapturedAfterBaseline(captured, baseline)
+			if tmuxcontrol.ConsumeForceComplete(sessionName) {
+				return captured, tmuxcontrol.ErrForceComplete
+			}
+			if streamChan != nil && streamTerminalScreen {
+				if time.Since(lastTerminalStreamedAt) >= time.Second && streamAgyTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
+			}
+			if autoApproveWebSearch && hasAgyWebSearchApprovalPrompt(captured) {
+				if lastWebSearchApprovalAt.IsZero() || time.Since(lastWebSearchApprovalAt) >= 2*time.Second {
+					if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "y"); err == nil {
+						lastWebSearchApprovalAt = time.Now()
+					}
+				}
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			// Reset idle only when we have activity AND we're not yet
+			// at the ready prompt. Agy's TUI leaves stale status
+			// lines ("Running...", "Thinking...") visible for several
+			// seconds after the → prompt reappears; those used to
+			// keep restarting the idle timer and added 5-10s of
+			// avoidable wait to every turn. hasAgyReadyPrompt
+			// already handles the "→ visible + stale status" case
+			// correctly (returns true), so once we're ready we let
+			// the stable-window check drive completion.
+			if !hasAgyReadyPrompt(captured) && hasAgyActivity(captured) {
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			if strings.TrimSpace(delta) != "" {
+				sawActivity = true
+			}
+			if !sawActivity || !hasAgyReadyPrompt(captured) {
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			if captured != lastCaptured {
+				lastCaptured = captured
+				idleSince = time.Now()
+				continue
+			}
+			if idleSince.IsZero() {
+				idleSince = time.Now()
+				continue
+			}
+			if time.Since(idleSince) >= agyInteractiveStableWindow {
+				content := parseAgyInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				if strings.TrimSpace(content) == "" {
+					if readyWithoutContentSince.IsZero() {
+						readyWithoutContentSince = time.Now()
+					}
+					if agyPaneShowsPromptDraft(captured, prompt) && submitRetryCount < 3 && time.Since(lastSubmitRetryAt) >= time.Second {
+						_ = runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+						submitRetryCount++
+						lastSubmitRetryAt = time.Now()
+						idleSince = time.Time{}
+						continue
+					}
+					if time.Since(readyWithoutContentSince) >= 15*time.Second {
+						return captured, fmt.Errorf("Antigravity CLI returned to the prompt without visible assistant output; latest pane:\n%s", captured)
+					}
+					continue
+				}
+				return captured, nil
+			}
+		}
+	}
+}
+
+func parseAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	delta := agyCapturedAfterBaseline(captured, baseline)
+	text := extractAgyVisibleAssistantText(delta)
+	text = stripAgyEchoedUserPrompt(text, echoedUserPrompt)
+	text = stripAgyHistoricalAssistantText(text, historicalAssistantTexts)
+	return strings.TrimSpace(text)
+}
+
+func forcedAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
+	delta := agyCapturedAfterBaseline(captured, baseline)
+	text := extractAgyVisibleAssistantText(delta)
+	text = stripAgyEchoedUserPrompt(text, echoedUserPrompt)
+	text = stripAgyHistoricalAssistantText(text, historicalAssistantTexts)
+	return strings.TrimSpace(text)
+}
+
+func extractAgyVisibleAssistantText(delta string) string {
+	lines := strings.Split(stripAgyANSI(delta), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := normalizeAgyPaneLine(line)
+		if isAgyPromptBoundaryLine(trimmed) {
+			break
+		}
+		// "User: …" marks the start of a user turn. Everything previously
+		// collected is from an older assistant turn and must be discarded —
+		// otherwise a multi-turn pane (where baseline-diff falls back to
+		// line-prefix mode and leaves prior turns in the delta) leaks the
+		// stale reply into the new turn's extracted text.
+		if isAgyUserTurnHeader(trimmed) {
+			out = out[:0]
+			continue
+		}
+		if trimmed == "" {
+			// Preserve blank lines as paragraph-break markers (collapse runs),
+			// but never start the response with a blank.
+			if len(out) > 0 && out[len(out)-1] != "" {
+				out = append(out, "")
+			}
+			continue
+		}
+		if isAgyTUILine(trimmed) || isAgyToolStatusLine(trimmed) || isAgyBoxDrawingLine(trimmed) {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	// Drop trailing blank markers introduced by the input-box gap.
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	// Blank lines between non-blank lines are preserved as "" entries, so the
+	// joined output uses "\n\n" between paragraphs — CommonMark renders that as
+	// a real paragraph break, while a single "\n" inside a paragraph (a tmux
+	// hard-wrap) is treated as a soft break and rendered as a space.
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// isAgyUserTurnHeader matches Agy's per-turn user header ("User: <prompt>").
+// Anchored on the colon-space pair to avoid matching prose like "User input is".
+func isAgyUserTurnHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "User:") && !strings.HasPrefix(trimmed, "user:") {
+		return false
+	}
+	// Require the colon to be followed by whitespace OR end-of-line — distinguishes
+	// Agy's "User: hi" header from prose like "User:enter your username".
+	if len(trimmed) == len("User:") {
+		return true
+	}
+	next := trimmed[len("User:")]
+	return next == ' ' || next == '\t'
+}
+
+func normalizeAgyPaneLine(line string) string {
+	line = strings.TrimSpace(stripAgyANSI(line))
+	line = strings.TrimPrefix(line, "│")
+	line = strings.TrimSuffix(line, "│")
+	line = strings.TrimSpace(line)
+	line = strings.TrimSpace(strings.TrimPrefix(line, "• "))
+	// Agy labels each assistant turn with a literal "Assistant:" header. Strip
+	// it so the kept response reads as plain prose (and matches what the user
+	// sees in the chat panel for Claude/Gemini, which have no such label).
+	line = strings.TrimSpace(strings.TrimPrefix(line, "Assistant:"))
+	return line
+}
+
+// agyShellEchoSuffix matches the duration suffix Agy appends to shell-tool
+// echoes (e.g. "$ ls -1 /tmp 407ms", "$ sleep 1 1.0s"). Used to distinguish a
+// shell-tool transcript line from a code block that legitimately starts with "$".
+var agyShellEchoSuffix = regexp.MustCompile(`\s\d+(?:\.\d+)?(?:ms|s)\s*$`)
+
+// agyFoundCountLine matches the tool-result summary Agy prints after
+// grep/glob/list operations: "Found 33 files", "Found 1,024 matches", etc.
+var agyFoundCountLine = regexp.MustCompile(`^found\s+[\d,]+\s+(files?|matches?|results?|symbols?)\b`)
+
+// agyMultiToolSummaryLine matches Agy's per-turn tool-activity summary:
+//
+//	"Read, grepped, globbed 7 files, 4 greps, 2 globs"
+//
+// The line lists past-tense verbs followed by counts. Always tool narration,
+// never response prose.
+var agyMultiToolSummaryLine = regexp.MustCompile(`^(?:read|grepped|globbed|listed|searched)[,\s].*\b\d+\s+(?:files?|greps?|globs?|matches?|results?|symbols?|reads?|lists?|searches?)\b`)
+
+// agyEarlierHiddenLine matches Agy's truncation header on long tool
+// transcripts, e.g. "… 10 earlier items hidden" or "... 3 earlier tools hidden".
+var agyEarlierHiddenLine = regexp.MustCompile(`^(?:…|\.\.\.)\s*\d+\s+earlier\s+(?:items?|tools?|results?)\b`)
+
+// agyReadFileLine matches Agy's per-file read narration. Agy truncates
+// long paths with `...`, so a real prose line "Read the docs" is unaffected — the
+// regex requires a path token and either "lines N-M" or a file extension.
+var agyReadFileLine = regexp.MustCompile(`^read\s+(?:\.\.\.|/|~)\S*\s+(?:lines?\s+\d+(?:-\d+)?|.*\.\w{1,8}\b)`)
+
+func isAgyPromptBoundaryLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	// The → arrow is Agy's input agy — the most reliable structural
+	// boundary. In the delta (after baseline stripping), it only appears at
+	// the bottom after the response completes.
+	return strings.HasPrefix(trimmed, "→") ||
+		trimmed == ">" ||
+		trimmed == "›" ||
+		trimmed == "❯" ||
+		strings.Contains(lower, "ask (shift+tab") ||
+		strings.HasPrefix(lower, "type your message") ||
+		strings.Contains(lower, "what can i help") ||
+		strings.Contains(lower, "add a follow-up") ||
+		strings.Contains(lower, "agy agent") && strings.Contains(lower, "workspace")
+}
+
+func isAgyTUILine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	if trimmed == "" {
+		return true
+	}
+	return strings.Contains(lower, "ctrl+") ||
+		strings.Contains(lower, "esc to") ||
+		strings.Contains(lower, "press enter") ||
+		strings.Contains(lower, "run everything") ||
+		strings.Contains(lower, "ask (shift+tab") ||
+		strings.HasPrefix(lower, "v20") ||
+		strings.Contains(lower, "try composer") ||
+		strings.Contains(lower, "composer") && strings.Contains(lower, "fast") ||
+		strings.Contains(trimmed, " · ") ||
+		strings.HasPrefix(trimmed, "→ ") ||
+		strings.Contains(lower, "agy agent") ||
+		strings.Contains(lower, "agy") && strings.Contains(lower, "model") ||
+		strings.Contains(lower, "workspace:") ||
+		strings.Contains(lower, "mode:") ||
+		strings.Contains(lower, "approval") ||
+		strings.Contains(lower, "permission") ||
+		strings.Contains(lower, "pasted text") ||
+		strings.HasPrefix(lower, "use /") ||
+		strings.HasPrefix(lower, "add a follow-up") ||
+		strings.HasPrefix(lower, "auto-run") ||
+		// Agy labels each user turn with a literal "User:" header. It is a
+		// structural marker, not response prose, so drop it from extraction.
+		strings.HasPrefix(lower, "user:")
+}
+
+func isAgyToolStatusLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "thinking") ||
+		strings.HasPrefix(lower, "working") ||
+		strings.HasPrefix(lower, "running") ||
+		strings.HasPrefix(lower, "reading") ||
+		strings.HasPrefix(lower, "editing") ||
+		strings.HasPrefix(lower, "writing") ||
+		strings.HasPrefix(lower, "searching") ||
+		strings.HasPrefix(lower, "applying") ||
+		strings.HasPrefix(lower, "calling ") ||
+		strings.HasPrefix(lower, "called ") ||
+		strings.HasPrefix(lower, "executing") ||
+		strings.HasPrefix(lower, "globbed ") ||
+		strings.HasPrefix(lower, "listed ") ||
+		strings.HasPrefix(lower, "grepped ") ||
+		strings.Contains(lower, "mcp") && strings.Contains(lower, "tool") ||
+		strings.Contains(lower, "shell(") ||
+		strings.Contains(lower, `"stdout"`) ||
+		strings.Contains(lower, `"stderr"`) ||
+		strings.Contains(lower, `"exit_code"`) {
+		return true
+	}
+	// Tool-result summary lines: "Found N files", "Found N matches", …
+	if agyFoundCountLine.MatchString(lower) {
+		return true
+	}
+	// Combined per-turn tool-activity summary, truncation header, per-file read
+	// narration — all are tool transcript, never response prose.
+	if agyMultiToolSummaryLine.MatchString(lower) ||
+		agyEarlierHiddenLine.MatchString(lower) ||
+		agyReadFileLine.MatchString(lower) {
+		return true
+	}
+	// Shell-tool command echo: starts with "$ " and ends with a duration
+	// suffix like "407ms" or "1.2s" — distinguishes the tool transcript from a
+	// markdown code block that happens to begin with "$".
+	if strings.HasPrefix(trimmed, "$ ") && agyShellEchoSuffix.MatchString(lower) {
+		return true
+	}
+	// Truncation marker that closes a tool-output block:
+	//   "… truncated (36 more lines) · ctrl+o to expand"
+	// (Already filtered by isAgyTUILine's " · " rule in the common case;
+	// handle the no-middot variant defensively.)
+	if strings.Contains(lower, "truncated") &&
+		(strings.Contains(lower, "more lines") || strings.Contains(lower, "more line")) {
+		return true
+	}
+	return false
+}
+
+func isAgyBoxDrawingLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	for _, r := range line {
+		if strings.ContainsRune("─━▀▄▁▂▃▅▆▇█▌▐▝▜▗▟▘▛▙▚▞▖╭╮╰╯│┌┐└┘├┤┬┴┼╞╪╡╘╧╛╔╗╚╝═║╠╣╦╩╬╌╍╎╏┄┅┆┇┈┉┊┋ ", r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func stripAgyEchoedUserPrompt(text, prompt string) string {
+	text = strings.TrimSpace(text)
+	prompt = strings.TrimSpace(prompt)
+	if text == "" || prompt == "" {
+		return text
+	}
+	// Preserve raw lines (including blank-line paragraph markers) for the
+	// returned text, and compute a parallel non-empty view for prompt matching.
+	rawLines := strings.Split(text, "\n")
+	textNonEmpty := make([]string, 0, len(rawLines))
+	rawIndexFor := make([]int, 0, len(rawLines))
+	for i, line := range rawLines {
+		if strings.TrimSpace(line) != "" {
+			textNonEmpty = append(textNonEmpty, line)
+			rawIndexFor = append(rawIndexFor, i)
+		}
+	}
+	promptLines := nonEmptyAgyLines(prompt)
+	if len(textNonEmpty) == 0 || len(promptLines) == 0 {
+		return text
+	}
+	bestStart := -1
+	bestLen := 0
+	for start := 0; start < len(textNonEmpty) && start < 64; start++ {
+		for promptStart := 0; promptStart < len(promptLines); promptStart++ {
+			matchLen := 0
+			for start+matchLen < len(textNonEmpty) &&
+				promptStart+matchLen < len(promptLines) &&
+				agyPromptLinesEqual(textNonEmpty[start+matchLen], promptLines[promptStart+matchLen]) {
+				matchLen++
+			}
+			if matchLen > bestLen {
+				bestStart = start
+				bestLen = matchLen
+			}
+		}
+	}
+	if bestLen < 2 && !(len(promptLines) == 1 && bestLen == 1) {
+		return text
+	}
+	// Translate the non-empty match span back to raw-line indices and drop it
+	// (keeps paragraph-break blank lines outside the prompt block intact).
+	startRaw := rawIndexFor[bestStart]
+	endRaw := rawIndexFor[bestStart+bestLen-1] + 1
+	out := make([]string, 0, len(rawLines))
+	out = append(out, rawLines[:startRaw]...)
+	out = append(out, rawLines[endRaw:]...)
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func stripAgyHistoricalAssistantText(text string, historicalAssistantTexts []string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || len(historicalAssistantTexts) == 0 {
+		return text
+	}
+	for i := len(historicalAssistantTexts) - 1; i >= 0; i-- {
+		historical := strings.TrimSpace(historicalAssistantTexts[i])
+		if historical == "" {
+			continue
+		}
+		if stripped, ok := stripAgyHistoricalPrefix(text, historical); ok {
+			text = strings.TrimSpace(stripped)
+			i = len(historicalAssistantTexts)
+		}
+	}
+	return text
+}
+
+func stripAgyHistoricalPrefix(text, historical string) (string, bool) {
+	if text == historical {
+		return "", true
+	}
+	if strings.HasPrefix(text, historical) {
+		return text[len(historical):], true
+	}
+	historicalLines := nonEmptyAgyLines(historical)
+	for start := 0; start < len(historicalLines); start++ {
+		suffix := strings.Join(historicalLines[start:], "\n")
+		if suffix == "" {
+			continue
+		}
+		if text == suffix {
+			return "", true
+		}
+		if strings.HasPrefix(text, suffix) {
+			return text[len(suffix):], true
+		}
+	}
+	return text, false
+}
+
+func agyPromptLinesEqual(a, b string) bool {
+	a = normalizeAgyPromptLine(a)
+	b = normalizeAgyPromptLine(b)
+	return a != "" && a == b
+}
+
+func normalizeAgyPromptLine(line string) string {
+	line = strings.TrimSpace(stripAgyANSI(line))
+	line = strings.TrimPrefix(line, "│")
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, ">")
+	line = strings.TrimPrefix(line, "›")
+	return strings.TrimSpace(line)
+}
+
+func nonEmptyAgyLines(text string) []string {
+	rawLines := strings.Split(strings.TrimSpace(text), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func agyPaneShowsPromptDraft(captured, prompt string) bool {
+	captured = strings.ToLower(stripAgyANSI(captured))
+	for _, line := range nonEmptyAgyLines(prompt) {
+		line = strings.TrimSpace(stripAgyANSI(line))
+		if len([]rune(line)) < 8 {
+			continue
+		}
+		if len([]rune(line)) > 120 {
+			line = string([]rune(line)[:120])
+		}
+		if strings.Contains(captured, strings.ToLower(line)) {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func hasAgyReadyPrompt(captured string) bool {
+	if hasAgyTrustPrompt(captured) {
+		return false
+	}
+	if hasAgyWebSearchApprovalPrompt(captured) {
+		return false
+	}
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	if !hasAgyReadyMarker(cleaned) {
+		return false
+	}
+	// Live generation signals (composing spinner, ctrl+c to stop) mean the
+	// turn is still in progress — never treat as ready.
+	if hasAgyLiveGenerationActivity(cleaned) {
+		return false
+	}
+	// Agy leaves stale status lines (Running..., Thinking...) in the pane
+	// after a tool finishes. Once the → prompt is visible, stale activity
+	// text should not keep the turn open forever.
+	if hasAgyActivity(captured) && !strings.Contains(cleaned, "→") {
+		return false
+	}
+	return true
+}
+
+func hasAgyLiveGenerationActivity(cleaned string) bool {
+	return strings.Contains(cleaned, "ctrl+c to stop") ||
+		strings.Contains(cleaned, "composing")
+}
+
+func hasAgyReadyMarker(cleaned string) bool {
+	// The → arrow is Agy's structural input agy — the most reliable
+	// signal that the prompt area is visible, regardless of placeholder text.
+	for _, line := range strings.Split(cleaned, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "→") || trimmed == ">" {
+			return true
+		}
+	}
+	return strings.Contains(cleaned, "type your message") ||
+		strings.Contains(cleaned, "ask (shift+tab") ||
+		strings.Contains(cleaned, "plan, search, build anything") ||
+		strings.Contains(cleaned, "what can i help") ||
+		strings.Contains(cleaned, "ask me anything") ||
+		strings.Contains(cleaned, "message agy") ||
+		strings.Contains(cleaned, "add a follow-up")
+}
+
+func hasAgyTrustPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	if strings.Contains(cleaned, "trusting workspace") {
+		return false
+	}
+	return strings.Contains(cleaned, "workspace trust required") ||
+		strings.Contains(cleaned, "do you trust the contents of this directory") ||
+		strings.Contains(cleaned, "do you trust the contents of this project") ||
+		strings.Contains(cleaned, "trust") && strings.Contains(cleaned, "workspace") &&
+			(strings.Contains(cleaned, "y/n") || strings.Contains(cleaned, "yes") ||
+				strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "[w]"))
+}
+
+func hasAgyWebSearchApprovalPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	return strings.Contains(cleaned, "allow this web search") ||
+		strings.Contains(cleaned, "allow search (y)") ||
+		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
+}
+
+func agyTrustPromptResponse(captured string) string {
+	cleaned := strings.ToLower(stripAgyANSI(captured))
+	if strings.Contains(cleaned, "yes, i trust this folder") ||
+		strings.Contains(cleaned, "do you trust the contents of this project") {
+		return "Enter"
+	}
+	if strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "trust this workspace, but don't enable all mcp servers") {
+		return "a"
+	}
+	return "y"
+}
+
+func hasAgyActivity(captured string) bool {
+	for _, line := range strings.Split(stripAgyANSI(captured), "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if lower == "" {
+			continue
+		}
+		if strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "ctrl+c to cancel") ||
+			strings.Contains(lower, "ctrl+c to stop") ||
+			strings.Contains(lower, "composing") ||
+			strings.HasPrefix(lower, "thinking") ||
+			strings.HasPrefix(lower, "working") ||
+			strings.HasPrefix(lower, "running") ||
+			strings.HasPrefix(lower, "editing") ||
+			strings.HasPrefix(lower, "applying") ||
+			strings.HasPrefix(lower, "calling ") {
+			return true
+		}
+	}
+	return false
+}
+
+func streamAgyTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	snapshot, err := captureAgyPaneForDisplay(ctx, sessionName)
+	if err != nil {
+		return false
+	}
+	snapshot = strings.TrimRight(stripAgyANSI(snapshot), "\n")
+	if strings.TrimSpace(snapshot) == "" || snapshot == *lastTerminalSnapshot {
+		return false
+	}
+	*lastTerminalSnapshot = snapshot
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":            sessionName,
+			"agy_interactive_session": sessionName,
+		},
+	}:
+		return true
+	default:
+		return false
+	}
+}
+
+func interruptAgyInteractiveSession(sessionName string, logger interfaces.Logger) {
+	interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runAgyCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil && logger != nil {
+		logger.Debugf("Failed to send Escape to Agy interactive session %s: %v", sessionName, err)
+	}
+}
+
+func resetAgyPaneForTurn(ctx context.Context, sessionName string) {
+	// Only trim tmux's external scrollback to bound memory growth. We
+	// intentionally do NOT send C-l (0x0C) anymore: Agy's raw-mode TUI
+	// catches that keystroke as "clear display", which wipes the visible
+	// chat history the operator is watching in the browser terminal pane.
+	// Baseline-diff logic in agyCapturedAfterBaseline tolerates an
+	// already-populated pane via LastIndex(captured, baseline).
+	_ = runAgyCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
+}
+
+func captureAgyPane(ctx context.Context, sessionName string) (string, error) {
+	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
+}
+
+func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-S", "-3000", "-t", sessionName)
+}
+
+func agyCapturedAfterBaseline(captured, baseline string) string {
+	if baseline == "" {
+		return captured
+	}
+	// Fast path: exact substring match.
+	if idx := strings.LastIndex(captured, baseline); idx >= 0 {
+		return captured[idx+len(baseline):]
+	}
+	// Non-breaking space normalization (matches Claude Code adapter).
+	normalizedCaptured := strings.ReplaceAll(captured, " ", " ")
+	normalizedBaseline := strings.ReplaceAll(baseline, " ", " ")
+	if idx := strings.LastIndex(normalizedCaptured, normalizedBaseline); idx >= 0 {
+		return normalizedCaptured[idx+len(normalizedBaseline):]
+	}
+	// Line-based prefix divergence: on multi-turn panes the baseline and
+	// captured share the same top lines (header + earlier turns) but diverge
+	// where the new turn starts. Find the first line that differs and
+	// return everything from that point onward.
+	return agyLinePrefixDelta(normalizedCaptured, normalizedBaseline)
+}
+
+func agyLinePrefixDelta(captured, baseline string) string {
+	capturedLines := strings.Split(captured, "\n")
+	baselineLines := strings.Split(baseline, "\n")
+	maxCompare := len(capturedLines)
+	if len(baselineLines) < maxCompare {
+		maxCompare = len(baselineLines)
+	}
+	divergeAt := 0
+	for i := 0; i < maxCompare; i++ {
+		if strings.TrimSpace(capturedLines[i]) != strings.TrimSpace(baselineLines[i]) {
+			break
+		}
+		divergeAt = i + 1
+	}
+	// Require at least a few matching lines to trust the prefix.
+	if divergeAt < 3 {
+		return captured
+	}
+	return strings.Join(capturedLines[divergeAt:], "\n")
+}
+
+func killAgyTmuxSession(ctx context.Context, sessionName string) error {
+	if strings.TrimSpace(sessionName) == "" {
+		return nil
+	}
+	if err := runAgyCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
+		if isAgyTmuxSessionLostError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func isAgyTmuxSessionLostError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "can't find pane") ||
+		strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "no current target")
+}
+
+func agyInteractiveSessionPrefix() string {
+	prefix := strings.TrimSpace(os.Getenv(EnvAgyInteractiveSessionPrefix))
+	if prefix == "" {
+		prefix = "mlp-agy-cli-int"
+	}
+	return sanitizeAgyTmuxSessionName(prefix)
+}
+
+func newAgyTmuxSessionName() string {
+	return sanitizeAgyTmuxSessionName(fmt.Sprintf("%s-%d-%s", agyInteractiveSessionPrefix(), time.Now().UnixNano(), agyRandomHex(4)))
+}
+
+func agyInteractiveTimeout() time.Duration {
+	return agyDurationFromEnvAllowZero(EnvAgyInteractiveTimeoutSeconds, defaultAgyInteractiveTimeout)
+}
+
+func agyInteractiveCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := agyInteractiveTimeout()
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func agyInteractiveIdleTimeout() time.Duration {
+	return agyDurationFromEnv(EnvAgyInteractiveIdleTimeoutSeconds, defaultAgyInteractiveIdleTimeout)
+}
+
+func agyInteractiveRetention() time.Duration {
+	return tmuxlaunch.Retention(defaultAgyInteractiveRetention)
+}
+
+func agyInteractivePromptWait() time.Duration {
+	return tmuxlaunch.PromptWait(EnvAgyInteractivePromptWaitSeconds)
+}
+
+func agyInteractiveStreamTmuxScreenEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvAgyInteractiveStreamTmuxScreen))) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func agyDurationFromEnv(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func agyDurationFromEnvAllowZero(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func runAgyCommand(ctx context.Context, stdin io.Reader, name string, args ...string) error {
+	_, err := runAgyCommandOutput(ctx, stdin, name, args...)
+	return err
+}
+
+func runAgyCommandOutput(ctx context.Context, stdin io.Reader, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+func agyShellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = agyShellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func agyShellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func agyMustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
+}
+
+func agyRandomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func sanitizeAgyTmuxSessionName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "agy"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func stripAgyANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inEscape {
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if ch == 0x1b {
+			inEscape = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}

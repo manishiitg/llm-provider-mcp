@@ -25,6 +25,7 @@ var nativeResumeRegistry = map[Provider]func(sessionID string) llmtypes.CallOpti
 	ProviderCodexCLI:    WithCodexResumeSessionID,
 	ProviderGeminiCLI:   WithGeminiResumeSessionID,
 	ProviderCursorCLI:   WithCursorResumeSessionID,
+	ProviderAgyCLI:      WithAgyResumeSessionID,
 	ProviderOpenCodeCLI: WithOpenCodeResumeSessionID,
 }
 
