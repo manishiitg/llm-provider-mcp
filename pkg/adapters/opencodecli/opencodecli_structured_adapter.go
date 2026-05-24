@@ -159,11 +159,24 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		// systemPrompt extracted at the top of the function so the
 		// in-prompt "[System Instructions]" prefix and the workspace
 		// AGENTS.md stay in lockstep.
-		if enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool); enabled && strings.TrimSpace(systemPrompt) != "" {
-			body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
-			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
+		if enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool); enabled {
+			if strings.TrimSpace(systemPrompt) != "" {
+				body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
+				cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
+				if werr != nil {
+					return nil, fmt.Errorf("opencode project instruction file: %w", werr)
+				}
+				configCleanups = append(configCleanups, cleanup)
+			}
+			// Deny-builtin plugin: forces MCP-only tool routing by
+			// throwing in tool.execute.before for built-in tool names.
+			// Unlike codex/gemini (config-only deny via hook scripts),
+			// opencode requires plugin code per opencode.ai/docs/plugins —
+			// the file lands at .opencode/plugins/deny-builtin.js and
+			// opencode auto-loads it.
+			cleanup, werr := writeOpenCodeDenyBuiltinPlugin(workingDir)
 			if werr != nil {
-				return nil, fmt.Errorf("opencode project instruction file: %w", werr)
+				return nil, fmt.Errorf("opencode deny-builtin plugin: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}

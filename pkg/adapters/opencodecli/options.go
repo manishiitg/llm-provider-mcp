@@ -118,16 +118,34 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 }
 
 // WithWriteProjectInstructionFile is an OFF-by-default feature flag that
-// asks the adapter to ALSO write the per-session system prompt to
-// <workingDir>/AGENTS.md (OpenCode's project-instructions convention,
-// same file as codex). Cleanup at session teardown byte-restores any
-// pre-existing AGENTS.md so operator-owned content survives successful
-// runs.
+// asks the adapter to ALSO project opencode's project-convention files
+// into the working dir at session start (and byte-restore them at
+// teardown):
 //
-// Risk caveat (vs cursor's .cursor/rules/ multi-file): AGENTS.md is a
-// single-file convention. If the orchestrator process crashes between
-// write and cleanup, the operator's pre-existing AGENTS.md is
-// destroyed. Off-by-default keeps the blast radius bounded.
+//   - <workingDir>/AGENTS.md
+//     Per-session system prompt; opencode reads this as project
+//     instructions (same convention as codex).
+//
+//   - <workingDir>/.opencode/plugins/deny-builtin.js
+//     ES-module opencode plugin that throws in tool.execute.before
+//     for built-in tool names (read, write, edit, bash, grep, glob,
+//     list, patch, webfetch, task), forcing the model to route
+//     through MCP servers (whose tool names are provider-prefixed:
+//     mcp__<server>__<tool> and are not in the deny set). Per
+//     opencode.ai/docs/plugins this is the ONLY way to declare hooks
+//     in opencode — config-only hooks are not supported, hence the
+//     plugin file vs codex/gemini's hooks.json/settings.json
+//     approach.
+//
+// The MCP server list itself lands at <workingDir>/opencode.jsonc
+// unconditionally via the existing WithMCPConfig wiring (separate
+// from this flag).
+//
+// Risk caveat: AGENTS.md and deny-builtin.js are single-file
+// conventions. If the orchestrator process crashes between write and
+// cleanup, the operator's pre-existing copies are destroyed.
+// Off-by-default keeps the blast radius bounded to callers that
+// explicitly accept the trade-off.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
