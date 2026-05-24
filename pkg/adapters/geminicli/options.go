@@ -24,6 +24,15 @@ const (
 
 	MetadataKeyInteractiveSessionID  = "gemini_interactive_session_id"
 	MetadataKeyPersistentInteractive = "gemini_persistent_interactive"
+
+	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
+	// flag for ALSO writing the per-session system prompt to
+	// <workingDir>/GEMINI.md (Gemini CLI's project-context convention).
+	// Default off; the existing GEMINI_SYSTEM_MD path covers the
+	// non-workspace-touching case. When enabled, the adapter byte-restores
+	// any pre-existing GEMINI.md on session teardown so operator-owned
+	// content is preserved across successful runs.
+	MetadataKeyWriteProjectInstructionFile = "gemini_write_project_instruction_file"
 )
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -130,6 +139,25 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithWriteProjectInstructionFile is an OFF-by-default feature flag that
+// asks the adapter to ALSO write the per-session system prompt to
+// <workingDir>/GEMINI.md (Gemini CLI's project-context convention), in
+// addition to any GEMINI_SYSTEM_MD injection. Cleanup at session
+// teardown byte-restores any pre-existing GEMINI.md so operator-owned
+// content survives successful runs.
+//
+// Risk caveat (vs cursor's .cursor/rules/ multi-file): Gemini's
+// convention is a single GEMINI.md file. If the orchestrator process
+// crashes between write and cleanup, the operator's pre-existing
+// GEMINI.md is destroyed. Off-by-default keeps the blast radius
+// bounded to callers that explicitly accept the trade-off.
+func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
 	}
 }
 

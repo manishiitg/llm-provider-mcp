@@ -51,7 +51,12 @@ type geminiInteractiveSession struct {
 	projectDir           string
 	projectDirID         string
 	systemPromptTempFile string
-	launchFingerprint    string
+	// projectInstructionCleanup is set when MetadataKeyWriteProjectInstructionFile
+	// is enabled and a GEMINI.md was written into the workspace. The cleanup
+	// byte-restores any pre-existing operator content (or removes the file
+	// we created) and is invoked on every teardown path.
+	projectInstructionCleanup func()
+	launchFingerprint         string
 	startupSlotMu        sync.Mutex
 	startupSlotRelease   func()
 	idleTimer            *time.Timer
@@ -357,6 +362,24 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		return nil, false, err
 	}
 	registerGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
+
+	// OFF-by-default project-instruction file: write GEMINI.md into the
+	// caller's working directory with byte-restore on session teardown.
+	// We do this AFTER tmux launch succeeded so we never leave a stray
+	// GEMINI.md behind on a failed startup. Errors here are non-fatal:
+	// the session still has GEMINI_SYSTEM_MD injected via env, so the
+	// system prompt is still in effect even if we couldn't drop the
+	// workspace-visible companion file.
+	if geminiWriteProjectInstructionFromOptions(opts) {
+		workingDir := geminiWorkingDirFromOptions(opts)
+		cleanup, writeErr := writeGeminiProjectInstructionFile(workingDir, systemPrompt)
+		if writeErr != nil {
+			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but writing GEMINI.md failed (continuing without workspace file): %v", writeErr)
+		} else if cleanup != nil {
+			session.projectInstructionCleanup = cleanup
+		}
+	}
+
 	return session, false, nil
 }
 
@@ -625,6 +648,10 @@ func closeGeminiSessionLocked(session *geminiInteractiveSession, reason string, 
 		_ = os.Remove(session.systemPromptTempFile)
 		session.systemPromptTempFile = ""
 	}
+	if session.projectInstructionCleanup != nil {
+		session.projectInstructionCleanup()
+		session.projectInstructionCleanup = nil
+	}
 	unregisterGeminiInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
@@ -658,6 +685,10 @@ func cleanupFailedGeminiInteractiveSession(session *geminiInteractiveSession) {
 	if session.systemPromptTempFile != "" {
 		_ = os.Remove(session.systemPromptTempFile)
 	}
+	if session.projectInstructionCleanup != nil {
+		session.projectInstructionCleanup()
+		session.projectInstructionCleanup = nil
+	}
 }
 
 func removeGeminiPersistentSession(ownerSessionID string, session *geminiInteractiveSession) {
@@ -687,6 +718,10 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 		unregisterGeminiInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 		if session.systemPromptTempFile != "" {
 			_ = os.Remove(session.systemPromptTempFile)
+		}
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
 		}
 		if err := killGeminiTmuxSession(ctx, session.tmuxSessionName); err != nil {
 			failures = append(failures, err.Error())

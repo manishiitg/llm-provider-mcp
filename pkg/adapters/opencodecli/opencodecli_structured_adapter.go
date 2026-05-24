@@ -151,6 +151,22 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}
+		// OFF-by-default: also drop the system prompt at
+		// <workingDir>/AGENTS.md so the workspace itself carries
+		// OpenCode's conventional project instructions. Byte-restore via
+		// the same configCleanups defer above keeps operator-owned
+		// content safe on successful runs. We piggyback on the existing
+		// systemPrompt extracted at the top of the function so the
+		// in-prompt "[System Instructions]" prefix and the workspace
+		// AGENTS.md stay in lockstep.
+		if enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool); enabled && strings.TrimSpace(systemPrompt) != "" {
+			body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
+			if werr != nil {
+				return nil, fmt.Errorf("opencode project instruction file: %w", werr)
+			}
+			configCleanups = append(configCleanups, cleanup)
+		}
 	}
 
 	// Resolve the model id. If the call is scoped to a sub-provider tile

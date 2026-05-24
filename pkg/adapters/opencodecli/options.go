@@ -27,6 +27,16 @@ const (
 	// entries relevant to the active sub-provider into the launched
 	// `opencode run` env.
 	MetadataKeySubProviderAPIKeys = "opencode_sub_provider_api_keys"
+
+	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default
+	// feature flag for ALSO writing the per-session system prompt to
+	// <workingDir>/AGENTS.md (OpenCode's project-instructions
+	// convention, same file as codex). Default off; OpenCode's
+	// system-prompt path covers the non-workspace-touching case. When
+	// enabled, the adapter byte-restores any pre-existing AGENTS.md on
+	// session teardown so operator-owned content is preserved across
+	// successful runs.
+	MetadataKeyWriteProjectInstructionFile = "opencode_write_project_instruction_file"
 )
 
 // WithOpenCodeModel sets the OpenCode CLI --model flag. Use "opencode-cli" or
@@ -104,6 +114,24 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyPersistentInteractive] = enabled
+	}
+}
+
+// WithWriteProjectInstructionFile is an OFF-by-default feature flag that
+// asks the adapter to ALSO write the per-session system prompt to
+// <workingDir>/AGENTS.md (OpenCode's project-instructions convention,
+// same file as codex). Cleanup at session teardown byte-restores any
+// pre-existing AGENTS.md so operator-owned content survives successful
+// runs.
+//
+// Risk caveat (vs cursor's .cursor/rules/ multi-file): AGENTS.md is a
+// single-file convention. If the orchestrator process crashes between
+// write and cleanup, the operator's pre-existing AGENTS.md is
+// destroyed. Off-by-default keeps the blast radius bounded.
+func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
 	}
 }
 

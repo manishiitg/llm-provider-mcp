@@ -3786,6 +3786,21 @@ func WithGeminiWorkingDir(dir string) llmtypes.CallOption {
 	return geminicli.WithWorkingDir(dir)
 }
 
+// WithGeminiWriteProjectInstructionFile is an OFF-by-default feature
+// flag asking the gemini adapter to ALSO drop the per-session system
+// prompt at <workingDir>/GEMINI.md (gemini-cli's project-context
+// convention), in addition to the existing GEMINI_SYSTEM_MD env-var
+// injection. Cleanup at session teardown byte-restores any pre-existing
+// operator GEMINI.md.
+//
+// Off by default because GEMINI.md is a single-file convention with a
+// non-zero collision risk if the orchestrator process crashes between
+// write and cleanup; the existing GEMINI_SYSTEM_MD path already injects
+// the prompt without touching workspace files.
+func WithGeminiWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return geminicli.WithWriteProjectInstructionFile(enabled)
+}
+
 // WithGeminiAllowedTools sets the deprecated --allowed-tools flag for the Gemini CLI.
 // Prefer WithGeminiProjectSettings plus Policy Engine rules instead.
 func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
@@ -4026,6 +4041,21 @@ func WithAgySandbox(mode string) llmtypes.CallOption {
 // WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd.
 func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
 	return opencodecli.WithWorkingDir(dir)
+}
+
+// WithOpenCodeWriteProjectInstructionFile is an OFF-by-default feature
+// flag that asks the OpenCode adapter to ALSO drop the per-session
+// system prompt at <workingDir>/AGENTS.md (OpenCode's project-
+// instructions convention, same file as codex), in addition to the
+// existing in-prompt "[System Instructions]" prefix. Cleanup at session
+// teardown byte-restores any pre-existing AGENTS.md.
+//
+// Off by default because AGENTS.md is a single-file convention with a
+// non-zero collision risk if the orchestrator process crashes between
+// write and cleanup; the existing in-prompt prefix already carries the
+// system prompt without touching workspace files.
+func WithOpenCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
+	return opencodecli.WithWriteProjectInstructionFile(enabled)
 }
 
 // WithOpenCodeInteractiveSessionID is retained for API compatibility. OpenCode
