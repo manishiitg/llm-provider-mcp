@@ -282,21 +282,51 @@ What STAYS the same:
 
 ## 8. Rollout Order
 
-1. **Design alignment** (this doc, awaiting sign-off)
+1. **Design alignment** (this doc, awaiting sign-off) — ✅ done
 2. **Prototype on cursor** — has clean deny coverage + shared-dir
-   lease test for regression catching
-3. **Validate end-to-end**: run a workflow step with cursor, confirm
-   model can do meaningful work via MCP bridge, confirm tmp dir is
-   cleaned up
-4. **Template to other 5 CLIs** in one batch
-5. **Workflow orchestrator wire-through**: flip the flag for all
-   workflow-step code paths in mcp-agent-builder-go
-6. **Update WORKSPACE_PROJECTIONS.md**: document the chat-vs-workflow
+   lease test for regression catching — ✅ done (Phase A in
+   mcpagent commit 6032608, Phase B in
+   multi-llm-provider-go commit 955f40e)
+3. **Workflow orchestrator wire-through**: flip the flag for all
+   workflow-step code paths in mcp-agent-builder-go — ✅ done
+   (commit d438a5b1)
+4. **Update WORKSPACE_PROJECTIONS.md**: document the chat-vs-workflow
    split explicitly. Note that several "risks" called out there go
    away in workflow mode.
-7. **Re-add codex hooks projection for workflow mode**: now that the
-   tmp dir is fresh and SHA-trust persists across runs, codex hooks
-   become safe + reliable. Closes #31 cleanly.
+5. **Pin sandbox=workspace-write for codex** in mcpagent's codex
+   integration path so apply_patch (which codex has no `--disable`
+   flag for) is confined to cwd. Combined with the tmp-dir cwd from
+   Phase 3, this closes the apply_patch gap structurally — no hooks
+   needed. — ✅ done
+6. **Template Phase 2's cursor isolation E2E to other 5 CLIs** as
+   regression coverage.
+
+### ~~Dropped~~ — Re-add codex hooks projection for workflow mode
+
+The earlier proposal was: now that the tmp dir is fresh per step,
+codex's per-SHA hook trust cache would hit consistently, so we
+could safely re-add the `.codex/hooks.json` + deny script
+projection (which was removed because of trust-prompt flakiness).
+The goal was closing the `apply_patch` deny gap — codex's
+`--disable <feature>` flag list does not include `apply_patch`, so
+hooks were the only deny lever.
+
+**Dropped because the tmp-dir + sandbox combination closes the gap
+structurally without re-introducing hooks**:
+
+- Phase 3 makes cwd a fresh `/tmp/mlp-cli-session-*` per step.
+- Codex's `--sandbox workspace-write` (now explicitly pinned in
+  Phase 5) confines BOTH `shell` AND `apply_patch` writes to cwd.
+- So `apply_patch` can only write to the tmp dir, never the user's
+  workflow dir.
+- Hooks are no longer necessary for the security property they
+  would have provided.
+
+Re-adding hooks would add per-SHA trust-state file management,
+write coordination with `~/.codex/config.toml`, and the (admittedly
+shrunken) risk surface of misconfigured deny scripts — for zero
+incremental safety. Better to leave the hooks projection removed
+and rely on the structural confinement.
 
 ## 9. Non-Goals
 

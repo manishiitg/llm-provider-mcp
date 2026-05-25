@@ -9,6 +9,26 @@ Owned by `WithWriteProjectInstructionFile(enabled bool)` on each adapter; OFF
 by default; byte-restore of any pre-existing operator content at session
 teardown.
 
+## 0. Chat vs. workflow split (read this first)
+
+Coding-CLI sessions split into two modes that have different
+relationships with the workspace:
+
+| Mode | cwd | Resume? | Risk of operator-file mutation? |
+| :--- | :-- | :------ | :----------------------------- |
+| Multi-agent chat / builder chat | user's workspace | yes (native CLI resume) | yes — that's the desired UX (agent edits the user's files directly) |
+| Workflow step | fresh `os.MkdirTemp("", "mlp-cli-session-*")` (Phase C of [WORKFLOW_STEP_ISOLATION.md](./WORKFLOW_STEP_ISOLATION.md)) | no (each step is a fresh conversation) | no — model has no path to operator files via built-ins |
+
+Several of the "risks" called out in this doc (crash-window
+operator-content destruction, single-file collision races,
+`apply_patch` escape on codex) **DO NOT APPLY in workflow mode**
+because the cwd is a fresh disposable tmp dir, not the user's
+actual workspace. They still matter for chat mode where the
+agent operates directly on user files.
+
+Where a specific risk has a chat-mode caveat that's resolved by
+workflow-step isolation, this doc flags it inline.
+
 ## 1. Why project at all
 
 The orchestrator already injects every supported configuration through CLI
@@ -64,6 +84,13 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
   orchestrator process crashes between write and restore, the operator's
   file is destroyed — single-file conventions inherently carry this
   crash-window risk.
+
+  **In workflow mode** ([Section 0](#0-chat-vs-workflow-split-read-this-first)),
+  cwd is a fresh `os.MkdirTemp` dir. There's no pre-existing operator
+  content to destroy in the tmp dir, so the crash-window risk is N/A —
+  if the orchestrator crashes, the tmp dir is just an orphaned
+  scratch space the OS will reap. The risk only applies in chat
+  mode where the cwd is the user's actual workspace.
 
 ## 3. Lifecycle
 
@@ -137,6 +164,29 @@ in `pkg/adapters/codexcli/options.go` and covers `shell_tool`,
 than dropping a hook script — no SHA-keyed trust prompt to dismiss,
 no per-session auto-dismiss flakiness, works on first invocation in
 a fresh tempdir.
+
+**Notably missing from `--disable`**: `apply_patch`. Codex does not
+expose its file-edit tool as a feature flag, so `WithDisableShellTool`
++ `WithDisableFeatures` cannot block `apply_patch`. We close this
+gap STRUCTURALLY rather than with hooks:
+
+- The mcpagent codex integration pins `WithCodexSandbox("workspace-write")`
+  on every codex call. With workspace-write, codex's sandbox confines
+  BOTH `shell` AND `apply_patch` writes to the session's cwd, rejecting
+  writes to absolute paths outside.
+- In workflow mode ([Section 0](#0-chat-vs-workflow-split-read-this-first)),
+  cwd is a fresh `os.MkdirTemp` dir, so `apply_patch` can only touch
+  the tmp dir — the user's actual workflow files are unreachable via
+  built-ins.
+- In chat mode, cwd is the user's workspace dir, so `apply_patch`
+  edits the user's files — that's the desired "agent edits my files"
+  UX.
+
+This is why we do NOT re-add the codex hooks projection: the
+sandbox+cwd combo already provides the security property the hooks
+would have, without the trust-prompt churn. See
+[WORKFLOW_STEP_ISOLATION.md](./WORKFLOW_STEP_ISOLATION.md) §8 for
+the dropped-Phase-D explanation.
 
 Historical context (for future readers wondering why this section is
 notably shorter than the others): an earlier version of this
