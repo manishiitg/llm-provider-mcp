@@ -37,40 +37,43 @@ import (
 func TestCodexCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 
-	// KNOWN GAP: when this test was first run against codex-cli
-	// v0.131.0 with MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS=1 set
-	// (so the .codex/hooks.json drop actually happens), codex
-	// blocked on its interactive trust-review screen ("⚠ 1 hook
-	// needs review before it can run. Press t to trust all; enter
-	// to review hooks; esc to close") — exactly the behavior
-	// documented in docs/WORKSPACE_PROJECTIONS.md Section 4.
+	// STATUS: trust-review screen auto-dismiss is partially landed
+	// (see waitForCodexPrompt + dismissCodexHookTrustReviewPrompt),
+	// but the BEHAVIORAL verification is still flaky:
 	//
-	// --dangerously-bypass-hook-trust IS appended to the codex args
-	// when the env var is set (we verified this earlier and codex
-	// prints "flag is enabled") but the flag only bypasses the
-	// trust check on hook EXECUTION — it does NOT auto-dismiss the
-	// visual review screen. The tmux adapter cannot send keystrokes
-	// before the prompt fires and blocks waiting for ready state,
-	// so the session hangs until the test timeout.
+	//   - The dismiss successfully gets past the menu form (Down +
+	//     Enter selects "Trust all and continue") and the expanded
+	//     review form (t + Escape) most of the time, so the session
+	//     no longer times out at the trust prompt.
 	//
-	// Possible fixes (not done here, separate investigation):
-	//   1. Add a post-launch tmux send-keys "t" then Enter to
-	//      dismiss the review screen, gated on the env var being
-	//      set so it only fires when the hooks projection happens.
-	//   2. Submit a codex bug/feature request for a flag that
-	//      auto-dismisses the review screen in tmux mode.
-	//   3. Use codex's user-global ~/.codex/hooks.json instead of
-	//      the project-scoped one — user-global hooks may be
-	//      auto-trusted on subsequent invocations once approved
-	//      once interactively.
+	//   - HOWEVER, when the model attempts a Bash tool call,
+	//     codex's deny hook stderr ("Built-in tools disabled by
+	//     orchestrator policy") does NOT consistently reach the
+	//     model's narrated response — the haystack captures only
+	//     codex's "1 hook is new or changed" banner, not the
+	//     script's stderr.
 	//
-	// Until one of these is in, this test is skipped. The lifecycle
-	// tests (TestWriteCodexProjectDenyBuiltinHooksLifecycleNoPriorContent
-	// and TestWriteCodexProjectArtifactsComposesAllArtifacts with the
-	// env var set) still lock in "file lands, cleanup restores" —
-	// what's missing is "file is loaded and the hook fires when the
-	// model invokes a built-in."
-	t.Skip("known gap: codex v0.131.0 blocks on visual trust-review screen even with --dangerously-bypass-hook-trust set; needs send-keys-to-dismiss work before this can pass — see codexcli_interactive_adapter.go buildCodexInteractiveArgs and docs/WORKSPACE_PROJECTIONS.md Section 4")
+	// Open questions (for the followup that fully fixes this):
+	//   1. Does codex's PreToolUse hook stderr actually surface to
+	//      the model under --dangerously-bypass-hook-trust mode?
+	//      Or does the bypass also suppress the stderr feedback
+	//      that's supposed to teach the model "don't try that
+	//      again"?
+	//   2. Is the stderr being captured by codex but not streamed
+	//      to our adapter's stream-json output? Need to compare
+	//      what `codex exec` shows vs what the tmux session emits.
+	//   3. Does sending Down+Enter to the menu form actually trust
+	//      the hook for runtime use, or does it only register the
+	//      visual-trust state? The screen transition we observe
+	//      ("Trusting hooks..." then back to a residual menu)
+	//      suggests the runtime state may not be persisted within
+	//      the same invocation.
+	//
+	// The unsafe-projections gate + auto-dismiss path is still
+	// useful: it gets the session past the visual blocker so the
+	// rest of the call works. The behavioral test stays skipped
+	// until the stderr-to-model surfacing is figured out.
+	t.Skip("known partial: trust-review auto-dismiss landed but deny stderr does not consistently reach the model's response — needs codex hook-stderr surfacing investigation; see waitForCodexPrompt + dismissCodexHookTrustReviewPrompt")
 
 	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "1")
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })

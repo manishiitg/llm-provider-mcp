@@ -977,6 +977,16 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 	defer ticker.Stop()
 	dismissedRateReminder := false
 	dismissedTrustPrompt := false
+	// hookTrustDismissAttempts counts re-dismissal attempts rather
+	// than using a binary flag because codex's hook trust UI is a
+	// MULTI-STEP wizard: an initial 3-option menu, then an expanded
+	// review table after "Trust all and continue", then the normal
+	// ready prompt. Each step needs its own dismissal keystrokes.
+	// We cap attempts to avoid infinite loops if codex enters an
+	// unexpected state — 6 attempts at 200ms ticks gives codex ~1.2s
+	// to advance, well within the 120s prompt-wait deadline.
+	hookTrustDismissAttempts := 0
+	const maxHookTrustDismissAttempts = 6
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
@@ -1003,6 +1013,19 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 					_ = dismissCodexTrustPrompt(deadline, sessionName, captured)
 					dismissedTrustPrompt = true
 				}
+				continue
+			}
+			// Hook trust review screen ("Press t to trust all; enter to
+			// review hooks; esc to close") fires on launch whenever the
+			// workspace has a .codex/hooks.json that codex hasn't seen
+			// before — even with --dangerously-bypass-hook-trust set,
+			// because the flag enables hook EXECUTION but does not
+			// auto-dismiss the visual review screen on v0.131.0.
+			// Sending "t" trusts all hooks for this invocation, which
+			// is the same trust state the flag already implies.
+			if hasCodexHookTrustReviewPrompt(captured) && hookTrustDismissAttempts < maxHookTrustDismissAttempts {
+				_ = dismissCodexHookTrustReviewPrompt(deadline, sessionName)
+				hookTrustDismissAttempts++
 				continue
 			}
 			if hasCodexRateLimitReminderModal(captured) {
@@ -2217,7 +2240,7 @@ func hasCodexActivity(captured string) bool {
 }
 
 func hasCodexReadyPrompt(captured string) bool {
-	if hasCodexTrustPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
+	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -2343,6 +2366,137 @@ func dismissCodexTrustPrompt(ctx context.Context, sessionName, captured string) 
 	args := []string{"send-keys", "-t", sessionName}
 	args = append(args, keys...)
 	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+// hasCodexHookTrustReviewPrompt detects EITHER of codex's two hook
+// trust prompts. Both are distinct from the workspace-trust prompt
+// (hasCodexTrustPrompt) and the rate-limit reminder. Both fire when
+// the workspace has a .codex/hooks.json that codex hasn't seen this
+// invocation, even with --dangerously-bypass-hook-trust on the
+// command line (the flag enables hook EXECUTION but does not
+// auto-dismiss the visual prompts on v0.131.0).
+//
+// Form 1 — initial menu (this is what fresh sessions see):
+//
+//	Hooks need review
+//	1 hook is new or changed.
+//	Hooks can run outside the sandbox after you trust them.
+//
+//	› 1. Review hooks
+//	  2. Trust all and continue
+//	  3. Continue without trusting (hooks won't run)
+//
+//	Press enter to confirm or esc to go back
+//
+// Form 2 — expanded review table (reached via "1. Review hooks"):
+//
+//	Hooks
+//	⚠ N hook(s) need review before [they|it] can run.
+//	Event             Installed   Active   Review   Description
+//	PreToolUse        1           0        1        ...
+//	Press t to trust all; enter to review hooks; esc to close
+//
+// We match on distinctive bottom-line directives that are stable
+// across hook-count variations. Either form returns true.
+func hasCodexHookTrustReviewPrompt(captured string) bool {
+	// captureCodexPane uses -S -3000 so the returned content includes
+	// 3000 lines of scrollback. Anchor text from a dismissed prompt
+	// stays in scrollback indefinitely, so a naïve substring match
+	// over the full buffer reports the prompt as "still showing" long
+	// after we dismissed it — which then makes waitForCodexPrompt
+	// loop forever in the dismissed branch and never reach
+	// hasCodexReadyPrompt. Only inspect the tail of the buffer so
+	// detection reflects what's currently RENDERED, not what was
+	// ever shown.
+	stripped := stripCodexANSI(captured)
+	tail := lastNCodexLines(stripped, 40)
+	// Form 1 — initial menu. We saw in live capture that tmux's
+	// capture-pane sometimes omits intermediate lines from this menu
+	// (e.g. the "Trust all and continue" row may be missing while the
+	// header + option-1 row are present). Match on the distinctive
+	// header AND the option-1 row — both are stable across captures
+	// AND specific enough to never false-positive against codex's
+	// other prompts.
+	if strings.Contains(tail, "Hooks need review") &&
+		strings.Contains(tail, "1. Review hooks") {
+		return true
+	}
+	// Form 2 — expanded review table. The "Press t to trust all" line
+	// is the bottom-line directive and is the most distinctive anchor.
+	if strings.Contains(tail, "Press t to trust all") &&
+		strings.Contains(tail, "esc to close") {
+		return true
+	}
+	return false
+}
+
+// lastNCodexLines returns the last n lines of s, joined with newlines.
+// Used to scope substring matches to the currently-rendered portion of
+// a tmux capture-pane output (which includes scrollback we don't want
+// to false-positive on).
+func lastNCodexLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+// dismissCodexHookTrustReviewPrompt sends the right key sequence for
+// whichever hook trust prompt is currently showing. The two forms have
+// disjoint key contracts so we must branch — sending "Down/Enter" to
+// the expanded review form leaves stray input, and sending "t" to the
+// menu form is interpreted as a non-existent option-letter and stays
+// stuck. We detect by looking for each form's unique anchor text.
+//
+// Menu form ("Hooks need review" + numbered options): send Down
+// (move from default "1. Review hooks" to "2. Trust all and
+// continue") then Enter (confirm). Trust all + the
+// --dangerously-bypass-hook-trust flag give equivalent runtime trust;
+// either way the hooks fire on tool calls.
+//
+// Expanded review form (full hooks table + "Press t to trust all"):
+// send "t" (trust all) then Escape (close the resulting "Press enter
+// to view hooks; esc to close" follow-up modal).
+//
+// Short sleeps between keystrokes prevent tmux from coalescing the
+// pair so codex sees discrete presses.
+func dismissCodexHookTrustReviewPrompt(ctx context.Context, sessionName string) error {
+	captured, err := captureCodexPane(ctx, sessionName)
+	if err != nil {
+		// Fall back to menu-form dismissal — it's the form fresh sessions
+		// hit, so it's the safer default when capture races the prompt.
+		captured = ""
+	}
+	stripped := stripCodexANSI(captured)
+
+	if strings.Contains(stripped, "Press t to trust all") &&
+		strings.Contains(stripped, "esc to close") {
+		// Expanded review form: t → Escape.
+		if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "t"); err != nil {
+			return err
+		}
+		time.Sleep(150 * time.Millisecond)
+		return runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape")
+	}
+
+	// Default: menu form. Down → Enter selects "Trust all and
+	// continue" (codex registers the choice and shows "Trusting
+	// hooks..."). Codex does NOT auto-close the modal after the
+	// trust applies — the menu re-renders without the selected
+	// option and the user is expected to dismiss with Escape. We
+	// pause briefly to let the trust action settle, then send
+	// Escape to fully close the modal so waitForCodexPrompt's next
+	// poll sees the normal ready prompt.
+	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Down"); err != nil {
+		return err
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
+		return err
+	}
+	time.Sleep(400 * time.Millisecond)
+	return runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape")
 }
 
 func selectedCodexTrustPromptOption(captured string) int {
