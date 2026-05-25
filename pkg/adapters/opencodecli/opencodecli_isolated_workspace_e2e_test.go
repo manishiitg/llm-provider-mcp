@@ -1,0 +1,75 @@
+package opencodecli
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
+
+// TestOpenCodeCLIRealIsolatedTmpDirDoesNotTouchOuterWorkspace is the
+// Phase B+ workflow-step isolation E2E for OpenCode CLI, templated
+// from cursorcli_isolated_workspace_e2e_test.go.
+//
+// OpenCode-specific anchors:
+//   - Working-dir option is WithWorkingDir.
+//   - Leaked artifacts: AGENTS.md, opencode.jsonc, .opencode/.
+//   - OpenCode is structured-only (no tmux persistent session) so no
+//     CleanupOpenCodeCLIInteractiveSessions plumbing is needed.
+//
+// Skipped unless RUN_OPENCODE_CLI_REAL_E2E=1 and opencode is on PATH.
+func TestOpenCodeCLIRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T) {
+	requireRealOpenCodeCLIE2E(t)
+
+	userWorkspace := t.TempDir()
+	sentinelPath := filepath.Join(userWorkspace, "operator-do-not-touch.txt")
+	sentinelContent := []byte("ISOLATION_SENTINEL_OPENCODE_42\nmust not be touched by opencode built-ins\n")
+	if err := os.WriteFile(sentinelPath, sentinelContent, 0o600); err != nil {
+		t.Fatalf("seed sentinel: %v", err)
+	}
+	preInfo, _ := os.Stat(sentinelPath)
+	preSeedMTime := preInfo.ModTime()
+	time.Sleep(10 * time.Millisecond)
+
+	isolatedWorkspace, err := os.MkdirTemp("", "mlp-cli-session-*")
+	if err != nil {
+		t.Fatalf("create isolated tmp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(isolatedWorkspace) })
+
+	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	_, callErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly the word OK and nothing else."}},
+		},
+	},
+		WithWorkingDir(isolatedWorkspace),
+	)
+	if callErr != nil {
+		t.Fatalf("GenerateContent error = %v", callErr)
+	}
+
+	postContent, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("sentinel must still exist: %v", err)
+	}
+	if string(postContent) != string(sentinelContent) {
+		t.Errorf("sentinel was modified\n  want: %s\n  got:  %s", sentinelContent, postContent)
+	}
+	postInfo, _ := os.Stat(sentinelPath)
+	if !postInfo.ModTime().Equal(preSeedMTime) {
+		t.Errorf("sentinel mtime advanced — something touched the file")
+	}
+	for _, leak := range []string{"AGENTS.md", "opencode.jsonc", ".opencode"} {
+		if _, err := os.Stat(filepath.Join(userWorkspace, leak)); err == nil {
+			t.Errorf("%q leaked into user workspace — isolation failed", leak)
+		}
+	}
+}
