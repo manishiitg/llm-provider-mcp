@@ -164,7 +164,7 @@ func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *
 	if err != nil {
 		t.Fatalf("read generated cli.json: %v", err)
 	}
-	for _, resource := range []string{"Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "WebSearch(*)"} {
+	for _, resource := range []string{"Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)"} {
 		if !strings.Contains(string(body), resource) {
 			t.Fatalf("cli.json = %s, want deny resource %s", string(body), resource)
 		}

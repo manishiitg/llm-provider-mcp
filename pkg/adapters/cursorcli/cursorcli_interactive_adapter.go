@@ -745,7 +745,7 @@ func writeCursorDenyBuiltinPermissionsCLI(cursorDir string) (func(), error) {
 	denyConfig := `{
   "permissions": {
     "allow": [],
-    "deny": ["Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "Edit(*)", "Write(*)", "WebFetch(*)", "WebSearch(*)"]
+    "deny": ["Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "Edit(*)", "Write(*)"]
   }
 }
 `

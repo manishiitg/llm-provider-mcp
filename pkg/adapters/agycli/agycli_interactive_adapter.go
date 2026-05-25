@@ -48,13 +48,13 @@ type agyInteractiveSession struct {
 	tmuxSessionName string
 	workingDir      string
 	persistent      bool
-	cleanupFiles      func()
-	releaseMCPLease   func()
-	idleTimer         *time.Timer
-	initErr           error
-	createdAt         time.Time
-	lastUsed          time.Time
-	mu                sync.Mutex
+	cleanupFiles    func()
+	releaseMCPLease func()
+	idleTimer       *time.Timer
+	initErr         error
+	createdAt       time.Time
+	lastUsed        time.Time
+	mu              sync.Mutex
 }
 
 var agyInteractiveRegistry = struct {
@@ -812,7 +812,7 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 	return cleanupAll, nil
 }
 
-const agyBridgeOnlyDeniedToolMatcher = "view_file|write_to_file|replace_file_content|multi_replace_file_content|list_dir|find_by_name|grep_search|search_web|read_url_content|run_command|manage_task|schedule|list_permissions|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|ask_question|generate_image"
+const agyBridgeOnlyDeniedToolMatcher = "Read|read|read_file|view_file|ListDir|list_dir|Search|search|grep_search|find_by_name|write_to_file|replace_file_content|multi_replace_file_content|run_command|manage_task|schedule|list_permissions|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|ask_question|generate_image"
 
 func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 	scriptPath := filepath.Join(agentsDir, "mlp-bridge-only-hook.sh")
@@ -821,10 +821,17 @@ func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 	// model EXACTLY which bridge tools are available so it doesn't give
 	// up with "no MCP server configured" when its built-in is blocked.
 	denyReason := "Antigravity built-in tools are DENIED in this session. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need: api-bridge.execute_shell_command(command, timeout?) for shell (cat, ls, jq, python3, curl); api-bridge.diff_patch_workspace_file(filepath, diff) for file edits (instead of write_to_file / replace_file_content); api-bridge.get_api_spec(server_name, tool_name) to discover other MCP servers (google_sheets, playwright). Do NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured. Always pick a bridge tool over giving up."
+	denyPayload, err := json.Marshal(map[string]string{
+		"decision": "deny",
+		"reason":   denyReason,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Agy bridge-only deny payload: %w", err)
+	}
 	script := "#!/bin/sh\n" +
 		"input=$(cat)\n" +
 		"printf '%s\\n' \"$input\" >> " + agyShellQuote(logPath) + "\n" +
-		"printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"" + denyReason + "\"}'\n"
+		"printf '%s\\n' " + agyShellQuote(string(denyPayload)) + "\n"
 	scriptCleanup, err := writeAgyRestoredFile(scriptPath, []byte(script))
 	if err != nil {
 		return nil, err
@@ -2657,7 +2664,6 @@ func agyRandomHex(n int) string {
 	}
 	return hex.EncodeToString(buf)
 }
-
 
 func sanitizeAgyTmuxSessionName(value string) string {
 	value = strings.TrimSpace(value)

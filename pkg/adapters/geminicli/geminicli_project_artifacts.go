@@ -194,7 +194,7 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 		}
 		existingBefore, _ := hooks["BeforeTool"].([]any)
 		denyEntry := map[string]any{
-			"matcher": "^(read_file|write_file|shell|edit|grep|search_file_content|web_fetch)$",
+			"matcher": "^(read_file|write_file|shell|edit|grep|search_file_content)$",
 			"hooks": []map[string]any{
 				{
 					"name":        "mlp-session-deny-builtin",

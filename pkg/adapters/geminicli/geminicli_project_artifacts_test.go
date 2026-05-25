@@ -183,17 +183,21 @@ func TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
 // the exact tool-name matcher we synthesize so that future changes to
 // gemini's built-in tool names trigger a test failure rather than a
 // silent escape. Per geminicli.com/docs/hooks the canonical names are
-// read_file, write_file, shell, edit, grep, search_file_content,
-// web_fetch.
+// read_file, write_file, shell, edit, grep, search_file_content.
+// web_fetch is intentionally NOT denied — we want gemini to be able
+// to fetch web content directly without forcing it through the bridge.
 func TestWriteGeminiProjectSettingsAndHooksMatcherCoversBuiltins(t *testing.T) {
 	tmp := t.TempDir()
 	if _, err := writeGeminiProjectSettingsAndHooks(tmp, "", true); err != nil {
 		t.Fatalf("writeGeminiProjectSettingsAndHooks: %v", err)
 	}
 	body, _ := os.ReadFile(filepath.Join(tmp, ".gemini", "settings.json"))
-	for _, tool := range []string{"read_file", "write_file", "shell", "edit", "grep", "search_file_content", "web_fetch"} {
+	for _, tool := range []string{"read_file", "write_file", "shell", "edit", "grep", "search_file_content"} {
 		if !strings.Contains(string(body), tool) {
 			t.Errorf("BeforeTool matcher must cover built-in %q so the deny hook fires on it; got:\n%s", tool, body)
 		}
+	}
+	if strings.Contains(string(body), "web_fetch") {
+		t.Errorf("BeforeTool matcher must NOT cover web_fetch (web access stays allowed); got:\n%s", body)
 	}
 }
