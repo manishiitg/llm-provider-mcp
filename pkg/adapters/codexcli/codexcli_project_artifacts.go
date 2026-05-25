@@ -80,7 +80,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// path on codex is appendCodexDisabledFeatureArgs with
 	// codexBridgeOnlyDisabledFeatures (in options.go) — that list covers
 	// shell_tool, apply_patch via patch tool, unified_exec, tool_search,
-	// multi_agent, apps, browser_use, computer_use, image_generation,
+	// multi_agent, apps, browser_use, computer_use,
 	// workspace_dependencies, hooks, plugins, unavailable_dummy_tools.
 	// Passing those as flags is strictly cleaner than dropping a hook
 	// script: no SHA-keyed trust prompt to dismiss, no
@@ -182,7 +182,7 @@ func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string) (func(), 
 // flags: appendCodexDisabledFeatureArgs in options.go applies the
 // codexBridgeOnlyDisabledFeatures list (shell_tool, unified_exec,
 // tool_search, multi_agent, apps, browser_use, computer_use,
-// image_generation, workspace_dependencies, hooks, plugins,
+// workspace_dependencies, hooks, plugins,
 // unavailable_dummy_tools, etc.) when the caller asks for MCP-only
 // routing. Flags don't trigger any trust prompts, don't need
 // SHA-keyed caching, and work on the first invocation in a fresh

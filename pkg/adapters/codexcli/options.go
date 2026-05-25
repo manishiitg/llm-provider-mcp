@@ -51,7 +51,6 @@ var codexBridgeOnlyDisabledFeatures = []string{
 	"browser_use",
 	"browser_use_external",
 	"computer_use",
-	"image_generation",
 	"workspace_dependencies",
 	"hooks",
 	"plugins",
