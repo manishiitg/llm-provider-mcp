@@ -36,39 +36,6 @@ import (
 // GEMINI_API_KEY set.
 func TestGeminiCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	requireRealGeminiCLIE2E(t)
-
-	// KNOWN GAP: when this test was first run against gemini-cli v0.41.2,
-	// the sentinel value LEAKED into the response — the model
-	// successfully called read_file despite our hooks.BeforeTool
-	// matcher covering "read_file". The deny hook configuration we
-	// write to <workingDir>/.gemini/settings.json appears NOT to be
-	// the file gemini-cli actually consults at runtime.
-	//
-	// Most likely cause: gemini-cli launches from a temp project dir
-	// (see prepareGeminiInteractiveProjectDir in
-	// geminicli_interactive_adapter.go) and uses --include-directories
-	// to add the user's workingDir. settings.json discovery follows
-	// the CWD, so the temp-dir settings is what counts — our drop at
-	// workingDir/.gemini/settings.json is invisible to gemini.
-	//
-	// Possible fixes (not done here, separate investigation):
-	//   1. Also write the deny hook into the temp project dir's
-	//      .gemini/settings.json (would require coordinating with
-	//      prepareGeminiInteractiveProjectDir's existing settings
-	//      handling).
-	//   2. Use GEMINI_SETTINGS_PATH env var (if it exists) to point
-	//      gemini at our workingDir's settings.json.
-	//   3. Accept that the hooks projection is workspace-visibility
-	//      only (downstream tooling can read it) and disable the
-	//      "deny-builtin under workspace settings.json" pattern for
-	//      gemini since it doesn't enforce.
-	//
-	// Until one of these is in, this test is skipped. The lifecycle
-	// test (TestWriteGeminiProjectArtifactsComposesAllArtifacts)
-	// still locks in "file lands, cleanup restores" — what's missing
-	// is "file is actually consulted by gemini at runtime."
-	t.Skip("known gap: gemini-cli v0.41.2 does not consult <workingDir>/.gemini/settings.json at runtime (it reads from its temp project dir); needs settings-path investigation before this can pass — see geminicli_project_artifacts.go writeGeminiProjectSettingsAndHooks()")
-
 	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
 
 	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))

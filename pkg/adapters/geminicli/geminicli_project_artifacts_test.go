@@ -14,10 +14,14 @@ import (
 // composite cleanup tears them all down.
 func TestWriteGeminiProjectArtifactsComposesAllArtifacts(t *testing.T) {
 	tmp := t.TempDir()
+	// Use a SEPARATE projectDir to exercise the dual-write path
+	// added when we discovered gemini reads settings from projectDir
+	// not workingDir.
+	projectDir := t.TempDir()
 	prompt := "Two-space indent. Always lint."
 	settingsJSON := `{"mcpServers":{"api-bridge":{"command":"/opt/mcpbridge","env":{"MCP_API_URL":"http://localhost:9000"}}}}`
 
-	cleanup, err := writeGeminiProjectArtifacts(tmp, prompt, settingsJSON, true)
+	cleanup, err := writeGeminiProjectArtifacts(tmp, projectDir, prompt, settingsJSON, true)
 	if err != nil {
 		t.Fatalf("writeGeminiProjectArtifacts: %v", err)
 	}
@@ -134,7 +138,7 @@ func TestWriteGeminiProjectSettingsAndHooksMergesWithOperatorContent(t *testing.
 // TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps guards the
 // orchestrator-cwd safety: empty workingDir must short-circuit.
 func TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeGeminiProjectArtifacts("", "anything", `{"mcpServers":{}}`, true)
+	cleanup, err := writeGeminiProjectArtifacts("", "", "anything", `{"mcpServers":{}}`, true)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

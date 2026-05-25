@@ -351,28 +351,24 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		return nil, false, err
 	}
 	session.startupSlotRelease = startupRelease
-	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {
-		session.initErr = err
-		releaseGeminiStartupSlot(session)
-		if systemPromptTempFile != "" {
-			_ = os.Remove(systemPromptTempFile)
-		}
-		session.mu.Unlock()
-		removeGeminiPersistentSession(ownerSessionID, session)
-		return nil, false, err
-	}
-	registerGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
 
-	// OFF-by-default project-artifact projection: write GEMINI.md +
-	// .gemini/settings.json (merged mcpServers + hooks.BeforeTool deny
-	// entry) + .gemini/hooks/deny-builtin.sh into the caller's working
-	// directory with byte-restore on session teardown. We do this AFTER
-	// tmux launch succeeded so we never leave stray artifacts behind on
-	// a failed startup. Errors here are non-fatal: the session still
-	// has GEMINI_SYSTEM_MD env injection AND the temp-dir
-	// .gemini/settings.json (via --include-directories), so the
-	// system prompt and MCP servers are still in effect even if we
-	// couldn't drop the workspace-visible companion files.
+	// OFF-by-default project-artifact projection. MUST run BEFORE
+	// startGeminiTmuxSession so the merged settings.json (operator
+	// mcpServers + deny hooks) is in place at projectDir/.gemini/settings.json
+	// BEFORE gemini boots — otherwise gemini reads the operator-only
+	// settings that prepareGeminiInteractiveProjectDir already wrote
+	// there and the deny hook never fires. (See
+	// docs/WORKSPACE_PROJECTIONS.md gemini section.)
+	//
+	// Writes GEMINI.md + .gemini/settings.json + .gemini/hooks/deny-builtin.sh
+	// to workingDir (for visibility + byte-restore on cleanup) AND
+	// overwrites projectDir/.gemini/settings.json with the same merged
+	// content (this is what gemini consults at runtime, since it
+	// launches with cwd = projectDir; cleanup is handled implicitly
+	// by gemini-cli-project-* dir's normal teardown). Errors are
+	// non-fatal: the GEMINI_SYSTEM_MD env injection and the
+	// operator-only settings already provide the baseline; the
+	// projection is additive.
 	if geminiWriteProjectInstructionFromOptions(opts) {
 		workingDir := geminiWorkingDirFromOptions(opts)
 		projectSettingsJSON := ""
@@ -381,13 +377,29 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 				projectSettingsJSON = v
 			}
 		}
-		cleanup, writeErr := writeGeminiProjectArtifacts(workingDir, systemPrompt, projectSettingsJSON, true)
+		cleanup, writeErr := writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON, true)
 		if writeErr != nil {
 			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but projecting workspace artifacts failed (continuing without workspace files): %v", writeErr)
 		} else if cleanup != nil {
 			session.projectInstructionCleanup = cleanup
 		}
 	}
+
+	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {
+		session.initErr = err
+		releaseGeminiStartupSlot(session)
+		if systemPromptTempFile != "" {
+			_ = os.Remove(systemPromptTempFile)
+		}
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
+		}
+		session.mu.Unlock()
+		removeGeminiPersistentSession(ownerSessionID, session)
+		return nil, false, err
+	}
+	registerGeminiInteractiveSession(ownerSessionID, session.tmuxSessionName)
 
 	return session, false, nil
 }

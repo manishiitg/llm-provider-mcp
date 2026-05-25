@@ -39,7 +39,7 @@ import (
 // the temp-dir .gemini/settings.json (loaded via --include-directories)
 // already carry the configuration. The workspace projection is
 // additive belt-and-suspenders.
-func writeGeminiProjectArtifacts(workingDir, systemPrompt, projectSettingsJSON string, denyBuiltins bool) (func(), error) {
+func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON string, denyBuiltins bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -68,15 +68,39 @@ func writeGeminiProjectArtifacts(workingDir, systemPrompt, projectSettingsJSON s
 	// settings.json + hooks/deny-builtin.sh are co-managed: the script
 	// path is referenced from settings.json, so we write the script
 	// first (so the path exists) and roll back together if either step
-	// fails.
+	// fails. The script + settings.json land at workingDir (for
+	// visibility / byte-restore) AND projectDir (where gemini actually
+	// reads settings from at runtime — see prepareGeminiInteractiveProjectDir).
+	// Without the projectDir copy, the deny hook is decorative: settings
+	// at workingDir is invisible to a gemini-cli process that launches
+	// with cwd = projectDir.
 	if denyBuiltins || strings.TrimSpace(projectSettingsJSON) != "" {
 		cu, err := writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON, denyBuiltins)
 		if err != nil {
 			rollback()
-			return noop, fmt.Errorf("gemini .gemini/settings.json + hooks: %w", err)
+			return noop, fmt.Errorf("gemini .gemini/settings.json + hooks (workingDir): %w", err)
 		}
 		if cu != nil {
 			cleanups = append(cleanups, cu)
+		}
+
+		// projectDir copy — overwrites the operator-only settings.json
+		// that prepareGeminiInteractiveProjectDir wrote before us with
+		// the merged version (operator settings + deny hooks). This is
+		// the file gemini's runtime actually consults. The deny script
+		// referenced from the hook is the one we just wrote at
+		// workingDir/.gemini/hooks/deny-builtin.sh (absolute path
+		// resolves correctly from any cwd).
+		projectDir = strings.TrimSpace(projectDir)
+		if projectDir != "" && projectDir != workingDir {
+			cu, err := writeGeminiProjectSettingsAndHooks(projectDir, projectSettingsJSON, denyBuiltins)
+			if err != nil {
+				rollback()
+				return noop, fmt.Errorf("gemini .gemini/settings.json + hooks (projectDir): %w", err)
+			}
+			if cu != nil {
+				cleanups = append(cleanups, cu)
+			}
 		}
 	}
 
