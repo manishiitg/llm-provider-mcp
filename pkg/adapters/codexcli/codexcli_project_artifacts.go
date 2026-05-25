@@ -298,21 +298,6 @@ func tomlStringArray(items []string) string {
 	return b.String()
 }
 
-// readPriorFileForRestore captures any pre-existing file at path so a
-// later cleanup can byte-restore it. Returns (nil, false, nil) when the
-// file did not exist; (content, true, nil) when it did; non-nil error
-// only on genuine I/O failures (not IsNotExist).
-func readPriorFileForRestore(path string) ([]byte, bool, error) {
-	data, err := os.ReadFile(path)
-	if err == nil {
-		return data, true, nil
-	}
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	return nil, false, err
-}
-
 // dirIsEmptyOrJustCreated returns true iff the directory exists and has
 // no children — a heuristic for "we just created this and nothing has
 // been written into it yet, so cleanup can attempt os.Remove (which
