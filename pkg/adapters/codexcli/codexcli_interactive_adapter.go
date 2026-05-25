@@ -954,6 +954,21 @@ func codexWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 }
 
 func startCodexTmuxSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+	if workingDir != "" {
+		// Pre-trust workingDir in ~/.codex/config.toml so codex skips
+		// its interactive "Do you trust the contents of this
+		// directory?" prompt. Per
+		// https://github.com/openai/codex/issues/14345, the trust
+		// prompt fires even with --dangerously-bypass-approvals-and-sandbox
+		// on v0.114+ unless the path is recorded in
+		// projects."<path>".trust_level = "trusted". The pattern
+		// mirrors preTrustClaudeWorkingDir which writes to
+		// ~/.claude.json. Errors are silently ignored — the worst
+		// case is the prompt appears and the in-tmux dismissCodexTrustPrompt
+		// (already wired into waitForCodexPrompt) handles it
+		// reactively.
+		preTrustCodexWorkingDir(workingDir)
+	}
 	shellCommand := codexInteractiveShellCommand(args, workingDir)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
@@ -963,6 +978,82 @@ func startCodexTmuxSession(ctx context.Context, sessionName string, args []strin
 	}
 	_ = runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
 	return nil
+}
+
+var preTrustCodexMu sync.Mutex
+
+// preTrustCodexWorkingDir records workingDir as a trusted project in
+// ~/.codex/config.toml so codex's "Do you trust the contents of this
+// directory?" prompt does not fire when the tmux session launches.
+// Per https://github.com/openai/codex/issues/14345, codex v0.114+
+// shows this prompt EVEN WITH --dangerously-bypass-approvals-and-sandbox
+// set, unless the path is pre-recorded via
+//
+//	[projects."<absolute-path>"]
+//	trust_level = "trusted"
+//
+// in ~/.codex/config.toml. We append this section if the workingDir
+// is not already trusted. On macOS /var is a symlink to /private/var,
+// so we record both raw and EvalSymlinks-resolved paths to match
+// however codex normalizes the path at trust-check time.
+//
+// Errors are silently ignored — the in-tmux dismissCodexTrustPrompt
+// (already wired into waitForCodexPrompt) reactively handles the
+// prompt if pre-trust fails. This is belt-and-suspenders, not a
+// replacement.
+func preTrustCodexWorkingDir(workingDir string) {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return
+	}
+	paths := []string{workingDir}
+	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil && resolved != workingDir {
+		paths = append(paths, resolved)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	configDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return
+	}
+	configPath := filepath.Join(configDir, "config.toml")
+
+	preTrustCodexMu.Lock()
+	defer preTrustCodexMu.Unlock()
+
+	existing, _ := os.ReadFile(configPath)
+	existingStr := string(existing)
+
+	var toAppend strings.Builder
+	for _, p := range paths {
+		// Look for an existing [projects."<p>"] section. If present,
+		// assume it's already trusted (the issue's workaround scripts
+		// follow the same idempotency assumption). Codex parses TOML
+		// quoted-keys with backslash escapes, but project paths from
+		// macOS/Linux don't contain characters that need escaping.
+		marker := fmt.Sprintf("[projects.%q]", p)
+		if strings.Contains(existingStr, marker) {
+			continue
+		}
+		// Ensure separation from any prior content.
+		if toAppend.Len() == 0 && existingStr != "" && !strings.HasSuffix(existingStr, "\n") {
+			toAppend.WriteString("\n")
+		}
+		toAppend.WriteString("\n")
+		toAppend.WriteString(marker)
+		toAppend.WriteString("\n")
+		toAppend.WriteString(`trust_level = "trusted"`)
+		toAppend.WriteString("\n")
+	}
+	if toAppend.Len() == 0 {
+		return
+	}
+
+	updated := existingStr + toAppend.String()
+	_ = os.WriteFile(configPath, []byte(updated), 0o600)
 }
 
 func codexInteractiveShellCommand(args []string, workingDir string) string {

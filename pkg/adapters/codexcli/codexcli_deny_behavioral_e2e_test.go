@@ -73,7 +73,7 @@ func TestCodexCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	// useful: it gets the session past the visual blocker so the
 	// rest of the call works. The behavioral test stays skipped
 	// until the stderr-to-model surfacing is figured out.
-	t.Skip("known partial: trust-review auto-dismiss landed but deny stderr does not consistently reach the model's response — needs codex hook-stderr surfacing investigation; see waitForCodexPrompt + dismissCodexHookTrustReviewPrompt")
+	t.Skip("known partial: workspace pre-trust (preTrustCodexWorkingDir, https://github.com/openai/codex/issues/14345) and hook trust review auto-dismiss both landed, but the visual hook-review screen still appears intermittently on the first session per hook-content SHA — codex persists per-hook trust in ~/.codex/config.toml under [hooks.state.\"<path>:<event>:0:0\"] trusted_hash = sha256:<hash>, which we don't yet pre-compute. After the FIRST session interactively trusts the hook content, subsequent sessions with the SAME hook content bypass the prompt automatically (cached by codex). Fix: compute SHA256 of the hook script + entry and pre-write the [hooks.state] block; or send-keys handling needs to be more robust for the multi-form prompt sequence.")
 
 	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "1")
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
