@@ -821,10 +821,12 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create Agy rules dir: %w", err)
 		}
-		// Per-session-stable hex so repeated turns on the same owner
-		// session reuse one `mlp-system-<hex>.md` instead of piling up
-		// one new file per turn (mirrors cursor adapter's behavior).
-		rulePath := filepath.Join(rulesDir, "mlp-system-"+agyStableHex(ownerSessionID, 6)+".md")
+		// Fixed filename — only one agy chat owns a workflow folder at
+		// a time, so no need to disambiguate via per-session hex. The
+		// adapter's cleanup callback removes this file on session end;
+		// if a session crashed and left it behind, the next session
+		// overwrites it cleanly.
+		rulePath := filepath.Join(rulesDir, "mlp-system.md")
 		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
 		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
 			cleanupAll()
@@ -2709,24 +2711,6 @@ func agyRandomHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
-// agyStableHex returns a deterministic hex string derived from the
-// given seed (typically the owner session ID). Used for naming
-// session-scoped projection files like
-// `.agents/rules/mlp-system-<hex>.md` so the same session reuses one
-// filename across turns instead of accumulating one new .md per turn.
-// Falls back to a random hex when the seed is empty. Mirrors the
-// equivalent helper in pkg/adapters/cursorcli.
-func agyStableHex(seed string, n int) string {
-	if strings.TrimSpace(seed) == "" {
-		return agyRandomHex(n)
-	}
-	sum := sha256.Sum256([]byte(seed))
-	encoded := hex.EncodeToString(sum[:])
-	if n*2 < len(encoded) {
-		return encoded[:n*2]
-	}
-	return encoded
-}
 
 func sanitizeAgyTmuxSessionName(value string) string {
 	value = strings.TrimSpace(value)

@@ -34,6 +34,7 @@ const (
 	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
+	cursorBootBannerPromptGrace         = 2 * time.Second
 
 	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -601,11 +602,12 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create Cursor rules dir: %w", err)
 		}
-		// Per-session-stable hex so repeated turns on the same owner
-		// session reuse one `mlp-system-<hex>.mdc` instead of piling
-		// up one new file per turn. Concurrent sessions sharing the
-		// workingDir still get distinct hexes.
-		rulePath := filepath.Join(rulesDir, "mlp-system-"+cursorStableHex(ownerSessionID, 6)+".mdc")
+		// Fixed filename — only one cursor chat owns a workflow folder
+		// at a time, so no need to disambiguate via per-session hex.
+		// The adapter's cleanup callback removes this file on session
+		// end; if a session crashed and left it behind, the next
+		// session overwrites it cleanly.
+		rulePath := filepath.Join(rulesDir, "mlp-system.mdc")
 		content := "---\nalwaysApply: true\n---\n\n" + systemPrompt
 		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write Cursor system rule: %w", err)
@@ -1086,6 +1088,7 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	// false-positived on cursor's cold-start banner where the
 	// placeholder paints before the input field is interactive.
 	var consecutiveReadyTicks int
+	var bootBannerReadySince time.Time
 	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1113,8 +1116,22 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(captured))
 				trustSubmitted = true
 				consecutiveReadyTicks = 0
+				bootBannerReadySince = time.Time{}
 				continue
 			}
+			cleaned := strings.ToLower(stripCursorANSI(captured))
+			if cursorBootBannerAcceptableAfterGrace(cleaned) {
+				consecutiveReadyTicks = 0
+				if bootBannerReadySince.IsZero() {
+					bootBannerReadySince = time.Now()
+					continue
+				}
+				if time.Since(bootBannerReadySince) >= cursorBootBannerPromptGrace {
+					return nil
+				}
+				continue
+			}
+			bootBannerReadySince = time.Time{}
 			if hasCursorReadyPrompt(captured) {
 				consecutiveReadyTicks++
 				if consecutiveReadyTicks >= 2 {
@@ -1800,6 +1817,12 @@ func hasCursorBootBanner(cleaned string) bool {
 	return strings.Contains(cleaned, "plan, search, build anything")
 }
 
+func cursorBootBannerAcceptableAfterGrace(cleaned string) bool {
+	return hasCursorBootBanner(cleaned) &&
+		hasCursorReadyMarker(cleaned) &&
+		!hasCursorLiveGenerationActivity(cleaned)
+}
+
 func hasCursorLiveGenerationActivity(cleaned string) bool {
 	return strings.Contains(cleaned, "ctrl+c to stop") ||
 		strings.Contains(cleaned, "composing")
@@ -2117,24 +2140,6 @@ func cursorRandomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
-}
-
-// cursorStableHex returns a deterministic hex string derived from the
-// given seed (typically the owner session ID). Used for naming
-// session-scoped projection files like `.cursor/rules/mlp-system-<hex>.mdc`
-// so the same session reuses the same filename across turns instead of
-// accumulating one .mdc per turn. Falls back to a random hex when the
-// seed is empty.
-func cursorStableHex(seed string, n int) string {
-	if strings.TrimSpace(seed) == "" {
-		return cursorRandomHex(n)
-	}
-	sum := sha256.Sum256([]byte(seed))
-	encoded := hex.EncodeToString(sum[:])
-	if n*2 < len(encoded) {
-		return encoded[:n*2]
-	}
-	return encoded
 }
 
 func sanitizeCursorTmuxSessionName(value string) string {
