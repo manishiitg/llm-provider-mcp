@@ -257,12 +257,24 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// the full conversation including tool-call / tool-result blocks,
 	// so workflow conversation logs gain the same richness as the
 	// claude-code / codex tmux flows.
-	if sidecarMsgs := readCursorTranscriptMessages(turnStart, session.workingDir, ownerSessionID); len(sidecarMsgs) > 0 {
+	//
+	// The same store.db path also carries cursor's native session ID
+	// (the <agentId> dir name), which `cursor-agent --resume <id>`
+	// accepts. Publishing it as additional[cursor_session_id] is what
+	// lets mcpagent persist the ID across server restarts so a chat
+	// can be resumed in a fresh tmux session. Without this, resume is
+	// silently broken in tmux mode even though the rest of the
+	// orchestrator wiring works end-to-end.
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID)
+	if len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(genInfo, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "cursor-cli",
 			Transport: llmtypes.CodingProviderTransportTmux,
 			Messages:  sidecarMsgs,
 		})
+	}
+	if nativeID := cursorNativeSessionIDFromStoreDBPath(storeDBPath); nativeID != "" {
+		additional["cursor_session_id"] = nativeID
 	}
 
 	return &llmtypes.ContentResponse{
@@ -345,7 +357,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		cursorPersistentRegistry.Unlock()
 	}
 
-	args, env, workingDir, cleanupFiles, err := c.buildCursorInteractiveLaunch(opts, systemPrompt)
+	args, env, workingDir, cleanupFiles, err := c.buildCursorInteractiveLaunch(opts, systemPrompt, ownerSessionID)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
@@ -372,7 +384,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	return session, nil
 }
 
-func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, func(), error) {
+func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string, ownerSessionID string) ([]string, []string, string, func(), error) {
 	workingDir := cursorWorkingDirFromOptions(opts)
 	if workingDir == "" {
 		workingDir = cursorMustGetwd()
@@ -381,7 +393,7 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		return nil, nil, "", nil, fmt.Errorf("failed to create Cursor CLI working directory: %w", err)
 	}
 
-	cleanupFiles, err := prepareCursorProjectFiles(workingDir, systemPrompt, opts)
+	cleanupFiles, err := prepareCursorProjectFiles(workingDir, systemPrompt, opts, ownerSessionID)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -502,7 +514,7 @@ func (c *CursorCLIAdapter) cursorInteractiveLaunchFingerprint(opts *llmtypes.Cal
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions) (func(), error) {
+func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions, ownerSessionID string) (func(), error) {
 	cleanups := make([]func(), 0, 3)
 	addCleanup := func(cleanup func()) {
 		if cleanup != nil {
@@ -521,7 +533,11 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create Cursor rules dir: %w", err)
 		}
-		rulePath := filepath.Join(rulesDir, "mlp-system-"+cursorRandomHex(6)+".mdc")
+		// Per-session-stable hex so repeated turns on the same owner
+		// session reuse one `mlp-system-<hex>.mdc` instead of piling
+		// up one new file per turn. Concurrent sessions sharing the
+		// workingDir still get distinct hexes.
+		rulePath := filepath.Join(rulesDir, "mlp-system-"+cursorStableHex(ownerSessionID, 6)+".mdc")
 		content := "---\nalwaysApply: true\n---\n\n" + systemPrompt
 		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write Cursor system rule: %w", err)
@@ -936,6 +952,11 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	var trustSubmitted bool
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
+	// Debounce the ready signal: require it to hold across two
+	// consecutive captures (~400ms). Single-tick readiness has
+	// false-positived on cursor's cold-start banner where the
+	// placeholder paints before the input field is interactive.
+	var consecutiveReadyTicks int
 	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -951,6 +972,7 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 				if isCursorTmuxSessionLostError(err) {
 					return fmt.Errorf("Cursor Agent CLI tmux session ended while waiting for prompt: %w", err)
 				}
+				consecutiveReadyTicks = 0
 				continue
 			}
 			if streamChan != nil && streamTerminalScreen {
@@ -961,11 +983,17 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 			if hasCursorTrustPrompt(captured) && !trustSubmitted {
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(captured))
 				trustSubmitted = true
+				consecutiveReadyTicks = 0
 				continue
 			}
 			if hasCursorReadyPrompt(captured) {
-				return nil
+				consecutiveReadyTicks++
+				if consecutiveReadyTicks >= 2 {
+					return nil
+				}
+				continue
 			}
+			consecutiveReadyTicks = 0
 		}
 	}
 }
@@ -1571,6 +1599,14 @@ func hasCursorReadyPrompt(captured string) bool {
 	if !hasCursorReadyMarker(cleaned) {
 		return false
 	}
+	// Cold-start welcome banner (Cursor v2026.05.24+ Composer 2.5)
+	// paints "→ Plan, search, build anything" before the input field
+	// is actually interactive. Submitting at that point silently drops
+	// the keystrokes. Treat the welcome banner as not-ready; the wait
+	// loop continues until the banner state passes.
+	if hasCursorBootBanner(cleaned) {
+		return false
+	}
 	// Live generation signals (composing spinner, ctrl+c to stop) mean the
 	// turn is still in progress — never treat as ready.
 	if hasCursorLiveGenerationActivity(cleaned) {
@@ -1583,6 +1619,28 @@ func hasCursorReadyPrompt(captured string) bool {
 		return false
 	}
 	return true
+}
+
+// hasCursorBootBanner detects the Composer 2.5 welcome screen that
+// cursor-agent paints at process start. Its placeholder line contains
+// the same "→" + "plan, search, build anything" tokens our ready
+// marker keys off, so without this guard `hasCursorReadyPrompt` would
+// fire prematurely and the first user prompt would land on a dead
+// input field. The banner is distinguished by the persistent header
+// trio "cursor agent" + version line + "/skills" tagline, which only
+// appear before any conversation has scrolled them off.
+func hasCursorBootBanner(cleaned string) bool {
+	if !strings.Contains(cleaned, "cursor agent") {
+		return false
+	}
+	if !strings.Contains(cleaned, "use /skills") {
+		return false
+	}
+	// Composer 2.5 ships its version line right under the banner.
+	// Either the version line OR the "plan, search, build anything"
+	// placeholder confirms we're still on the welcome screen rather
+	// than a post-conversation "Add a follow-up" pane.
+	return strings.Contains(cleaned, "plan, search, build anything")
 }
 
 func hasCursorLiveGenerationActivity(cleaned string) bool {
@@ -1886,12 +1944,40 @@ func cursorMustGetwd() string {
 	return wd
 }
 
+// intPtrFromInt returns a *int for non-zero values, nil for zero.
+// Used when populating GenerationInfo numeric fields; nil leaves the
+// field unset rather than recording a misleading zero.
+func intPtrFromInt(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
 func cursorRandomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// cursorStableHex returns a deterministic hex string derived from the
+// given seed (typically the owner session ID). Used for naming
+// session-scoped projection files like `.cursor/rules/mlp-system-<hex>.mdc`
+// so the same session reuses the same filename across turns instead of
+// accumulating one .mdc per turn. Falls back to a random hex when the
+// seed is empty.
+func cursorStableHex(seed string, n int) string {
+	if strings.TrimSpace(seed) == "" {
+		return cursorRandomHex(n)
+	}
+	sum := sha256.Sum256([]byte(seed))
+	encoded := hex.EncodeToString(sum[:])
+	if n*2 < len(encoded) {
+		return encoded[:n*2]
+	}
+	return encoded
 }
 
 func sanitizeCursorTmuxSessionName(value string) string {

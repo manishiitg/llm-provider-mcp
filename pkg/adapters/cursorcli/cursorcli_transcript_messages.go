@@ -72,21 +72,32 @@ var (
 // Returns nil on any error or when no store.db is found for the
 // given workingDir. Best-effort.
 func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerSessionID string) []llmtypes.MessageContent {
+	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, ownerSessionID)
+	return msgs
+}
+
+// readCursorTranscriptMessagesAndStoreDB does the same work as
+// readCursorTranscriptMessages but also returns the picked store.db
+// path. Callers that need cursor's native session ID (the path's
+// parent dir, used for --resume) want both at once because picking
+// the freshest store.db twice would race when cursor writes another
+// commit in between.
+func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string) ([]llmtypes.MessageContent, string) {
 	if strings.TrimSpace(workingDir) == "" {
-		return nil
+		return nil, ""
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	hash := workingDirHashForCursor(workingDir)
 	if hash == "" {
-		return nil
+		return nil, ""
 	}
 	chatsDir := filepath.Join(home, ".cursor", "chats", hash)
 	info, err := os.Stat(chatsDir)
 	if err != nil || !info.IsDir() {
-		return nil
+		return nil, ""
 	}
 
 	// Cursor may keep multiple agent dirs per workspace; pick the
@@ -112,9 +123,10 @@ func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerS
 		return nil
 	})
 	if len(cands) == 0 {
-		return nil
+		return nil, ""
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
+	pickedPath := cands[0].path
 
 	// Cursor commits its sqlite root blob asynchronously, sometimes
 	// many seconds AFTER the tmux pane settles (observed 19s on a
@@ -126,12 +138,31 @@ func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerS
 	// return. This is best-effort by design.
 	deadline := time.Now().Add(4 * time.Second)
 	for {
-		msgs := readCursorStoreDBMessages(cands[0].path, ownerSessionID)
+		msgs := readCursorStoreDBMessages(pickedPath, ownerSessionID)
 		if hasUsableCursorTurn(msgs) || time.Now().After(deadline) {
-			return msgs
+			return msgs, pickedPath
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+// cursorNativeSessionIDFromStoreDBPath extracts cursor's agentId —
+// which is what `cursor-agent --resume <id>` accepts — from a
+// transcript store.db path. The cursor layout is:
+//
+//	~/.cursor/chats/<md5(cwd)>/<agentId>/store.db
+//
+// So the parent dir's basename is the agentId. Returns "" for any
+// path that doesn't match (defensive: callers may pass empty path
+// when no transcript was located).
+func cursorNativeSessionIDFromStoreDBPath(storeDBPath string) string {
+	if strings.TrimSpace(storeDBPath) == "" {
+		return ""
+	}
+	if filepath.Base(storeDBPath) != "store.db" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(storeDBPath))
 }
 
 // hasUsableCursorTurn reports whether the message list contains any

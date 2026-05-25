@@ -149,6 +149,12 @@ exit 1
 }
 
 func TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal(t *testing.T) {
+	// Cursor is now tmux-only by contract; GenerateContent no longer
+	// reaches generateContentStructured (the path this test exercises
+	// with a fake cursor-agent stub). Skip until the structured path
+	// is reinstated or this test is reworked to call the unexported
+	// structured method directly.
+	t.Skip("cursor-cli structured transport disabled (tmux-only contract); see cursorcli_adapter.go")
 	fakeBin := t.TempDir()
 	cursorPath := filepath.Join(fakeBin, "cursor-agent")
 	script := `#!/bin/sh
@@ -252,6 +258,53 @@ Ask (shift+tab to cycle)`
 	}
 }
 
+// TestCursorReadyPromptRejectsComposer25BootBanner locks in the fix
+// for the cold-start failure where the first user prompt was silently
+// dropped because hasCursorReadyPrompt fired on the welcome screen.
+//
+// Cursor Agent v2026.05.24+ paints "→ Plan, search, build anything"
+// as a placeholder on the boot banner. The "→" + placeholder
+// combination tripped hasCursorReadyMarker; the wait loop returned
+// nil; the submit fired before the input field was actually
+// interactive; the keystrokes were lost; the turn timed out with the
+// pane still showing the banner.
+//
+// Pane fixture is verbatim from the observed failure
+// (session e0d8032c-..., 2026-05-25 13:23:37) minus padding spaces.
+func TestCursorReadyPromptRejectsComposer25BootBanner(t *testing.T) {
+	pane := `  Cursor Agent
+  v2026.05.24-dda726e
+  Use /skills to give Cursor specialized knowledge for tasks.
+
+  → Plan, search, build anything
+
+  Composer 2.5                                                                                                                                     Auto-run
+  ~/ai-work/mcp-agent-builder-go/workspace-docs/Workflow/ICICI-BANK-PARSING · main`
+
+	if hasCursorReadyPrompt(pane) {
+		t.Fatal("Composer 2.5 cold-start banner must NOT be treated as ready — submitting on this pane drops the prompt")
+	}
+}
+
+// TestCursorReadyPromptAcceptsPostBannerComposerPane verifies the
+// banner guard does not regress the warm-session readiness signal.
+// Once cursor has scrolled past the boot banner (no more "Cursor
+// Agent\nv...\nUse /skills..." header), the same "→" / "Plan, search,
+// build anything" tokens should still be treated as ready so chat
+// turns submit normally.
+func TestCursorReadyPromptAcceptsPostBannerComposerPane(t *testing.T) {
+	pane := `Some previous assistant output that scrolled the banner away.
+
+  → Plan, search, build anything
+
+  Composer 2.5                                                                                                                                     Auto-run
+  ~/workspace · main`
+
+	if !hasCursorReadyPrompt(pane) {
+		t.Fatal("post-banner Composer pane should be ready — only the boot banner is special-cased")
+	}
+}
+
 func TestCursorReadyPromptAllowsStaleRunningLineAfterToolCompletion(t *testing.T) {
 	pane := `Cursor Agent
 v2026.05.16-0338208
@@ -285,7 +338,7 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	WithApproveMCPs()(opts)
 	WithSandbox("enabled")(opts)
 
-	args, env, gotWorkDir, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Follow repo rules.")
+	args, env, gotWorkDir, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Follow repo rules.", "test-session-build-launch")
 	if err != nil {
 		t.Fatalf("buildCursorInteractiveLaunch error = %v", err)
 	}
@@ -336,7 +389,7 @@ func TestPrepareCursorProjectFilesRestoresExistingConfig(t *testing.T) {
 	WithProjectConfig(`{"permissions":{"allow":[],"deny":["Shell(rm)"]}}`)(opts)
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	cleanup, err := prepareCursorProjectFiles(workDir, "System text", opts)
+	cleanup, err := prepareCursorProjectFiles(workDir, "System text", opts, "test-session-restore")
 	if err != nil {
 		t.Fatalf("prepareCursorProjectFiles error = %v", err)
 	}

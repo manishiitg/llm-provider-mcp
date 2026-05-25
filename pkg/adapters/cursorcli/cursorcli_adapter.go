@@ -10,8 +10,10 @@ import (
 )
 
 // CursorCLIAdapter implements the LLM interface for Cursor Agent CLI.
-// It supports both tmux (persistent interactive) and structured JSON
-// (cursor-agent --print --output-format stream-json) transports.
+// Transport is tmux-only — cursor-cli requires a persistent tmux session
+// for every turn (mirrors the agy-cli contract). The structured
+// stream-json path was removed; see git history for the prior
+// implementation if it ever needs reinstating.
 type CursorCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -27,9 +29,11 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent generates content using Cursor Agent CLI. It uses the
-// structured JSON transport by default. When an interactive session ID and
-// persistent interactive mode are both set, it uses the tmux transport.
+// GenerateContent generates content using Cursor Agent CLI via the
+// tmux transport. Cursor is tmux-only: if the caller did not pass an
+// interactive session ID, generateContentTmux auto-generates a bounded
+// one. The structured stream-json path is intentionally bypassed here
+// to keep a single contract across chat and workflow steps.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -43,23 +47,7 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if cursorInteractiveSessionIDFromOptions(opts) != "" && cursorPersistentInteractiveFromOptions(opts) {
-		return c.generateContentTmux(ctx, messages, opts)
-	}
-
-	return llmtypes.WithObservability(ctx, llmtypes.ObservabilityConfig{
-		Provider:     "cursor-cli",
-		Model:        c.modelID,
-		Opts:         opts,
-		MessageCount: len(messages),
-		Messages:     messages,
-		HeaderLine:   fmt.Sprintf("cursor-agent --output-format stream-json model=%s msgs=%d", c.modelID, len(messages)),
-		RequestMetaExtra: map[string]interface{}{
-			"transport": "structured_cli",
-		},
-	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
-		return c.generateContentStructured(ctx, messages, opts, sink)
-	})
+	return c.generateContentTmux(ctx, messages, opts)
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns

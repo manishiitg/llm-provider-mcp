@@ -1,12 +1,13 @@
 # Antigravity CLI Pending Items
 
-Status: do not publish or promote `agy-cli` as a production CLI provider yet.
+Status: `agy-cli` may be exposed as an alpha local CLI provider, but must not be
+promoted as a production CLI provider yet.
 
 This file tracks the known gaps before Antigravity CLI should be treated as a
 fully supported coding-agent provider across `multi-llm-provider-go`,
 `mcpagent`, and `mcp-agent-builder-go`.
 
-## Pending Before Publish
+## Pending Before Production
 
 - [ ] Verify workspace-scoped MCP isolation.
   - Two Agy sessions in separate working dirs must not see each other's bridge
@@ -14,14 +15,12 @@ fully supported coding-agent provider across `multi-llm-provider-go`,
   - Shared workdir behavior with different concurrent MCP configs is currently
     fail-closed, not certified as isolated.
 
-- [x] Keep Agy hidden from production/provider publishing until broader
-  certification gaps are resolved.
+- [x] Keep Agy marked alpha until broader certification gaps are resolved.
   - Chat, tmux, live input, native resume, system rules, and workspace MCP
     config writing are working. A real MCP bridge tool call is now certified,
     but other tmux contract gaps remain.
-  - Agy remains available for explicit local/contract tests, but it is removed
-    from published/default provider lists until the remaining gaps are accepted
-    or resolved.
+  - Agy may be visible in provider setup as `Antigravity CLI (Alpha)`, but the
+    contract remains local-sign-in, tmux-only, and not structured-JSON.
 
 - [ ] Finish remaining certification gaps.
   - Known gaps are tracked in `coding_agent_contract_test.go` under

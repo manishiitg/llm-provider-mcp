@@ -2,6 +2,7 @@ package utils
 
 import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
@@ -59,6 +60,9 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Cursor CLI
 	allModels = append(allModels, cursorcli.GetAllCursorCLIModels()...)
+
+	// Antigravity CLI
+	allModels = append(allModels, agycli.GetAllAgyCLIModels()...)
 
 	// OpenCode CLI
 	allModels = append(allModels, opencodecli.GetAllOpenCodeCLIModels()...)

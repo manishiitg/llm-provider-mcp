@@ -16,6 +16,11 @@ import (
 
 func requireCursorCLIStructuredE2E(t *testing.T) {
 	t.Helper()
+	// Cursor is now tmux-only by contract — GenerateContent no longer
+	// reaches generateContentStructured, so these tests would silently
+	// exercise the tmux path instead. Skip them outright until either
+	// the structured path is reinstated or these tests are migrated.
+	t.Skip("cursor-cli structured stream-json transport is disabled (tmux-only contract); see cursorcli_adapter.go")
 	if os.Getenv("RUN_CURSOR_CLI_STREAM_JSON_E2E") == "" && os.Getenv("RUN_CURSOR_CLI_REAL_E2E") == "" {
 		t.Skip("set RUN_CURSOR_CLI_STREAM_JSON_E2E=1 to run Cursor CLI structured JSON e2e tests")
 	}
