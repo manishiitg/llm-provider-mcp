@@ -481,16 +481,12 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	}
 
 	args := []string{"codex"}
-	// --dangerously-bypass-hook-trust is paired with the
-	// .codex/hooks.json projection in writeCodexProjectArtifacts,
-	// which is gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
-	// because the flag enables hook EXECUTION but does NOT dismiss
-	// codex's interactive review screen on v0.131.0. Only emit the
-	// flag when the projection is actually happening, so the trust-
-	// bypass warning doesn't appear in normal sessions.
-	if writeProjectInstructionFromOptions(opts) && os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
-		args = append(args, "--dangerously-bypass-hook-trust")
-	}
+	// (The previous --dangerously-bypass-hook-trust wiring was removed
+	// when the codex .codex/hooks.json projection was deleted from
+	// writeCodexProjectArtifacts — see comment in that file. Codex's
+	// --disable <feature> CLI flags via WithDisableShellTool /
+	// WithDisableFeatures replace the need for a hooks.json drop, so
+	// we never have hooks codex needs to trust-bypass for.)
 	if resumeSessionID != "" {
 		args = append(args, "resume")
 	}

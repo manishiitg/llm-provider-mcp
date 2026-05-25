@@ -11,27 +11,24 @@ import (
 )
 
 // TestCodexCLIRealProjectArtifactsLifecycle is an end-to-end test that
-// proves the WithWriteProjectInstructionFile lifecycle against a real
-// `codex` binary by exercising the SAFE projections (the ones not
-// gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS).
+// proves the WithWriteProjectInstructionFile lifecycle against a
+// real `codex` binary by exercising the projected files (AGENTS.md
+// + .codex/config.toml [mcp_servers.*] tables).
 //
-// The current safe set for codex is AGENTS.md and .codex/config.toml
-// ([mcp_servers.NAME] tables). The hooks.json + deny-builtin.sh drop
-// is disabled by default because it triggers codex v0.131.0's
-// interactive hook-review screen ("⚠ 1 hook needs review before it
-// can run.") that the tmux adapter cannot dismiss — the documented
-// --dangerously-bypass-hook-trust flag enables hook execution but
-// does NOT auto-dismiss the visual review screen. See
-// codexcli_project_artifacts.go for the gate explanation.
+// The hooks.json + deny-builtin.sh projection was REMOVED — codex's
+// first-class --disable <feature> CLI flags (see
+// codexBridgeOnlyDisabledFeatures in options.go) cover the
+// deny-builtin lever without needing a workspace hook script. See
+// the comment in codexcli_project_artifacts.go's removed-helper
+// note for the full rationale.
 //
 // Verifications after the call returns:
 //   - <workingDir>/AGENTS.md byte-restored to operator pre-seed
 //   - mtime advanced past pre-seed (proves the writer fired and
 //     then restored — without this, byte-restore would pass via
 //     the null hypothesis of "writer never ran")
-//   - .codex/hooks.json was NOT created (proves the unsafe drop
-//     stays disabled when MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
-//     is unset)
+//   - .codex/hooks.json was NOT created (proves the hooks
+//     projection stays disabled)
 //
 // Skipped unless RUN_CODEX_CLI_REAL_E2E=1 (or RUN_CODEX_CLI_INTERACTIVE_E2E=1)
 // and codex+tmux are on PATH.

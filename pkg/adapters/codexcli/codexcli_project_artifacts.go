@@ -73,28 +73,24 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 		}
 	}
 
-	// .codex/hooks.json projection is intentionally gated behind an
-	// env var: dropping it triggers codex's interactive hook review
-	// screen at startup ("⚠ 1 hook needs review before it can run.").
-	// The documented --dangerously-bypass-hook-trust flag enables hook
-	// EXECUTION without trust but does NOT auto-dismiss the visual
-	// review screen on codex v0.131.0 — the tmux adapter blocks
-	// waiting for ready state. Disabling this projection by default
-	// removes the deny-builtin lever from codex; the trade-off is
-	// acceptable because the alternative (a session that always times
-	// out) is strictly worse. Set MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS=1
-	// to turn it back on if you have a way to dismiss the review screen
-	// (e.g. send-keys "t" post-launch).
-	if denyBuiltins && os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
-		cu, err := writeCodexProjectDenyBuiltinHooks(workingDir)
-		if err != nil {
-			rollback()
-			return noop, fmt.Errorf("codex deny-builtin hooks: %w", err)
-		}
-		if cu != nil {
-			cleanups = append(cleanups, cu)
-		}
-	}
+	// denyBuiltins is intentionally unused for codex. The hooks-file
+	// projection (.codex/hooks.json + deny script) was REMOVED because
+	// codex already has first-class --disable <feature> CLI flags for
+	// every built-in tool we'd want to block. The canonical deny-builtin
+	// path on codex is appendCodexDisabledFeatureArgs with
+	// codexBridgeOnlyDisabledFeatures (in options.go) — that list covers
+	// shell_tool, apply_patch via patch tool, unified_exec, tool_search,
+	// multi_agent, apps, browser_use, computer_use, image_generation,
+	// workspace_dependencies, hooks, plugins, unavailable_dummy_tools.
+	// Passing those as flags is strictly cleaner than dropping a hook
+	// script: no SHA-keyed trust prompt to dismiss, no
+	// MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS gating, no per-session
+	// auto-dismiss flakiness. The denyBuiltins parameter is retained on
+	// the function signature for API symmetry with the other adapters
+	// (gemini, opencode) but is a no-op here. Operators who want
+	// deny-builtin behavior on codex should call WithDisableShellTool /
+	// WithDisableFeatures via the adapter options instead.
+	_ = denyBuiltins
 
 	return rollback, nil
 }
@@ -162,103 +158,28 @@ func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string) (func(), 
 	}, nil
 }
 
-// writeCodexProjectDenyBuiltinHooks installs codex's PreToolUse hook
-// configuration that denies built-in tool calls (Bash, apply_patch) and
-// forces the model to use MCP servers instead. Two files land:
+// writeCodexProjectDenyBuiltinHooks was REMOVED. It used to write
+// <workingDir>/.codex/hooks.json + .codex/hooks/deny-builtin.sh to
+// implement deny-builtin-tools via codex's PreToolUse hook contract.
+// Dropping those files triggered codex's interactive hook trust review
+// screen on first invocation per hook-content SHA, which the tmux
+// adapter couldn't reliably auto-dismiss across codex's two-form
+// prompt sequence (see commit 367291d for the partial auto-dismiss).
 //
-//   - <workingDir>/.codex/hooks.json
-//   - <workingDir>/.codex/hooks/deny-builtin.sh
+// The cleaner path is codex's first-class --disable <feature> CLI
+// flags: appendCodexDisabledFeatureArgs in options.go applies the
+// codexBridgeOnlyDisabledFeatures list (shell_tool, unified_exec,
+// tool_search, multi_agent, apps, browser_use, computer_use,
+// image_generation, workspace_dependencies, hooks, plugins,
+// unavailable_dummy_tools, etc.) when the caller asks for MCP-only
+// routing. Flags don't trigger any trust prompts, don't need
+// SHA-keyed caching, and work on the first invocation in a fresh
+// tempdir. There's no reason to use a hook script when CLI flags
+// already cover the use case.
 //
-// Both are byte-restored on cleanup if they pre-existed; otherwise
-// removed. The deny script exits 2 with a stderr reason — codex's
-// hook contract treats exit 2 as "System Block", aborting the tool
-// call (per developers.openai.com/codex/hooks).
-func writeCodexProjectDenyBuiltinHooks(workingDir string) (func(), error) {
-	noop := func() {}
-	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
-		return noop, nil
-	}
-
-	codexDir := filepath.Join(workingDir, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		return noop, fmt.Errorf("create .codex dir: %w", err)
-	}
-	codexDirCreatedByUs := dirIsEmptyOrJustCreated(codexDir)
-
-	hooksDir := filepath.Join(codexDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		return noop, fmt.Errorf("create .codex/hooks dir: %w", err)
-	}
-	hooksDirCreatedByUs := dirIsEmptyOrJustCreated(hooksDir)
-
-	scriptPath := filepath.Join(hooksDir, "deny-builtin.sh")
-	priorScript, scriptExisted, err := readPriorFileForRestore(scriptPath)
-	if err != nil {
-		return noop, fmt.Errorf("read pre-existing deny-builtin.sh: %w", err)
-	}
-	scriptBody := "#!/bin/sh\n# mlp-session: deny built-in tool calls; force MCP server usage.\n# Auto-removed at session cleanup.\necho \"Built-in tools disabled by orchestrator policy; use MCP servers instead.\" >&2\nexit 2\n"
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o700); err != nil {
-		return noop, fmt.Errorf("write deny-builtin.sh: %w", err)
-	}
-
-	hooksPath := filepath.Join(codexDir, "hooks.json")
-	priorHooks, hooksExisted, err := readPriorFileForRestore(hooksPath)
-	if err != nil {
-		// Roll back the script write before bubbling up.
-		if scriptExisted {
-			_ = os.WriteFile(scriptPath, priorScript, 0o700)
-		} else {
-			_ = os.Remove(scriptPath)
-		}
-		return noop, fmt.Errorf("read pre-existing hooks.json: %w", err)
-	}
-	hooksConfig := map[string]any{
-		"hooks": map[string]any{
-			"PreToolUse": []map[string]any{
-				{
-					"matcher": "^(Bash|apply_patch)$",
-					"hooks": []map[string]any{
-						{
-							"type":          "command",
-							"command":       scriptPath,
-							"statusMessage": "Enforcing MCP-only tool policy (built-ins disabled by orchestrator)",
-						},
-					},
-				},
-			},
-		},
-	}
-	hooksJSON, _ := json.MarshalIndent(hooksConfig, "", "  ")
-	if err := os.WriteFile(hooksPath, hooksJSON, 0o600); err != nil {
-		// Roll back the script write before bubbling up.
-		if scriptExisted {
-			_ = os.WriteFile(scriptPath, priorScript, 0o700)
-		} else {
-			_ = os.Remove(scriptPath)
-		}
-		return noop, fmt.Errorf("write hooks.json: %w", err)
-	}
-
-	return func() {
-		if hooksExisted {
-			_ = os.WriteFile(hooksPath, priorHooks, 0o600)
-		} else {
-			_ = os.Remove(hooksPath)
-		}
-		if scriptExisted {
-			_ = os.WriteFile(scriptPath, priorScript, 0o700)
-		} else {
-			_ = os.Remove(scriptPath)
-		}
-		if hooksDirCreatedByUs {
-			_ = os.Remove(hooksDir)
-		}
-		if codexDirCreatedByUs {
-			_ = os.Remove(codexDir)
-		}
-	}, nil
-}
+// Operators who want deny-builtin behavior on codex should call
+// WithDisableShellTool / WithDisableFeatures via the adapter options
+// instead of relying on a workspace-dropped hook file.
 
 // codexMCPServerSpec mirrors codex's MCP server schema from
 // developers.openai.com/codex/mcp. Fields are optional except command.

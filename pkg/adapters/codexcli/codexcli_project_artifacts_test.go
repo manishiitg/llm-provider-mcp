@@ -1,7 +1,6 @@
 package codexcli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,108 +114,30 @@ func TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent(t *testing.T) {
 	}
 }
 
-// TestWriteCodexProjectDenyBuiltinHooksLifecycleNoPriorContent covers
-// the fresh-workspace case: no .codex/ exists, hooks.json +
-// deny-builtin.sh both get created, cleanup removes them (and the
-// directories we created when empty).
-func TestWriteCodexProjectDenyBuiltinHooksLifecycleNoPriorContent(t *testing.T) {
-	tmp := t.TempDir()
-	cleanup, err := writeCodexProjectDenyBuiltinHooks(tmp)
-	if err != nil {
-		t.Fatalf("writeCodexProjectDenyBuiltinHooks: %v", err)
-	}
+// (TestWriteCodexProjectDenyBuiltinHooks{Lifecycle,RestoresOperatorScript}
+// and TestWriteCodexProjectArtifacts{ComposesAllArtifacts,HooksGatedByEnvVar}
+// were removed when the codex .codex/hooks.json projection was deleted.
+// Codex deny-builtin behavior now ships via CLI --disable flags
+// (codexBridgeOnlyDisabledFeatures in options.go), not via a workspace
+// hook script. See the comment block in writeCodexProjectArtifacts +
+// codexcli_project_artifacts.go's deleted-helper note for the
+// rationale. The remaining ProjectArtifacts tests cover AGENTS.md +
+// .codex/config.toml lifecycles, which still ship as workspace
+// projections.)
 
-	hooksPath := filepath.Join(tmp, ".codex", "hooks.json")
-	scriptPath := filepath.Join(tmp, ".codex", "hooks", "deny-builtin.sh")
-
-	hooksBody, err := os.ReadFile(hooksPath)
-	if err != nil {
-		t.Fatalf("hooks.json must exist after write: %v", err)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal(hooksBody, &parsed); err != nil {
-		t.Errorf("hooks.json must be valid JSON; got %v\nbody:\n%s", err, hooksBody)
-	}
-	if !strings.Contains(string(hooksBody), `"PreToolUse"`) {
-		t.Errorf("hooks.json must declare PreToolUse event; got:\n%s", hooksBody)
-	}
-	if !strings.Contains(string(hooksBody), `"^(Bash|apply_patch)$"`) {
-		t.Errorf("hooks.json matcher must cover Bash + apply_patch (codex's built-in tool names); got:\n%s", hooksBody)
-	}
-
-	scriptBody, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("deny-builtin.sh must exist: %v", err)
-	}
-	if !strings.HasPrefix(string(scriptBody), "#!/bin/sh") {
-		t.Errorf("deny-builtin.sh must start with a POSIX shebang; got:\n%s", scriptBody)
-	}
-	if !strings.Contains(string(scriptBody), "exit 2") {
-		t.Errorf("deny-builtin.sh must exit 2 (codex System Block) on built-in tool calls; got:\n%s", scriptBody)
-	}
-
-	info, _ := os.Stat(scriptPath)
-	if mode := info.Mode().Perm(); mode&0o100 == 0 {
-		t.Errorf("deny-builtin.sh must be owner-executable (perm includes 0100); got %o", mode)
-	}
-
-	cleanup()
-	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
-		t.Errorf("cleanup must remove hooks.json; stat err=%v", err)
-	}
-	if _, err := os.Stat(scriptPath); !os.IsNotExist(err) {
-		t.Errorf("cleanup must remove deny-builtin.sh; stat err=%v", err)
-	}
-}
-
-// TestWriteCodexProjectDenyBuiltinHooksRestoresOperatorScript guards
-// against destroying an operator-owned deny-builtin.sh: if they had a
-// custom script at that path, cleanup must restore it.
-func TestWriteCodexProjectDenyBuiltinHooksRestoresOperatorScript(t *testing.T) {
-	tmp := t.TempDir()
-	hooksDir := filepath.Join(tmp, ".codex", "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatalf("seed hooks dir: %v", err)
-	}
-	priorScript := []byte("#!/bin/sh\n# operator's own deny script\nexit 1\n")
-	scriptPath := filepath.Join(hooksDir, "deny-builtin.sh")
-	if err := os.WriteFile(scriptPath, priorScript, 0o700); err != nil {
-		t.Fatalf("seed pre-existing deny-builtin.sh: %v", err)
-	}
-
-	cleanup, err := writeCodexProjectDenyBuiltinHooks(tmp)
-	if err != nil {
-		t.Fatalf("writeCodexProjectDenyBuiltinHooks: %v", err)
-	}
-
-	mid, _ := os.ReadFile(scriptPath)
-	if string(mid) == string(priorScript) {
-		t.Error("mid-session, our orchestrator deny script should be installed, not the operator's prior script")
-	}
-
-	cleanup()
-	restored, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("after cleanup, operator deny-builtin.sh should exist (restored): %v", err)
-	}
-	if string(restored) != string(priorScript) {
-		t.Errorf("cleanup must restore operator deny-builtin.sh byte-for-byte\n  want: %q\n  got:  %q", priorScript, restored)
-	}
-}
-
-// TestWriteCodexProjectArtifactsComposesAllArtifacts exercises the
-// top-level composite writer with MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS
-// set, so all four artifacts (AGENTS.md + .codex/config.toml +
-// .codex/hooks.json + .codex/hooks/deny-builtin.sh) land and the
-// composite cleanup tears all four down in LIFO order. Without the
-// env var the hooks projection is intentionally skipped — see
-// TestWriteCodexProjectArtifactsHooksGatedByEnvVar.
-func TestWriteCodexProjectArtifactsComposesAllArtifacts(t *testing.T) {
-	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "1")
+// TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML covers
+// the post-hooks-removal contract: the composite writer drops exactly
+// AGENTS.md + .codex/config.toml when both are non-empty, and the
+// cleanup tears both down. Hooks-projection-related expectations
+// have been removed.
+func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
 	tmp := t.TempDir()
 	prompt := "Run cargo test before committing."
 	mcpJSON := `{"api-bridge":{"command":"/opt/mcpbridge"}}`
 
+	// denyBuiltins=true is now a no-op on codex; we keep passing it
+	// to lock in that the parameter remains accepted on the function
+	// signature for API symmetry with the other adapters.
 	cleanup, err := writeCodexProjectArtifacts(tmp, prompt, mcpJSON, true)
 	if err != nil {
 		t.Fatalf("writeCodexProjectArtifacts: %v", err)
@@ -225,8 +146,6 @@ func TestWriteCodexProjectArtifactsComposesAllArtifacts(t *testing.T) {
 	expected := []string{
 		filepath.Join(tmp, "AGENTS.md"),
 		filepath.Join(tmp, ".codex", "config.toml"),
-		filepath.Join(tmp, ".codex", "hooks.json"),
-		filepath.Join(tmp, ".codex", "hooks", "deny-builtin.sh"),
 	}
 	for _, path := range expected {
 		if _, err := os.Stat(path); err != nil {
@@ -234,48 +153,20 @@ func TestWriteCodexProjectArtifactsComposesAllArtifacts(t *testing.T) {
 		}
 	}
 
-	cleanup()
-	for _, path := range expected {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("cleanup must remove artifact %q created from nothing; stat err=%v", path, err)
-		}
-	}
-}
-
-// TestWriteCodexProjectArtifactsHooksGatedByEnvVar locks in the gate:
-// without MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS set, the hooks
-// projection (.codex/hooks.json + .codex/hooks/deny-builtin.sh) must
-// NOT land. AGENTS.md and .codex/config.toml are unaffected by the
-// gate and still drop.
-func TestWriteCodexProjectArtifactsHooksGatedByEnvVar(t *testing.T) {
-	// Explicitly UNSET the env var in case the host shell has it set;
-	// t.Setenv handles cleanup automatically.
-	t.Setenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS", "")
-	tmp := t.TempDir()
-
-	cleanup, err := writeCodexProjectArtifacts(tmp, "system prompt", `{"x":{"command":"y"}}`, true)
-	if err != nil {
-		t.Fatalf("writeCodexProjectArtifacts: %v", err)
-	}
-	defer cleanup()
-
-	// Safe artifacts still land.
-	for _, path := range []string{
-		filepath.Join(tmp, "AGENTS.md"),
-		filepath.Join(tmp, ".codex", "config.toml"),
-	} {
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("safe artifact %q must still land without the env var: %v", path, err)
-		}
-	}
-
-	// Unsafe artifacts MUST NOT land.
+	// Hooks files MUST NOT land — they were removed as a feature.
 	for _, path := range []string{
 		filepath.Join(tmp, ".codex", "hooks.json"),
 		filepath.Join(tmp, ".codex", "hooks", "deny-builtin.sh"),
 	} {
 		if _, err := os.Stat(path); err == nil {
-			t.Errorf("unsafe artifact %q was created despite the env var being unset; the gate is broken", path)
+			t.Errorf("hooks artifact %q must NOT be created — that projection was removed; use codex --disable flags instead", path)
+		}
+	}
+
+	cleanup()
+	for _, path := range expected {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("cleanup must remove artifact %q created from nothing; stat err=%v", path, err)
 		}
 	}
 }

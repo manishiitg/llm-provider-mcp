@@ -43,7 +43,7 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | CLI         | Instruction file                            | MCP config                                      | Deny-builtin hook                                                     |
 | :---------- | :------------------------------------------ | :---------------------------------------------- | :-------------------------------------------------------------------- |
 | Claude Code | `.claude/rules/mlp-session-<hex>.md`        | `.mcp.json` *(unsafe)*                          | n/a (use `--allowed-tools` / `--disallowed-tools`)                    |
-| Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | `.codex/hooks.json` + `.codex/hooks/deny-builtin.sh` *(unsafe)*        |
+| Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
 | OpenCode    | `AGENTS.md`                                 | `opencode.jsonc` (`"mcp"` key, separate option) | `.opencode/plugins/deny-builtin.js` (ES-module plugin)                |
 | Cursor      | `.cursor/rules/mlp-session-<hex>.md`        | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
@@ -119,19 +119,33 @@ the MCP servers without triggering the prompt, so disabling this
 projection loses only the workspace-visibility belt-and-suspenders,
 not the actual MCP loading.
 
-### Codex `.codex/hooks.json`
+### Codex `.codex/hooks.json` (REMOVED, not unsafe)
 
-Dropping `<workingDir>/.codex/hooks.json` triggers codex v0.131.0's
-hook trust review screen ("⚠ 1 hook needs review before it can run").
-The documented `--dangerously-bypass-hook-trust` flag *is* recognized
-(codex prints "flag is enabled. Enabled hooks may run without review")
-but does NOT auto-dismiss the visual review screen in interactive
-mode — only the trust check on hook *execution*. The tmux adapter
-blocks waiting for ready state.
+The `.codex/hooks.json` projection was **removed entirely** rather
+than gated, because codex has first-class `--disable <feature>` CLI
+flags that cover the deny-builtin lever without needing a hook
+script at all.
 
-Disabling this projection removes the deny-builtin lever from codex.
-The trade-off is acceptable because the alternative (a session that
-always times out) is strictly worse.
+The pre-baked deny list lives at `codexBridgeOnlyDisabledFeatures`
+in `pkg/adapters/codexcli/options.go` and covers `shell_tool`,
+`unified_exec`, `tool_search`, `multi_agent`, `apps`, `browser_use`,
+`browser_use_external`, `computer_use`, `image_generation`,
+`workspace_dependencies`, `hooks`, `plugins`, and
+`unavailable_dummy_tools`. Passing those as flags via
+`WithDisableShellTool` / `WithDisableFeatures` is strictly cleaner
+than dropping a hook script — no SHA-keyed trust prompt to dismiss,
+no per-session auto-dismiss flakiness, works on first invocation in
+a fresh tempdir.
+
+Historical context (for future readers wondering why this section is
+notably shorter than the others): an earlier version of this
+projection did drop `.codex/hooks.json` + `.codex/hooks/deny-builtin.sh`,
+gated behind `MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS=1` because it
+triggered codex v0.131.0's hook trust review screen that the tmux
+adapter couldn't reliably auto-dismiss. The auto-dismiss code in
+`waitForCodexPrompt` survives (it's defensive — operators may have
+their own `.codex/hooks.json` we shouldn't trip on), but the
+projection itself is gone.
 
 ### Opting back in
 
@@ -179,8 +193,6 @@ their live CLIs and ship enabled-by-default under the flag:
 - Format invariants: codex TOML emitter (key ordering, bare vs quoted
   keys, env subtable), gemini hooks matcher covers documented tool
   names, opencode plugin uses `tool.execute.before`.
-- Gate enforcement: `TestWriteCodexProjectArtifactsHooksGatedByEnvVar`
-  exercises both branches of the unsafe gate.
 
 ### Real-CLI E2E (gated per CLI)
 
@@ -202,7 +214,7 @@ mode is in use, and asserts:
   mid-session — without this assertion, byte-restore could pass via
   the null hypothesis "writer never ran").
 - For codex specifically: `.codex/hooks.json` was NOT created
-  (proves the unsafe-projection gate is honored).
+  (proves the removed hooks projection didn't sneak back in).
 
 ### What's NOT covered yet
 
