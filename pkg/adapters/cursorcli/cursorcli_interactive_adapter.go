@@ -101,9 +101,16 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 
 	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
 	historicalAssistantTexts := cursorAssistantHistory(conversationMessages)
-	resume := cursorResumeSessionIDFromOptions(opts) != ""
+	resumeID := cursorResumeSessionIDFromOptions(opts)
+	resume := resumeID != ""
+	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	prompt := buildCursorPrompt(conversationMessages, resume)
-	if strings.TrimSpace(prompt) == "" {
+	// Launch-only: boot tmux with --resume so the user can see the prior
+	// cursor conversation in the pane without sending any prompt yet.
+	// Mirrors what agy + claude-code experimental do; the chat-history
+	// resumed-terminal path calls model.GenerateContent(ctx, nil, ...)
+	// with WithCodingProviderLaunchOnly() expecting this contract.
+	if !launchOnly && strings.TrimSpace(prompt) == "" {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
@@ -156,6 +163,48 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	baseline, _ := captureCursorPane(callCtx, session.tmuxSessionName)
+	// Launch-only path: cursor is up with --resume applied (if resumeID
+	// was provided), the pane shows whatever cursor has restored from
+	// its store.db, and we hand back a SessionHandle so the orchestrator
+	// can rebind to this tmux session on subsequent turns instead of
+	// spawning yet another one.
+	if launchOnly {
+		var lastSnapshot string
+		streamCursorTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		nativeSessionID := resumeID
+		if nativeSessionID == "" {
+			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID); storeDBPath != "" {
+				nativeSessionID = cursorNativeSessionIDFromStoreDBPath(storeDBPath)
+			}
+		}
+		additional := map[string]interface{}{
+			"provider":                      "cursor-cli",
+			"cursor_mode":                   "tmux",
+			"cursor_interactive_session":    session.tmuxSessionName,
+			"cursor_persistent_interactive": persistent,
+			"cursor_uses_print_json":        false,
+			"cursor_working_dir":            session.workingDir,
+			"cursor_launch_only":            true,
+		}
+		if nativeSessionID != "" {
+			additional["cursor_session_id"] = nativeSessionID
+		}
+		gi := &llmtypes.GenerationInfo{Additional: additional}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:        "cursor-cli",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			NativeSessionID: nativeSessionID,
+			TmuxSession:     session.tmuxSessionName,
+			WorkingDir:      session.workingDir,
+			Model:           c.modelID,
+		})
+		return &llmtypes.ContentResponse{
+			Choices: []*llmtypes.ContentChoice{{Content: "", GenerationInfo: gi}},
+		}, nil
+	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
 	if err := sendCursorInputToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
 		if opts.StreamChan != nil {
@@ -273,9 +322,28 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 			Messages:  sidecarMsgs,
 		})
 	}
-	if nativeID := cursorNativeSessionIDFromStoreDBPath(storeDBPath); nativeID != "" {
-		additional["cursor_session_id"] = nativeID
+	nativeSessionID := cursorNativeSessionIDFromStoreDBPath(storeDBPath)
+	if nativeSessionID == "" {
+		// Fall back to a caller-supplied resume ID so a SessionHandle
+		// still gets attached when cursor hasn't committed the store.db
+		// yet (the trivial-turn race documented above).
+		nativeSessionID = resumeID
 	}
+	if nativeSessionID != "" {
+		additional["cursor_session_id"] = nativeSessionID
+	}
+	// Attach a SessionHandle so the orchestrator can reattach to this
+	// same tmux pane on future turns (rebind path), and so the
+	// resumed-terminal restore tier picks up the native session ID even
+	// when the agent isn't kept in memory.
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+		Provider:        "cursor-cli",
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: nativeSessionID,
+		TmuxSession:     session.tmuxSessionName,
+		WorkingDir:      session.workingDir,
+		Model:           c.modelID,
+	})
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
