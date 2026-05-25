@@ -623,6 +623,10 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	}
 
 	cursorDir := filepath.Join(workingDir, ".cursor")
+	// Diagnostic: log how prepareCursorProjectFiles was called so we can
+	// pinpoint why .cursor/rules/mlp-system.mdc fails to materialize.
+	fmt.Fprintf(os.Stderr, "[CURSOR_PROJECT_DEBUG] workingDir=%q systemPrompt_len=%d ownerSessionID=%q\n",
+		workingDir, len(strings.TrimSpace(systemPrompt)), ownerSessionID)
 	if strings.TrimSpace(systemPrompt) != "" {
 		rulesDir := filepath.Join(cursorDir, "rules")
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
