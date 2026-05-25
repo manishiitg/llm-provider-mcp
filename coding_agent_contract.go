@@ -351,29 +351,42 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},
 	ProviderOpenCodeCLI: {
-		Provider:                  ProviderOpenCodeCLI,
-		DisplayName:               "OpenCode CLI",
-		CLIName:                   "opencode",
-		Transport:                 CodingAgentTransportStructured,
-		RequiresWorkingDir:        true,
-		RequiresOwnerSessionID:    false,
-		UsesPersistentSession:     false,
-		SupportsLiveInput:         false,
-		SupportsInterrupt:         false,
-		SupportsTerminalStream:    false,
-		SupportsFinalExtraction:   true,
-		SupportsNativeResume:      true,
-		UsesMCPBridge:             true,
-		SupportsBridgeOnlyTools:   true,
-		UsesNativeSystemPrompt:    true,
-		LaunchesViaLoginShell:     false,
-		ProcessScopedCleanup:      false,
-		HandlesTmuxSessionLoss:    false,
-		StructuredFallback:        true,
-		ImageInputInteractive:     true,
-		SurfacesTokenUsage:        true,
-		TokenUsageSource:          "stream-json",
-		AdapterReadsTranscript:    false,
+		Provider:                ProviderOpenCodeCLI,
+		DisplayName:             "OpenCode CLI",
+		CLIName:                 "opencode",
+		Transport:               CodingAgentTransportStructured,
+		RequiresWorkingDir:      true,
+		RequiresOwnerSessionID:  false,
+		UsesPersistentSession:   false,
+		SupportsLiveInput:       false,
+		SupportsInterrupt:       false,
+		SupportsTerminalStream:  false,
+		SupportsFinalExtraction: true,
+		SupportsNativeResume:    true,
+		UsesMCPBridge:           true,
+		SupportsBridgeOnlyTools: true,
+		UsesNativeSystemPrompt:  true,
+		LaunchesViaLoginShell:   false,
+		ProcessScopedCleanup:    false,
+		HandlesTmuxSessionLoss:  false,
+		StructuredFallback:      true,
+		ImageInputInteractive:   true,
+		SurfacesTokenUsage:      true,
+		// Primary path is stream-json (step_finish events), with a
+		// post-hoc `opencode export <sessionID>` enrichment as a
+		// backstop when the upstream endpoint omits step_finish
+		// (observed on the hosted free tier for short responses).
+		// Both paths are exact — no estimation involved — so we
+		// classify by the canonical primary.
+		TokenUsageSource: "stream-json",
+		// True: after each turn the adapter shells out to
+		// `opencode export <sessionID>` to recover the conversation
+		// messages (text + tool calls) and aggregate token usage from
+		// opencode's local SQLite store. This populates
+		// CodingProviderIntermediateMessages so the host's
+		// conversation log captures the full internal trail.
+		AdapterReadsTranscript:    true,
+		TranscriptPathTemplate:    "opencode export <sessionID>  // reads ~/.local/share/opencode/opencode.db via the CLI's export subcommand",
 		APIKeyEnvVars:             []string{"OPENCODE_API_KEY"},
 		WorkingDirInstructionFile: "AGENTS.md", // OpenCode follows the OpenAI-style AGENTS.md convention.
 		UserInstructionFile:       "~/.opencode/AGENTS.md",

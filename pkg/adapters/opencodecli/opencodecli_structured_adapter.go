@@ -140,17 +140,28 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}
-		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
-			configJSON, merr := buildOpenCodeMCPConfigJSON(mcpJSON)
+		// Decide whether to write opencode.jsonc with our generated
+		// content. We do so when MCP servers are provided AND/OR the
+		// caller opted into MCP-only routing (deny built-in tools).
+		// When MetadataKeyProjectConfig is set, that path above already
+		// wrote opencode.jsonc with the caller's verbatim content and we
+		// skip our merge — power users can shape their own config.
+		mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
+		writeInstructionFile, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool)
+		_, projectConfigSupplied := opts.Metadata.Custom[MetadataKeyProjectConfig].(string)
+
+		if !projectConfigSupplied && (strings.TrimSpace(mcpJSON) != "" || writeInstructionFile) {
+			configJSON, merr := buildOpenCodeProjectConfigJSON(mcpJSON, writeInstructionFile)
 			if merr != nil {
 				return nil, merr
 			}
 			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), configJSON)
 			if werr != nil {
-				return nil, fmt.Errorf("opencode MCP config: %w", werr)
+				return nil, fmt.Errorf("opencode project config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}
+
 		// OFF-by-default: also drop the system prompt at
 		// <workingDir>/AGENTS.md so the workspace itself carries
 		// OpenCode's conventional project instructions. Byte-restore via
@@ -159,24 +170,11 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		// systemPrompt extracted at the top of the function so the
 		// in-prompt "[System Instructions]" prefix and the workspace
 		// AGENTS.md stay in lockstep.
-		if enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool); enabled {
-			if strings.TrimSpace(systemPrompt) != "" {
-				body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
-				cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
-				if werr != nil {
-					return nil, fmt.Errorf("opencode project instruction file: %w", werr)
-				}
-				configCleanups = append(configCleanups, cleanup)
-			}
-			// Deny-builtin plugin: forces MCP-only tool routing by
-			// throwing in tool.execute.before for built-in tool names.
-			// Unlike codex/gemini (config-only deny via hook scripts),
-			// opencode requires plugin code per opencode.ai/docs/plugins —
-			// the file lands at .opencode/plugins/deny-builtin.js and
-			// opencode auto-loads it.
-			cleanup, werr := writeOpenCodeDenyBuiltinPlugin(workingDir)
+		if writeInstructionFile && strings.TrimSpace(systemPrompt) != "" {
+			body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
 			if werr != nil {
-				return nil, fmt.Errorf("opencode deny-builtin plugin: %w", werr)
+				return nil, fmt.Errorf("opencode project instruction file: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}
@@ -280,18 +278,110 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		stopReason = "tool_calls"
 	}
 
+	additional := map[string]interface{}{
+		"provider":            "opencode-cli",
+		"opencode_mode":       "structured",
+		"opencode_session_id": sessionID,
+	}
+	// Always surface the model we asked opencode to use. Free-tier
+	// stream-json events don't carry a model field, so without this the
+	// caller has no way to know which model produced the response —
+	// breaking cost ledger tagging, inspector views, and resume picker
+	// labels. We know the model unambiguously because we passed it via
+	// --model ourselves; falling back to the adapter's construction-
+	// time default when the call didn't override.
+	//
+	// "opencode_effective_model" matches the convention used by other
+	// CLI adapters (cursor_model, codex_effective_model,
+	// gemini_effective_model) — extractCostAndEffectiveModel in the
+	// host app's cost-routes looks for exactly that key.
+	effectiveModelForReport := modelToUse
+	if strings.TrimSpace(effectiveModelForReport) == "" {
+		effectiveModelForReport = c.modelID
+	}
+	if strings.TrimSpace(effectiveModelForReport) != "" {
+		additional["opencode_effective_model"] = effectiveModelForReport
+	}
+
+	// Sidecar enrichment via `opencode export <sessionID>`. The
+	// stream-json events we already parsed cover the happy path, but
+	// the free-tier endpoint frequently omits step_finish (which is
+	// where tokens live) and emits no tool/reasoning event metadata in
+	// a host-friendly shape. opencode's own SQLite store has all of
+	// that; the export subcommand is the supported way to read it.
+	//
+	// We run it best-effort: any error here MUST NOT fail the call —
+	// the user already got their text response, and the worst case is
+	// degraded cost reporting + missing intermediate-message splice
+	// (the same state we had before this enrichment existed).
+	var intermediateMessages []llmtypes.MessageContent
+	if strings.TrimSpace(sessionID) != "" {
+		exp, expErr := runOpencodeExport(ctx, binPath, sessionID)
+		if expErr != nil {
+			c.logInfof("opencode export %s (non-fatal): %v", sessionID, expErr)
+		} else if exp != nil {
+			// Fill token usage from the export when the stream didn't
+			// surface step_finish. The export's tokens are cumulative
+			// over the whole session, which matches what the host's
+			// cost ledger wants per call (cost is accumulated per
+			// session in opencode itself).
+			if totalUsage.InputTokens == 0 && exp.Info.Tokens.Input > 0 {
+				totalUsage.InputTokens = exp.Info.Tokens.Input
+			}
+			if totalUsage.OutputTokens == 0 && exp.Info.Tokens.Output > 0 {
+				totalUsage.OutputTokens = exp.Info.Tokens.Output
+			}
+			if totalUsage.TotalTokens == 0 {
+				totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens
+			}
+			if exp.Info.Tokens.Cache.Read > 0 {
+				cr := exp.Info.Tokens.Cache.Read
+				totalUsage.CacheTokens = &cr
+				// Mirror into Additional under the conventional key
+				// host's extractCacheTokens looks for, so cost ledger
+				// surfaces cache reads in summaries.
+				additional["cache_read_input_tokens"] = cr
+			}
+			if exp.Info.Tokens.Cache.Write > 0 {
+				additional["cache_creation_input_tokens"] = exp.Info.Tokens.Cache.Write
+			}
+			if exp.Info.Tokens.Reasoning > 0 {
+				additional["reasoning_tokens"] = exp.Info.Tokens.Reasoning
+			}
+			if exp.Info.Cost > 0 {
+				additional["cost_usd_estimated"] = exp.Info.Cost
+			}
+			// Cross-check the model: opencode's export carries the
+			// model it actually used (provider-id-prefixed). If our
+			// synthesized value disagrees, the export wins — that's
+			// the on-disk truth.
+			if id := strings.TrimSpace(exp.Info.Model.ID); id != "" {
+				qualified := id
+				if pid := strings.TrimSpace(exp.Info.Model.ProviderID); pid != "" {
+					qualified = pid + "/" + id
+				}
+				additional["opencode_effective_model"] = qualified
+			}
+			// Pull the last turn's user/assistant pair as intermediate
+			// messages for the host's conversation log to splice in.
+			intermediateMessages = exp.lastTurnMessages()
+		}
+	}
+
+	gi := &llmtypes.GenerationInfo{Additional: additional}
+	if len(intermediateMessages) > 0 {
+		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
+			Provider:  "opencode-cli",
+			Transport: llmtypes.CodingProviderTransportStructured,
+			Messages:  intermediateMessages,
+		})
+	}
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
-				Content:    content,
-				StopReason: stopReason,
-				GenerationInfo: &llmtypes.GenerationInfo{
-					Additional: map[string]interface{}{
-						"provider":            "opencode-cli",
-						"opencode_mode":       "structured",
-						"opencode_session_id": sessionID,
-					},
-				},
+				Content:        content,
+				StopReason:     stopReason,
+				GenerationInfo: gi,
 			},
 		},
 		Usage: &totalUsage,
@@ -387,10 +477,6 @@ func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath str
 				}
 
 			case "step_finish":
-				// End-of-turn teardown per the structured-CLI shutdown contract
-				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
-				// grace for opencode session-state flush → SIGKILL.
-				go procshutdown.Graceful(cmd, scannerDone, c.logger)
 				var part opencodeStepFinishPart
 				if err := json.Unmarshal(event.Part, &part); err == nil {
 					res.usage.InputTokens += part.Tokens.Input
@@ -401,6 +487,22 @@ func (c *OpenCodeCLIAdapter) runOpencodeAttempt(ctx context.Context, binPath str
 						res.usage.CacheTokens = &cacheRead
 					}
 					res.lastFinishReason = part.Reason
+				}
+				// End-of-turn teardown per the structured-CLI shutdown contract
+				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
+				// grace for opencode session-state flush → SIGKILL.
+				//
+				// IMPORTANT: only terminate when the model is actually done.
+				// Multi-step tool-using flows emit `step_finish` with
+				// reason="tool-calls" between steps — that signals "tool
+				// result will feed into the next step", NOT "we're done".
+				// Terminating on that intermediate step_finish kills opencode
+				// before the final answer is produced (observed live: MCP
+				// bridge tests, any tool-use turn). Reasons that DO indicate
+				// the turn is over: "stop", "length", "content_filter", "" (no
+				// reason set yet — treat as natural end).
+				if part.Reason != "tool-calls" {
+					go procshutdown.Graceful(cmd, scannerDone, c.logger)
 				}
 			}
 		}

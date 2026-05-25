@@ -81,99 +81,57 @@ func TestOpenCodeWriteRestoredAGENTSMDRestoresOperatorContent(t *testing.T) {
 	}
 }
 
-// TestWriteOpenCodeDenyBuiltinPluginLifecycleNoPriorContent covers
-// the fresh-workspace case: no .opencode/ exists, the plugin file is
-// dropped at .opencode/plugins/deny-builtin.js with the JS that throws
-// on built-in tool names, cleanup removes it (plus the dirs we created
-// when empty).
-func TestWriteOpenCodeDenyBuiltinPluginLifecycleNoPriorContent(t *testing.T) {
-	tmp := t.TempDir()
-	cleanup, err := writeOpenCodeDenyBuiltinPlugin(tmp)
+// TestBuildOpenCodeProjectConfigJSONDeniesBuiltinTools covers the
+// replacement for the old JS plugin: when denyBuiltins=true, the
+// generated opencode.jsonc must contain a "tools" block setting every
+// filesystem/shell/network built-in to false, so the model is forced to
+// reach those capabilities via MCP servers instead. Opencode's
+// documented `{"tools": {"read": false, ...}}` mechanism (per
+// opencode.ai/docs/config) replaces the earlier .opencode/plugins/
+// deny-builtin.js approach, which never reliably fired in practice.
+func TestBuildOpenCodeProjectConfigJSONDeniesBuiltinTools(t *testing.T) {
+	out, err := buildOpenCodeProjectConfigJSON("", true)
 	if err != nil {
-		t.Fatalf("writeOpenCodeDenyBuiltinPlugin: %v", err)
+		t.Fatalf("buildOpenCodeProjectConfigJSON: %v", err)
 	}
 
-	pluginPath := filepath.Join(tmp, ".opencode", "plugins", "deny-builtin.js")
-	body, err := os.ReadFile(pluginPath)
-	if err != nil {
-		t.Fatalf("expected deny-builtin.js after write: %v", err)
+	body := string(out)
+	if !strings.Contains(body, `"tools"`) {
+		t.Errorf("expected a tools block in generated opencode.jsonc; got:\n%s", body)
 	}
-	if !strings.Contains(string(body), "export default") {
-		t.Errorf("plugin file must use ES-module export default per opencode plugin schema; got:\n%s", body)
-	}
-	if !strings.Contains(string(body), "tool.execute.before") {
-		t.Errorf("plugin file must hook tool.execute.before; got:\n%s", body)
-	}
-	// Built-in tool names must be in the deny set. If opencode renames
-	// any of these in a future release, this test forces an update.
-	for _, tool := range []string{"read", "write", "edit", "bash", "grep", "webfetch"} {
-		if !strings.Contains(string(body), `"`+tool+`"`) {
-			t.Errorf("plugin file must include built-in %q in the deny set; got:\n%s", tool, body)
+	// "apply_patch" not "patch" — opencode docs explicitly call this out
+	// as a common gotcha. If the docs change the tool ID, this test
+	// forces an update.
+	for _, tool := range []string{"read", "write", "edit", "bash", "grep", "glob", "lsp", "apply_patch", "webfetch", "websearch", "task", "skill"} {
+		if !strings.Contains(body, `"`+tool+`": false`) {
+			t.Errorf("expected %q disabled in tools block; got:\n%s", tool, body)
 		}
 	}
-	if !strings.Contains(string(body), "throw new Error") {
-		t.Errorf("plugin file must throw on denied tool calls (opencode's documented deny mechanism); got:\n%s", body)
-	}
-
-	cleanup()
-	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
-		t.Errorf("cleanup must remove deny-builtin.js; stat err=%v", err)
+	if strings.Contains(body, `"patch": false`) {
+		t.Errorf("must use 'apply_patch' not 'patch' per opencode docs; got:\n%s", body)
 	}
 }
 
-// TestWriteOpenCodeDenyBuiltinPluginRestoresOperatorContent guards
-// the byte-restore promise: if the operator already had their own
-// .opencode/plugins/deny-builtin.js, cleanup must restore it.
-func TestWriteOpenCodeDenyBuiltinPluginRestoresOperatorContent(t *testing.T) {
-	tmp := t.TempDir()
-	pluginsDir := filepath.Join(tmp, ".opencode", "plugins")
-	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
-		t.Fatalf("seed .opencode/plugins dir: %v", err)
-	}
-	operatorBody := []byte("// operator's own deny-builtin plugin\nexport default async () => ({});\n")
-	pluginPath := filepath.Join(pluginsDir, "deny-builtin.js")
-	if err := os.WriteFile(pluginPath, operatorBody, 0o600); err != nil {
-		t.Fatalf("seed operator deny-builtin.js: %v", err)
-	}
-
-	cleanup, err := writeOpenCodeDenyBuiltinPlugin(tmp)
+// TestBuildOpenCodeProjectConfigJSONMCPOnly confirms the MCP-only path
+// (denyBuiltins=false) still emits the merged {"mcp":{...}} shape that
+// existing callers rely on — i.e. dropping the deny-plugin didn't
+// regress the MCP wiring contract.
+func TestBuildOpenCodeProjectConfigJSONMCPOnly(t *testing.T) {
+	input := `{"mcpServers":{"bridge":{"command":["echo","hi"]}}}`
+	out, err := buildOpenCodeProjectConfigJSON(input, false)
 	if err != nil {
-		t.Fatalf("writeOpenCodeDenyBuiltinPlugin: %v", err)
+		t.Fatalf("buildOpenCodeProjectConfigJSON: %v", err)
 	}
 
-	mid, _ := os.ReadFile(pluginPath)
-	if string(mid) == string(operatorBody) {
-		t.Error("mid-session, the operator's plugin should NOT be visible — our deny plugin is installed")
+	body := string(out)
+	if !strings.Contains(body, `"mcp"`) || !strings.Contains(body, `"bridge"`) {
+		t.Errorf("MCP-only path must include mcp.bridge server; got:\n%s", body)
 	}
-	if !strings.Contains(string(mid), "mlp-session") {
-		t.Errorf("mid-session, our orchestrator deny plugin must be installed; got:\n%s", mid)
+	if strings.Contains(body, `"tools"`) {
+		t.Errorf("MCP-only path must NOT include tools block when denyBuiltins=false; got:\n%s", body)
 	}
-
-	cleanup()
-	restored, err := os.ReadFile(pluginPath)
-	if err != nil {
-		t.Fatalf("after cleanup, deny-builtin.js should exist (restored): %v", err)
-	}
-	if string(restored) != string(operatorBody) {
-		t.Errorf("cleanup must restore operator deny-builtin.js byte-for-byte\n  want: %q\n  got:  %q", operatorBody, restored)
-	}
-}
-
-// TestWriteOpenCodeDenyBuiltinPluginEmptyWorkingDirNoOp guards
-// against polluting the orchestrator's own cwd when the caller forgot
-// to set MetadataKeyWorkingDir.
-func TestWriteOpenCodeDenyBuiltinPluginEmptyWorkingDirNoOp(t *testing.T) {
-	cleanup, err := writeOpenCodeDenyBuiltinPlugin("")
-	if err != nil {
-		t.Errorf("empty workingDir should return nil error; got %v", err)
-	}
-	if cleanup == nil {
-		t.Fatal("cleanup must be non-nil even for empty workingDir (no-op cleanup)")
-	}
-	cleanup() // must not panic
-	if _, err := os.Stat(".opencode"); err == nil {
-		t.Errorf(".opencode dir must NOT be created in process cwd when workingDir is empty")
-		_ = os.RemoveAll(".opencode")
+	if !strings.Contains(body, `"type": "local"`) {
+		t.Errorf("MCP-only path must inject default type=local; got:\n%s", body)
 	}
 }
 

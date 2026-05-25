@@ -13,54 +13,59 @@ import (
 // TestOpenCodeCLIRealProjectArtifactsLifecycle is an end-to-end test
 // that proves the WithWriteProjectInstructionFile lifecycle against a
 // real `opencode` binary: pre-seed an operator-owned AGENTS.md AND
-// .opencode/plugins/deny-builtin.js, run a tiny adapter call with the
-// flag + WithMCPConfig + WithWorkingDir pointing at a tempdir, then
-// verify after the call:
+// opencode.jsonc, run a tiny adapter call with the flag +
+// WithMCPConfig + WithWorkingDir pointing at a tempdir, then verify
+// after the call:
 //
 //   - <workingDir>/AGENTS.md byte-restored to operator pre-seed
-//   - <workingDir>/.opencode/plugins/deny-builtin.js byte-restored
-//     to operator pre-seed (proves the plugin-file projection
+//   - <workingDir>/opencode.jsonc byte-restored to operator pre-seed
+//     (proves the merged-config write — MCP block + tools-deny —
 //     restores operator-owned content correctly)
-//   - mtime advanced past pre-seed (proves the adapter touched the
-//     workspace vs the null hypothesis of "writer never ran")
+//   - mtime advanced past pre-seed on both files (proves the adapter
+//     touched the workspace vs the null hypothesis of "writer never
+//     ran")
+//
+// Historical note: an earlier version of this test pre-seeded
+// .opencode/plugins/deny-builtin.js because the deny mechanism used
+// to be a JS plugin auto-loaded from that directory. opencode never
+// reliably fired the plugin (test was permanently skipped), so the
+// adapter switched to opencode's documented {"tools":{"read":false,
+// ...}} config block, which lands in opencode.jsonc. This test now
+// guards the opencode.jsonc lifecycle instead.
 //
 // Skipped unless RUN_OPENCODE_CLI_REAL_E2E=1 and opencode is on PATH.
 func TestOpenCodeCLIRealProjectArtifactsLifecycle(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 
 	tmp := t.TempDir()
-	pluginsDir := filepath.Join(tmp, ".opencode", "plugins")
-	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
-		t.Fatalf("seed .opencode/plugins dir: %v", err)
-	}
 
 	agentsPath := filepath.Join(tmp, "AGENTS.md")
-	pluginPath := filepath.Join(pluginsDir, "deny-builtin.js")
+	jsoncPath := filepath.Join(tmp, "opencode.jsonc")
 
 	operatorAGENTS := []byte("# Operator AGENTS.md\n\nThis content MUST be restored on cleanup.\n")
-	operatorPlugin := []byte("// operator's own deny plugin — must survive cleanup\nexport default async () => ({});\n")
+	operatorJsonc := []byte("// operator's own opencode.jsonc\n{\n  \"$operator\": true\n}\n")
 
 	if err := os.WriteFile(agentsPath, operatorAGENTS, 0o600); err != nil {
 		t.Fatalf("seed AGENTS.md: %v", err)
 	}
-	if err := os.WriteFile(pluginPath, operatorPlugin, 0o600); err != nil {
-		t.Fatalf("seed deny-builtin.js: %v", err)
+	if err := os.WriteFile(jsoncPath, operatorJsonc, 0o600); err != nil {
+		t.Fatalf("seed opencode.jsonc: %v", err)
 	}
 	preInfoAgents, _ := os.Stat(agentsPath)
 	preMTimeAgents := preInfoAgents.ModTime()
-	preInfoPlugin, _ := os.Stat(pluginPath)
-	preMTimePlugin := preInfoPlugin.ModTime()
+	preInfoJsonc, _ := os.Stat(jsoncPath)
+	preMTimeJsonc := preInfoJsonc.ModTime()
 	time.Sleep(10 * time.Millisecond)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	// MCP config goes through the existing WithMCPConfig path; it lands
-	// at opencode.jsonc independently of WithWriteProjectInstructionFile,
-	// so we don't pre-seed opencode.jsonc here — its lifecycle is
-	// covered by existing tests.
-	mcpJSON := `{"mcpServers":{"orchestrator-bridge":{"command":"/tmp/mcpbridge","env":{"MCP_API_URL":"http://localhost:9999"}}}}`
+	// MCP config goes through the existing WithMCPConfig path; the
+	// adapter merges it into the same opencode.jsonc write that the
+	// tools-deny block lands in, so the single restore must put both
+	// blocks of operator content back.
+	mcpJSON := `{"mcpServers":{"orchestrator-bridge":{"command":"node","args":["/tmp/mcpbridge"],"env":{"MCP_API_URL":"http://localhost:9999"}}}}`
 
 	// System message ensures the AGENTS.md write path inside the
 	// structured adapter fires (it's gated on a non-empty systemPrompt).
@@ -94,20 +99,20 @@ func TestOpenCodeCLIRealProjectArtifactsLifecycle(t *testing.T) {
 		t.Errorf("cleanup must restore operator AGENTS.md byte-for-byte\n  want: %s\n  got:  %s", operatorAGENTS, postAGENTS)
 	}
 
-	postPlugin, err := os.ReadFile(pluginPath)
+	postJsonc, err := os.ReadFile(jsoncPath)
 	if err != nil {
-		t.Fatalf("deny-builtin.js must still exist after cleanup (byte-restored): %v", err)
+		t.Fatalf("opencode.jsonc must still exist after cleanup (byte-restored): %v", err)
 	}
-	if string(postPlugin) != string(operatorPlugin) {
-		t.Errorf("cleanup must restore operator deny-builtin.js byte-for-byte\n  want: %s\n  got:  %s", operatorPlugin, postPlugin)
+	if string(postJsonc) != string(operatorJsonc) {
+		t.Errorf("cleanup must restore operator opencode.jsonc byte-for-byte\n  want: %s\n  got:  %s", operatorJsonc, postJsonc)
 	}
 
 	postInfoAgents, _ := os.Stat(agentsPath)
 	if !postInfoAgents.ModTime().After(preMTimeAgents) {
 		t.Errorf("AGENTS.md mtime must advance past pre-seed (proves the writer touched the file mid-session and then restored); preSeed=%v post=%v", preMTimeAgents, postInfoAgents.ModTime())
 	}
-	postInfoPlugin, _ := os.Stat(pluginPath)
-	if !postInfoPlugin.ModTime().After(preMTimePlugin) {
-		t.Errorf("deny-builtin.js mtime must advance past pre-seed (proves the deny-plugin writer fired and then restored); preSeed=%v post=%v", preMTimePlugin, postInfoPlugin.ModTime())
+	postInfoJsonc, _ := os.Stat(jsoncPath)
+	if !postInfoJsonc.ModTime().After(preMTimeJsonc) {
+		t.Errorf("opencode.jsonc mtime must advance past pre-seed (proves the merged-config writer fired and then restored); preSeed=%v post=%v", preMTimeJsonc, postInfoJsonc.ModTime())
 	}
 }

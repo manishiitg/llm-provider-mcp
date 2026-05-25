@@ -27,8 +27,9 @@ projection is useful when:
 - An operator auditing a running session wants to see the prompt /
   MCP config / hooks at the conventional path without spelunking
   through tmux capture or temp files.
-- A CLI's hook system *only* loads from on-disk config (opencode hooks
-  require a plugin file; no in-flag path exists).
+- A CLI's hook/permission system *only* loads from on-disk config
+  (opencode's tool-disable block lives in `opencode.jsonc`; no in-flag
+  path exists).
 
 Off by default because workspace writes carry a non-zero risk surface
 (crash-window during write/restore, discovery prompts on some CLIs).
@@ -45,7 +46,7 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | Claude Code | `.claude/rules/mlp-session-<hex>.md`        | `.mcp.json` *(unsafe)*                          | n/a (use `--allowed-tools` / `--disallowed-tools`)                    |
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
-| OpenCode    | `AGENTS.md`                                 | `opencode.jsonc` (`"mcp"` key, separate option) | `.opencode/plugins/deny-builtin.js` (ES-module plugin)                |
+| OpenCode    | `AGENTS.md`                                 | `opencode.jsonc` (`"mcp"` key, merged with deny block) | `opencode.jsonc` `"tools": {"read": false, ...}` block (config-only, no plugin) |
 | Cursor      | `.cursor/rules/mlp-session-<hex>.md`        | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
 | Antigravity | `.agents/rules/mlp-system-<hex>.md`         | `.agents/mcp_config.json`                       | `.agents/hooks.json` (deny entries inline)                            |
 
@@ -178,8 +179,14 @@ their live CLIs and ship enabled-by-default under the flag:
   hooks block without a review screen, even with `hooks.BeforeTool`
   entries. (Notable: gemini behaves better here than codex despite
   using the same hook event family.)
-- **OpenCode's `.opencode/plugins/deny-builtin.js`** — opencode
-  auto-loads anything in `.opencode/plugins/`, no discovery prompt.
+- **OpenCode's `opencode.jsonc` `"tools": {…false}` block** — opencode
+  honors the config-based tool-disable without any plugin auto-load
+  or discovery prompt. Earlier versions of this adapter dropped a JS
+  plugin at `.opencode/plugins/deny-builtin.js`; that approach was
+  abandoned after empirical testing showed opencode 1.15.4 didn't
+  reliably fire the plugin's `tool.execute.before` hook. The
+  config-block path is opencode's documented happy path and verified
+  live by `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires`.
 - **Claude's `.claude/rules/mlp-session-<hex>.md`** — Claude's
   per-rule loading silently picks up new files.
 
@@ -192,7 +199,10 @@ their live CLIs and ship enabled-by-default under the flag:
   no-op.
 - Format invariants: codex TOML emitter (key ordering, bare vs quoted
   keys, env subtable), gemini hooks matcher covers documented tool
-  names, opencode plugin uses `tool.execute.before`.
+  names, opencode `"tools"` block disables `read`/`write`/`bash` and
+  friends (and uses `apply_patch`, not `patch`), opencode MCP entries
+  merge caller-side `{command, args}` into the single-array
+  `command: ["exe", arg, …]` shape opencode 1.15.4 requires.
 
 ### Real-CLI E2E (gated per CLI)
 
@@ -218,18 +228,14 @@ mode is in use, and asserts:
 
 ### What's NOT covered yet
 
-- **Behavioral deny-hook verification.** No test proves that prompting
-  the CLI to invoke a built-in tool actually results in the deny hook
-  firing and the tool call getting vetoed. The lifecycle tests cover
-  "the file we wrote lands in the right place with the right shape";
-  the missing piece is "the CLI honors the config we drop." This is
-  flaky to test (model decides whether to invoke a built-in) and is
-  the next gap if behavioral coverage becomes important.
-- **Cross-CLI plugin-format validation.** Our opencode deny-plugin
-  source was written against the implied shape from the `.env`
-  example in `opencode.ai/docs/plugins` — the default-export + record
-  shape has not been independently verified against opencode's SDK
-  type definitions.
+- **Behavioral deny-hook verification for non-OpenCode CLIs.**
+  OpenCode is now covered by
+  `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires` (asserts the
+  sentinel file content cannot leak when the `tools` block disables
+  `read`). Equivalent behavioral tests for codex/gemini/cursor still
+  don't exist; the missing piece for those CLIs is "the CLI honors
+  the deny config we drop", as distinct from "the file we wrote
+  lands in the right place."
 
 ## 7. Adding a new CLI
 

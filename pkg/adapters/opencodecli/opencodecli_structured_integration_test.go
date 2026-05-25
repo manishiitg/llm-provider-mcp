@@ -19,7 +19,7 @@ func TestOpenCodeCLIStructuredBasicRun(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -49,7 +49,7 @@ func TestOpenCodeCLIStructuredTokenUsage(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -82,7 +82,7 @@ func TestOpenCodeCLIStructuredSystemPrompt(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -116,7 +116,7 @@ func TestOpenCodeCLIStructuredStreaming(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -159,7 +159,7 @@ func TestOpenCodeCLIStructuredToolUseProducesToolChunks(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -206,7 +206,7 @@ func TestOpenCodeCLIStructuredSessionIDInMetadata(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -243,7 +243,7 @@ func TestOpenCodeCLIStructuredMultiTurnResume(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 
 	canary := "CANARY_" + opencodeRandomHex(6)
 
@@ -304,7 +304,7 @@ func TestOpenCodeCLIStructuredNoInternalMemory(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 
 	secret := "XYZZY_" + opencodeRandomHex(6)
 
@@ -356,7 +356,7 @@ func TestOpenCodeCLIStructuredNoInjectedStrings(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -384,10 +384,21 @@ func TestOpenCodeCLIStructuredNoInjectedStrings(t *testing.T) {
 func TestOpenCodeCLIStructuredModelOverride(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 
+	// This test pins the --model flag to a specific PAID model
+	// (anthropic/claude-sonnet-4-6) to prove WithOpenCodeModel routes
+	// through; the only way to verify a model override is to use a
+	// model that requires explicit selection, and the free tier
+	// would defeat that. Needs Anthropic creds available to opencode
+	// (either an authenticated `opencode auth login anthropic` or an
+	// ANTHROPIC_API_KEY env var). Skip if neither is present.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("RUN_OPENCODE_PAID_MODEL_OVERRIDE") == "" {
+		t.Skip("set ANTHROPIC_API_KEY or RUN_OPENCODE_PAID_MODEL_OVERRIDE=1 (after `opencode auth login anthropic`) to run model-override test")
+	}
+
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -417,7 +428,7 @@ func TestOpenCodeCLIStructuredModelOverride(t *testing.T) {
 
 func TestOpenCodeCLIStructuredErrorHandling(t *testing.T) {
 	t.Run("missing binary returns clear error", func(t *testing.T) {
-		adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+		adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 
 		origPath := os.Getenv("PATH")
 		t.Setenv("PATH", "/nonexistent")
@@ -454,7 +465,7 @@ func TestOpenCodeCLIStructuredMCPBridge(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	bridgeToken := "OPENCODE_STRUCT_BRIDGE_" + opencodeRandomHex(4)
 	mcpServerPath := writeOpenCodeContractMCPServer(t)
 
@@ -590,7 +601,7 @@ func TestOpenCodeCLIStructuredToolDisable(t *testing.T) {
 		t.Fatalf("write opencode.jsonc: %v", err)
 	}
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -649,7 +660,7 @@ func TestOpenCodeCLIStructuredSandboxedMCP(t *testing.T) {
 			t.Fatalf("write opencode.jsonc: %v", err)
 		}
 
-		adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+		adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -694,7 +705,7 @@ func TestOpenCodeCLIStructuredGracefulCancel(t *testing.T) {
 	workspaceDir := t.TempDir()
 	gitInit(t, workspaceDir)
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

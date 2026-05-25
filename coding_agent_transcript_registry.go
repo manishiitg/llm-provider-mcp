@@ -30,6 +30,14 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	ProviderGeminiCLI: {
 		PathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
 	},
+	ProviderOpenCodeCLI: {
+		// Unique among readers: opencode persists into a single
+		// SQLite file (~/.local/share/opencode/opencode.db) and we
+		// query it indirectly by shelling out to `opencode export
+		// <sessionID>`. The CLI subcommand is part of the stable
+		// public surface so we don't take a sqlite3 dep.
+		PathTemplate: "opencode export <sessionID>  // reads ~/.local/share/opencode/opencode.db via the CLI's export subcommand",
+	},
 }
 
 // TranscriptReaderFor returns the transcript reader metadata for a provider,

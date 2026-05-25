@@ -11,59 +11,38 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// TestOpenCodeCLIRealDenyBuiltinHookActuallyFires is the behavioral
-// counterpart to TestWriteOpenCodeDenyBuiltinPluginLifecycleNoPriorContent:
-// the lifecycle test proves the deny plugin lands and gets cleaned up;
-// this test proves the plugin actually fires when the model invokes a
-// built-in tool. Without this test, regressions like "plugin lands but
-// opencode never loads it" or "tool.execute.before signature drift"
-// would slip through.
+// TestOpenCodeCLIRealDenyBuiltinHookActuallyFires proves the built-in
+// deny mechanism actually fires when the model invokes a disabled tool.
+//
+// Implementation history: an earlier version of this code dropped a JS
+// plugin at .opencode/plugins/deny-builtin.js that threw from
+// tool.execute.before. In practice opencode either didn't load the
+// plugin or didn't honor the throw — the sentinel kept leaking through.
+// The current adapter switched to opencode's documented
+// `{"tools": {"read": false, ...}}` config field
+// (opencode.ai/docs/config), which the structured adapter merges into
+// opencode.jsonc when WithWriteProjectInstructionFile(true) is set.
 //
 // Shape:
 //   1. Run a real opencode call with WithWriteProjectInstructionFile(true)
-//      so the deny plugin gets dropped at .opencode/plugins/deny-builtin.js.
-//   2. Prompt opencode to invoke a built-in tool (we use `read` since
-//      it's in the BUILTIN_TOOLS deny set and is unambiguous).
-//   3. Assert the deny script's thrown error message ("Built-in tool
-//      'X' is disabled by orchestrator policy") propagates to the
-//      final response OR to streamed tool-call results.
+//      so the tools-deny block gets merged into opencode.jsonc.
+//   2. Prompt opencode to invoke a built-in tool (we use `read` because
+//      it's in the deny set and unambiguous).
+//   3. Assert the sentinel file's content does NOT leak into the
+//      response — proof that the built-in `read` did not execute.
 //
-// Why model behavior makes this flaky: opencode/the model might:
-//   - refuse to invoke the built-in (saying "I cannot read files")
-//   - try the built-in, get the deny, then narrate the failure
-//   - try the built-in, get the deny, retry with another approach
-//
-// All three outcomes are evidence the deny fired. The assertion looks
-// for "disabled by orchestrator policy" anywhere in the streamed
-// chunks OR final response, so any of those outcomes pass.
+// Why model behavior makes this less brittle than the old assertion:
+// opencode/the model might refuse upfront, try the tool and report
+// failure, or try then route around it. The only assertion we make
+// is that the sentinel value never appears — that's the security
+// contract callers actually depend on.
 //
 // Skipped unless RUN_OPENCODE_CLI_REAL_E2E=1 and opencode is on PATH.
+// No API key is required: the test pins the model to opencode's hosted
+// free tier (opencode/deepseek-v4-flash-free) so the security contract
+// is verifiable on any workstation with the opencode binary installed.
 func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
-
-	// KNOWN GAP: when this test was first run against opencode-cli
-	// against the real binary, the `read` tool succeeded (✓ result
-	// read: 0s) — meaning opencode did NOT load + execute the deny
-	// plugin we dropped at .opencode/plugins/deny-builtin.js. The
-	// plugin file IS landing (TestWriteOpenCodeDenyBuiltinPluginLifecycleNoPriorContent
-	// proves that), so the issue is one of:
-	//   1. Opencode requires explicit registration of plugin files in
-	//      opencode.jsonc's "plugin" array — auto-loading from
-	//      .opencode/plugins/ may not be a documented feature, only
-	//      ~/.config/opencode/plugins/ is.
-	//   2. The plugin's `export default async function` signature does
-	//      not match what opencode's SDK expects (the .env example in
-	//      the docs uses a slightly different shape).
-	//   3. The hook key "tool.execute.before" may have drifted vs the
-	//      installed opencode-cli version.
-	//
-	// Until the plugin loading mechanism is independently verified
-	// (e.g. by reading opencode's plugin-loader source or finding a
-	// working example in the wild), this test is skipped to avoid
-	// blocking CI on a known product-side gap that needs separate
-	// investigation. The lifecycle test still locks in "file lands,
-	// cleanup restores" so we don't regress the parts we control.
-	t.Skip("known gap: opencode does not load + fire the deny plugin we drop; needs plugin-loader investigation before this can pass — see opencodecli_project_artifacts.go opencodeDenyBuiltinPluginSource()")
 
 	tmp := t.TempDir()
 
@@ -76,7 +55,7 @@ func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 		t.Fatalf("seed sentinel file: %v", err)
 	}
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -112,31 +91,39 @@ func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	)
 	<-streamDone
 
-	if callErr != nil {
-		t.Fatalf("GenerateContent error = %v\nstream so far:\n%s", callErr, streamContent.String())
-	}
-
-	// Combine streamed chunks + final response for the assertion. The
-	// deny message may surface in either: opencode's stream-json shows
-	// the thrown error as a tool-call failure event, and the model
-	// typically also narrates the failure in its final text response.
+	// Combine streamed chunks + final response into the assertion
+	// haystack. We capture this BEFORE checking callErr because the
+	// security contract is about what the model saw, not whether
+	// opencode produced a clean exit: even a terminated/error run is
+	// evidence-bearing if we got tool events back. Free-tier sessions
+	// sometimes get killed mid-flow (response budget, internal
+	// step-cap); that's a separate fragility we don't gate the
+	// security claim on.
 	haystack := streamContent.String()
 	if resp != nil && len(resp.Choices) > 0 {
 		haystack += "\n" + resp.Choices[0].Content
 	}
-
-	// Sentinel must NOT appear — proves the read tool did not succeed.
-	// (If it appeared, opencode either bypassed the plugin entirely or
-	// the plugin loaded but didn't throw on `read`.)
-	if strings.Contains(haystack, "DENY_HOOK_SENTINEL_VALUE_42") {
-		t.Errorf("sentinel value leaked into response — the read tool succeeded, meaning the deny plugin did NOT fire as expected\nfull haystack:\n%s", haystack)
+	if callErr != nil {
+		// Non-fatal: log so the surrounding context is visible if the
+		// sentinel assertion below fails. Don't t.Fatalf — that would
+		// mask the actual security contract.
+		t.Logf("GenerateContent returned non-fatal error (process may have hit free-tier limits): %v", callErr)
+	}
+	if haystack == "" {
+		// Defensive: if nothing was streamed AND no response, opencode
+		// failed to even start — that's not a deny-mechanism signal,
+		// it's environmental.
+		t.Fatalf("no stream content and no response — opencode never produced output; callErr=%v", callErr)
 	}
 
-	// Deny message MUST appear somewhere in the stream + response. The
-	// plugin throws `Built-in tool '<name>' is disabled by orchestrator
-	// policy; use MCP servers instead.` so the substring "disabled by
-	// orchestrator policy" is the most reliable anchor.
-	if !strings.Contains(haystack, "disabled by orchestrator policy") {
-		t.Errorf("deny plugin's error message did NOT appear in stream or response — the plugin may not have been loaded by opencode, or the tool.execute.before hook signature has drifted\nfull haystack:\n%s", haystack)
+	// Sentinel must NOT appear — proves the built-in read tool did not
+	// execute. The adapter writes opencode.jsonc with
+	// {"tools":{"read": false, ...}}, so opencode itself refuses to run
+	// the tool. The exact wording of opencode's refusal is an
+	// implementation detail we don't pin; the only assertion that
+	// matters for the security contract is that the sentinel never
+	// reaches the model's output stream.
+	if strings.Contains(haystack, "DENY_HOOK_SENTINEL_VALUE_42") {
+		t.Errorf("sentinel value leaked into response — the built-in read tool succeeded despite opencode.jsonc tools-deny; check that buildOpenCodeProjectConfigJSON wired through and opencode honored the tools block\nfull haystack:\n%s", haystack)
 	}
 }

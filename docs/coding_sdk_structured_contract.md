@@ -186,8 +186,19 @@ The adapter must:
 ### 9. Process Shutdown Contract
 
 Every structured CLI subprocess MUST be torn down by the adapter using
-this exact sequence once a terminal event (`result` / `task_complete` /
-`done` / equivalent) is observed on stdout:
+this exact sequence once a **terminal-state** event (`result` /
+`task_complete` / `done` / opencode `step_finish` with
+`reason != "tool-calls"` / equivalent) is observed on stdout:
+
+**OpenCode-specific carve-out:** opencode emits `step_finish` between
+multi-step turns (e.g. before a tool call, then again after the tool
+result feeds back into the next step). Only the final step_finish has
+`reason == "stop"` (or `"length"`, `"content_filter"`, etc.).
+Intermediate ones have `reason == "tool-calls"` and MUST NOT trigger
+the shutdown sequence — terminating opencode there cuts the turn off
+before the final assistant text is produced (regression history:
+TestOpenCodeCLIStructuredMCPBridge silently failed for months because
+the adapter terminated on the post-tool-call step_finish).
 
 ```
 SIGTERM  →  10s  →  SIGTERM  →  10s  →  SIGTERM  →  5s  →  SIGKILL
@@ -419,9 +430,11 @@ RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/gem
 ### OpenCode CLI (`opencode run --format json`)
 
 ```sh
-RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
-  -run 'TestOpenCodeCLIStructured|TestOpenCodeCLIRealImagePath|TestOpenCodeCLIRealSearchWeb' \
-  -v -timeout 10m
+# Free-tier by default — no API key required. Pinned to
+# opencode/deepseek-v4-flash-free via the freeTierTestModel() helper
+# in opencodecli_real_test.go. Override the model with
+# OPENCODE_CLI_REAL_E2E_MODEL=<provider/model> for paid-tier coverage.
+RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli -v -timeout 15m
 ```
 
 | Area | Test |
@@ -433,20 +446,27 @@ RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli \
 | Tool call events | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
 | Session metadata | `TestOpenCodeCLIStructuredSessionIDInMetadata` |
 | Multi-step tool use | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
-| Model override | `TestOpenCodeCLIStructuredModelOverride` |
-| Image path | `TestOpenCodeCLIRealImagePathAnalysis` |
+| Model override | `TestOpenCodeCLIStructuredModelOverride` (skipped on free tier; needs `ANTHROPIC_API_KEY` or `RUN_OPENCODE_PAID_MODEL_OVERRIDE=1`) |
+| Image path | `TestOpenCodeCLIRealImagePathAnalysis` (skipped when running on the default free-tier model; needs a vision-capable override via `OPENCODE_CLI_REAL_E2E_MODEL`) |
 | Web search | `TestOpenCodeCLIRealSearchWeb` |
 | Live web search | `TestOpenCodeCLIRealSearchWebLiveData` |
 | Error handling | `TestOpenCodeCLIStructuredErrorHandling` |
-| MCP bridge | `TestOpenCodeCLIStructuredMCPBridge` |
+| MCP bridge | `TestOpenCodeCLIStructuredMCPBridge` (exercises canonical `{"mcpServers":{name:{"command":"<exe>","args":[...]}}}` input → opencode 1.15.4's `{"mcp":{name:{"command":["<exe>",...]}}}` after adapter merge) |
 | Multi-turn resume | `TestOpenCodeCLIStructuredMultiTurnResume` |
 | No injected strings | `TestOpenCodeCLIStructuredNoInjectedStrings` |
 | No internal memory | `TestOpenCodeCLIStructuredNoInternalMemory` |
-| Tool disable | `TestOpenCodeCLIStructuredToolDisable` |
+| Tool disable (behavioral) | `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires` (asserts sentinel does not leak when `WithWriteProjectInstructionFile(true)` writes the `tools:{read:false,...}` block into `opencode.jsonc`) |
+| Tool disable (config) | `TestOpenCodeCLIStructuredToolDisable` |
 | Sandboxed MCP | `TestOpenCodeCLIStructuredSandboxedMCP` (limitation: `*:deny` blocks all including MCP) |
+| Project-artifacts lifecycle | `TestOpenCodeCLIRealProjectArtifactsLifecycle` (operator-owned `AGENTS.md` and `opencode.jsonc` both byte-restored after the adapter's merged config write) |
+| Multi-turn memory (builder layer) | `TestMultiTurnChatE2E_OpenCode` in `mcp-agent-builder-go/agent_go/cmd/server/` (3 turns via native `--session`, asserts intermediate-message splice + non-zero token surface via `opencode export <id>` sidecar) |
 | Graceful cancel | `TestOpenCodeCLIStructuredGracefulCancel` |
 
-**Gaps:** none.
+**Gaps:** free-tier endpoint does not emit `step_finish` events for short
+responses, so the adapter falls back to `opencode export <sessionID>` after
+every turn to recover tokens + conversation history. Paid sub-providers
+(Kimi, GLM, etc.) surface tokens through the stream-json path directly and
+do not need the export fallback.
 
 ## Full Provider Coverage Matrix
 

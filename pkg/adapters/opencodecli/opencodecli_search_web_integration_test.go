@@ -11,7 +11,7 @@ func TestOpenCodeCLIRealSearchWeb(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupOpenCodeCLIInteractiveSessions(context.Background()) })
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -30,7 +30,7 @@ func TestOpenCodeCLIRealSearchWebLiveData(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupOpenCodeCLIInteractiveSessions(context.Background()) })
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", freeTierTestModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 

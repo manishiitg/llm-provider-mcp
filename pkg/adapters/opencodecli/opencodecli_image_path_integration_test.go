@@ -19,6 +19,16 @@ import (
 func TestOpenCodeCLIRealImagePathAnalysis(t *testing.T) {
 	requireRealOpenCodeCLIE2E(t)
 
+	// Vision check: needs a model that actually looks at PNG bytes.
+	// The default free-tier model (deepseek-v4-flash-free) doesn't
+	// have vision and reliably says "black" for any image. Operators
+	// who want to run this test must point at a vision-capable model
+	// (e.g. a paid Claude/Gemini/GPT-4o tile) via the env override.
+	model := freeTierTestModel()
+	if model == "opencode/deepseek-v4-flash-free" {
+		t.Skip("set OPENCODE_CLI_REAL_E2E_MODEL=<vision-capable model> to run the image-path analysis test; the default free-tier model lacks vision")
+	}
+
 	workspaceDir := t.TempDir()
 	if out, err := exec.CommandContext(context.Background(), "git", "init", workspaceDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
@@ -26,7 +36,7 @@ func TestOpenCodeCLIRealImagePathAnalysis(t *testing.T) {
 	imagePath := filepath.Join(workspaceDir, "sample.png")
 	writeSolidOpenCodeTestPNG(t, imagePath, color.RGBA{R: 255, A: 255})
 
-	adapter := NewOpenCodeCLIAdapter("", "opencode-cli", &MockLogger{})
+	adapter := NewOpenCodeCLIAdapter("", model, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
