@@ -76,9 +76,26 @@ func ContinueCodingAgentSession(ctx context.Context, model llmtypes.Model, handl
 	if err != nil {
 		return nil, err
 	}
-	messages := []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, message),
+	// Prepend a System message when the caller provided one via
+	// WithCodingProviderLaunchSystemPrompt. Without this, every
+	// continuation turn arrives at the adapter with only a Human
+	// message → split*SystemPrompt returns empty → prepare*ProjectFiles
+	// skips writing the rule file (.cursor/rules/mlp-system.mdc,
+	// .agents/rules/mlp-system.md, AGENTS.md, etc.) → the adapter's
+	// "launch configuration changed" guard tears down the prior tmux
+	// session and re-acquires with empty systemPrompt mid-conversation.
+	probe := &llmtypes.CallOptions{}
+	for _, opt := range continuationOptions {
+		opt(probe)
 	}
+	messages := []llmtypes.MessageContent{}
+	if systemPrompt := strings.TrimSpace(llmtypes.CodingProviderLaunchSystemPromptFromOptions(probe)); systemPrompt != "" {
+		messages = append(messages, llmtypes.MessageContent{
+			Role:  llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}},
+		})
+	}
+	messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, message))
 	resp, err := model.GenerateContent(ctx, messages, continuationOptions...)
 	if err == nil || !isCodingAgentContinuationRetryableTmuxLoss(err) {
 		return resp, err
