@@ -79,6 +79,8 @@ var agyWorkspaceMCPConfigRegistry = struct {
 	leases: map[string]map[*agyInteractiveSession]string{},
 }
 
+var agyStatuslineCaptureMu sync.Mutex
+
 var errAgyAuthRequired = errors.New("Antigravity CLI authentication required")
 
 func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
@@ -285,23 +287,24 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 		additional["agy_interactive_retention_seconds"] = int(agyInteractiveRetention().Seconds())
 	}
 
-	// Agy's tmux TUI does not expose exact token counts in a format the
-	// adapter can read (the running counter on the "⠰⠰ Composing 1.87k
-	// tokens" line is cleared once the turn settles). We approximate so the
-	// cost ledger receives a non-zero row rather than a bare timestamp.
-	// The approximation is char-based (≈ 4 chars/token for English prose,
-	// the standard fallback used elsewhere in this codebase); cost is then
-	// computed via the same ComputeUSDCostFromMetadata path the structured
-	// adapter uses. Numbers may be ±20-30% off the true tokenizer counts —
-	// good enough for cost-tracking trends, not for fine-grained per-call
-	// billing reconciliation.
-	inputTokens, outputTokens := estimateAgyTmuxTokens(prompt, content)
+	inputTokens, outputTokens, cacheReadTokens := agyTmuxTokenCounts(prompt, content, nil, additional)
+	if !persistent {
+		if statuslineUsage, ok := captureAgyStatuslineUsageAtIdle(callCtx, session, c.logger); ok {
+			inputTokens, outputTokens, cacheReadTokens = agyTmuxTokenCounts(prompt, content, &statuslineUsage, additional)
+		}
+	}
 	totalTokens := inputTokens + outputTokens
+	if cacheReadTokens > 0 {
+		totalTokens += cacheReadTokens
+	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrFromInt(inputTokens),
 		OutputTokens: intPtrFromInt(outputTokens),
 		TotalTokens:  intPtrFromInt(totalTokens),
 		Additional:   additional,
+	}
+	if cacheReadTokens > 0 {
+		genInfo.CachedContentTokens = intPtrFromInt(cacheReadTokens)
 	}
 	costLookupModel := c.modelID
 	if costLookupModel != "" {
@@ -345,14 +348,46 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 	}, nil
 }
 
+type agyStatuslineUsage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+}
+
+func agyTmuxTokenCounts(prompt, content string, statuslineUsage *agyStatuslineUsage, additional map[string]interface{}) (int, int, int) {
+	if statuslineUsage != nil {
+		estimatedInput, estimatedOutput := estimateAgyTmuxTokens(prompt, content)
+		inputTokens := statuslineUsage.InputTokens + statuslineUsage.CacheCreationInputTokens
+		outputTokens := statuslineUsage.OutputTokens
+		if inputTokens <= 0 {
+			inputTokens = estimatedInput
+		}
+		if outputTokens <= 0 {
+			outputTokens = estimatedOutput
+		}
+		additional["agy_token_usage_source"] = "statusline"
+		additional["agy_statusline_input_tokens"] = statuslineUsage.InputTokens
+		additional["agy_statusline_output_tokens"] = statuslineUsage.OutputTokens
+		if statuslineUsage.CacheCreationInputTokens > 0 {
+			additional["cache_creation_input_tokens"] = statuslineUsage.CacheCreationInputTokens
+		}
+		if statuslineUsage.CacheReadInputTokens > 0 {
+			additional["cache_read_input_tokens"] = statuslineUsage.CacheReadInputTokens
+		}
+		return inputTokens, outputTokens, statuslineUsage.CacheReadInputTokens
+	}
+	inputTokens, outputTokens := estimateAgyTmuxTokens(prompt, content)
+	additional["agy_token_usage_source"] = "estimated"
+	return inputTokens, outputTokens, 0
+}
+
 // estimateAgyTmuxTokens returns (input, output) token counts estimated
-// from prompt/response character lengths. Agy's tmux TUI does not surface
-// exact token counts in a parseable form, so this is the best the adapter
-// can do without re-implementing the model's tokenizer. The 4-chars-per-
-// token heuristic matches what other tmux adapters fall back to when their
-// CLI's JSON side-stream is unavailable. Both halves round up so a tiny
-// turn still records >0 tokens, otherwise ComputeUSDCostFromMetadata would
-// return 0 and the ledger row stays bare.
+// from prompt/response character lengths. Agy falls back to this when the
+// bounded-session statusline snapshot is unavailable, and for persistent
+// sessions where mutating the user's live statusline would be surprising.
+// The 4-chars-per-token heuristic matches what other tmux adapters fall
+// back to when their CLI's JSON side-stream is unavailable.
 func estimateAgyTmuxTokens(prompt, content string) (int, int) {
 	estimate := func(s string) int {
 		n := len(s)
@@ -367,6 +402,232 @@ func estimateAgyTmuxTokens(prompt, content string) (int, int) {
 
 func intPtrFromInt(v int) *int {
 	return &v
+}
+
+type agySettingsSnapshot struct {
+	path    string
+	exists  bool
+	body    []byte
+	mode    os.FileMode
+	restore bool
+}
+
+func captureAgyStatuslineUsageAtIdle(ctx context.Context, session *agyInteractiveSession, logger interfaces.Logger) (agyStatuslineUsage, bool) {
+	if session == nil || strings.TrimSpace(session.tmuxSessionName) == "" {
+		return agyStatuslineUsage{}, false
+	}
+
+	agyStatuslineCaptureMu.Lock()
+	defer agyStatuslineCaptureMu.Unlock()
+
+	captureCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	snapshot, err := snapshotAgySettingsFile()
+	if err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "snapshot settings", err)
+		return agyStatuslineUsage{}, false
+	}
+	tempDir := ""
+	defer func() {
+		if snapshot.restore {
+			if err := restoreAgySettingsFile(snapshot); err != nil {
+				logAgyStatuslineUsageCaptureError(logger, "restore settings", err)
+			}
+		}
+		if tempDir != "" {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	if err := waitForAgyPrompt(captureCtx, session.tmuxSessionName, nil); err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "wait for prompt", err)
+		return agyStatuslineUsage{}, false
+	}
+
+	tempDir, err = os.MkdirTemp("", "agy-statusline-usage-*")
+	if err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "create temp dir", err)
+		return agyStatuslineUsage{}, false
+	}
+	outputPath := filepath.Join(tempDir, "usage.json")
+	scriptPath := filepath.Join(tempDir, "capture.sh")
+	if err := os.WriteFile(scriptPath, []byte(buildAgyStatuslineCaptureScript(outputPath)), 0o700); err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "write capture script", err)
+		return agyStatuslineUsage{}, false
+	}
+
+	command := "/statusline sh " + agyShellQuote(scriptPath)
+	if err := typeAgyInputToTmux(captureCtx, session.tmuxSessionName, command); err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "submit statusline command", err)
+		return agyStatuslineUsage{}, false
+	}
+	raw, err := waitForAgyStatuslineUsageFile(captureCtx, outputPath)
+	if err != nil {
+		logAgyStatuslineUsageCaptureError(logger, "read statusline usage", err)
+		return agyStatuslineUsage{}, false
+	}
+	usage, ok := parseAgyStatuslineUsageJSON(raw)
+	if !ok {
+		logAgyStatuslineUsageCaptureError(logger, "parse statusline usage", fmt.Errorf("no token counts in statusline payload"))
+		return agyStatuslineUsage{}, false
+	}
+	return usage, true
+}
+
+func snapshotAgySettingsFile() (agySettingsSnapshot, error) {
+	path := filepath.Join(agyAppDataDir(), "settings.json")
+	snapshot := agySettingsSnapshot{path: path, restore: true, mode: 0o600}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.exists = true
+	snapshot.body = body
+	snapshot.mode = info.Mode().Perm()
+	if snapshot.mode == 0 {
+		snapshot.mode = 0o600
+	}
+	return snapshot, nil
+}
+
+func restoreAgySettingsFile(snapshot agySettingsSnapshot) error {
+	if snapshot.path == "" {
+		return nil
+	}
+	if snapshot.exists {
+		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+			return err
+		}
+		mode := snapshot.mode
+		if mode == 0 {
+			mode = 0o600
+		}
+		return os.WriteFile(snapshot.path, snapshot.body, mode)
+	}
+	if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func buildAgyStatuslineCaptureScript(outputPath string) string {
+	quotedOutputPath := agyShellQuote(outputPath)
+	return `#!/bin/sh
+out=` + quotedOutputPath + `
+payload=$(cat)
+input_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"current_usage"[[:space:]]*:[[:space:]]*{[^}]*"input_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+output_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"current_usage"[[:space:]]*:[[:space:]]*{[^}]*"output_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+cache_creation_input_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"current_usage"[[:space:]]*:[[:space:]]*{[^}]*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+cache_read_input_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"current_usage"[[:space:]]*:[[:space:]]*{[^}]*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+total_input_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"total_input_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+total_output_tokens=$(printf '%s\n' "$payload" | sed -n 's/.*"total_output_tokens"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+: "${input_tokens:=0}"
+: "${output_tokens:=0}"
+: "${cache_creation_input_tokens:=0}"
+: "${cache_read_input_tokens:=0}"
+: "${total_input_tokens:=0}"
+: "${total_output_tokens:=0}"
+tmp="${out}.$$"
+printf '{"input_tokens":%s,"output_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"total_input_tokens":%s,"total_output_tokens":%s}\n' "$input_tokens" "$output_tokens" "$cache_creation_input_tokens" "$cache_read_input_tokens" "$total_input_tokens" "$total_output_tokens" > "$tmp"
+mv "$tmp" "$out"
+`
+}
+
+func waitForAgyStatuslineUsageFile(ctx context.Context, path string) ([]byte, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		raw, err := os.ReadFile(path)
+		if err == nil && len(bytes.TrimSpace(raw)) > 0 {
+			return raw, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return nil, errors.Join(ctx.Err(), fmt.Errorf("last read error: %w", lastErr))
+			}
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func parseAgyStatuslineUsageJSON(raw []byte) (agyStatuslineUsage, bool) {
+	type currentUsage struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	}
+	var payload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		ContextWindow            struct {
+			TotalInputTokens  int          `json:"total_input_tokens"`
+			TotalOutputTokens int          `json:"total_output_tokens"`
+			CurrentUsage      currentUsage `json:"current_usage"`
+		} `json:"context_window"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &payload); err != nil {
+		return agyStatuslineUsage{}, false
+	}
+
+	usage := agyStatuslineUsage{
+		InputTokens:              payload.InputTokens,
+		OutputTokens:             payload.OutputTokens,
+		CacheCreationInputTokens: payload.CacheCreationInputTokens,
+		CacheReadInputTokens:     payload.CacheReadInputTokens,
+	}
+	current := payload.ContextWindow.CurrentUsage
+	if current.InputTokens > 0 || current.OutputTokens > 0 || current.CacheCreationInputTokens > 0 || current.CacheReadInputTokens > 0 {
+		usage = agyStatuslineUsage{
+			InputTokens:              current.InputTokens,
+			OutputTokens:             current.OutputTokens,
+			CacheCreationInputTokens: current.CacheCreationInputTokens,
+			CacheReadInputTokens:     current.CacheReadInputTokens,
+		}
+	}
+	if usage.InputTokens <= 0 {
+		if payload.ContextWindow.TotalInputTokens > 0 {
+			usage.InputTokens = payload.ContextWindow.TotalInputTokens
+		} else if payload.TotalInputTokens > 0 {
+			usage.InputTokens = payload.TotalInputTokens
+		}
+	}
+	if usage.OutputTokens <= 0 {
+		if payload.ContextWindow.TotalOutputTokens > 0 {
+			usage.OutputTokens = payload.ContextWindow.TotalOutputTokens
+		} else if payload.TotalOutputTokens > 0 {
+			usage.OutputTokens = payload.TotalOutputTokens
+		}
+	}
+	if usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CacheCreationInputTokens <= 0 && usage.CacheReadInputTokens <= 0 {
+		return agyStatuslineUsage{}, false
+	}
+	return usage, true
+}
+
+func logAgyStatuslineUsageCaptureError(logger interfaces.Logger, stage string, err error) {
+	if logger == nil || err == nil {
+		return
+	}
+	logger.Debugf("Agy statusline usage capture skipped at %s: %v", stage, err)
 }
 
 // acquireAgyInteractiveSession returns with session.mu held.
@@ -488,7 +749,12 @@ func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, sy
 
 	env := []string{}
 	if strings.TrimSpace(c.apiKey) != "" {
-		env = append(env, "AGY_API_KEY="+strings.TrimSpace(c.apiKey))
+		apiKey := strings.TrimSpace(c.apiKey)
+		env = append(env,
+			"AGY_API_KEY="+apiKey,
+			"GOOGLE_API_KEY="+apiKey,
+			"GEMINI_API_KEY="+apiKey,
+		)
 	}
 	return args, env, workingDir, cleanupFiles, nil
 }
@@ -1733,6 +1999,18 @@ func isAgyTUILine(line string) bool {
 func isAgyToolStatusLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
+	nativeToolLine := strings.TrimSpace(strings.TrimLeft(trimmed, "●○◦* "))
+	nativeToolLower := strings.ToLower(nativeToolLine)
+	if strings.HasPrefix(nativeToolLower, "bash(") ||
+		strings.HasPrefix(nativeToolLower, "generateimage(") ||
+		strings.HasPrefix(nativeToolLower, "listpermissions(") ||
+		strings.HasPrefix(nativeToolLower, "read(") ||
+		strings.HasPrefix(nativeToolLower, "write(") ||
+		strings.HasPrefix(nativeToolLower, "edit(") ||
+		strings.HasPrefix(nativeToolLower, "grep(") ||
+		strings.HasPrefix(nativeToolLower, "glob(") {
+		return true
+	}
 	if strings.HasPrefix(lower, "thinking") ||
 		strings.HasPrefix(lower, "working") ||
 		strings.HasPrefix(lower, "running") ||
@@ -1955,8 +2233,9 @@ func hasAgyReadyPrompt(captured string) bool {
 	}
 	// Agy leaves stale status lines (Running..., Thinking...) in the pane
 	// after a tool finishes. Once the → prompt is visible, stale activity
-	// text should not keep the turn open forever.
-	if hasAgyActivity(captured) && !strings.Contains(cleaned, "→") {
+	// text should not keep the turn open forever. Recent Agy builds can use a
+	// plain ">" input line after completion, so accept either structural prompt.
+	if hasAgyActivity(captured) && !hasAgyReadyInputPromptLine(cleaned) {
 		return false
 	}
 	return true
@@ -1965,18 +2244,14 @@ func hasAgyReadyPrompt(captured string) bool {
 func hasAgyLiveGenerationActivity(cleaned string) bool {
 	return strings.Contains(cleaned, "ctrl+c to stop") ||
 		strings.Contains(cleaned, "esc to cancel") ||
-		strings.Contains(cleaned, "generating") ||
 		strings.Contains(cleaned, "composing")
 }
 
 func hasAgyReadyMarker(cleaned string) bool {
 	// The → arrow is Agy's structural input agy — the most reliable
 	// signal that the prompt area is visible, regardless of placeholder text.
-	for _, line := range strings.Split(cleaned, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "→") || trimmed == ">" {
-			return true
-		}
+	if hasAgyReadyInputPromptLine(cleaned) {
+		return true
 	}
 	return strings.Contains(cleaned, "type your message") ||
 		strings.Contains(cleaned, "ask (shift+tab") ||
@@ -1985,6 +2260,16 @@ func hasAgyReadyMarker(cleaned string) bool {
 		strings.Contains(cleaned, "ask me anything") ||
 		strings.Contains(cleaned, "message agy") ||
 		strings.Contains(cleaned, "add a follow-up")
+}
+
+func hasAgyReadyInputPromptLine(cleaned string) bool {
+	for _, line := range strings.Split(cleaned, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "→") || trimmed == ">" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAgyTrustPrompt(captured string) bool {

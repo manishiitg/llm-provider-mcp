@@ -435,6 +435,7 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
 //   - "minimax-coding-plan" uses MiniMax image generation with image-01
 //   - "codex-cli" uses the native Codex CLI image generation flow
+//   - "agy-cli" uses the native Antigravity CLI image generation flow
 func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationModel, error) {
 	switch config.Provider {
 	case ProviderVertex:
@@ -443,8 +444,10 @@ func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationMode
 		return initializeMiniMaxCodingPlanImagen(config)
 	case ProviderCodexCLI:
 		return initializeCodexCLIImage(config)
+	case ProviderAgyCLI:
+		return initializeAgyCLIImage(config)
 	default:
-		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax-coding-plan, codex-cli", config.Provider)
+		return nil, fmt.Errorf("image generation not supported for provider: %s. Supported providers: vertex, minimax-coding-plan, codex-cli, agy-cli", config.Provider)
 	}
 }
 
@@ -556,6 +559,38 @@ func initializeCodexCLIImage(config Config) (llmtypes.ImageGenerationModel, erro
 		logger.Infof("Codex CLI image generation: using Codex CLI local auth/session (CODEX_API_KEY not provided)")
 	}
 	return codexcli.NewCodexCLIImageAdapter(apiKey, modelID, logger), nil
+}
+
+func initializeAgyCLIImage(config Config) (llmtypes.ImageGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "agy-cli"
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.AgyCLI != nil && *config.APIKeys.AgyCLI != "" {
+		apiKey = *config.APIKeys.AgyCLI
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("AGY_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+
+	logger.Infof("Initializing Agy CLI Image Generation with model: %s", modelID)
+	if apiKey == "" {
+		logger.Infof("Agy CLI image generation: using Antigravity CLI local sign-in")
+	}
+	return agycli.NewAgyCLIImageAdapter(apiKey, modelID, logger), nil
 }
 
 // initializeVertexImagen creates an image generation adapter using the Gemini API.

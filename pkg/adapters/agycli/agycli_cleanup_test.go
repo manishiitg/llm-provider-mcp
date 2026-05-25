@@ -76,6 +76,32 @@ esc to cancel
 	}
 }
 
+func TestAgyCompletedImageGenerationPaneIsReady(t *testing.T) {
+	token := "AGY_IMAGE_GENERATED_abc123"
+	pane := `
+● GenerateImage(simple_blue_square)
+  Generating image...
+● Bash(cp /tmp/simple_blue_square.png /tmp/generated.png)
+● Bash(ls -la /tmp/generated.png)
+
+` + token + `
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+	if !hasAgyReadyPrompt(pane) {
+		t.Fatal("completed image-generation pane should be classified ready")
+	}
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	if !strings.Contains(content, token) {
+		t.Fatalf("content = %q, want token %s", content, token)
+	}
+	if strings.Contains(content, "GenerateImage(") || strings.Contains(content, "Bash(") {
+		t.Fatalf("content = %q, want native tool transcript filtered", content)
+	}
+}
+
 func TestAgyPromptDraftToClearBeforePaste(t *testing.T) {
 	pane := `
 Assistant: Done
@@ -265,6 +291,24 @@ func TestBuildAgyInteractiveLaunchAddsConversationBeforePromptInteractive(t *tes
 	matches, _ := filepath.Glob(filepath.Join(opts.Metadata.Custom[MetadataKeyWorkingDir].(string), ".agents", "rules", "mlp-system-*.md"))
 	if len(matches) != 1 {
 		t.Fatalf("system rule files = %v, want one temporary Agy rule", matches)
+	}
+}
+
+func TestBuildAgyInteractiveLaunchAddsAPIKeyAliases(t *testing.T) {
+	adapter := NewAgyCLIAdapter("test-key", "agy-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(t.TempDir())(opts)
+
+	_, env, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "")
+	if err != nil {
+		t.Fatalf("build launch: %v", err)
+	}
+	defer cleanup()
+
+	for _, want := range []string{"AGY_API_KEY=test-key", "GOOGLE_API_KEY=test-key", "GEMINI_API_KEY=test-key"} {
+		if !containsString(env, want) {
+			t.Fatalf("env = %#v, want %s", env, want)
+		}
 	}
 }
 
@@ -515,6 +559,101 @@ I0524 conversation_manager.go:378] Streaming conversation 66666666-7777-8888-999
 	}
 }
 
+func TestParseAgyStatuslineUsagePrefersCurrentUsage(t *testing.T) {
+	raw := []byte(`{
+		"email":"secret@example.com",
+		"context_window":{
+			"total_input_tokens":161,
+			"total_output_tokens":356,
+			"current_usage":{
+				"input_tokens":14861,
+				"output_tokens":133,
+				"cache_creation_input_tokens":17,
+				"cache_read_input_tokens":29
+			}
+		}
+	}`)
+
+	usage, ok := parseAgyStatuslineUsageJSON(raw)
+	if !ok {
+		t.Fatal("parseAgyStatuslineUsageJSON ok = false")
+	}
+	if usage.InputTokens != 14861 || usage.OutputTokens != 133 || usage.CacheCreationInputTokens != 17 || usage.CacheReadInputTokens != 29 {
+		t.Fatalf("usage = %+v, want current_usage counts", usage)
+	}
+}
+
+func TestParseAgyStatuslineUsageFallsBackToTotals(t *testing.T) {
+	raw := []byte(`{"context_window":{"total_input_tokens":11,"total_output_tokens":22}}`)
+
+	usage, ok := parseAgyStatuslineUsageJSON(raw)
+	if !ok {
+		t.Fatal("parseAgyStatuslineUsageJSON ok = false")
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 22 {
+		t.Fatalf("usage = %+v, want context-window totals", usage)
+	}
+}
+
+func TestBuildAgyStatuslineCaptureScriptSanitizesUsage(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "usage.json")
+	scriptPath := filepath.Join(dir, "capture.sh")
+	if err := os.WriteFile(scriptPath, []byte(buildAgyStatuslineCaptureScript(outputPath)), 0o700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	cmd := exec.CommandContext(t.Context(), "sh", scriptPath)
+	cmd.Stdin = strings.NewReader(`{"email":"secret@example.com","plan_tier":"Business","context_window":{"total_input_tokens":41,"total_output_tokens":42,"current_usage":{"input_tokens":123,"output_tokens":45,"cache_creation_input_tokens":6,"cache_read_input_tokens":7}}}`)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run script: %v output=%s", err, out)
+	}
+	body, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if strings.Contains(string(body), "secret@example.com") || strings.Contains(string(body), "Business") {
+		t.Fatalf("sanitized usage leaked account metadata: %s", body)
+	}
+	usage, ok := parseAgyStatuslineUsageJSON(body)
+	if !ok {
+		t.Fatalf("parse sanitized usage failed: %s", body)
+	}
+	if usage.InputTokens != 123 || usage.OutputTokens != 45 || usage.CacheCreationInputTokens != 6 || usage.CacheReadInputTokens != 7 {
+		t.Fatalf("usage = %+v, want sanitized current_usage counts", usage)
+	}
+}
+
+func TestAgyTmuxTokenCountsStatuslineAddsCacheMetadata(t *testing.T) {
+	additional := map[string]interface{}{}
+	input, output, cacheRead := agyTmuxTokenCounts("prompt", "reply", &agyStatuslineUsage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheCreationInputTokens: 3,
+		CacheReadInputTokens:     7,
+	}, additional)
+
+	if input != 13 || output != 5 || cacheRead != 7 {
+		t.Fatalf("counts = (%d, %d, %d), want (13, 5, 7)", input, output, cacheRead)
+	}
+	if got := additional["agy_token_usage_source"]; got != "statusline" {
+		t.Fatalf("agy_token_usage_source = %v, want statusline", got)
+	}
+	if got := additional["cache_creation_input_tokens"]; got != 3 {
+		t.Fatalf("cache_creation_input_tokens = %v, want 3", got)
+	}
+	if got := additional["cache_read_input_tokens"]; got != 7 {
+		t.Fatalf("cache_read_input_tokens = %v, want 7", got)
+	}
+}
+
+func TestEstimateAgyTmuxTokensRoundsUp(t *testing.T) {
+	input, output := estimateAgyTmuxTokens("12345", "123456789")
+	if input != 2 || output != 3 {
+		t.Fatalf("estimateAgyTmuxTokens = (%d, %d), want (2, 3)", input, output)
+	}
+}
+
 func indexOfAgyArg(args []string, want string) int {
 	for i, arg := range args {
 		if arg == want {
@@ -522,4 +661,13 @@ func indexOfAgyArg(args []string, want string) int {
 		}
 	}
 	return -1
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -88,6 +88,42 @@ func TestAgyCLIRealInteractiveTmuxFullContract(t *testing.T) {
 	}
 }
 
+func TestAgyCLIRealStatuslineUsageContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupAgyCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewAgyCLIAdapter("", "agy-cli", &MockLogger{})
+	token := "AGY_STATUSLINE_USAGE_" + agyRandomHex(5)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply only with the requested exact token."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: " + token}}},
+	},
+		WithInteractiveSessionID("agy-statusline-usage-"+agyRandomHex(4)),
+		WithWorkingDir(t.TempDir()),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	if handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp); ok && handle.TmuxSession != "" {
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_ = killAgyTmuxSession(cleanupCtx, handle.TmuxSession)
+		})
+	}
+	if !strings.Contains(resp.Choices[0].Content, token) {
+		t.Fatalf("content = %q, want token %s", resp.Choices[0].Content, token)
+	}
+	assertAgyUsage(t, resp)
+	gi := resp.Choices[0].GenerationInfo
+	if source, _ := gi.Additional["agy_token_usage_source"].(string); source != "statusline" {
+		t.Fatalf("agy_token_usage_source = %q, want statusline; gi=%+v", source, gi)
+	}
+}
+
 func TestAgyCLIRealPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
 	requireRealAgyCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupAgyCLIInteractiveSessions(context.Background()) })
@@ -1326,7 +1362,7 @@ func assertAgyUsage(t *testing.T, resp *llmtypes.ContentResponse) {
 	t.Helper()
 	gi := resp.Choices[0].GenerationInfo
 	if gi == nil || gi.InputTokens == nil || gi.OutputTokens == nil || *gi.InputTokens == 0 || *gi.OutputTokens == 0 {
-		t.Fatalf("expected estimated non-zero token usage; gi=%+v usage=%+v", gi, resp.Usage)
+		t.Fatalf("expected non-zero token usage; gi=%+v usage=%+v", gi, resp.Usage)
 	}
 }
 
