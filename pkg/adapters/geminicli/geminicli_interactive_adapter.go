@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -56,16 +55,15 @@ type geminiInteractiveSession struct {
 	// byte-restores any pre-existing operator content (or removes the file
 	// we created) and is invoked on every teardown path.
 	projectInstructionCleanup func()
-	launchFingerprint         string
-	startupSlotMu        sync.Mutex
-	startupSlotRelease   func()
-	idleTimer            *time.Timer
-	initErr              error
-	createdAt            time.Time
-	lastUsed             time.Time
-	mu                   sync.Mutex
-	liveMu               sync.Mutex
-	pendingLiveInputs    []string
+	startupSlotMu             sync.Mutex
+	startupSlotRelease        func()
+	idleTimer                 *time.Timer
+	initErr                   error
+	createdAt                 time.Time
+	lastUsed                  time.Time
+	mu                        sync.Mutex
+	liveMu                    sync.Mutex
+	pendingLiveInputs         []string
 }
 
 var geminiInteractiveRegistry = struct {
@@ -291,8 +289,6 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 // either releaseGeminiInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
 func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*geminiInteractiveSession, bool, error) {
-	launchFingerprint := g.geminiInteractiveLaunchFingerprint(opts, systemPrompt)
-
 	geminiPersistentRegistry.Lock()
 	if existing := geminiPersistentRegistry.sessions[ownerSessionID]; existing != nil {
 		existing.mu.Lock()
@@ -301,12 +297,6 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 			existing.mu.Unlock()
 			geminiPersistentRegistry.Unlock()
 			return nil, false, err
-		}
-		if existing.launchFingerprint != launchFingerprint {
-			existing.mu.Unlock()
-			geminiPersistentRegistry.Unlock()
-			closeGeminiPersistentSession(ownerSessionID, "launch configuration changed", g.logger)
-			return g.acquireGeminiInteractiveSession(ctx, ownerSessionID, opts, systemPrompt)
 		}
 		if existing.idleTimer != nil {
 			existing.idleTimer.Stop()
@@ -319,11 +309,10 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 
 	now := time.Now()
 	session := &geminiInteractiveSession{
-		ownerSessionID:    ownerSessionID,
-		tmuxSessionName:   newGeminiTmuxSessionName(),
-		launchFingerprint: launchFingerprint,
-		createdAt:         now,
-		lastUsed:          now,
+		ownerSessionID:  ownerSessionID,
+		tmuxSessionName: newGeminiTmuxSessionName(),
+		createdAt:       now,
+		lastUsed:        now,
 	}
 	session.mu.Lock()
 	geminiPersistentRegistry.sessions[ownerSessionID] = session
@@ -476,74 +465,6 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
 	return args, env, projectDir, projectDirID, commandDir, systemPromptTempFile, nil
-}
-
-func (g *GeminiCLIAdapter) geminiInteractiveLaunchFingerprint(opts *llmtypes.CallOptions, systemPrompt string) string {
-	modelToUse := resolveGeminiCLIModelID(g.modelID)
-	custom := map[string]interface{}{}
-	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		custom = opts.Metadata.Custom
-		if model, ok := custom[MetadataKeyGeminiModel].(string); ok && strings.TrimSpace(model) != "" {
-			modelToUse = resolveGeminiCLIModelID(model)
-		}
-	}
-	if modelToUse == "" || modelToUse == "gemini-cli" {
-		modelToUse = "auto"
-	}
-
-	hash := sha256.New()
-	write := func(key, value string) {
-		_, _ = io.WriteString(hash, key)
-		_, _ = io.WriteString(hash, "\x00")
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writeFile := func(key, path string) {
-		path = strings.TrimSpace(path)
-		write(key+".path", path)
-		if path == "" {
-			return
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			write(key+".read_error", err.Error())
-			return
-		}
-		_, _ = io.WriteString(hash, key+".content")
-		_, _ = io.WriteString(hash, "\x00")
-		_, _ = hash.Write(content)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writeStringOption := func(key string) {
-		if value, ok := custom[key].(string); ok {
-			write(key, strings.TrimSpace(value))
-		}
-	}
-
-	write("model", modelToUse)
-	// Persistent interactive sessions pin the system prompt at session startup.
-	// Do not include the full prompt text in the reuse fingerprint: app-level
-	// prompts can contain per-turn dynamic context such as secret ordering or
-	// timestamps, and restarting the TUI would break native multi-turn memory.
-	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
-	writeStringOption(MetadataKeyApprovalMode)
-	writeStringOption(MetadataKeyAllowedTools)
-	writeStringOption(MetadataKeyProjectSettings)
-	writeStringOption(MetadataKeyWorkingDir)
-	writeStringOption(MetadataKeyProjectDirID)
-	writeStringOption(MetadataKeyResumeSessionID)
-	writeFile(MetadataKeySystemPromptFile, stringOptionValue(custom, MetadataKeySystemPromptFile))
-	writeFile(MetadataKeyPolicyPath, stringOptionValue(custom, MetadataKeyPolicyPath))
-	writeFile(MetadataKeyAdminPolicyPath, stringOptionValue(custom, MetadataKeyAdminPolicyPath))
-
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func stringOptionValue(custom map[string]interface{}, key string) string {
-	if value, ok := custom[key].(string); ok {
-		return value
-	}
-	return ""
 }
 
 func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.CallOptions) (string, string, error) {
@@ -1386,7 +1307,7 @@ func extractLatestGeminiMarkedAssistantText(delta string) string {
 			current = append(current, trimGeminiBulletPrefix(trimmed))
 			continue
 		}
-		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) {
+		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) || isGeminiShellStartupLine(trimmed) {
 			continue
 		}
 	}
@@ -1463,7 +1384,7 @@ func extractGeminiVisibleAssistantText(delta string) string {
 			skipStartupContinuation = true
 			continue
 		}
-		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) {
+		if isGeminiTUILine(trimmed) || isGeminiToolPanelLine(trimmed) || isGeminiShellStartupLine(trimmed) {
 			continue
 		}
 		if markerContent, ok := trimGeminiAssistantMarker(trimmed); ok {
@@ -1602,6 +1523,18 @@ func isGeminiStartupContinuationLine(line string) bool {
 		strings.Contains(lower, "these hooks will be executed") ||
 		strings.Contains(lower, "review the project settings") ||
 		strings.HasPrefix(lower, "and prompts will be queued")
+}
+
+func isGeminiShellStartupLine(line string) bool {
+	trimmed := strings.TrimSpace(stripGeminiANSI(line))
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, ".zshrc:source:") ||
+		strings.HasPrefix(lower, "agent pid ") ||
+		strings.HasPrefix(lower, "identity added:") ||
+		strings.HasPrefix(lower, "last login:")
 }
 
 func isGeminiToolPanelLine(line string) bool {
@@ -1846,6 +1779,7 @@ func stripGeminiEchoedUserPrompt(text, prompt string) string {
 	}
 
 	bestStart := -1
+	bestPromptStart := -1
 	bestLen := 0
 	for start := 0; start < len(lines) && start < 32; start++ {
 		for promptStart := 0; promptStart < len(promptLines); promptStart++ {
@@ -1857,12 +1791,16 @@ func stripGeminiEchoedUserPrompt(text, prompt string) string {
 			}
 			if matchLen > bestLen {
 				bestStart = start
+				bestPromptStart = promptStart
 				bestLen = matchLen
 			}
 		}
 	}
 
 	if bestLen < 2 {
+		return text
+	}
+	if bestStart == 0 && bestPromptStart > 0 && bestLen == len(lines) {
 		return text
 	}
 	out := make([]string, 0, len(lines)-bestLen)
@@ -1961,11 +1899,10 @@ func interruptGeminiInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
-	// Do not clear the pane between turns. Persistent tmux sessions are the
-	// user-visible transcript, and per-turn parsing is anchored to the captured
-	// baseline rather than a wiped scrollback.
-	_ = ctx
-	_ = sessionName
+	// Only trim tmux's external scrollback to bound memory growth. The visible
+	// pane stays intact for the browser terminal; per-turn parsing is still
+	// anchored to the captured baseline.
+	_ = runGeminiCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
 func captureGeminiPane(ctx context.Context, sessionName string) (string, error) {
@@ -1977,12 +1914,41 @@ func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (strin
 }
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {
-	if baseline != "" {
-		if idx := strings.LastIndex(captured, baseline); idx >= 0 {
-			return captured[idx+len(baseline):]
-		}
+	if baseline == "" {
+		return captured
 	}
-	return captured
+	// Fast path: exact substring match.
+	if idx := strings.LastIndex(captured, baseline); idx >= 0 {
+		return captured[idx+len(baseline):]
+	}
+	// Non-breaking space normalization (matches the other tmux-backed adapters).
+	normalizedCaptured := strings.ReplaceAll(captured, " ", " ")
+	normalizedBaseline := strings.ReplaceAll(baseline, " ", " ")
+	if idx := strings.LastIndex(normalizedCaptured, normalizedBaseline); idx >= 0 {
+		return normalizedCaptured[idx+len(normalizedBaseline):]
+	}
+	return geminiLinePrefixDelta(normalizedCaptured, normalizedBaseline)
+}
+
+func geminiLinePrefixDelta(captured, baseline string) string {
+	capturedLines := strings.Split(captured, "\n")
+	baselineLines := strings.Split(baseline, "\n")
+	maxCompare := len(capturedLines)
+	if len(baselineLines) < maxCompare {
+		maxCompare = len(baselineLines)
+	}
+	divergeAt := 0
+	for i := 0; i < maxCompare; i++ {
+		if strings.TrimSpace(capturedLines[i]) != strings.TrimSpace(baselineLines[i]) {
+			break
+		}
+		divergeAt = i + 1
+	}
+	// Require at least a few matching lines to trust the prefix.
+	if divergeAt < 3 {
+		return captured
+	}
+	return strings.Join(capturedLines[divergeAt:], "\n")
 }
 
 func killGeminiTmuxSession(ctx context.Context, sessionName string) error {

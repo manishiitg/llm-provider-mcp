@@ -485,7 +485,7 @@ func TestBuildAgyInteractiveLaunchAddsConversationBeforePromptInteractive(t *tes
 	if conversationIdx > promptIdx {
 		t.Fatalf("--conversation must appear before --prompt-interactive so agy treats it as a flag: %#v", args)
 	}
-	matches, _ := filepath.Glob(filepath.Join(opts.Metadata.Custom[MetadataKeyWorkingDir].(string), ".agents", "rules", "mlp-system-*.md"))
+	matches, _ := filepath.Glob(filepath.Join(opts.Metadata.Custom[MetadataKeyWorkingDir].(string), ".agents", "rules", "mlp-system*.md"))
 	if len(matches) != 1 {
 		t.Fatalf("system rule files = %v, want one temporary Agy rule", matches)
 	}
@@ -518,7 +518,7 @@ func TestPrepareAgyProjectFilesWritesProjectFilesAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
-	matches, _ := filepath.Glob(filepath.Join(workDir, ".agents", "rules", "mlp-system-*.md"))
+	matches, _ := filepath.Glob(filepath.Join(workDir, ".agents", "rules", "mlp-system*.md"))
 	if len(matches) != 1 {
 		t.Fatalf("system rule files = %v, want one temporary Agy rule", matches)
 	}

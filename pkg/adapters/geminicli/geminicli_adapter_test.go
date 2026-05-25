@@ -240,53 +240,6 @@ func argPairContains(args []string, flag, value string) bool {
 	return false
 }
 
-func TestGeminiInteractiveLaunchFingerprintIgnoresDynamicSystemPromptText(t *testing.T) {
-	adapter := NewGeminiCLIAdapter("", geminiCLIContractModel, &MockLogger{})
-	opts := &llmtypes.CallOptions{}
-	policyPath := filepath.Join(t.TempDir(), "policy.toml")
-	if err := os.WriteFile(policyPath, []byte(`[[rule]]
-toolName = "*"
-decision = "deny"
-priority = 999
-`), 0o600); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-	WithAdminPolicyPath(policyPath)(opts)
-	WithProjectSettings(`{"mcpServers":{"api-bridge":{"command":"bridge-a"}}}`)(opts)
-
-	baseline := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt A")
-	if baseline == "" {
-		t.Fatal("fingerprint should not be empty")
-	}
-	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt A"); got != baseline {
-		t.Fatalf("fingerprint should be stable, got %q want %q", got, baseline)
-	}
-	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt B"); got != baseline {
-		t.Fatal("fingerprint should not change for dynamic system prompt text")
-	}
-	if got := adapter.geminiInteractiveLaunchFingerprint(opts, ""); got == baseline {
-		t.Fatal("fingerprint should distinguish absent vs present system prompt")
-	}
-
-	changedSettings := &llmtypes.CallOptions{}
-	WithAdminPolicyPath(policyPath)(changedSettings)
-	WithProjectSettings(`{"mcpServers":{"api-bridge":{"command":"bridge-b"}}}`)(changedSettings)
-	if got := adapter.geminiInteractiveLaunchFingerprint(changedSettings, "system prompt A"); got == baseline {
-		t.Fatal("fingerprint should change when MCP/project settings change")
-	}
-
-	if err := os.WriteFile(policyPath, []byte(`[[rule]]
-toolName = "*"
-decision = "allow"
-priority = 999
-`), 0o600); err != nil {
-		t.Fatalf("rewrite policy: %v", err)
-	}
-	if got := adapter.geminiInteractiveLaunchFingerprint(opts, "system prompt A"); got == baseline {
-		t.Fatal("fingerprint should change when policy file content changes")
-	}
-}
-
 func TestBuildGeminiInteractivePromptCarriesPriorConversation(t *testing.T) {
 	token := "GEMINI_CONTEXT_TOKEN"
 	prompt := buildGeminiInteractivePrompt([]llmtypes.MessageContent{
@@ -616,6 +569,42 @@ I see 11 planned regression steps.
 			"api-bridge",
 			"stdout",
 			"exit_code",
+		},
+	)
+}
+
+func TestParseGeminiInteractiveResponseFiltersShellStartupWhenBaselineDiverges(t *testing.T) {
+	baseline := `/Users/mipl/.zshrc:source:4: no such file or directory: /Users/mipl/powerlevel10k/powerlevel10k.zsh-theme
+Agent pid 12345
+Identity added: /Users/mipl/.ssh/id_ed25519 (user@example.com)
+/Users/mipl/.zshrc:source:77: no such file or directory: /Users/mipl/esp/esp-idf/export.sh
+> Type your message
+`
+	prompt := "Return a final answer containing these three plain lines and no setup commentary:\nGemini final LIVE_TOKEN\nfirst LIVE_TOKEN\nsecond LIVE_TOKEN"
+	captured := `/Users/mipl/.zshrc:source:4: no such file or directory: /Users/mipl/powerlevel10k/powerlevel10k.zsh-theme
+Agent pid 12345
+Identity added: /Users/mipl/.ssh/id_ed25519 (user@example.com)
+/Users/mipl/.zshrc:source:77: no such file or directory: /Users/mipl/esp/esp-idf/export.sh
+> Return a final answer containing these three plain lines and no setup commentary:
+Gemini final LIVE_TOKEN
+first LIVE_TOKEN
+second LIVE_TOKEN
+> Type your message
+`
+
+	got := parseGeminiInteractiveResponse(captured, baseline, prompt, nil)
+	want := "Gemini final LIVE_TOKEN\nfirst LIVE_TOKEN\nsecond LIVE_TOKEN"
+	if got != want {
+		t.Fatalf("parsed response = %q, want %q", got, want)
+	}
+	testcontracts.AssertCleanFinalExtraction(t, "gemini-cli", got,
+		[]string{"Gemini final LIVE_TOKEN", "first LIVE_TOKEN", "second LIVE_TOKEN"},
+		[]string{
+			".zshrc:source",
+			"Agent pid",
+			"Identity added",
+			"Return a final answer",
+			"Type your message",
 		},
 	)
 }

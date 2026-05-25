@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,11 +43,10 @@ const (
 )
 
 type cursorInteractiveSession struct {
-	ownerSessionID    string
-	tmuxSessionName   string
-	workingDir        string
-	launchFingerprint string
-	persistent        bool
+	ownerSessionID  string
+	tmuxSessionName string
+	workingDir      string
+	persistent      bool
 	cleanupFiles      func()
 	idleTimer         *time.Timer
 	initErr           error
@@ -383,8 +381,6 @@ func estimateCursorTmuxTokens(prompt, content string) (int, int) {
 
 // acquireCursorInteractiveSession returns with session.mu held.
 func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*cursorInteractiveSession, error) {
-	launchFingerprint := c.cursorInteractiveLaunchFingerprint(opts, systemPrompt)
-
 	if persistent {
 		cursorPersistentRegistry.Lock()
 		if existing := cursorPersistentRegistry.sessions[ownerSessionID]; existing != nil {
@@ -394,12 +390,6 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 				existing.mu.Unlock()
 				cursorPersistentRegistry.Unlock()
 				return nil, err
-			}
-			if existing.launchFingerprint != launchFingerprint {
-				existing.mu.Unlock()
-				cursorPersistentRegistry.Unlock()
-				closeCursorPersistentSession(ownerSessionID, "launch configuration changed", c.logger)
-				return c.acquireCursorInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
 			}
 			if existing.idleTimer != nil {
 				existing.idleTimer.Stop()
@@ -413,12 +403,11 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 
 	now := time.Now()
 	session := &cursorInteractiveSession{
-		ownerSessionID:    ownerSessionID,
-		tmuxSessionName:   newCursorTmuxSessionName(),
-		launchFingerprint: launchFingerprint,
-		persistent:        persistent,
-		createdAt:         now,
-		lastUsed:          now,
+		ownerSessionID:  ownerSessionID,
+		tmuxSessionName: newCursorTmuxSessionName(),
+		persistent:      persistent,
+		createdAt:       now,
+		lastUsed:        now,
 	}
 	session.mu.Lock()
 	if persistent {
@@ -517,72 +506,6 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	return args, env, workingDir, cleanupFiles, nil
 }
 
-func (c *CursorCLIAdapter) cursorInteractiveLaunchFingerprint(opts *llmtypes.CallOptions, systemPrompt string) string {
-	custom := map[string]interface{}{}
-	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		custom = opts.Metadata.Custom
-	}
-	modelToUse := resolveCursorCLIModelID(c.modelID)
-	if model, ok := custom[MetadataKeyCursorModel].(string); ok {
-		modelToUse = resolveCursorCLIModelID(model)
-	}
-
-	hash := sha256.New()
-	write := func(key, value string) {
-		_, _ = io.WriteString(hash, key)
-		_, _ = io.WriteString(hash, "\x00")
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writeBool := func(key string) {
-		if value, ok := custom[key].(bool); ok {
-			write(key, strconv.FormatBool(value))
-		}
-	}
-	writeString := func(key string) {
-		if value, ok := custom[key].(string); ok {
-			write(key, strings.TrimSpace(value))
-		}
-	}
-	writeStringSlice := func(key string) {
-		if values, ok := custom[key].([]string); ok {
-			write(key, strings.Join(values, "\x00"))
-		}
-	}
-
-	write("model", modelToUse)
-	// Persistent interactive sessions pin the system prompt at session startup
-	// via .cursor/rules/mlp-system-*.mdc. Do not include the full prompt text
-	// in the reuse fingerprint: app-level prompts can contain per-turn dynamic
-	// context (e.g. background-agent role labels vs chat-agent labels), and
-	// restarting the TUI would tear down the live Cursor pane mid-conversation.
-	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
-	writeString(MetadataKeyWorkingDir)
-	writeString(MetadataKeyResumeSessionID)
-	writeString(MetadataKeySandbox)
-	writeString(MetadataKeyMode)
-	// Project config (.cursor/cli.json) and MCP config (.cursor/mcp.json) are
-	// re-written into the workspace on every call by prepareCursorProjectFiles.
-	// The running TUI does not reload them — Cursor reads both at startup only.
-	// Hashing the JSON contents here would force a TUI restart whenever the
-	// caller's MCP config embeds per-turn data (e.g. a Langfuse TraceID inside
-	// MCP_VIRTUAL_SCOPE_ID), which it always does for the bridge config built
-	// by mcpagent. Hash only "is config provided" so a session that started
-	// without an MCP config still gets restarted when one is added later.
-	hasStringValue := func(key string) bool {
-		v, ok := custom[key].(string)
-		return ok && strings.TrimSpace(v) != ""
-	}
-	write("project_config_present", strconv.FormatBool(hasStringValue(MetadataKeyProjectConfig)))
-	write("mcp_config_present", strconv.FormatBool(hasStringValue(MetadataKeyMCPConfig)))
-	writeBool(MetadataKeyForce)
-	writeBool(MetadataKeyApproveMCPs)
-	writeStringSlice(MetadataKeyHeaders)
-	writeStringSlice(MetadataKeyPluginDirs)
-
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
 func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions, ownerSessionID string) (func(), error) {
 	cleanups := make([]func(), 0, 3)
 	addCleanup := func(cleanup func()) {
@@ -623,10 +546,6 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	}
 
 	cursorDir := filepath.Join(workingDir, ".cursor")
-	// Diagnostic: log how prepareCursorProjectFiles was called so we can
-	// pinpoint why .cursor/rules/mlp-system.mdc fails to materialize.
-	fmt.Fprintf(os.Stderr, "[CURSOR_PROJECT_DEBUG] workingDir=%q systemPrompt_len=%d ownerSessionID=%q\n",
-		workingDir, len(strings.TrimSpace(systemPrompt)), ownerSessionID)
 	if strings.TrimSpace(systemPrompt) != "" {
 		rulesDir := filepath.Join(cursorDir, "rules")
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {

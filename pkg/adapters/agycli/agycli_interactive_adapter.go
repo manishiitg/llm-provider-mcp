@@ -44,11 +44,10 @@ const (
 )
 
 type agyInteractiveSession struct {
-	ownerSessionID    string
-	tmuxSessionName   string
-	workingDir        string
-	launchFingerprint string
-	persistent        bool
+	ownerSessionID  string
+	tmuxSessionName string
+	workingDir      string
+	persistent      bool
 	cleanupFiles      func()
 	releaseMCPLease   func()
 	idleTimer         *time.Timer
@@ -632,8 +631,6 @@ func logAgyStatuslineUsageCaptureError(logger interfaces.Logger, stage string, e
 
 // acquireAgyInteractiveSession returns with session.mu held.
 func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*agyInteractiveSession, error) {
-	launchFingerprint := c.agyInteractiveLaunchFingerprint(opts, systemPrompt)
-
 	if persistent {
 		agyPersistentRegistry.Lock()
 		if existing := agyPersistentRegistry.sessions[ownerSessionID]; existing != nil {
@@ -643,12 +640,6 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 				existing.mu.Unlock()
 				agyPersistentRegistry.Unlock()
 				return nil, err
-			}
-			if existing.launchFingerprint != launchFingerprint {
-				existing.mu.Unlock()
-				agyPersistentRegistry.Unlock()
-				closeAgyPersistentSession(ownerSessionID, "launch configuration changed", c.logger)
-				return c.acquireAgyInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
 			}
 			if existing.idleTimer != nil {
 				existing.idleTimer.Stop()
@@ -662,12 +653,11 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 
 	now := time.Now()
 	session := &agyInteractiveSession{
-		ownerSessionID:    ownerSessionID,
-		tmuxSessionName:   newAgyTmuxSessionName(),
-		launchFingerprint: launchFingerprint,
-		persistent:        persistent,
-		createdAt:         now,
-		lastUsed:          now,
+		ownerSessionID:  ownerSessionID,
+		tmuxSessionName: newAgyTmuxSessionName(),
+		persistent:      persistent,
+		createdAt:       now,
+		lastUsed:        now,
 	}
 	session.mu.Lock()
 	if persistent {
@@ -757,49 +747,6 @@ func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, sy
 		)
 	}
 	return args, env, workingDir, cleanupFiles, nil
-}
-
-func (c *AgyCLIAdapter) agyInteractiveLaunchFingerprint(opts *llmtypes.CallOptions, systemPrompt string) string {
-	custom := map[string]interface{}{}
-	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		custom = opts.Metadata.Custom
-	}
-	hash := sha256.New()
-	write := func(key, value string) {
-		_, _ = io.WriteString(hash, key)
-		_, _ = io.WriteString(hash, "\x00")
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writeBool := func(key string) {
-		if value, ok := custom[key].(bool); ok {
-			write(key, strconv.FormatBool(value))
-		}
-	}
-	writeString := func(key string) {
-		if value, ok := custom[key].(string); ok {
-			write(key, strings.TrimSpace(value))
-		}
-	}
-	write("model", strings.TrimSpace(c.modelID))
-	// Persistent interactive sessions pin the system prompt at session startup
-	// via .agents/rules/mlp-system-*.md. Do not include the full prompt text
-	// in the reuse fingerprint: app-level prompts can contain per-turn dynamic
-	// context (e.g. background-agent role labels vs chat-agent labels), and
-	// restarting the TUI would tear down the live Agy pane mid-conversation.
-	write("system_prompt_present", strconv.FormatBool(strings.TrimSpace(systemPrompt) != ""))
-	writeString(MetadataKeyWorkingDir)
-	writeString(MetadataKeyResumeSessionID)
-	writeString("agy_sandbox")
-	hasStringValue := func(key string) bool {
-		v, ok := custom[key].(string)
-		return ok && strings.TrimSpace(v) != ""
-	}
-	write("mcp_config_present", strconv.FormatBool(hasStringValue(MetadataKeyMCPConfig)))
-	writeBool(MetadataKeyBridgeOnlyTools)
-	writeBool("agy_dangerously_skip_permissions")
-
-	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions, ownerSessionID string) (func(), error) {
