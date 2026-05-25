@@ -1,5 +1,7 @@
 package llmtypes
 
+import "strings"
+
 // WithModel sets the model ID
 func WithModel(model string) CallOption {
 	return func(opts *CallOptions) {
@@ -142,6 +144,40 @@ func CodingProviderLaunchOnlyFromOptions(opts *CallOptions) bool {
 	}
 	enabled, _ := opts.Metadata.Custom[CodingProviderLaunchOnlyMetadataKey].(bool)
 	return enabled
+}
+
+// WithCodingProviderLaunchSystemPrompt carries the agent's accumulated
+// system prompt through the launch-only contract so the adapter can
+// project its provider-specific rule file (.cursor/rules/mlp-system.mdc,
+// .agents/rules/mlp-system.md, AGENTS.md, GEMINI.md, CLAUDE.md, etc.)
+// even though no user message is being sent. Without this, launch-only
+// (used by the resumed-terminal restore path) hits the adapter with
+// nil messages → split*SystemPrompt returns empty → the rule file is
+// never written for that session.
+func WithCodingProviderLaunchSystemPrompt(systemPrompt string) CallOption {
+	return func(opts *CallOptions) {
+		if strings.TrimSpace(systemPrompt) == "" {
+			return
+		}
+		if opts.Metadata == nil {
+			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
+		}
+		if opts.Metadata.Custom == nil {
+			opts.Metadata.Custom = make(map[string]interface{})
+		}
+		opts.Metadata.Custom[CodingProviderLaunchSystemPromptMetadataKey] = systemPrompt
+	}
+}
+
+// CodingProviderLaunchSystemPromptFromOptions returns the launch-only
+// system prompt (if any) injected via WithCodingProviderLaunchSystemPrompt.
+// Empty string when not set.
+func CodingProviderLaunchSystemPromptFromOptions(opts *CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	prompt, _ := opts.Metadata.Custom[CodingProviderLaunchSystemPromptMetadataKey].(string)
+	return prompt
 }
 
 // WithStreamingFunc is a convenience function that creates a channel and callback

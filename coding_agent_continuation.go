@@ -155,7 +155,27 @@ func startCodingAgentTmuxTransportSession(ctx context.Context, model llmtypes.Mo
 		return nil, err
 	}
 	launchOptions = append(launchOptions, llmtypes.WithCodingProviderLaunchOnly())
-	return model.GenerateContent(ctx, nil, launchOptions...)
+	// Build a single-system-message slice when the caller passed
+	// WithCodingProviderLaunchSystemPrompt so the adapter's
+	// split*SystemPrompt extracts it and prepare*ProjectFiles writes
+	// the provider-specific rule file (.cursor/rules/mlp-system.mdc,
+	// .agents/rules/mlp-system.md, AGENTS.md, GEMINI.md, etc.). Without
+	// this, launch-only sends nil messages → empty systemPrompt → rule
+	// file never written for the resumed session.
+	probe := &llmtypes.CallOptions{}
+	for _, opt := range launchOptions {
+		opt(probe)
+	}
+	launchMessages := []llmtypes.MessageContent(nil)
+	if systemPrompt := strings.TrimSpace(llmtypes.CodingProviderLaunchSystemPromptFromOptions(probe)); systemPrompt != "" {
+		launchMessages = []llmtypes.MessageContent{
+			{
+				Role:  llmtypes.ChatMessageTypeSystem,
+				Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}},
+			},
+		}
+	}
+	return model.GenerateContent(ctx, launchMessages, launchOptions...)
 }
 
 func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.CodingProviderSessionHandle, options []llmtypes.CallOption) ([]llmtypes.CallOption, error) {

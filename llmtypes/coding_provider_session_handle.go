@@ -15,8 +15,9 @@ const (
 	CodingProviderSessionStatusLost   = "lost"
 	CodingProviderSessionStatusClosed = "closed"
 
-	CodingProviderSessionHandleAdditionalKey = "coding_provider_session_handle"
-	CodingProviderLaunchOnlyMetadataKey      = "coding_provider_launch_only"
+	CodingProviderSessionHandleAdditionalKey    = "coding_provider_session_handle"
+	CodingProviderLaunchOnlyMetadataKey         = "coding_provider_launch_only"
+	CodingProviderLaunchSystemPromptMetadataKey = "coding_provider_launch_system_prompt"
 )
 
 // CodingProviderSessionHandle is the provider-owned continuation state for a
