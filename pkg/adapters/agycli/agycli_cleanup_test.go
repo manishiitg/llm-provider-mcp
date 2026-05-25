@@ -581,8 +581,10 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 		t.Fatalf("hooks.json = %s, want one mlp-bridge-only-tools PreToolUse hook", hookBody)
 	}
 	matcher := bridgeHook.PreToolUse[0].Matcher
-	if !strings.Contains(matcher, "run_command") || !strings.Contains(matcher, "write_to_file") {
-		t.Fatalf("bridge-only matcher = %q, want command and write tools denied", matcher)
+	if !strings.Contains(matcher, "run_command") || !strings.Contains(matcher, "write_to_file") ||
+		!strings.Contains(matcher, "Read|read|read_file") || !strings.Contains(matcher, "ListDir|list_dir") ||
+		!strings.Contains(matcher, "Search|search|grep_search") {
+		t.Fatalf("bridge-only matcher = %q, want read, list, search, command, and write tools denied", matcher)
 	}
 	if len(bridgeHook.PreToolUse[0].Hooks) != 1 {
 		t.Fatalf("bridge-only hooks = %#v, want one command hook", bridgeHook.PreToolUse[0].Hooks)
@@ -599,6 +601,22 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 	}
 	if !strings.Contains(string(scriptBody), `"decision":"deny"`) || !strings.Contains(string(scriptBody), "api-bridge.execute_shell_command") {
 		t.Fatalf("bridge-only hook script = %q, want deny JSON listing api-bridge tools", string(scriptBody))
+	}
+	cmd := exec.CommandContext(context.Background(), "sh", scriptPath)
+	cmd.Stdin = strings.NewReader(`{"toolCall":{"name":"view_file","args":{"AbsolutePath":"/tmp/secret.txt"}}}`)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bridge-only hook script execution error = %v, output=%q", err, string(output))
+	}
+	var decision struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal(output, &decision); err != nil {
+		t.Fatalf("bridge-only hook script output is not valid JSON: %v; output=%q", err, string(output))
+	}
+	if decision.Decision != "deny" || !strings.Contains(decision.Reason, "api-bridge.execute_shell_command") {
+		t.Fatalf("bridge-only hook decision = %#v, want deny with bridge guidance", decision)
 	}
 
 	cleanup()

@@ -369,7 +369,7 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	if len(env) != 1 || env[0] != "CURSOR_API_KEY=secret" {
 		t.Fatalf("env = %v, want CURSOR_API_KEY", env)
 	}
-	if matches, _ := filepath.Glob(filepath.Join(workDir, ".cursor", "rules", "mlp-system-*.mdc")); len(matches) != 1 {
+	if matches, _ := filepath.Glob(filepath.Join(workDir, ".cursor", "rules", "mlp-system*.mdc")); len(matches) != 1 {
 		t.Fatalf("system rule files = %v, want one temporary Cursor rule", matches)
 	}
 }
