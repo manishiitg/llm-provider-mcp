@@ -596,6 +596,32 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		}
 	}
 
+	// cursor-agent uses .git as the workspace-root marker for its
+	// .cursor/mcp.json discovery — it walks UP from cwd looking for
+	// .git and only loads .cursor/mcp.json next to the FIRST .git it
+	// finds. When the workflow folder sits inside a parent repo (e.g.
+	// builder-go's workspace-docs/), cursor walks past our workflow
+	// folder and lands on the parent repo, which has no
+	// .cursor/mcp.json — the api-bridge MCP server then never loads
+	// in the session and the model reports "MCP not exposed to this
+	// chat". Dropping an empty .git/ in the workflow folder makes
+	// cursor treat it as its own workspace root and the .cursor/mcp.json
+	// next to it is discovered. workspace-docs is gitignored upstream
+	// so this marker has no side-effect on the parent repo. Cleanup
+	// removes it on session end.
+	gitMarkerDir := filepath.Join(workingDir, ".git")
+	gitMarkerCreated := false
+	if _, err := os.Stat(gitMarkerDir); os.IsNotExist(err) {
+		if mkErr := os.MkdirAll(gitMarkerDir, 0o755); mkErr == nil {
+			gitMarkerCreated = true
+			addCleanup(func() {
+				if gitMarkerCreated {
+					_ = os.Remove(gitMarkerDir)
+				}
+			})
+		}
+	}
+
 	cursorDir := filepath.Join(workingDir, ".cursor")
 	if strings.TrimSpace(systemPrompt) != "" {
 		rulesDir := filepath.Join(cursorDir, "rules")
