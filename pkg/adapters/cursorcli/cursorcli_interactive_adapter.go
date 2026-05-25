@@ -47,12 +47,12 @@ type cursorInteractiveSession struct {
 	tmuxSessionName string
 	workingDir      string
 	persistent      bool
-	cleanupFiles      func()
-	idleTimer         *time.Timer
-	initErr           error
-	createdAt         time.Time
-	lastUsed          time.Time
-	mu                sync.Mutex
+	cleanupFiles    func()
+	idleTimer       *time.Timer
+	initErr         error
+	createdAt       time.Time
+	lastUsed        time.Time
+	mu              sync.Mutex
 }
 
 var cursorInteractiveRegistry = struct {
@@ -663,10 +663,13 @@ func writeCursorDenyBuiltinHooks(cursorDir string) (func(), error) {
 	// tells cursor to obey the permission verdict. Exit code 2 would
 	// also deny, but emitting the verdict explicitly lets us include a
 	// user_message that helps debug "why didn't cursor run my command".
+	logPath := filepath.Join(hooksDir, "mlp-deny-builtin-denials.jsonl")
 	script := `#!/bin/bash
 # Installed by the multi-llm-provider-go cursor adapter when
 # WithDenyBuiltinTools is enabled. Denies cursor's built-in Shell/Read
 # so the agent routes through the MCP bridge (api-bridge.*) instead.
+input=$(cat)
+printf '%s\n' "$input" >> ` + cursorShellQuote(logPath) + `
 cat <<'JSON'
 {"permission":"deny","user_message":"Built-in Shell/Read/Edit/Write are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in Shell/Read/Edit/Write are DENIED. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
 JSON
@@ -701,6 +704,11 @@ exit 0
 		} else {
 			_ = os.Remove(hooksPath)
 		}
+		// logPath lives inside hooksDir, so remove it BEFORE attempting
+		// to remove hooksDir — otherwise hooksDir stays (not empty),
+		// which in turn keeps cursorDir non-empty and the final cleanup
+		// fails. Best-effort: ignore the error if the file isn't there.
+		_ = os.Remove(logPath)
 		if scriptExisted {
 			_ = os.WriteFile(scriptPath, previousScript, 0o755)
 		} else {
@@ -737,7 +745,7 @@ func writeCursorDenyBuiltinPermissionsCLI(cursorDir string) (func(), error) {
 	denyConfig := `{
   "permissions": {
     "allow": [],
-    "deny": ["Shell(*)", "Read(*)", "Edit(*)", "Write(*)", "WebFetch(*)", "WebSearch(*)"]
+    "deny": ["Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "Edit(*)", "Write(*)", "WebFetch(*)", "WebSearch(*)"]
   }
 }
 `

@@ -1,11 +1,15 @@
 package cursorcli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // TestWriteCursorDenyBuiltinHooksLifecycle covers the unit-level invariants
@@ -69,6 +73,31 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 	if mode := info.Mode().Perm(); mode&0o100 == 0 {
 		t.Errorf("deny script must be owner-executable; mode=%o", mode)
 	}
+	cmd := exec.CommandContext(context.Background(), "bash", scriptPath)
+	cmd.Stdin = strings.NewReader(`{"tool_name":"Read","tool_input":{"path":"/tmp/secret.txt"}}`)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny script execution error = %v output=%q", err, string(output))
+	}
+	var decision struct {
+		Permission   string `json:"permission"`
+		UserMessage  string `json:"user_message"`
+		AgentMessage string `json:"agent_message"`
+	}
+	if err := json.Unmarshal(output, &decision); err != nil {
+		t.Fatalf("deny script output must be valid JSON: %v output=%q", err, string(output))
+	}
+	if decision.Permission != "deny" || !strings.Contains(decision.AgentMessage, "api-bridge") {
+		t.Fatalf("deny script decision = %#v, want permission deny with bridge guidance", decision)
+	}
+	logPath := filepath.Join(cursorDir, "hooks", "mlp-deny-builtin-denials.jsonl")
+	logBody, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("deny script should log hook stdin to %s: %v", logPath, err)
+	}
+	if !json.Valid([]byte(strings.TrimSpace(string(logBody)))) || !strings.Contains(string(logBody), "Read") {
+		t.Fatalf("deny script log = %q, want valid JSON line containing Read", string(logBody))
+	}
 
 	// Cleanup removes what we wrote and leaves the temp dir empty.
 	cleanup()
@@ -117,5 +146,27 @@ func TestWriteCursorDenyBuiltinHooksRestoresPreExistingHooksJSON(t *testing.T) {
 	}
 	if string(restored) != string(preExisting) {
 		t.Errorf("cleanup must restore pre-existing hooks.json byte-for-byte\n  want: %q\n  got:  %q", preExisting, restored)
+	}
+}
+
+func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *testing.T) {
+	workDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithDenyBuiltinTools(true)(opts)
+
+	cleanup, err := prepareCursorProjectFiles(workDir, "", opts, "test-session-cursor")
+	if err != nil {
+		t.Fatalf("prepareCursorProjectFiles: %v", err)
+	}
+	defer cleanup()
+
+	body, err := os.ReadFile(filepath.Join(workDir, ".cursor", "cli.json"))
+	if err != nil {
+		t.Fatalf("read generated cli.json: %v", err)
+	}
+	for _, resource := range []string{"Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "WebSearch(*)"} {
+		if !strings.Contains(string(body), resource) {
+			t.Fatalf("cli.json = %s, want deny resource %s", string(body), resource)
+		}
 	}
 }

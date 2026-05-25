@@ -15,13 +15,13 @@ import (
 //
 //   - <workingDir>/GEMINI.md                        — per-session system prompt
 //   - <workingDir>/.gemini/settings.json            — merged mcpServers
-//                                                     (from operator-supplied
-//                                                     projectSettingsJSON, if
-//                                                     any) + hooks.BeforeTool
-//                                                     deny entry
+//     (from operator-supplied
+//     projectSettingsJSON, if
+//     any) + hooks.BeforeTool
+//     deny entry
 //   - <workingDir>/.gemini/hooks/deny-builtin.sh    — POSIX deny script that
-//                                                     exits 2 (Gemini's
-//                                                     "System Block")
+//     exits 2 (Gemini's
+//     "System Block")
 //
 // Per geminicli.com/docs/hooks, gemini-cli loads hook configuration
 // from .gemini/settings.json under the "hooks" key (BeforeTool event)
@@ -146,7 +146,14 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 		if err != nil {
 			return noop, fmt.Errorf("read pre-existing deny-builtin.sh: %w", err)
 		}
-		scriptBody := "#!/bin/sh\n# mlp-session: deny built-in tool calls; force MCP server usage.\n# Auto-removed at session cleanup.\necho \"Built-in tools disabled by orchestrator policy; use MCP servers instead.\" >&2\nexit 2\n"
+		logPath := filepath.Join(hooksDir, "deny-builtin-denials.jsonl")
+		scriptBody := "#!/bin/sh\n" +
+			"# mlp-session: deny built-in tool calls; force MCP server usage.\n" +
+			"# Auto-removed at session cleanup.\n" +
+			"input=$(cat)\n" +
+			"printf '%s\\n' \"$input\" >> " + geminiShellQuote(logPath) + "\n" +
+			"echo \"Built-in tools disabled by orchestrator policy; use MCP servers instead.\" >&2\n" +
+			"exit 2\n"
 		if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o700); err != nil {
 			return noop, fmt.Errorf("write deny-builtin.sh: %w", err)
 		}
@@ -227,6 +234,7 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 			} else {
 				_ = os.Remove(scriptPath)
 			}
+			_ = os.Remove(filepath.Join(hooksDir, "deny-builtin-denials.jsonl"))
 		}
 		if hooksDirCreatedByUs {
 			_ = os.Remove(hooksDir)
@@ -246,6 +254,13 @@ func geminiReadPriorFileForRestore(path string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	return nil, false, err
+}
+
+func geminiShellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func geminiDirIsEmptyOrJustCreated(dir string) bool {

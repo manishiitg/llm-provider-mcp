@@ -1,8 +1,12 @@
 package geminicli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,12 +75,33 @@ func TestWriteGeminiProjectArtifactsComposesAllArtifacts(t *testing.T) {
 	if mode := info.Mode().Perm(); mode&0o100 == 0 {
 		t.Errorf("deny-builtin.sh must be owner-executable; got %o", mode)
 	}
+	cmd := exec.CommandContext(context.Background(), scriptPath)
+	cmd.Stdin = strings.NewReader(`{"tool_name":"read_file","tool_input":{"path":"/tmp/secret.txt"}}`)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("deny-builtin.sh exit = %v output=%q, want exit code 2", err, string(output))
+	}
+	if !strings.Contains(string(output), "disabled by orchestrator policy") {
+		t.Fatalf("deny-builtin.sh output = %q, want deny message", string(output))
+	}
+	logPath := filepath.Join(tmp, ".gemini", "hooks", "deny-builtin-denials.jsonl")
+	logBody, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("deny-builtin.sh should log hook stdin to %s: %v", logPath, err)
+	}
+	if !json.Valid(bytes.TrimSpace(logBody)) || !strings.Contains(string(logBody), "read_file") {
+		t.Fatalf("deny hook log = %q, want valid JSON line containing read_file", string(logBody))
+	}
 
 	cleanup()
 	for _, path := range expectedArtifacts {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("cleanup must remove artifact %q; stat err=%v", path, err)
 		}
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Errorf("cleanup must remove deny hook log %q; stat err=%v", logPath, err)
 	}
 }
 

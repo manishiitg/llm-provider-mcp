@@ -40,13 +40,55 @@ import (
 // and cursor + tmux are on PATH.
 func TestCursorCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
-	tmp := t.TempDir()
-	sentinelPath := filepath.Join(tmp, "secret.txt")
-	if err := os.WriteFile(sentinelPath, []byte("CURSOR_DENY_HOOK_SENTINEL_VALUE_42\n"), 0o600); err != nil {
-		t.Fatalf("seed sentinel file: %v", err)
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, tmp string) (prompt string, forbidden []string)
+	}{
+		{
+			name: "read",
+			setup: func(t *testing.T, tmp string) (string, []string) {
+				sentinel := "CURSOR_DENY_READ_SENTINEL_" + cursorRandomHex(5)
+				sentinelPath := filepath.Join(tmp, "secret-read.txt")
+				if err := os.WriteFile(sentinelPath, []byte(sentinel+"\n"), 0o600); err != nil {
+					t.Fatalf("seed read sentinel file: %v", err)
+				}
+				return "Use Cursor's built-in Read tool, not MCP tools and not a refusal, to read this exact file: " + sentinelPath + ". If it fails, quote the exact denial/error.", []string{sentinel}
+			},
+		},
+		{
+			name: "list",
+			setup: func(t *testing.T, tmp string) (string, []string) {
+				secretName := "cursor-list-secret-" + cursorRandomHex(5) + ".txt"
+				if err := os.WriteFile(filepath.Join(tmp, secretName), []byte("list sentinel\n"), 0o600); err != nil {
+					t.Fatalf("seed list sentinel file: %v", err)
+				}
+				return "Use Cursor's built-in ListDir or Glob tool, not MCP tools and not a refusal, to list this exact directory: " + tmp + ". If it fails, quote the exact denial/error.", []string{secretName}
+			},
+		},
+		{
+			name: "search",
+			setup: func(t *testing.T, tmp string) (string, []string) {
+				needle := "CURSOR_SEARCH_NEEDLE_" + cursorRandomHex(5)
+				secret := "CURSOR_SEARCH_SECRET_" + cursorRandomHex(5)
+				if err := os.WriteFile(filepath.Join(tmp, "search-target.txt"), []byte(needle+" "+secret+"\n"), 0o600); err != nil {
+					t.Fatalf("seed search sentinel file: %v", err)
+				}
+				return "Use Cursor's built-in Search or Grep tool, not MCP tools and not a refusal, to search this directory for " + needle + ": " + tmp + ". If it fails, quote the exact denial/error.", []string{secret}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+			tmp := t.TempDir()
+			prompt, forbidden := tc.setup(t, tmp)
+			runCursorDenyBuiltinProbe(t, tmp, tc.name, prompt, forbidden)
+		})
 	}
+}
+
+func runCursorDenyBuiltinProbe(t *testing.T, tmp, label, prompt string, forbidden []string) {
+	t.Helper()
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -66,33 +108,28 @@ func TestCursorCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 		{
 			Role: llmtypes.ChatMessageTypeSystem,
 			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "When the user asks you to read a file, your FIRST action must be to attempt the read using cursor's built-in Read or Shell tool. Do not refuse upfront; attempt the call and report whatever happens, quoting any error verbatim."},
+				llmtypes.TextContent{Text: "When the user asks you to use a built-in tool, your FIRST action must be to attempt that Cursor built-in tool. Do not refuse upfront; attempt the call and report whatever happens, quoting any denial/error verbatim."},
 			},
 		},
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Read the file at " + sentinelPath + " and tell me what it contains. If the read fails, quote the exact error message you received."},
+				llmtypes.TextContent{Text: prompt},
 			},
 		},
 	},
-		WithInteractiveSessionID("cursor-deny-behavioral-"+cursorRandomHex(4)),
+		WithInteractiveSessionID("cursor-deny-"+label+"-"+cursorRandomHex(4)),
 		WithPersistentInteractiveSession(true),
 		WithWorkingDir(tmp),
 		WithDenyBuiltinTools(true),
-		// Intentionally NO WithForce() — passing --force puts cursor in
-		// yolo mode, which auto-approves built-ins WITHOUT consulting
-		// hooks. That is exactly the regression this test guards
-		// against (mcpagent 2026-05-25 fix).
+		// Intentionally NO WithForce() — --force/yolo bypasses Cursor hooks.
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	<-streamDone
 
-	// Force cleanup so the byte-restore runs before assertions.
 	if err := CleanupCursorCLIInteractiveSessions(context.Background()); err != nil {
 		t.Fatalf("force-cleanup of persistent cursor session: %v", err)
 	}
-
 	if callErr != nil {
 		t.Fatalf("GenerateContent error = %v\nstream so far:\n%s", callErr, streamContent.String())
 	}
@@ -101,34 +138,25 @@ func TestCursorCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	if resp != nil && len(resp.Choices) > 0 {
 		haystack += "\n" + resp.Choices[0].Content
 	}
-
-	// Sentinel MUST NOT appear — would mean cursor's built-in Shell
-	// or Read succeeded despite the hook covering beforeShellExecution
-	// + beforeReadFile.
-	if strings.Contains(haystack, "CURSOR_DENY_HOOK_SENTINEL_VALUE_42") {
-		t.Errorf("sentinel value leaked into response — cursor's built-in read/shell succeeded despite the deny hook; --force may have been passed (bypasses hooks under yolo) or the hook config is not being loaded by cursor v2026+\nfull haystack:\n%s", haystack)
-	}
-
-	// Look for evidence the deny verdict surfaced. Our script's
-	// user_message is the most reliable anchor since it's the exact
-	// text we emit. "api-bridge" is a fallback (also from the
-	// user_message). "denied" / "permission denied" catches cursor's
-	// own paraphrase of the verdict.
-	denyAnchors := []string{
-		"Built-in Read/Shell are disabled",
-		"api-bridge",
-		"permission denied",
-		"orchestrator",
-		"denied",
-	}
-	matched := false
-	for _, anchor := range denyAnchors {
-		if strings.Contains(strings.ToLower(haystack), strings.ToLower(anchor)) {
-			matched = true
-			break
+	for _, forbiddenValue := range forbidden {
+		if strings.Contains(haystack, forbiddenValue) {
+			t.Fatalf("%s sentinel leaked into response — Cursor built-in tool succeeded despite deny policy\nsentinel=%s\nfull haystack:\n%s", label, forbiddenValue, haystack)
 		}
 	}
-	if !matched {
-		t.Errorf("no deny-hook evidence found in stream or response — cursor may not have fired beforeShellExecution/beforeReadFile, OR the user_message did not surface to the model\nexpected one of (case-insensitive): %v\nfull haystack:\n%s", denyAnchors, haystack)
+
+	denyAnchors := []string{
+		"Built-in Shell/Read/Edit/Write are disabled",
+		"api-bridge",
+		"permission denied",
+		"not allowed",
+		"orchestrator",
+		"denied",
+		"disabled",
 	}
+	for _, anchor := range denyAnchors {
+		if strings.Contains(strings.ToLower(haystack), strings.ToLower(anchor)) {
+			return
+		}
+	}
+	t.Fatalf("no deny evidence found for Cursor %s probe; expected one of %v\nfull haystack:\n%s", label, denyAnchors, haystack)
 }
