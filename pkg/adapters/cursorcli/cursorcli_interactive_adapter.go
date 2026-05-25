@@ -649,6 +649,24 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				return nil, err
 			}
 			addCleanup(cleanup)
+			// Hooks alone are not enough: cursor v2026.05.24+ evaluates
+			// .cursor/cli.json permissions BEFORE prompting the user, and
+			// only consults the hook AFTER the user has approved. Without
+			// a permission-level deny, cursor shows "Run this command?
+			// Not in allowlist: cat ..." every time the model wants to
+			// shell out. Installing a deny-only cli.json forecloses the
+			// built-in tools at the permission gate so cursor never
+			// prompts and immediately tells the model to use the bridge.
+			// Skip when caller supplied their own cli.json (MetadataKeyProjectConfig
+			// was already written above) — caller's choices win.
+			if _, callerSuppliedCLI := opts.Metadata.Custom[MetadataKeyProjectConfig].(string); !callerSuppliedCLI {
+				cliCleanup, err := writeCursorDenyBuiltinPermissionsCLI(cursorDir)
+				if err != nil {
+					cleanupAll()
+					return nil, err
+				}
+				addCleanup(cliCleanup)
+			}
 		}
 	}
 
@@ -719,6 +737,49 @@ exit 0
 		} else {
 			_ = os.Remove(scriptPath)
 			_ = os.Remove(hooksDir)
+		}
+		_ = os.Remove(cursorDir)
+	}, nil
+}
+
+// writeCursorDenyBuiltinPermissionsCLI installs a .cursor/cli.json
+// whose permissions.deny rules block cursor's built-in Shell / Read /
+// Edit / Write tools at the permission gate that cursor evaluates
+// BEFORE prompting the user (and before the hooks.json hook runs).
+//
+// Why this is needed in addition to writeCursorDenyBuiltinHooks:
+// cursor v2026.05.24+ shows "Run this command? Not in allowlist: cat ..."
+// when a model invokes a built-in shell command that isn't pre-approved.
+// The hook only runs after the user accepts that prompt. By denying at
+// the permission layer here, cursor skips the prompt and immediately
+// reports back to the model that the tool is denied, forcing it to
+// pick the MCP bridge tool (api-bridge.execute_shell_command, etc.).
+//
+// Patterns are coarse wildcards. We don't try to model the full cursor
+// permission grammar — just blanket-deny the built-ins we expect the
+// bridge to substitute. Restoration on cleanup preserves any
+// pre-existing operator cli.json byte-for-byte.
+func writeCursorDenyBuiltinPermissionsCLI(cursorDir string) (func(), error) {
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create cursor dir: %w", err)
+	}
+	cliPath := filepath.Join(cursorDir, "cli.json")
+	previousCLI, cliExisted := readPreviousCursorFile(cliPath)
+	denyConfig := `{
+  "permissions": {
+    "allow": [],
+    "deny": ["Shell(*)", "Read(*)", "Edit(*)", "Write(*)", "WebFetch(*)", "WebSearch(*)"]
+  }
+}
+`
+	if err := os.WriteFile(cliPath, []byte(denyConfig), 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write cursor cli.json: %w", err)
+	}
+	return func() {
+		if cliExisted {
+			_ = os.WriteFile(cliPath, previousCLI, 0o600)
+		} else {
+			_ = os.Remove(cliPath)
 		}
 		_ = os.Remove(cursorDir)
 	}, nil
@@ -1300,7 +1361,8 @@ func extractCursorVisibleAssistantText(delta string) string {
 	lines := strings.Split(stripCursorANSI(delta), "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		trimmed := normalizeCursorPaneLine(line)
+		roleLine := normalizeCursorPaneLineWithoutAssistantLabel(line)
+		trimmed := normalizeCursorAssistantTurnLabel(roleLine)
 		if isCursorPromptBoundaryLine(trimmed) {
 			break
 		}
@@ -1309,9 +1371,16 @@ func extractCursorVisibleAssistantText(delta string) string {
 		// otherwise a multi-turn pane (where baseline-diff falls back to
 		// line-prefix mode and leaves prior turns in the delta) leaks the
 		// stale reply into the new turn's extracted text.
-		if isCursorUserTurnHeader(trimmed) {
+		if isCursorUserTurnHeader(roleLine) {
 			out = out[:0]
 			continue
+		}
+		if assistantLine, ok := stripCursorAssistantTurnHeader(roleLine); ok {
+			out = out[:0]
+			trimmed = assistantLine
+			if trimmed == "" {
+				continue
+			}
 		}
 		if trimmed == "" {
 			// Preserve blank lines as paragraph-break markers (collapse runs),
@@ -1353,17 +1422,37 @@ func isCursorUserTurnHeader(line string) bool {
 	return next == ' ' || next == '\t'
 }
 
-func normalizeCursorPaneLine(line string) string {
+func normalizeCursorPaneLineWithoutAssistantLabel(line string) string {
 	line = strings.TrimSpace(stripCursorANSI(line))
 	line = strings.TrimPrefix(line, "│")
 	line = strings.TrimSuffix(line, "│")
 	line = strings.TrimSpace(line)
 	line = strings.TrimSpace(strings.TrimPrefix(line, "• "))
+	return line
+}
+
+func normalizeCursorAssistantTurnLabel(line string) string {
 	// Cursor labels each assistant turn with a literal "Assistant:" header. Strip
 	// it so the kept response reads as plain prose (and matches what the user
 	// sees in the chat panel for Claude/Gemini, which have no such label).
 	line = strings.TrimSpace(strings.TrimPrefix(line, "Assistant:"))
 	return line
+}
+
+func stripCursorAssistantTurnHeader(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, "assistant:") {
+		return "", false
+	}
+	if len(trimmed) == len("Assistant:") {
+		return "", true
+	}
+	next := trimmed[len("Assistant:")]
+	if next != ' ' && next != '\t' {
+		return "", false
+	}
+	return strings.TrimSpace(trimmed[len("Assistant:"):]), true
 }
 
 // cursorShellEchoSuffix matches the duration suffix Cursor appends to shell-tool
