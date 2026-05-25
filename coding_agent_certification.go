@@ -205,9 +205,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
-			TestName:    "TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText",
-			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1"},
-			Description: "final response is extracted from Claude Code tmux output",
+			TestName:    "TestClaudeCodeExperimentalRealFinalExtractionFromTmuxVertexJudgeE2E",
+			Env:         []string{"RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "real Claude Code tmux turn is captured and Vertex judges final extraction quality, formatting, and TUI noise removal",
 			RealE2E:     true,
 		},
 		{
@@ -402,9 +402,11 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertFinalExtraction,
-			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
-			TestName:    "TestExtractCodexVisibleAssistantTextDropsLiveInputEcho",
-			Description: "Codex final extraction excludes queued user text and TUI noise",
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "real Codex CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and TUI noise removal",
+			RealE2E:     true,
 		},
 		{
 			ID:          CertMultiTurn,
@@ -526,6 +528,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Description: "Cursor CLI calls a real MCP bridge tool through its structured (--print) path",
 			RealE2E:     true,
 		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1", "RUN_CURSOR_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "real Cursor CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and shell/TUI transcript removal",
+			RealE2E:     true,
+		},
 	},
 	ProviderAgyCLI: {
 		{
@@ -627,9 +637,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
-			TestName:    "TestAgyCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
-			Description: "final response is extracted from Antigravity CLI tmux output",
+			TestName:    "TestAgyCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "real Antigravity CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and MCP/thought/TUI noise removal",
 			RealE2E:     true,
 		},
 		{
@@ -732,6 +742,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Description: "Gemini CLI calls a real MCP bridge tool through its stream-json path",
 			RealE2E:     true,
 		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/geminicli/geminicli_adapter_test.go",
+			TestName:    "TestGeminiFinalExtractionVertexJudgeE2E",
+			Env:         []string{"GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "Vertex judge validates Gemini final extraction quality, formatting, and MCP/tool panel noise removal",
+			RealE2E:     true,
+		},
 	},
 	ProviderOpenCodeCLI: {
 		{
@@ -740,6 +758,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestOpenCodeCLIStructuredMCPBridge",
 			Env:         []string{"RUN_OPENCODE_CLI_REAL_E2E=1"},
 			Description: "OpenCode CLI calls a real MCP bridge tool through its structured run path",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/opencodecli/opencodecli_adapter_test.go",
+			TestName:    "TestOpenCodeFinalExtractionVertexJudgeE2E",
+			Env:         []string{"GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
+			Description: "Vertex judge validates OpenCode structured final extraction quality and tool-event noise removal",
 			RealE2E:     true,
 		},
 	},

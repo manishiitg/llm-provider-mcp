@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -122,6 +123,64 @@ func TestAgyCLIRealStatuslineUsageContract(t *testing.T) {
 	if source, _ := gi.Additional["agy_token_usage_source"].(string); source != "statusline" {
 		t.Fatalf("agy_token_usage_source = %q, want statusline; gi=%+v", source, gi)
 	}
+}
+
+func TestAgyCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupAgyCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewAgyCLIAdapter("", "agy-cli", &MockLogger{})
+	ownerSessionID := "agy-real-final-extract-" + agyRandomHex(4)
+	token := "LIVE_AGY_FINAL_" + agyRandomHex(5)
+	workDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nAgy final %s\nfirst %s\nsecond %s", token, token, token)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	tmuxSession, ok := activeAgyInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Agy tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureAgyPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Agy pane: %v", err)
+	}
+
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "agy-cli",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
+		MustContain: []string{
+			"Agy final " + token,
+			"first " + token,
+			"second " + token,
+		},
+		Forbidden: []string{
+			"Return a final answer",
+			"Do not use tools",
+			"Thought",
+			"execute_shell_command",
+			"api-bridge/",
+			"+ 28 tools",
+			"Authorization: Bearer",
+			"Would you like me",
+			"▸",
+			"●",
+		},
+		ExpectedNote: "This is a live Antigravity CLI tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+	})
 }
 
 func TestAgyCLIRealPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
@@ -404,7 +463,7 @@ func TestAgyCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	WithWorkingDir(workDir)(opts)
 	WithDangerouslySkipPermissions(false)(opts)
 
-	args, env, workingDir, cleanupFiles, err := adapter.buildAgyInteractiveLaunch(opts, "")
+	args, env, workingDir, cleanupFiles, err := adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
 	if err != nil {
 		t.Fatalf("build auth prompt launch: %v", err)
 	}
@@ -581,7 +640,7 @@ func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract(t *testing.T) {
 	WithWorkingDir(workDir)(opts)
 	WithBridgeOnlyTools(true)(opts)
 
-	args, env, workingDir, cleanupFiles, err := adapter.buildAgyInteractiveLaunch(opts, "")
+	args, env, workingDir, cleanupFiles, err := adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
 	if err != nil {
 		t.Fatalf("build bridge-only launch: %v", err)
 	}
@@ -949,6 +1008,81 @@ func TestAgyCLIRealNativeResumeAfterTmuxLossContract(t *testing.T) {
 	}
 	if got := agySessionIDFromResponse(second); got != resumeID {
 		t.Fatalf("resumed generation conversation id = %q, want %q", got, resumeID)
+	}
+}
+
+func TestAgyCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupAgyCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewAgyCLIAdapter("", "agy-cli", &MockLogger{})
+	ownerSessionID := "agy-real-live-process-" + agyRandomHex(4)
+	workDir := t.TempDir()
+	bridgeToken := "AGY_LIVE_PROCESS_" + agyRandomHex(5)
+	firstDone := "AGY_FIRST_DONE_" + agyRandomHex(5)
+	liveAck := "AGY_LIVE_ACK_" + agyRandomHex(5)
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+
+	mcpServerPath := writeAgyCancellableSlowMCPServer(t, slowToolMarker)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resultCh := make(chan agyRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use declared MCP tools when asked. If a follow-up user message arrives while you are working, handle it after the current tool call finishes."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge slow_contract MCP tool with token %s and delay_ms 8000. Do not answer until the tool returns. Then reply exactly %s.", bridgeToken, firstDone)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithWorkingDir(workDir),
+			WithMCPConfig(mcpConfig),
+		)
+		out := agyRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	tmuxSession := waitForAgyRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForAgyRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, reply exactly %s and nothing else.", liveAck)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendAgyInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendAgyInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("GenerateContent error = %v", got.err)
+		}
+		paneAfter, err := captureAgyPane(context.Background(), tmuxSession)
+		if err != nil {
+			t.Fatalf("capture Agy pane after live follow-up: %v", err)
+		}
+		if !strings.Contains(got.content, liveAck) {
+			t.Fatalf("live follow-up was not extracted as final content; content=%q pane:\n%s", got.content, paneAfter)
+		}
+		if strings.Contains(got.content, liveMessage) || strings.Contains(got.content, firstDone) {
+			t.Fatalf("final content should be the live follow-up answer only; content=%q", got.content)
+		}
+	case <-time.After(4 * time.Minute):
+		pane, _ := captureAgyPane(context.Background(), tmuxSession)
+		t.Fatalf("timed out waiting for Agy to process queued live input; pane:\n%s", pane)
 	}
 }
 

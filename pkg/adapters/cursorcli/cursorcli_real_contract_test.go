@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -159,6 +160,69 @@ func TestCursorCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 		t.Fatalf("timed out waiting for GenerateContent to return after cancellation")
 	}
 	_ = drainCursorStream(streamChan)
+}
+
+func TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-final-extract-" + cursorRandomHex(4)
+	token := "LIVE_CURSOR_FINAL_" + cursorRandomHex(5)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nCursor final %s\nfirst %s\nsecond %s", token, token, token)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithDenyBuiltinTools(true),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Cursor tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureCursorPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Cursor pane: %v", err)
+	}
+	_ = drainCursorStream(streamChan)
+
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "cursor-cli",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
+		MustContain: []string{
+			"Cursor final " + token,
+			"first " + token,
+			"second " + token,
+		},
+		Forbidden: []string{
+			"Return a final answer",
+			"Do not use tools",
+			"Cursor Agent",
+			"Composer",
+			"Add a follow-up",
+			"Ask (shift+tab",
+			"User:",
+			"Assistant:",
+			"ctrl+c",
+			"ctrl+o",
+			"Globbed",
+			"Found ",
+			"$ ",
+		},
+		ExpectedNote: "This is a live Cursor CLI tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+	})
 }
 
 func requireRealCursorCLIE2E(t *testing.T) {

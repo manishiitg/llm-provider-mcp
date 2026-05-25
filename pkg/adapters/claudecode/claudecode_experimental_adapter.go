@@ -533,7 +533,7 @@ func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptio
 		}
 	}
 
-	args := []string{"claude", "--permission-mode", "dontAsk", "--verbose"}
+	args := []string{"claude", "--permission-mode", "dontAsk"}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	} else if nativeSessionID != "" {

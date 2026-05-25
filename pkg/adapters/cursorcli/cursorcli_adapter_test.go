@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -1243,21 +1244,73 @@ func TestParseCursorResponseDropsToolTranscriptAndUserHeader(t *testing.T) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("response missing final assistant line %q, got:\n%s", want, got)
 	}
-	forbidden := []string{
-		"User:",                 // prior-turn header leaked through
-		"which workflows are",   // echoed user prompt
-		`Globbed "*"`,           // tool transcript
-		"Found 33 files",        // tool result summary
-		"$ ls -1",               // raw shell echo
-		"407ms",                 // shell duration suffix
-		"truncated",             // tool-output ellipsis marker
-		"Assistant:",            // stripped label prefix should not survive
-	}
-	for _, bad := range forbidden {
-		if strings.Contains(got, bad) {
-			t.Fatalf("response should not contain %q, got:\n%s", bad, got)
-		}
-	}
+	testcontracts.AssertCleanFinalExtraction(t, "cursor-cli", got,
+		[]string{want},
+		[]string{
+			"User:",               // prior-turn header leaked through
+			"which workflows are", // echoed user prompt
+			"Listing workflows in the workspace.",
+			`Globbed "*"`,    // tool transcript
+			"Found 33 files", // tool result summary
+			"$ ls -1",        // raw shell echo
+			"\nalpha\nbeta\n",
+			"407ms",     // shell duration suffix
+			"truncated", // tool-output ellipsis marker
+			"ctrl+o",
+			"Assistant:", // stripped label prefix should not survive
+		},
+	)
+}
+
+func TestCursorFinalExtractionVertexJudgeE2E(t *testing.T) {
+	baseline := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+
+  → Add a follow-up`
+
+	captured := `  Cursor Agent
+  v2026.05.20-2b5dd59
+
+
+  User: which workflows are there
+
+
+  Listing workflows in the workspace.
+
+    Globbed "*" in /tmp/Workflow
+    Found 33 files
+
+  $ ls -1 /tmp/Workflow | sort 407ms
+    alpha
+    beta
+    … truncated (31 more lines) · ctrl+o to expand
+
+  Assistant: Here are the workflows: alpha, beta, gamma.
+
+
+  → Add a follow-up`
+
+	got := parseCursorInteractiveResponse(captured, baseline, "which workflows are there", nil)
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "cursor-cli",
+		TmuxScreen: captured,
+		Extracted:  got,
+		UserGoal:   "List the workflows.",
+		MustContain: []string{
+			"Here are the workflows: alpha, beta, gamma.",
+		},
+		Forbidden: []string{
+			"User:",
+			"which workflows are there",
+			`Globbed "*"`,
+			"Found 33 files",
+			"$ ls -1",
+			"ctrl+o",
+			"Assistant:",
+		},
+		ExpectedNote: "The extracted answer should be only the assistant sentence without labels or shell transcript.",
+	})
 }
 
 // Documents the known small false-positive in the shell-echo filter: a single

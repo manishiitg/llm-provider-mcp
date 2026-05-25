@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -606,18 +607,53 @@ I see 11 planned regression steps.
 	if got != want {
 		t.Fatalf("visible assistant text = %q, want %q", got, want)
 	}
-	for _, forbidden := range []string{
-		"Waiting for MCP",
-		"prompts will be queued",
-		"execute_shell_command",
-		"api-bridge",
-		"stdout",
-		"exit_code",
-	} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("visible assistant text leaked %q in %q", forbidden, got)
-		}
-	}
+	testcontracts.AssertCleanFinalExtraction(t, "gemini-cli", got,
+		[]string{"Hello! I'm your Workflow Builder Agent", "I see 11 planned regression steps."},
+		[]string{
+			"Waiting for MCP",
+			"prompts will be queued",
+			"execute_shell_command",
+			"api-bridge",
+			"stdout",
+			"exit_code",
+		},
+	)
+}
+
+func TestGeminiFinalExtractionVertexJudgeE2E(t *testing.T) {
+	input := `
+ℹ Waiting for MCP servers to initialize... Slash commands are still available
+and prompts will be queued.
+│ ✓  execute_shell_command (api-bridge MCP Server) {"command":"jq '[.steps[]]'"}
+│ {
+│   "stdout": "[\n  {\n    \"id\": \"prepare-test-fixtures\",\n    \"title\": \"Prepare Regression Fixtures\"\n  }\n]\n",
+│   "stderr": "",
+│   "exit_code": 0,
+│   "execution_time_ms": 44
+│ }
+Hello! I'm your Workflow Builder Agent for the testing workflow.
+I see 11 planned regression steps.
+`
+	got := extractGeminiVisibleAssistantText(input)
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "gemini-cli",
+		TmuxScreen: input,
+		Extracted:  got,
+		UserGoal:   "Introduce the workflow builder state after initialization.",
+		MustContain: []string{
+			"Hello! I'm your Workflow Builder Agent",
+			"I see 11 planned regression steps.",
+		},
+		Forbidden: []string{
+			"Waiting for MCP",
+			"prompts will be queued",
+			"execute_shell_command",
+			"api-bridge",
+			"stdout",
+			"exit_code",
+		},
+		ExpectedNote: "The final answer should preserve the two clean assistant lines.",
+	})
 }
 
 func TestGeminiInteractiveAPIErrorIgnoresEchoedPromptText(t *testing.T) {
@@ -1286,7 +1322,7 @@ func TestResolveGeminiCLITierAliases(t *testing.T) {
 		model string
 		want  string
 	}{
-		{model: "high", want: "gemini-3.5-flash"},
+		{model: "high", want: "gemini-3-pro-preview"},
 		{model: "medium", want: "gemini-3.5-flash"},
 		{model: "low", want: "gemini-3.1-flash-lite"},
 		{model: "gemini-3.5-flash", want: "gemini-3.5-flash"},

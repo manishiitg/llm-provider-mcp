@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -100,6 +101,202 @@ func TestAgyCompletedImageGenerationPaneIsReady(t *testing.T) {
 	if strings.Contains(content, "GenerateImage(") || strings.Contains(content, "Bash(") {
 		t.Fatalf("content = %q, want native tool transcript filtered", content)
 	}
+}
+
+func TestAgyDetectsQueuedLiveInputDraftAtReadyPrompt(t *testing.T) {
+	pane := `
+The original task is complete.
+
+────────────────────────────────────────
+> PREVALIDATION_FAILED_AGY_LIVE_123
+────────────────────────────────────────
+`
+	draft, ok := agyUnsubmittedPromptDraft(pane)
+	if !ok {
+		t.Fatal("ready prompt with live input draft should be treated as unsubmitted")
+	}
+	if draft != "PREVALIDATION_FAILED_AGY_LIVE_123" {
+		t.Fatalf("draft = %q", draft)
+	}
+}
+
+func TestAgyIgnoresEmptyReadyPromptDraft(t *testing.T) {
+	pane := `
+The original task is complete.
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+	if draft, ok := agyUnsubmittedPromptDraft(pane); ok {
+		t.Fatalf("empty ready prompt should not be treated as unsubmitted draft: %q", draft)
+	}
+}
+
+func TestAgyFinalExtractionKeepsLatestAssistantAfterPromptLineFollowup(t *testing.T) {
+	pane := `
+> First task
+
+First answer should not be final.
+
+────────────────────────────────────────
+> Follow-up task
+
+▸ Thought for 1s
+  Preparing concise answer
+
+Second answer is final.
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	if content != "Second answer is final." {
+		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestAgyFinalExtractionDropsPastedTextMarker(t *testing.T) {
+	pane := `
+> [Pasted text #1]
+
+Fast pasted input was accepted.
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	if content != "Fast pasted input was accepted." {
+		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestAgyFinalExtractionDropsMCPToolAndThoughtNoise(t *testing.T) {
+	pane := agyNoisyFinalExtractionPane()
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	assertAgyNoisyFinalExtractionClean(t, content)
+}
+
+func TestAgyFinalExtractionKeepsAnswerMatchingPromptSuffix(t *testing.T) {
+	prompt := "Return a final answer containing these three plain lines and no setup commentary:\nAgy final LIVE_AGY_FINAL_suffix\nfirst LIVE_AGY_FINAL_suffix\nsecond LIVE_AGY_FINAL_suffix"
+	pane := `
+> Return a final answer containing these three plain lines and no setup commentary:
+  Agy final LIVE_AGY_FINAL_suffix
+  first LIVE_AGY_FINAL_suffix
+  second LIVE_AGY_FINAL_suffix
+
+▸ Thought for 3s, 418 tokens
+  Focusing on Final Output
+  Agy final LIVE_AGY_FINAL_suffix
+  first LIVE_AGY_FINAL_suffix
+  second LIVE_AGY_FINAL_suffix
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+	content := parseAgyInteractiveResponse(pane, "", prompt, nil)
+	testcontracts.AssertCleanFinalExtraction(t, "agy-cli", content,
+		[]string{
+			"Agy final LIVE_AGY_FINAL_suffix",
+			"first LIVE_AGY_FINAL_suffix",
+			"second LIVE_AGY_FINAL_suffix",
+		},
+		[]string{
+			"Return a final answer",
+			"Focusing on Final Output",
+			"Thought",
+			">",
+		},
+	)
+}
+
+func TestAgyFinalExtractionVertexJudgeE2E(t *testing.T) {
+	testcontracts.RequireVertexFinalExtractionJudgeE2E(t)
+
+	pane := agyNoisyFinalExtractionPane()
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	assertAgyNoisyFinalExtractionClean(t, content)
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "agy-cli",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Explain whether this workflow has a system prompt or instructions.",
+		MustContain: []string{
+			"Yes, the system prompt",
+			"soul/soul.md",
+			"step-specific runtime prompts",
+		},
+		Forbidden: []string{
+			"api-bridge/",
+			"Thought",
+			"Would you like me",
+			"+ 28 tools",
+			"Authorization: Bearer",
+			"execute_shell_command",
+		},
+		ExpectedNote: "The answer should be the final prose paragraph only, preserving its two-paragraph formatting.",
+	})
+}
+
+func agyNoisyFinalExtractionPane() string {
+	return `
+> do you have a system prompt or instructions for workflow
+
++ 28 tools
+• execute_shell_command
+
+-H "Authorization: Bearer $MCP_API_TOKEN"
+-H "Content-Type: application/json"
+-d '{ "group_name": "test-group" }'
+
+Would you like me to trigger one of these steps or run the entire workflow for you?
+
+● api-bridge/get_api_spec(Get get_step_prompts API spec)
+● api-bridge/get_api_spec(Get get_workflow_config API spec)
+● api-bridge/get_step_prompts(Get step prompts)
+
+▸ Thought for 2s, 184 tokens
+  Investigating Execution Logs
+
+● api-bridge/execute_shell_command(List iteration-36 prepare-test-fixtures logs)
+● api-bridge/execute_shell_command(Read system prompt for step)
+● api-bridge/execute_shell_command(Get system prompt preview)
+
+▸ Thought for 3s, 207 tokens
+  Discovering Core Instructions
+
+● api-bridge/execute_shell_command(Read soul.md)
+
+▸ Thought Process
+  Understanding Workflow Mechanisms
+
+Yes, the system prompt and instructions for this workflow are structured across multiple layers.
+
+The high-level objective is in soul/soul.md, and step-specific runtime prompts are synthesized into each run's execution logs.
+
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+}
+
+func assertAgyNoisyFinalExtractionClean(t *testing.T, content string) {
+	t.Helper()
+	testcontracts.AssertCleanFinalExtraction(t, "agy-cli", content,
+		[]string{"Yes, the system prompt"},
+		[]string{
+			"api-bridge/",
+			"Thought",
+			"Would you like me",
+			"+ 28 tools",
+			"Authorization: Bearer",
+			"execute_shell_command",
+			"Discovering Core Instructions",
+		},
+	)
 }
 
 func TestAgyPromptDraftToClearBeforePaste(t *testing.T) {
@@ -268,7 +465,7 @@ func TestBuildAgyInteractiveLaunchAddsConversationBeforePromptInteractive(t *tes
 	WithWorkingDir(t.TempDir())(opts)
 	WithResumeSessionID("agy-conversation-123")(opts)
 
-	args, _, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "Follow repo rules.")
+	args, _, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "Follow repo rules.", "test-session-agy")
 	if err != nil {
 		t.Fatalf("build launch: %v", err)
 	}
@@ -299,7 +496,7 @@ func TestBuildAgyInteractiveLaunchAddsAPIKeyAliases(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithWorkingDir(t.TempDir())(opts)
 
-	_, env, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "")
+	_, env, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
 	if err != nil {
 		t.Fatalf("build launch: %v", err)
 	}
@@ -317,7 +514,7 @@ func TestPrepareAgyProjectFilesWritesProjectFilesAndCleansUp(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	cleanup, err := prepareAgyProjectFiles(workDir, "Follow repo rules.", opts)
+	cleanup, err := prepareAgyProjectFiles(workDir, "Follow repo rules.", opts, "test-session-agy")
 	if err != nil {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
@@ -356,7 +553,7 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithBridgeOnlyTools(true)(opts)
 
-	cleanup, err := prepareAgyProjectFiles(workDir, "", opts)
+	cleanup, err := prepareAgyProjectFiles(workDir, "", opts, "test-session-agy")
 	if err != nil {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
@@ -400,8 +597,8 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bridge-only hook script: %v", err)
 	}
-	if !strings.Contains(string(scriptBody), `"decision":"deny"`) || !strings.Contains(string(scriptBody), "MCP bridge-only mode") {
-		t.Fatalf("bridge-only hook script = %q, want deny JSON with bridge-only reason", string(scriptBody))
+	if !strings.Contains(string(scriptBody), `"decision":"deny"`) || !strings.Contains(string(scriptBody), "api-bridge.execute_shell_command") {
+		t.Fatalf("bridge-only hook script = %q, want deny JSON listing api-bridge tools", string(scriptBody))
 	}
 
 	cleanup()
@@ -429,7 +626,7 @@ func TestPrepareAgyProjectFilesMergesAndRestoresExistingHooks(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithBridgeOnlyTools(true)(opts)
 
-	cleanup, err := prepareAgyProjectFiles(workDir, "", opts)
+	cleanup, err := prepareAgyProjectFiles(workDir, "", opts, "test-session-agy")
 	if err != nil {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
@@ -474,7 +671,7 @@ func TestPrepareAgyProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"new":{"command":"new"}}}`)(opts)
 
-	cleanup, err := prepareAgyProjectFiles(workDir, "", opts)
+	cleanup, err := prepareAgyProjectFiles(workDir, "", opts, "test-session-agy")
 	if err != nil {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
@@ -493,7 +690,7 @@ func TestPrepareAgyProjectFilesRejectsInvalidMCPConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":`)(opts)
 
-	if cleanup, err := prepareAgyProjectFiles(t.TempDir(), "", opts); err == nil {
+	if cleanup, err := prepareAgyProjectFiles(t.TempDir(), "", opts, "test-session-agy"); err == nil {
 		if cleanup != nil {
 			cleanup()
 		}

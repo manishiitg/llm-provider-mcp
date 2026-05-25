@@ -675,7 +675,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 		agyPersistentRegistry.Unlock()
 	}
 
-	args, env, workingDir, cleanupFiles, err := c.buildAgyInteractiveLaunch(opts, systemPrompt)
+	args, env, workingDir, cleanupFiles, err := c.buildAgyInteractiveLaunch(opts, systemPrompt, ownerSessionID)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
@@ -719,7 +719,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 	return session, nil
 }
 
-func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string) ([]string, []string, string, func(), error) {
+func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string, ownerSessionID string) ([]string, []string, string, func(), error) {
 	workingDir := agyWorkingDirFromOptions(opts)
 	if workingDir == "" {
 		workingDir = agyMustGetwd()
@@ -728,7 +728,7 @@ func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, sy
 		return nil, nil, "", nil, fmt.Errorf("failed to create Antigravity CLI working directory: %w", err)
 	}
 
-	cleanupFiles, err := prepareAgyProjectFiles(workingDir, systemPrompt, opts)
+	cleanupFiles, err := prepareAgyProjectFiles(workingDir, systemPrompt, opts, ownerSessionID)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -802,7 +802,7 @@ func (c *AgyCLIAdapter) agyInteractiveLaunchFingerprint(opts *llmtypes.CallOptio
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions) (func(), error) {
+func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions, ownerSessionID string) (func(), error) {
 	cleanups := make([]func(), 0, 2)
 	addCleanup := func(cleanup func()) {
 		if cleanup != nil {
@@ -821,7 +821,10 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create Agy rules dir: %w", err)
 		}
-		rulePath := filepath.Join(rulesDir, "mlp-system-"+agyRandomHex(6)+".md")
+		// Per-session-stable hex so repeated turns on the same owner
+		// session reuse one `mlp-system-<hex>.md` instead of piling up
+		// one new file per turn (mirrors cursor adapter's behavior).
+		rulePath := filepath.Join(rulesDir, "mlp-system-"+agyStableHex(ownerSessionID, 6)+".md")
 		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
 		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
 			cleanupAll()
@@ -865,10 +868,14 @@ const agyBridgeOnlyDeniedToolMatcher = "view_file|write_to_file|replace_file_con
 func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 	scriptPath := filepath.Join(agentsDir, "mlp-bridge-only-hook.sh")
 	logPath := filepath.Join(agentsDir, "mlp-bridge-only-denials.jsonl")
+	// Rich deny reason mirrors the cursor hook's agent_message: tell the
+	// model EXACTLY which bridge tools are available so it doesn't give
+	// up with "no MCP server configured" when its built-in is blocked.
+	denyReason := "Antigravity built-in tools are DENIED in this session. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need: api-bridge.execute_shell_command(command, timeout?) for shell (cat, ls, jq, python3, curl); api-bridge.diff_patch_workspace_file(filepath, diff) for file edits (instead of write_to_file / replace_file_content); api-bridge.get_api_spec(server_name, tool_name) to discover other MCP servers (google_sheets, playwright). Do NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured. Always pick a bridge tool over giving up."
 	script := "#!/bin/sh\n" +
 		"input=$(cat)\n" +
 		"printf '%s\\n' \"$input\" >> " + agyShellQuote(logPath) + "\n" +
-		"printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"MCP bridge-only mode blocks Antigravity built-in tools; use the configured MCP bridge tool instead.\"}'\n"
+		"printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"" + denyReason + "\"}'\n"
 	scriptCleanup, err := writeAgyRestoredFile(scriptPath, []byte(script))
 	if err != nil {
 		return nil, err
@@ -1494,21 +1501,10 @@ func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, st
 	}
 }
 
-// agyTypedInputMaxLen is the upper bound under which a single-line message
-// is typed via `tmux send-keys -l` (keystroke injection) instead of
-// paste-buffer + bracketed paste. Keeping short, single-line input out of the
-// bracketed-paste path stops Agy's TUI from rendering normal chat turns as
-// "[Pasted text #N]". Multi-line or longer payloads still go through
-// paste-buffer to preserve newlines and avoid premature submission.
-const agyTypedInputMaxLen = 240
-
 func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Agy interactive input is empty")
-	}
-	if !strings.ContainsAny(message, "\n\r") && len(message) <= agyTypedInputMaxLen {
-		return typeAgyInputToTmux(ctx, sessionName, message)
 	}
 	bufferName := "mlp-agy-input-" + agyRandomHex(6)
 	tmp, err := os.CreateTemp("", "agy-tmux-input-*.txt")
@@ -1527,7 +1523,10 @@ func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error 
 	if err := runAgyCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
 		return fmt.Errorf("failed to load Agy input into tmux buffer: %w", err)
 	}
-	if err := runAgyCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+	// Do not pass paste-buffer -p here. Agy treats bracketed paste as a
+	// collapsed "[Pasted text #N]" block; raw tmux paste is still fast, preserves
+	// embedded LFs with -r, and leaves the prompt text readable in the pane.
+	if err := runAgyCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Agy interactive session: %w", err)
 	}
 	waitForAgyInputDraftVisible(ctx, sessionName, message, 2*time.Second)
@@ -1543,12 +1542,10 @@ func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error 
 	return nil
 }
 
-// typeAgyInputToTmux delivers a short single-line message to Agy's TUI
-// as keystrokes via `tmux send-keys -l` instead of paste-buffer. The TUI then
-// treats it as normal typed input and does not show the "[Pasted text]"
-// marker. Used only for messages that have no embedded newlines and fit under
-// agyTypedInputMaxLen — multi-line or longer payloads stay on the
-// paste-buffer/bracketed-paste path so Agy doesn't submit on every \n.
+// typeAgyInputToTmux is retained for internal slash-command setup where Agy's
+// command palette expects literal keystrokes. User messages go through
+// sendAgyInputToTmux so they are pasted in one tmux operation instead of
+// rendered key-by-key by the TUI.
 func typeAgyInputToTmux(ctx context.Context, sessionName, message string) error {
 	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", message); err != nil {
 		return fmt.Errorf("failed to type input into Agy interactive session: %w", err)
@@ -1634,17 +1631,26 @@ func latestAgyPromptDraftRaw(captured string) (draft string, placeholder bool, o
 		trimmed := strings.TrimSpace(strings.ReplaceAll(stripAgyANSI(lines[i]), "\u00a0", " "))
 		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "│"))
 		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, "│"))
-		for _, marker := range []string{">", "→", "›", "❯"} {
-			if trimmed == marker {
-				return "", false, true
-			}
-			if strings.HasPrefix(trimmed, marker+" ") || strings.HasPrefix(trimmed, marker+"\t") {
-				draft := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
-				return draft, isAgyPromptPlaceholder(draft), true
-			}
+		if draft, ok := agyPromptLineDraft(trimmed); ok {
+			return draft, isAgyPromptPlaceholder(draft), true
 		}
 	}
 	return "", false, false
+}
+
+func agyPromptLineDraft(line string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(stripAgyANSI(line), "\u00a0", " "))
+	trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "│"))
+	trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, "│"))
+	for _, marker := range []string{">", "→", "›", "❯"} {
+		if trimmed == marker {
+			return "", true
+		}
+		if strings.HasPrefix(trimmed, marker+" ") || strings.HasPrefix(trimmed, marker+"\t") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, marker)), true
+		}
+	}
+	return "", false
 }
 
 func isAgyPromptPlaceholder(draft string) bool {
@@ -1732,6 +1738,9 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 	var readyWithoutContentSince time.Time
 	var submitRetryCount int
 	var lastSubmitRetryAt time.Time
+	var draftSubmitRetryCount int
+	var lastDraftSubmitRetryAt time.Time
+	var lastDraftSubmitValue string
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
@@ -1803,6 +1812,21 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 				lastCaptured = captured
 				continue
 			}
+			if draft, ok := agyUnsubmittedPromptDraft(captured); ok {
+				if draft != lastDraftSubmitValue {
+					lastDraftSubmitValue = draft
+					draftSubmitRetryCount = 0
+					lastDraftSubmitRetryAt = time.Time{}
+				}
+				if draftSubmitRetryCount < 3 && (lastDraftSubmitRetryAt.IsZero() || time.Since(lastDraftSubmitRetryAt) >= time.Second) {
+					_ = runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+					draftSubmitRetryCount++
+					lastDraftSubmitRetryAt = time.Now()
+				}
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
 			if captured != lastCaptured {
 				lastCaptured = captured
 				idleSince = time.Now()
@@ -1836,6 +1860,12 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 	}
 }
 
+func agyUnsubmittedPromptDraft(captured string) (string, bool) {
+	draft, placeholder, ok := latestAgyPromptDraftRaw(captured)
+	draft = strings.TrimSpace(draft)
+	return draft, ok && draft != "" && !placeholder
+}
+
 func parseAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
 	delta := agyCapturedAfterBaseline(captured, baseline)
 	text := extractAgyVisibleAssistantText(delta)
@@ -1855,10 +1885,23 @@ func forcedAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, h
 func extractAgyVisibleAssistantText(delta string) string {
 	lines := strings.Split(stripAgyANSI(delta), "\n")
 	out := make([]string, 0, len(lines))
+	skipThoughtTitle := false
 	for _, line := range lines {
 		trimmed := normalizeAgyPaneLine(line)
+		if draft, ok := agyPromptLineDraft(trimmed); ok {
+			if strings.TrimSpace(draft) != "" && !isAgyPromptPlaceholder(draft) {
+				out = out[:0]
+				skipThoughtTitle = false
+				continue
+			}
+			break
+		}
 		if isAgyPromptBoundaryLine(trimmed) {
 			break
+		}
+		if skipThoughtTitle && trimmed != "" {
+			skipThoughtTitle = false
+			continue
 		}
 		// "User: …" marks the start of a user turn. Everything previously
 		// collected is from an older assistant turn and must be discarded —
@@ -1877,7 +1920,16 @@ func extractAgyVisibleAssistantText(delta string) string {
 			}
 			continue
 		}
-		if isAgyTUILine(trimmed) || isAgyToolStatusLine(trimmed) || isAgyBoxDrawingLine(trimmed) {
+		if isAgyThoughtStatusLine(trimmed) {
+			out = out[:0]
+			skipThoughtTitle = true
+			continue
+		}
+		if isAgyToolStatusLine(trimmed) {
+			out = out[:0]
+			continue
+		}
+		if isAgyTUILine(trimmed) || isAgyBoxDrawingLine(trimmed) {
 			continue
 		}
 		out = append(out, trimmed)
@@ -1948,6 +2000,16 @@ var agyEarlierHiddenLine = regexp.MustCompile(`^(?:…|\.\.\.)\s*\d+\s+earlier\s
 // regex requires a path token and either "lines N-M" or a file extension.
 var agyReadFileLine = regexp.MustCompile(`^read\s+(?:\.\.\.|/|~)\S*\s+(?:lines?\s+\d+(?:-\d+)?|.*\.\w{1,8}\b)`)
 
+// agyMCPToolCardLine matches collapsed MCP tool cards such as:
+//
+//	"● api-bridge/get_api_spec(Get API spec)"
+//
+// The provider/server segment is intentionally generic because workflow tools
+// use server names beyond api-bridge.
+var agyMCPToolCardLine = regexp.MustCompile(`^[\w.-]+/[\w.-]+\(`)
+
+var agyToolCountLine = regexp.MustCompile(`^[+-]\s*\d+\s+tools?\b`)
+
 func isAgyPromptBoundaryLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
@@ -2011,6 +2073,9 @@ func isAgyToolStatusLine(line string) bool {
 		strings.HasPrefix(nativeToolLower, "glob(") {
 		return true
 	}
+	if agyMCPToolCardLine.MatchString(nativeToolLower) {
+		return true
+	}
 	if strings.HasPrefix(lower, "thinking") ||
 		strings.HasPrefix(lower, "working") ||
 		strings.HasPrefix(lower, "running") ||
@@ -2030,6 +2095,11 @@ func isAgyToolStatusLine(line string) bool {
 		strings.Contains(lower, `"stdout"`) ||
 		strings.Contains(lower, `"stderr"`) ||
 		strings.Contains(lower, `"exit_code"`) {
+		return true
+	}
+	if agyToolCountLine.MatchString(lower) ||
+		strings.HasPrefix(trimmed, "-H ") ||
+		strings.HasPrefix(trimmed, "-d ") {
 		return true
 	}
 	// Tool-result summary lines: "Found N files", "Found N matches", …
@@ -2058,6 +2128,13 @@ func isAgyToolStatusLine(line string) bool {
 		return true
 	}
 	return false
+}
+
+func isAgyThoughtStatusLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimLeft(line, "▸ "))
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "thought for ") ||
+		strings.HasPrefix(lower, "thought process")
 }
 
 func isAgyBoxDrawingLine(line string) bool {
@@ -2096,6 +2173,7 @@ func stripAgyEchoedUserPrompt(text, prompt string) string {
 	}
 	bestStart := -1
 	bestLen := 0
+	bestPromptStart := 0
 	for start := 0; start < len(textNonEmpty) && start < 64; start++ {
 		for promptStart := 0; promptStart < len(promptLines); promptStart++ {
 			matchLen := 0
@@ -2107,10 +2185,14 @@ func stripAgyEchoedUserPrompt(text, prompt string) string {
 			if matchLen > bestLen {
 				bestStart = start
 				bestLen = matchLen
+				bestPromptStart = promptStart
 			}
 		}
 	}
 	if bestLen < 2 && !(len(promptLines) == 1 && bestLen == 1) {
+		return text
+	}
+	if bestStart == 0 && bestPromptStart > 0 && bestLen == len(textNonEmpty) {
 		return text
 	}
 	// Translate the non-empty match span back to raw-line indices and drop it
@@ -2625,6 +2707,25 @@ func agyRandomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// agyStableHex returns a deterministic hex string derived from the
+// given seed (typically the owner session ID). Used for naming
+// session-scoped projection files like
+// `.agents/rules/mlp-system-<hex>.md` so the same session reuses one
+// filename across turns instead of accumulating one new .md per turn.
+// Falls back to a random hex when the seed is empty. Mirrors the
+// equivalent helper in pkg/adapters/cursorcli.
+func agyStableHex(seed string, n int) string {
+	if strings.TrimSpace(seed) == "" {
+		return agyRandomHex(n)
+	}
+	sum := sha256.Sum256([]byte(seed))
+	encoded := hex.EncodeToString(sum[:])
+	if n*2 < len(encoded) {
+		return encoded[:n*2]
+	}
+	return encoded
 }
 
 func sanitizeAgyTmuxSessionName(value string) string {

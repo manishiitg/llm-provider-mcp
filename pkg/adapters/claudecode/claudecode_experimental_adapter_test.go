@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -613,6 +614,56 @@ func TestExtractLatestUnmarkedAssistantResponseSkipsTrailingToolBlock(t *testing
 	if got != want {
 		t.Fatalf("content = %q, want %q", got, want)
 	}
+	testcontracts.AssertCleanFinalExtraction(t, "claude-code", got,
+		[]string{"Here's the full summary:", "- done", "- verified"},
+		[]string{
+			"api-bridge",
+			"execute_shell_command",
+			"stdout",
+			"ctrl+o",
+			"mcp-agent-20260519",
+			"❯",
+		},
+	)
+}
+
+func TestClaudeFinalExtractionVertexJudgeE2E(t *testing.T) {
+	pane := `
+⏺ Here's the full summary:
+  - done
+  - verified
+
+✻ Worked for 2s
+
+⏺ api-bridge - execute_shell_command (MCP)(command: "cat file")
+  ⎿  {"stdout":"ok"}
+
+─────────────────────────────────────────────────── mcp-agent-20260519 ──
+❯
+`
+	got, ok := extractLatestUnmarkedAssistantResponse(pane)
+	if !ok {
+		t.Fatal("extractLatestUnmarkedAssistantResponse ok = false, want true")
+	}
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "claude-code",
+		TmuxScreen: pane,
+		Extracted:  got,
+		UserGoal:   "Provide a concise summary of completed work.",
+		MustContain: []string{
+			"Here's the full summary:",
+			"- done",
+			"- verified",
+		},
+		Forbidden: []string{
+			"api-bridge",
+			"execute_shell_command",
+			"stdout",
+			"mcp-agent-20260519",
+			"❯",
+		},
+		ExpectedNote: "The final answer is a heading followed by two bullet lines.",
+	})
 }
 
 func TestExtractLatestUnmarkedAssistantResponseCanStillStripMarkers(t *testing.T) {
@@ -958,7 +1009,7 @@ func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
 	}
 }
 
-func TestExperimentalAlwaysAddsVerboseFlag(t *testing.T) {
+func TestExperimentalDoesNotAddVerboseFlagByDefault(t *testing.T) {
 	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
@@ -967,8 +1018,8 @@ func TestExperimentalAlwaysAddsVerboseFlag(t *testing.T) {
 	if len(tempFiles) != 0 {
 		t.Fatalf("tempFiles = %v, want none", tempFiles)
 	}
-	if !containsArg(args, "--verbose") {
-		t.Fatalf("args = %v, want --verbose by default", args)
+	if containsArg(args, "--verbose") {
+		t.Fatalf("args = %v, want no --verbose by default", args)
 	}
 }
 

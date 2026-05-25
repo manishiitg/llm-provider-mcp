@@ -247,7 +247,7 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// gaps that need their own e2e tests, tracked as follow-up tasks.
 	ProviderCursorCLI: {
 		CertBoundedRetention, CertBridgeOnlyTools, CertCancellation, CertCleanup,
-		CertDoneDetection, CertFinalExtraction, CertFreshLaunch, CertLifecyclePolicy,
+		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
 		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
 		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
 		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
@@ -262,11 +262,11 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// CertMCPBridge has landed for both; remaining IDs await their own
 	// e2e tests.
 	ProviderGeminiCLI: {
-		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
+		CertBridgeOnlyTools, CertDoneDetection, CertFreshLaunch,
 		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 	ProviderOpenCodeCLI: {
-		CertBridgeOnlyTools, CertDoneDetection, CertFinalExtraction, CertFreshLaunch,
+		CertBridgeOnlyTools, CertDoneDetection, CertFreshLaunch,
 		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 }
@@ -322,8 +322,8 @@ func TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification(t *testing.T)
 	}
 }
 
-func TestClaudeAndCodexCertificationReferencesExistingTests(t *testing.T) {
-	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
+func TestCodingAgentCertificationReferencesExistingTests(t *testing.T) {
+	for provider := range codingAgentProviderCertifications {
 		certs := CodingAgentProviderCertifications(provider)
 		if len(certs) == 0 {
 			t.Fatalf("%s has no registered certifications", provider)

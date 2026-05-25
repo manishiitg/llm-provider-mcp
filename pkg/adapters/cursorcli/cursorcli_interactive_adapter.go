@@ -699,7 +699,7 @@ func writeCursorDenyBuiltinHooks(cursorDir string) (func(), error) {
 # WithDenyBuiltinTools is enabled. Denies cursor's built-in Shell/Read
 # so the agent routes through the MCP bridge (api-bridge.*) instead.
 cat <<'JSON'
-{"permission":"deny","user_message":"Built-in Read/Shell are disabled in this session. Call the api-bridge MCP tool instead (api-bridge.execute_shell_command for shell, api-bridge.read_file for reads).","agent_message":"This action is gated by the orchestrator. Call the api-bridge MCP tool instead of the built-in."}
+{"permission":"deny","user_message":"Built-in Shell/Read/Edit/Write are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in Shell/Read/Edit/Write are DENIED. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
 JSON
 exit 0
 `

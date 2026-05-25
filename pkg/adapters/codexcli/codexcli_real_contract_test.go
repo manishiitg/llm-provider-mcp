@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -143,6 +144,66 @@ func TestCodexCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 		t.Fatalf("content = %q, want bridge tool result %q", content, want)
 	}
 	assertCodexInteractiveTerminalOnlyStream(t, streamChan)
+}
+
+func TestCodexCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-final-extract-" + codexRandomHex(4)
+	token := "LIVE_CODEX_FINAL_" + codexRandomHex(5)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nCodex final %s\nfirst %s\nsecond %s", token, token, token)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithDisableShellTool(),
+		WithApprovalPolicy("never"),
+		WithReasoningEffort("low"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	tmuxSession, ok := activeCodexInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Codex tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureCodexPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Codex pane: %v", err)
+	}
+	_ = drainCodexStream(streamChan)
+
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "codex-cli",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
+		MustContain: []string{
+			"Codex final " + token,
+			"first " + token,
+			"second " + token,
+		},
+		Forbidden: []string{
+			"Return a final answer",
+			"Do not use tools",
+			"Calling ",
+			"Called ",
+			"codex.",
+			"execute_shell_command",
+			"❯",
+			"›",
+		},
+		ExpectedNote: "This is a live Codex CLI tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+	})
 }
 
 func TestCodexCLIRealInteractiveWorkspaceTrustPromptContract(t *testing.T) {

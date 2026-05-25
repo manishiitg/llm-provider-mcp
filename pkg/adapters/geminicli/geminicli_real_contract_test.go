@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -110,6 +111,74 @@ noted %s`, token, token, token)
 	if !ok || tmuxSessionAfter != tmuxSession {
 		t.Fatalf("expected same tmux session reused, before=%q after=%q ok=%v", tmuxSession, tmuxSessionAfter, ok)
 	}
+}
+
+func TestGeminiCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+	requireRealGeminiCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupGeminiCLIInteractiveSessions(context.Background()) })
+
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	adapter := NewGeminiCLIAdapter(apiKey, geminiCLIContractModel, &MockLogger{})
+	ownerSessionID := "gemini-real-final-extract-" + geminiRandomHex(4)
+	token := "LIVE_GEMINI_FINAL_" + geminiRandomHex(5)
+
+	policyPath := writeGeminiRealPolicy(t, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+deny_message = "No tools are needed for this final-extraction contract test."
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nGemini final %s\nfirst %s\nsecond %s", token, token, token)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithProjectSettings(`{}`),
+		WithAdminPolicyPath(policyPath),
+		WithApprovalMode("yolo"),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(resp.Choices[0].Content)
+	tmuxSession, ok := activeGeminiInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Gemini tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureGeminiPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Gemini pane: %v", err)
+	}
+	_ = drainGeminiStream(streamChan)
+
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "gemini-cli",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
+		MustContain: []string{
+			"Gemini final " + token,
+			"first " + token,
+			"second " + token,
+		},
+		Forbidden: []string{
+			"Return a final answer",
+			"Do not use tools",
+			"Waiting for MCP",
+			"prompts will be queued",
+			"execute_shell_command",
+			"api-bridge",
+			"stdout",
+			"exit_code",
+		},
+		ExpectedNote: "This is a live Gemini CLI tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+	})
 }
 
 func TestGeminiCLIRealInteractiveLargePastedPromptSubmits(t *testing.T) {

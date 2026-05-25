@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -744,7 +745,52 @@ Here is the final answer:
 	if got != want {
 		t.Fatalf("parsed response = %q, want %q", got, want)
 	}
+	testcontracts.AssertCleanFinalExtraction(t, "codex-cli", got,
+		[]string{"Here is the final answer:", "- alpha", "- beta"},
+		[]string{
+			"Calling codex.list_mcp_resources",
+			"Called codex.list_mcp_resources",
+			"Intermediate assistant-looking replay",
+			"codex.list_mcp_resources",
+			"resources",
+		},
+	)
 	assertCodexNoInternalStatus(t, got)
+}
+
+func TestCodexFinalExtractionVertexJudgeE2E(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+Calling codex.list_mcp_resources({"cursor":null})
+Called codex.list_mcp_resources({"cursor":null})
+└ {"resources": []}
+Intermediate assistant-looking replay near tool output
+────────────────────────────────────────────────────────────────────────────────
+Here is the final answer:
+- alpha
+- beta
+────────────────────────────────────────────────────────────────────────────────
+❯`
+
+	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "codex-cli",
+		TmuxScreen: captured,
+		Extracted:  got,
+		UserGoal:   "Return the final answer list.",
+		MustContain: []string{
+			"Here is the final answer:",
+			"- alpha",
+			"- beta",
+		},
+		Forbidden: []string{
+			"codex.list_mcp_resources",
+			"resources",
+			"Intermediate assistant-looking replay",
+			"❯",
+		},
+		ExpectedNote: "The answer should preserve the heading and bullet list from the final framed response.",
+	})
 }
 
 func TestParseCodexInteractiveResponseRejectsSeparatorFramedToolTail(t *testing.T) {

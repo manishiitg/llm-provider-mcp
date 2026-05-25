@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -477,6 +478,72 @@ func TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn(t 
 	if _, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); !ok {
 		t.Fatalf("persistent interactive session not registered after completed turn")
 	}
+}
+
+func TestClaudeCodeExperimentalRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+	skipClaudeExperimentalPersistentE2E(t)
+
+	adapter := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+
+	ownerSessionID := "claude-final-extract-e2e-" + randomHex(4)
+	token := "LIVE_CLAUDE_FINAL_" + randomHex(5)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nClaude final %s\nfirst %s\nsecond %s", token, token, token)},
+			},
+		},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(firstChoiceText(resp))
+	tmuxSession, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Claude Code tmux session for %s", ownerSessionID)
+	}
+	pane, err := captureTmuxPane(ctx, tmuxSession)
+	if err != nil {
+		t.Fatalf("capture Claude Code pane: %v", err)
+	}
+
+	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+		Provider:   "claude-code",
+		TmuxScreen: pane,
+		Extracted:  content,
+		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
+		MustContain: []string{
+			"Claude final " + token,
+			"first " + token,
+			"second " + token,
+		},
+		Forbidden: []string{
+			"Return a final answer",
+			"Do not use tools",
+			"execute_shell_command",
+			"api-bridge",
+			"stdout",
+			"ctrl+o",
+			"❯",
+			"⏺",
+			"✻",
+		},
+		ExpectedNote: "This is a live Claude Code tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+	})
 }
 
 func TestClaudeCodeExperimentalIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {

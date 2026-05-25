@@ -16,7 +16,7 @@ func TestRawClaude(t *testing.T) {
 		t.Skip("set RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 to run legacy claude -p raw test")
 	}
 
-	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions"}
+	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages", "--dangerously-skip-permissions"}
 	cmd := exec.CommandContext(context.Background(), "claude", args...)
 
 	var inputStream bytes.Buffer

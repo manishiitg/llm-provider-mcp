@@ -325,8 +325,7 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent, workingDir string, term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
 	_ = inspector // reserved for future per-event emissions
 	// 1. Prepare Command Arguments
-	// Note: --input-format stream-json requires --output-format stream-json and --verbose
-	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages"}
+	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages"}
 
 	// Pass --model only when the configured model is a real Claude CLI model ID.
 	if c.shouldPassModelFlag() {
@@ -1116,7 +1115,6 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 		"-p",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
-		"--verbose",
 		"--resume", sessionID,
 		"--max-turns", "1",
 	}
