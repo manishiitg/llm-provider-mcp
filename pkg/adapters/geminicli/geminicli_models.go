@@ -6,11 +6,24 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
+// knownGeminiCLIModels is the ordered list of model IDs the frontend exposes
+// for gemini-cli. Tier aliases (auto/high/medium/low) come first and resolve
+// via resolveGeminiCLIModelID; bare GA model names follow so users with
+// access to the newer frontier Pro variants can pick them explicitly.
+//
+// Why both: gemini-cli validates the model against the backend's
+// fetchAvailableModels response. The "-preview" / safe tier aliases work for
+// every account; the GA names (gemini-3.1-pro, gemini-3-pro) only resolve
+// for accounts that have those models provisioned. Exposing both lets users
+// pick whichever their account actually supports without us having to detect
+// account tier server-side.
 var knownGeminiCLIModels = []string{
 	"auto",
 	"high",
 	"medium",
 	"low",
+	"gemini-3.1-pro",
+	"gemini-3-pro",
 }
 
 // GetAllGeminiCLIModels returns the frontend-visible Gemini CLI model aliases.
@@ -28,11 +41,15 @@ func GetAllGeminiCLIModels() []*llmtypes.ModelMetadata {
 		case "auto":
 			meta.ModelName = "Auto (recommended, pricing varies)"
 		case "high":
-			meta.ModelName = "High (Gemini 3.1 Pro)"
+			meta.ModelName = "High (Gemini 3.1 Pro Preview)"
 		case "medium":
-			meta.ModelName = "Medium (Gemini 3.5 Flash)"
+			meta.ModelName = "Medium (Gemini 3 Flash Preview)"
 		case "low":
-			meta.ModelName = "Low (Gemini 3.1 Flash Lite)"
+			meta.ModelName = "Low (Gemini 3.1 Flash Lite Preview)"
+		case "gemini-3.1-pro":
+			meta.ModelName = "Gemini 3.1 Pro (GA — requires account access)"
+		case "gemini-3-pro":
+			meta.ModelName = "Gemini 3 Pro (GA — requires account access)"
 		}
 
 		models = append(models, meta)
@@ -44,26 +61,22 @@ func GetAllGeminiCLIModels() []*llmtypes.ModelMetadata {
 // resolveGeminiCLIModelID maps the tier aliases the frontend exposes to the
 // concrete model IDs that gemini-cli's --model flag accepts.
 //
-// Verified against gemini-cli 0.41.2's bundled model registry:
-//
-//	"gemini-3.1-pro"               — GA frontier model (the previous code shipped
-//	                                  "gemini-3-pro-preview", which is the older
-//	                                  preview snapshot)
-//	"gemini-3.5-flash"             — GA mid-tier model; requires gemini-cli that
-//	                                  includes 3.5 in its bundled registry (post-
-//	                                  0.41.2). Older builds will fall through to
-//	                                  the API and may 400; brew upgrade gemini-cli
-//	                                  on dev boxes and deploy VMs.
-//	"gemini-3.1-flash-lite-preview" — current shipped Flash-Lite. There is no
-//	                                  GA "gemini-3.1-flash-lite" name yet (the
-//	                                  previous code shipped that suffix and it
-//	                                  silently fell through as an unknown ID).
+// IMPORTANT: gemini-cli validates the model name against the BACKEND's
+// fetchAvailableModels response, not just the CLI's bundled registry. Bare
+// GA names ("gemini-3.1-pro", "gemini-3-pro") are accepted by the CLI's
+// flag parser but rejected at chat time by the backend on accounts that
+// haven't been provisioned for those models — gemini-cli surfaces this as
+// `Model "gemini-3.1-pro" was not found or is invalid` in its TUI picker
+// and halts the chat. The "-preview" variants resolve for every
+// authenticated account, so they're the tier defaults; users whose
+// account has the GA model can pick "gemini-3.1-pro" / "gemini-3-pro"
+// directly from the frontend (those entries live in knownGeminiCLIModels).
 func resolveGeminiCLIModelID(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "high":
-		return "gemini-3.1-pro"
+		return "gemini-3.1-pro-preview"
 	case "medium":
-		return "gemini-3.5-flash"
+		return "gemini-3-flash-preview"
 	case "low":
 		return "gemini-3.1-flash-lite-preview"
 	default:

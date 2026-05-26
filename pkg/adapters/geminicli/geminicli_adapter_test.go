@@ -1311,10 +1311,10 @@ func TestResolveGeminiCLITierAliases(t *testing.T) {
 		model string
 		want  string
 	}{
-		{model: "high", want: "gemini-3.1-pro"},
-		{model: "medium", want: "gemini-3.5-flash"},
+		{model: "high", want: "gemini-3.1-pro-preview"},
+		{model: "medium", want: "gemini-3-flash-preview"},
 		{model: "low", want: "gemini-3.1-flash-lite-preview"},
-		{model: "gemini-3.5-flash", want: "gemini-3.5-flash"},
+		{model: "gemini-3.1-pro-preview", want: "gemini-3.1-pro-preview"},
 	}
 
 	for _, tt := range tests {
