@@ -284,26 +284,31 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		Provider:    ProviderGeminiCLI,
 		DisplayName: "Gemini CLI",
 		CLIName:     "gemini",
-		// Gemini CLI is being deprecated by Google. We pin it to the structured
-		// transport so we don't carry tmux-specific bug surface for a CLI that's
-		// going away — matches the OpenCode CLI contract shape.
-		Transport:                 CodingAgentTransportStructured,
+		// Gemini CLI runs in the tmux interactive transport by default — same
+		// shape as Claude Code / Codex / Cursor / Agy. The structured
+		// (--output-format stream-json) path is kept available as the
+		// StructuredFallback for callers that opt in (workflow steps that want
+		// non-tmux execution, batch / cron contexts, headless servers without
+		// tmux). The interactive adapter's session registry, live-input dispatch,
+		// control-key (interrupt) injection, and cleanup helpers are all wired
+		// — see geminicli_interactive_adapter.go.
+		Transport:                 CodingAgentTransportTmux,
 		RequiresWorkingDir:        true,
-		RequiresOwnerSessionID:    false,
-		UsesPersistentSession:     false,
-		SupportsLiveInput:         false,
-		SupportsInterrupt:         false,
-		SupportsTerminalStream:    false,
+		RequiresOwnerSessionID:    true,
+		UsesPersistentSession:     true,
+		SupportsLiveInput:         true,
+		SupportsInterrupt:         true,
+		SupportsTerminalStream:    true,
 		SupportsFinalExtraction:   true,
 		SupportsNativeResume:      true,
 		UsesMCPBridge:             true,
 		SupportsBridgeOnlyTools:   true,
 		UsesNativeSystemPrompt:    true,
-		LaunchesViaLoginShell:     false,
-		ProcessScopedCleanup:      false,
-		HandlesTmuxSessionLoss:    false,
+		LaunchesViaLoginShell:     true,
+		ProcessScopedCleanup:      true,
+		HandlesTmuxSessionLoss:    true,
 		StructuredFallback:        true,
-		ImageInputInteractive:     false,
+		ImageInputInteractive:     false, // gemini-cli has no image attachment flag in either tmux or structured mode (see generateContent guard)
 		SurfacesTokenUsage:        true,
 		TokenUsageSource:          "transcript-file",
 		AdapterReadsTranscript:    true,

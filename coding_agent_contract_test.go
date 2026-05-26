@@ -19,7 +19,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
 		{name: "agy cli", provider: ProviderAgyCLI, wantTmux: true, wantFound: true},
-		{name: "gemini cli", provider: ProviderGeminiCLI, wantFound: true},
+		{name: "gemini cli", provider: ProviderGeminiCLI, wantTmux: true, wantFound: true},
 		{name: "opencode cli", provider: ProviderOpenCodeCLI, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
@@ -258,13 +258,28 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	ProviderAgyCLI: {
 		CertSharedWorkdirMCPIsolation,
 	},
-	// Gemini + OpenCode are structured-only (no tmux suite required).
-	// CertMCPBridge has landed for both; remaining IDs await their own
-	// e2e tests.
+	// Gemini CLI is now tmux-default (matching Claude/Codex/Cursor/Agy) with
+	// structured as the opt-in fallback. The interactive adapter has its core
+	// e2e suite — full tmux contract, MCP bridge, live input, queued
+	// validation, shared-workdir MCP isolation, parallel startup queue and
+	// isolation, cleanup, trust prompt, image-path analysis, project artifact
+	// lifecycle — but it doesn't yet have explicit certification-registry
+	// entries for every claim in the tmux contract. The IDs below mirror the
+	// gap shape used for Cursor: a public TODO list of capabilities the
+	// contract claims but whose certification entry hasn't been wired up.
+	// Drain by registering each in codingAgentProviderCertifications.
 	ProviderGeminiCLI: {
-		CertDoneDetection, CertFreshLaunch,
-		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
+		CertBoundedRetention, CertCancellation, CertCleanup,
+		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
+		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
+		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
+		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
+		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
+		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
+		CertTrustAuthPrompts, CertWorkingDirectory,
 	},
+	// OpenCode is structured-only (no tmux suite required).
+	// CertMCPBridge has landed; remaining IDs await their own e2e tests.
 	ProviderOpenCodeCLI: {
 		CertDoneDetection, CertFreshLaunch,
 		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
