@@ -324,6 +324,19 @@ func (c *ClaudeCodeAdapter) GenerateContent(ctx context.Context, messages []llmt
 // WithObservability wrapper. All per-stream emissions live here.
 func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent, workingDir string, term *llmtypes.SyntheticTerminal, inspector *llmtypes.InspectorEmitter) (*llmtypes.ContentResponse, error) {
 	_ = inspector // reserved for future per-event emissions
+
+	// Project attached skills into .claude/skills/ before launching
+	// the CLI so Claude Code discovers them natively at startup.
+	// Best-effort: the listing is also in the system prompt via
+	// mcpagent.ensureSystemPrompt, so a projection failure degrades
+	// gracefully (agent loses the on-disk full body but still sees the
+	// listing).
+	if workingDir != "" {
+		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+			_ = c.ProjectSkills(workingDir, skills)
+		}
+	}
+
 	// 1. Prepare Command Arguments
 	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages"}
 

@@ -469,6 +469,13 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		return nil, nil, "", nil, fmt.Errorf("failed to create Cursor CLI working directory: %w", err)
 	}
 
+	// Project attached skills into .cursor/skills/ so Cursor's native
+	// Agent Skills loader picks them up at session start. Non-fatal:
+	// the listing is also in the system prompt via mcpagent.
+	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+		_ = c.ProjectSkills(workingDir, skills)
+	}
+
 	cleanupFiles, err := prepareCursorProjectFiles(workingDir, systemPrompt, opts, ownerSessionID)
 	if err != nil {
 		return nil, nil, "", nil, err

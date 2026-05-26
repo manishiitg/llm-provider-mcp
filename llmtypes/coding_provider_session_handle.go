@@ -18,6 +18,15 @@ const (
 	CodingProviderSessionHandleAdditionalKey    = "coding_provider_session_handle"
 	CodingProviderLaunchOnlyMetadataKey         = "coding_provider_launch_only"
 	CodingProviderLaunchSystemPromptMetadataKey = "coding_provider_launch_system_prompt"
+
+	// AttachedSkillsMetadataKey threads the agent's attached skills into
+	// the adapter via opts.Metadata.Custom. CLI adapters call
+	// AttachedSkillsFromOptions(opts) at session launch to retrieve the
+	// list and project SKILL.md folders to their native skill directory
+	// (.claude/skills/, .agents/skills/). API adapters can ignore the
+	// key — mcpagent's ensureSystemPrompt already surfaces the listing
+	// in the outgoing system prompt for them.
+	AttachedSkillsMetadataKey = "attached_skills"
 )
 
 // CodingProviderSessionHandle is the provider-owned continuation state for a

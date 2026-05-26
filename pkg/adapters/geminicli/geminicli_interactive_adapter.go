@@ -372,6 +372,12 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		} else if cleanup != nil {
 			session.projectInstructionCleanup = cleanup
 		}
+
+		// Project attached skills into .agents/skills/ at the workspace
+		// root so Gemini CLI's skill loader picks them up. Best-effort.
+		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+			_ = g.ProjectSkills(workingDir, skills)
+		}
 	}
 
 	if err := startGeminiTmuxSession(ctx, session.tmuxSessionName, args, env, commandDir); err != nil {

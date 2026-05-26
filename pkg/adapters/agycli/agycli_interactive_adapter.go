@@ -718,6 +718,15 @@ func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, sy
 		return nil, nil, "", nil, fmt.Errorf("failed to create Antigravity CLI working directory: %w", err)
 	}
 
+	// Project attached skills before launching the CLI so agy can
+	// discover them in .agents/skills/ at startup. Non-fatal: skills
+	// are useful but not load-bearing — the agent can still run
+	// without disk projection, and the listing is also present in the
+	// system prompt via mcpagent's ensureSystemPrompt.
+	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+		_ = c.ProjectSkills(workingDir, skills)
+	}
+
 	cleanupFiles, err := prepareAgyProjectFiles(workingDir, systemPrompt, opts, ownerSessionID)
 	if err != nil {
 		return nil, nil, "", nil, err

@@ -180,6 +180,39 @@ func CodingProviderLaunchSystemPromptFromOptions(opts *CallOptions) string {
 	return prompt
 }
 
+// WithAttachedSkills threads the agent's attached skills through the
+// call so CLI adapters can project them to the provider's working
+// directory at session launch. mcpagent populates this from
+// Agent.attachedSkills before every LLM call; CLI adapters read it via
+// AttachedSkillsFromOptions(opts) and call their own ProjectSkills
+// method. API adapters don't need to read it — the listing is already
+// in the system prompt by the time the request goes out.
+func WithAttachedSkills(skills []*Skill) CallOption {
+	return func(opts *CallOptions) {
+		if len(skills) == 0 {
+			return
+		}
+		if opts.Metadata == nil {
+			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
+		}
+		if opts.Metadata.Custom == nil {
+			opts.Metadata.Custom = make(map[string]interface{})
+		}
+		opts.Metadata.Custom[AttachedSkillsMetadataKey] = skills
+	}
+}
+
+// AttachedSkillsFromOptions returns the skills threaded by
+// WithAttachedSkills, or nil when none are attached. Safe to call on
+// nil or partially-initialized CallOptions.
+func AttachedSkillsFromOptions(opts *CallOptions) []*Skill {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return nil
+	}
+	skills, _ := opts.Metadata.Custom[AttachedSkillsMetadataKey].([]*Skill)
+	return skills
+}
+
 // WithStreamingFunc is a convenience function that creates a channel and callback
 // This maintains backward compatibility for simple use cases
 // For better control, use WithStreamingChan directly

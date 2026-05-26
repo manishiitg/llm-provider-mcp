@@ -446,6 +446,13 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		// Best-effort: a failure here is not a session-killer. The
 		// primary injection paths succeeded; the workspace projection
 		// is purely additive belt-and-suspenders.
+
+		// Project attached skills into .agents/skills/ so Codex's
+		// repo-scoped skill loader picks them up at startup. Also
+		// best-effort.
+		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+			_ = c.ProjectSkills(workingDir, skills)
+		}
 	}
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
 		session.initErr = err
