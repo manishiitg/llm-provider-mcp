@@ -1311,9 +1311,9 @@ func TestResolveGeminiCLITierAliases(t *testing.T) {
 		model string
 		want  string
 	}{
-		{model: "high", want: "gemini-3-pro-preview"},
+		{model: "high", want: "gemini-3.1-pro"},
 		{model: "medium", want: "gemini-3.5-flash"},
-		{model: "low", want: "gemini-3.1-flash-lite"},
+		{model: "low", want: "gemini-3.1-flash-lite-preview"},
 		{model: "gemini-3.5-flash", want: "gemini-3.5-flash"},
 	}
 

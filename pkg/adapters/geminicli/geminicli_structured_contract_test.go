@@ -426,7 +426,7 @@ func TestGeminiCLIStructuredTierAliasesResolveModels(t *testing.T) {
 		alias string
 		want  string
 	}{
-		{alias: "high", want: "gemini-3-pro-preview"},
+		{alias: "high", want: "gemini-3.1-pro"},
 		{alias: "medium", want: "gemini-3.5-flash"},
 	}
 

@@ -918,16 +918,16 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 	}
 
 	switch modelID {
-	case "pro", "gemini-3-pro-preview", "gemini-3.1-pro-preview":
+	case "pro", "gemini-3.1-pro", "gemini-3-pro", "gemini-3.1-pro-preview", "gemini-3-pro-preview":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
-			ModelName:             "Gemini 3 Pro Preview",
+			ModelName:             "Gemini 3.1 Pro",
 			ContextWindow:         1048576,
 			InputCostPer1MTokens:  2.00,
 			OutputCostPer1MTokens: 12.00,
 		}, nil
-	case "flash", "gemini-3.5-flash", "gemini-3-flash-preview":
+	case "flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-flash-base":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
@@ -936,11 +936,11 @@ func (g *GeminiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			InputCostPer1MTokens:  1.50,
 			OutputCostPer1MTokens: 9.00,
 		}, nil
-	case "flash-lite", "gemini-3.1-flash-lite-preview":
+	case "flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-flash-lite-preview":
 		return &llmtypes.ModelMetadata{
 			ModelID:               metadataModelID,
 			Provider:              "gemini-cli",
-			ModelName:             "Gemini 3.1 Flash-Lite Preview",
+			ModelName:             "Gemini 3.1 Flash-Lite",
 			ContextWindow:         1048576,
 			InputCostPer1MTokens:  0.25,
 			OutputCostPer1MTokens: 1.50,
