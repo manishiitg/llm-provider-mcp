@@ -597,6 +597,14 @@ func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, log
 	session.mu.Unlock()
 }
 
+// CloseCodexCLIInteractiveSessionForOwner closes the persistent codex
+// interactive session for the given owner. See agycli's equivalent
+// CloseAgyCLIInteractiveSessionForOwner for the mid-chat-prompt-change
+// motivation.
+func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	closeCodexPersistentSession(ownerSessionID, reason, nil)
+}
+
 func closeCodexPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	codexPersistentRegistry.Lock()
 	session := codexPersistentRegistry.sessions[ownerSessionID]

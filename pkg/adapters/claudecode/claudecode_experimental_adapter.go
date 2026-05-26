@@ -2678,6 +2678,14 @@ func releaseClaudePersistentInteractiveSession(session *claudeExperimentalPersis
 	session.mu.Unlock()
 }
 
+// CloseClaudeCodeInteractiveSessionForOwner closes the persistent
+// Claude Code interactive session for the given owner. See agycli's
+// equivalent CloseAgyCLIInteractiveSessionForOwner for the
+// mid-chat-prompt-change motivation.
+func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
+	closeClaudePersistentInteractiveSession(ownerSessionID, reason, nil)
+}
+
 func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {

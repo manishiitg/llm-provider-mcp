@@ -547,6 +547,14 @@ func releaseGeminiStartupSlot(session *geminiInteractiveSession) {
 	release()
 }
 
+// CloseGeminiCLIInteractiveSessionForOwner closes the persistent gemini
+// interactive session for the given owner. See agycli's equivalent
+// CloseAgyCLIInteractiveSessionForOwner for the mid-chat-prompt-change
+// motivation.
+func CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	closeGeminiPersistentSession(ownerSessionID, reason, nil)
+}
+
 func closeGeminiPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	geminiPersistentRegistry.Lock()
 	session := geminiPersistentRegistry.sessions[ownerSessionID]

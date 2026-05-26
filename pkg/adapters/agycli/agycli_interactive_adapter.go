@@ -1125,6 +1125,17 @@ func closeAgyPersistentSession(ownerSessionID, reason string, logger interfaces.
 	closeAgySessionLocked(session, reason, logger)
 }
 
+// CloseAgyCLIInteractiveSessionForOwner closes the persistent agy
+// interactive session registered for the given owner session ID. Use
+// when the orchestrator needs to force a fresh relaunch — e.g. when the
+// chat's workshop mode changed mid-session and the agent's system prompt
+// has been updated, so the running agy CLI process (which loaded its
+// prompt at launch time) must be torn down to pick up the new content.
+// Returns silently when no session exists for the owner.
+func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	closeAgyPersistentSession(ownerSessionID, reason, nil)
+}
+
 func closeAgySessionLocked(session *agyInteractiveSession, reason string, logger interfaces.Logger) {
 	if session == nil {
 		return

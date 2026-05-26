@@ -161,6 +161,37 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
 }
 
+// Close*InteractiveSessionForOwner force-closes the persistent CLI
+// session for the given owner. Callers reach for these when something
+// about the session must change in a way the running CLI process can't
+// adopt mid-flight — most concretely a workshop-mode switch that
+// rewrites the agent's system prompt. The CLI process loaded its
+// prompt at launch time and won't re-read the rule file, so the
+// orchestrator tears down the persistent session here and the next
+// turn relaunches with the new content.
+//
+// Calls are no-ops when no session is registered for the owner.
+
+func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	agycli.CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
+func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	cursorcli.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
+func CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	geminicli.CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
+func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	codexcli.CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
+func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
+	claudecodeadapter.CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
 // SendClaudeCodeInput sends user input to a live Claude Code tmux session
 // registered for the owning application session.
 func SendClaudeCodeInput(ctx context.Context, sessionID, message string) error {

@@ -857,6 +857,14 @@ func closeCursorPersistentSession(ownerSessionID, reason string, logger interfac
 	closeCursorSessionLocked(session, reason, logger)
 }
 
+// CloseCursorCLIInteractiveSessionForOwner closes the persistent cursor
+// interactive session for the given owner. See agycli's equivalent
+// CloseAgyCLIInteractiveSessionForOwner for the mid-chat-prompt-change
+// motivation.
+func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	closeCursorPersistentSession(ownerSessionID, reason, nil)
+}
+
 func closeCursorSessionLocked(session *cursorInteractiveSession, reason string, logger interfaces.Logger) {
 	if session == nil {
 		return
