@@ -11,7 +11,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// TestClaudeCodeExperimentalRealIsolatedTmpDirDoesNotTouchOuterWorkspace
+// TestClaudeCodeTmuxRealIsolatedTmpDirDoesNotTouchOuterWorkspace
 // is the Phase B+ end-to-end validation for the workflow-step
 // isolation design (docs/WORKFLOW_STEP_ISOLATION.md) on Claude Code,
 // templated from cursorcli_isolated_workspace_e2e_test.go. See the
@@ -22,14 +22,14 @@ import (
 //   - The leaked artifacts to guard against in userWorkspace are
 //     `.claude/` (rules, settings, plugins) and `.mcp.json`.
 //   - Working-dir option is WithWorkingDir (claudecode's adapter).
-//   - Uses the experimental tmux adapter (NewClaudeCodeExperimentalAdapter)
+//   - Uses the Claude Code tmux adapter (NewClaudeCodeTmuxAdapter)
 //     because that's the path mcpagent's coding-agent options drive.
 //
-// Skipped unless RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1 and the
+// Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
 // claude binary is on PATH.
-func TestClaudeCodeExperimentalRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T) {
+func TestClaudeCodeTmuxRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
-	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	userWorkspace := t.TempDir()
 	sentinelPath := filepath.Join(userWorkspace, "operator-do-not-touch.txt")
@@ -46,7 +46,7 @@ func TestClaudeCodeExperimentalRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *t
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(isolatedWorkspace) })
 
-	adapter := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -56,7 +56,7 @@ func TestClaudeCodeExperimentalRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *t
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely."}},
 		},
 		{
-			Role: llmtypes.ChatMessageTypeHuman,
+			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly the word OK and nothing else."}},
 		},
 	},

@@ -117,7 +117,7 @@ See `.env.example` for all available environment variables. Key variables:
 - `AZURE_AI_ENDPOINT`, `AZURE_AI_API_KEY` - Azure AI Services endpoint and API key
 - `ZAI_API_KEY` - Z.AI API key
 - `MINIMAX_API_KEY` - MiniMax API key (for both text and image generation)
-- **Claude Code**: Uses experimental interactive CLI mode. Requires `claude` and `tmux` 3.x+ binaries in PATH. Authenticate Claude Code via interactive login before use.
+- **Claude Code**: Uses tmux interactive CLI mode. Requires `claude` and `tmux` 3.x+ binaries in PATH. Authenticate Claude Code via interactive login before use.
 
 ### Provider Configuration
 

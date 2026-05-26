@@ -23,8 +23,8 @@ func TestInitializeClaudeCodeDefaultUsesExperimentalTransport(t *testing.T) {
 	if !ok {
 		t.Fatalf("InitializeLLM() returned %T, want *ProviderAwareLLM", llm)
 	}
-	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeExperimentalAdapter); !ok {
-		t.Fatalf("Claude Code default transport = %T, want *ClaudeCodeExperimentalAdapter", wrapped.Model)
+	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeTmuxAdapter); !ok {
+		t.Fatalf("Claude Code default transport = %T, want *ClaudeCodeTmuxAdapter", wrapped.Model)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 	llm, err := InitializeLLM(Config{
 		Provider:            ProviderClaudeCode,
 		ModelID:             "claude-code",
-		ClaudeCodeTransport: ClaudeCodeTransportExperimental,
+		ClaudeCodeTransport: ClaudeCodeTransportTmux,
 	})
 	if err != nil {
 		t.Fatalf("InitializeLLM() error = %v", err)
@@ -68,8 +68,8 @@ func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 	if !ok {
 		t.Fatalf("InitializeLLM() returned %T, want *ProviderAwareLLM", llm)
 	}
-	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeExperimentalAdapter); !ok {
-		t.Fatalf("Claude Code config transport override = %T, want *ClaudeCodeExperimentalAdapter", wrapped.Model)
+	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeTmuxAdapter); !ok {
+		t.Fatalf("Claude Code config transport override = %T, want *ClaudeCodeTmuxAdapter", wrapped.Model)
 	}
 }
 
@@ -82,9 +82,9 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "default", raw: "", want: ClaudeCodeTransportExperimental},
-		{name: "experimental", raw: "experimental", want: ClaudeCodeTransportExperimental},
-		{name: "tmux alias", raw: "tmux", want: ClaudeCodeTransportExperimental},
+		{name: "default", raw: "", want: ClaudeCodeTransportTmux},
+		{name: "legacy experimental alias", raw: "experimental", want: ClaudeCodeTransportTmux},
+		{name: "tmux", raw: "tmux", want: ClaudeCodeTransportTmux},
 		{name: "print", raw: "print", want: ClaudeCodeTransportPrint},
 		{name: "p alias", raw: "-p", want: ClaudeCodeTransportPrint},
 		{name: "agent sdk alias", raw: "agent-sdk", want: ClaudeCodeTransportPrint},

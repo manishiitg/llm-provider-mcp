@@ -61,6 +61,9 @@ fully supported coding-agent provider across `multi-llm-provider-go`,
 - [x] Real hook-enforced bridge-only tool E2E passed:
   - `TestAgyCLIRealBridgeOnlyWriteContract`
   - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract`
+  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInReadContract`
+  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInListDirContract`
+  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInSearchContract`
 - [x] Real working-directory E2E passed:
   - `TestAgyCLIRealWorkingDirectoryMCPContract`
 - [x] Real slow-tool false-idle E2E passed:

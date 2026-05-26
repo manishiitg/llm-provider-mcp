@@ -24,11 +24,11 @@ import (
 // .cursor/hooks.json + .cursor/hooks/mlp-deny-builtin.sh both land.
 // CRITICAL: this test deliberately does NOT call WithForce().
 //
-// The deny script emits permission=deny JSON with user_message
-// "Built-in Read/Shell are disabled in this session. Call the
-// api-bridge MCP tool instead". Per cursor's hooks contract
-// (cursor.com/docs/hooks), permission=deny aborts the tool call and
-// surfaces the user_message to the model.
+// The deny script emits permission=deny JSON for shell, read, list,
+// search, and edit built-ins with guidance to use api-bridge MCP tools
+// instead. Per cursor's hooks contract (cursor.com/docs/hooks),
+// permission=deny aborts the tool call and surfaces the user_message
+// to the model.
 //
 // Assertion strategy:
 //   - Sentinel value MUST NOT appear in the response (would mean the
@@ -145,7 +145,7 @@ func runCursorDenyBuiltinProbe(t *testing.T, tmp, label, prompt string, forbidde
 	}
 
 	denyAnchors := []string{
-		"Built-in Shell/Read/Edit/Write are disabled",
+		"Built-in Shell/Read/ListDir/Glob/Grep/Search/Edit/Write are disabled",
 		"api-bridge",
 		"permission denied",
 		"not allowed",

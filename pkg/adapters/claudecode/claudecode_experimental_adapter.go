@@ -40,11 +40,18 @@ const (
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 	promptPasteLiveInputWait       = 2 * time.Second
 
+	EnvClaudeTmuxSessionPrefix      = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
+	EnvClaudeTmuxTimeoutSeconds     = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
+	EnvClaudeTmuxPromptWaitSeconds  = "CLAUDE_CODE_TMUX_PROMPT_WAIT_SECONDS"
+	EnvClaudeTmuxIdleTimeoutSeconds = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
+	EnvClaudeTmuxStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+
+	// Legacy env names kept for existing deployments and test runners.
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	EnvClaudeExperimentalStreamTmuxScreen   = EnvClaudeTmuxStreamTmuxScreen
 	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 )
 
@@ -111,24 +118,38 @@ func newClaudeCallContext(parent context.Context, timeout time.Duration) (contex
 	}
 }
 
-// ClaudeCodeExperimentalAdapter runs Claude Code in experimental interactive mode.
+// ClaudeCodeTmuxAdapter runs Claude Code through its interactive tmux transport.
 // It intentionally does not invoke `claude -p`.
-type ClaudeCodeExperimentalAdapter struct {
+type ClaudeCodeTmuxAdapter struct {
 	modelID string
 	logger  interfaces.Logger
 }
 
-func NewClaudeCodeExperimentalAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeExperimentalAdapter {
+// ClaudeCodeExperimentalAdapter is the legacy exported name for
+// ClaudeCodeTmuxAdapter. New callers should use NewClaudeCodeTmuxAdapter.
+type ClaudeCodeExperimentalAdapter = ClaudeCodeTmuxAdapter
+
+func NewClaudeCodeTmuxAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeTmuxAdapter {
+	return newClaudeCodeTmuxAdapter(modelID, logger)
+}
+
+// NewClaudeCodeExperimentalAdapter is kept for compatibility.
+// Deprecated: use NewClaudeCodeTmuxAdapter.
+func NewClaudeCodeExperimentalAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeTmuxAdapter {
+	return newClaudeCodeTmuxAdapter(modelID, logger)
+}
+
+func newClaudeCodeTmuxAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeTmuxAdapter {
 	if modelID == "" {
 		modelID = "claude-code"
 	}
-	return &ClaudeCodeExperimentalAdapter{
+	return &ClaudeCodeTmuxAdapter{
 		modelID: modelID,
 		logger:  logger,
 	}
 }
 
-func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+func (c *ClaudeCodeTmuxAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
@@ -156,7 +177,7 @@ func (c *ClaudeCodeExperimentalAdapter) GenerateContent(ctx context.Context, mes
 	})
 }
 
-func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
+func (c *ClaudeCodeTmuxAdapter) generateContentTmuxBody(ctx context.Context, opts *llmtypes.CallOptions, messages []llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	if err := ensureTmuxAvailable(ctx); err != nil {
 		return nil, err
 	}
@@ -257,7 +278,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		streamClaudeTerminalSnapshot(callCtx, sessionName, opts.StreamChan, &lastSnapshot)
 		additional := map[string]interface{}{
 			"provider":                           "claude-code",
-			"claude_code_mode":                   "experimental",
+			"claude_code_mode":                   "tmux",
 			"claude_code_run_id":                 runID,
 			"claude_code_session":                sessionName,
 			"claude_code_session_id":             nativeSessionID,
@@ -290,7 +311,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		return nil, err
 	}
 
-	c.logger.Infof("Executing Claude Code experimental session: %s", sessionName)
+	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
 	paneBaseline, _ := captureTmuxPane(callCtx, sessionName)
 	if err := sendPromptToTmux(callCtx, sessionName, prompt); err != nil {
 		return nil, err
@@ -304,7 +325,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		if isContextCanceledError(err) {
 			if interruptErr := interruptClaudeExperimentalSession(sessionName, c.logger); interruptErr != nil {
 				if persistentInteractive && persistentSession != nil {
-					discardPersistentSession(fmt.Errorf("Claude Code experimental session did not return to prompt after context cancellation: %w", interruptErr))
+					discardPersistentSession(fmt.Errorf("Claude Code tmux session did not return to prompt after context cancellation: %w", interruptErr))
 				}
 			}
 		}
@@ -334,7 +355,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 		exists, checkErr := claudeTmuxSessionExists(checkCtx, sessionName)
 		checkCancel()
 		if checkErr == nil && !exists {
-			discardPersistentSession(fmt.Errorf("Claude Code experimental tmux session %s ended after response capture", sessionName))
+			discardPersistentSession(fmt.Errorf("Claude Code tmux session %s ended after response capture", sessionName))
 		}
 	}
 	closeResumeRef := ""
@@ -350,7 +371,7 @@ func (c *ClaudeCodeExperimentalAdapter) generateContentTmuxBody(ctx context.Cont
 
 	additional := map[string]interface{}{
 		"provider":                           "claude-code",
-		"claude_code_mode":                   "experimental",
+		"claude_code_mode":                   "tmux",
 		"claude_code_run_id":                 runID,
 		"claude_code_session":                sessionName,
 		"claude_code_session_id":             responseSessionID,
@@ -448,11 +469,11 @@ func containsClaudeImageContent(messages []llmtypes.MessageContent) bool {
 	return false
 }
 
-func (c *ClaudeCodeExperimentalAdapter) GetModelID() string {
+func (c *ClaudeCodeTmuxAdapter) GetModelID() string {
 	return c.modelID
 }
 
-func (c *ClaudeCodeExperimentalAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+func (c *ClaudeCodeTmuxAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	if modelID == "" {
 		modelID = c.modelID
 	}
@@ -489,13 +510,13 @@ func (c *ClaudeCodeExperimentalAdapter) GetModelMetadata(modelID string) (*llmty
 		return &llmtypes.ModelMetadata{
 			ModelID:       modelID,
 			Provider:      "claude-code",
-			ModelName:     "Claude Code Experimental",
+			ModelName:     "Claude Code",
 			ContextWindow: 200000,
 		}, nil
 	}
 }
 
-func (c *ClaudeCodeExperimentalAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, nativeSessionID, systemPrompt string) ([]string, []string, error) {
+func (c *ClaudeCodeTmuxAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, nativeSessionID, systemPrompt string) ([]string, []string, error) {
 	extraArgs := []string{}
 	var tempFiles []string
 	toolsArg := ""
@@ -656,12 +677,12 @@ func claudeProjectRuleNonce() string {
 	return hex.EncodeToString(b)
 }
 
-func (c *ClaudeCodeExperimentalAdapter) shouldPassModelFlag() bool {
+func (c *ClaudeCodeTmuxAdapter) shouldPassModelFlag() bool {
 	modelID := strings.TrimSpace(c.modelID)
 	return modelID != "" && modelID != "claude-code"
 }
 
-func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+func (c *ClaudeCodeTmuxAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
 	if workingDir != "" {
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
@@ -674,10 +695,10 @@ func (c *ClaudeCodeExperimentalAdapter) startSession(ctx context.Context, sessio
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
-		return fmt.Errorf("failed to start Claude Code experimental session %q: %w", sessionName, err)
+		return fmt.Errorf("failed to start Claude Code tmux session %q: %w", sessionName, err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on"); err != nil {
-		return fmt.Errorf("failed to configure Claude Code experimental session %q: %w", sessionName, err)
+		return fmt.Errorf("failed to configure Claude Code tmux session %q: %w", sessionName, err)
 	}
 	return nil
 }
@@ -750,7 +771,14 @@ func preTrustClaudeWorkingDir(workingDir string) {
 }
 
 func claudePromptSuggestionEnvArgs() []string {
-	return []string{"-e", EnvClaudePromptSuggestion + "=false"}
+	return []string{
+		"-e", EnvClaudePromptSuggestion + "=false",
+		// The tmux adapter relies on the user's Claude Code login. Inherited
+		// Anthropic API env vars make recent Claude Code builds stop at an
+		// interactive auth-choice prompt that this transport cannot answer.
+		"-e", "ANTHROPIC_API_KEY=",
+		"-e", "ANTHROPIC_BASE_URL=",
+	}
 }
 
 func claudeExperimentalShellCommand(args []string, workingDir string) string {
@@ -1111,7 +1139,7 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		return fmt.Errorf("failed to load prompt into tmux buffer: %w", err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste prompt into Claude Code experimental session: %w", err)
+		return fmt.Errorf("failed to paste prompt into Claude Code tmux session: %w", err)
 	}
 	promptSubmitted, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste)
 	if err != nil {
@@ -1126,7 +1154,7 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
-			return fmt.Errorf("failed to submit prompt to Claude Code experimental session: %w", err)
+			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
 		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane); err == nil {
 			return nil
@@ -1135,24 +1163,24 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		}
 	}
 
-	return fmt.Errorf("Claude Code experimental prompt did not start after submit retries: %w", lastErr)
+	return fmt.Errorf("Claude Code prompt did not start after submit retries: %w", lastErr)
 }
 
 func sendInputToActiveTmux(ctx context.Context, sessionName, message string) error {
 	bufferName := "mlp-claude-steer-" + randomHex(6)
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
-		return fmt.Errorf("Claude Code experimental input is empty")
+		return fmt.Errorf("Claude Code tmux input is empty")
 	}
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
 	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
 	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
-		return fmt.Errorf("failed to load Claude Code experimental input into tmux buffer: %w", err)
+		return fmt.Errorf("failed to load Claude Code tmux input into tmux buffer: %w", err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste input into Claude Code experimental session: %w", err)
+		return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
 	}
 	if _, err := waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, promptPasteLiveInputWait); err != nil {
 		if ctx.Err() != nil || isClaudeTmuxSessionLostError(err) {
@@ -1167,7 +1195,7 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	for attempt := 1; attempt <= 3; attempt++ {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
-			return fmt.Errorf("failed to submit input to Claude Code experimental session: %w", err)
+			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
 		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
 			return nil
@@ -1175,7 +1203,7 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 			lastErr = err
 		}
 	}
-	return fmt.Errorf("Claude Code experimental input remained unsubmitted after submit retries: %w", lastErr)
+	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
 }
 
 func claudeSubmitPromptKeys() []string {
@@ -1286,13 +1314,13 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 
 	promptCtx, promptCancel := context.WithTimeout(closeCtx, 10*time.Second)
 	if err := waitForReadyInputPrompt(promptCtx, sessionName); err != nil && logger != nil {
-		logger.Debugf("Claude Code experimental session %s was not visibly idle before close: %v", sessionName, err)
+		logger.Debugf("Claude Code tmux session %s was not visibly idle before close: %v", sessionName, err)
 	}
 	promptCancel()
 
 	if err := runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-u", "/exit", "C-m"); err != nil {
 		if logger != nil {
-			logger.Errorf("Failed to close Claude Code experimental session %s cleanly: %v", sessionName, err)
+			logger.Errorf("Failed to close Claude Code tmux session %s cleanly: %v", sessionName, err)
 		}
 		return ""
 	}
@@ -1304,14 +1332,14 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 		select {
 		case <-closeCtx.Done():
 			if logger != nil {
-				logger.Errorf("Timed out waiting for Claude Code experimental resume id from session %s", sessionName)
+				logger.Errorf("Timed out waiting for Claude Code resume id from session %s", sessionName)
 			}
 			return ""
 		case <-ticker.C:
 			captured, err := captureTmuxPane(closeCtx, sessionName)
 			if err != nil {
 				if logger != nil {
-					logger.Errorf("Failed to capture Claude Code experimental close output for session %s: %v", sessionName, err)
+					logger.Errorf("Failed to capture Claude Code close output for session %s: %v", sessionName, err)
 				}
 				return ""
 			}
@@ -1320,7 +1348,7 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 			}
 			if strings.Contains(captured, "Pane is dead") {
 				if logger != nil {
-					logger.Errorf("Claude Code experimental session %s closed without a resume id", sessionName)
+					logger.Errorf("Claude Code tmux session %s closed without a resume id", sessionName)
 				}
 				return ""
 			}
@@ -1334,13 +1362,13 @@ func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Lo
 
 	if err := runCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
 		if logger != nil {
-			logger.Debugf("Failed to send Escape to Claude Code experimental session %s: %v", sessionName, err)
+			logger.Debugf("Failed to send Escape to Claude Code tmux session %s: %v", sessionName, err)
 		}
 		return err
 	}
 	if err := waitForReadyInputPrompt(interruptCtx, sessionName); err != nil {
 		if logger != nil {
-			logger.Debugf("Claude Code experimental session %s did not return to prompt after Escape: %v", sessionName, err)
+			logger.Debugf("Claude Code tmux session %s did not return to prompt after Escape: %v", sessionName, err)
 		}
 		return err
 	}
@@ -1542,9 +1570,9 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return false, fmt.Errorf("timed out waiting for Claude Code experimental prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				return false, fmt.Errorf("timed out waiting for Claude Code prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return false, fmt.Errorf("timed out waiting for Claude Code experimental prompt paste")
+			return false, fmt.Errorf("timed out waiting for Claude Code prompt paste")
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
@@ -1593,9 +1621,9 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code experimental prompt to start; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				return fmt.Errorf("timed out waiting for Claude Code prompt to start; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return fmt.Errorf("timed out waiting for Claude Code experimental prompt to start")
+			return fmt.Errorf("timed out waiting for Claude Code prompt to start")
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
@@ -1708,12 +1736,12 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 			return content, nil
 		}
 		if isClaudeTmuxSessionLostError(err) {
-			return "", fmt.Errorf("Claude Code experimental tmux session ended before response could be captured: %w", err)
+			return "", fmt.Errorf("Claude Code tmux session ended before response could be captured: %w", err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("timed out waiting for Claude Code experimental response: %w", err)
+			return "", fmt.Errorf("timed out waiting for Claude Code response: %w", err)
 		}
-		return "", fmt.Errorf("Claude Code experimental response wait failed: %w", err)
+		return "", fmt.Errorf("Claude Code response wait failed: %w", err)
 	}
 
 	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
@@ -1724,7 +1752,7 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 			return content, nil
 		}
 	}
-	return "", fmt.Errorf("Claude Code experimental session returned to idle without a parseable response; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
+	return "", fmt.Errorf("Claude Code tmux session returned to idle without a parseable response; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
 }
 
 func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
@@ -1798,7 +1826,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			}
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
 			if errText := detectTmuxFatalStatus(captured); errText != "" {
-				return "", fmt.Errorf("claude code experimental session failed: %s", errText)
+				return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 			}
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
@@ -2033,7 +2061,7 @@ func captureTmuxPane(ctx context.Context, sessionName string) (string, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to capture Claude Code experimental session: %w: %s", err, strings.TrimSpace(out.String()))
+		return "", fmt.Errorf("failed to capture Claude Code tmux session: %w: %s", err, strings.TrimSpace(out.String()))
 	}
 	return out.String(), nil
 }
@@ -2044,7 +2072,7 @@ func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string,
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to capture Claude Code experimental display session: %w: %s", err, strings.TrimSpace(out.String()))
+		return "", fmt.Errorf("failed to capture Claude Code display session: %w: %s", err, strings.TrimSpace(out.String()))
 	}
 	return out.String(), nil
 }
@@ -2320,31 +2348,49 @@ func truncateClaudePaneForError(captured string) string {
 }
 
 func tmuxTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalTimeoutSeconds))
-	if raw == "" {
-		return defaultTmuxTimeout
-	}
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 0 {
+	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxTimeoutSeconds, EnvClaudeExperimentalTimeoutSeconds)
+	if !ok || seconds < 0 {
 		return defaultTmuxTimeout
 	}
 	return time.Duration(seconds) * time.Second
 }
 
 func promptReadyTimeout() time.Duration {
+	if parsed, ok := claudePositiveDurationFromEnv(EnvClaudeTmuxPromptWaitSeconds); ok {
+		return parsed
+	}
 	return tmuxlaunch.PromptWait(EnvClaudeExperimentalPromptWaitSeconds)
 }
 
 func persistentInteractiveIdleTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalIdleTimeoutSeconds))
-	if raw == "" {
-		return defaultPersistentIdleTimeout
-	}
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds <= 0 {
+	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxIdleTimeoutSeconds, EnvClaudeExperimentalIdleTimeoutSeconds)
+	if !ok || seconds <= 0 {
 		return defaultPersistentIdleTimeout
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func claudePositiveDurationFromEnv(keys ...string) (time.Duration, bool) {
+	seconds, ok := claudeDurationSecondsFromEnv(keys...)
+	if !ok || seconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
+}
+
+func claudeDurationSecondsFromEnv(keys ...string) (int, bool) {
+	for _, key := range keys {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			continue
+		}
+		seconds, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, false
+		}
+		return seconds, true
+	}
+	return 0, false
 }
 
 func boundedRetentionTimeout() time.Duration {
@@ -2399,7 +2445,14 @@ func parseTmuxMajorVersion(version string) (int, bool) {
 	return major, true
 }
 
+// CleanupClaudeCodeExperimentalSessions is kept for compatibility.
+// Deprecated: use CleanupClaudeCodeTmuxSessions.
 func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
+	return CleanupClaudeCodeTmuxSessions(ctx)
+}
+
+// CleanupClaudeCodeTmuxSessions cleans up registered Claude Code tmux sessions.
+func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}
@@ -2419,7 +2472,7 @@ func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("failed to clean up Claude Code experimental sessions: %s", strings.Join(failures, "; "))
+		return fmt.Errorf("failed to clean up Claude Code tmux sessions: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -2452,9 +2505,12 @@ func appendUniqueStrings(base []string, extra ...string) []string {
 }
 
 func claudeExperimentalSessionPrefix() string {
-	prefix := strings.TrimSpace(os.Getenv(EnvClaudeExperimentalSessionPrefix))
+	prefix := strings.TrimSpace(os.Getenv(EnvClaudeTmuxSessionPrefix))
 	if prefix == "" {
-		prefix = "mlp-claude-code-exp"
+		prefix = strings.TrimSpace(os.Getenv(EnvClaudeExperimentalSessionPrefix))
+	}
+	if prefix == "" {
+		prefix = "mlp-claude-code"
 	}
 	return sanitizeTmuxSessionName(prefix)
 }
@@ -2541,10 +2597,10 @@ func claudeWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 // acquirePersistentInteractiveSession returns with session.mu held. The caller
 // must releaseClaudePersistentInteractiveSession on normal completion, or mark,
 // unlock, and clean up the session on a ready-prompt failure.
-func (c *ClaudeCodeExperimentalAdapter) acquirePersistentInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID string, opts *llmtypes.CallOptions, systemPrompt string, workingDir string) (*claudeExperimentalPersistentSession, error) {
+func (c *ClaudeCodeTmuxAdapter) acquirePersistentInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID string, opts *llmtypes.CallOptions, systemPrompt string, workingDir string) (*claudeExperimentalPersistentSession, error) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
-		return nil, fmt.Errorf("persistent Claude Code experimental session requires an owner session ID")
+		return nil, fmt.Errorf("persistent Claude Code tmux session requires an owner session ID")
 	}
 
 	claudeExperimentalPersistentRegistry.Lock()
@@ -2635,7 +2691,7 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 		session.idleTimer = nil
 	}
 	if logger != nil {
-		logger.Debugf("Closing persistent Claude Code experimental session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
+		logger.Debugf("Closing persistent Claude Code tmux session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
 	_ = closeClaudeSessionForResume(session.tmuxSessionName, logger)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2658,7 +2714,7 @@ func markClaudePersistentInteractiveSessionFailedLocked(session *claudeExperimen
 		session.idleTimer = nil
 	}
 	if logger != nil {
-		logger.Debugf("Discarding persistent Claude Code experimental session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
+		logger.Debugf("Discarding persistent Claude Code tmux session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
 }
 
@@ -2709,14 +2765,21 @@ func stopClaudeIdleTimerIfAvailable(session *claudeExperimentalPersistentSession
 	}
 }
 
+// SendClaudeCodeExperimentalInput is kept for compatibility.
+// Deprecated: use SendClaudeCodeInput.
 func SendClaudeCodeExperimentalInput(ctx context.Context, ownerSessionID, message string) error {
+	return SendClaudeCodeInput(ctx, ownerSessionID, message)
+}
+
+// SendClaudeCodeInput routes live input into a registered Claude Code tmux session.
+func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) error {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
-		return fmt.Errorf("Claude Code experimental owner session ID is required")
+		return fmt.Errorf("Claude Code owner session ID is required")
 	}
 	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
 	if !ok {
-		return fmt.Errorf("no active Claude Code experimental session registered for owner session %s", ownerSessionID)
+		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
 	return sendInputToActiveTmux(ctx, sessionName, message)
 }

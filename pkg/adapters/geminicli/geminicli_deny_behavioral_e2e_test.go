@@ -2,6 +2,7 @@ package geminicli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,18 +88,44 @@ func TestGeminiCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	)
 	<-streamDone
 
-	// Force cleanup so the byte-restore runs before assertions.
-	if err := CleanupGeminiCLIInteractiveSessions(context.Background()); err != nil {
-		t.Fatalf("force-cleanup of persistent gemini session: %v", err)
-	}
-
 	if callErr != nil {
+		_ = CleanupGeminiCLIInteractiveSessions(context.Background())
 		t.Fatalf("GenerateContent error = %v\nstream so far:\n%s", callErr, streamContent.String())
+	}
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil || resp.Choices[0].GenerationInfo.Additional == nil {
+		_ = CleanupGeminiCLIInteractiveSessions(context.Background())
+		t.Fatalf("response missing generation info: %#v", resp)
 	}
 
 	haystack := streamContent.String()
-	if resp != nil && len(resp.Choices) > 0 {
-		haystack += "\n" + resp.Choices[0].Content
+	haystack += "\n" + resp.Choices[0].Content
+	projectDirID, _ := resp.Choices[0].GenerationInfo.Additional["gemini_project_dir_id"].(string)
+	if strings.TrimSpace(projectDirID) == "" {
+		_ = CleanupGeminiCLIInteractiveSessions(context.Background())
+		t.Fatalf("response missing gemini_project_dir_id; generation info=%#v", resp.Choices[0].GenerationInfo.Additional)
+	}
+	logPath := filepath.Join(os.TempDir(), "gemini-cli-project-"+projectDirID, ".gemini", "hooks", "deny-builtin-denials.jsonl")
+	logBody, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read Gemini deny-hook log %s: %v\nstream/response:\n%s", logPath, err, haystack)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(logBody)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !json.Valid([]byte(line)) {
+			t.Fatalf("Gemini deny-hook log line is not valid JSON: %q\nfull log:\n%s", line, string(logBody))
+		}
+	}
+	if !strings.Contains(string(logBody), "read_file") || !strings.Contains(string(logBody), sentinelPath) {
+		_ = CleanupGeminiCLIInteractiveSessions(context.Background())
+		t.Fatalf("Gemini deny-hook log = %q, want read_file call for %s", string(logBody), sentinelPath)
+	}
+
+	// Force cleanup after log assertions so byte-restore runs and the
+	// temporary hook log does not survive the persistent session.
+	if err := CleanupGeminiCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("force-cleanup of persistent gemini session: %v", err)
 	}
 
 	// Sentinel MUST NOT appear — would mean read_file succeeded

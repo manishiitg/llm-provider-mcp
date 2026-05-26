@@ -325,7 +325,7 @@ can debug the provider TUI state without exposing secrets.
 Claude Code:
 
 - Default interactive transport: `claude` inside tmux
-  (`CLAUDE_CODE_TRANSPORT=experimental`).
+  (`CLAUDE_CODE_TRANSPORT=tmux`).
 - Legacy structured print transport: `claude -p --output-format stream-json`
   (`CLAUDE_CODE_TRANSPORT=print`). This path is disabled unless
   `CLAUDE_CODE_ALLOW_LEGACY_PRINT=1` is also set, and should only be used for
@@ -420,7 +420,7 @@ OpenCode CLI:
 
 - Claude Code `print`: supports base64 and URL image parts through stream-json
   content blocks.
-- Claude Code `experimental` tmux: rejects image input until the TUI transport
+- Claude Code tmux: rejects image input until the TUI transport
   has a real attachment path.
 - Codex CLI `exec`: supports base64 image parts by writing temporary image files
   and passing them through native `--image` flags. Image URLs are rejected
@@ -1166,14 +1166,14 @@ assistant text.
 
 Claude Code tmux:
 
-- `TestClaudeCodeExperimentalIntegrationNoInternalTools`
-- `TestClaudeCodeExperimentalIntegrationNativeSystemPrompt`
-- `TestClaudeCodeExperimentalIntegrationFreshPromptCarriesUserText`
-- `TestClaudeCodeExperimentalIntegrationLargePastedPromptSubmits`
-- `TestClaudeCodeExperimentalIntegrationNativeResume`
-- `TestClaudeCodeExperimentalIntegrationHaikuExtendedResumeIsolation`
-- `TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape`
-- `TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn`
+- `TestClaudeCodeTmuxIntegrationNoInternalTools`
+- `TestClaudeCodeTmuxIntegrationNativeSystemPrompt`
+- `TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText`
+- `TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits`
+- `TestClaudeCodeTmuxIntegrationNativeResume`
+- `TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation`
+- `TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape`
+- `TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn`
 
 Gemini CLI tmux:
 
@@ -1276,9 +1276,9 @@ RUN_CODEX_CLI_REAL_E2E=1 RUN_CODEX_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/
 Current Claude Code tmux real contract commands:
 
 ```sh
-RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegration(LargePastedPromptSubmits|NoInternalTools|NativeSystemPrompt|FreshPromptCarriesUserText|NativeResume)' -v -timeout 6m
-RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegrationHaikuLiveInputAndEscape' -v -timeout 6m
-RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeExperimentalIntegrationHaikuPersistentInteractiveMultiTurn' -v -timeout 6m
+RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegration(LargePastedPromptSubmits|NoInternalTools|NativeSystemPrompt|FreshPromptCarriesUserText|NativeResume)' -v -timeout 6m
+RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape' -v -timeout 6m
+RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn' -v -timeout 6m
 ```
 
 Current Cursor CLI real contract command:

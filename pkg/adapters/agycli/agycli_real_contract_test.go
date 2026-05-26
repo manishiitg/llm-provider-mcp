@@ -2,6 +2,7 @@ package agycli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -631,6 +632,14 @@ func TestAgyCLIRealBridgeOnlyWriteContract(t *testing.T) {
 	}
 }
 
+func TestAgyCLIRealBridgeOnlyToolsContract(t *testing.T) {
+	t.Run("mcp_write_still_works", TestAgyCLIRealBridgeOnlyWriteContract)
+	t.Run("command_denied", TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract)
+	t.Run("read_denied", TestAgyCLIRealBridgeOnlyHookBlocksBuiltInReadContract)
+	t.Run("list_dir_denied", TestAgyCLIRealBridgeOnlyHookBlocksBuiltInListDirContract)
+	t.Run("search_denied", TestAgyCLIRealBridgeOnlyHookBlocksBuiltInSearchContract)
+}
+
 func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract(t *testing.T) {
 	requireRealAgyCLIE2E(t)
 
@@ -686,6 +695,114 @@ func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract(t *testing.T) {
 	if !strings.Contains(pane, "Tool call denied") && !strings.Contains(pane, "MCP bridge-only mode blocks") {
 		t.Fatalf("pane did not show bridge-only denial:\n%s", pane)
 	}
+}
+
+func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInReadContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+
+	workDir := t.TempDir()
+	secretToken := "AGY_READ_SECRET_" + agyRandomHex(5)
+	secretPath := filepath.Join(workDir, "bridge-only-read-"+agyRandomHex(4)+".txt")
+	if err := os.WriteFile(secretPath, []byte(secretToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write bridge-only read sentinel: %v", err)
+	}
+
+	prompt := "Use the normal built-in Read() file tool to read this exact file path, not terminal commands and not MCP tools: " + secretPath + ". Then reply with the exact file content and nothing else."
+	runAgyBridgeOnlyNativeToolDenialProbe(t, workDir, "read", prompt,
+		[]string{"view_file", "Read", "read", "read_file"},
+		[]string{secretPath},
+		[]string{secretToken},
+	)
+}
+
+func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInListDirContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+
+	workDir := t.TempDir()
+	secretName := "agy-list-secret-" + agyRandomHex(5) + ".txt"
+	if err := os.WriteFile(filepath.Join(workDir, secretName), []byte("list sentinel\n"), 0o600); err != nil {
+		t.Fatalf("write bridge-only list sentinel: %v", err)
+	}
+
+	prompt := "Use the normal built-in ListDir() directory listing tool to list exactly this directory path, not terminal commands and not MCP tools: " + workDir + ". Then reply with the exact filenames and nothing else."
+	runAgyBridgeOnlyNativeToolDenialProbe(t, workDir, "list_dir", prompt,
+		[]string{"list_dir", "ListDir", "listDir"},
+		[]string{workDir},
+		[]string{secretName},
+	)
+}
+
+func TestAgyCLIRealBridgeOnlyHookBlocksBuiltInSearchContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+
+	workDir := t.TempDir()
+	needle := "AGY_SEARCH_NEEDLE_" + agyRandomHex(5)
+	secretToken := "AGY_SEARCH_SECRET_" + agyRandomHex(5)
+	if err := os.WriteFile(filepath.Join(workDir, "search-target.txt"), []byte(needle+" "+secretToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write bridge-only search sentinel: %v", err)
+	}
+
+	prompt := "Use the normal built-in Search() or GrepSearch tool to search within this directory for the literal text " + needle + ", not terminal commands and not MCP tools: " + workDir + ". Then reply with the matching line and nothing else."
+	runAgyBridgeOnlyNativeToolDenialProbe(t, workDir, "search", prompt,
+		[]string{"grep_search", "Search", "search", "find_by_name"},
+		[]string{needle},
+		[]string{secretToken},
+	)
+}
+
+func runAgyBridgeOnlyNativeToolDenialProbe(t *testing.T, workDir, label, prompt string, toolNames, requiredLogSubstrings, forbiddenSubstrings []string) string {
+	t.Helper()
+
+	adapter := NewAgyCLIAdapter("", "agy-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	WithBridgeOnlyTools(true)(opts)
+
+	args, env, workingDir, cleanupFiles, err := adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
+	if err != nil {
+		t.Fatalf("build bridge-only %s launch: %v", label, err)
+	}
+	t.Cleanup(cleanupFiles)
+
+	sessionName := newAgyTmuxSessionName()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := startAgyTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+		t.Fatalf("start bridge-only %s hook tmux session: %v", label, err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		requestAgyGracefulExit(closeCtx, sessionName)
+		_ = killAgyTmuxSession(closeCtx, sessionName)
+	})
+
+	if err := waitForAgyPrompt(ctx, sessionName, nil); err != nil {
+		pane, _ := captureAgyPane(context.Background(), sessionName)
+		t.Fatalf("wait for bridge-only %s prompt: %v; pane:\n%s", label, err, pane)
+	}
+
+	logPath := filepath.Join(workDir, ".agents", "mlp-bridge-only-denials.jsonl")
+	if err := sendAgyInputToTmux(ctx, sessionName, prompt); err != nil {
+		t.Fatalf("send bridge-only %s prompt: %v", label, err)
+	}
+
+	logText := waitForAgyBridgeOnlyDenial(t, logPath, "bridge-only "+label+" hook denial log", 90*time.Second, toolNames, requiredLogSubstrings)
+	for _, forbidden := range forbiddenSubstrings {
+		if forbidden != "" && strings.Contains(logText, forbidden) {
+			t.Fatalf("bridge-only %s denial log leaked %q: %q", label, forbidden, logText)
+		}
+	}
+
+	pane := waitForAgyRealPaneCondition(t, sessionName, "bridge-only "+label+" denial", 30*time.Second, nil, func(pane string) bool {
+		return strings.Contains(pane, "Tool call denied by") || strings.Contains(pane, "Antigravity built-in tools are DENIED")
+	})
+	for _, forbidden := range forbiddenSubstrings {
+		if forbidden != "" && strings.Contains(pane, forbidden) {
+			t.Fatalf("bridge-only %s leaked %q into pane:\n%s", label, forbidden, pane)
+		}
+	}
+	return logText
 }
 
 func TestAgyCLIRealWorkingDirectoryMCPContract(t *testing.T) {
@@ -1427,6 +1544,59 @@ func waitForAgyRealFile(t *testing.T, path, label string, timeout time.Duration,
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s at %s", label, path)
+}
+
+func waitForAgyBridgeOnlyDenial(t *testing.T, path, label string, timeout time.Duration, toolNames, requiredSubstrings []string) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var latest string
+	for time.Now().Before(deadline) {
+		body, err := os.ReadFile(path)
+		if err == nil {
+			latest = string(body)
+			for _, line := range strings.Split(latest, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var entry struct {
+					ToolCall struct {
+						Name string `json:"name"`
+					} `json:"toolCall"`
+				}
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("%s contains invalid JSON line: %v; line=%q; full log=%q", label, err, line, latest)
+				}
+				if !agyStringIn(entry.ToolCall.Name, toolNames) {
+					continue
+				}
+				missing := ""
+				for _, required := range requiredSubstrings {
+					if required != "" && !strings.Contains(line, required) {
+						missing = required
+						break
+					}
+				}
+				if missing == "" {
+					return latest
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", label, err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s with tool names %v and required substrings %v; latest log=%q", label, toolNames, requiredSubstrings, latest)
+	return ""
+}
+
+func agyStringIn(value string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForAgyRealPaneCondition(t *testing.T, tmuxSession, label string, timeout time.Duration, errCh <-chan agyRealResult, matches func(string) bool) string {

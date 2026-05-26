@@ -195,8 +195,8 @@ Reference: `pkg/adapters/geminicli/geminicli_adapter.go` — the
 accumulation on whether the response looks like real usage (not an
 estimation). The check used to only inspect `gi.InputTokens` /
 `gi.OutputTokens` (legacy naming). Adapters that populate the
-modern `gi.PromptTokens` / `gi.CompletionTokens` (Claude Code
-experimental, codex, gemini transcript readers) without also
+modern `gi.PromptTokens` / `gi.CompletionTokens` (Claude Code tmux,
+codex, gemini transcript readers) without also
 populating the legacy pair OR setting `resp.Usage` fell through
 to the "skip estimated" branch — and the cumulative counters
 that drive `TokenUsageEvent.PromptTokens/CompletionTokens` stayed

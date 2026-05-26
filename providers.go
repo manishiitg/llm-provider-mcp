@@ -92,7 +92,7 @@ const (
 	DefaultOpenCodeModel  = "opencode-cli"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
-	// Supported normal value: "experimental" for tmux TUI mode.
+	// Supported normal value: "tmux" for Claude Code TUI mode.
 	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
@@ -100,6 +100,9 @@ const (
 	// `claude -p` stream-json transport can be selected.
 	EnvClaudeCodeAllowLegacyPrint = "CLAUDE_CODE_ALLOW_LEGACY_PRINT"
 
+	ClaudeCodeTransportTmux = "tmux"
+	// ClaudeCodeTransportExperimental is kept as a legacy alias.
+	// Deprecated: use ClaudeCodeTransportTmux.
 	ClaudeCodeTransportExperimental = "experimental"
 	ClaudeCodeTransportPrint        = "print"
 )
@@ -113,12 +116,18 @@ func SetCodingAgentTmuxSize(columns, rows int) {
 	tmuxsize.SetPreferredSize(columns, rows)
 }
 
-// CleanupClaudeCodeExperimentalSessions removes Claude Code tmux sessions
+// CleanupClaudeCodeTmuxSessions removes Claude Code tmux sessions
 // registered by this process. It intentionally does not kill every tmux session
 // with the provider prefix, because other backend processes/tests may own live
 // coding-agent sessions in the same user tmux server.
+func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
+	return claudecodeadapter.CleanupClaudeCodeTmuxSessions(ctx)
+}
+
+// CleanupClaudeCodeExperimentalSessions is kept for compatibility.
+// Deprecated: use CleanupClaudeCodeTmuxSessions.
 func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
-	return claudecodeadapter.CleanupClaudeCodeExperimentalSessions(ctx)
+	return CleanupClaudeCodeTmuxSessions(ctx)
 }
 
 // CleanupCodexCLIInteractiveSessions removes Codex CLI tmux sessions registered
@@ -152,10 +161,16 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
 }
 
-// SendClaudeCodeExperimentalInput sends user input to a live Claude Code
-// experimental session registered for the owning application session.
+// SendClaudeCodeInput sends user input to a live Claude Code tmux session
+// registered for the owning application session.
+func SendClaudeCodeInput(ctx context.Context, sessionID, message string) error {
+	return claudecodeadapter.SendClaudeCodeInput(ctx, sessionID, message)
+}
+
+// SendClaudeCodeExperimentalInput is kept for compatibility.
+// Deprecated: use SendClaudeCodeInput.
 func SendClaudeCodeExperimentalInput(ctx context.Context, sessionID, message string) error {
-	return claudecodeadapter.SendClaudeCodeExperimentalInput(ctx, sessionID, message)
+	return SendClaudeCodeInput(ctx, sessionID, message)
 }
 
 // SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
@@ -188,10 +203,16 @@ func SendGeminiCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return geminicli.SendGeminiInteractiveInput(ctx, sessionID, message)
 }
 
-// SendClaudeCodeExperimentalControlKey injects a tmux control key (e.g.
-// "Escape", "C-c") into a registered Claude Code experimental session.
+// SendClaudeCodeControlKey injects a tmux control key (e.g. "Escape", "C-c")
+// into a registered Claude Code tmux session.
+func SendClaudeCodeControlKey(ctx context.Context, sessionID, key string) error {
+	return claudecodeadapter.SendClaudeCodeControlKey(ctx, sessionID, key)
+}
+
+// SendClaudeCodeExperimentalControlKey is kept for compatibility.
+// Deprecated: use SendClaudeCodeControlKey.
 func SendClaudeCodeExperimentalControlKey(ctx context.Context, sessionID, key string) error {
-	return claudecodeadapter.SendClaudeCodeExperimentalControlKey(ctx, sessionID, key)
+	return SendClaudeCodeControlKey(ctx, sessionID, key)
 }
 
 // SendCodexCLIInteractiveControlKey injects a tmux control key into a
@@ -242,7 +263,7 @@ type Config struct {
 	// API keys for providers (optional, falls back to environment variables if not provided)
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
-	// initialized Claude Code model. Normal execution should use "experimental"
+	// initialized Claude Code model. Normal execution should use "tmux"
 	// for tmux/no -p. The legacy print path is test-only and requires
 	// CLAUDE_CODE_ALLOW_LEGACY_PRINT=1.
 	ClaudeCodeTransport string
@@ -2115,10 +2136,10 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 		return llm, nil
 	}
 
-	logger.Infof("Claude Code: using experimental mode with CLI OAuth credentials (no `claude -p` invocation)")
+	logger.Infof("Claude Code: using tmux mode with CLI OAuth credentials (no `claude -p` invocation)")
 
-	// Create Claude Code experimental adapter.
-	llm := claudecodeadapter.NewClaudeCodeExperimentalAdapter(modelID, logger)
+	// Create Claude Code tmux adapter.
+	llm := claudecodeadapter.NewClaudeCodeTmuxAdapter(modelID, logger)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{
@@ -2128,13 +2149,13 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 			"provider":     "claude-code",
 			"status":       StatusLLMInitialized,
 			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-			"mode":         ClaudeCodeTransportExperimental,
-			"transport":    ClaudeCodeTransportExperimental,
+			"mode":         ClaudeCodeTransportTmux,
+			"transport":    ClaudeCodeTransportTmux,
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized Claude Code experimental adapter - model_id: %s", modelID)
+	logger.Infof("Initialized Claude Code tmux adapter - model_id: %s", modelID)
 	return llm, nil
 }
 
@@ -2151,15 +2172,15 @@ func resolveClaudeCodeTransport(configured string) (string, error) {
 
 func normalizeClaudeCodeTransport(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", ClaudeCodeTransportExperimental, "tmux", "interactive":
-		return ClaudeCodeTransportExperimental, nil
+	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
+		return ClaudeCodeTransportTmux, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
 		if strings.TrimSpace(os.Getenv(EnvClaudeCodeAllowLegacyPrint)) != "1" {
-			return "", fmt.Errorf("Claude Code legacy print transport is disabled; use %s=%q for tmux mode or set %s=1 only for targeted legacy tests", EnvClaudeCodeTransport, ClaudeCodeTransportExperimental, EnvClaudeCodeAllowLegacyPrint)
+			return "", fmt.Errorf("Claude Code legacy print transport is disabled; use %s=%q for tmux mode or set %s=1 only for targeted legacy tests", EnvClaudeCodeTransport, ClaudeCodeTransportTmux, EnvClaudeCodeAllowLegacyPrint)
 		}
 		return ClaudeCodeTransportPrint, nil
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportExperimental)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	}
 }
 
@@ -3742,7 +3763,7 @@ func WithResumeSessionID(id string) llmtypes.CallOption {
 	return claudecodeadapter.WithResumeSessionID(id)
 }
 
-// WithClaudeCodeInteractiveSessionID links a Claude Code experimental run to
+// WithClaudeCodeInteractiveSessionID links a Claude Code tmux run to
 // the owning application session so live follow-up input can be sent to it.
 func WithClaudeCodeInteractiveSessionID(id string) llmtypes.CallOption {
 	return claudecodeadapter.WithInteractiveSessionID(id)

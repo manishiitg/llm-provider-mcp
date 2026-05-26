@@ -42,7 +42,7 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 	if parsed.Version != 1 {
 		t.Errorf("hooks.json version = %d, want 1", parsed.Version)
 	}
-	for _, ev := range []string{"beforeShellExecution", "beforeReadFile"} {
+	for _, ev := range []string{"preToolUse", "beforeShellExecution", "beforeReadFile"} {
 		hooks, ok := parsed.Hooks[ev]
 		if !ok || len(hooks) == 0 {
 			t.Errorf("hooks.json missing %q event entry", ev)
@@ -51,6 +51,12 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 		cmd, _ := hooks[0]["command"].(string)
 		if !strings.Contains(cmd, "mlp-deny-builtin.sh") {
 			t.Errorf("hook %q command should reference mlp-deny-builtin.sh, got %q", ev, cmd)
+		}
+	}
+	matcher, _ := parsed.Hooks["preToolUse"][0]["matcher"].(string)
+	for _, tool := range []string{"Read", "ListDir", "Glob", "Grep", "Search"} {
+		if !strings.Contains(matcher, tool) {
+			t.Fatalf("preToolUse matcher = %q, want built-in tool %s covered", matcher, tool)
 		}
 	}
 
@@ -65,6 +71,9 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(string(scriptRaw), "api-bridge") {
 		t.Errorf("deny script user_message should point at api-bridge; got:\n%s", scriptRaw)
+	}
+	if !strings.Contains(string(scriptRaw), "ListDir") || !strings.Contains(string(scriptRaw), "Grep") {
+		t.Errorf("deny script should name list/search built-ins; got:\n%s", scriptRaw)
 	}
 	info, err := os.Stat(scriptPath)
 	if err != nil {

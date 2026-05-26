@@ -643,9 +643,10 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 }
 
 // writeCursorDenyBuiltinHooks installs a .cursor/hooks.json + deny script
-// that blocks cursor's built-in Shell and Read tools via cursor's hook
-// system (https://cursor.com/docs/hooks). The model is forced to call the
-// MCP bridge instead (api-bridge.execute_shell_command, api-bridge.read_file)
+// that blocks cursor's built-in Shell / Read / ListDir / Glob / Grep /
+// Search / Edit / Write tools via cursor's hook system
+// (https://cursor.com/docs/hooks). The model is forced to call the MCP
+// bridge instead (api-bridge.execute_shell_command, api-bridge.read_file)
 // when the orchestrator has injected the bridge mcp.json.
 //
 // Cleanup restores any pre-existing hooks.json the operator had in their
@@ -666,12 +667,13 @@ func writeCursorDenyBuiltinHooks(cursorDir string) (func(), error) {
 	logPath := filepath.Join(hooksDir, "mlp-deny-builtin-denials.jsonl")
 	script := `#!/bin/bash
 # Installed by the multi-llm-provider-go cursor adapter when
-# WithDenyBuiltinTools is enabled. Denies cursor's built-in Shell/Read
-# so the agent routes through the MCP bridge (api-bridge.*) instead.
+# WithDenyBuiltinTools is enabled. Denies cursor's built-in filesystem,
+# shell, and edit tools so the agent routes through the MCP bridge
+# (api-bridge.*) instead.
 input=$(cat)
 printf '%s\n' "$input" >> ` + cursorShellQuote(logPath) + `
 cat <<'JSON'
-{"permission":"deny","user_message":"Built-in Shell/Read/Edit/Write are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in Shell/Read/Edit/Write are DENIED. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
+{"permission":"deny","user_message":"Built-in Shell/Read/ListDir/Glob/Grep/Search/Edit/Write are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in Shell/Read/ListDir/Glob/Grep/Search/Edit/Write are DENIED. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, grep, find, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
 JSON
 exit 0
 `
@@ -682,8 +684,9 @@ exit 0
 	hooksConfig := `{
   "version": 1,
   "hooks": {
-    "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh"}],
-    "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh"}]
+    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "Shell|Read|ListDir|Glob|Grep|Search|Edit|Write", "failClosed": true}],
+    "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}],
+    "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}]
   }
 }
 `

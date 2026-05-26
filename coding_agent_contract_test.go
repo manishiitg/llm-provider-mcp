@@ -246,7 +246,7 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// landed (TestCursorCLIStructuredMCPBridge); remaining IDs are real
 	// gaps that need their own e2e tests, tracked as follow-up tasks.
 	ProviderCursorCLI: {
-		CertBoundedRetention, CertBridgeOnlyTools, CertCancellation, CertCleanup,
+		CertBoundedRetention, CertCancellation, CertCleanup,
 		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
 		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
 		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
@@ -262,11 +262,11 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// CertMCPBridge has landed for both; remaining IDs await their own
 	// e2e tests.
 	ProviderGeminiCLI: {
-		CertBridgeOnlyTools, CertDoneDetection, CertFreshLaunch,
+		CertDoneDetection, CertFreshLaunch,
 		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 	ProviderOpenCodeCLI: {
-		CertBridgeOnlyTools, CertDoneDetection, CertFreshLaunch,
+		CertDoneDetection, CertFreshLaunch,
 		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 }

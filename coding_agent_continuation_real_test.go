@@ -29,13 +29,13 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 		{
 			name:       "claude-code",
 			provider:   ProviderClaudeCode,
-			model:      codingAgentContinuationE2EModel("CLAUDE_CODE_EXPERIMENTAL_INTEGRATION_MODEL", "claude-haiku-4-5-20251001"),
+			model:      codingAgentContinuationE2EModel("CLAUDE_CODE_TMUX_INTEGRATION_MODEL", "claude-haiku-4-5-20251001"),
 			binaryName: "claude",
 			config: func(model string) Config {
 				return Config{
 					Provider:            ProviderClaudeCode,
 					ModelID:             model,
-					ClaudeCodeTransport: ClaudeCodeTransportExperimental,
+					ClaudeCodeTransport: ClaudeCodeTransportTmux,
 				}
 			},
 			options: func(ownerID, workDir string) []llmtypes.CallOption {

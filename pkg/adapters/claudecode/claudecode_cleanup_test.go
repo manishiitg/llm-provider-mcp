@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestCleanupClaudeCodeExperimentalSessionsDoesNotBlockOnBusyPersistentSession(t *testing.T) {
+func TestCleanupClaudeCodeTmuxSessionsDoesNotBlockOnBusyPersistentSession(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -35,7 +35,7 @@ func TestCleanupClaudeCodeExperimentalSessionsDoesNotBlockOnBusyPersistentSessio
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		done <- CleanupClaudeCodeExperimentalSessions(ctx)
+		done <- CleanupClaudeCodeTmuxSessions(ctx)
 	}()
 
 	select {

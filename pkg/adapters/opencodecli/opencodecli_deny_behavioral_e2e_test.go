@@ -24,12 +24,12 @@ import (
 // opencode.jsonc when WithWriteProjectInstructionFile(true) is set.
 //
 // Shape:
-//   1. Run a real opencode call with WithWriteProjectInstructionFile(true)
-//      so the tools-deny block gets merged into opencode.jsonc.
-//   2. Prompt opencode to invoke a built-in tool (we use `read` because
-//      it's in the deny set and unambiguous).
-//   3. Assert the sentinel file's content does NOT leak into the
-//      response — proof that the built-in `read` did not execute.
+//  1. Run a real opencode call with WithWriteProjectInstructionFile(true)
+//     so the tools-deny block gets merged into opencode.jsonc.
+//  2. Prompt opencode to invoke a built-in tool (we use `read` because
+//     it's in the deny set and unambiguous).
+//  3. Assert the sentinel file's content does NOT leak into the
+//     response — proof that the built-in `read` did not execute.
 //
 // Why model behavior makes this less brittle than the old assertion:
 // opencode/the model might refuse upfront, try the tool and report
@@ -63,10 +63,21 @@ func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	// (where the deny error message lands) AND the model's narration.
 	streamChan := make(chan llmtypes.StreamChunk, 256)
 	var streamContent strings.Builder
+	var toolEvidence strings.Builder
 	streamDone := make(chan struct{})
 	go func() {
 		for chunk := range streamChan {
-			streamContent.WriteString(chunk.Content)
+			switch chunk.Type {
+			case llmtypes.StreamChunkTypeToolCallStart, llmtypes.StreamChunkTypeToolCallEnd:
+				toolEvidence.WriteString(chunk.ToolName)
+				toolEvidence.WriteString(" ")
+				toolEvidence.WriteString(chunk.Content)
+				toolEvidence.WriteString(" ")
+				toolEvidence.WriteString(chunk.ToolResult)
+				toolEvidence.WriteString("\n")
+			default:
+				streamContent.WriteString(chunk.Content)
+			}
 		}
 		close(streamDone)
 	}()
@@ -100,6 +111,9 @@ func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	// step-cap); that's a separate fragility we don't gate the
 	// security claim on.
 	haystack := streamContent.String()
+	if toolEvidence.Len() > 0 {
+		haystack += "\n" + toolEvidence.String()
+	}
 	if resp != nil && len(resp.Choices) > 0 {
 		haystack += "\n" + resp.Choices[0].Content
 	}
@@ -125,5 +139,28 @@ func TestOpenCodeCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 	// reaches the model's output stream.
 	if strings.Contains(haystack, "DENY_HOOK_SENTINEL_VALUE_42") {
 		t.Errorf("sentinel value leaked into response — the built-in read tool succeeded despite opencode.jsonc tools-deny; check that buildOpenCodeProjectConfigJSON wired through and opencode honored the tools block\nfull haystack:\n%s", haystack)
+	}
+	lower := strings.ToLower(haystack)
+	denyAnchors := []string{
+		"disabled",
+		"denied",
+		"unavailable tool",
+		"available tools: invalid, todowrite",
+		"not available",
+		"not allowed",
+		"permission",
+		"read is",
+		"cannot access",
+		"can't access",
+	}
+	matched := false
+	for _, anchor := range denyAnchors {
+		if strings.Contains(lower, anchor) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("no OpenCode tools-deny evidence found. This is too weak because absence of the sentinel alone could be a model refusal.\nexpected one of %v\nfull haystack:\n%s", denyAnchors, haystack)
 	}
 }

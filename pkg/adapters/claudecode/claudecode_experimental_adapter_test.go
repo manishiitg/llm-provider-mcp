@@ -83,7 +83,11 @@ exit 1
 
 func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	got := claudePromptSuggestionEnvArgs()
-	want := []string{"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"}
+	want := []string{
+		"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
+		"-e", "ANTHROPIC_API_KEY=",
+		"-e", "ANTHROPIC_BASE_URL=",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
 	}
@@ -129,8 +133,8 @@ func writeExecutableTestShell(t *testing.T, name string) string {
 	return path
 }
 
-func TestExperimentalBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
-	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
+func TestTmuxBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
+	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)
@@ -159,8 +163,8 @@ func TestExperimentalBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
 	}
 }
 
-func TestExperimentalRejectsImageContent(t *testing.T) {
-	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
+func TestTmuxRejectsImageContent(t *testing.T) {
+	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
 
 	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
 		{
@@ -205,8 +209,8 @@ func TestClaudeTmuxSessionLostErrorDetection(t *testing.T) {
 		want bool
 	}{
 		{name: "nil", err: nil},
-		{name: "no server", err: errors.New("failed to capture Claude Code experimental session: exit status 1: no server running on /private/tmp/tmux-501/default"), want: true},
-		{name: "missing pane", err: errors.New("failed to capture Claude Code experimental session: exit status 1: can't find pane: mlp-claude-code-exp-1"), want: true},
+		{name: "no server", err: errors.New("failed to capture Claude Code tmux session: exit status 1: no server running on /private/tmp/tmux-501/default"), want: true},
+		{name: "missing pane", err: errors.New("failed to capture Claude Code tmux session: exit status 1: can't find pane: mlp-claude-code-1"), want: true},
 		{name: "missing session", err: errors.New("tmux kill-session failed: can't find session: mlp-claude-code-exp-1"), want: true},
 		{name: "ordinary timeout", err: context.DeadlineExceeded},
 	}
@@ -220,8 +224,8 @@ func TestClaudeTmuxSessionLostErrorDetection(t *testing.T) {
 	}
 }
 
-func TestExperimentalBuildClaudeArgsPassesBridgeOptions(t *testing.T) {
-	adapter := NewClaudeCodeExperimentalAdapter("claude-sonnet-4-6", &MockLogger{})
+func TestTmuxBuildClaudeArgsPassesBridgeOptions(t *testing.T) {
+	adapter := NewClaudeCodeTmuxAdapter("claude-sonnet-4-6", &MockLogger{})
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"/tmp/mcpbridge"}}}`)(opts)
 	WithClaudeCodeTools("WebSearch")(opts)
@@ -271,7 +275,7 @@ func TestExperimentalBuildClaudeArgsPassesBridgeOptions(t *testing.T) {
 		t.Fatalf("args = %v, system prompt must be passed by file to avoid command length limits", args)
 	}
 	if containsArg(args, "--append-system-prompt") {
-		t.Fatalf("args = %v, experimental mode should replace with --system-prompt, not append", args)
+		t.Fatalf("args = %v, tmux mode should replace with --system-prompt, not append", args)
 	}
 	if len(tempFiles) != 2 {
 		t.Fatalf("tempFiles = %v, want MCP config and system prompt temp files", tempFiles)
@@ -326,7 +330,7 @@ func TestBuildTmuxPromptResumeSendsOnlyLatestHumanMessage(t *testing.T) {
 		t.Fatalf("tmux prompt should not contain system messages; they are passed via --system-prompt: %q", prompt)
 	}
 	for _, forbidden := range []string{
-		"experimental adapter",
+		"tmux adapter",
 		"Final answer format",
 		"Start marker",
 		"End marker",
@@ -930,7 +934,7 @@ Would you like to compact the conversation or continue without compacting?
 	}
 }
 
-func TestExperimentalTimeoutEnv(t *testing.T) {
+func TestTmuxTimeoutEnv(t *testing.T) {
 	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "")
 	if got := tmuxTimeout(); got != 0 {
 		t.Fatalf("tmuxTimeout default = %v, want 0", got)
@@ -952,7 +956,7 @@ func TestExperimentalTimeoutEnv(t *testing.T) {
 	}
 }
 
-func TestExperimentalPromptWaitEnv(t *testing.T) {
+func TestTmuxPromptWaitEnv(t *testing.T) {
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
 	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "")
 	if got := promptReadyTimeout(); got != 120*time.Second {
@@ -1009,8 +1013,8 @@ func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
 	}
 }
 
-func TestExperimentalDoesNotAddVerboseFlagByDefault(t *testing.T) {
-	adapter := NewClaudeCodeExperimentalAdapter("claude-code", &MockLogger{})
+func TestTmuxDoesNotAddVerboseFlagByDefault(t *testing.T) {
+	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)

@@ -258,7 +258,7 @@ their live CLIs and ship enabled-by-default under the flag:
 
 | CLI         | Env var                                            | Status |
 | :---------- | :------------------------------------------------- | :----- |
-| Claude Code | `RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1`       | PASS   |
+| Claude Code | `RUN_CLAUDE_CODE_TMUX_INTEGRATION=1`       | PASS   |
 | Codex       | `RUN_CODEX_CLI_REAL_E2E=1`                          | PASS   |
 | Gemini      | `RUN_GEMINI_CLI_REAL_E2E=1` + `GEMINI_API_KEY`     | PASS   |
 | OpenCode    | `RUN_OPENCODE_CLI_REAL_E2E=1`                       | PASS   |

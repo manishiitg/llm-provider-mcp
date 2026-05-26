@@ -11,7 +11,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// TestClaudeCodeExperimentalRealProjectArtifactsLifecycle is an end-to-
+// TestClaudeCodeTmuxRealProjectArtifactsLifecycle is an end-to-
 // end test that proves the WithWriteProjectInstructionFile lifecycle
 // against a real `claude` binary by exercising the SAFE projections
 // (the ones not gated behind MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS).
@@ -20,7 +20,7 @@ import (
 // mlp-session-<hex>.md — the .mcp.json projection is disabled by
 // default because it triggers Claude Code v2.1.150's "New MCP server
 // found in .mcp.json — approve?" discovery prompt that the tmux
-// adapter cannot dismiss. See claudecode_experimental_adapter.go for
+// adapter cannot dismiss. See Claude Code tmux adapter for
 // the gate explanation.
 //
 // Verifications after the call returns:
@@ -31,18 +31,18 @@ import (
 //     session-rule file write does not trigger a prompt; vs the
 //     .mcp.json write that does)
 //
-// Skipped unless RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1 and the
-// `claude` binary is on PATH (same gate as sibling experimental E2Es).
-func TestClaudeCodeExperimentalRealProjectArtifactsLifecycle(t *testing.T) {
+// Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
+// `claude` binary is on PATH (same gate as sibling tmux E2Es).
+func TestClaudeCodeTmuxRealProjectArtifactsLifecycle(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
 	tmp := t.TempDir()
 	rulesDir := filepath.Join(tmp, ".claude", "rules")
 
-	adapter := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	// Provide a system prompt so the .claude/rules/*.md write path
 	// fires inside buildClaudeArgs. Without a non-empty system prompt

@@ -10,8 +10,8 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// TestClaudeCodeExperimentalRealCrossRestartResume is the behavioral
-// lock-in for claude-code experimental tmux resume across a simulated
+// TestClaudeCodeTmuxRealCrossRestartResume is the behavioral
+// lock-in for claude-code tmux resume across a simulated
 // server restart. Templated from the cursor variant — see
 // cursorcli_resume_e2e_test.go for the shared rationale.
 //
@@ -20,25 +20,25 @@ import (
 //     (newClaudeNativeSessionID) on turn 1, then surfaced as
 //     additional[claude_code_session_id]. Turn 2 passes it back via
 //     WithResumeSessionID, which becomes --resume <id> on the claude
-//     CLI invocation (claudecode_experimental_adapter.go:537).
-//   - CleanupClaudeCodeExperimentalSessions wipes the in-memory
+//     CLI invocation (Claude Code tmux adapter:537).
+//   - CleanupClaudeCodeTmuxSessions wipes the in-memory
 //     persistent tmux registry, simulating the server restart that
 //     would otherwise be the only way to force resume to kick in.
 //   - Same workingDir is used across both turns because claude's
 //     transcript lives under that path; resuming from a different
 //     cwd would not find the prior conversation.
 //
-// Skipped unless RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION=1 and the
+// Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
 // claude binary is on PATH.
-func TestClaudeCodeExperimentalRealCrossRestartResume(t *testing.T) {
+func TestClaudeCodeTmuxRealCrossRestartResume(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
-	t.Cleanup(func() { _ = CleanupClaudeCodeExperimentalSessions(context.Background()) })
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	workingDir := t.TempDir()
 	sentinel := "CLAUDE_CROSS_RESTART_SENTINEL_42"
 
 	// --- Turn 1: seed sentinel, capture native session ID.
-	adapter1 := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter1 := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel1()
 
@@ -78,12 +78,12 @@ func TestClaudeCodeExperimentalRealCrossRestartResume(t *testing.T) {
 	t.Logf("captured claude native session ID: %s", nativeSessionID)
 
 	// --- Simulated restart: clear in-memory persistent tmux registry.
-	if err := CleanupClaudeCodeExperimentalSessions(context.Background()); err != nil {
+	if err := CleanupClaudeCodeTmuxSessions(context.Background()); err != nil {
 		t.Fatalf("simulated restart: cleanup of persistent claude sessions failed: %v", err)
 	}
 
 	// --- Turn 2: fresh adapter + fresh owner session ID, --resume the captured ID.
-	adapter2 := NewClaudeCodeExperimentalAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter2 := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel2()
 
