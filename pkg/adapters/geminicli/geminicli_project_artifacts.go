@@ -210,8 +210,16 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 			hooks = map[string]any{}
 		}
 		existingBefore, _ := hooks["BeforeTool"].([]any)
+		// Matcher covers the full native tool surface gemini-cli 0.43.0
+		// registers — see `grep -hEo '"<name>"' bundle/*.js` against the
+		// installed bundle for the canonical list. Missing any name here
+		// leaves a native tool open that bypasses the MCP bridge / folder
+		// guard, which is exactly the regression the deny-hook exists to
+		// prevent. `search_file_content` from the original matcher was
+		// stale (not a registered tool name in any current version) and
+		// has been dropped.
 		denyEntry := map[string]any{
-			"matcher": "^(read_file|write_file|shell|edit|grep|search_file_content)$",
+			"matcher": "^(edit|glob|grep|list_directory|memory|read_file|read_many_files|replace|run_shell_command|save_memory|search_file_content|shell|write_file)$",
 			"hooks": []map[string]any{
 				{
 					"name":        "mlp-session-deny-builtin",

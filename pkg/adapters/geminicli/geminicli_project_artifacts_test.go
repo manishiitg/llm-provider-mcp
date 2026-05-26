@@ -182,22 +182,43 @@ func TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
 // TestWriteGeminiProjectSettingsAndHooksMatcherCoversBuiltins locks in
 // the exact tool-name matcher we synthesize so that future changes to
 // gemini's built-in tool names trigger a test failure rather than a
-// silent escape. Per geminicli.com/docs/hooks the canonical names are
-// read_file, write_file, shell, edit, grep, search_file_content.
-// web_fetch is intentionally NOT denied — we want gemini to be able
-// to fetch web content directly without forcing it through the bridge.
+// silent escape.
+//
+// Canonical built-in tool names from gemini-cli 0.43.0's bundle
+// (verified via `grep -hEo '"<name>"' bundle/*.js`):
+//
+//	edit, glob, google_web_search, grep, list_directory, memory,
+//	read_file, read_many_files, replace, run_shell_command, save_memory,
+//	shell, web_fetch, write_file
+//
+// We deny all of them EXCEPT web_fetch and google_web_search — direct
+// web access stays allowed so the chat agent can fetch URLs and run
+// searches without forcing every request through the bridge.
+//
+// search_file_content is also denied as a defensive measure: it's
+// referenced in older docs and may resurface as a tool name on
+// future gemini-cli versions; the matcher is cheap to keep wide.
 func TestWriteGeminiProjectSettingsAndHooksMatcherCoversBuiltins(t *testing.T) {
 	tmp := t.TempDir()
 	if _, err := writeGeminiProjectSettingsAndHooks(tmp, "", true); err != nil {
 		t.Fatalf("writeGeminiProjectSettingsAndHooks: %v", err)
 	}
 	body, _ := os.ReadFile(filepath.Join(tmp, ".gemini", "settings.json"))
-	for _, tool := range []string{"read_file", "write_file", "shell", "edit", "grep", "search_file_content"} {
+	for _, tool := range []string{
+		"edit", "glob", "grep", "list_directory",
+		"memory", "read_file", "read_many_files", "replace",
+		"run_shell_command", "save_memory", "search_file_content",
+		"shell", "write_file",
+	} {
 		if !strings.Contains(string(body), tool) {
 			t.Errorf("BeforeTool matcher must cover built-in %q so the deny hook fires on it; got:\n%s", tool, body)
 		}
 	}
-	if strings.Contains(string(body), "web_fetch") {
-		t.Errorf("BeforeTool matcher must NOT cover web_fetch (web access stays allowed); got:\n%s", body)
+	for _, allowed := range []string{"web_fetch", "google_web_search"} {
+		// The matcher anchors with ^...$ so partial matches don't fire.
+		// Confirm the exact token isn't present in the matcher alternation.
+		if strings.Contains(string(body), "|"+allowed+"|") || strings.Contains(string(body), "("+allowed+"|") || strings.Contains(string(body), "|"+allowed+")") {
+			t.Errorf("BeforeTool matcher must NOT cover %s (web access stays allowed); got:\n%s", allowed, body)
+		}
 	}
 }
