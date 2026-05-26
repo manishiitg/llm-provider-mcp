@@ -178,14 +178,16 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 			}
 			configCleanups = append(configCleanups, cleanup)
 		}
+	}
 
-		// Project attached skills into .agents/skills/ so OpenCode's
-		// skill loader picks them up. Best-effort: skill folders are
-		// outside the AGENTS.md byte-restore scope and persist
-		// across the session lifecycle of this workspace.
-		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-			_ = c.ProjectSkills(workingDir, skills)
-		}
+	// Project attached skills into .agents/skills/ so OpenCode's
+	// skill loader picks them up. Independent of the opencode.jsonc /
+	// AGENTS.md projection above; skills are useful even when the
+	// operator-instruction-file projection is off. Best-effort: skill
+	// folders are outside the AGENTS.md byte-restore scope and persist
+	// across the session lifecycle of this workspace.
+	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 && workingDir != "" {
+		_ = c.ProjectSkills(workingDir, attachedSkills)
 	}
 
 	// Resolve the model id. If the call is scoped to a sub-provider tile

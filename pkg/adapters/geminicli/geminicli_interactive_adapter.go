@@ -372,11 +372,19 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		} else if cleanup != nil {
 			session.projectInstructionCleanup = cleanup
 		}
+	}
 
-		// Project attached skills into .agents/skills/ at the workspace
-		// root so Gemini CLI's skill loader picks them up. Best-effort.
-		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-			_ = g.ProjectSkills(workingDir, skills)
+	// Project attached skills into the workflow's .agents/skills/ so
+	// the user sees them in the workflow folder and Gemini's workspace
+	// skill loader picks them up. Independent of
+	// geminiWriteProjectInstructionFromOptions (which gates the
+	// GEMINI.md / settings.json projection); skills are useful even
+	// when the operator-instruction-file projection is off.
+	// Best-effort: failures don't block the launch — the listing is
+	// also in the system prompt via mcpagent's ensureSystemPrompt.
+	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 {
+		if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
+			_ = g.ProjectSkills(workingDir, attachedSkills)
 		}
 	}
 
