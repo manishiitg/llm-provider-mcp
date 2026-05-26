@@ -374,7 +374,14 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	}
 }
 
-func TestPrepareCursorProjectFilesRestoresExistingConfig(t *testing.T) {
+// TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup locks in the
+// new aggressive-cleanup contract: mid-session the orchestrator's
+// override config is visible, and on cleanup the entire .cursor/ tree
+// is removed — including the operator's original cli.json. The trade-off
+// (operator content destroyed) is intentional: .cursor/ is treated as a
+// session-scoped artifact area so orphans from a prior crashed session
+// don't leak across runs.
+func TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup(t *testing.T) {
 	workDir := t.TempDir()
 	cursorDir := filepath.Join(workDir, ".cursor")
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
@@ -395,7 +402,7 @@ func TestPrepareCursorProjectFilesRestoresExistingConfig(t *testing.T) {
 		t.Fatalf("prepareCursorProjectFiles error = %v", err)
 	}
 	if got, err := os.ReadFile(cliPath); err != nil || !strings.Contains(string(got), "Shell(rm)") {
-		t.Fatalf("temporary cli.json = %q err=%v, want override", string(got), err)
+		t.Fatalf("mid-session cli.json = %q err=%v, want orchestrator override", string(got), err)
 	}
 	if _, err := os.Stat(filepath.Join(cursorDir, "mcp.json")); err != nil {
 		t.Fatalf("mcp.json not written: %v", err)
@@ -403,14 +410,8 @@ func TestPrepareCursorProjectFilesRestoresExistingConfig(t *testing.T) {
 
 	cleanup()
 
-	if got, err := os.ReadFile(cliPath); err != nil || string(got) != original {
-		t.Fatalf("restored cli.json = %q err=%v, want original", string(got), err)
-	}
-	if _, err := os.Stat(filepath.Join(cursorDir, "mcp.json")); !os.IsNotExist(err) {
-		t.Fatalf("mcp.json should be removed after cleanup, err=%v", err)
-	}
-	if matches, _ := filepath.Glob(filepath.Join(cursorDir, "rules", "mlp-system-*.mdc")); len(matches) != 0 {
-		t.Fatalf("system rule files remain after cleanup: %v", matches)
+	if _, err := os.Stat(cursorDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the full .cursor/ tree (including the operator's pre-existing cli.json); stat err = %v", err)
 	}
 }
 

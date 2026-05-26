@@ -104,6 +104,23 @@ func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSe
 		}
 	}
 
+	// Final teardown: nuke the whole .gemini/ tree (in workingDir AND
+	// projectDir if they differ). Registered LAST so it fires FIRST in
+	// LIFO order, making the earlier per-file restore callbacks no-ops on
+	// already-gone files. The intent is a clean wipe between sessions —
+	// orphaned settings.json / deny scripts from a prior session that
+	// didn't finish its cleanup callback would otherwise leak. Trade-off:
+	// an operator's own pre-existing content under .gemini/ is destroyed.
+	// GEMINI.md (workingDir root, outside .gemini/) is still byte-restored
+	// by writeGeminiProjectInstructionFile so an operator GEMINI.md
+	// survives unchanged.
+	cleanups = append(cleanups, func() {
+		_ = os.RemoveAll(filepath.Join(workingDir, ".gemini"))
+		if projectDir != "" && projectDir != workingDir {
+			_ = os.RemoveAll(filepath.Join(projectDir, ".gemini"))
+		}
+	})
+
 	return rollback, nil
 }
 

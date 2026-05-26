@@ -92,6 +92,18 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// WithDisableFeatures via the adapter options instead.
 	_ = denyBuiltins
 
+	// Final teardown: nuke the whole .codex/ tree. Registered LAST so it
+	// fires FIRST in LIFO order, making the earlier per-file restore
+	// callbacks no-ops on already-gone files. The intent is a clean wipe
+	// between sessions — orphaned config.toml from a prior session whose
+	// cleanup callback didn't fire would otherwise leak. Trade-off: an
+	// operator's own pre-existing content under .codex/ is destroyed.
+	// AGENTS.md (workingDir root, outside .codex/) is still byte-restored
+	// by writeCodexProjectAgentsFile so an operator AGENTS.md survives.
+	cleanups = append(cleanups, func() {
+		_ = os.RemoveAll(filepath.Join(workingDir, ".codex"))
+	})
+
 	return rollback, nil
 }
 

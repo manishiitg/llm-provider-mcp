@@ -809,6 +809,20 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 		}
 	}
 
+	// Final teardown: nuke the whole .agents/ tree. Registered LAST so it
+	// fires FIRST in LIFO order, making the earlier per-file restore
+	// callbacks no-ops on already-gone files. The intent is a clean wipe
+	// between sessions — orphaned MCP config / hook files from a prior
+	// session that didn't finish its cleanup callback (e.g. orchestrator
+	// killed before closeAgyPersistentSession ran) would otherwise leak.
+	// Trade-off: if the operator had their OWN content under .agents/
+	// before our session, it is destroyed by this RemoveAll. That is
+	// considered acceptable for now; the orchestrator manages this
+	// directory as a session-scoped artifact.
+	if strings.TrimSpace(workingDir) != "" {
+		addCleanup(func() { _ = os.RemoveAll(agentsDir) })
+	}
+
 	return cleanupAll, nil
 }
 

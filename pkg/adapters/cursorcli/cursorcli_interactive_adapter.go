@@ -639,6 +639,17 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		}
 	}
 
+	// Final teardown: nuke the whole .cursor/ tree. Registered LAST so it
+	// fires FIRST in LIFO order, making the earlier per-file restore
+	// callbacks no-ops on already-gone files. The intent is a clean wipe
+	// between sessions — orphaned hook scripts, denial logs, or cli.json
+	// from a prior session whose cleanup callback didn't fire (orchestrator
+	// killed before close) would otherwise leak. Trade-off: an operator's
+	// own pre-existing content under .cursor/ is destroyed.
+	if strings.TrimSpace(workingDir) != "" {
+		addCleanup(func() { _ = os.RemoveAll(cursorDir) })
+	}
+
 	return cleanupAll, nil
 }
 

@@ -622,6 +622,16 @@ func (c *ClaudeCodeTmuxAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, nati
 				}
 			}
 		}
+		// Final teardown for the workflow-folder .claude/ tree: appended
+		// LAST so it runs LAST in removeFiles, after per-file restores
+		// (which target paths still inside the tree we are about to
+		// nuke — those restore writes become no-ops on a removed parent
+		// dir). Wipes orphan rules/MCP files from prior sessions whose
+		// cleanup never fired. See claudeCleanupDirSentinel docs for the
+		// operator-content trade-off.
+		if strings.TrimSpace(workingDir) != "" {
+			tempFiles = append(tempFiles, claudeCleanupDirSentinel+filepath.Join(workingDir, ".claude"))
+		}
 	}
 
 	args = append(args, "--tools", toolsArg)
@@ -2905,9 +2915,25 @@ func removeFiles(paths []string) {
 				continue
 			}
 		}
+		// Sentinel: paths prefixed with claudeCleanupDirSentinel get
+		// nuked recursively via os.RemoveAll. Used by buildClaudeArgs
+		// to register the workflow-folder .claude/ provider dir for
+		// full teardown so orphan rules/MCP files from prior sessions
+		// don't leak across runs. Trade-off: operator-owned content
+		// under <workingDir>/.claude/ is destroyed.
+		if strings.HasPrefix(path, claudeCleanupDirSentinel) {
+			_ = os.RemoveAll(strings.TrimPrefix(path, claudeCleanupDirSentinel))
+			continue
+		}
 		_ = os.Remove(path)
 	}
 }
+
+// claudeCleanupDirSentinel marks paths in the session tempFiles list
+// that should be removed recursively (os.RemoveAll) rather than via the
+// default per-file os.Remove. Used to wipe the entire <workingDir>/.claude/
+// provider directory at session end.
+const claudeCleanupDirSentinel = "\x00mlp-cleanup-dir:"
 
 func runCommand(ctx context.Context, stdin io.Reader, name string, args ...string) error {
 	_, err := runCommandOutput(ctx, stdin, name, args...)

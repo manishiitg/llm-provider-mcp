@@ -629,7 +629,16 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestPrepareAgyProjectFilesMergesAndRestoresExistingHooks(t *testing.T) {
+// TestPrepareAgyProjectFilesMergesExistingHooksMidSessionAndNukesOnCleanup
+// locks in the new aggressive-cleanup contract: mid-session the
+// orchestrator's bridge-only hook is merged in alongside any operator-
+// supplied entries (so the session works correctly), but on cleanup the
+// entire .agents/ tree is removed — including the operator's original
+// hooks.json. The trade-off (operator content destroyed) is intentional:
+// .agents/ is treated as a session-scoped artifact area so orphaned files
+// from a prior session that crashed without firing cleanup don't leak
+// across runs.
+func TestPrepareAgyProjectFilesMergesExistingHooksMidSessionAndNukesOnCleanup(t *testing.T) {
 	workDir := t.TempDir()
 	agentsDir := filepath.Join(workDir, ".agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -657,24 +666,24 @@ func TestPrepareAgyProjectFilesMergesAndRestoresExistingHooks(t *testing.T) {
 		t.Fatalf("active hooks.json is not valid JSON: %v", err)
 	}
 	if _, ok := active["existing-policy"]; !ok {
-		t.Fatalf("active hooks.json = %s, want existing hook preserved", activeBody)
+		t.Fatalf("active hooks.json = %s, want existing hook preserved mid-session", activeBody)
 	}
 	if _, ok := active["mlp-bridge-only-tools"]; !ok {
-		t.Fatalf("active hooks.json = %s, want bridge-only hook merged", activeBody)
+		t.Fatalf("active hooks.json = %s, want bridge-only hook merged in mid-session", activeBody)
 	}
 
 	cleanup()
 
-	restored, err := os.ReadFile(hooksPath)
-	if err != nil {
-		t.Fatalf("read restored hooks.json: %v", err)
-	}
-	if string(restored) != original {
-		t.Fatalf("restored hooks.json = %q, want original", string(restored))
+	if _, err := os.Stat(agentsDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the full .agents/ tree; stat err = %v", err)
 	}
 }
 
-func TestPrepareAgyProjectFilesRestoresExistingMCPConfig(t *testing.T) {
+// TestPrepareAgyProjectFilesNukesAgentsTreeOnCleanup locks in that the
+// orchestrator-supplied MCP config is written mid-session AND that the
+// whole .agents/ tree (including any pre-existing operator content) is
+// removed on cleanup. Counterpart to the hooks test above.
+func TestPrepareAgyProjectFilesNukesAgentsTreeOnCleanup(t *testing.T) {
 	workDir := t.TempDir()
 	agentsDir := filepath.Join(workDir, ".agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -694,13 +703,13 @@ func TestPrepareAgyProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 		t.Fatalf("prepareAgyProjectFiles error = %v", err)
 	}
 	if got, err := os.ReadFile(mcpPath); err != nil || !strings.Contains(string(got), `"new"`) {
-		t.Fatalf("temporary mcp_config.json = %q err=%v, want override", string(got), err)
+		t.Fatalf("mid-session mcp_config.json = %q err=%v, want orchestrator override", string(got), err)
 	}
 
 	cleanup()
 
-	if got, err := os.ReadFile(mcpPath); err != nil || string(got) != original {
-		t.Fatalf("restored mcp_config.json = %q err=%v, want original", string(got), err)
+	if _, err := os.Stat(agentsDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the full .agents/ tree; stat err = %v", err)
 	}
 }
 
