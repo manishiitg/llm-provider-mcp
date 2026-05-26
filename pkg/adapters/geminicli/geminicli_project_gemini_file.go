@@ -62,16 +62,26 @@ func writeGeminiProjectInstructionFile(workingDir, systemPrompt string) (func(),
 	return cleanup, nil
 }
 
-// geminiWriteProjectInstructionFromOptions reads the OFF-by-default
-// feature flag from call options. Returns false when metadata is unset
-// or the value is not a true bool, matching the cautious default.
+// geminiWriteProjectInstructionFromOptions reads the project-artifact
+// projection flag from call options. Now defaults to TRUE: when the
+// metadata key is unset, we project GEMINI.md + .gemini/settings.json
+// + .gemini/hooks/deny-builtin.sh into the workflow's working
+// directory, matching the behavior of the other tmux-backed CLIs
+// (agy/cursor/claude-code) which always project their rule files.
+//
+// The earlier OFF-by-default rationale (operator might own GEMINI.md
+// at the workflow root) does not apply to workflow folders under
+// workspace-docs/Workflow/ — those are orchestrator-managed, not
+// user-edited; there is no pre-existing operator content to destroy.
+// Callers can still pass WithGeminiWriteProjectInstructionFile(false)
+// explicitly to opt out for non-workflow workingDirs.
 func geminiWriteProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return false
+		return true
 	}
 	v, ok := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile]
 	if !ok {
-		return false
+		return true
 	}
 	enabled, _ := v.(bool)
 	return enabled
