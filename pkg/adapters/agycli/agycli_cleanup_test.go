@@ -425,6 +425,22 @@ func TestAgyFeedbackPromptDetection(t *testing.T) {
 	}
 }
 
+func TestAgyReadyPromptAfterFeedbackSkipWithEscFooter(t *testing.T) {
+	pane := `
+  Hello! I am Antigravity, your AI coding assistant.
+
+  How can I help you with this project today?
+⣽ Working...
+────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────
+esc to cancel                                                                                                            Gemini 3.5 Flash
+`
+	if !hasAgyReadyPrompt(pane) {
+		t.Fatal("ready prompt with stale esc footer should be classified ready")
+	}
+}
+
 func TestAgyWorkspaceMCPConfigLeaseRejectsConcurrentConflicts(t *testing.T) {
 	workDir := t.TempDir()
 	first := &agyInteractiveSession{ownerSessionID: "first"}

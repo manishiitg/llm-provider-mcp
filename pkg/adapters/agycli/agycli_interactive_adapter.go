@@ -2314,9 +2314,24 @@ func hasAgyReadyPrompt(captured string) bool {
 }
 
 func hasAgyLiveGenerationActivity(cleaned string) bool {
-	return strings.Contains(cleaned, "ctrl+c to stop") ||
-		strings.Contains(cleaned, "esc to cancel") ||
-		strings.Contains(cleaned, "composing")
+	readyInputVisible := hasAgyReadyInputPromptLine(cleaned)
+	for _, line := range strings.Split(cleaned, "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if lower == "" {
+			continue
+		}
+		if strings.Contains(lower, "ctrl+c to stop") ||
+			strings.Contains(lower, "ctrl+c to cancel") ||
+			strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "composing") ||
+			strings.HasPrefix(lower, "○ ") {
+			return true
+		}
+		if strings.Contains(lower, "esc to cancel") && !readyInputVisible {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAgyReadyMarker(cleaned string) bool {
