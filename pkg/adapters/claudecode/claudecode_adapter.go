@@ -353,8 +353,24 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 		}
 	}
 
+	joinedSystemPrompt := strings.Join(systemPrompts, "\n\n")
 	if len(systemPrompts) > 0 {
-		args = append(args, "--append-system-prompt", strings.Join(systemPrompts, "\n\n"))
+		args = append(args, "--append-system-prompt", joinedSystemPrompt)
+	}
+
+	// Project the system prompt into <workingDir>/CLAUDE.md (Claude
+	// Code's project-instructions convention) with byte-restore on
+	// cleanup. ON by default; mirrors the interactive adapter behavior
+	// so structured (non-interactive) generateContent calls also drop
+	// the per-session system prompt into the workspace. Best-effort:
+	// write failures must not block GenerateContent — the
+	// --append-system-prompt injection above is the primary path.
+	if writeProjectInstructionFromOptions(opts) && workingDir != "" && strings.TrimSpace(joinedSystemPrompt) != "" {
+		if rulePath, werr := writeClaudeCodeProjectInstructionFile(workingDir, joinedSystemPrompt); werr != nil {
+			c.logger.Errorf("claude code: project CLAUDE.md write failed (best-effort): %v", werr)
+		} else if rulePath != "" {
+			defer removeFiles([]string{rulePath})
+		}
 	}
 
 	// Handle JSON Schema for structured output

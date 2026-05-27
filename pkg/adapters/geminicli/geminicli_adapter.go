@@ -351,6 +351,22 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 		}
 		commandDir = workingDir
 		g.logger.Infof("Using Gemini CLI working dir: %s", workingDir)
+
+		// Project the system prompt into <workingDir>/GEMINI.md
+		// (gemini-cli's project-context convention) with byte-restore
+		// on cleanup. ON by default; mirrors the interactive adapter
+		// so structured (non-interactive) generateContent calls also
+		// drop the per-session system prompt into the workspace.
+		// Best-effort: write failures must not block GenerateContent —
+		// the GEMINI_SYSTEM_MD env var above is the primary path.
+		if geminiWriteProjectInstructionFromOptions(opts) && len(systemPrompts) > 0 {
+			combined := strings.Join(systemPrompts, "\n\n")
+			if cleanup, werr := writeGeminiProjectInstructionFile(workingDir, combined); werr != nil {
+				g.logger.Errorf("gemini cli: project GEMINI.md write failed (best-effort): %v", werr)
+			} else if cleanup != nil {
+				defer cleanup()
+			}
+		}
 	}
 
 	// If project settings JSON is provided, create a per-invocation project directory with

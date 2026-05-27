@@ -333,13 +333,34 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 	// Pass system prompt via developer_instructions config instead of
 	// prepending to the user message. This lets codex treat it as a proper
 	// system-level instruction rather than part of the user prompt.
+	combinedSystemPrompt := strings.Join(systemPrompts, "\n\n")
 	if len(systemPrompts) > 0 {
-		combined := strings.Join(systemPrompts, "\n\n")
-		override, err := codexStringConfigOverride("developer_instructions", combined)
+		override, err := codexStringConfigOverride("developer_instructions", combinedSystemPrompt)
 		if err != nil {
 			return nil, err
 		}
 		args = append(args, "-c", override)
+	}
+
+	// Project the system prompt into <workingDir>/AGENTS.md (codex's
+	// project-instructions convention) with byte-restore on cleanup.
+	// ON by default; mirrors the interactive adapter behavior so
+	// structured (non-interactive) generateContent calls also drop the
+	// per-session system prompt into the workspace. Best-effort: write
+	// failures must not block GenerateContent — the
+	// developer_instructions override above is the primary path.
+	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(combinedSystemPrompt) != "" {
+		var projectWorkingDir string
+		if opts.Metadata != nil && opts.Metadata.Custom != nil {
+			projectWorkingDir, _ = opts.Metadata.Custom[MetadataKeyProjectDirID].(string)
+		}
+		if strings.TrimSpace(projectWorkingDir) != "" {
+			if cleanup, werr := writeCodexProjectAgentsFile(projectWorkingDir, combinedSystemPrompt); werr != nil {
+				c.logger.Errorf("codex cli: project AGENTS.md write failed (best-effort): %v", werr)
+			} else if cleanup != nil {
+				defer cleanup()
+			}
+		}
 	}
 
 	// 2. Build the prompt text
