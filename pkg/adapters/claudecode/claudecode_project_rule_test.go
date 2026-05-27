@@ -7,29 +7,23 @@ import (
 	"testing"
 )
 
-// TestWriteClaudeCodeProjectRuleFileLifecycle covers the unit-level
-// invariants of the opt-in project-rule writer: file lands at
-// .claude/rules/mlp-session-<hex>.md with the system prompt body,
-// includes the orchestrator marker comment, has restrictive perms,
-// and uses a unique nonce so concurrent sessions don't collide.
-func TestWriteClaudeCodeProjectRuleFileLifecycle(t *testing.T) {
+// TestWriteClaudeCodeProjectInstructionFileLifecycle covers the
+// invariants of the project-instruction writer: file lands at
+// <workdir>/CLAUDE.md with the system prompt body, includes the
+// orchestrator marker comment, has restrictive perms, and a second
+// write to the same workdir overwrites in place (no nonce, no
+// per-session uniqueness).
+func TestWriteClaudeCodeProjectInstructionFileLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	prompt := "Always run gofmt before committing.\nNever push to main."
 
-	path1, err := writeClaudeCodeProjectRuleFile(tmp, prompt)
+	path1, err := writeClaudeCodeProjectInstructionFile(tmp, prompt)
 	if err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if path1 == "" {
-		t.Fatalf("expected non-empty path with non-empty workingDir")
-	}
-	expectedDir := filepath.Join(tmp, ".claude", "rules")
-	if !strings.HasPrefix(path1, expectedDir+string(filepath.Separator)) {
-		t.Errorf("rule path %q should sit under %q", path1, expectedDir)
-	}
-	base := filepath.Base(path1)
-	if !strings.HasPrefix(base, "mlp-session-") || !strings.HasSuffix(base, ".md") {
-		t.Errorf("rule filename %q must follow mlp-session-<hex>.md", base)
+	expected := filepath.Join(tmp, "CLAUDE.md")
+	if path1 != expected {
+		t.Errorf("rule path %q should be %q (workdir-root CLAUDE.md)", path1, expected)
 	}
 
 	body, err := os.ReadFile(path1)
@@ -48,32 +42,85 @@ func TestWriteClaudeCodeProjectRuleFileLifecycle(t *testing.T) {
 		t.Errorf("rule file should be 0o600 (operator-private); got %o", mode)
 	}
 
-	// Second write with same prompt must produce a DIFFERENT path so
-	// concurrent sessions in the same workspace don't fight over the
-	// same filename.
-	path2, err := writeClaudeCodeProjectRuleFile(tmp, prompt)
+	// Second write must hit the same fixed path — one chat owns the
+	// workdir at a time, so CLAUDE.md is canonical and re-written in
+	// place rather than disambiguated.
+	path2, err := writeClaudeCodeProjectInstructionFile(tmp, prompt)
 	if err != nil {
 		t.Fatalf("second write: %v", err)
 	}
-	if path1 == path2 {
-		t.Errorf("two writes must produce unique filenames so concurrent sessions don't collide; both got %q", path1)
+	if path1 != path2 {
+		t.Errorf("CLAUDE.md path must be stable across writes; got %q then %q", path1, path2)
 	}
 }
 
-// TestWriteClaudeCodeProjectRuleFileEmptyWorkingDirNoOps guards against
-// the adapter accidentally writing to ".claude/rules/" relative to the
-// process cwd when the caller forgot to set MetadataKeyWorkingDir. An
-// empty workingDir must short-circuit cleanly with no side effects.
-func TestWriteClaudeCodeProjectRuleFileEmptyWorkingDirNoOps(t *testing.T) {
-	path, err := writeClaudeCodeProjectRuleFile("", "anything")
+// TestWriteClaudeCodeProjectInstructionFileByteRestore verifies the
+// byte-restore contract: when CLAUDE.md exists, the prior bytes are
+// staged in claudeProjectFileRestores so removeFiles writes them back.
+// When CLAUDE.md does not exist, no restore entry is registered so
+// removeFiles deletes the file we created.
+func TestWriteClaudeCodeProjectInstructionFileByteRestore(t *testing.T) {
+	tmp := t.TempDir()
+	priorBody := "operator-owned CLAUDE.md content\n"
+	path := filepath.Join(tmp, "CLAUDE.md")
+	if err := os.WriteFile(path, []byte(priorBody), 0o600); err != nil {
+		t.Fatalf("seed prior CLAUDE.md: %v", err)
+	}
+
+	written, err := writeClaudeCodeProjectInstructionFile(tmp, "session prompt")
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if written != path {
+		t.Fatalf("written path mismatch: %q vs %q", written, path)
+	}
+
+	// Prior bytes must be registered for restore.
+	restored, ok := claudeProjectFileRestores.Load(path)
+	if !ok {
+		t.Fatalf("prior bytes were not registered for byte-restore")
+	}
+	if bs, _ := restored.([]byte); string(bs) != priorBody {
+		t.Errorf("registered restore payload mismatch: got %q want %q", bs, priorBody)
+	}
+
+	// Simulate cleanup via the existing removeFiles path.
+	removeFiles([]string{path})
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("CLAUDE.md should still exist (restored); got %v", err)
+	}
+	if string(got) != priorBody {
+		t.Errorf("CLAUDE.md not restored to prior bytes; got %q want %q", got, priorBody)
+	}
+
+	// Second pass: no prior file, removeFiles must delete what we wrote.
+	tmp2 := t.TempDir()
+	path2 := filepath.Join(tmp2, "CLAUDE.md")
+	if _, err := writeClaudeCodeProjectInstructionFile(tmp2, "another session"); err != nil {
+		t.Fatalf("write fresh: %v", err)
+	}
+	removeFiles([]string{path2})
+	if _, err := os.Stat(path2); !os.IsNotExist(err) {
+		t.Errorf("CLAUDE.md must be removed when no prior content existed; stat err=%v", err)
+	}
+}
+
+// TestWriteClaudeCodeProjectInstructionFileEmptyWorkingDirNoOps guards
+// against the adapter accidentally writing CLAUDE.md to the process cwd
+// when the caller forgot to set MetadataKeyWorkingDir. An empty
+// workingDir must short-circuit cleanly with no side effects.
+func TestWriteClaudeCodeProjectInstructionFileEmptyWorkingDirNoOps(t *testing.T) {
+	path, err := writeClaudeCodeProjectInstructionFile("", "anything")
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}
 	if path != "" {
 		t.Errorf("empty workingDir should return empty path; got %q", path)
 	}
-	if _, err := os.Stat(".claude"); err == nil {
-		t.Errorf(".claude directory must NOT be created in process cwd when workingDir is empty")
-		_ = os.RemoveAll(".claude") // best-effort cleanup if the assert fired
+	if _, err := os.Stat("CLAUDE.md"); err == nil {
+		t.Errorf("CLAUDE.md must NOT be created in process cwd when workingDir is empty")
+		_ = os.Remove("CLAUDE.md") // best-effort cleanup if the assert fired
 	}
 }

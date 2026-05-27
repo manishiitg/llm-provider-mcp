@@ -17,16 +17,17 @@ All coding-CLI sessions — chat AND workflow steps — currently run with
 WithWriteProjectInstructionFile pattern (shipped earlier this week)
 projects per-session files into that dir:
 
-- Claude Code: `.claude/rules/mlp-session-<hex>.md`, `.mcp.json` (gated)
+- Claude Code: `CLAUDE.md`, `.mcp.json` (gated)
 - Codex:       `AGENTS.md`, `.codex/config.toml`
-- Cursor:     `.cursor/rules/...`, `.cursor/mcp.json`, `.cursor/hooks.json`
+- Cursor:     `.cursor/rules/mlp-system.mdc`, `.cursor/mcp.json`, `.cursor/hooks.json`
 - Gemini:     `GEMINI.md`, `.gemini/settings.json`, `.gemini/hooks/...`
 - OpenCode:   `AGENTS.md`, `opencode.jsonc`, `.opencode/plugins/...`
-- Antigravity: `.agents/rules/...`, `.agents/mcp_config.json`, `.agents/hooks.json`
+- Antigravity: `.agents/rules/mlp-system.md`, `.agents/mcp_config.json`, `.agents/hooks.json`
 
-Per-session unique hex suffixes (claude / cursor / agy `.../rules/`)
-avoid filename collisions, but the SINGLE-FILE conventions
-(`AGENTS.md`, `GEMINI.md`, `.cursor/mcp.json`, etc.) do not.
+All instruction-file paths are now fixed-name single-file conventions
+(`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `mlp-system.mdc/md`) under the
+"one chat owns the workdir at a time" assumption. The same single-file
+race exists for the MCP / hooks files alongside.
 
 When two workflow steps run concurrently (or back-to-back in
 persistent-session mode) against the same workspace:

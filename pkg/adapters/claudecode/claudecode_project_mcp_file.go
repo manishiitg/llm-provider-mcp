@@ -23,8 +23,8 @@ import (
 // races acquireClaudePersistentInteractiveSession on a different owner.
 var claudeProjectFileRestores sync.Map // map[string][]byte
 
-// writeClaudeCodeProjectMCPFile is the OFF-by-default counterpart to
-// writeClaudeCodeProjectRuleFile: when MetadataKeyWriteProjectInstructionFile
+// writeClaudeCodeProjectMCPFile is the counterpart to
+// writeClaudeCodeProjectInstructionFile: when MetadataKeyWriteProjectInstructionFile
 // is set AND MetadataKeyMCPConfig carries a JSON document, also drop the
 // MCP server list at <workingDir>/.mcp.json (Claude Code's project-scoped
 // MCP convention). On cleanup, byte-restore any pre-existing operator

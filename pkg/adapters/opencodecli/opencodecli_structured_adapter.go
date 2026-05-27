@@ -147,7 +147,12 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		// wrote opencode.jsonc with the caller's verbatim content and we
 		// skip our merge — power users can shape their own config.
 		mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
-		writeInstructionFile, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool)
+		// Defaults to true when the key is unset; callers can opt out
+		// by passing WithOpenCodeWriteProjectInstructionFile(false).
+		writeInstructionFile := true
+		if v, ok := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile]; ok {
+			writeInstructionFile, _ = v.(bool)
+		}
 		_, projectConfigSupplied := opts.Metadata.Custom[MetadataKeyProjectConfig].(string)
 
 		if !projectConfigSupplied && (strings.TrimSpace(mcpJSON) != "" || writeInstructionFile) {

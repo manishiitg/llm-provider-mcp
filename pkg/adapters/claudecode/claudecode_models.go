@@ -12,7 +12,7 @@ var knownClaudeCodeModels = []string{
 // GetAllClaudeCodeModels returns the frontend-visible Claude Code CLI models.
 func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 	models := make([]*llmtypes.ModelMetadata, 0, len(knownClaudeCodeModels))
-	adapter := NewClaudeCodeTmuxAdapter("claude-code", nil)
+	adapter := NewClaudeCodeInteractiveAdapter("claude-code", nil)
 
 	for _, modelID := range knownClaudeCodeModels {
 		meta, err := adapter.GetModelMetadata(modelID)

@@ -5,9 +5,10 @@ each coding CLI's project-conventional on-disk format. Pairs with the existing
 `-c`-flag / `--mcp-config` / env-var injection paths — the projections are
 *additive workspace visibility*, not a replacement for the primary injection.
 
-Owned by `WithWriteProjectInstructionFile(enabled bool)` on each adapter; OFF
+Owned by `WithWriteProjectInstructionFile(enabled bool)` on each adapter; ON
 by default; byte-restore of any pre-existing operator content at session
-teardown.
+teardown. Pass `false` to opt out for repos where you want to preserve
+operator-authored content even across crash windows.
 
 ## 0. Chat vs. workflow split (read this first)
 
@@ -51,8 +52,10 @@ projection is useful when:
   (opencode's tool-disable block lives in `opencode.jsonc`; no in-flag
   path exists).
 
-Off by default because workspace writes carry a non-zero risk surface
-(crash-window during write/restore, discovery prompts on some CLIs).
+ON by default; the workspace-write risk surface (crash-window during
+write/restore, discovery prompts on some CLIs) is bounded by byte-restore
+on clean teardown. Pass `false` to opt out per-adapter when you'd rather
+preserve operator-authored content unconditionally.
 
 ## 2. The Matrix
 
@@ -63,27 +66,29 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 
 | CLI         | Instruction file                            | MCP config                                      | Deny-builtin hook                                                     |
 | :---------- | :------------------------------------------ | :---------------------------------------------- | :-------------------------------------------------------------------- |
-| Claude Code | `.claude/rules/mlp-session-<hex>.md`        | `.mcp.json` *(unsafe)*                          | n/a (use `--allowed-tools` / `--disallowed-tools`)                    |
+| Claude Code | `CLAUDE.md`                                 | `.mcp.json` *(unsafe)*                          | n/a (use `--allowed-tools` / `--disallowed-tools`)                    |
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
 | OpenCode    | `AGENTS.md`                                 | `opencode.jsonc` (`"mcp"` key, merged with deny block) | `opencode.jsonc` `"tools": {"read": false, ...}` block (config-only, no plugin) |
-| Cursor      | `.cursor/rules/mlp-session-<hex>.md`        | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
-| Antigravity | `.agents/rules/mlp-system-<hex>.md`         | `.agents/mcp_config.json`                       | `.agents/hooks.json` (deny entries inline)                            |
+| Cursor      | `.cursor/rules/mlp-system.mdc`              | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
+| Antigravity | `.agents/rules/mlp-system.md`               | `.agents/mcp_config.json`                       | `.agents/hooks.json` (deny entries inline)                            |
 
 ### Notes per CLI
 
-- **Claude Code's `.claude/rules/`** is a multi-file directory: every
-  `.md` is loaded as a project rule. Unique-per-session hex suffix means
-  concurrent orchestrator sessions in the same workspace don't collide,
-  and operator-owned files at `.claude/rules/*.md` are never touched.
-- **Cursor's `.cursor/rules/`** has the same multi-file semantics.
-- **Antigravity's `.agents/rules/`** ditto.
-- **All other instruction files are single-file conventions**
-  (`AGENTS.md`, `GEMINI.md`). Byte-restore captures any pre-existing
-  operator content and writes it back at session teardown. If the
-  orchestrator process crashes between write and restore, the operator's
-  file is destroyed — single-file conventions inherently carry this
-  crash-window risk.
+- **Claude Code's `CLAUDE.md`** is a single root-file convention. The
+  adapter captures any pre-existing operator `CLAUDE.md` bytes into the
+  process-wide restore registry (`claudeProjectFileRestores`) and writes
+  them back at session teardown. One chat owns a workdir at a time, so
+  the fixed filename is intentional — no nonce.
+- **Cursor's `.cursor/rules/mlp-system.mdc`** is a fixed-filename file
+  under the tool-specific rules dir, removed at session teardown. The
+  one-chat-per-workdir assumption applies.
+- **Antigravity's `.agents/rules/mlp-system.md`** ditto.
+- **`AGENTS.md` / `GEMINI.md` / `CLAUDE.md`** are single-file
+  conventions. Byte-restore captures any pre-existing operator content
+  and writes it back at session teardown. If the orchestrator process
+  crashes between write and restore, the operator's file is destroyed —
+  single-file conventions inherently carry this crash-window risk.
 
   **In workflow mode** ([Section 0](#0-chat-vs-workflow-split-read-this-first)),
   cwd is a fresh `os.MkdirTemp` dir. There's no pre-existing operator
@@ -237,8 +242,9 @@ their live CLIs and ship enabled-by-default under the flag:
   reliably fire the plugin's `tool.execute.before` hook. The
   config-block path is opencode's documented happy path and verified
   live by `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires`.
-- **Claude's `.claude/rules/mlp-session-<hex>.md`** — Claude's
-  per-rule loading silently picks up new files.
+- **Claude's `CLAUDE.md`** — Claude Code's memory layer auto-loads the
+  root-level project-instructions file at startup with no discovery
+  prompt.
 
 ## 6. Test coverage
 

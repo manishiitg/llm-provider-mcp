@@ -2170,7 +2170,7 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	logger.Infof("Claude Code: using tmux mode with CLI OAuth credentials (no `claude -p` invocation)")
 
 	// Create Claude Code tmux adapter.
-	llm := claudecodeadapter.NewClaudeCodeTmuxAdapter(modelID, logger)
+	llm := claudecodeadapter.NewClaudeCodeInteractiveAdapter(modelID, logger)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{
@@ -3812,12 +3812,14 @@ func WithClaudeCodeWorkingDir(dir string) llmtypes.CallOption {
 	return claudecodeadapter.WithWorkingDir(dir)
 }
 
-// WithClaudeCodeWriteProjectInstructionFile is an OFF-by-default feature
-// flag that asks the adapter to ALSO project the per-session system
-// prompt into <workingDir>/.claude/rules/mlp-session-<hex>.md, in
-// addition to the existing --system-prompt-file injection. Each session
-// uses a unique hex suffix so the file never collides with an
-// operator-owned project rule. Auto-removed at session cleanup.
+// WithClaudeCodeWriteProjectInstructionFile controls whether the adapter
+// ALSO projects the per-session system prompt into <workingDir>/CLAUDE.md
+// (Claude Code's project-instructions convention), in addition to the
+// --system-prompt-file injection. ON by default; pass false to opt out
+// for repos where you want to preserve an operator-authored CLAUDE.md
+// even across crash windows. Any pre-existing CLAUDE.md is byte-restored
+// on session cleanup; a process crash between write and cleanup
+// destroys the operator's prior content.
 func WithClaudeCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return claudecodeadapter.WithWriteProjectInstructionFile(enabled)
 }
@@ -3873,17 +3875,13 @@ func WithGeminiWorkingDir(dir string) llmtypes.CallOption {
 	return geminicli.WithWorkingDir(dir)
 }
 
-// WithGeminiWriteProjectInstructionFile is an OFF-by-default feature
-// flag asking the gemini adapter to ALSO drop the per-session system
-// prompt at <workingDir>/GEMINI.md (gemini-cli's project-context
-// convention), in addition to the existing GEMINI_SYSTEM_MD env-var
-// injection. Cleanup at session teardown byte-restores any pre-existing
-// operator GEMINI.md.
-//
-// Off by default because GEMINI.md is a single-file convention with a
-// non-zero collision risk if the orchestrator process crashes between
-// write and cleanup; the existing GEMINI_SYSTEM_MD path already injects
-// the prompt without touching workspace files.
+// WithGeminiWriteProjectInstructionFile controls whether the gemini
+// adapter ALSO drops the per-session system prompt at <workingDir>/GEMINI.md
+// (gemini-cli's project-context convention), in addition to the
+// GEMINI_SYSTEM_MD env-var injection. ON by default; pass false to opt
+// out. Cleanup byte-restores any pre-existing operator GEMINI.md; a
+// process crash between write and cleanup destroys the operator's prior
+// content.
 func WithGeminiWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return geminicli.WithWriteProjectInstructionFile(enabled)
 }
@@ -3952,17 +3950,13 @@ func WithCodexPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return codexcli.WithPersistentInteractiveSession(enabled)
 }
 
-// WithCodexWriteProjectInstructionFile is an OFF-by-default feature
-// flag that asks the codex adapter to ALSO project the per-session
-// system prompt into <workingDir>/AGENTS.md (codex's project-
-// instructions convention), in addition to the existing -c
-// model_instructions_file injection. Cleanup at session teardown
-// byte-restores any pre-existing operator AGENTS.md.
-//
-// Off by default because AGENTS.md is a single-file convention with
-// a non-zero collision risk if the orchestrator process crashes
-// between write and cleanup; the existing -c model_instructions_file
-// flag already injects the prompt without touching workspace files.
+// WithCodexWriteProjectInstructionFile controls whether the codex
+// adapter ALSO projects the per-session system prompt into
+// <workingDir>/AGENTS.md (codex's project-instructions convention), in
+// addition to the -c model_instructions_file injection. ON by default;
+// pass false to opt out. Cleanup byte-restores any pre-existing
+// operator AGENTS.md; a process crash between write and cleanup
+// destroys the operator's prior content.
 func WithCodexWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return codexcli.WithWriteProjectInstructionFile(enabled)
 }
@@ -4130,17 +4124,13 @@ func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
 	return opencodecli.WithWorkingDir(dir)
 }
 
-// WithOpenCodeWriteProjectInstructionFile is an OFF-by-default feature
-// flag that asks the OpenCode adapter to ALSO drop the per-session
-// system prompt at <workingDir>/AGENTS.md (OpenCode's project-
-// instructions convention, same file as codex), in addition to the
-// existing in-prompt "[System Instructions]" prefix. Cleanup at session
-// teardown byte-restores any pre-existing AGENTS.md.
-//
-// Off by default because AGENTS.md is a single-file convention with a
-// non-zero collision risk if the orchestrator process crashes between
-// write and cleanup; the existing in-prompt prefix already carries the
-// system prompt without touching workspace files.
+// WithOpenCodeWriteProjectInstructionFile controls whether the OpenCode
+// adapter ALSO drops the per-session system prompt at
+// <workingDir>/AGENTS.md (OpenCode's project-instructions convention,
+// same file as codex), in addition to the in-prompt "[System
+// Instructions]" prefix. ON by default; pass false to opt out. Cleanup
+// byte-restores any pre-existing AGENTS.md; a process crash between
+// write and cleanup destroys the operator's prior content.
 func WithOpenCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return opencodecli.WithWriteProjectInstructionFile(enabled)
 }

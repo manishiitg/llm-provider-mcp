@@ -664,14 +664,19 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
-// writeProjectInstructionFromOptions reads the opt-in feature flag for
-// writing the per-session system prompt to AGENTS.md. Returns false on
-// any malformed value so default behavior is unchanged.
+// writeProjectInstructionFromOptions reads the feature flag for writing
+// the per-session system prompt to <workingDir>/AGENTS.md. Defaults to
+// true when the key is unset; callers can opt out by passing
+// WithCodexWriteProjectInstructionFile(false).
 func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return false
+		return true
 	}
-	enabled, _ := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile].(bool)
+	v, ok := opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile]
+	if !ok {
+		return true
+	}
+	enabled, _ := v.(bool)
 	return enabled
 }
 

@@ -29,7 +29,7 @@ const (
 func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -64,7 +64,7 @@ func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationNativeSystemPrompt(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -97,7 +97,7 @@ func TestClaudeCodeTmuxIntegrationNativeSystemPrompt(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -130,7 +130,7 @@ func TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -171,7 +171,7 @@ func TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationNativeResume(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -231,7 +231,7 @@ func TestClaudeCodeTmuxIntegrationNativeResume(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -345,7 +345,7 @@ func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 	skipClaudeExperimentalLiveE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -429,7 +429,7 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -488,7 +488,7 @@ func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing
 func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -554,7 +554,7 @@ func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -620,7 +620,7 @@ func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *te
 func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusable(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	ownerSessionID := "claude-cancel-ready-e2e-" + randomHex(4)
@@ -936,7 +936,7 @@ rl.on("line", (line) => {
 func TestClaudeCodeTmuxIntegrationHaikuMCPBridgeContract(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -982,7 +982,7 @@ func TestClaudeCodeTmuxIntegrationHaikuMCPBridgeContract(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -1050,7 +1050,7 @@ func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationTrustPromptAutoDismiss(t *testing.T) {
 	skipClaudeExperimentalIntegration(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -1085,7 +1085,7 @@ func TestClaudeCodeTmuxIntegrationTrustPromptAutoDismiss(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationParallelIsolation(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	type parallelSpec struct {
@@ -1180,7 +1180,7 @@ func TestClaudeCodeTmuxIntegrationParallelIsolation(t *testing.T) {
 func TestClaudeCodeTmuxIntegrationSharedWorkingDirMCPIsolation(t *testing.T) {
 	skipClaudeExperimentalPersistentE2E(t)
 
-	adapter := NewClaudeCodeTmuxAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")

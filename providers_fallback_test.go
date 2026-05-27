@@ -23,8 +23,8 @@ func TestInitializeClaudeCodeDefaultUsesExperimentalTransport(t *testing.T) {
 	if !ok {
 		t.Fatalf("InitializeLLM() returned %T, want *ProviderAwareLLM", llm)
 	}
-	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeTmuxAdapter); !ok {
-		t.Fatalf("Claude Code default transport = %T, want *ClaudeCodeTmuxAdapter", wrapped.Model)
+	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeInteractiveAdapter); !ok {
+		t.Fatalf("Claude Code default transport = %T, want *ClaudeCodeInteractiveAdapter", wrapped.Model)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 	if !ok {
 		t.Fatalf("InitializeLLM() returned %T, want *ProviderAwareLLM", llm)
 	}
-	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeTmuxAdapter); !ok {
-		t.Fatalf("Claude Code config transport override = %T, want *ClaudeCodeTmuxAdapter", wrapped.Model)
+	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeInteractiveAdapter); !ok {
+		t.Fatalf("Claude Code config transport override = %T, want *ClaudeCodeInteractiveAdapter", wrapped.Model)
 	}
 }
 

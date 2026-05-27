@@ -22,7 +22,7 @@ import (
 //   - The leaked artifacts to guard against in userWorkspace are
 //     `.claude/` (rules, settings, plugins) and `.mcp.json`.
 //   - Working-dir option is WithWorkingDir (claudecode's adapter).
-//   - Uses the Claude Code tmux adapter (NewClaudeCodeTmuxAdapter)
+//   - Uses the Claude Code tmux adapter (NewClaudeCodeInteractiveAdapter)
 //     because that's the path mcpagent's coding-agent options drive.
 //
 // Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
@@ -46,7 +46,7 @@ func TestClaudeCodeTmuxRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(isolatedWorkspace) })
 
-	adapter := NewClaudeCodeTmuxAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 

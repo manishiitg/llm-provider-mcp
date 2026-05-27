@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -134,7 +135,7 @@ func writeExecutableTestShell(t *testing.T, name string) string {
 }
 
 func TestTmuxBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
-	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)
@@ -164,7 +165,7 @@ func TestTmuxBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
 }
 
 func TestTmuxRejectsImageContent(t *testing.T) {
-	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
 
 	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
 		{
@@ -225,7 +226,7 @@ func TestClaudeTmuxSessionLostErrorDetection(t *testing.T) {
 }
 
 func TestTmuxBuildClaudeArgsPassesBridgeOptions(t *testing.T) {
-	adapter := NewClaudeCodeTmuxAdapter("claude-sonnet-4-6", &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter("claude-sonnet-4-6", &MockLogger{})
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"/tmp/mcpbridge"}}}`)(opts)
 	WithClaudeCodeTools("WebSearch")(opts)
@@ -751,6 +752,36 @@ func TestExtractTailAssistantTextFallbackSkipsClaudeChrome(t *testing.T) {
 	}
 }
 
+func TestParseClaudeResponseFromCapturedFallbackPreservesLongFinal(t *testing.T) {
+	finalLines := make([]string, 0, 40)
+	for i := 1; i <= 40; i++ {
+		finalLines = append(finalLines, fmt.Sprintf("LONG_FINAL_LINE_%02d CUT_OFF_SENTINEL_%02d", i, i))
+	}
+	pane := `╭─── Claude Code v2.1.144 ───╮
+❯ user prompt echo
+  Called api-bridge 2 times (ctrl+o to expand)
+  ` + strings.Join(finalLines, "\n  ") + `
+⎿ Compacted history (ctrl+o for full summary)
+─────────────────────────────────────────────────── mcp-agent-20260526 ──
+❯`
+
+	got, ok := parseClaudeResponseFromCaptured(pane, "", "", "")
+	if !ok {
+		t.Fatal("parseClaudeResponseFromCaptured ok = false, want true")
+	}
+	for _, want := range finalLines {
+		if !strings.Contains(got, want) {
+			t.Fatalf("content missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "api-bridge") || strings.Contains(got, "ctrl+o") || strings.Contains(got, "mcp-agent-20260526") || strings.Contains(got, "❯") {
+		t.Fatalf("content leaked Claude chrome/tool output:\n%s", got)
+	}
+	if gotLines := strings.Split(got, "\n"); len(gotLines) != len(finalLines) {
+		t.Fatalf("line count = %d, want %d; content:\n%s", len(gotLines), len(finalLines), got)
+	}
+}
+
 func TestParseClaudeResumeSessionID(t *testing.T) {
 	pane := `
 Resume this session with:
@@ -1014,7 +1045,7 @@ func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
 }
 
 func TestTmuxDoesNotAddVerboseFlagByDefault(t *testing.T) {
-	adapter := NewClaudeCodeTmuxAdapter("claude-code", &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
 	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)

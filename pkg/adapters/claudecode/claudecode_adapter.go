@@ -237,34 +237,25 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	}
 }
 
-// WithWriteProjectInstructionFile is an OFF-by-default feature flag that
-// asks the adapter to ALSO write the per-session system prompt to
-// <workingDir>/.claude/rules/mlp-session-<hex>.md, in addition to the
-// existing --system-prompt-file flag injection. Per Claude Code's docs
-// (https://code.claude.com/docs/en/memory), files in .claude/rules/ are
-// auto-loaded as project rules with the same priority as .claude/CLAUDE.md.
+// WithWriteProjectInstructionFile controls whether the adapter ALSO writes
+// the per-session system prompt to <workingDir>/CLAUDE.md (Claude Code's
+// project-instructions convention), in addition to the --system-prompt-file
+// flag injection. ON by default; pass false to opt out.
 //
-// Useful when the operator wants the system prompt VISIBLE inside the
-// working dir for debugging or transparency, or when downstream tooling
-// (other agents, IDE plugins) reads project rules and you want them to
-// see the same instructions. Off by default because the --system-prompt-
-// file flag already injects the prompt; duplicating into a workspace
-// file is belt-and-suspenders.
-//
-// The session file uses a unique hex suffix so multiple concurrent
-// sessions in the same working dir don't collide, and so cleanup never
-// removes an operator-owned .claude/rules/*.md. Restored to the pre-
-// session state on adapter teardown.
+// Useful because (a) the prompt is visible inside the workspace for
+// debugging and transparency, and (b) downstream tooling (other agents,
+// IDE plugins) that reads CLAUDE.md sees the same instructions. The
+// adapter byte-restores any pre-existing operator CLAUDE.md on session
+// teardown.
 //
 // When this flag is on AND WithMCPConfig was also set, the adapter
 // ALSO projects the MCP servers JSON into <workingDir>/.mcp.json
-// (Claude Code's project-scoped MCP convention). Unlike the .md path,
-// .mcp.json is a single canonical file: cleanup byte-restores any
-// pre-existing operator .mcp.json so user-owned configuration is
-// preserved on successful runs. Crash-window caveat applies: if the
-// orchestrator process crashes between write and cleanup, the
-// operator's prior .mcp.json is destroyed. Off-by-default keeps the
-// blast radius bounded.
+// (Claude Code's project-scoped MCP convention), also with byte-restore.
+//
+// Risk caveat: CLAUDE.md and .mcp.json are single-file conventions. If
+// the orchestrator process crashes between write and cleanup, the
+// operator's prior content is destroyed. Pass false to disable for repos
+// where this trade-off is unacceptable.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

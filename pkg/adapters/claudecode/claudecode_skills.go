@@ -18,6 +18,18 @@ const claudeCodeSkillsSubdir = ".claude/skills"
 //
 // Idempotent: safe to call at both session launch and session resume.
 func (a *ClaudeCodeAdapter) ProjectSkills(workdir string, skills []*llmtypes.Skill) error {
+	return projectClaudeCodeSkills(workdir, skills)
+}
+
+// ProjectSkills satisfies the mcpagent.SkillProjector contract for the
+// tmux adapter. Same on-disk layout as ClaudeCodeAdapter — Claude Code
+// reads skills from <workdir>/.claude/skills/ regardless of whether
+// it's launched in print or interactive/tmux mode.
+func (a *ClaudeCodeInteractiveAdapter) ProjectSkills(workdir string, skills []*llmtypes.Skill) error {
+	return projectClaudeCodeSkills(workdir, skills)
+}
+
+func projectClaudeCodeSkills(workdir string, skills []*llmtypes.Skill) error {
 	if workdir == "" || len(skills) == 0 {
 		return nil
 	}
