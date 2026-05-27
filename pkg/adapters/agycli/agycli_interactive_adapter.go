@@ -2440,7 +2440,7 @@ func streamAgyTerminalSnapshot(ctx context.Context, sessionName string, streamCh
 	if err != nil {
 		return false
 	}
-	snapshot = strings.TrimRight(stripAgyANSI(snapshot), "\n")
+	snapshot = strings.TrimRight(stripAgyANSIPreserveColors(snapshot), "\n")
 	if strings.TrimSpace(snapshot) == "" || snapshot == *lastTerminalSnapshot {
 		return false
 	}
@@ -2524,7 +2524,11 @@ func captureAgyPane(ctx context.Context, sessionName string) (string, error) {
 }
 
 func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
-	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-S", "-3000", "-t", sessionName)
+	// -e preserves ANSI SGR (color, bold, dim, etc.) so the frontend can
+	// colorize the snapshot via ansi_up. Cursor positioning sequences are
+	// stripped at the next layer (stripAgyANSIPreserveColors) so they don't
+	// garble the rendered output.
+	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-S", "-3000", "-t", sessionName)
 }
 
 func agyCapturedAfterBaseline(captured, baseline string) string {
@@ -2742,6 +2746,39 @@ func stripAgyANSI(s string) string {
 			continue
 		}
 		if ch == 0x1b {
+			inEscape = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+// stripAgyANSIPreserveColors strips ANSI cursor positioning / clear-screen /
+// erase-line sequences but preserves SGR (Select Graphic Rendition: color,
+// bold, dim, underline, etc., terminated with `m`). The frontend feeds this
+// output through ansi_up to colorize the rendered pane snapshot. Cursor
+// positioning is dropped because ansi_up does not emulate VT100 movement,
+// so leaving those sequences in would print as garbage. SGR is the only
+// class of escape that's safe to forward verbatim.
+func stripAgyANSIPreserveColors(s string) string {
+	var b, esc strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inEscape {
+			esc.WriteByte(ch)
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+				if ch == 'm' {
+					b.WriteString(esc.String())
+				}
+				esc.Reset()
+				inEscape = false
+			}
+			continue
+		}
+		if ch == 0x1b {
+			esc.WriteByte(ch)
 			inEscape = true
 			continue
 		}
