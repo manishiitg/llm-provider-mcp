@@ -104,6 +104,25 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	resume := resumeID != ""
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	prompt := buildCursorPrompt(conversationMessages, resume)
+	// JSON Schema structured output: cursor-cli has no flag equivalent to
+	// claude-code's --json-schema, so we append the schema to the prompt
+	// with explicit instructions. Same prompt-appended fallback used by
+	// claude-code's interactive adapter and the gemini / codex adapters.
+	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(prompt)
+		if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		prompt = b.String()
+	}
 	// Launch-only: boot tmux with --resume so the user can see the prior
 	// cursor conversation in the pane without sending any prompt yet.
 	// Mirrors what agy + claude-code experimental do; the chat-history

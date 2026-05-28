@@ -428,6 +428,26 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 		promptText = "Describe the attached image."
 	}
 
+	// JSON Schema structured output: codex-cli has no flag equivalent to
+	// claude-code's --json-schema, so we append the schema to the prompt
+	// with explicit instructions. Same prompt-appended fallback used by
+	// claude-code's interactive adapter and the gemini adapters.
+	if opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(promptText)
+		if promptText != "" && !strings.HasSuffix(promptText, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		promptText = b.String()
+	}
+
 	promptStdin := ""
 	if len(imagePaths) > 0 {
 		// Codex CLI help documents stdin prompts for `exec -` and `exec resume

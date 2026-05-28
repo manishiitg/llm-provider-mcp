@@ -111,6 +111,26 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 	historicalAssistantTexts := agyAssistantHistory(conversationMessages)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	prompt := buildAgyPrompt(conversationMessages)
+	// JSON Schema structured output: agy-cli has no flag equivalent to
+	// claude-code's --json-schema, so we append the schema to the prompt
+	// with explicit instructions. Same prompt-appended fallback used by
+	// claude-code's interactive adapter and the gemini / codex / cursor /
+	// opencode adapters.
+	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(prompt)
+		if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		prompt = b.String()
+	}
 	if !launchOnly && strings.TrimSpace(prompt) == "" {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)

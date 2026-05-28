@@ -107,6 +107,27 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
 	}
 
+	// JSON Schema structured output: opencode-cli has no flag equivalent
+	// to claude-code's --json-schema, so we append the schema to the
+	// prompt with explicit instructions. Same prompt-appended fallback
+	// used by claude-code's interactive adapter and the gemini / codex /
+	// cursor adapters.
+	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(prompt)
+		if !strings.HasSuffix(prompt, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		prompt = b.String()
+	}
+
 	args := []string{"run", "--format", "json"}
 
 	dangerouslySkip := true
