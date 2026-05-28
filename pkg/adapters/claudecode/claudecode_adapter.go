@@ -873,6 +873,15 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	// The actual context window is reported per-call in modelUsage and used
 	// to update the agent's context window tracking dynamically.
 	switch modelID {
+	case "claude-opus-4-7":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              providerName,
+			ModelName:             "Claude Opus 4.7",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  15.00,
+			OutputCostPer1MTokens: 75.00,
+		}, nil
 	case "claude-opus-4-6":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
