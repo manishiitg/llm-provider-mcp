@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -151,6 +152,26 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 
 	includePriorContext := !reusedSession && geminiResumeSessionIDFromOptions(opts) == ""
 	prompt := buildGeminiInteractivePrompt(conversationMessages, includePriorContext)
+	// JSON Schema structured output: Gemini CLI has no flag equivalent to
+	// claude-code's --json-schema, so we append the schema to the prompt
+	// with explicit instructions. Same fallback approach the
+	// claude-code interactive adapter uses; mirrors the structured-path
+	// implementation in geminicli_adapter.go.
+	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(prompt)
+		if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		prompt = b.String()
+	}
 	baseline, _ := captureGeminiPane(callCtx, session.tmuxSessionName)
 	g.logger.Infof("Executing Gemini CLI interactive tmux session: %s", session.tmuxSessionName)
 	if err := sendGeminiPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {

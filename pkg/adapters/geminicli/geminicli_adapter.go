@@ -327,6 +327,28 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 		}
 	}
 
+	// JSON Schema structured output: Gemini CLI has no flag equivalent to
+	// claude-code's --json-schema, so we append the schema to the prompt
+	// with explicit instructions. Same fallback approach the
+	// claude-code interactive adapter uses (see
+	// claudecode_interactive_adapter.go:836). The model gets the schema
+	// as part of its turn and is expected to respond with conforming JSON.
+	if opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
+		}
+		var b strings.Builder
+		b.WriteString(promptText)
+		if promptText != "" && !strings.HasSuffix(promptText, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
+		b.Write(schemaBytes)
+		b.WriteString("\n")
+		promptText = b.String()
+	}
+
 	// Use stdin for the prompt to avoid "argument list too long" errors (ARG_MAX)
 	// when the conversation transcript is large. --prompt flag stays empty to
 	// trigger headless mode; the actual text is fed via stdin (Gemini CLI appends
