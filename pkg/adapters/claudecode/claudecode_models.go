@@ -4,6 +4,7 @@ import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 var knownClaudeCodeModels = []string{
 	"claude-code",
+	"claude-opus-4-7",
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
 	"claude-haiku-4-5-20251001",
@@ -23,6 +24,8 @@ func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 		switch modelID {
 		case "claude-code":
 			meta.ModelName = "Auto (default, pricing varies)"
+		case "claude-opus-4-7":
+			meta.ModelName = "Opus 4.7"
 		case "claude-opus-4-6":
 			meta.ModelName = "Opus 4.6"
 		case "claude-sonnet-4-6":
