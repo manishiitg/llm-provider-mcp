@@ -138,6 +138,14 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	}
 
 	if codexInteractiveSessionIDFromOptions(opts) != "" {
+		// Defensive backstop. The structured codex path below handles
+		// llmtypes.ImageContent via --image temp files; the interactive
+		// tmux path doesn't, but in practice the orchestrator funnels
+		// CLI image input as a TEXT message containing the absolute
+		// workspace path (see mcp-agent-builder-go's
+		// workspace_advanced_tools.go:1509-1517), so this rarely fires.
+		// When it does, the error tells the caller to switch to
+		// text+path which works uniformly across all CLI providers.
 		if len(collectCodexImageContent(messages)) > 0 {
 			if opts.StreamChan != nil {
 				close(opts.StreamChan)

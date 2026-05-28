@@ -40,6 +40,14 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		opt(opts)
 	}
 
+	// Defensive backstop for direct adapter callers that bypass the
+	// orchestrator's image-content pre-processing. In practice, callers
+	// running through mcp-agent-builder-go funnel CLI image input as a
+	// TEXT message containing the absolute workspace path (see
+	// workspace_advanced_tools.go:1509-1517 `pathBasedImageAnalysisProvider`
+	// branch); the model uses its filesystem-read capability to view the
+	// file. So image input across all CLI providers IS uniform — text +
+	// path — and this rejection rarely fires.
 	if containsCursorImageContent(messages) {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
