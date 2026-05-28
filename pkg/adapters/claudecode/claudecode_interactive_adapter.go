@@ -22,6 +22,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -2121,7 +2122,7 @@ func stripClaudeANSIPreserveColors(s string) string {
 		}
 		b.WriteByte(ch)
 	}
-	return b.String()
+	return paneview.CollapseBlankRuns(b.String())
 }
 
 func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
