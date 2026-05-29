@@ -44,7 +44,17 @@ const (
 	// duplicating into a workspace file is belt-and-suspenders only useful
 	// when the operator wants the prompt visible inside the cwd.
 	MetadataKeyWriteProjectInstructionFile = "claude_code_write_project_instruction_file"
-	claudeCodeDisableAutoMemoryEnv         = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
+	// controlling whether projected workspace artifacts (CLAUDE.md,
+	// .mcp.json, and any other byte-restore writer) preserve an operator's
+	// pre-existing content across the session. Default off: every run
+	// writes a fresh artifact from the latest orchestrator output and
+	// deletes it on cleanup, never restoring whatever was there before.
+	// Pass WithRestoreProjectFiles(true) to opt back into the legacy
+	// byte-restore behavior for repos with operator-owned files worth
+	// preserving.
+	MetadataKeyRestoreProjectFiles = "claude_code_restore_project_files"
+	claudeCodeDisableAutoMemoryEnv = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -263,6 +273,20 @@ func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	}
 }
 
+// WithRestoreProjectFiles controls whether projected workspace artifacts
+// (CLAUDE.md, .mcp.json) preserve the operator's pre-existing content
+// across a session. OFF by default: each run writes a fresh artifact and
+// removes it on cleanup, never restoring whatever was there before — so
+// the workspace always reflects the latest orchestrator output. Pass true
+// to opt back into the legacy behavior where any pre-existing operator
+// file is byte-restored on session teardown.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
 func ensureMetadata(opts *llmtypes.CallOptions) {
 	if opts.Metadata == nil {
 		opts.Metadata = &llmtypes.Metadata{Custom: make(map[string]interface{})}
@@ -366,7 +390,7 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 	// write failures must not block GenerateContent — the
 	// --append-system-prompt injection above is the primary path.
 	if writeProjectInstructionFromOptions(opts) && workingDir != "" && strings.TrimSpace(joinedSystemPrompt) != "" {
-		if rulePath, werr := writeClaudeCodeProjectInstructionFile(workingDir, joinedSystemPrompt); werr != nil {
+		if rulePath, werr := writeClaudeCodeProjectInstructionFile(workingDir, joinedSystemPrompt, restoreProjectFilesFromOptions(opts)); werr != nil {
 			c.logger.Errorf("claude code: project CLAUDE.md write failed (best-effort): %v", werr)
 		} else if rulePath != "" {
 			defer removeFiles([]string{rulePath})

@@ -14,7 +14,7 @@ func TestWriteCodexProjectAgentsFileLifecycleNoPriorContent(t *testing.T) {
 	tmp := t.TempDir()
 	prompt := "Use 4-space indentation.\nRun `cargo test` before committing."
 
-	cleanup, err := writeCodexProjectAgentsFile(tmp, prompt)
+	cleanup, err := writeCodexProjectAgentsFile(tmp, prompt, false)
 	if err != nil {
 		t.Fatalf("writeCodexProjectAgentsFile: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestWriteCodexProjectAgentsFileRestoresOperatorContent(t *testing.T) {
 		t.Fatalf("seed pre-existing AGENTS.md: %v", err)
 	}
 
-	cleanup, err := writeCodexProjectAgentsFile(tmp, "session-only system prompt")
+	cleanup, err := writeCodexProjectAgentsFile(tmp, "session-only system prompt", true)
 	if err != nil {
 		t.Fatalf("writeCodexProjectAgentsFile with pre-existing AGENTS.md: %v", err)
 	}
@@ -73,11 +73,39 @@ func TestWriteCodexProjectAgentsFileRestoresOperatorContent(t *testing.T) {
 	}
 }
 
+// TestWriteCodexProjectAgentsFileNoRestoreDefault verifies the DEFAULT
+// (restorePrior=false): even with a pre-existing operator AGENTS.md,
+// cleanup DELETES the freshly-written file rather than restoring the prior
+// content. This is the "always write fresh, never restore" behavior.
+func TestWriteCodexProjectAgentsFileNoRestoreDefault(t *testing.T) {
+	tmp := t.TempDir()
+	operatorContent := []byte("# Operator's pre-existing AGENTS.md\n")
+	path := filepath.Join(tmp, "AGENTS.md")
+	if err := os.WriteFile(path, operatorContent, 0o600); err != nil {
+		t.Fatalf("seed pre-existing AGENTS.md: %v", err)
+	}
+
+	cleanup, err := writeCodexProjectAgentsFile(tmp, "session-only system prompt", false)
+	if err != nil {
+		t.Fatalf("writeCodexProjectAgentsFile: %v", err)
+	}
+
+	mid, _ := os.ReadFile(path)
+	if strings.Contains(string(mid), "Operator's pre-existing") {
+		t.Fatal("mid-session, operator content must be overwritten by the session prompt")
+	}
+
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("default cleanup must DELETE the file, not restore prior content; stat err=%v", err)
+	}
+}
+
 // TestWriteCodexProjectAgentsFileEmptyWorkingDirNoOps guards against
 // the adapter accidentally writing AGENTS.md into the orchestrator's
 // own cwd when the caller forgot to set MetadataKeyWorkingDir.
 func TestWriteCodexProjectAgentsFileEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeCodexProjectAgentsFile("", "anything")
+	cleanup, err := writeCodexProjectAgentsFile("", "anything", false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

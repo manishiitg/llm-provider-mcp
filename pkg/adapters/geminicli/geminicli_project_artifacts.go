@@ -39,7 +39,7 @@ import (
 // the temp-dir .gemini/settings.json (loaded via --include-directories)
 // already carry the configuration. The workspace projection is
 // additive belt-and-suspenders.
-func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON string, denyBuiltins bool) (func(), error) {
+func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON string, denyBuiltins, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -55,7 +55,7 @@ func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSe
 	}
 
 	if strings.TrimSpace(systemPrompt) != "" {
-		cu, err := writeGeminiProjectInstructionFile(workingDir, systemPrompt)
+		cu, err := writeGeminiProjectInstructionFile(workingDir, systemPrompt, restorePrior)
 		if err != nil {
 			rollback()
 			return noop, fmt.Errorf("gemini GEMINI.md: %w", err)
@@ -75,7 +75,7 @@ func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSe
 	// at workingDir is invisible to a gemini-cli process that launches
 	// with cwd = projectDir.
 	if denyBuiltins || strings.TrimSpace(projectSettingsJSON) != "" {
-		cu, err := writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON, denyBuiltins)
+		cu, err := writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON, denyBuiltins, restorePrior)
 		if err != nil {
 			rollback()
 			return noop, fmt.Errorf("gemini .gemini/settings.json + hooks (workingDir): %w", err)
@@ -93,7 +93,7 @@ func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSe
 		// resolves correctly from any cwd).
 		projectDir = strings.TrimSpace(projectDir)
 		if projectDir != "" && projectDir != workingDir {
-			cu, err := writeGeminiProjectSettingsAndHooks(projectDir, projectSettingsJSON, denyBuiltins)
+			cu, err := writeGeminiProjectSettingsAndHooks(projectDir, projectSettingsJSON, denyBuiltins, restorePrior)
 			if err != nil {
 				rollback()
 				return noop, fmt.Errorf("gemini .gemini/settings.json + hooks (projectDir): %w", err)
@@ -133,7 +133,7 @@ func writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSe
 // write_file, shell, edit) and exits 2 — gemini treats exit 2 as
 // System Block, aborting the tool call. MCP server tools are NOT in
 // the matcher, so they execute normally.
-func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, denyBuiltins bool) (func(), error) {
+func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, denyBuiltins, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -158,10 +158,12 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 		}
 		hooksDirCreatedByUs = geminiDirIsEmptyOrJustCreated(hooksDir)
 
-		var err error
-		priorScript, scriptExisted, err = geminiReadPriorFileForRestore(scriptPath)
-		if err != nil {
-			return noop, fmt.Errorf("read pre-existing deny-builtin.sh: %w", err)
+		if restorePrior {
+			var err error
+			priorScript, scriptExisted, err = geminiReadPriorFileForRestore(scriptPath)
+			if err != nil {
+				return noop, fmt.Errorf("read pre-existing deny-builtin.sh: %w", err)
+			}
 		}
 		logPath := filepath.Join(hooksDir, "deny-builtin-denials.jsonl")
 		scriptBody := "#!/bin/sh\n" +
@@ -177,17 +179,22 @@ func writeGeminiProjectSettingsAndHooks(workingDir, projectSettingsJSON string, 
 	}
 
 	settingsPath := filepath.Join(geminiDir, "settings.json")
-	priorSettings, settingsExisted, err := geminiReadPriorFileForRestore(settingsPath)
-	if err != nil {
-		// Roll back the script write before bubbling up.
-		if denyBuiltins {
-			if scriptExisted {
-				_ = os.WriteFile(scriptPath, priorScript, 0o700)
-			} else {
-				_ = os.Remove(scriptPath)
+	var priorSettings []byte
+	settingsExisted := false
+	if restorePrior {
+		var err error
+		priorSettings, settingsExisted, err = geminiReadPriorFileForRestore(settingsPath)
+		if err != nil {
+			// Roll back the script write before bubbling up.
+			if denyBuiltins {
+				if scriptExisted {
+					_ = os.WriteFile(scriptPath, priorScript, 0o700)
+				} else {
+					_ = os.Remove(scriptPath)
+				}
 			}
+			return noop, fmt.Errorf("read pre-existing settings.json: %w", err)
 		}
-		return noop, fmt.Errorf("read pre-existing settings.json: %w", err)
 	}
 
 	settings := map[string]any{}

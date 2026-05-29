@@ -459,7 +459,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 				mcpServersJSON = v
 			}
 		}
-		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true); perr == nil {
+		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true, restoreProjectFilesFromOptions(opts)); perr == nil {
 			session.projectInstructionCleanup = cleanup
 		}
 		// Best-effort: a failure here is not a session-killer. The
@@ -699,6 +699,19 @@ func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
+// restoreProjectFilesFromOptions reads the OFF-by-default feature flag for
+// preserving operator-owned project artifacts across a session. Returns
+// false when the key is unset: the default writes fresh and deletes on
+// cleanup, never restoring pre-existing content. Callers opt into the
+// legacy byte-restore behavior with WithRestoreProjectFiles(true).
+func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
+}
+
 // writeCodexProjectAgentsFile writes the per-session system prompt to
 // <workingDir>/AGENTS.md (codex's project-instructions convention). If
 // a pre-existing AGENTS.md is present, its bytes are captured and the
@@ -710,7 +723,7 @@ func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 // operator content safe across successful runs; a process crash
 // between write and cleanup destroys the prior content (documented
 // risk for the opt-in flag).
-func writeCodexProjectAgentsFile(workingDir, systemPrompt string) (func(), error) {
+func writeCodexProjectAgentsFile(workingDir, systemPrompt string, restorePrior bool) (func(), error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return func() {}, nil
@@ -719,10 +732,15 @@ func writeCodexProjectAgentsFile(workingDir, systemPrompt string) (func(), error
 		return nil, fmt.Errorf("ensure codex working dir: %w", err)
 	}
 	path := filepath.Join(workingDir, "AGENTS.md")
-	previous, readErr := os.ReadFile(path)
-	existed := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
+	var previous []byte
+	existed := false
+	if restorePrior {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			previous, existed = data, true
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
+		}
 	}
 	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

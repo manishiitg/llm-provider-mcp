@@ -25,7 +25,7 @@ func TestWriteGeminiProjectArtifactsComposesAllArtifacts(t *testing.T) {
 	prompt := "Two-space indent. Always lint."
 	settingsJSON := `{"mcpServers":{"api-bridge":{"command":"/opt/mcpbridge","env":{"MCP_API_URL":"http://localhost:9000"}}}}`
 
-	cleanup, err := writeGeminiProjectArtifacts(tmp, projectDir, prompt, settingsJSON, true)
+	cleanup, err := writeGeminiProjectArtifacts(tmp, projectDir, prompt, settingsJSON, true, false)
 	if err != nil {
 		t.Fatalf("writeGeminiProjectArtifacts: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestWriteGeminiProjectSettingsAndHooksMergesWithOperatorContent(t *testing.
 	// through WithProjectSettings. This test instead validates the
 	// byte-restore promise: at cleanup, the file goes back exactly as
 	// it was, even though our mid-session content overwrote it.
-	cleanup, err := writeGeminiProjectSettingsAndHooks(tmp, "", true)
+	cleanup, err := writeGeminiProjectSettingsAndHooks(tmp, "", true, true)
 	if err != nil {
 		t.Fatalf("writeGeminiProjectSettingsAndHooks: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestWriteGeminiProjectSettingsAndHooksMergesWithOperatorContent(t *testing.
 // TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps guards the
 // orchestrator-cwd safety: empty workingDir must short-circuit.
 func TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeGeminiProjectArtifacts("", "", "anything", `{"mcpServers":{}}`, true)
+	cleanup, err := writeGeminiProjectArtifacts("", "", "anything", `{"mcpServers":{}}`, true, false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}
@@ -200,7 +200,7 @@ func TestWriteGeminiProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
 // future gemini-cli versions; the matcher is cheap to keep wide.
 func TestWriteGeminiProjectSettingsAndHooksMatcherCoversBuiltins(t *testing.T) {
 	tmp := t.TempDir()
-	if _, err := writeGeminiProjectSettingsAndHooks(tmp, "", true); err != nil {
+	if _, err := writeGeminiProjectSettingsAndHooks(tmp, "", true, false); err != nil {
 		t.Fatalf("writeGeminiProjectSettingsAndHooks: %v", err)
 	}
 	body, _ := os.ReadFile(filepath.Join(tmp, ".gemini", "settings.json"))

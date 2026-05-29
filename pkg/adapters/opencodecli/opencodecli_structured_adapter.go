@@ -154,8 +154,9 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		}
 	}()
 	if workingDir != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		restorePrior := opencodeRestoreProjectFilesFromOptions(opts)
 		if configJSON, ok := opts.Metadata.Custom[MetadataKeyProjectConfig].(string); ok && strings.TrimSpace(configJSON) != "" {
-			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), []byte(configJSON))
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), []byte(configJSON), restorePrior)
 			if werr != nil {
 				return nil, fmt.Errorf("opencode project config: %w", werr)
 			}
@@ -181,7 +182,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 			if merr != nil {
 				return nil, merr
 			}
-			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), configJSON)
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "opencode.jsonc"), configJSON, restorePrior)
 			if werr != nil {
 				return nil, fmt.Errorf("opencode project config: %w", werr)
 			}
@@ -198,7 +199,7 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		// AGENTS.md stay in lockstep.
 		if writeInstructionFile && strings.TrimSpace(systemPrompt) != "" {
 			body := []byte("<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt)
-			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body)
+			cleanup, werr := writeOpenCodeRestoredFile(filepath.Join(workingDir, "AGENTS.md"), body, restorePrior)
 			if werr != nil {
 				return nil, fmt.Errorf("opencode project instruction file: %w", werr)
 			}

@@ -17,7 +17,7 @@ func TestWriteClaudeCodeProjectInstructionFileLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	prompt := "Always run gofmt before committing.\nNever push to main."
 
-	path1, err := writeClaudeCodeProjectInstructionFile(tmp, prompt)
+	path1, err := writeClaudeCodeProjectInstructionFile(tmp, prompt, false)
 	if err != nil {
 		t.Fatalf("first write: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestWriteClaudeCodeProjectInstructionFileLifecycle(t *testing.T) {
 	// Second write must hit the same fixed path — one chat owns the
 	// workdir at a time, so CLAUDE.md is canonical and re-written in
 	// place rather than disambiguated.
-	path2, err := writeClaudeCodeProjectInstructionFile(tmp, prompt)
+	path2, err := writeClaudeCodeProjectInstructionFile(tmp, prompt, false)
 	if err != nil {
 		t.Fatalf("second write: %v", err)
 	}
@@ -55,10 +55,10 @@ func TestWriteClaudeCodeProjectInstructionFileLifecycle(t *testing.T) {
 }
 
 // TestWriteClaudeCodeProjectInstructionFileByteRestore verifies the
-// byte-restore contract: when CLAUDE.md exists, the prior bytes are
-// staged in claudeProjectFileRestores so removeFiles writes them back.
-// When CLAUDE.md does not exist, no restore entry is registered so
-// removeFiles deletes the file we created.
+// OPT-IN byte-restore contract (restorePrior=true): when CLAUDE.md exists,
+// the prior bytes are staged in claudeProjectFileRestores so removeFiles
+// writes them back. When CLAUDE.md does not exist, no restore entry is
+// registered so removeFiles deletes the file we created.
 func TestWriteClaudeCodeProjectInstructionFileByteRestore(t *testing.T) {
 	tmp := t.TempDir()
 	priorBody := "operator-owned CLAUDE.md content\n"
@@ -67,7 +67,7 @@ func TestWriteClaudeCodeProjectInstructionFileByteRestore(t *testing.T) {
 		t.Fatalf("seed prior CLAUDE.md: %v", err)
 	}
 
-	written, err := writeClaudeCodeProjectInstructionFile(tmp, "session prompt")
+	written, err := writeClaudeCodeProjectInstructionFile(tmp, "session prompt", true)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestWriteClaudeCodeProjectInstructionFileByteRestore(t *testing.T) {
 	// Second pass: no prior file, removeFiles must delete what we wrote.
 	tmp2 := t.TempDir()
 	path2 := filepath.Join(tmp2, "CLAUDE.md")
-	if _, err := writeClaudeCodeProjectInstructionFile(tmp2, "another session"); err != nil {
+	if _, err := writeClaudeCodeProjectInstructionFile(tmp2, "another session", true); err != nil {
 		t.Fatalf("write fresh: %v", err)
 	}
 	removeFiles([]string{path2})
@@ -107,12 +107,52 @@ func TestWriteClaudeCodeProjectInstructionFileByteRestore(t *testing.T) {
 	}
 }
 
+// TestWriteClaudeCodeProjectInstructionFileNoRestoreDefault verifies the
+// DEFAULT (restorePrior=false): even when a pre-existing operator CLAUDE.md
+// is present, no restore entry is registered and removeFiles deletes the
+// freshly-written file rather than resurrecting the prior content. This is
+// the "always write fresh, never restore" behavior.
+func TestWriteClaudeCodeProjectInstructionFileNoRestoreDefault(t *testing.T) {
+	tmp := t.TempDir()
+	priorBody := "operator-owned CLAUDE.md content\n"
+	path := filepath.Join(tmp, "CLAUDE.md")
+	if err := os.WriteFile(path, []byte(priorBody), 0o600); err != nil {
+		t.Fatalf("seed prior CLAUDE.md: %v", err)
+	}
+
+	written, err := writeClaudeCodeProjectInstructionFile(tmp, "session prompt", false)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if written != path {
+		t.Fatalf("written path mismatch: %q vs %q", written, path)
+	}
+
+	// No restore entry may be registered when restorePrior is false.
+	if _, ok := claudeProjectFileRestores.Load(path); ok {
+		t.Fatalf("default (no-restore) must NOT register prior bytes for restore")
+	}
+
+	// The freshly written body must reflect the new session prompt, not
+	// the operator's prior content.
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), priorBody) {
+		t.Errorf("fresh write must overwrite prior operator content; got:\n%s", body)
+	}
+
+	// Cleanup must DELETE the file — prior content is gone for good.
+	removeFiles([]string{path})
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("default cleanup must delete the written file, not restore prior; stat err=%v", err)
+	}
+}
+
 // TestWriteClaudeCodeProjectInstructionFileEmptyWorkingDirNoOps guards
 // against the adapter accidentally writing CLAUDE.md to the process cwd
 // when the caller forgot to set MetadataKeyWorkingDir. An empty
 // workingDir must short-circuit cleanly with no side effects.
 func TestWriteClaudeCodeProjectInstructionFileEmptyWorkingDirNoOps(t *testing.T) {
-	path, err := writeClaudeCodeProjectInstructionFile("", "anything")
+	path, err := writeClaudeCodeProjectInstructionFile("", "anything", false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

@@ -40,7 +40,7 @@ var claudeProjectFileRestores sync.Map // map[string][]byte
 // operator's pre-existing .mcp.json is destroyed. The OFF-by-default
 // flag keeps the blast radius bounded to callers that explicitly accept
 // this trade-off.
-func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string) (string, error) {
+func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string, restorePrior bool) (string, error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return "", nil
@@ -51,10 +51,12 @@ func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string) (string, error) {
 
 	path := filepath.Join(workingDir, ".mcp.json")
 
-	if prior, err := os.ReadFile(path); err == nil {
-		claudeProjectFileRestores.Store(path, prior)
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("read pre-existing .mcp.json: %w", err)
+	if restorePrior {
+		if prior, err := os.ReadFile(path); err == nil {
+			claudeProjectFileRestores.Store(path, prior)
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("read pre-existing .mcp.json: %w", err)
+		}
 	}
 
 	if err := os.WriteFile(path, []byte(mcpJSON), 0o600); err != nil {

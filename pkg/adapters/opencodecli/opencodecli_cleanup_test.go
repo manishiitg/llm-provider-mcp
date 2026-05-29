@@ -35,11 +35,11 @@ func TestConfigCleanupChainRestoresAllFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildOpenCodeProjectConfigJSON: %v", err)
 	}
-	cleanupJsonc, err := writeOpenCodeRestoredFile(jsoncPath, sessionJsonc)
+	cleanupJsonc, err := writeOpenCodeRestoredFile(jsoncPath, sessionJsonc, true)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile jsonc: %v", err)
 	}
-	cleanupAgents, err := writeOpenCodeRestoredFile(agentsPath, []byte("session-only AGENTS.md"))
+	cleanupAgents, err := writeOpenCodeRestoredFile(agentsPath, []byte("session-only AGENTS.md"), true)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile agents: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestConfigCleanupSurvivesExternallyDeletedFile(t *testing.T) {
 	tmp := t.TempDir()
 	jsoncPath := filepath.Join(tmp, "opencode.jsonc")
 
-	cleanup, err := writeOpenCodeRestoredFile(jsoncPath, []byte("{}"))
+	cleanup, err := writeOpenCodeRestoredFile(jsoncPath, []byte("{}"), false)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestConfigCleanupIsIdempotent(t *testing.T) {
 		t.Fatalf("seed operator opencode.jsonc: %v", err)
 	}
 
-	cleanup, err := writeOpenCodeRestoredFile(jsoncPath, []byte("{\"session\":true}"))
+	cleanup, err := writeOpenCodeRestoredFile(jsoncPath, []byte("{\"session\":true}"), true)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile: %v", err)
 	}

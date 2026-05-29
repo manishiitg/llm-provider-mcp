@@ -26,7 +26,7 @@ import (
 // orchestrator process crashes between write and cleanup, the
 // operator's pre-existing GEMINI.md is destroyed. Off-by-default keeps
 // the blast radius bounded.
-func writeGeminiProjectInstructionFile(workingDir, systemPrompt string) (func(), error) {
+func writeGeminiProjectInstructionFile(workingDir, systemPrompt string, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -40,11 +40,13 @@ func writeGeminiProjectInstructionFile(workingDir, systemPrompt string) (func(),
 
 	var priorContent []byte
 	priorExisted := false
-	if data, err := os.ReadFile(path); err == nil {
-		priorContent = data
-		priorExisted = true
-	} else if !os.IsNotExist(err) {
-		return noop, fmt.Errorf("read pre-existing GEMINI.md: %w", err)
+	if restorePrior {
+		if data, err := os.ReadFile(path); err == nil {
+			priorContent = data
+			priorExisted = true
+		} else if !os.IsNotExist(err) {
+			return noop, fmt.Errorf("read pre-existing GEMINI.md: %w", err)
+		}
 	}
 
 	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Auto-removed at session cleanup. -->\n\n" + systemPrompt
@@ -84,5 +86,19 @@ func geminiWriteProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 		return true
 	}
 	enabled, _ := v.(bool)
+	return enabled
+}
+
+// geminiRestoreProjectFilesFromOptions reads the OFF-by-default feature
+// flag for preserving operator-owned project artifacts (GEMINI.md,
+// .gemini/settings.json, deny script) across a session. Returns false when
+// the key is unset: the default writes fresh and deletes on cleanup, never
+// restoring pre-existing content. Callers opt into the legacy byte-restore
+// behavior with WithRestoreProjectFiles(true).
+func geminiRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
 	return enabled
 }

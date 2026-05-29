@@ -36,7 +36,7 @@ import (
 // configuration. The workspace projection is additive belt-and-
 // suspenders, useful when downstream tooling reads codex's
 // project-scoped files directly.
-func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string, denyBuiltins bool) (func(), error) {
+func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string, denyBuiltins, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -52,7 +52,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	}
 
 	if strings.TrimSpace(systemPrompt) != "" {
-		cu, err := writeCodexProjectAgentsFile(workingDir, systemPrompt)
+		cu, err := writeCodexProjectAgentsFile(workingDir, systemPrompt, restorePrior)
 		if err != nil {
 			rollback()
 			return noop, fmt.Errorf("codex AGENTS.md: %w", err)
@@ -63,7 +63,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	}
 
 	if strings.TrimSpace(mcpServersJSON) != "" {
-		cu, err := writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON)
+		cu, err := writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON, restorePrior)
 		if err != nil {
 			rollback()
 			return noop, fmt.Errorf("codex .codex/config.toml: %w", err)
@@ -122,7 +122,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 // definitions have a known small shape (per
 // developers.openai.com/codex/mcp), so we avoid pulling in a TOML
 // dependency.
-func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string) (func(), error) {
+func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" || strings.TrimSpace(mcpServersJSON) == "" {
@@ -146,11 +146,13 @@ func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string) (func(), 
 	path := filepath.Join(codexDir, "config.toml")
 	var priorContent []byte
 	priorExisted := false
-	if data, err := os.ReadFile(path); err == nil {
-		priorContent = data
-		priorExisted = true
-	} else if !os.IsNotExist(err) {
-		return noop, fmt.Errorf("read pre-existing .codex/config.toml: %w", err)
+	if restorePrior {
+		if data, err := os.ReadFile(path); err == nil {
+			priorContent = data
+			priorExisted = true
+		} else if !os.IsNotExist(err) {
+			return noop, fmt.Errorf("read pre-existing .codex/config.toml: %w", err)
+		}
 	}
 
 	toml := renderCodexMCPServersTOML(servers)

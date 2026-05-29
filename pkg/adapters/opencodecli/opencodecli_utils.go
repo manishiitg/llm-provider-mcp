@@ -58,14 +58,19 @@ func opencodeRandomHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
-func writeOpenCodeRestoredFile(path string, content []byte) (func(), error) {
+func writeOpenCodeRestoredFile(path string, content []byte, restorePrior bool) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create OpenCode config dir: %w", err)
 	}
-	previous, readErr := os.ReadFile(path)
-	existed := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("failed to read existing OpenCode config %s: %w", path, readErr)
+	var previous []byte
+	existed := false
+	if restorePrior {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			previous, existed = data, true
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("failed to read existing OpenCode config %s: %w", path, readErr)
+		}
 	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to write OpenCode config %s: %w", path, err)

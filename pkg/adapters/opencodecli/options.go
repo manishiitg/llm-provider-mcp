@@ -37,6 +37,14 @@ const (
 	// session teardown so operator-owned content is preserved across
 	// successful runs.
 	MetadataKeyWriteProjectInstructionFile = "opencode_write_project_instruction_file"
+	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
+	// controlling whether projected workspace artifacts (opencode.jsonc,
+	// AGENTS.md) preserve an operator's pre-existing content across the
+	// session. Default off: every run writes a fresh artifact and deletes
+	// it on cleanup, never restoring whatever was there before. Pass
+	// WithRestoreProjectFiles(true) to opt back into the legacy
+	// byte-restore behavior.
+	MetadataKeyRestoreProjectFiles = "opencode_restore_project_files"
 )
 
 // WithOpenCodeModel sets the OpenCode CLI --model flag. Use "opencode-cli" or
@@ -79,6 +87,29 @@ func WithProjectConfig(configJSON string) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyProjectConfig] = configJSON
 	}
+}
+
+// WithRestoreProjectFiles controls whether projected workspace artifacts
+// (opencode.jsonc, AGENTS.md) preserve the operator's pre-existing content
+// across a session. OFF by default: each run writes a fresh artifact and
+// removes it on cleanup, never restoring whatever was there before. Pass
+// true to opt back into the legacy byte-restore behavior.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// opencodeRestoreProjectFilesFromOptions reads the OFF-by-default restore
+// flag. Returns false when unset: the default writes fresh and deletes on
+// cleanup, never restoring pre-existing content.
+func opencodeRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
 }
 
 // WithMCPConfig writes a temporary/restored .opencode/mcp.json in the workspace

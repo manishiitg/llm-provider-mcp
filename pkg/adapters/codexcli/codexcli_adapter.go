@@ -363,7 +363,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 			projectWorkingDir, _ = opts.Metadata.Custom[MetadataKeyProjectDirID].(string)
 		}
 		if strings.TrimSpace(projectWorkingDir) != "" {
-			if cleanup, werr := writeCodexProjectAgentsFile(projectWorkingDir, combinedSystemPrompt); werr != nil {
+			if cleanup, werr := writeCodexProjectAgentsFile(projectWorkingDir, combinedSystemPrompt, restoreProjectFilesFromOptions(opts)); werr != nil {
 				c.logger.Errorf("codex cli: project AGENTS.md write failed (best-effort): %v", werr)
 			} else if cleanup != nil {
 				defer cleanup()

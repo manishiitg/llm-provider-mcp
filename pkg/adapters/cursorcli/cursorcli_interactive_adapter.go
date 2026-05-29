@@ -619,7 +619,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				cleanupAll()
 				return nil, fmt.Errorf("cursor project config is not valid JSON")
 			}
-			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(configJSON))
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(configJSON), cursorRestoreProjectFilesFromOptions(opts))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -631,7 +631,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				cleanupAll()
 				return nil, fmt.Errorf("cursor MCP config is not valid JSON")
 			}
-			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON))
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON), cursorRestoreProjectFilesFromOptions(opts))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -639,7 +639,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			addCleanup(cleanup)
 		}
 		if denyBuiltin, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && denyBuiltin {
-			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir)
+			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -656,7 +656,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			// Skip when caller supplied their own cli.json (MetadataKeyProjectConfig
 			// was already written above) — caller's choices win.
 			if _, callerSuppliedCLI := opts.Metadata.Custom[MetadataKeyProjectConfig].(string); !callerSuppliedCLI {
-				cliCleanup, err := writeCursorDenyBuiltinPermissionsCLI(cursorDir)
+				cliCleanup, err := writeCursorDenyBuiltinPermissionsCLI(cursorDir, cursorRestoreProjectFilesFromOptions(opts))
 				if err != nil {
 					cleanupAll()
 					return nil, err
@@ -691,7 +691,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 // workspace and removes our deny script + the hooks/ subdir if we created
 // them. Order matters: write-then-restore composes cleanly with the rest
 // of prepareCursorProjectFiles's cleanup stack.
-func writeCursorDenyBuiltinHooks(cursorDir string) (func(), error) {
+func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool) (func(), error) {
 	hooksDir := filepath.Join(cursorDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cursor hooks dir: %w", err)
@@ -715,7 +715,7 @@ cat <<'JSON'
 JSON
 exit 0
 `
-	previousScript, scriptExisted := readPreviousCursorFile(scriptPath)
+	previousScript, scriptExisted := readPreviousCursorFileIf(restorePrior, scriptPath)
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to write cursor deny-builtin script: %w", err)
 	}
@@ -729,7 +729,7 @@ exit 0
 }
 `
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
-	previousHooks, hooksExisted := readPreviousCursorFile(hooksPath)
+	previousHooks, hooksExisted := readPreviousCursorFileIf(restorePrior, hooksPath)
 	if err := os.WriteFile(hooksPath, []byte(hooksConfig), 0o600); err != nil {
 		_ = os.Remove(scriptPath)
 		if !scriptExisted {
@@ -777,12 +777,12 @@ exit 0
 // permission grammar — just blanket-deny the built-ins we expect the
 // bridge to substitute. Restoration on cleanup preserves any
 // pre-existing operator cli.json byte-for-byte.
-func writeCursorDenyBuiltinPermissionsCLI(cursorDir string) (func(), error) {
+func writeCursorDenyBuiltinPermissionsCLI(cursorDir string, restorePrior bool) (func(), error) {
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cursor dir: %w", err)
 	}
 	cliPath := filepath.Join(cursorDir, "cli.json")
-	previousCLI, cliExisted := readPreviousCursorFile(cliPath)
+	previousCLI, cliExisted := readPreviousCursorFileIf(restorePrior, cliPath)
 	denyConfig := `{
   "permissions": {
     "allow": [],
@@ -815,14 +815,30 @@ func readPreviousCursorFile(path string) ([]byte, bool) {
 	return content, true
 }
 
-func writeCursorRestoredFile(path string, content []byte) (func(), error) {
+// readPreviousCursorFileIf gates byte-restore capture on the OFF-by-default
+// restore flag. When restore is false (the default), it reports the file as
+// non-existent so cleanup deletes whatever we wrote rather than resurrecting
+// prior operator content.
+func readPreviousCursorFileIf(restore bool, path string) ([]byte, bool) {
+	if !restore {
+		return nil, false
+	}
+	return readPreviousCursorFile(path)
+}
+
+func writeCursorRestoredFile(path string, content []byte, restorePrior bool) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create Cursor config dir: %w", err)
 	}
-	previous, readErr := os.ReadFile(path)
-	existed := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("failed to read existing Cursor config %s: %w", path, readErr)
+	var previous []byte
+	existed := false
+	if restorePrior {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			previous, existed = data, true
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("failed to read existing Cursor config %s: %w", path, readErr)
+		}
 	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to write Cursor config %s: %w", path, err)

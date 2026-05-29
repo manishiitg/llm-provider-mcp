@@ -33,6 +33,14 @@ const (
 	// any pre-existing GEMINI.md on session teardown so operator-owned
 	// content is preserved across successful runs.
 	MetadataKeyWriteProjectInstructionFile = "gemini_write_project_instruction_file"
+	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
+	// controlling whether projected workspace artifacts (GEMINI.md,
+	// .gemini/settings.json, deny script) preserve an operator's
+	// pre-existing content across the session. Default off: every run
+	// writes a fresh artifact and deletes it on cleanup, never restoring
+	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
+	// back into the legacy byte-restore behavior.
+	MetadataKeyRestoreProjectFiles = "gemini_restore_project_files"
 )
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -172,6 +180,19 @@ func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
+	}
+}
+
+// WithRestoreProjectFiles controls whether projected workspace artifacts
+// (GEMINI.md, .gemini/settings.json, deny script) preserve the operator's
+// pre-existing content across a session. OFF by default: each run writes a
+// fresh artifact and removes it on cleanup, never restoring whatever was
+// there before. Pass true to opt back into the legacy byte-restore
+// behavior.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
 	}
 }
 

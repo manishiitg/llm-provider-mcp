@@ -10,6 +10,15 @@ const (
 	MetadataKeyAutoApproveWebSearch  = "agy_auto_approve_web_search"
 	MetadataKeyInteractiveSessionID  = "agy_interactive_session_id"
 	MetadataKeyPersistentInteractive = "agy_persistent_interactive"
+	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
+	// controlling whether projected workspace artifacts (.agents/
+	// mcp_config.json, hooks.json, deny script) preserve an operator's
+	// pre-existing content across the session. Default off: every run
+	// writes fresh artifacts (hooks.json is overwritten, not merged) and
+	// deletes them on cleanup, never restoring whatever was there before.
+	// Pass WithRestoreProjectFiles(true) to opt back into the legacy
+	// merge/byte-restore behavior.
+	MetadataKeyRestoreProjectFiles = "agy_restore_project_files"
 )
 
 // WithSandbox sets Antigravity CLI's --sandbox value.
@@ -64,6 +73,30 @@ func WithBridgeOnlyTools(enabled bool) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyBridgeOnlyTools] = enabled
 	}
+}
+
+// WithRestoreProjectFiles controls whether projected workspace artifacts
+// (.agents/mcp_config.json, hooks.json, deny script) preserve the
+// operator's pre-existing content across a session. OFF by default: each
+// run writes fresh artifacts (hooks.json is overwritten, not merged) and
+// removes them on cleanup, never restoring whatever was there before. Pass
+// true to opt back into the legacy merge/byte-restore behavior.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// agyRestoreProjectFilesFromOptions reads the OFF-by-default restore flag.
+// Returns false when unset: the default writes fresh and deletes on
+// cleanup, never restoring pre-existing content.
+func agyRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
 }
 
 // WithAutoApproveWebSearch allows the Agy TUI's web-search approval prompt

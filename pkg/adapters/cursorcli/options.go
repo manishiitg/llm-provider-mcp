@@ -18,6 +18,14 @@ const (
 	MetadataKeyInteractiveSessionID  = "cursor_interactive_session_id"
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
+	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
+	// controlling whether projected workspace artifacts (.cursor/cli.json,
+	// .cursor/mcp.json, hooks.json, deny script) preserve an operator's
+	// pre-existing content across the session. Default off: every run
+	// writes a fresh artifact and deletes it on cleanup, never restoring
+	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
+	// back into the legacy byte-restore behavior.
+	MetadataKeyRestoreProjectFiles = "cursor_restore_project_files"
 )
 
 // WithCursorModel sets the Cursor Agent CLI --model flag. Use "cursor-cli" or
@@ -82,6 +90,30 @@ func WithWorkingDir(dir string) llmtypes.CallOption {
 
 // WithProjectConfig writes a temporary/restored .cursor/cli.json in the
 // workspace before launching Cursor Agent.
+// WithRestoreProjectFiles controls whether projected workspace artifacts
+// (.cursor/cli.json, .cursor/mcp.json, hooks.json, deny script) preserve
+// the operator's pre-existing content across a session. OFF by default:
+// each run writes a fresh artifact and removes it on cleanup, never
+// restoring whatever was there before. Pass true to opt back into the
+// legacy byte-restore behavior.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// cursorRestoreProjectFilesFromOptions reads the OFF-by-default restore
+// flag. Returns false when unset: the default writes fresh and deletes on
+// cleanup, never restoring pre-existing content.
+func cursorRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
+}
+
 func WithProjectConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

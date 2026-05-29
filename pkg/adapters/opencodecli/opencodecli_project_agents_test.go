@@ -20,7 +20,7 @@ func TestOpenCodeWriteRestoredAGENTSMDLifecycleNoPriorContent(t *testing.T) {
 	prompt := "Use 4-space indentation.\nRun lint before submitting."
 	body := []byte("<!-- mlp-session-instructions -->\n\n" + prompt)
 
-	cleanup, err := writeOpenCodeRestoredFile(filepath.Join(tmp, "AGENTS.md"), body)
+	cleanup, err := writeOpenCodeRestoredFile(filepath.Join(tmp, "AGENTS.md"), body, false)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestOpenCodeWriteRestoredAGENTSMDRestoresOperatorContent(t *testing.T) {
 	}
 
 	sessionBody := []byte("<!-- mlp-session-instructions -->\n\nsession-only system prompt")
-	cleanup, err := writeOpenCodeRestoredFile(path, sessionBody)
+	cleanup, err := writeOpenCodeRestoredFile(path, sessionBody, true)
 	if err != nil {
 		t.Fatalf("writeOpenCodeRestoredFile with pre-existing AGENTS.md: %v", err)
 	}

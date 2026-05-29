@@ -606,8 +606,9 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// .mcp.json content survives the session.
 	if writeProjectInstructionFromOptions(opts) && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string)
+		restoreProjectFiles := restoreProjectFilesFromOptions(opts)
 		if strings.TrimSpace(systemPrompt) != "" {
-			if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt); err != nil {
+			if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt, restoreProjectFiles); err != nil {
 				// Best-effort: a write failure here must not block the
 				// session. The primary --system-prompt-file injection
 				// already succeeded; CLAUDE.md is purely additive.
@@ -631,7 +632,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		// (e.g. a tmux send-keys post-launch dismissal).
 		if os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
 			if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
-				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig); err != nil {
+				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles); err != nil {
 					_ = err
 				} else if mcpPath != "" {
 					tempFiles = append(tempFiles, mcpPath)
@@ -675,24 +676,40 @@ func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
+// restoreProjectFilesFromOptions reads the OFF-by-default feature flag for
+// preserving operator-owned project artifacts across a session. Returns
+// false when the key is unset: the default is to write fresh and delete on
+// cleanup, never restoring pre-existing content. Callers opt back into the
+// legacy byte-restore behavior with WithRestoreProjectFiles(true).
+func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
+}
+
 // writeClaudeCodeProjectInstructionFile installs the per-session system
 // prompt at <workingDir>/CLAUDE.md (Claude Code's project-instructions
-// convention). If a pre-existing CLAUDE.md is present its bytes are
-// registered with claudeProjectFileRestores so removeFiles restores them
-// on session cleanup; if absent, the written file is os.Remove'd. Returns
-// the absolute path so the caller can append it to tempFiles for the
-// existing cleanup flow.
+// convention). When restorePrior is true and a pre-existing CLAUDE.md is
+// present, its bytes are registered with claudeProjectFileRestores so
+// removeFiles restores them on session cleanup. When restorePrior is false
+// (the default), no prior bytes are stashed: the freshly-written file is
+// simply os.Remove'd on cleanup, so every run reflects the latest
+// orchestrator output and never resurrects stale content. Returns the
+// absolute path so the caller can append it to tempFiles for the existing
+// cleanup flow.
 //
 // Returns "" with nil error when no work needs doing (empty workingDir);
 // returns a non-empty path with non-nil error only when the write itself
 // failed. The caller treats any error as best-effort and continues; the
 // primary --system-prompt-file injection has already succeeded.
 //
-// Risk caveat: CLAUDE.md is a single-file convention; if the orchestrator
-// process crashes between write and cleanup, the operator's pre-existing
-// CLAUDE.md is destroyed. Callers that need to protect operator content
-// can pass WithClaudeCodeWriteProjectInstructionFile(false).
-func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string) (string, error) {
+// Risk caveat: CLAUDE.md is a single-file convention. With restorePrior
+// false, an operator's pre-existing CLAUDE.md is overwritten and removed
+// without recovery — that is the intended default. Pass
+// WithRestoreProjectFiles(true) to byte-restore operator content instead.
+func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string, restorePrior bool) (string, error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return "", nil
@@ -701,10 +718,12 @@ func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string) (str
 		return "", fmt.Errorf("ensure claude working dir: %w", err)
 	}
 	path := filepath.Join(workingDir, "CLAUDE.md")
-	if prior, err := os.ReadFile(path); err == nil {
-		claudeProjectFileRestores.Store(path, prior)
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("read pre-existing CLAUDE.md: %w", err)
+	if restorePrior {
+		if prior, err := os.ReadFile(path); err == nil {
+			claudeProjectFileRestores.Store(path, prior)
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("read pre-existing CLAUDE.md: %w", err)
+		}
 	}
 	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

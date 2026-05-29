@@ -391,7 +391,7 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 		// the GEMINI_SYSTEM_MD env var above is the primary path.
 		if geminiWriteProjectInstructionFromOptions(opts) && len(systemPrompts) > 0 {
 			combined := strings.Join(systemPrompts, "\n\n")
-			if cleanup, werr := writeGeminiProjectInstructionFile(workingDir, combined); werr != nil {
+			if cleanup, werr := writeGeminiProjectInstructionFile(workingDir, combined, geminiRestoreProjectFilesFromOptions(opts)); werr != nil {
 				g.logger.Errorf("gemini cli: project GEMINI.md write failed (best-effort): %v", werr)
 			} else if cleanup != nil {
 				defer cleanup()

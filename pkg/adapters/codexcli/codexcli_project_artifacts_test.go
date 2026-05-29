@@ -91,7 +91,7 @@ func TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent(t *testing.T) {
 	}
 
 	mcpJSON := `{"api-bridge":{"command":"/usr/local/bin/mcpbridge"}}`
-	cleanup, err := writeCodexProjectMCPConfigTOML(tmp, mcpJSON)
+	cleanup, err := writeCodexProjectMCPConfigTOML(tmp, mcpJSON, true)
 	if err != nil {
 		t.Fatalf("writeCodexProjectMCPConfigTOML: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
 	// denyBuiltins=true is now a no-op on codex; we keep passing it
 	// to lock in that the parameter remains accepted on the function
 	// signature for API symmetry with the other adapters.
-	cleanup, err := writeCodexProjectArtifacts(tmp, prompt, mcpJSON, true)
+	cleanup, err := writeCodexProjectArtifacts(tmp, prompt, mcpJSON, true, false)
 	if err != nil {
 		t.Fatalf("writeCodexProjectArtifacts: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
 // TestWriteCodexProjectArtifactsEmptyWorkingDirNoOps guards the
 // orchestrator-cwd safety: empty workingDir must short-circuit.
 func TestWriteCodexProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeCodexProjectArtifacts("", "anything", `{"x":{"command":"y"}}`, true)
+	cleanup, err := writeCodexProjectArtifacts("", "anything", `{"x":{"command":"y"}}`, true, false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

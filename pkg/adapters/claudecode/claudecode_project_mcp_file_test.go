@@ -16,7 +16,7 @@ func TestWriteClaudeCodeProjectMCPFileLifecycleNoPriorContent(t *testing.T) {
 	tmp := t.TempDir()
 	mcpJSON := `{"mcpServers":{"api-bridge":{"command":"/usr/local/bin/mcpbridge","env":{"MCP_API_URL":"http://localhost:9000"}}}}`
 
-	path, err := writeClaudeCodeProjectMCPFile(tmp, mcpJSON)
+	path, err := writeClaudeCodeProjectMCPFile(tmp, mcpJSON, false)
 	if err != nil {
 		t.Fatalf("writeClaudeCodeProjectMCPFile: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestWriteClaudeCodeProjectMCPFileRestoresOperatorContent(t *testing.T) {
 	}
 
 	sessionJSON := `{"mcpServers":{"session":{"command":"/tmp/session-mcp"}}}`
-	if _, err := writeClaudeCodeProjectMCPFile(tmp, sessionJSON); err != nil {
+	if _, err := writeClaudeCodeProjectMCPFile(tmp, sessionJSON, true); err != nil {
 		t.Fatalf("writeClaudeCodeProjectMCPFile with pre-existing .mcp.json: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestPreApproveClaudeMCPServersForWorkingDirIdempotent(t *testing.T) {
 // cwd (or writing an empty JSON document) when the caller forgot to
 // set MetadataKeyWorkingDir or MetadataKeyMCPConfig.
 func TestWriteClaudeCodeProjectMCPFileEmptyInputsNoOp(t *testing.T) {
-	path, err := writeClaudeCodeProjectMCPFile("", "anything")
+	path, err := writeClaudeCodeProjectMCPFile("", "anything", false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}
@@ -219,7 +219,7 @@ func TestWriteClaudeCodeProjectMCPFileEmptyInputsNoOp(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
-	path, err = writeClaudeCodeProjectMCPFile(tmp, "   ")
+	path, err = writeClaudeCodeProjectMCPFile(tmp, "   ", false)
 	if err != nil {
 		t.Errorf("blank mcpJSON should return nil error; got %v", err)
 	}

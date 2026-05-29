@@ -14,7 +14,7 @@ func TestWriteGeminiProjectInstructionFileLifecycleNoPriorContent(t *testing.T) 
 	tmp := t.TempDir()
 	prompt := "Prefer two-space indent.\nRun goimports before committing."
 
-	cleanup, err := writeGeminiProjectInstructionFile(tmp, prompt)
+	cleanup, err := writeGeminiProjectInstructionFile(tmp, prompt, false)
 	if err != nil {
 		t.Fatalf("writeGeminiProjectInstructionFile: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestWriteGeminiProjectInstructionFileRestoresOperatorContent(t *testing.T) 
 		t.Fatalf("seed pre-existing GEMINI.md: %v", err)
 	}
 
-	cleanup, err := writeGeminiProjectInstructionFile(tmp, "session-only system prompt")
+	cleanup, err := writeGeminiProjectInstructionFile(tmp, "session-only system prompt", true)
 	if err != nil {
 		t.Fatalf("writeGeminiProjectInstructionFile with pre-existing GEMINI.md: %v", err)
 	}
@@ -76,12 +76,41 @@ func TestWriteGeminiProjectInstructionFileRestoresOperatorContent(t *testing.T) 
 	}
 }
 
+// TestWriteGeminiProjectInstructionFileNoRestoreDefault verifies the
+// DEFAULT (restorePrior=false): even with a pre-existing operator
+// GEMINI.md, cleanup DELETES the freshly-written file rather than
+// restoring the prior content — the "always write fresh, never restore"
+// behavior.
+func TestWriteGeminiProjectInstructionFileNoRestoreDefault(t *testing.T) {
+	tmp := t.TempDir()
+	operatorContent := []byte("# Operator's pre-existing GEMINI.md\n")
+	path := filepath.Join(tmp, "GEMINI.md")
+	if err := os.WriteFile(path, operatorContent, 0o600); err != nil {
+		t.Fatalf("seed pre-existing GEMINI.md: %v", err)
+	}
+
+	cleanup, err := writeGeminiProjectInstructionFile(tmp, "session-only system prompt", false)
+	if err != nil {
+		t.Fatalf("writeGeminiProjectInstructionFile: %v", err)
+	}
+
+	mid, _ := os.ReadFile(path)
+	if strings.Contains(string(mid), "Operator's pre-existing") {
+		t.Fatal("mid-session, operator content must be overwritten by the session prompt")
+	}
+
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("default cleanup must DELETE the file, not restore prior content; stat err=%v", err)
+	}
+}
+
 // TestWriteGeminiProjectInstructionFileEmptyWorkingDirNoOps guards
 // against the adapter accidentally writing GEMINI.md into the
 // orchestrator's own cwd when the caller forgot to set
 // MetadataKeyWorkingDir. An empty workingDir must short-circuit cleanly.
 func TestWriteGeminiProjectInstructionFileEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeGeminiProjectInstructionFile("", "anything")
+	cleanup, err := writeGeminiProjectInstructionFile("", "anything", false)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

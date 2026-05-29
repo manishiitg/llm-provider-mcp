@@ -646,15 +646,60 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 }
 
 // TestPrepareAgyProjectFilesMergesExistingHooksMidSessionAndNukesOnCleanup
-// locks in the new aggressive-cleanup contract: mid-session the
-// orchestrator's bridge-only hook is merged in alongside any operator-
-// supplied entries (so the session works correctly), but on cleanup the
-// entire .agents/ tree is removed — including the operator's original
-// hooks.json. The trade-off (operator content destroyed) is intentional:
-// .agents/ is treated as a session-scoped artifact area so orphaned files
-// from a prior session that crashed without firing cleanup don't leak
-// across runs.
+// locks in the OPT-IN merge contract (WithRestoreProjectFiles(true)):
+// mid-session the orchestrator's bridge-only hook is merged in alongside
+// any operator-supplied entries, but on cleanup the entire .agents/ tree
+// is removed — including the operator's original hooks.json. The merge is
+// only reachable now that restore is opted in; the default overwrites
+// (see TestPrepareAgyProjectFilesOverwritesExistingHooksByDefault).
 func TestPrepareAgyProjectFilesMergesExistingHooksMidSessionAndNukesOnCleanup(t *testing.T) {
+	workDir := t.TempDir()
+	agentsDir := filepath.Join(workDir, ".agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(agentsDir, "hooks.json")
+	original := `{"existing-policy":{"PreToolUse":[{"matcher":"read_url_content","hooks":[{"type":"command","command":"echo keep","timeout":1}]}]}}`
+	if err := os.WriteFile(hooksPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &llmtypes.CallOptions{}
+	WithBridgeOnlyTools(true)(opts)
+	WithRestoreProjectFiles(true)(opts)
+
+	cleanup, err := prepareAgyProjectFiles(workDir, "", opts, "test-session-agy")
+	if err != nil {
+		t.Fatalf("prepareAgyProjectFiles error = %v", err)
+	}
+	activeBody, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("read active hooks.json: %v", err)
+	}
+	var active map[string]interface{}
+	if err := json.Unmarshal(activeBody, &active); err != nil {
+		t.Fatalf("active hooks.json is not valid JSON: %v", err)
+	}
+	if _, ok := active["existing-policy"]; !ok {
+		t.Fatalf("active hooks.json = %s, want existing hook preserved mid-session", activeBody)
+	}
+	if _, ok := active["mlp-bridge-only-tools"]; !ok {
+		t.Fatalf("active hooks.json = %s, want bridge-only hook merged in mid-session", activeBody)
+	}
+
+	cleanup()
+
+	if _, err := os.Stat(agentsDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the full .agents/ tree; stat err = %v", err)
+	}
+}
+
+// TestPrepareAgyProjectFilesOverwritesExistingHooksByDefault locks in the
+// DEFAULT (restore off): a pre-existing operator hooks.json is NOT merged —
+// our bridge-only hook is written fresh and the operator's entry is gone
+// mid-session. This is the "always write fresh, never restore/merge"
+// behavior. (Cleanup still nukes the whole .agents/ tree as before.)
+func TestPrepareAgyProjectFilesOverwritesExistingHooksByDefault(t *testing.T) {
 	workDir := t.TempDir()
 	agentsDir := filepath.Join(workDir, ".agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -681,11 +726,11 @@ func TestPrepareAgyProjectFilesMergesExistingHooksMidSessionAndNukesOnCleanup(t 
 	if err := json.Unmarshal(activeBody, &active); err != nil {
 		t.Fatalf("active hooks.json is not valid JSON: %v", err)
 	}
-	if _, ok := active["existing-policy"]; !ok {
-		t.Fatalf("active hooks.json = %s, want existing hook preserved mid-session", activeBody)
+	if _, ok := active["existing-policy"]; ok {
+		t.Fatalf("default must overwrite, not merge: existing-policy should be gone; got %s", activeBody)
 	}
 	if _, ok := active["mlp-bridge-only-tools"]; !ok {
-		t.Fatalf("active hooks.json = %s, want bridge-only hook merged in mid-session", activeBody)
+		t.Fatalf("active hooks.json = %s, want fresh bridge-only hook installed", activeBody)
 	}
 
 	cleanup()

@@ -817,12 +817,13 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 	}
 
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		restorePrior := agyRestoreProjectFilesFromOptions(opts)
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
 			if !json.Valid([]byte(mcpJSON)) {
 				cleanupAll()
 				return nil, fmt.Errorf("agy MCP config is not valid JSON")
 			}
-			cleanup, err := writeAgyRestoredFile(filepath.Join(agentsDir, "mcp_config.json"), []byte(mcpJSON))
+			cleanup, err := writeAgyRestoredFile(filepath.Join(agentsDir, "mcp_config.json"), []byte(mcpJSON), restorePrior)
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -830,7 +831,7 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 			addCleanup(cleanup)
 		}
 		if enabled, ok := opts.Metadata.Custom[MetadataKeyBridgeOnlyTools].(bool); ok && enabled {
-			cleanup, err := writeAgyBridgeOnlyHookFiles(agentsDir)
+			cleanup, err := writeAgyBridgeOnlyHookFiles(agentsDir, restorePrior)
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -858,7 +859,7 @@ func prepareAgyProjectFiles(workingDir, systemPrompt string, opts *llmtypes.Call
 
 const agyBridgeOnlyDeniedToolMatcher = "Read|read|read_file|view_file|ListDir|list_dir|Search|search|grep_search|find_by_name|write_to_file|replace_file_content|multi_replace_file_content|run_command|manage_task|schedule|list_permissions|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|ask_question|generate_image"
 
-func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
+func writeAgyBridgeOnlyHookFiles(agentsDir string, restorePrior bool) (func(), error) {
 	scriptPath := filepath.Join(agentsDir, "mlp-bridge-only-hook.sh")
 	logPath := filepath.Join(agentsDir, "mlp-bridge-only-denials.jsonl")
 	// Rich deny reason mirrors the cursor hook's agent_message: tell the
@@ -876,22 +877,28 @@ func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 		"input=$(cat)\n" +
 		"printf '%s\\n' \"$input\" >> " + agyShellQuote(logPath) + "\n" +
 		"printf '%s\\n' " + agyShellQuote(string(denyPayload)) + "\n"
-	scriptCleanup, err := writeAgyRestoredFile(scriptPath, []byte(script))
+	scriptCleanup, err := writeAgyRestoredFile(scriptPath, []byte(script), restorePrior)
 	if err != nil {
 		return nil, err
 	}
 
 	hooksPath := filepath.Join(agentsDir, "hooks.json")
 	hooksConfig := map[string]interface{}{}
-	existingHooks, readErr := os.ReadFile(hooksPath)
-	if readErr == nil && strings.TrimSpace(string(existingHooks)) != "" {
-		if err := json.Unmarshal(existingHooks, &hooksConfig); err != nil {
+	// Only merge with an operator's pre-existing hooks.json when restore is
+	// opted in. With restore off (the default) we overwrite fresh: a clean
+	// session-scoped hooks.json with just our bridge-only entry, deleted on
+	// cleanup.
+	if restorePrior {
+		existingHooks, readErr := os.ReadFile(hooksPath)
+		if readErr == nil && strings.TrimSpace(string(existingHooks)) != "" {
+			if err := json.Unmarshal(existingHooks, &hooksConfig); err != nil {
+				scriptCleanup()
+				return nil, fmt.Errorf("failed to parse existing Agy hooks.json: %w", err)
+			}
+		} else if readErr != nil && !os.IsNotExist(readErr) {
 			scriptCleanup()
-			return nil, fmt.Errorf("failed to parse existing Agy hooks.json: %w", err)
+			return nil, fmt.Errorf("failed to read existing Agy hooks.json: %w", readErr)
 		}
-	} else if readErr != nil && !os.IsNotExist(readErr) {
-		scriptCleanup()
-		return nil, fmt.Errorf("failed to read existing Agy hooks.json: %w", readErr)
 	}
 	hooksConfig["mlp-bridge-only-tools"] = map[string]interface{}{
 		"PreToolUse": []map[string]interface{}{
@@ -913,7 +920,7 @@ func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 		return nil, fmt.Errorf("failed to encode Agy bridge-only hooks: %w", err)
 	}
 	hooksBody = append(hooksBody, '\n')
-	hooksCleanup, err := writeAgyRestoredFile(hooksPath, hooksBody)
+	hooksCleanup, err := writeAgyRestoredFile(hooksPath, hooksBody, restorePrior)
 	if err != nil {
 		scriptCleanup()
 		return nil, err
@@ -926,14 +933,19 @@ func writeAgyBridgeOnlyHookFiles(agentsDir string) (func(), error) {
 	}, nil
 }
 
-func writeAgyRestoredFile(path string, content []byte) (func(), error) {
+func writeAgyRestoredFile(path string, content []byte, restorePrior bool) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create Agy config dir: %w", err)
 	}
-	previous, readErr := os.ReadFile(path)
-	existed := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("failed to read existing Agy config %s: %w", path, readErr)
+	var previous []byte
+	existed := false
+	if restorePrior {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			previous, existed = data, true
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("failed to read existing Agy config %s: %w", path, readErr)
+		}
 	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to write Agy config %s: %w", path, err)

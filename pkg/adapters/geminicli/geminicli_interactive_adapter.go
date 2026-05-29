@@ -388,7 +388,7 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 				projectSettingsJSON = v
 			}
 		}
-		cleanup, writeErr := writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON, true)
+		cleanup, writeErr := writeGeminiProjectArtifacts(workingDir, projectDir, systemPrompt, projectSettingsJSON, true, geminiRestoreProjectFilesFromOptions(opts))
 		if writeErr != nil {
 			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but projecting workspace artifacts failed (continuing without workspace files): %v", writeErr)
 		} else if cleanup != nil {
