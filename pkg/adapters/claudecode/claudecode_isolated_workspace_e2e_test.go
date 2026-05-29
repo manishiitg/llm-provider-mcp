@@ -28,7 +28,7 @@ import (
 // Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
 // claude binary is on PATH.
 func TestClaudeCodeTmuxRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	userWorkspace := t.TempDir()
@@ -46,7 +46,7 @@ func TestClaudeCodeTmuxRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(isolatedWorkspace) })
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 

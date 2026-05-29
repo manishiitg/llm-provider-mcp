@@ -383,7 +383,10 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 	}
 
 	// 1. Prepare Command Arguments
-	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages"}
+	// Newer Claude Code CLIs (>=2.x) require --verbose when --print is combined
+	// with --output-format=stream-json; without it the CLI exits 1 with
+	// "When using --print, --output-format=stream-json requires --verbose".
+	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages"}
 
 	// Pass --model only when the configured model is a real Claude CLI model ID.
 	if c.shouldPassModelFlag() {
@@ -1208,6 +1211,7 @@ func (c *ClaudeCodeAdapter) retryForFinalAnswer(
 	// Build minimal arg list: resume the session with 1 turn
 	args := []string{
 		"-p",
+		"--verbose", // required by Claude Code >=2.x with --print + stream-json
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--resume", sessionID,

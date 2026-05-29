@@ -14,15 +14,9 @@ func SendClaudeCodeControlKey(ctx context.Context, ownerSessionID, key string) e
 	if ownerSessionID == "" {
 		return fmt.Errorf("Claude Code owner session ID is required")
 	}
-	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
 	return runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
-}
-
-// SendClaudeCodeExperimentalControlKey is kept for compatibility.
-// Deprecated: use SendClaudeCodeControlKey.
-func SendClaudeCodeExperimentalControlKey(ctx context.Context, ownerSessionID, key string) error {
-	return SendClaudeCodeControlKey(ctx, ownerSessionID, key)
 }

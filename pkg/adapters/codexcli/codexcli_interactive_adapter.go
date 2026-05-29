@@ -634,6 +634,32 @@ func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeCodexPersistentSession(ownerSessionID, reason, nil)
 }
 
+// CloseCodexCLIInteractiveSessionByTmux closes the persistent codex
+// interactive session whose backing tmux session matches tmuxSessionName,
+// regardless of the owner key it was registered under. Teardown backstop for
+// when the owning session ID is unknown or has drifted. Delegates to the
+// owner-keyed close so the same graceful exit + cleanup runs. No-op when no
+// live session matches.
+func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	name := strings.TrimSpace(tmuxSessionName)
+	if name == "" {
+		return
+	}
+	codexPersistentRegistry.Lock()
+	owner := ""
+	for o, s := range codexPersistentRegistry.sessions {
+		if s != nil && s.tmuxSessionName == name {
+			owner = o
+			break
+		}
+	}
+	codexPersistentRegistry.Unlock()
+	if owner == "" {
+		return
+	}
+	closeCodexPersistentSession(owner, reason, nil)
+}
+
 func closeCodexPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	codexPersistentRegistry.Lock()
 	session := codexPersistentRegistry.sessions[ownerSessionID]

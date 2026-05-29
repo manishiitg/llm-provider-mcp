@@ -110,11 +110,18 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 	}
 }
 
-func TestNormalizeClaudeCodeTransportRejectsLegacyPrintUnlessExplicitlyAllowed(t *testing.T) {
+func TestNormalizeClaudeCodeTransportAcceptsPrintWithoutFlag(t *testing.T) {
+	// Print / stream-json is now a fully supported, opt-in transport (no longer
+	// gated behind CLAUDE_CODE_ALLOW_LEGACY_PRINT). A workflow step selects it
+	// explicitly; the default remains tmux.
 	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "")
 
-	if _, err := normalizeClaudeCodeTransport(ClaudeCodeTransportPrint); err == nil {
-		t.Fatal("normalizeClaudeCodeTransport(print) error = nil, want disabled legacy print error")
+	got, err := normalizeClaudeCodeTransport(ClaudeCodeTransportPrint)
+	if err != nil {
+		t.Fatalf("normalizeClaudeCodeTransport(print) error = %v, want nil (print is supported)", err)
+	}
+	if got != ClaudeCodeTransportPrint {
+		t.Fatalf("normalizeClaudeCodeTransport(print) = %q, want %q", got, ClaudeCodeTransportPrint)
 	}
 }
 

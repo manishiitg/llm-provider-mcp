@@ -908,6 +908,32 @@ func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeCursorPersistentSession(ownerSessionID, reason, nil)
 }
 
+// CloseCursorCLIInteractiveSessionByTmux closes the persistent cursor
+// interactive session whose backing tmux session matches tmuxSessionName,
+// regardless of the owner key it was registered under. Teardown backstop for
+// when the owning session ID is unknown or has drifted. Delegates to the
+// owner-keyed close so the same graceful exit + cleanup runs. No-op when no
+// live session matches.
+func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	name := strings.TrimSpace(tmuxSessionName)
+	if name == "" {
+		return
+	}
+	cursorPersistentRegistry.Lock()
+	owner := ""
+	for o, s := range cursorPersistentRegistry.sessions {
+		if s != nil && s.tmuxSessionName == name {
+			owner = o
+			break
+		}
+	}
+	cursorPersistentRegistry.Unlock()
+	if owner == "" {
+		return
+	}
+	closeCursorPersistentSession(owner, reason, nil)
+}
+
 func closeCursorSessionLocked(session *cursorInteractiveSession, reason string, logger interfaces.Logger) {
 	if session == nil {
 		return

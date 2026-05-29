@@ -16,22 +16,22 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
-func TestClaudeExperimentalStreamTmuxScreenFlag(t *testing.T) {
+func TestClaudeInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, "")
-	if !claudeExperimentalStreamTmuxScreenEnabled() {
+	if !claudeInteractiveStreamTmuxScreenEnabled() {
 		t.Fatal("tmux screen streaming should be enabled by default")
 	}
 
 	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
 		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
-		if !claudeExperimentalStreamTmuxScreenEnabled() {
+		if !claudeInteractiveStreamTmuxScreenEnabled() {
 			t.Fatalf("tmux screen streaming should be enabled for %q", value)
 		}
 	}
 
 	for _, value := range []string{"0", "false", "FALSE", "no", "off"} {
 		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
-		if claudeExperimentalStreamTmuxScreenEnabled() {
+		if claudeInteractiveStreamTmuxScreenEnabled() {
 			t.Fatalf("tmux screen streaming should be disabled for %q", value)
 		}
 	}
@@ -102,12 +102,12 @@ func TestClaudeSubmitPromptKeysMoveToEndBeforeEnter(t *testing.T) {
 	}
 }
 
-func TestClaudeExperimentalShellCommandUsesCallerWorkingDir(t *testing.T) {
+func TestClaudeInteractiveShellCommandUsesCallerWorkingDir(t *testing.T) {
 	shell := writeExecutableTestShell(t, "zsh")
 	t.Setenv("CODING_AGENT_LOGIN_SHELL", shell)
 	t.Setenv("CODING_AGENT_SHELL_MODE", "")
 
-	got := claudeExperimentalShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
+	got := claudeInteractiveShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
 	if !strings.HasPrefix(got, "'"+shell+"' '-ilc' ") {
 		t.Fatalf("shell command = %q, want login shell prefix", got)
 	}
@@ -116,10 +116,10 @@ func TestClaudeExperimentalShellCommandUsesCallerWorkingDir(t *testing.T) {
 	}
 }
 
-func TestClaudeExperimentalShellCommandDirectMode(t *testing.T) {
+func TestClaudeInteractiveShellCommandDirectMode(t *testing.T) {
 	t.Setenv("CODING_AGENT_SHELL_MODE", "direct")
 
-	got := claudeExperimentalShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
+	got := claudeInteractiveShellCommand([]string{"claude", "--system-prompt-file", "/tmp/sys.md"}, "/tmp/user chat")
 	if !strings.HasPrefix(got, "cd '/tmp/user chat' && exec ") {
 		t.Fatalf("shell command = %q, want direct cwd before exec", got)
 	}
@@ -184,7 +184,7 @@ func TestTmuxRejectsImageContent(t *testing.T) {
 	}
 }
 
-func TestClaudeExperimentalSessionsFromTmuxListOnlyMatchesAdapterPrefix(t *testing.T) {
+func TestClaudeInteractiveSessionsFromTmuxListOnlyMatchesAdapterPrefix(t *testing.T) {
 	out := strings.Join([]string{
 		"mlp-claude-code-exp-111-aaaa",
 		"user-work",
@@ -193,7 +193,7 @@ func TestClaudeExperimentalSessionsFromTmuxListOnlyMatchesAdapterPrefix(t *testi
 		"mlp-claude-code-exp2-222-bbbb",
 	}, "\n")
 
-	got := claudeExperimentalSessionsFromTmuxList(out, "mlp-claude-code-exp")
+	got := claudeInteractiveSessionsFromTmuxList(out, "mlp-claude-code-exp")
 	want := []string{
 		"mlp-claude-code-exp-111-aaaa",
 		"mlp-claude-code-exp",

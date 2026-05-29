@@ -57,21 +57,21 @@ const (
 	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 )
 
-var claudeExperimentalSessionRegistry = struct {
+var claudeInteractiveSessionRegistry = struct {
 	sync.Mutex
 	sessions map[string]struct{}
 }{
 	sessions: map[string]struct{}{},
 }
 
-var claudeExperimentalInteractiveRegistry = struct {
+var claudeInteractiveOwnerRegistry = struct {
 	sync.RWMutex
 	sessions map[string]string
 }{
 	sessions: map[string]string{},
 }
 
-type claudeExperimentalPersistentSession struct {
+type claudeInteractivePersistentSession struct {
 	ownerSessionID  string
 	tmuxSessionName string
 	nativeSessionID string
@@ -84,11 +84,11 @@ type claudeExperimentalPersistentSession struct {
 	mu              sync.Mutex
 }
 
-var claudeExperimentalPersistentRegistry = struct {
+var claudeInteractivePersistentRegistry = struct {
 	sync.Mutex
-	sessions map[string]*claudeExperimentalPersistentSession
+	sessions map[string]*claudeInteractivePersistentSession
 }{
-	sessions: map[string]*claudeExperimentalPersistentSession{},
+	sessions: map[string]*claudeInteractivePersistentSession{},
 }
 
 func newClaudeCallContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -127,17 +127,7 @@ type ClaudeCodeInteractiveAdapter struct {
 	logger  interfaces.Logger
 }
 
-// ClaudeCodeExperimentalAdapter is the legacy exported name for
-// ClaudeCodeInteractiveAdapter. New callers should use NewClaudeCodeInteractiveAdapter.
-type ClaudeCodeExperimentalAdapter = ClaudeCodeInteractiveAdapter
-
 func NewClaudeCodeInteractiveAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
-	return newClaudeCodeInteractiveAdapter(modelID, logger)
-}
-
-// NewClaudeCodeExperimentalAdapter is kept for compatibility.
-// Deprecated: use NewClaudeCodeInteractiveAdapter.
-func NewClaudeCodeExperimentalAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
 	return newClaudeCodeInteractiveAdapter(modelID, logger)
 }
 
@@ -226,7 +216,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	systemPrompt, conversationMessages := splitSystemPrompt(messages)
 
 	var sessionName string
-	var persistentSession *claudeExperimentalPersistentSession
+	var persistentSession *claudeInteractivePersistentSession
 	releasePersistentSession := false
 	discardPersistentSession := func(err error) {
 		if persistentInteractive && persistentSession != nil {
@@ -264,12 +254,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		if err := c.startSession(callCtx, sessionName, args, workingDir); err != nil {
 			return nil, err
 		}
-		registerClaudeExperimentalSession(sessionName)
-		cleanupSession := cleanupClaudeExperimentalSessionAfter(sessionName, llmtypes.TmuxKillDelay)
+		registerClaudeInteractiveSession(sessionName)
+		cleanupSession := cleanupClaudeInteractiveSessionAfter(sessionName, llmtypes.TmuxKillDelay)
 		defer cleanupSession()
 		if interactiveSessionID != "" {
-			registerClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
-			defer unregisterClaudeExperimentalInteractiveSession(interactiveSessionID, sessionName)
+			registerClaudeInteractiveOwner(interactiveSessionID, sessionName)
+			defer unregisterClaudeInteractiveOwner(interactiveSessionID, sessionName)
 		}
 	}
 
@@ -333,7 +323,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 			discardPersistentSession(err)
 		}
 		if isContextCanceledError(err) {
-			if interruptErr := interruptClaudeExperimentalSession(sessionName, c.logger); interruptErr != nil {
+			if interruptErr := interruptClaudeInteractiveSession(sessionName, c.logger); interruptErr != nil {
 				if persistentInteractive && persistentSession != nil {
 					discardPersistentSession(fmt.Errorf("Claude Code tmux session did not return to prompt after context cancellation: %w", interruptErr))
 				}
@@ -775,7 +765,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
 		preTrustClaudeWorkingDir(workingDir)
 	}
-	shellCommand := claudeExperimentalShellCommand(args, workingDir)
+	shellCommand := claudeInteractiveShellCommand(args, workingDir)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
@@ -867,7 +857,7 @@ func claudePromptSuggestionEnvArgs() []string {
 	}
 }
 
-func claudeExperimentalShellCommand(args []string, workingDir string) string {
+func claudeInteractiveShellCommand(args []string, workingDir string) string {
 	return shelllaunch.Command(args, workingDir)
 }
 
@@ -1061,7 +1051,7 @@ func defaultClaudeDisplayName() string {
 	return "mcp-agent-" + time.Now().Format("20060102-150405")
 }
 
-func claudeExperimentalStreamTmuxScreenEnabled() bool {
+func claudeInteractiveStreamTmuxScreenEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvClaudeExperimentalStreamTmuxScreen))) {
 	case "", "1", "true", "yes", "on":
 		return true
@@ -1082,7 +1072,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	resumePromptHandled := false
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
+	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
 
 	for {
 		select {
@@ -1442,7 +1432,7 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 	}
 }
 
-func interruptClaudeExperimentalSession(sessionName string, logger interfaces.Logger) error {
+func interruptClaudeInteractiveSession(sessionName string, logger interfaces.Logger) error {
 	interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1883,7 +1873,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	streamTerminalScreen := claudeExperimentalStreamTmuxScreenEnabled()
+	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
 
 	for {
 		select {
@@ -2566,29 +2556,23 @@ func parseTmuxMajorVersion(version string) (int, bool) {
 	return major, true
 }
 
-// CleanupClaudeCodeExperimentalSessions is kept for compatibility.
-// Deprecated: use CleanupClaudeCodeTmuxSessions.
-func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
-	return CleanupClaudeCodeTmuxSessions(ctx)
-}
-
 // CleanupClaudeCodeTmuxSessions cleans up registered Claude Code tmux sessions.
 func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}
 
-	sessions := activeClaudeExperimentalSessions()
+	sessions := activeClaudeInteractiveSessions()
 	persistentSessions := drainClaudePersistentInteractiveSessions()
 	for _, session := range persistentSessions {
 		sessions = appendUniqueStrings(sessions, session.tmuxSessionName)
-		unregisterClaudeExperimentalInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		unregisterClaudeInteractiveOwner(session.ownerSessionID, session.tmuxSessionName)
 		removeFiles(session.tempFiles)
 	}
 
 	var failures []string
 	for _, sessionName := range sessions {
-		if err := killClaudeExperimentalSession(ctx, sessionName); err != nil {
+		if err := killClaudeInteractiveSession(ctx, sessionName); err != nil {
 			failures = append(failures, err.Error())
 		}
 	}
@@ -2598,12 +2582,12 @@ func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
 	return nil
 }
 
-func activeClaudeExperimentalSessions() []string {
-	claudeExperimentalSessionRegistry.Lock()
-	defer claudeExperimentalSessionRegistry.Unlock()
+func activeClaudeInteractiveSessions() []string {
+	claudeInteractiveSessionRegistry.Lock()
+	defer claudeInteractiveSessionRegistry.Unlock()
 
-	sessions := make([]string, 0, len(claudeExperimentalSessionRegistry.sessions))
-	for sessionName := range claudeExperimentalSessionRegistry.sessions {
+	sessions := make([]string, 0, len(claudeInteractiveSessionRegistry.sessions))
+	for sessionName := range claudeInteractiveSessionRegistry.sessions {
 		sessions = append(sessions, sessionName)
 	}
 	return sessions
@@ -2625,7 +2609,7 @@ func appendUniqueStrings(base []string, extra ...string) []string {
 	return out
 }
 
-func claudeExperimentalSessionPrefix() string {
+func claudeInteractiveSessionPrefix() string {
 	prefix := strings.TrimSpace(os.Getenv(EnvClaudeTmuxSessionPrefix))
 	if prefix == "" {
 		prefix = strings.TrimSpace(os.Getenv(EnvClaudeExperimentalSessionPrefix))
@@ -2637,53 +2621,53 @@ func claudeExperimentalSessionPrefix() string {
 }
 
 func newTmuxSessionName() string {
-	prefix := claudeExperimentalSessionPrefix()
+	prefix := claudeInteractiveSessionPrefix()
 	return sanitizeTmuxSessionName(fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), randomHex(4)))
 }
 
-func registerClaudeExperimentalSession(sessionName string) {
-	claudeExperimentalSessionRegistry.Lock()
-	defer claudeExperimentalSessionRegistry.Unlock()
-	claudeExperimentalSessionRegistry.sessions[sessionName] = struct{}{}
+func registerClaudeInteractiveSession(sessionName string) {
+	claudeInteractiveSessionRegistry.Lock()
+	defer claudeInteractiveSessionRegistry.Unlock()
+	claudeInteractiveSessionRegistry.sessions[sessionName] = struct{}{}
 }
 
-func unregisterClaudeExperimentalSession(sessionName string) {
-	claudeExperimentalSessionRegistry.Lock()
-	defer claudeExperimentalSessionRegistry.Unlock()
-	delete(claudeExperimentalSessionRegistry.sessions, sessionName)
+func unregisterClaudeInteractiveSession(sessionName string) {
+	claudeInteractiveSessionRegistry.Lock()
+	defer claudeInteractiveSessionRegistry.Unlock()
+	delete(claudeInteractiveSessionRegistry.sessions, sessionName)
 }
 
-func registerClaudeExperimentalInteractiveSession(ownerSessionID, tmuxSessionName string) {
+func registerClaudeInteractiveOwner(ownerSessionID, tmuxSessionName string) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
 	if ownerSessionID == "" || tmuxSessionName == "" {
 		return
 	}
-	claudeExperimentalInteractiveRegistry.Lock()
-	defer claudeExperimentalInteractiveRegistry.Unlock()
-	claudeExperimentalInteractiveRegistry.sessions[ownerSessionID] = tmuxSessionName
+	claudeInteractiveOwnerRegistry.Lock()
+	defer claudeInteractiveOwnerRegistry.Unlock()
+	claudeInteractiveOwnerRegistry.sessions[ownerSessionID] = tmuxSessionName
 }
 
-func unregisterClaudeExperimentalInteractiveSession(ownerSessionID, tmuxSessionName string) {
+func unregisterClaudeInteractiveOwner(ownerSessionID, tmuxSessionName string) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return
 	}
-	claudeExperimentalInteractiveRegistry.Lock()
-	defer claudeExperimentalInteractiveRegistry.Unlock()
-	if current := claudeExperimentalInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
-		delete(claudeExperimentalInteractiveRegistry.sessions, ownerSessionID)
+	claudeInteractiveOwnerRegistry.Lock()
+	defer claudeInteractiveOwnerRegistry.Unlock()
+	if current := claudeInteractiveOwnerRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
+		delete(claudeInteractiveOwnerRegistry.sessions, ownerSessionID)
 	}
 }
 
-func activeClaudeExperimentalInteractiveSession(ownerSessionID string) (string, bool) {
+func activeClaudeInteractiveOwner(ownerSessionID string) (string, bool) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return "", false
 	}
-	claudeExperimentalInteractiveRegistry.RLock()
-	defer claudeExperimentalInteractiveRegistry.RUnlock()
-	sessionName, ok := claudeExperimentalInteractiveRegistry.sessions[ownerSessionID]
+	claudeInteractiveOwnerRegistry.RLock()
+	defer claudeInteractiveOwnerRegistry.RUnlock()
+	sessionName, ok := claudeInteractiveOwnerRegistry.sessions[ownerSessionID]
 	return sessionName, ok && strings.TrimSpace(sessionName) != ""
 }
 
@@ -2718,19 +2702,19 @@ func claudeWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 // acquirePersistentInteractiveSession returns with session.mu held. The caller
 // must releaseClaudePersistentInteractiveSession on normal completion, or mark,
 // unlock, and clean up the session on a ready-prompt failure.
-func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID string, opts *llmtypes.CallOptions, systemPrompt string, workingDir string) (*claudeExperimentalPersistentSession, error) {
+func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID string, opts *llmtypes.CallOptions, systemPrompt string, workingDir string) (*claudeInteractivePersistentSession, error) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return nil, fmt.Errorf("persistent Claude Code tmux session requires an owner session ID")
 	}
 
-	claudeExperimentalPersistentRegistry.Lock()
-	if existing := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+	claudeInteractivePersistentRegistry.Lock()
+	if existing := claudeInteractivePersistentRegistry.sessions[ownerSessionID]; existing != nil {
 		existing.mu.Lock()
 		if existing.initErr != nil {
 			err := existing.initErr
 			existing.mu.Unlock()
-			claudeExperimentalPersistentRegistry.Unlock()
+			claudeInteractivePersistentRegistry.Unlock()
 			return nil, err
 		}
 		if existing.idleTimer != nil {
@@ -2738,13 +2722,13 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			existing.idleTimer = nil
 		}
 		existing.lastUsed = time.Now()
-		claudeExperimentalPersistentRegistry.Unlock()
+		claudeInteractivePersistentRegistry.Unlock()
 		return existing, nil
 	}
 
 	now := time.Now()
 	sessionName := newTmuxSessionName()
-	session := &claudeExperimentalPersistentSession{
+	session := &claudeInteractivePersistentSession{
 		ownerSessionID:  ownerSessionID,
 		tmuxSessionName: sessionName,
 		nativeSessionID: nativeSessionID,
@@ -2753,8 +2737,8 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		lastUsed:        now,
 	}
 	session.mu.Lock()
-	claudeExperimentalPersistentRegistry.sessions[ownerSessionID] = session
-	claudeExperimentalPersistentRegistry.Unlock()
+	claudeInteractivePersistentRegistry.sessions[ownerSessionID] = session
+	claudeInteractivePersistentRegistry.Unlock()
 
 	args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
 	if err != nil {
@@ -2772,12 +2756,12 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		removeFiles(tempFiles)
 		return nil, err
 	}
-	registerClaudeExperimentalSession(sessionName)
-	registerClaudeExperimentalInteractiveSession(ownerSessionID, sessionName)
+	registerClaudeInteractiveSession(sessionName)
+	registerClaudeInteractiveOwner(ownerSessionID, sessionName)
 	return session, nil
 }
 
-func releaseClaudePersistentInteractiveSession(session *claudeExperimentalPersistentSession, logger interfaces.Logger) {
+func releaseClaudePersistentInteractiveSession(session *claudeInteractivePersistentSession, logger interfaces.Logger) {
 	if session == nil {
 		return
 	}
@@ -2797,20 +2781,46 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeClaudePersistentInteractiveSession(ownerSessionID, reason, nil)
 }
 
+// CloseClaudeCodeInteractiveSessionByTmux closes the persistent Claude Code
+// interactive session whose backing tmux session matches tmuxSessionName,
+// regardless of the owner key it was registered under. Teardown backstop for
+// when the owning session ID is unknown or has drifted. Delegates to the
+// owner-keyed close so the same graceful exit + cleanup runs. No-op when no
+// live session matches.
+func CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	name := strings.TrimSpace(tmuxSessionName)
+	if name == "" {
+		return
+	}
+	claudeInteractivePersistentRegistry.Lock()
+	owner := ""
+	for o, s := range claudeInteractivePersistentRegistry.sessions {
+		if s != nil && s.tmuxSessionName == name {
+			owner = o
+			break
+		}
+	}
+	claudeInteractivePersistentRegistry.Unlock()
+	if owner == "" {
+		return
+	}
+	closeClaudePersistentInteractiveSession(owner, reason, nil)
+}
+
 func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return
 	}
 
-	claudeExperimentalPersistentRegistry.Lock()
-	session := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]
+	claudeInteractivePersistentRegistry.Lock()
+	session := claudeInteractivePersistentRegistry.sessions[ownerSessionID]
 	if session == nil {
-		claudeExperimentalPersistentRegistry.Unlock()
+		claudeInteractivePersistentRegistry.Unlock()
 		return
 	}
-	delete(claudeExperimentalPersistentRegistry.sessions, ownerSessionID)
-	claudeExperimentalPersistentRegistry.Unlock()
+	delete(claudeInteractivePersistentRegistry.sessions, ownerSessionID)
+	claudeInteractivePersistentRegistry.Unlock()
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -2825,13 +2835,13 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 	_ = closeClaudeSessionForResume(session.tmuxSessionName, logger)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = killClaudeExperimentalSession(cleanupCtx, session.tmuxSessionName)
-	unregisterClaudeExperimentalInteractiveSession(ownerSessionID, session.tmuxSessionName)
-	unregisterClaudeExperimentalSession(session.tmuxSessionName)
+	_ = killClaudeInteractiveSession(cleanupCtx, session.tmuxSessionName)
+	unregisterClaudeInteractiveOwner(ownerSessionID, session.tmuxSessionName)
+	unregisterClaudeInteractiveSession(session.tmuxSessionName)
 	removeFiles(session.tempFiles)
 }
 
-func markClaudePersistentInteractiveSessionFailedLocked(session *claudeExperimentalPersistentSession, err error, logger interfaces.Logger) {
+func markClaudePersistentInteractiveSessionFailedLocked(session *claudeInteractivePersistentSession, err error, logger interfaces.Logger) {
 	if session == nil {
 		return
 	}
@@ -2847,35 +2857,35 @@ func markClaudePersistentInteractiveSessionFailedLocked(session *claudeExperimen
 	}
 }
 
-func cleanupFailedClaudePersistentInteractiveSession(session *claudeExperimentalPersistentSession) {
+func cleanupFailedClaudePersistentInteractiveSession(session *claudeInteractivePersistentSession) {
 	if session == nil {
 		return
 	}
 	removeClaudePersistentInteractiveSession(session.ownerSessionID, session)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = killClaudeExperimentalSession(cleanupCtx, session.tmuxSessionName)
-	unregisterClaudeExperimentalInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
-	unregisterClaudeExperimentalSession(session.tmuxSessionName)
+	_ = killClaudeInteractiveSession(cleanupCtx, session.tmuxSessionName)
+	unregisterClaudeInteractiveOwner(session.ownerSessionID, session.tmuxSessionName)
+	unregisterClaudeInteractiveSession(session.tmuxSessionName)
 	removeFiles(session.tempFiles)
 }
 
-func removeClaudePersistentInteractiveSession(ownerSessionID string, session *claudeExperimentalPersistentSession) {
-	claudeExperimentalPersistentRegistry.Lock()
-	defer claudeExperimentalPersistentRegistry.Unlock()
-	if current := claudeExperimentalPersistentRegistry.sessions[ownerSessionID]; current == session {
-		delete(claudeExperimentalPersistentRegistry.sessions, ownerSessionID)
+func removeClaudePersistentInteractiveSession(ownerSessionID string, session *claudeInteractivePersistentSession) {
+	claudeInteractivePersistentRegistry.Lock()
+	defer claudeInteractivePersistentRegistry.Unlock()
+	if current := claudeInteractivePersistentRegistry.sessions[ownerSessionID]; current == session {
+		delete(claudeInteractivePersistentRegistry.sessions, ownerSessionID)
 	}
 }
 
-func drainClaudePersistentInteractiveSessions() []*claudeExperimentalPersistentSession {
-	claudeExperimentalPersistentRegistry.Lock()
-	sessions := make([]*claudeExperimentalPersistentSession, 0, len(claudeExperimentalPersistentRegistry.sessions))
-	for _, session := range claudeExperimentalPersistentRegistry.sessions {
+func drainClaudePersistentInteractiveSessions() []*claudeInteractivePersistentSession {
+	claudeInteractivePersistentRegistry.Lock()
+	sessions := make([]*claudeInteractivePersistentSession, 0, len(claudeInteractivePersistentRegistry.sessions))
+	for _, session := range claudeInteractivePersistentRegistry.sessions {
 		sessions = append(sessions, session)
 	}
-	claudeExperimentalPersistentRegistry.sessions = map[string]*claudeExperimentalPersistentSession{}
-	claudeExperimentalPersistentRegistry.Unlock()
+	claudeInteractivePersistentRegistry.sessions = map[string]*claudeInteractivePersistentSession{}
+	claudeInteractivePersistentRegistry.Unlock()
 
 	for _, session := range sessions {
 		stopClaudeIdleTimerIfAvailable(session)
@@ -2883,7 +2893,7 @@ func drainClaudePersistentInteractiveSessions() []*claudeExperimentalPersistentS
 	return sessions
 }
 
-func stopClaudeIdleTimerIfAvailable(session *claudeExperimentalPersistentSession) {
+func stopClaudeIdleTimerIfAvailable(session *claudeInteractivePersistentSession) {
 	if session == nil || !session.mu.TryLock() {
 		return
 	}
@@ -2894,48 +2904,42 @@ func stopClaudeIdleTimerIfAvailable(session *claudeExperimentalPersistentSession
 	}
 }
 
-// SendClaudeCodeExperimentalInput is kept for compatibility.
-// Deprecated: use SendClaudeCodeInput.
-func SendClaudeCodeExperimentalInput(ctx context.Context, ownerSessionID, message string) error {
-	return SendClaudeCodeInput(ctx, ownerSessionID, message)
-}
-
 // SendClaudeCodeInput routes live input into a registered Claude Code tmux session.
 func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) error {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return fmt.Errorf("Claude Code owner session ID is required")
 	}
-	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
 	return sendInputToActiveTmux(ctx, sessionName, message)
 }
 
-func cleanupClaudeExperimentalSessionAfter(sessionName string, retention time.Duration) func() {
+func cleanupClaudeInteractiveSessionAfter(sessionName string, retention time.Duration) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			if retention <= 0 {
-				closeClaudeExperimentalSessionNow(sessionName)
+				closeClaudeInteractiveSessionNow(sessionName)
 				return
 			}
 			time.AfterFunc(retention, func() {
-				closeClaudeExperimentalSessionNow(sessionName)
+				closeClaudeInteractiveSessionNow(sessionName)
 			})
 		})
 	}
 }
 
-func closeClaudeExperimentalSessionNow(sessionName string) {
-	defer unregisterClaudeExperimentalSession(sessionName)
+func closeClaudeInteractiveSessionNow(sessionName string) {
+	defer unregisterClaudeInteractiveSession(sessionName)
 	killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = killClaudeExperimentalSession(killCtx, sessionName)
+	_ = killClaudeInteractiveSession(killCtx, sessionName)
 }
 
-func killClaudeExperimentalSession(ctx context.Context, sessionName string) error {
+func killClaudeInteractiveSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
 	}
@@ -2961,7 +2965,7 @@ func claudeTmuxSessionExists(ctx context.Context, sessionName string) (bool, err
 	return true, nil
 }
 
-func claudeExperimentalSessionsFromTmuxList(out, prefix string) []string {
+func claudeInteractiveSessionsFromTmuxList(out, prefix string) []string {
 	var sessions []string
 	for _, line := range strings.Split(out, "\n") {
 		sessionName := strings.TrimSpace(line)

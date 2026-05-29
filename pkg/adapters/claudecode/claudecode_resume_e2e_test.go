@@ -31,14 +31,14 @@ import (
 // Skipped unless RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 and the
 // claude binary is on PATH.
 func TestClaudeCodeTmuxRealCrossRestartResume(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	workingDir := t.TempDir()
 	sentinel := "CLAUDE_CROSS_RESTART_SENTINEL_42"
 
 	// --- Turn 1: seed sentinel, capture native session ID.
-	adapter1 := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter1 := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel1()
 
@@ -83,7 +83,7 @@ func TestClaudeCodeTmuxRealCrossRestartResume(t *testing.T) {
 	}
 
 	// --- Turn 2: fresh adapter + fresh owner session ID, --resume the captured ID.
-	adapter2 := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter2 := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel2()
 

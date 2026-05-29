@@ -124,12 +124,6 @@ func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
 	return claudecodeadapter.CleanupClaudeCodeTmuxSessions(ctx)
 }
 
-// CleanupClaudeCodeExperimentalSessions is kept for compatibility.
-// Deprecated: use CleanupClaudeCodeTmuxSessions.
-func CleanupClaudeCodeExperimentalSessions(ctx context.Context) error {
-	return CleanupClaudeCodeTmuxSessions(ctx)
-}
-
 // CleanupCodexCLIInteractiveSessions removes Codex CLI tmux sessions registered
 // by this process.
 func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
@@ -192,16 +186,37 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 	claudecodeadapter.CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
+// CloseXxxCLIInteractiveSessionByTmux variants tear down a tmux-backed coding
+// CLI session by its tmux session name rather than by owner key. They run the
+// same provider-specific graceful exit + cleanup as the owner-keyed closes,
+// and are used as a teardown backstop when the owning session ID is unknown or
+// has drifted (e.g. workflow sub-agents registered under a step-execution
+// owner). All are no-ops when no live session matches the tmux name.
+
+func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	agycli.CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	cursorcli.CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	geminicli.CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	codexcli.CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	claudecodeadapter.CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
 // SendClaudeCodeInput sends user input to a live Claude Code tmux session
 // registered for the owning application session.
 func SendClaudeCodeInput(ctx context.Context, sessionID, message string) error {
 	return claudecodeadapter.SendClaudeCodeInput(ctx, sessionID, message)
-}
-
-// SendClaudeCodeExperimentalInput is kept for compatibility.
-// Deprecated: use SendClaudeCodeInput.
-func SendClaudeCodeExperimentalInput(ctx context.Context, sessionID, message string) error {
-	return SendClaudeCodeInput(ctx, sessionID, message)
 }
 
 // SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
@@ -238,12 +253,6 @@ func SendGeminiCLIInteractiveInput(ctx context.Context, sessionID, message strin
 // into a registered Claude Code tmux session.
 func SendClaudeCodeControlKey(ctx context.Context, sessionID, key string) error {
 	return claudecodeadapter.SendClaudeCodeControlKey(ctx, sessionID, key)
-}
-
-// SendClaudeCodeExperimentalControlKey is kept for compatibility.
-// Deprecated: use SendClaudeCodeControlKey.
-func SendClaudeCodeExperimentalControlKey(ctx context.Context, sessionID, key string) error {
-	return SendClaudeCodeControlKey(ctx, sessionID, key)
 }
 
 // SendCodexCLIInteractiveControlKey injects a tmux control key into a
@@ -294,9 +303,9 @@ type Config struct {
 	// API keys for providers (optional, falls back to environment variables if not provided)
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
-	// initialized Claude Code model. Normal execution should use "tmux"
-	// for tmux/no -p. The legacy print path is test-only and requires
-	// CLAUDE_CODE_ALLOW_LEGACY_PRINT=1.
+	// initialized Claude Code model. Default is "tmux" (the interactive TUI
+	// transport). "print" selects the `claude -p` stream-json transport — an
+	// opt-in path a workflow step may request via its transport config.
 	ClaudeCodeTransport string
 }
 
@@ -2206,12 +2215,14 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
 		return ClaudeCodeTransportTmux, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
-		if strings.TrimSpace(os.Getenv(EnvClaudeCodeAllowLegacyPrint)) != "1" {
-			return "", fmt.Errorf("Claude Code legacy print transport is disabled; use %s=%q for tmux mode or set %s=1 only for targeted legacy tests", EnvClaudeCodeTransport, ClaudeCodeTransportTmux, EnvClaudeCodeAllowLegacyPrint)
-		}
+		// Print / stream-json transport. Opt-in and rarely used — the default is
+		// tmux; a workflow step selects this explicitly via its transport config
+		// (step-level "structured"/"json" is mapped to this "print" value before
+		// it reaches here). Fully supported (not legacy-gated): the `claude -p`
+		// path passes the structured contract tests against the current CLI.
 		return ClaudeCodeTransportPrint, nil
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q (default) or %q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux, ClaudeCodeTransportPrint)
 	}
 }
 

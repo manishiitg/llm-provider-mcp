@@ -62,7 +62,7 @@ func SendCodingAgentControlKey(ctx context.Context, provider Provider, modelID, 
 
 	switch normalizedProvider {
 	case ProviderClaudeCode:
-		return SendClaudeCodeExperimentalControlKey(ctx, ownerSessionID, trimmedKey)
+		return SendClaudeCodeControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderGeminiCLI:

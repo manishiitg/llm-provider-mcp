@@ -42,7 +42,7 @@ func SendCodingAgentLiveInput(ctx context.Context, provider Provider, modelID, o
 
 	switch normalizedProvider {
 	case ProviderClaudeCode:
-		return SendClaudeCodeExperimentalInput(ctx, ownerSessionID, message)
+		return SendClaudeCodeInput(ctx, ownerSessionID, message)
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderGeminiCLI:

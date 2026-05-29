@@ -46,7 +46,7 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 					WithClaudeCodeEffort("low"),
 				}
 			},
-			cleanup: CleanupClaudeCodeExperimentalSessions,
+			cleanup: CleanupClaudeCodeTmuxSessions,
 		},
 		{
 			name:       "codex-cli",

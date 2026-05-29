@@ -19,17 +19,17 @@ const (
 	runClaudeTmuxLiveE2EEnv               = "RUN_CLAUDE_CODE_TMUX_LIVE_E2E"
 	runClaudeTmuxPersistentE2EEnv         = "RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E"
 	claudeTmuxIntegrationModelEnv         = "CLAUDE_CODE_TMUX_INTEGRATION_MODEL"
-	runClaudeExperimentalIntegrationEnv   = "RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION"
-	runClaudeExperimentalLiveE2EEnv       = "RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E"
-	runClaudeExperimentalPersistentE2EEnv = "RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E"
-	claudeExperimentalIntegrationModelEnv = "CLAUDE_CODE_EXPERIMENTAL_INTEGRATION_MODEL"
-	defaultClaudeExperimentalTestModel    = "claude-haiku-4-5-20251001"
+	runClaudeInteractiveIntegrationEnv   = "RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION"
+	runClaudeInteractiveLiveE2EEnv       = "RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E"
+	runClaudeInteractivePersistentE2EEnv = "RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E"
+	claudeInteractiveIntegrationModelEnv = "CLAUDE_CODE_EXPERIMENTAL_INTEGRATION_MODEL"
+	defaultClaudeInteractiveTestModel    = "claude-haiku-4-5-20251001"
 )
 
 func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -58,13 +58,13 @@ func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {
 	if sessionID := experimentalClaudeSessionID(resp); sessionID == "" {
 		t.Fatalf("response did not include claude_code_session_id: %#v", resp.Choices[0].GenerationInfo.Additional)
 	}
-	assertClaudeExperimentalHaikuMetadata(t, resp)
+	assertClaudeInteractiveHaikuMetadata(t, resp)
 }
 
 func TestClaudeCodeTmuxIntegrationNativeSystemPrompt(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -91,13 +91,13 @@ func TestClaudeCodeTmuxIntegrationNativeSystemPrompt(t *testing.T) {
 	if !containsFold(got, systemToken) {
 		t.Fatalf("content = %q, want token %q from native system prompt", got, systemToken)
 	}
-	assertClaudeExperimentalHaikuMetadata(t, resp)
+	assertClaudeInteractiveHaikuMetadata(t, resp)
 }
 
 func TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -124,13 +124,13 @@ func TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText(t *testing.T) {
 	if !strings.Contains(got, userToken) || strings.Contains(got, "EMPTY_INPUT") {
 		t.Fatalf("content = %q, want user token %q and no EMPTY_INPUT", got, userToken)
 	}
-	assertClaudeExperimentalHaikuMetadata(t, resp)
+	assertClaudeInteractiveHaikuMetadata(t, resp)
 }
 
 func TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -165,13 +165,13 @@ func TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits(t *testing.T) {
 	if !strings.Contains(got, token) {
 		t.Fatalf("content = %q, want token %s", got, token)
 	}
-	assertClaudeExperimentalHaikuMetadata(t, resp)
+	assertClaudeInteractiveHaikuMetadata(t, resp)
 }
 
 func TestClaudeCodeTmuxIntegrationNativeResume(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -224,21 +224,21 @@ func TestClaudeCodeTmuxIntegrationNativeResume(t *testing.T) {
 	if resumedID, _ := second.Choices[0].GenerationInfo.Additional["claude_code_resumed_session_id"].(string); resumedID != sessionID {
 		t.Fatalf("resumed session id metadata = %q, want %q", resumedID, sessionID)
 	}
-	assertClaudeExperimentalHaikuMetadata(t, first)
-	assertClaudeExperimentalHaikuMetadata(t, second)
+	assertClaudeInteractiveHaikuMetadata(t, first)
+	assertClaudeInteractiveHaikuMetadata(t, second)
 }
 
 func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	keyA := "session-a-integration-4821"
 	keyB := "session-b-integration-7394"
-	largeInput := buildClaudeExperimentalIntegrationLargeInput()
+	largeInput := buildClaudeInteractiveIntegrationLargeInput()
 
 	firstA, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{
@@ -335,17 +335,17 @@ func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
 		t.Fatalf("session B resumed metadata = %q, want %q", resumedID, sessionB)
 	}
 
-	assertClaudeExperimentalHaikuMetadata(t, firstA)
-	assertClaudeExperimentalHaikuMetadata(t, secondA)
-	assertClaudeExperimentalHaikuMetadata(t, firstB)
-	assertClaudeExperimentalHaikuMetadata(t, thirdA)
-	assertClaudeExperimentalHaikuMetadata(t, secondB)
+	assertClaudeInteractiveHaikuMetadata(t, firstA)
+	assertClaudeInteractiveHaikuMetadata(t, secondA)
+	assertClaudeInteractiveHaikuMetadata(t, firstB)
+	assertClaudeInteractiveHaikuMetadata(t, thirdA)
+	assertClaudeInteractiveHaikuMetadata(t, secondB)
 }
 
 func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
-	skipClaudeExperimentalLiveE2E(t)
+	skipClaudeInteractiveLiveE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -353,10 +353,10 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 	ownerSessionID := "claude-live-e2e-" + randomHex(4)
 	toolToken := "SLOW_CLAUDE_E2E_" + randomHex(4)
 	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
-	mcpServerPath := writeClaudeExperimentalSlowMCPServer(t, slowToolMarker)
+	mcpServerPath := writeClaudeInteractiveSlowMCPServer(t, slowToolMarker)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
 
-	resultCh := make(chan claudeExperimentalRealResult, 1)
+	resultCh := make(chan claudeInteractiveRealResult, 1)
 	startupErrCh := make(chan error, 1)
 	go func() {
 		resp, err := adapter.GenerateContent(
@@ -381,7 +381,7 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 			WithAllowedTools("mcp__api-bridge__slow_contract"),
 			WithEffort("low"),
 		)
-		out := claudeExperimentalRealResult{err: err}
+		out := claudeInteractiveRealResult{err: err}
 		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
 			out.content = resp.Choices[0].Content
 		}
@@ -395,7 +395,7 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 	}()
 
 	waitForIntegrationInteractiveSession(t, ownerSessionID, 30*time.Second, startupErrCh)
-	waitForClaudeExperimentalFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+	waitForClaudeInteractiveFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	liveErr := SendClaudeCodeInput(sendCtx, ownerSessionID, "## Pre-validation failed (retry attempt 3)\n\nFix the specific issue above and re-produce the required outputs.")
@@ -427,9 +427,9 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 }
 
 func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -480,15 +480,15 @@ func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing
 	if persistent, _ := second.Choices[0].GenerationInfo.Additional["claude_code_persistent_interactive"].(bool); !persistent {
 		t.Fatalf("persistent metadata = %#v, want true", second.Choices[0].GenerationInfo.Additional["claude_code_persistent_interactive"])
 	}
-	if _, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); !ok {
+	if _, ok := activeClaudeInteractiveOwner(ownerSessionID); !ok {
 		t.Fatalf("persistent interactive session not registered after completed turn")
 	}
 }
 
 func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(claudeExperimentalIntegrationModel(), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -517,7 +517,7 @@ func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 		t.Fatalf("GenerateContent error = %v", err)
 	}
 	content := strings.TrimSpace(firstChoiceText(resp))
-	tmuxSession, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	tmuxSession, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok || tmuxSession == "" {
 		t.Fatalf("expected active Claude Code tmux session for %s", ownerSessionID)
 	}
@@ -552,9 +552,9 @@ func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 }
 
 func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -587,7 +587,7 @@ func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *te
 		t.Fatalf("first content = %q, want ready", got)
 	}
 
-	sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID)
+	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {
 		t.Fatalf("persistent interactive session not registered for %s", ownerSessionID)
 	}
@@ -595,7 +595,7 @@ func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *te
 	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, staleDraft); err != nil {
 		t.Fatalf("seed stale tmux draft: %v", err)
 	}
-	waitForClaudeExperimentalDraft(t, sessionName, staleDraft, 5*time.Second)
+	waitForClaudeInteractiveDraft(t, sessionName, staleDraft, 5*time.Second)
 
 	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{
@@ -618,14 +618,14 @@ func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *te
 }
 
 func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusable(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	ownerSessionID := "claude-cancel-ready-e2e-" + randomHex(4)
 	markerPath := filepath.Join(t.TempDir(), "slow-tool-started.json")
-	mcpServerPath := writeClaudeExperimentalSlowMCPServer(t, markerPath)
+	mcpServerPath := writeClaudeInteractiveSlowMCPServer(t, markerPath)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
 	options := []llmtypes.CallOption{
 		WithInteractiveSessionID(ownerSessionID),
@@ -657,7 +657,7 @@ func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusabl
 		errCh <- err
 	}()
 
-	waitForClaudeExperimentalFileOrResult(t, markerPath, "slow tool start marker", 90*time.Second, errCh, ownerSessionID)
+	waitForClaudeInteractiveFileOrResult(t, markerPath, "slow tool start marker", 90*time.Second, errCh, ownerSessionID)
 	cancel()
 
 	select {
@@ -672,7 +672,7 @@ func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusabl
 		t.Fatal("timed out waiting for canceled Claude Code turn to return")
 	}
 
-	if sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+	if sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID); ok {
 		captured, err := captureTmuxPane(context.Background(), sessionName)
 		if err != nil {
 			t.Fatalf("active session %s could not be captured after cancellation: %v", sessionName, err)
@@ -683,7 +683,7 @@ func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusabl
 	}
 }
 
-func waitForClaudeExperimentalFileOrResult(t *testing.T, path, label string, timeout time.Duration, errCh <-chan error, ownerSessionID string) {
+func waitForClaudeInteractiveFileOrResult(t *testing.T, path, label string, timeout time.Duration, errCh <-chan error, ownerSessionID string) {
 	t.Helper()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -694,7 +694,7 @@ func waitForClaudeExperimentalFileOrResult(t *testing.T, path, label string, tim
 		case err := <-errCh:
 			t.Fatalf("Claude Code exited before %s: %v", label, err)
 		case <-deadline.C:
-			if sessionName, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+			if sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID); ok {
 				if captured, err := captureTmuxPane(context.Background(), sessionName); err == nil {
 					t.Fatalf("timed out waiting for %s at %s; latest pane:\n%s", label, path, captured)
 				}
@@ -708,38 +708,38 @@ func waitForClaudeExperimentalFileOrResult(t *testing.T, path, label string, tim
 	}
 }
 
-func skipClaudeExperimentalIntegration(t *testing.T) {
+func skipClaudeInteractiveIntegration(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxIntegrationEnv) == "" && os.Getenv(runClaudeExperimentalIntegrationEnv) == "" {
+	if os.Getenv(runClaudeTmuxIntegrationEnv) == "" && os.Getenv(runClaudeInteractiveIntegrationEnv) == "" {
 		t.Skip("set " + runClaudeTmuxIntegrationEnv + "=1 to run real Claude Code tmux integration tests")
 	}
 }
 
-func skipClaudeExperimentalLiveE2E(t *testing.T) {
+func skipClaudeInteractiveLiveE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxLiveE2EEnv) == "" && os.Getenv(runClaudeExperimentalLiveE2EEnv) == "" {
+	if os.Getenv(runClaudeTmuxLiveE2EEnv) == "" && os.Getenv(runClaudeInteractiveLiveE2EEnv) == "" {
 		t.Skip("set " + runClaudeTmuxLiveE2EEnv + "=1 to run real Claude Code Haiku live-input/Escape E2E")
 	}
 }
 
-func skipClaudeExperimentalPersistentE2E(t *testing.T) {
+func skipClaudeInteractivePersistentE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxPersistentE2EEnv) == "" && os.Getenv(runClaudeExperimentalPersistentE2EEnv) == "" {
+	if os.Getenv(runClaudeTmuxPersistentE2EEnv) == "" && os.Getenv(runClaudeInteractivePersistentE2EEnv) == "" {
 		t.Skip("set " + runClaudeTmuxPersistentE2EEnv + "=1 to run real Claude Code Haiku persistent multi-turn E2E")
 	}
 }
 
-func claudeExperimentalIntegrationModel() string {
+func claudeInteractiveIntegrationModel() string {
 	if model := strings.TrimSpace(os.Getenv(claudeTmuxIntegrationModelEnv)); model != "" {
 		return model
 	}
-	if model := strings.TrimSpace(os.Getenv(claudeExperimentalIntegrationModelEnv)); model != "" {
+	if model := strings.TrimSpace(os.Getenv(claudeInteractiveIntegrationModelEnv)); model != "" {
 		return model
 	}
-	return defaultClaudeExperimentalTestModel
+	return defaultClaudeInteractiveTestModel
 }
 
-func assertClaudeExperimentalHaikuMetadata(t *testing.T, resp *llmtypes.ContentResponse) {
+func assertClaudeInteractiveHaikuMetadata(t *testing.T, resp *llmtypes.ContentResponse) {
 	t.Helper()
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].GenerationInfo == nil {
 		t.Fatalf("response missing generation info: %#v", resp)
@@ -776,14 +776,14 @@ func waitForIntegrationInteractiveSession(t *testing.T, ownerSessionID string, t
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for Claude Code interactive session %q", ownerSessionID)
 		case <-ticker.C:
-			if _, ok := activeClaudeExperimentalInteractiveSession(ownerSessionID); ok {
+			if _, ok := activeClaudeInteractiveOwner(ownerSessionID); ok {
 				return
 			}
 		}
 	}
 }
 
-func waitForClaudeExperimentalFile(t *testing.T, path, label string, timeout time.Duration, resultCh <-chan claudeExperimentalRealResult) {
+func waitForClaudeInteractiveFile(t *testing.T, path, label string, timeout time.Duration, resultCh <-chan claudeInteractiveRealResult) {
 	t.Helper()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -803,7 +803,7 @@ func waitForClaudeExperimentalFile(t *testing.T, path, label string, timeout tim
 	}
 }
 
-func waitForClaudeExperimentalDraft(t *testing.T, sessionName, want string, timeout time.Duration) {
+func waitForClaudeInteractiveDraft(t *testing.T, sessionName, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -819,7 +819,7 @@ func waitForClaudeExperimentalDraft(t *testing.T, sessionName, want string, time
 	t.Fatalf("timed out waiting for Claude Code draft %q; latest pane:\n%s", want, captured)
 }
 
-type claudeExperimentalRealResult struct {
+type claudeInteractiveRealResult struct {
 	content string
 	err     error
 }
@@ -832,7 +832,7 @@ func experimentalClaudeResumedSessionID(resp *llmtypes.ContentResponse) string {
 	return sessionID
 }
 
-func buildClaudeExperimentalIntegrationLargeInput() string {
+func buildClaudeInteractiveIntegrationLargeInput() string {
 	var b strings.Builder
 	b.WriteString("Large prompt regression fixture:\n")
 	for i := 0; b.Len() < 12000; i++ {
@@ -843,7 +843,7 @@ func buildClaudeExperimentalIntegrationLargeInput() string {
 	return b.String()
 }
 
-func writeClaudeExperimentalSlowMCPServer(t *testing.T, markerPath string) string {
+func writeClaudeInteractiveSlowMCPServer(t *testing.T, markerPath string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-slow-contract-mcp.js")
 	script := fmt.Sprintf(`#!/usr/bin/env node
@@ -934,15 +934,15 @@ rl.on("line", (line) => {
 // ---------------------------------------------------------------------------
 
 func TestClaudeCodeTmuxIntegrationHaikuMCPBridgeContract(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	bridgeToken := "CLAUDE_BRIDGE_" + randomHex(4)
-	mcpServerPath := writeClaudeExperimentalContractMCPServer(t)
+	mcpServerPath := writeClaudeInteractiveContractMCPServer(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
 
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
@@ -980,9 +980,9 @@ func TestClaudeCodeTmuxIntegrationHaikuMCPBridgeContract(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -995,7 +995,7 @@ func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 		t.Fatalf("write workspace marker: %v", err)
 	}
 
-	mcpServerPath := writeClaudeExperimentalCwdMCPServer(t)
+	mcpServerPath := writeClaudeInteractiveCwdMCPServer(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
 
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
@@ -1048,9 +1048,9 @@ func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeCodeTmuxIntegrationTrustPromptAutoDismiss(t *testing.T) {
-	skipClaudeExperimentalIntegration(t)
+	skipClaudeInteractiveIntegration(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
@@ -1083,9 +1083,9 @@ func TestClaudeCodeTmuxIntegrationTrustPromptAutoDismiss(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeCodeTmuxIntegrationParallelIsolation(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	type parallelSpec struct {
@@ -1178,9 +1178,9 @@ func TestClaudeCodeTmuxIntegrationParallelIsolation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaudeCodeTmuxIntegrationSharedWorkingDirMCPIsolation(t *testing.T) {
-	skipClaudeExperimentalPersistentE2E(t)
+	skipClaudeInteractivePersistentE2E(t)
 
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeExperimentalTestModel, &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	sharedWorkDir := filepath.Join(t.TempDir(), "shared-workspace")
@@ -1215,7 +1215,7 @@ func TestClaudeCodeTmuxIntegrationSharedWorkingDirMCPIsolation(t *testing.T) {
 		},
 	}
 	for i := range specs {
-		specs[i].mcpServerPath = writeClaudeExperimentalIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
+		specs[i].mcpServerPath = writeClaudeInteractiveIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
 		specs[i].mcpConfig = fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, specs[i].mcpServerPath)
 	}
 
@@ -1291,7 +1291,7 @@ func TestClaudeCodeTmuxIntegrationSharedWorkingDirMCPIsolation(t *testing.T) {
 	}
 }
 
-func writeClaudeExperimentalContractMCPServer(t *testing.T) string {
+func writeClaudeInteractiveContractMCPServer(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-contract-mcp.js")
 	script := `#!/usr/bin/env node
@@ -1325,7 +1325,7 @@ rl.on("line", (line) => {
 	return path
 }
 
-func writeClaudeExperimentalIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
+func writeClaudeInteractiveIsolationMCPServer(t *testing.T, sessionMarker, outputPath string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-isolation-contract-mcp.js")
 	script := fmt.Sprintf(`#!/usr/bin/env node
@@ -1367,7 +1367,7 @@ rl.on("line", (line) => {
 	return path
 }
 
-func writeClaudeExperimentalCwdMCPServer(t *testing.T) string {
+func writeClaudeInteractiveCwdMCPServer(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-cwd-mcp.js")
 	script := `#!/usr/bin/env node

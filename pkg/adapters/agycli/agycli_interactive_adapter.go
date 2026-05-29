@@ -1178,6 +1178,34 @@ func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeAgyPersistentSession(ownerSessionID, reason, nil)
 }
 
+// CloseAgyCLIInteractiveSessionByTmux closes the persistent agy interactive
+// session whose backing tmux session matches tmuxSessionName, regardless of
+// the owner key it was registered under. Use as a teardown backstop when the
+// owning session ID is unknown or has drifted (e.g. a workflow sub-agent
+// registered under a step-execution owner that the caller can't reconstruct).
+// It resolves the tmux name to its owner and delegates to the owner-keyed
+// close, so the exact same graceful exit + cleanup sequence runs. No-op when
+// no live session matches the tmux name.
+func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	name := strings.TrimSpace(tmuxSessionName)
+	if name == "" {
+		return
+	}
+	agyPersistentRegistry.Lock()
+	owner := ""
+	for o, s := range agyPersistentRegistry.sessions {
+		if s != nil && s.tmuxSessionName == name {
+			owner = o
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+	if owner == "" {
+		return
+	}
+	closeAgyPersistentSession(owner, reason, nil)
+}
+
 func closeAgySessionLocked(session *agyInteractiveSession, reason string, logger interfaces.Logger) {
 	if session == nil {
 		return

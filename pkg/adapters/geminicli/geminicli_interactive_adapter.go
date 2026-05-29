@@ -591,6 +591,32 @@ func CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeGeminiPersistentSession(ownerSessionID, reason, nil)
 }
 
+// CloseGeminiCLIInteractiveSessionByTmux closes the persistent gemini
+// interactive session whose backing tmux session matches tmuxSessionName,
+// regardless of the owner key it was registered under. Teardown backstop for
+// when the owning session ID is unknown or has drifted. Delegates to the
+// owner-keyed close so the same graceful exit + cleanup runs. No-op when no
+// live session matches.
+func CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	name := strings.TrimSpace(tmuxSessionName)
+	if name == "" {
+		return
+	}
+	geminiPersistentRegistry.Lock()
+	owner := ""
+	for o, s := range geminiPersistentRegistry.sessions {
+		if s != nil && s.tmuxSessionName == name {
+			owner = o
+			break
+		}
+	}
+	geminiPersistentRegistry.Unlock()
+	if owner == "" {
+		return
+	}
+	closeGeminiPersistentSession(owner, reason, nil)
+}
+
 func closeGeminiPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
 	geminiPersistentRegistry.Lock()
 	session := geminiPersistentRegistry.sessions[ownerSessionID]

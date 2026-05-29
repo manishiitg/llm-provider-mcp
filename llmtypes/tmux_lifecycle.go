@@ -7,7 +7,7 @@ import "time"
 // rail's default retention so the UI does not advertise a live/debuggable
 // terminal after the provider has already killed the real tmux process.
 //
-// Shared across all interactive adapters (claudecode_experimental,
+// Shared across all interactive adapters (claudecode_interactive,
 // codex_interactive, gemini_interactive, cursor_interactive) so the
 // behavior is uniform; per-adapter overrides via env vars still apply
 // to the rail-display retention, not this kill delay.

@@ -112,7 +112,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
 		{
 			ID:          CertFreshLaunch,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
 			Description: "starts Claude Code tmux transport and carries the first user prompt",
@@ -120,19 +120,19 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertResumeCompactionStartup,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_adapter_test.go",
 			TestName:    "TestClaudeResumeSummaryMenuSubmitsDefaultChoice",
 			Description: "resume/compaction startup prompts are detected and submitted through the global prompt-wait path",
 		},
 		{
 			ID:          CertStartupTerminalVisibility,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_adapter_test.go",
 			TestName:    "TestClaudeTerminalStreamCapturesRawScreenRows",
 			Description: "Claude startup/working panes emit raw terminal rows before final completion",
 		},
 		{
 			ID:          CertWorkingDirectory,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "proves Claude Code and its MCP bridge run in the requested cwd",
@@ -140,7 +140,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertTrustAuthPrompts,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "fresh Claude workspace trust setup is handled before launching in a requested cwd",
@@ -148,7 +148,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertNativeSystemPrompt,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationNativeSystemPrompt",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
 			Description: "system prompt reaches Claude through native system-prompt transport",
@@ -156,7 +156,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertPromptPaste,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
 			Description: "large pasted prompt submits correctly through tmux",
@@ -164,7 +164,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertMCPBridge,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuMCPBridgeContract",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "Claude Code calls a real MCP bridge tool",
@@ -172,7 +172,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertBridgeOnlyTools,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationNoInternalTools",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
 			Description: "Claude Code bridge-only mode does not expose internal shell/file tools",
@@ -180,7 +180,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertSlowToolLiveInput,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
 			Description: "live validation input during a slow MCP tool does not complete the foreground turn",
@@ -188,7 +188,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertSlowToolFalseIdle,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
 			Description: "slow MCP activity keeps Claude classified active even if prompt-looking UI appears",
@@ -196,7 +196,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertDoneDetection,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
 			Description: "slow MCP plus live input does not falsely complete while active",
@@ -204,7 +204,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertFinalExtraction,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
 			Description: "real Claude Code tmux turn is captured and Vertex judges final extraction quality, formatting, and TUI noise removal",
@@ -212,7 +212,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertMultiTurn,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "persistent Claude Code tmux session keeps native multi-turn memory",
@@ -220,7 +220,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertStaleDraftCleanup,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "stale prompt drafts are cleared before the next backend turn",
@@ -228,7 +228,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertLiveInput,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
 			Description: "live input routes into the active Claude Code tmux session",
@@ -236,7 +236,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertCancellation,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusable",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "canceled Claude Code persistent sessions are not reused while busy",
@@ -244,7 +244,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertPersistentCancelReuse,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusable",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "a canceled persistent Claude pane is not reused unless it is prompt-ready",
@@ -252,7 +252,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertLifecyclePolicy,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "persistent chat sessions remain registered after a completed turn",
@@ -266,7 +266,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertParallelIsolation,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationParallelIsolation",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "parallel Claude tmux sessions do not share state",
@@ -280,7 +280,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertSharedWorkdirMCPIsolation,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_integration_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
 			TestName:    "TestClaudeCodeTmuxIntegrationSharedWorkingDirMCPIsolation",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1"},
 			Description: "parallel Claude sessions in one cwd keep MCP sessions isolated",
@@ -294,7 +294,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 		{
 			ID:          CertSessionLoss,
-			TestFile:    "pkg/adapters/claudecode/claudecode_experimental_adapter_test.go",
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_adapter_test.go",
 			TestName:    "TestClaudeTmuxSessionLostErrorDetection",
 			Description: "Claude Code classifies missing tmux server/session/pane errors",
 		},
