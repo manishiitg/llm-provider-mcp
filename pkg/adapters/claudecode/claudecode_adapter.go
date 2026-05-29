@@ -408,23 +408,35 @@ func (c *ClaudeCodeAdapter) generateContentInner(ctx context.Context, opts *llmt
 	}
 
 	joinedSystemPrompt := strings.Join(systemPrompts, "\n\n")
-	if len(systemPrompts) > 0 {
-		args = append(args, "--append-system-prompt", joinedSystemPrompt)
-	}
 
 	// Project the system prompt into <workingDir>/CLAUDE.md (Claude
 	// Code's project-instructions convention) with byte-restore on
 	// cleanup. ON by default; mirrors the interactive adapter behavior
 	// so structured (non-interactive) generateContent calls also drop
 	// the per-session system prompt into the workspace. Best-effort:
-	// write failures must not block GenerateContent — the
-	// --append-system-prompt injection above is the primary path.
+	// write failures must not block GenerateContent.
+	//
+	// projectedToClaudeMd records whether the write succeeded so
+	// project-instruction-only mode can skip the --append-system-prompt
+	// injection below and avoid a doubled system prompt. On failure it stays
+	// false and the --append-system-prompt fallback fires.
+	projectedToClaudeMd := false
 	if writeProjectInstructionFromOptions(opts) && workingDir != "" && strings.TrimSpace(joinedSystemPrompt) != "" {
 		if rulePath, werr := writeClaudeCodeProjectInstructionFile(workingDir, joinedSystemPrompt, restoreProjectFilesFromOptions(opts)); werr != nil {
 			c.logger.Errorf("claude code: project CLAUDE.md write failed (best-effort): %v", werr)
 		} else if rulePath != "" {
 			defer removeFiles([]string{rulePath})
+			projectedToClaudeMd = true
 		}
+	}
+
+	// Inject the system prompt via --append-system-prompt UNLESS the caller
+	// opted into project-instruction-only mode AND the CLAUDE.md projection
+	// succeeded — in which case CLAUDE.md is the sole carrier (no doubled
+	// prompt). If the projection was skipped or failed, projectedToClaudeMd is
+	// false and we still pass --append-system-prompt so the prompt is applied.
+	if len(systemPrompts) > 0 && !(projectInstructionOnlyFromOptions(opts) && projectedToClaudeMd) {
+		args = append(args, "--append-system-prompt", joinedSystemPrompt)
 	}
 
 	// Handle JSON Schema for structured output
