@@ -582,22 +582,23 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	if c.shouldPassModelFlag() {
 		args = append(args, "--model", c.modelID)
 	}
-	if strings.TrimSpace(systemPrompt) != "" {
-		systemPromptPath, err := writeTempFile("claude-code-system-prompt-*.md", systemPrompt)
-		if err != nil {
-			return nil, nil, err
-		}
-		tempFiles = append(tempFiles, systemPromptPath)
-		args = append(args, "--system-prompt-file", systemPromptPath)
-	}
+
+	// projectedToClaudeMd records whether the system prompt was successfully
+	// written to <workingDir>/CLAUDE.md below. In project-instruction-only
+	// mode it gates whether we still pass --system-prompt-file: when the
+	// CLAUDE.md projection succeeded we skip the flag (the prompt is applied
+	// once, via project instructions); otherwise we fall back to the flag.
+	projectedToClaudeMd := false
 
 	// Project the system prompt into <workingDir>/CLAUDE.md (Claude
 	// Code's project-instructions convention) with byte-restore on
 	// cleanup. ON by default; operators that need to protect their own
 	// CLAUDE.md can opt out with WithClaudeCodeWriteProjectInstructionFile(false).
-	// The --system-prompt-file flag above already injects the prompt; this
-	// also makes the prompt visible inside the workspace for debugging
-	// and downstream tooling that reads project instructions.
+	// By default the prompt is ALSO injected via --system-prompt-file below;
+	// CLAUDE.md makes it visible inside the workspace for debugging and
+	// downstream tooling that reads project instructions. With
+	// WithProjectInstructionOnly(true) the --system-prompt-file injection is
+	// skipped and CLAUDE.md becomes the sole carrier (no doubled prompt).
 	//
 	// When the same flag is on AND an MCP config was provided via
 	// WithMCPConfig, we also project the MCP servers into
@@ -610,11 +611,12 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		if strings.TrimSpace(systemPrompt) != "" {
 			if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt, restoreProjectFiles); err != nil {
 				// Best-effort: a write failure here must not block the
-				// session. The primary --system-prompt-file injection
-				// already succeeded; CLAUDE.md is purely additive.
+				// session. projectedToClaudeMd stays false so the
+				// --system-prompt-file fallback below still fires.
 				_ = err
 			} else if rulePath != "" {
 				tempFiles = append(tempFiles, rulePath)
+				projectedToClaudeMd = true
 			}
 		}
 		// .mcp.json projection is intentionally gated behind an env
@@ -639,6 +641,22 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 				}
 			}
 		}
+	}
+
+	// Inject the system prompt via --system-prompt-file UNLESS the caller
+	// opted into project-instruction-only mode AND the CLAUDE.md projection
+	// actually succeeded. In that case the prompt lives solely in CLAUDE.md
+	// (auto-loaded as project instructions), so passing it here too would
+	// double the system prompt. If CLAUDE.md was skipped or failed to write,
+	// projectedToClaudeMd is false and we fall back to the flag so the prompt
+	// is never silently dropped.
+	if strings.TrimSpace(systemPrompt) != "" && !(projectInstructionOnlyFromOptions(opts) && projectedToClaudeMd) {
+		systemPromptPath, err := writeTempFile("claude-code-system-prompt-*.md", systemPrompt)
+		if err != nil {
+			return nil, nil, err
+		}
+		tempFiles = append(tempFiles, systemPromptPath)
+		args = append(args, "--system-prompt-file", systemPromptPath)
 	}
 
 	// Project attached skills into .claude/skills/ so Claude Code's
@@ -686,6 +704,18 @@ func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
 		return false
 	}
 	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
+}
+
+// projectInstructionOnlyFromOptions reads the OFF-by-default feature flag for
+// injecting the system prompt only via CLAUDE.md (skipping --system-prompt-file).
+// Returns false when the key is unset. Callers opt in with
+// WithProjectInstructionOnly(true).
+func projectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyProjectInstructionOnly].(bool)
 	return enabled
 }
 

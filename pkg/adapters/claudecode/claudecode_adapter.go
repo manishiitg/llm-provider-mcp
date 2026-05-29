@@ -54,7 +54,19 @@ const (
 	// byte-restore behavior for repos with operator-owned files worth
 	// preserving.
 	MetadataKeyRestoreProjectFiles = "claude_code_restore_project_files"
-	claudeCodeDisableAutoMemoryEnv = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature flag
+	// that makes the adapter inject the per-session system prompt SOLELY via
+	// <workingDir>/CLAUDE.md and skip the --system-prompt-file flag. Default
+	// off: the prompt goes through --system-prompt-file as usual (and is also
+	// projected to CLAUDE.md when WithWriteProjectInstructionFile is on).
+	// With it on, the prompt is written only to CLAUDE.md — which Claude Code
+	// auto-loads as project instructions — eliminating the doubled system
+	// prompt that otherwise results from passing the same bytes both ways.
+	// Pass WithProjectInstructionOnly(true) to enable. If the CLAUDE.md
+	// projection is disabled or fails, the adapter falls back to
+	// --system-prompt-file so the prompt is never lost.
+	MetadataKeyProjectInstructionOnly = "claude_code_project_instruction_only"
+	claudeCodeDisableAutoMemoryEnv    = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -284,6 +296,24 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// WithProjectInstructionOnly makes the adapter inject the per-session system
+// prompt SOLELY via <workingDir>/CLAUDE.md and skip the --system-prompt-file
+// flag. OFF by default. Claude Code auto-loads CLAUDE.md as project
+// instructions, so the prompt is still applied — but only once, avoiding the
+// doubled system prompt that results from passing the same bytes through both
+// --system-prompt-file and CLAUDE.md.
+//
+// Requires the CLAUDE.md projection to be active (it is, by default; see
+// WithWriteProjectInstructionFile) and a non-empty working dir. If the
+// projection is disabled or the write fails, the adapter falls back to
+// --system-prompt-file so the prompt is never silently dropped.
+func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectInstructionOnly] = enabled
 	}
 }
 

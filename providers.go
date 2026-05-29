@@ -3824,6 +3824,18 @@ func WithClaudeCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption
 	return claudecodeadapter.WithWriteProjectInstructionFile(enabled)
 }
 
+// WithClaudeCodeProjectInstructionOnly makes the adapter inject the
+// per-session system prompt SOLELY via <workingDir>/CLAUDE.md and skip the
+// --system-prompt-file flag. OFF by default. Claude Code auto-loads CLAUDE.md
+// as project instructions, so the prompt is still applied — but only once,
+// avoiding the doubled system prompt that otherwise results from passing the
+// same bytes through both --system-prompt-file and CLAUDE.md. Requires the
+// CLAUDE.md projection (on by default) and a working dir; if the projection is
+// disabled or its write fails, the adapter falls back to --system-prompt-file.
+func WithClaudeCodeProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return claudecodeadapter.WithProjectInstructionOnly(enabled)
+}
+
 // WithClaudeCodeEffort sets the --effort flag for the Claude Code CLI.
 // Values: "low", "medium", "high", "max"
 func WithClaudeCodeEffort(level string) llmtypes.CallOption {
