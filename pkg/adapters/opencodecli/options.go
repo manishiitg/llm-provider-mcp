@@ -45,6 +45,22 @@ const (
 	// WithRestoreProjectFiles(true) to opt back into the legacy
 	// byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "opencode_restore_project_files"
+
+	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature flag
+	// that makes the adapter carry the per-session system prompt SOLELY via
+	// the projected <workingDir>/AGENTS.md instruction file and SKIP the
+	// in-band "[System Instructions]" prefix normally prepended to the run
+	// prompt. opencode auto-loads AGENTS.md as project instructions, so the
+	// prompt is still applied — but only once, avoiding the doubled system
+	// prompt (and doubled token cost) that results from passing the same
+	// bytes through both the in-band prompt prefix and AGENTS.md.
+	//
+	// Requires the AGENTS.md projection to be active (see
+	// WithWriteProjectInstructionFile, ON by default) and a non-empty
+	// working dir. If the projection is disabled or its write fails, the
+	// adapter falls back to the in-band prefix so the prompt is never
+	// silently dropped. Pass WithProjectInstructionOnly(true) to enable.
+	MetadataKeyProjectInstructionOnly = "opencode_project_instruction_only"
 )
 
 // WithOpenCodeModel sets the OpenCode CLI --model flag. Use "opencode-cli" or
@@ -182,6 +198,37 @@ func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
 	}
+}
+
+// WithProjectInstructionOnly makes the adapter inject the per-session system
+// prompt SOLELY via the projected <workingDir>/AGENTS.md instruction file and
+// SKIP the in-band "[System Instructions]" prefix normally prepended to the
+// `opencode run` prompt. OFF by default. opencode auto-loads AGENTS.md as
+// project instructions, so the prompt is still applied — but only once,
+// avoiding the doubled system prompt (and doubled token cost) that results
+// from passing the same bytes through both the in-band prefix and AGENTS.md.
+//
+// Requires the AGENTS.md projection to be active (it is, by default; see
+// WithWriteProjectInstructionFile) and a non-empty working dir. If the
+// projection is disabled or the write fails, the adapter falls back to the
+// in-band prefix so the prompt is never silently dropped.
+func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectInstructionOnly] = enabled
+	}
+}
+
+// projectInstructionOnlyFromOptions reads the OFF-by-default feature flag for
+// injecting the system prompt only via the projected AGENTS.md instruction
+// file (skipping the in-band "[System Instructions]" prefix). Returns false
+// when the key is unset. Callers opt in with WithProjectInstructionOnly(true).
+func projectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyProjectInstructionOnly].(bool)
+	return enabled
 }
 
 // WithContinueLastSession resumes the most recent OpenCode session (--continue).

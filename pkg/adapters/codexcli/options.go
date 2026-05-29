@@ -44,6 +44,17 @@ const (
 	// before. Pass WithRestoreProjectFiles(true) to opt back into the
 	// legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "codex_restore_project_files"
+	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature
+	// flag that carries the per-session system prompt SOLELY via the
+	// projected <workingDir>/AGENTS.md file and SKIPS the CLI-side
+	// injection (-c developer_instructions in the structured path,
+	// -c model_instructions_file in the interactive path). Default off;
+	// the CLI injection is the primary path. When enabled, the CLI
+	// injection is skipped only if the AGENTS.md projection actually
+	// succeeded for that path — otherwise the adapter falls back to the
+	// CLI injection so the prompt is never silently dropped. For large
+	// prompts this avoids paying the system-prompt token cost twice.
+	MetadataKeyProjectInstructionOnly = "codex_project_instruction_only"
 )
 
 func appendCodexDisableUpdateArgs(args []string) []string {
@@ -296,6 +307,26 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// WithProjectInstructionOnly makes the adapter carry the per-session system
+// prompt SOLELY via the projected <workingDir>/AGENTS.md file and SKIP the
+// CLI-side injection (-c developer_instructions in the structured path,
+// -c model_instructions_file in the interactive path). OFF by default. Codex
+// auto-loads AGENTS.md as project instructions, so the prompt is still applied
+// — but only once, avoiding the doubled system prompt (and doubled token cost)
+// that results from passing the same bytes through both the CLI flag and
+// AGENTS.md.
+//
+// Requires the AGENTS.md projection to be active (it is, by default; see
+// WithWriteProjectInstructionFile) and a non-empty working dir. If the
+// projection is disabled or its write fails, the adapter falls back to the CLI
+// injection so the prompt is never silently dropped.
+func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectInstructionOnly] = enabled
 	}
 }
 

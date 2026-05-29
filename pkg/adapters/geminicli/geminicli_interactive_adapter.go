@@ -393,6 +393,18 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 			g.logger.Infof("gemini-cli: WithWriteProjectInstructionFile is enabled but projecting workspace artifacts failed (continuing without workspace files): %v", writeErr)
 		} else if cleanup != nil {
 			session.projectInstructionCleanup = cleanup
+
+			// project-instruction-only mode: GEMINI.md was projected
+			// successfully, so drop the GEMINI_SYSTEM_MD env injection that
+			// buildGeminiInteractiveLaunch added. GEMINI.md becomes the sole
+			// carrier of the system prompt (no doubled prompt / token cost).
+			// Only strips when the projection actually carried the prompt
+			// (non-empty systemPrompt + non-empty workingDir); if the
+			// projection was a no-op or failed, env keeps GEMINI_SYSTEM_MD so
+			// the prompt is never silently dropped.
+			if geminiProjectInstructionOnlyFromOptions(opts) && strings.TrimSpace(systemPrompt) != "" && strings.TrimSpace(workingDir) != "" {
+				env = removeGeminiSystemMDEnv(env)
+			}
 		}
 	}
 

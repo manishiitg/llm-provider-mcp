@@ -183,7 +183,7 @@ func TestCodexBridgeOnlyDisablesPluginAndDummyToolSurfaces(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithDisableShellTool()(opts)
 
-	args, systemPromptFile, err := adapter.buildCodexInteractiveArgs(opts, "")
+	args, systemPromptFile, _, err := adapter.buildCodexInteractiveArgs(opts, "")
 	if err != nil {
 		t.Fatalf("buildCodexInteractiveArgs error = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithResumeSessionID("019e2584-a35a-7100-877e-209c4518f957")(opts)
 
-	args, systemPromptFile, err := adapter.buildCodexInteractiveArgs(opts, "")
+	args, systemPromptFile, _, err := adapter.buildCodexInteractiveArgs(opts, "")
 	if err != nil {
 		t.Fatalf("buildCodexInteractiveArgs error = %v", err)
 	}

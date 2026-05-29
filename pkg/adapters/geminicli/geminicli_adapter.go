@@ -370,10 +370,13 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 	// Gemini CLI ≥0.39.1 refuses to run headless in untrusted directories (exit 55) without this.
 	env = append(env, "GEMINI_CLI_TRUST_WORKSPACE=true")
 	env = append(env, geminiAPIKeyEnv(g.apiKey)...)
-	if systemPromptFile != "" {
-		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
-	}
 
+	// Project the system prompt into <workingDir>/GEMINI.md FIRST so its
+	// success is known before we decide whether to ALSO inject
+	// GEMINI_SYSTEM_MD. projectedToInstructionFile is true only when the
+	// projection write actually succeeded (cleanup returned non-nil, no
+	// error); it gates project-instruction-only mode below.
+	projectedToInstructionFile := false
 	commandDir := ""
 	if workingDir := geminiWorkingDirFromOptions(opts); workingDir != "" {
 		if err := os.MkdirAll(workingDir, 0755); err != nil {
@@ -388,15 +391,27 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 		// so structured (non-interactive) generateContent calls also
 		// drop the per-session system prompt into the workspace.
 		// Best-effort: write failures must not block GenerateContent —
-		// the GEMINI_SYSTEM_MD env var above is the primary path.
+		// the GEMINI_SYSTEM_MD env var below is the fallback path.
 		if geminiWriteProjectInstructionFromOptions(opts) && len(systemPrompts) > 0 {
 			combined := strings.Join(systemPrompts, "\n\n")
 			if cleanup, werr := writeGeminiProjectInstructionFile(workingDir, combined, geminiRestoreProjectFilesFromOptions(opts)); werr != nil {
 				g.logger.Errorf("gemini cli: project GEMINI.md write failed (best-effort): %v", werr)
 			} else if cleanup != nil {
 				defer cleanup()
+				projectedToInstructionFile = true
 			}
 		}
+	}
+
+	// Inject the system prompt via GEMINI_SYSTEM_MD UNLESS the caller opted
+	// into project-instruction-only mode AND the GEMINI.md projection
+	// actually succeeded — in which case GEMINI.md is the sole carrier and a
+	// second injection here would double the system-prompt token cost. If
+	// the projection was skipped (flag off / empty working dir) or failed,
+	// projectedToInstructionFile is false and the env injection still fires
+	// so the prompt is never silently dropped.
+	if systemPromptFile != "" && !(geminiProjectInstructionOnlyFromOptions(opts) && projectedToInstructionFile) {
+		env = append(env, "GEMINI_SYSTEM_MD="+systemPromptFile)
 	}
 
 	// If project settings JSON is provided, create a per-invocation project directory with

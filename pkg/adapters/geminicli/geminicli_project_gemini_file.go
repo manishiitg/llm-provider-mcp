@@ -102,3 +102,35 @@ func geminiRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
 	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
 	return enabled
 }
+
+// geminiProjectInstructionOnlyFromOptions reads the OFF-by-default feature
+// flag controlling whether the per-session system prompt is carried SOLELY
+// via the projected <workingDir>/GEMINI.md (skipping the GEMINI_SYSTEM_MD env
+// injection). Returns false when the key is unset: the default carries the
+// prompt via both GEMINI_SYSTEM_MD and (when projection is enabled) GEMINI.md.
+// Callers opt in with WithProjectInstructionOnly(true). The env injection is
+// only skipped when this returns true AND the GEMINI.md projection actually
+// succeeded; otherwise the env injection still fires so the prompt is never
+// silently dropped.
+func geminiProjectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyProjectInstructionOnly].(bool)
+	return enabled
+}
+
+// removeGeminiSystemMDEnv returns a copy of env with any GEMINI_SYSTEM_MD=...
+// entry removed. Used by project-instruction-only mode to drop the
+// GEMINI_SYSTEM_MD injection once GEMINI.md has been projected successfully,
+// so the system prompt is carried once (via GEMINI.md) instead of twice.
+func removeGeminiSystemMDEnv(env []string) []string {
+	out := env[:0:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GEMINI_SYSTEM_MD=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}

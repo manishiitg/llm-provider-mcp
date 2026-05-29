@@ -338,25 +338,23 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 		}
 	}
 
-	// Pass system prompt via developer_instructions config instead of
-	// prepending to the user message. This lets codex treat it as a proper
-	// system-level instruction rather than part of the user prompt.
 	combinedSystemPrompt := strings.Join(systemPrompts, "\n\n")
-	if len(systemPrompts) > 0 {
-		override, err := codexStringConfigOverride("developer_instructions", combinedSystemPrompt)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "-c", override)
-	}
 
 	// Project the system prompt into <workingDir>/AGENTS.md (codex's
 	// project-instructions convention) with byte-restore on cleanup.
 	// ON by default; mirrors the interactive adapter behavior so
 	// structured (non-interactive) generateContent calls also drop the
-	// per-session system prompt into the workspace. Best-effort: write
-	// failures must not block GenerateContent — the
-	// developer_instructions override above is the primary path.
+	// per-session system prompt into the workspace. Runs BEFORE the
+	// developer_instructions injection below so its success is known when
+	// deciding whether to skip the CLI-side injection. Best-effort: write
+	// failures must not block GenerateContent.
+	//
+	// projectedToInstructionFile records whether the AGENTS.md write
+	// actually succeeded so project-instruction-only mode can skip the
+	// -c developer_instructions injection and avoid a doubled system
+	// prompt. On a skipped projection (flag off / empty working dir) or a
+	// write failure it stays false and the CLI injection fires.
+	projectedToInstructionFile := false
 	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(combinedSystemPrompt) != "" {
 		var projectWorkingDir string
 		if opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -367,8 +365,26 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 				c.logger.Errorf("codex cli: project AGENTS.md write failed (best-effort): %v", werr)
 			} else if cleanup != nil {
 				defer cleanup()
+				projectedToInstructionFile = true
 			}
 		}
+	}
+
+	// Pass system prompt via developer_instructions config instead of
+	// prepending to the user message. This lets codex treat it as a proper
+	// system-level instruction rather than part of the user prompt. Skip
+	// this CLI-side injection UNLESS the caller opted into
+	// project-instruction-only mode AND the AGENTS.md projection actually
+	// succeeded — in which case AGENTS.md is the sole carrier (no doubled
+	// prompt). If the projection was skipped or failed,
+	// projectedToInstructionFile is false and we still inject so the prompt
+	// is never silently dropped.
+	if len(systemPrompts) > 0 && !(projectInstructionOnlyFromOptions(opts) && projectedToInstructionFile) {
+		override, err := codexStringConfigOverride("developer_instructions", combinedSystemPrompt)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "-c", override)
 	}
 
 	// 2. Build the prompt text

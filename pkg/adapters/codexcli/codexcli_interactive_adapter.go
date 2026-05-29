@@ -434,7 +434,18 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	codexPersistentRegistry.sessions[ownerSessionID] = session
 	codexPersistentRegistry.Unlock()
 
-	args, systemPromptTempFile, err := c.buildCodexInteractiveArgs(opts, systemPrompt)
+	// buildCodexInteractiveArgs also performs the opt-in workspace
+	// artifact projection (AGENTS.md system prompt, .codex/config.toml
+	// MCP tables) up front so it can skip the CLI-side
+	// -c model_instructions_file injection when project-instruction-only
+	// mode is on AND the AGENTS.md projection succeeded. The returned
+	// cleanup (nil when nothing was projected) is stored on the session
+	// and run at teardown. The projection is off by default; the existing
+	// -c model_instructions_file and -c mcp_servers.* overrides already
+	// inject equivalent configuration. The workspace projection is
+	// additive and useful when downstream tooling reads codex's on-disk
+	// conventions directly.
+	args, systemPromptTempFile, projectCleanup, err := c.buildCodexInteractiveArgs(opts, systemPrompt)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
@@ -442,30 +453,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, err
 	}
 	session.systemPromptTempFile = systemPromptTempFile
-	// Opt-in: project up to four artifacts into the working dir for
-	// codex's project conventions: AGENTS.md (system prompt),
-	// .codex/config.toml ([mcp_servers] tables), .codex/hooks.json
-	// (PreToolUse deny entry), .codex/hooks/deny-builtin.sh (the deny
-	// script itself). Off by default; the existing -c model_instructions_file
-	// and -c mcp_servers.* overrides already inject equivalent
-	// configuration. The workspace projection is additive and useful
-	// when downstream tooling reads codex's on-disk conventions
-	// directly, and the deny hook is the strong lever for forcing
-	// MCP-only tool routing.
-	if writeProjectInstructionFromOptions(opts) && workingDir != "" {
-		mcpServersJSON := ""
-		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-			if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
-				mcpServersJSON = v
-			}
-		}
-		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true, restoreProjectFilesFromOptions(opts)); perr == nil {
-			session.projectInstructionCleanup = cleanup
-		}
-		// Best-effort: a failure here is not a session-killer. The
-		// primary injection paths succeeded; the workspace projection
-		// is purely additive belt-and-suspenders.
-	}
+	session.projectInstructionCleanup = projectCleanup
 
 	// Project attached skills into .agents/skills/ so Codex's
 	// repo-scoped skill loader picks them up at startup. Independent
@@ -493,11 +481,47 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	return session, nil
 }
 
-func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, systemPrompt string) ([]string, string, error) {
+// buildCodexInteractiveArgs builds the codex TUI launch args. It also
+// performs the opt-in workspace artifact projection (AGENTS.md, .codex/
+// config.toml) up front so that the CLI-side -c model_instructions_file
+// injection can be skipped when project-instruction-only mode is on AND the
+// AGENTS.md projection succeeded. It returns the args, the temp
+// system-prompt file path (empty when none was written), a cleanup for the
+// projected artifacts (nil when nothing was projected), and an error.
+func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, systemPrompt string) ([]string, string, func(), error) {
 	modelToUse := resolveCodexCLIModelID(c.modelID)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCodexModel].(string); ok && model != "" {
 			modelToUse = resolveCodexCLIModelID(model)
+		}
+	}
+
+	// Project the opt-in workspace artifacts (AGENTS.md system prompt,
+	// .codex/config.toml MCP tables) FIRST so projection success is known
+	// before deciding whether to skip the CLI-side -c model_instructions_file
+	// injection below. ON by default via WithWriteProjectInstructionFile;
+	// best-effort, a failure here is not a session-killer.
+	//
+	// projectedToInstructionFile records whether the AGENTS.md projection
+	// actually succeeded. Used to gate the CLI injection in
+	// project-instruction-only mode so the prompt is carried once, not
+	// twice. The returned projectCleanup is stored on the session by the
+	// caller and run at teardown.
+	var projectCleanup func()
+	projectedToInstructionFile := false
+	workingDir := codexWorkingDirFromOptions(opts)
+	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(workingDir) != "" && strings.TrimSpace(systemPrompt) != "" {
+		mcpServersJSON := ""
+		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+			if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
+				mcpServersJSON = v
+			}
+		}
+		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true, restoreProjectFilesFromOptions(opts)); perr != nil {
+			c.logger.Errorf("codex cli: project artifacts write failed (best-effort): %v", perr)
+		} else if cleanup != nil {
+			projectCleanup = cleanup
+			projectedToInstructionFile = true
 		}
 	}
 
@@ -578,20 +602,33 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 			}
 		}
 	}
-	if strings.TrimSpace(systemPrompt) != "" {
+	// Inject the system prompt via -c model_instructions_file UNLESS the
+	// caller opted into project-instruction-only mode AND the AGENTS.md
+	// projection above actually succeeded — in which case AGENTS.md is the
+	// sole carrier (no doubled prompt / token cost). If the projection was
+	// skipped (flag off / empty working dir) or failed,
+	// projectedToInstructionFile is false and we still inject so the prompt
+	// is never silently dropped.
+	if strings.TrimSpace(systemPrompt) != "" && !(projectInstructionOnlyFromOptions(opts) && projectedToInstructionFile) {
 		systemPromptTempFile, err := writeCodexInteractiveSystemPromptFile(systemPrompt)
 		if err != nil {
-			return nil, "", err
+			if projectCleanup != nil {
+				projectCleanup()
+			}
+			return nil, "", nil, err
 		}
 		override, err := codexStringConfigOverride("model_instructions_file", systemPromptTempFile)
 		if err != nil {
 			_ = os.Remove(systemPromptTempFile)
-			return nil, "", err
+			if projectCleanup != nil {
+				projectCleanup()
+			}
+			return nil, "", nil, err
 		}
 		args = append(args, "-c", override)
-		return appendResumeSessionID(args), systemPromptTempFile, nil
+		return appendResumeSessionID(args), systemPromptTempFile, projectCleanup, nil
 	}
-	return appendResumeSessionID(args), "", nil
+	return appendResumeSessionID(args), "", projectCleanup, nil
 }
 
 func releaseCodexInteractiveSession(session *codexInteractiveSession, logger interfaces.Logger) {
@@ -735,6 +772,19 @@ func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
 		return false
 	}
 	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
+	return enabled
+}
+
+// projectInstructionOnlyFromOptions reads the OFF-by-default feature flag for
+// carrying the system prompt only via the projected AGENTS.md file (skipping
+// the CLI-side -c developer_instructions / -c model_instructions_file
+// injection). Returns false when the key is unset. Callers opt in with
+// WithProjectInstructionOnly(true).
+func projectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyProjectInstructionOnly].(bool)
 	return enabled
 }
 

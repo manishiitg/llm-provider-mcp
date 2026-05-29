@@ -103,9 +103,12 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 		return nil, fmt.Errorf("opencode-cli prompt is empty")
 	}
 
-	if strings.TrimSpace(systemPrompt) != "" {
-		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
-	}
+	// The in-band "[System Instructions]" prefix is applied LATER (after the
+	// AGENTS.md projection block) so we can suppress it when the prompt is
+	// carried solely by the projected instruction file. See the
+	// projectedToInstructionFile gate below. Tracks whether the AGENTS.md
+	// write actually succeeded; only then is it safe to drop the in-band copy.
+	projectedToInstructionFile := false
 
 	// JSON Schema structured output: opencode-cli has no flag equivalent
 	// to claude-code's --json-schema, so we append the schema to the
@@ -204,7 +207,25 @@ func (c *OpenCodeCLIAdapter) generateContentStructured(ctx context.Context, mess
 				return nil, fmt.Errorf("opencode project instruction file: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
+			// The projection write succeeded: opencode will auto-load this
+			// AGENTS.md as project instructions. Record success so the
+			// gate below can drop the in-band "[System Instructions]"
+			// prefix when the caller opted into project-instruction-only
+			// mode (avoiding the doubled system prompt).
+			projectedToInstructionFile = true
 		}
+	}
+
+	// Inject the system prompt in-band as an "[System Instructions]" prefix
+	// UNLESS the caller opted into project-instruction-only mode AND the
+	// AGENTS.md projection actually succeeded. In that case the prompt lives
+	// solely in AGENTS.md (auto-loaded as project instructions), so prepending
+	// it here too would double the system prompt. If the projection was
+	// skipped (flag off / empty working dir) or failed to write,
+	// projectedToInstructionFile is false and we fall back to the in-band
+	// prefix so the prompt is never silently dropped.
+	if strings.TrimSpace(systemPrompt) != "" && !(projectInstructionOnlyFromOptions(opts) && projectedToInstructionFile) {
+		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
 	}
 
 	// Project attached skills into .agents/skills/ so OpenCode's

@@ -41,6 +41,19 @@ const (
 	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
 	// back into the legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "gemini_restore_project_files"
+
+	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature flag
+	// that makes the adapter carry the per-session system prompt SOLELY via
+	// the projected <workingDir>/GEMINI.md and SKIP the GEMINI_SYSTEM_MD env
+	// injection. Default off: the prompt is carried by BOTH GEMINI_SYSTEM_MD
+	// and (when projection is enabled) GEMINI.md, which doubles the
+	// system-prompt token cost for large prompts. When enabled AND the
+	// GEMINI.md projection actually succeeds, the env injection is skipped so
+	// the prompt is carried once. If the projection is disabled (flag off /
+	// empty working dir) or its write fails, the env injection still fires so
+	// the prompt is never silently dropped. Pass
+	// WithProjectInstructionOnly(true) to enable.
+	MetadataKeyProjectInstructionOnly = "gemini_project_instruction_only"
 )
 
 // WithGeminiModel sets the --model flag for the Gemini CLI.
@@ -193,6 +206,24 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// WithProjectInstructionOnly is an OFF-by-default feature flag that makes the
+// adapter carry the per-session system prompt SOLELY via the projected
+// <workingDir>/GEMINI.md and SKIP the GEMINI_SYSTEM_MD environment-variable
+// injection. For large prompts this avoids doubling the system-prompt token
+// cost (the prompt would otherwise be sent both via GEMINI_SYSTEM_MD and via
+// GEMINI.md).
+//
+// The skip only applies when the GEMINI.md projection actually succeeds. If
+// the projection is disabled (this flag off, projection flag off, or empty
+// working dir) or its write fails, the GEMINI_SYSTEM_MD env injection still
+// fires, so the system prompt is never silently dropped.
+func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectInstructionOnly] = enabled
 	}
 }
 
