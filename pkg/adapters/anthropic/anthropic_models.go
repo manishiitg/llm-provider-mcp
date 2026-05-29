@@ -9,6 +9,9 @@ import (
 
 // Anthropic model name constants
 const (
+	// Claude 4.8 Series
+	ModelClaudeOpus48 = "claude-opus-4-8"
+
 	// Claude 4.6 Series
 	ModelClaudeOpus46   = "claude-opus-4-6"
 	ModelClaudeSonnet46 = "claude-sonnet-4-6"
@@ -40,6 +43,18 @@ func normalizeToBaseModel(modelID string) string {
 // getAnthropicModels returns the map of Anthropic model metadata
 func getAnthropicModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
+		// Claude 4.8 Series
+		ModelClaudeOpus48: {
+			ModelID:                         ModelClaudeOpus48,
+			ModelName:                       "Claude Opus 4.8",
+			ContextWindow:                   200000,
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           25.00,
+			ReasoningCostPer1MTokens:        0.0,
+			CachedInputCostPer1MTokens:      0.50,
+			CachedInputCostWritePer1MTokens: 6.25,
+			Provider:                        "anthropic",
+		},
 		// Claude 4.6 Series
 		ModelClaudeOpus46: {
 			ModelID:                         ModelClaudeOpus46,
