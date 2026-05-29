@@ -3909,6 +3909,15 @@ func WithGeminiWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return geminicli.WithWriteProjectInstructionFile(enabled)
 }
 
+// WithGeminiProjectInstructionOnly carries the per-session system prompt solely
+// via the projected GEMINI.md (auto-loaded as project context) and skips the
+// GEMINI_SYSTEM_MD env injection, so the prompt is applied once instead of
+// doubled. OFF by default. Falls back to GEMINI_SYSTEM_MD if the projection is
+// disabled or its write fails.
+func WithGeminiProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return geminicli.WithProjectInstructionOnly(enabled)
+}
+
 // WithGeminiAllowedTools sets the deprecated --allowed-tools flag for the Gemini CLI.
 // Prefer WithGeminiProjectSettings plus Policy Engine rules instead.
 func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
@@ -3982,6 +3991,15 @@ func WithCodexPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 // destroys the operator's prior content.
 func WithCodexWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return codexcli.WithWriteProjectInstructionFile(enabled)
+}
+
+// WithCodexProjectInstructionOnly carries the per-session system prompt solely
+// via the projected AGENTS.md and skips the codex developer_instructions /
+// model_instructions_file CLI override, so the prompt is applied once instead
+// of doubled. OFF by default. Falls back to the CLI override if the projection
+// is disabled or its write fails.
+func WithCodexProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return codexcli.WithProjectInstructionOnly(enabled)
 }
 
 // WithCodexApprovalPolicy sets the approval_policy config override for the Codex CLI.
@@ -4156,6 +4174,15 @@ func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
 // write and cleanup destroys the operator's prior content.
 func WithOpenCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return opencodecli.WithWriteProjectInstructionFile(enabled)
+}
+
+// WithOpenCodeProjectInstructionOnly carries the per-session system prompt
+// solely via the projected AGENTS.md and skips the in-band "[System
+// Instructions]" prefix on the run prompt, so the prompt is applied once
+// instead of doubled. OFF by default. Falls back to the in-band prefix if the
+// projection is disabled or its write fails.
+func WithOpenCodeProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return opencodecli.WithProjectInstructionOnly(enabled)
 }
 
 // WithOpenCodeInteractiveSessionID is retained for API compatibility. OpenCode
