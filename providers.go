@@ -3930,6 +3930,14 @@ func WithGeminiProjectDirID(id string) llmtypes.CallOption {
 	return geminicli.WithProjectDirID(id)
 }
 
+// WithGeminiProjectDirAbsolute overrides the default /tmp project directory with
+// an absolute path. Used for workflow main_agent so GEMINI_PROJECT_DIR points at
+// a workflow-rooted location (e.g. <workflow>/.gemini-main) instead of /tmp.
+// Sub-step agents should leave this unset to keep /tmp isolation.
+func WithGeminiProjectDirAbsolute(absPath string) llmtypes.CallOption {
+	return geminicli.WithProjectDirAbsolute(absPath)
+}
+
 // WithGeminiInteractiveSessionID links a Gemini CLI interactive run to the
 // owning application session so live follow-up input can be sent to it.
 func WithGeminiInteractiveSessionID(id string) llmtypes.CallOption {

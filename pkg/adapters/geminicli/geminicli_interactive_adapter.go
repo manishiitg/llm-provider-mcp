@@ -543,6 +543,7 @@ func (g *GeminiCLIAdapter) buildGeminiInteractiveLaunch(ownerSessionID string, o
 func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.CallOptions) (string, string, error) {
 	projectDirID := ""
 	settingsJSON := ""
+	projectDirAbsolute := ""
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if id, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && strings.TrimSpace(id) != "" {
 			projectDirID = strings.TrimSpace(id)
@@ -550,11 +551,22 @@ func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.Ca
 		if settings, ok := opts.Metadata.Custom[MetadataKeyProjectSettings].(string); ok && strings.TrimSpace(settings) != "" {
 			settingsJSON = settings
 		}
+		if abs, ok := opts.Metadata.Custom[MetadataKeyProjectDirAbsolute].(string); ok {
+			trimmed := strings.TrimSpace(abs)
+			if filepath.IsAbs(trimmed) {
+				projectDirAbsolute = trimmed
+			}
+		}
 	}
 	if projectDirID == "" {
 		projectDirID = "interactive-" + sanitizeGeminiTmuxSessionName(ownerSessionID)
 	}
-	projectDir := filepath.Join(os.TempDir(), "gemini-cli-project-"+projectDirID)
+	var projectDir string
+	if projectDirAbsolute != "" {
+		projectDir = projectDirAbsolute
+	} else {
+		projectDir = filepath.Join(os.TempDir(), "gemini-cli-project-"+projectDirID)
+	}
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("failed to create Gemini interactive project dir: %w", err)
 	}

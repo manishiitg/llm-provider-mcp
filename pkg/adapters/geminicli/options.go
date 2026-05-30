@@ -22,6 +22,15 @@ const (
 	// This is used to ensure resume calls use the same directory as the original invocation.
 	MetadataKeyProjectDirID = "gemini_project_dir_id"
 
+	// MetadataKeyProjectDirAbsolute overrides the default /tmp project directory with
+	// an absolute path. When set, the adapter uses this path directly as GEMINI_PROJECT_DIR
+	// and as the tmux cwd, bypassing the os.TempDir() join. Intended for the workflow
+	// main_agent case where the project dir should live inside the workflow folder
+	// (e.g. /data/docs/Workflow/<name>/.gemini-main) so it survives /tmp wipes and the
+	// status line shows a meaningful workspace. Steps/sub-agents should leave this unset
+	// to keep the per-invocation /tmp isolation that prevents settings.json clobber.
+	MetadataKeyProjectDirAbsolute = "gemini_project_dir_absolute"
+
 	MetadataKeyInteractiveSessionID  = "gemini_interactive_session_id"
 	MetadataKeyPersistentInteractive = "gemini_persistent_interactive"
 
@@ -142,6 +151,18 @@ func WithProjectDirID(id string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyProjectDirID] = id
+	}
+}
+
+// WithProjectDirAbsolute overrides the default /tmp project directory with an
+// absolute path. Takes precedence over WithProjectDirID. Intended for the
+// workflow main_agent case so GEMINI_PROJECT_DIR points at a workflow-rooted
+// dir (e.g. <workflow>/.gemini-main) rather than /tmp. Sub-step agents should
+// leave this unset to keep per-invocation /tmp isolation.
+func WithProjectDirAbsolute(absPath string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyProjectDirAbsolute] = absPath
 	}
 }
 
