@@ -222,6 +222,94 @@ func TestGeminiWorkingDirKeepsProjectSettingsIsolated(t *testing.T) {
 	}
 }
 
+func TestGeminiProjectDirAbsoluteOverridesTmpDefault(t *testing.T) {
+	// When MetadataKeyProjectDirAbsolute is set, the adapter must use that
+	// path directly instead of joining under os.TempDir(). This is the
+	// workflow main_agent case where the project dir lives inside the
+	// workflow folder (e.g. <workflow>/.gemini-main).
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	workDir := filepath.Join(tmpDir, "workflow-confida-login")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workDir: %v", err)
+	}
+	absProjectDir := filepath.Join(workDir, ".gemini-main")
+
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	WithProjectDirID("session-main")(opts)
+	WithProjectDirAbsolute(absProjectDir)(opts)
+	WithProjectSettings(`{"mcpServers":{}}`)(opts)
+
+	interactiveDir, _, err := prepareGeminiInteractiveProjectDir("owner-session", opts)
+	if err != nil {
+		t.Fatalf("prepareGeminiInteractiveProjectDir: %v", err)
+	}
+	if interactiveDir != absProjectDir {
+		t.Fatalf("project dir = %q, want absolute override %q", interactiveDir, absProjectDir)
+	}
+	// Ensure it actually lives inside the workflow dir, not /tmp/gemini-cli-project-*.
+	if !strings.HasPrefix(interactiveDir, workDir) {
+		t.Fatalf("project dir %q not rooted in workflow dir %q", interactiveDir, workDir)
+	}
+	if strings.Contains(interactiveDir, "gemini-cli-project-") {
+		t.Fatalf("project dir %q still falling back to /tmp/gemini-cli-project- pattern", interactiveDir)
+	}
+	if _, err := os.Stat(filepath.Join(interactiveDir, ".gemini", "settings.json")); err != nil {
+		t.Fatalf("expected .gemini/settings.json under override path: %v", err)
+	}
+}
+
+func TestAppendGeminiIncludeWorkingDirSkipsWhenProjectIsDescendant(t *testing.T) {
+	// Workflow main_agent: projectDir lives inside workingDir
+	// (<workflow>/.gemini-main). Gemini's natural cwd → parent walk
+	// already discovers GEMINI.md in <workflow>, so adding
+	// --include-directories <workflow> would cause the SAME file to be
+	// loaded twice (reported as "2 GEMINI.md files" in the context
+	// summary). The arg must be skipped here.
+	tmpDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(tmpDir)(opts)
+
+	var args []string
+	descendantProjectDir := filepath.Join(tmpDir, ".gemini-main")
+	appendGeminiIncludeWorkingDirArg(&args, opts, descendantProjectDir)
+	if argPairContains(args, "--include-directories", tmpDir) {
+		t.Fatalf("expected --include-directories to be SKIPPED when projectDir is a descendant of workingDir; got args=%#v", args)
+	}
+
+	// Sanity check: when projectDir is OUTSIDE workingDir (the step
+	// /tmp isolation case), --include-directories MUST still be added
+	// so workspace files are reachable.
+	args = nil
+	outsideProjectDir := filepath.Join(t.TempDir(), "gemini-cli-project-step-1")
+	appendGeminiIncludeWorkingDirArg(&args, opts, outsideProjectDir)
+	if !argPairContains(args, "--include-directories", tmpDir) {
+		t.Fatalf("expected --include-directories %q when projectDir %q is outside workingDir; got args=%#v", tmpDir, outsideProjectDir, args)
+	}
+}
+
+func TestGeminiProjectDirAbsoluteIgnoredWhenRelative(t *testing.T) {
+	// Defensive: a non-absolute path in MetadataKeyProjectDirAbsolute must
+	// be ignored so callers can't accidentally write the project dir into
+	// CWD or some unexpected location.
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	opts := &llmtypes.CallOptions{}
+	WithProjectDirID("session-rel")(opts)
+	WithProjectDirAbsolute("relative/path/.gemini-main")(opts)
+	WithProjectSettings(`{}`)(opts)
+
+	interactiveDir, _, err := prepareGeminiInteractiveProjectDir("owner-session", opts)
+	if err != nil {
+		t.Fatalf("prepareGeminiInteractiveProjectDir: %v", err)
+	}
+	if !strings.Contains(interactiveDir, "gemini-cli-project-session-rel") {
+		t.Fatalf("relative override should have been ignored; got %q, expected default /tmp path", interactiveDir)
+	}
+}
+
 func envContains(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {

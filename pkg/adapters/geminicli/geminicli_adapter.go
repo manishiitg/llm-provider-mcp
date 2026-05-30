@@ -124,8 +124,22 @@ func appendGeminiIncludeWorkingDirArg(args *[]string, opts *llmtypes.CallOptions
 	if workingDir == "" {
 		return
 	}
-	if projectDir != "" && filepath.Clean(workingDir) == filepath.Clean(projectDir) {
-		return
+	if projectDir != "" {
+		cleanProject := filepath.Clean(projectDir)
+		cleanWorking := filepath.Clean(workingDir)
+		if cleanWorking == cleanProject {
+			return
+		}
+		// When projectDir is a descendant of workingDir (the workflow
+		// main_agent case where project dir lives at <workflow>/.gemini-main),
+		// gemini's natural cwd → parent walk already discovers GEMINI.md /
+		// .gemini/ in workingDir. Adding --include-directories would make the
+		// same files be loaded twice (gemini reports it as "2 GEMINI.md
+		// files" in the context summary).
+		if rel, err := filepath.Rel(cleanWorking, cleanProject); err == nil &&
+			rel != "." && !strings.HasPrefix(rel, "..") {
+			return
+		}
 	}
 	*args = append(*args, "--include-directories", workingDir)
 }
