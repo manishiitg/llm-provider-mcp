@@ -958,6 +958,57 @@ func TestGeminiReadyPromptAcceptsV042StarPrompt(t *testing.T) {
 	}
 }
 
+func TestHasGeminiActivityRecognizesToolCallInProgress(t *testing.T) {
+	// Real failing pane from server_debug.log (2026-05-30):
+	// gemini already accepted the Phase 2 prompt and started a tool call,
+	// but the previous heuristic only looked for text-status markers
+	// ("esc to cancel", "generating", etc.) which gemini does NOT render
+	// while a tool is mid-execution. The adapter then retried submit 5x
+	// and the whole turn failed even though gemini was working correctly.
+	// The fix: recognize the '⊶' in-progress tool marker as activity.
+	pane := `
+is now fully verified.
+
+  Phase 1 Result:
+   - File: login_status.json (Copied to orchestrator folder)
+   - Status: Verified
+
+  I am proceeding to the next requested phase. Please provide the instruction for Phase 2.
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Phase 2: Discovery. Use sub-agents to gather data.
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+╭────────────────────────────────────────────────────────────────────────────────╮
+│ ⊶  execute_shell_command (api-bridge MCP Server) {"command":"curl -sS ..."     │
+│                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────╯
+`
+	if !hasGeminiActivity(pane) {
+		t.Fatalf("hasGeminiActivity must return true when a tool-call panel with ⊶ in-progress marker is present (otherwise the submit-detection heuristic falsely declares the prompt unsubmitted and the workflow aborts mid-turn)")
+	}
+}
+
+func TestHasGeminiActivityRejectsCompletedToolCall(t *testing.T) {
+	// Sanity check: '✓' (completed) marker alone is NOT activity. Only
+	// the in-progress '⊶' counts. The captured pane below shows a finished
+	// tool call followed by a fresh ready prompt — should be quiet.
+	pane := `
+╭────────────────────────────────────────────────────────────────────────────────╮
+│ ✓  execute_shell_command (api-bridge MCP Server) {"command":"ls"}              │
+│                                                                                │
+│ result: OK                                                                     │
+╰────────────────────────────────────────────────────────────────────────────────╯
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ >   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)                            sandbox               /model
+ /tmp/project                                      no sandbox   Auto (Gemini 3)
+`
+	if hasGeminiActivity(pane) {
+		t.Fatalf("completed tool call (✓) followed by ready prompt must NOT count as active — otherwise the next user input would be deferred forever")
+	}
+}
+
 func TestGeminiTrustPromptAcceptsIncludedDirectoryPrompt(t *testing.T) {
 	pane := `
  ▝▜▄     Gemini CLI v0.42.0

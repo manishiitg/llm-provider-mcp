@@ -1739,11 +1739,24 @@ func hasGeminiActivity(captured string) bool {
 		}
 		if strings.Contains(lower, "esc to cancel") ||
 			strings.Contains(lower, "esc to interrupt") ||
-			isGeminiActiveStatusLine(line) {
+			isGeminiActiveStatusLine(line) ||
+			isGeminiToolCallInProgressLine(line) {
 			return true
 		}
 	}
 	return false
+}
+
+// isGeminiToolCallInProgressLine returns true when the line is part of a
+// gemini-cli tool-call panel that is still running. While a tool call
+// executes (the model is paused waiting for the tool result), gemini-cli
+// does NOT render "esc to cancel" or a "generating..." status line — but
+// the session is genuinely active and any Enter-press must not be treated
+// as a failed submit. The in-progress marker is '⊶' (U+22B6); completed
+// calls switch to '✓'. We scan for the marker anywhere on the line so it
+// works for both the boxed (`│ ⊶  tool_name ...`) and unboxed renderings.
+func isGeminiToolCallInProgressLine(line string) bool {
+	return strings.Contains(line, "⊶")
 }
 
 func isGeminiActiveStatusLine(line string) bool {
