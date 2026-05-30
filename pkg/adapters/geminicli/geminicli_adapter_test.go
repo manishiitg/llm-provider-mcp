@@ -987,6 +987,46 @@ is now fully verified.
 	}
 }
 
+func TestHasNewGeminiAssistantMarkerDetectsFastResponse(t *testing.T) {
+	// Real failing pane from server_debug.log (2026-05-30):
+	// the agent pasted an "Ack briefly" prompt; gemini answered with a
+	// quick "✦ Acknowledged. Monitoring..." line and returned to the
+	// ready prompt before the 100ms poll caught the in-flight state.
+	// Without the new-assistant-marker check, waitForGeminiInputDraft
+	// timed out even though the input had been received AND fully
+	// processed.
+	baseline := `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ >   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ workspace (/directory)
+`
+	captured := `[workflow=Workflow/check-form-26as-xspaces] started. Ack briefly. Do NOT call tools.
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ ✦ Acknowledged. Monitoring the Review Workflow Timing and Review Workflow Costs background agents.
+─────────────────────────────────────────────────────────────
+ Shift+Tab to accept edits
+ 2 GEMINI.md files · 1 MCP server
+`
+	if !hasNewGeminiAssistantMarker(captured, baseline) {
+		t.Fatalf("captured pane contains a new ✦ marker; baseline has none — fast-response detector must return true")
+	}
+	if hasNewGeminiAssistantMarker(baseline, captured) {
+		t.Fatalf("the reverse direction (going from response → ready) must NOT count as a new marker")
+	}
+	if hasNewGeminiAssistantMarker(captured, captured) {
+		t.Fatalf("comparing a pane to itself must not flag new markers")
+	}
+	// Also verify '->' and '→' markers count.
+	withArrow := "  -> Some response from gemini\n"
+	withUnicode := "  → Another response\n"
+	if !hasNewGeminiAssistantMarker(withArrow, "") {
+		t.Fatalf("'->' assistant marker must be detected")
+	}
+	if !hasNewGeminiAssistantMarker(withUnicode, "") {
+		t.Fatalf("'→' assistant marker must be detected")
+	}
+}
+
 func TestHasGeminiActivityRejectsCompletedToolCall(t *testing.T) {
 	// Sanity check: '✓' (completed) marker alone is NOT activity. Only
 	// the in-progress '⊶' counts. The captured pane below shows a finished

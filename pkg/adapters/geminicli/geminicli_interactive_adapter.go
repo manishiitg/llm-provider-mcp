@@ -1109,8 +1109,42 @@ func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste strin
 			if beforePaste != "" && captured != beforePaste && !hasGeminiReadyPrompt(captured) {
 				return nil
 			}
+			// Fast-response case: gemini may have accepted, processed, and
+			// returned to the ready prompt before our 100ms poll caught the
+			// intermediate "draft visible" or "active" state. If a new
+			// assistant marker (✦ / -> / →) has appeared since the paste
+			// baseline, the input was clearly received and the response is
+			// already complete — return success rather than timing out.
+			if beforePaste != "" && captured != beforePaste && hasNewGeminiAssistantMarker(captured, beforePaste) {
+				return nil
+			}
 		}
 	}
+}
+
+// hasNewGeminiAssistantMarker returns true when `captured` contains a
+// gemini assistant marker ("✦", "->", "→") on some line where `baseline`
+// did not. Used to detect that an input was processed end-to-end during
+// the brief window between paste and the next poll — without this, fast
+// "ack only" responses time out the prompt-paste-visible waiter.
+func hasNewGeminiAssistantMarker(captured, baseline string) bool {
+	return countGeminiAssistantMarkers(captured) > countGeminiAssistantMarkers(baseline)
+}
+
+func countGeminiAssistantMarkers(s string) int {
+	if s == "" {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(stripGeminiANSI(s), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "✦") ||
+			strings.HasPrefix(trimmed, "->") ||
+			strings.HasPrefix(trimmed, "→") {
+			count++
+		}
+	}
+	return count
 }
 
 func ensureGeminiInputSubmitted(ctx context.Context, sessionName string) error {
