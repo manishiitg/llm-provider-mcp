@@ -1277,7 +1277,7 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
-		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane); err == nil {
+		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, prompt); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -1730,7 +1730,7 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 	}
 }
 
-func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane string) error {
+func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prompt string) error {
 	deadline, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -1751,6 +1751,16 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 				if isClaudeTmuxSessionLostError(err) {
 					return err
 				}
+				continue
+			}
+			// A pasted prompt whose Enter did not actually submit stays visible
+			// in the ❯ input box (as the draft text or a "[Pasted text …]" chip).
+			// hasClaudeActivity alone false-positives when Claude was already
+			// busy from earlier work — the screen still shows the old spinner —
+			// so the submit loop would declare success while our text sits
+			// unsent in the box. Require the draft to have cleared first, the
+			// same check the live-steering path uses.
+			if draft, ok := latestClaudePromptDraft(captured); ok && claudePromptDraftStillMatchesMessage(draft, prompt) {
 				continue
 			}
 			if hasClaudeActivity(captured) {
