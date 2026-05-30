@@ -1329,8 +1329,24 @@ func cleanAgyWorkingDirKey(workingDir string) string {
 }
 
 func agyMCPConfigFingerprint(config string) string {
-	var decoded interface{}
+	var decoded map[string]interface{}
 	if err := json.Unmarshal([]byte(config), &decoded); err == nil {
+		// Normalize session-specific and scope-specific fields from env maps
+		if mcpServers, ok := decoded["mcpServers"].(map[string]interface{}); ok {
+			for _, srv := range mcpServers {
+				if srvMap, ok := srv.(map[string]interface{}); ok {
+					if env, ok := srvMap["env"].(map[string]interface{}); ok {
+						delete(env, "MCP_SESSION_ID")
+						delete(env, "MCP_VIRTUAL_SCOPE_ID")
+						if apiURL, ok := env["MCP_API_URL"].(string); ok {
+							if idx := strings.Index(apiURL, "/s/"); idx != -1 {
+								env["MCP_API_URL"] = apiURL[:idx]
+							}
+						}
+					}
+				}
+			}
+		}
 		if canonical, err := json.Marshal(decoded); err == nil {
 			config = string(canonical)
 		}
@@ -2022,7 +2038,6 @@ func normalizeAgyPaneLine(line string) string {
 	line = strings.TrimPrefix(line, "│")
 	line = strings.TrimSuffix(line, "│")
 	line = strings.TrimSpace(line)
-	line = strings.TrimSpace(strings.TrimPrefix(line, "• "))
 	// Agy labels each assistant turn with a literal "Assistant:" header. Strip
 	// it so the kept response reads as plain prose (and matches what the user
 	// sees in the chat panel for Claude/Gemini, which have no such label).
@@ -2196,6 +2211,10 @@ func isAgyThoughtStatusLine(line string) bool {
 func isAgyBoxDrawingLine(line string) bool {
 	if line == "" {
 		return true
+	}
+	// If the line contains a vertical column separator, it's a table row, not a TUI divider line.
+	if strings.Contains(line, "│") || strings.Contains(line, "|") {
+		return false
 	}
 	for _, r := range line {
 		if strings.ContainsRune("─━▀▄▁▂▃▅▆▇█▌▐▝▜▗▟▘▛▙▚▞▖╭╮╰╯│┌┐└┘├┤┬┴┼╞╪╡╘╧╛╔╗╚╝═║╠╣╦╩╬╌╍╎╏┄┅┆┇┈┉┊┋ ", r) {

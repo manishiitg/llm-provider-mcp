@@ -173,6 +173,30 @@ Fast pasted input was accepted.
 	}
 }
 
+func TestAgyFinalExtractionPreservesMarkdownTablesAndLists(t *testing.T) {
+	pane := `
+│ > Please generate a table and bullet points.                         │
+│                                                                      │
+│ Here is the table:                                                   │
+│ │ Header 1 │ Header 2 │                                              │
+│ │ ──────── │ ──────── │                                              │
+│ │ Value 1  │ Value 2  │                                              │
+│                                                                      │
+│ And the list:                                                        │
+│ • First bullet point                                                 │
+│ • Second bullet point                                                │
+│                                                                      │
+│ ────────────────────────────────────────                             │
+│ >                                                                    │
+│ ────────────────────────────────────────                             │
+`
+	content := parseAgyInteractiveResponse(pane, "", "", nil)
+	expected := "Here is the table:\n│ Header 1 │ Header 2 │\n│ ──────── │ ──────── │\n│ Value 1  │ Value 2  │\n\nAnd the list:\n• First bullet point\n• Second bullet point"
+	if content != expected {
+		t.Fatalf("content = %q, want %q", content, expected)
+	}
+}
+
 func TestAgyFinalExtractionDropsMCPToolAndThoughtNoise(t *testing.T) {
 	pane := agyNoisyFinalExtractionPane()
 	content := parseAgyInteractiveResponse(pane, "", "", nil)
@@ -473,6 +497,31 @@ func TestAgyWorkspaceMCPConfigLeaseRejectsConcurrentConflicts(t *testing.T) {
 		t.Fatalf("conflict should clear after releases: %v", err)
 	}
 	releaseSecond()
+}
+
+func TestAgyWorkspaceMCPConfigLeaseAllowsConcurrentSessionVariations(t *testing.T) {
+	workDir := t.TempDir()
+	
+	// Create two sessions with different MCP_SESSION_ID and MCP_API_URL (with session suffix path)
+	first := &agyInteractiveSession{ownerSessionID: "first"}
+	firstOpts := &llmtypes.CallOptions{}
+	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"alpha","env":{"MCP_SESSION_ID":"session-abc","MCP_API_URL":"http://127.0.0.1:8081/s/session-abc","MCP_VIRTUAL_SCOPE_ID":"scope-1"}}}}`)(firstOpts)
+	
+	releaseFirst, err := acquireAgyWorkspaceMCPConfigLease(workDir, firstOpts, first)
+	if err != nil {
+		t.Fatalf("first lease error = %v", err)
+	}
+	defer releaseFirst()
+
+	second := &agyInteractiveSession{ownerSessionID: "second"}
+	secondOpts := &llmtypes.CallOptions{}
+	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"alpha","env":{"MCP_SESSION_ID":"session-xyz","MCP_API_URL":"http://127.0.0.1:8081/s/session-xyz","MCP_VIRTUAL_SCOPE_ID":"scope-2"}}}}`)(secondOpts)
+	
+	releaseSecond, err := acquireAgyWorkspaceMCPConfigLease(workDir, secondOpts, second)
+	if err != nil {
+		t.Fatalf("concurrent lease should succeed because session-specific parameters are normalized/fingerprinted identically: %v", err)
+	}
+	defer releaseSecond()
 }
 
 func TestBuildAgyInteractiveLaunchAddsConversationBeforePromptInteractive(t *testing.T) {
