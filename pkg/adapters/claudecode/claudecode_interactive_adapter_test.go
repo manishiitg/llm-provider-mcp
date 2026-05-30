@@ -136,7 +136,7 @@ func writeExecutableTestShell(t *testing.T, name string) string {
 
 func TestTmuxBuildClaudeArgsDefaultsToNoInternalTools(t *testing.T) {
 	adapter := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
-	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
+	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)
 	}
@@ -234,7 +234,7 @@ func TestTmuxBuildClaudeArgsPassesBridgeOptions(t *testing.T) {
 	WithResumeSessionID("7aa21987-0003-4d71-b887-ad73e29d2faf")(opts)
 	WithEffort("high")(opts)
 
-	args, tempFiles, err := adapter.buildClaudeArgs(opts, "7aa21987-0003-4d71-b887-ad73e29d2faf", "native system prompt")
+	args, tempFiles, err := adapter.buildClaudeArgs(opts, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "native system prompt")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)
 	}
@@ -1046,7 +1046,7 @@ func TestClaudeCallContextHonorsExplicitParentCancel(t *testing.T) {
 
 func TestTmuxDoesNotAddVerboseFlagByDefault(t *testing.T) {
 	adapter := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
-	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
+	args, tempFiles, err := adapter.buildClaudeArgs(&llmtypes.CallOptions{}, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "")
 	if err != nil {
 		t.Fatalf("buildClaudeArgs error = %v", err)
 	}

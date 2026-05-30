@@ -45,17 +45,19 @@ const (
 )
 
 type agyInteractiveSession struct {
-	ownerSessionID  string
-	tmuxSessionName string
-	workingDir      string
-	persistent      bool
-	cleanupFiles    func()
-	releaseMCPLease func()
-	idleTimer       *time.Timer
-	initErr         error
-	createdAt       time.Time
-	lastUsed        time.Time
-	mu              sync.Mutex
+	ownerSessionID       string
+	tmuxSessionName      string
+	workingDir           string
+	persistent           bool
+	cleanupFiles         func()
+	releaseMCPLease      func()
+	idleTimer            *time.Timer
+	initErr              error
+	createdAt            time.Time
+	lastUsed             time.Time
+	modelID              string
+	statuslineConfigured bool
+	mu                   sync.Mutex
 }
 
 var agyInteractiveRegistry = struct {
@@ -194,6 +196,14 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 			close(opts.StreamChan)
 		}
 		return nil, err
+	}
+
+	if !session.statuslineConfigured {
+		if err := configureAgyStatusline(callCtx, session, c.logger); err == nil {
+			session.statuslineConfigured = true
+		} else if c.logger != nil {
+			c.logger.Debugf("Failed to configure Antigravity CLI statusline: %v", err)
+		}
 	}
 
 	if launchOnly {
@@ -679,6 +689,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 		persistent:      persistent,
 		createdAt:       now,
 		lastUsed:        now,
+		modelID:         c.modelID,
 	}
 	session.mu.Lock()
 	if persistent {
@@ -2521,6 +2532,7 @@ func hasAgyActivity(captured string) bool {
 }
 
 func streamAgyTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	streamAgyStatusLine(ctx, sessionName, streamChan)
 	snapshot, err := captureAgyPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
@@ -2872,4 +2884,269 @@ func stripAgyANSIPreserveColors(s string) string {
 		b.WriteByte(ch)
 	}
 	return paneview.CollapseBlankRuns(b.String())
+}
+
+var (
+	agyStatusLineStreamMu sync.Mutex
+	agyStatusLineStreamed = make(map[string]string) // sessionName -> raw JSON content of last streamed statusline
+)
+
+func agyStatuslinePath(sessionName string) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("agy_statusline_%s.json", sessionName))
+}
+
+func configureAgyStatusline(ctx context.Context, session *agyInteractiveSession, logger interfaces.Logger) error {
+	tempDir, err := os.MkdirTemp("", "agy-statusline-config-*")
+	if err != nil {
+		return err
+	}
+	outputPath := agyStatuslinePath(session.tmuxSessionName)
+	scriptPath := filepath.Join(tempDir, "statusline.sh")
+
+	// Create helper script that cat's stdin to outputPath
+	scriptContent := fmt.Sprintf("#!/bin/sh\ncat > %s\n", agyShellQuote(outputPath))
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return err
+	}
+
+	command := "/statusline sh " + agyShellQuote(scriptPath)
+	if err := typeAgyInputToTmux(ctx, session.tmuxSessionName, command); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return err
+	}
+
+	// Register a cleanup file helper so the temp dir gets removed on session exit
+	oldCleanup := session.cleanupFiles
+	session.cleanupFiles = func() {
+		if oldCleanup != nil {
+			oldCleanup()
+		}
+		_ = os.RemoveAll(tempDir)
+		_ = os.Remove(outputPath)
+	}
+	return nil
+}
+
+func streamAgyStatusLine(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) bool {
+	if streamChan == nil {
+		return false
+	}
+	outputPath := agyStatuslinePath(sessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return false
+	}
+
+	// Deduplicate streams
+	agyStatusLineStreamMu.Lock()
+	last := agyStatusLineStreamed[sessionName]
+	if last == trimmed {
+		agyStatusLineStreamMu.Unlock()
+		return false
+	}
+	agyStatusLineStreamed[sessionName] = trimmed
+	agyStatusLineStreamMu.Unlock()
+
+	// Parse the raw JSON
+	var payload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		ContextWindow            struct {
+			TotalInputTokens  int `json:"total_input_tokens"`
+			TotalOutputTokens int `json:"total_output_tokens"`
+			CurrentUsage      struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"current_usage"`
+		} `json:"context_window"`
+	}
+
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return false
+	}
+
+	// Build the generic StatusLine
+	status := &llmtypes.StatusLine{
+		Provider: "agy",
+	}
+
+	// Look up the session to get the model ID
+	var modelID string
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && sess.tmuxSessionName == sessionName {
+			modelID = sess.modelID
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+	status.Model = modelID
+
+	// Map token counts
+	current := payload.ContextWindow.CurrentUsage
+	if current.InputTokens > 0 || current.OutputTokens > 0 || current.CacheCreationInputTokens > 0 || current.CacheReadInputTokens > 0 {
+		status.InputTokens = current.InputTokens
+		status.OutputTokens = current.OutputTokens
+		status.CacheCreationInputTokens = current.CacheCreationInputTokens
+		status.CacheReadInputTokens = current.CacheReadInputTokens
+	} else {
+		status.InputTokens = payload.InputTokens
+		status.OutputTokens = payload.OutputTokens
+		status.CacheCreationInputTokens = payload.CacheCreationInputTokens
+		status.CacheReadInputTokens = payload.CacheReadInputTokens
+	}
+
+	if status.InputTokens <= 0 {
+		if payload.ContextWindow.TotalInputTokens > 0 {
+			status.InputTokens = payload.ContextWindow.TotalInputTokens
+		} else if payload.TotalInputTokens > 0 {
+			status.InputTokens = payload.TotalInputTokens
+		}
+	}
+	if status.OutputTokens <= 0 {
+		if payload.ContextWindow.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.ContextWindow.TotalOutputTokens
+		} else if payload.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.TotalOutputTokens
+		}
+	}
+
+	status.TotalInputTokens = payload.TotalInputTokens
+	if status.TotalInputTokens <= 0 {
+		status.TotalInputTokens = payload.ContextWindow.TotalInputTokens
+	}
+	status.TotalOutputTokens = payload.TotalOutputTokens
+	if status.TotalOutputTokens <= 0 {
+		status.TotalOutputTokens = payload.ContextWindow.TotalOutputTokens
+	}
+
+	// We can also put raw payload or extra metadata fields if needed
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &rawMap); err == nil {
+		status.Metadata = rawMap
+	}
+
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeStatusLine,
+		StatusLine: status,
+	}:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetStatusLine retrieves a snapshot of the current statusline for the active session.
+// Satisfies the llmtypes.StatusLineProvider interface.
+func (c *AgyCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (*llmtypes.StatusLine, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required")
+	}
+
+	// Find the session in the registry
+	var tmuxSessionName string
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && (sess.ownerSessionID == sessionID || sess.tmuxSessionName == sessionID) {
+			tmuxSessionName = sess.tmuxSessionName
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+
+	if tmuxSessionName == "" {
+		tmuxSessionName = sessionID // Fallback: treat sessionID as the tmux session name
+	}
+
+	outputPath := agyStatuslinePath(tmuxSessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read statusline payload: %w", err)
+	}
+
+	var payload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		ContextWindow            struct {
+			TotalInputTokens  int `json:"total_input_tokens"`
+			TotalOutputTokens int `json:"total_output_tokens"`
+			CurrentUsage      struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"current_usage"`
+		} `json:"context_window"`
+	}
+
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse statusline payload: %w", err)
+	}
+
+	status := &llmtypes.StatusLine{
+		Provider: "agy",
+		Model:    c.modelID,
+	}
+
+	// Map token counts
+	current := payload.ContextWindow.CurrentUsage
+	if current.InputTokens > 0 || current.OutputTokens > 0 || current.CacheCreationInputTokens > 0 || current.CacheReadInputTokens > 0 {
+		status.InputTokens = current.InputTokens
+		status.OutputTokens = current.OutputTokens
+		status.CacheCreationInputTokens = current.CacheCreationInputTokens
+		status.CacheReadInputTokens = current.CacheReadInputTokens
+	} else {
+		status.InputTokens = payload.InputTokens
+		status.OutputTokens = payload.OutputTokens
+		status.CacheCreationInputTokens = payload.CacheCreationInputTokens
+		status.CacheReadInputTokens = payload.CacheReadInputTokens
+	}
+
+	if status.InputTokens <= 0 {
+		if payload.ContextWindow.TotalInputTokens > 0 {
+			status.InputTokens = payload.ContextWindow.TotalInputTokens
+		} else if payload.TotalInputTokens > 0 {
+			status.InputTokens = payload.TotalInputTokens
+		}
+	}
+	if status.OutputTokens <= 0 {
+		if payload.ContextWindow.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.ContextWindow.TotalOutputTokens
+		} else if payload.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.TotalOutputTokens
+		}
+	}
+
+	status.TotalInputTokens = payload.TotalInputTokens
+	if status.TotalInputTokens <= 0 {
+		status.TotalInputTokens = payload.ContextWindow.TotalInputTokens
+	}
+	status.TotalOutputTokens = payload.TotalOutputTokens
+	if status.TotalOutputTokens <= 0 {
+		status.TotalOutputTokens = payload.ContextWindow.TotalOutputTokens
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(raw, &rawMap); err == nil {
+		status.Metadata = rawMap
+	}
+
+	return status, nil
 }

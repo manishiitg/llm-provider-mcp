@@ -23,7 +23,7 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		opts := &llmtypes.CallOptions{}
 		WithWorkingDir(dir)(opts)
 
-		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", promptBody)
+		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", "", promptBody)
 		if err != nil {
 			t.Fatalf("buildClaudeArgs error = %v", err)
 		}
@@ -48,7 +48,7 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		WithWorkingDir(dir)(opts)
 		WithProjectInstructionOnly(true)(opts)
 
-		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", promptBody)
+		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", "", promptBody)
 		if err != nil {
 			t.Fatalf("buildClaudeArgs error = %v", err)
 		}
@@ -73,7 +73,7 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		// not strand the session without a prompt.
 		WithProjectInstructionOnly(true)(opts)
 
-		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", promptBody)
+		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", "", promptBody)
 		if err != nil {
 			t.Fatalf("buildClaudeArgs error = %v", err)
 		}
@@ -91,7 +91,7 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		WithWorkingDir(dir)(opts)
 		WithProjectInstructionOnly(false)(opts)
 
-		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", promptBody)
+		args, tempFiles, err := adapter.buildClaudeArgs(opts, "", "", promptBody)
 		if err != nil {
 			t.Fatalf("buildClaudeArgs error = %v", err)
 		}

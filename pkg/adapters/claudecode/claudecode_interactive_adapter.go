@@ -250,7 +250,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		nativeSessionID = persistentSession.nativeSessionID
 	} else {
 		sessionName = newTmuxSessionName()
-		args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
+		args, tempFiles, err := c.buildClaudeArgs(opts, sessionName, nativeSessionID, systemPrompt)
 		if err != nil {
 			return nil, err
 		}
@@ -530,7 +530,7 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 	}
 }
 
-func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, nativeSessionID, systemPrompt string) ([]string, []string, error) {
+func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, sessionName, nativeSessionID, systemPrompt string) ([]string, []string, error) {
 	extraArgs := []string{}
 	var tempFiles []string
 	toolsArg := ""
@@ -545,18 +545,29 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 			tempFiles = append(tempFiles, configPath)
 			extraArgs = append(extraArgs, "--mcp-config", configPath, "--strict-mcp-config")
 		}
-		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && strings.TrimSpace(settings) != "" {
-			settingsArg := settings
-			if strings.HasPrefix(strings.TrimSpace(settings), "{") {
-				settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", settings)
-				if err != nil {
-					return nil, nil, err
-				}
-				tempFiles = append(tempFiles, settingsPath)
-				settingsArg = settingsPath
+
+		if sessionName != "" {
+			settingsPath, sFiles, err := c.prepareStatusLineSettings(opts, sessionName)
+			if err != nil {
+				return nil, nil, err
 			}
-			extraArgs = append(extraArgs, "--settings", settingsArg)
+			tempFiles = append(tempFiles, sFiles...)
+			extraArgs = append(extraArgs, "--settings", settingsPath)
+		} else {
+			if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && strings.TrimSpace(settings) != "" {
+				settingsArg := settings
+				if strings.HasPrefix(strings.TrimSpace(settings), "{") {
+					settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", settings)
+					if err != nil {
+						return nil, nil, err
+					}
+					tempFiles = append(tempFiles, settingsPath)
+					settingsArg = settingsPath
+				}
+				extraArgs = append(extraArgs, "--settings", settingsArg)
+			}
 		}
+
 		if tools, ok := opts.Metadata.Custom[MetadataKeyTools].(string); ok {
 			toolsArg = tools
 		}
@@ -565,6 +576,15 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		}
 		if effort, ok := opts.Metadata.Custom[MetadataKeyEffort].(string); ok && strings.TrimSpace(effort) != "" {
 			extraArgs = append(extraArgs, "--effort", effort)
+		}
+	} else {
+		if sessionName != "" {
+			settingsPath, sFiles, err := c.prepareStatusLineSettings(opts, sessionName)
+			if err != nil {
+				return nil, nil, err
+			}
+			tempFiles = append(tempFiles, sFiles...)
+			extraArgs = append(extraArgs, "--settings", settingsPath)
 		}
 	}
 
@@ -1998,6 +2018,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 }
 
 func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	streamClaudeStatusLine(ctx, sessionName, streamChan)
 	snapshot, err := captureTmuxPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
@@ -2823,7 +2844,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	claudeInteractivePersistentRegistry.sessions[ownerSessionID] = session
 	claudeInteractivePersistentRegistry.Unlock()
 
-	args, tempFiles, err := c.buildClaudeArgs(opts, nativeSessionID, systemPrompt)
+	args, tempFiles, err := c.buildClaudeArgs(opts, sessionName, nativeSessionID, systemPrompt)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
@@ -3171,4 +3192,216 @@ func sanitizeTmuxSessionName(name string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+var (
+	claudeStatusLineStreamMu sync.Mutex
+	claudeStatusLineStreamed = make(map[string]string) // sessionName -> raw JSON content of last streamed statusline
+)
+
+func claudeStatuslinePath(sessionName string) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("claude_statusline_%s.json", sessionName))
+}
+
+func (c *ClaudeCodeInteractiveAdapter) prepareStatusLineSettings(opts *llmtypes.CallOptions, sessionName string) (string, []string, error) {
+	outputPath := claudeStatuslinePath(sessionName)
+	// Create helper script that cat's stdin to outputPath
+	scriptContent := fmt.Sprintf("#!/bin/sh\ncat > %s\n", outputPath)
+	scriptPath, err := writeTempFile("claude-statusline-helper-*.sh", scriptContent)
+	if err != nil {
+		return "", nil, err
+	}
+	_ = os.Chmod(scriptPath, 0o755)
+
+	var tempFiles []string
+	tempFiles = append(tempFiles, scriptPath)
+
+	settingsMap := make(map[string]interface{})
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && strings.TrimSpace(settings) != "" {
+			settings = strings.TrimSpace(settings)
+			if strings.HasPrefix(settings, "{") {
+				_ = json.Unmarshal([]byte(settings), &settingsMap)
+			} else {
+				if raw, err := os.ReadFile(settings); err == nil {
+					_ = json.Unmarshal(raw, &settingsMap)
+				}
+			}
+		}
+	}
+
+	settingsMap["statusLine"] = map[string]interface{}{
+		"type":    "command",
+		"command": "sh " + scriptPath,
+		"padding": 0,
+	}
+
+	settingsJSON, err := json.Marshal(settingsMap)
+	if err != nil {
+		removeFiles(tempFiles)
+		return "", nil, err
+	}
+
+	settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", string(settingsJSON))
+	if err != nil {
+		removeFiles(tempFiles)
+		return "", nil, err
+	}
+
+	tempFiles = append(tempFiles, settingsPath)
+	return settingsPath, tempFiles, nil
+}
+
+func streamClaudeStatusLine(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) bool {
+	if streamChan == nil {
+		return false
+	}
+	outputPath := claudeStatuslinePath(sessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return false
+	}
+
+	// Deduplicate streams
+	claudeStatusLineStreamMu.Lock()
+	last := claudeStatusLineStreamed[sessionName]
+	if last == trimmed {
+		claudeStatusLineStreamMu.Unlock()
+		return false
+	}
+	claudeStatusLineStreamed[sessionName] = trimmed
+	claudeStatusLineStreamMu.Unlock()
+
+	status, err := parseClaudeStatusLineJSON(raw, "claude-3-5-sonnet") // default fallback model if unknown
+	if err != nil {
+		return false
+	}
+
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeStatusLine,
+		StatusLine: status,
+	}:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.StatusLine, error) {
+	// Parse with standard mapping, supporting both camelCase and snake_case or customized Claude Code output
+	var payload struct {
+		InputTokens               int `json:"input_tokens"`
+		InputTokensCamel          int `json:"inputTokens"`
+		OutputTokens              int `json:"output_tokens"`
+		OutputTokensCamel         int `json:"outputTokens"`
+		CacheCreationInputTokens  int `json:"cache_creation_input_tokens"`
+		CacheCreationInputCamel   int `json:"cacheCreationInputTokens"`
+		CacheReadInputTokens      int `json:"cache_read_input_tokens"`
+		CacheReadInputCamel       int `json:"cacheReadInputTokens"`
+		TotalInputTokens          int `json:"total_input_tokens"`
+		TotalInputCamel           int `json:"totalInputTokens"`
+		TotalOutputTokens         int `json:"total_output_tokens"`
+		TotalOutputCamel          int `json:"totalOutputTokens"`
+	}
+
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &payload); err != nil {
+		return nil, err
+	}
+
+	status := &llmtypes.StatusLine{
+		Provider: "claudecode",
+		Model:    defaultModel,
+	}
+
+	// Resolve the token counts
+	if payload.InputTokens > 0 {
+		status.InputTokens = payload.InputTokens
+	} else {
+		status.InputTokens = payload.InputTokensCamel
+	}
+
+	if payload.OutputTokens > 0 {
+		status.OutputTokens = payload.OutputTokens
+	} else {
+		status.OutputTokens = payload.OutputTokensCamel
+	}
+
+	if payload.CacheCreationInputTokens > 0 {
+		status.CacheCreationInputTokens = payload.CacheCreationInputTokens
+	} else {
+		status.CacheCreationInputTokens = payload.CacheCreationInputCamel
+	}
+
+	if payload.CacheReadInputTokens > 0 {
+		status.CacheReadInputTokens = payload.CacheReadInputTokens
+	} else {
+		status.CacheReadInputTokens = payload.CacheReadInputCamel
+	}
+
+	if payload.TotalInputTokens > 0 {
+		status.TotalInputTokens = payload.TotalInputTokens
+	} else {
+		status.TotalInputTokens = payload.TotalInputCamel
+	}
+
+	if payload.TotalOutputTokens > 0 {
+		status.TotalOutputTokens = payload.TotalOutputTokens
+	} else {
+		status.TotalOutputTokens = payload.TotalOutputCamel
+	}
+
+	// Map raw payload to metadata
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(raw, &rawMap); err == nil {
+		status.Metadata = rawMap
+	}
+
+	return status, nil
+}
+
+// GetStatusLine retrieves a snapshot of the current statusline for the active session.
+// Satisfies the llmtypes.StatusLineProvider interface.
+func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessionID string) (*llmtypes.StatusLine, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required")
+	}
+
+	// Find the session in the registry or use fallback
+	var tmuxSessionName string
+	claudeInteractivePersistentRegistry.Lock()
+	for _, sess := range claudeInteractivePersistentRegistry.sessions {
+		if sess != nil && (sess.ownerSessionID == sessionID || sess.tmuxSessionName == sessionID) {
+			tmuxSessionName = sess.tmuxSessionName
+			break
+		}
+	}
+	claudeInteractivePersistentRegistry.Unlock()
+
+	if tmuxSessionName == "" {
+		tmuxSessionName = sessionID
+	}
+
+	outputPath := claudeStatuslinePath(tmuxSessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read statusline payload: %w", err)
+	}
+
+	modelID := c.modelID
+	if modelID == "" {
+		modelID = "claude-3-5-sonnet"
+	}
+
+	status, err := parseClaudeStatusLineJSON(raw, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse statusline payload: %w", err)
+	}
+
+	return status, nil
 }
