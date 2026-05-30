@@ -45,7 +45,12 @@ const (
 	EnvClaudeTmuxSessionPrefix      = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
 	EnvClaudeTmuxTimeoutSeconds     = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
 	EnvClaudeTmuxPromptWaitSeconds  = "CLAUDE_CODE_TMUX_PROMPT_WAIT_SECONDS"
-	EnvClaudeTmuxIdleTimeoutSeconds = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
+	// EnvClaudeTmuxPromptMaxWaitSeconds caps the total time waitForTmuxPrompt
+	// will wait for a ready input prompt while Claude is actively working
+	// (e.g. compacting a long conversation on resume). The prompt-wait above
+	// is a sliding inactivity window; this is the absolute backstop.
+	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
+	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
 	EnvClaudeTmuxStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
 
 	// Legacy env names kept for existing deployments and test runners.
@@ -776,6 +781,19 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("failed to configure Claude Code tmux session %q: %w", sessionName, err)
 	}
+	// Pin the window size to manual. The session is detached (no attached
+	// client), so tmux's default window-size "latest" recomputes the size
+	// from the most-recent client — and with zero clients it collapses to
+	// default-size (80x24). When that happens the Claude Code TUI reflows
+	// into half its width: box borders squish, columns compress, lines
+	// double-wrap, and the captured pane becomes unreadable. "manual" freezes
+	// the size we launched at (tmuxsize.Args) until the frontend explicitly
+	// resize-windows it.
+	_ = runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "window-size", "manual")
+	// Enable focus-events so the Claude Code TUI receives focus in/out
+	// sequences and stops parking its "tmux focus-events off · add
+	// 'set -g focus-events on'" nag line in the footer.
+	_ = runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "focus-events", "on")
 	return nil
 }
 
@@ -1063,8 +1081,19 @@ func claudeInteractiveStreamTmuxScreenEnabled() bool {
 }
 
 func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	// promptWait is a sliding INACTIVITY window, not a hard cap on the whole
+	// wait. On resume Claude Code frequently compacts the conversation, and a
+	// large compaction routinely runs longer than promptWait. A fixed deadline
+	// fired mid-compaction, so waitForTmuxPrompt returned a timeout and the
+	// caller never sent the user's message. Instead we reset the inactivity
+	// timer whenever Claude is actively working (the compaction spinner / "esc
+	// to interrupt" / running progress lines), so a genuinely hung pane still
+	// aborts after promptWait of silence while a busy-but-progressing pane is
+	// allowed to finish. maxWait is the absolute backstop for a pane that
+	// reports activity forever.
 	promptWait := promptReadyTimeout()
-	deadline, cancel := context.WithTimeout(ctx, promptWait)
+	maxWait := promptReadyMaxWait(promptWait)
+	deadline, cancel := context.WithTimeout(ctx, maxWait)
 	defer cancel()
 
 	ticker := time.NewTicker(defaultTmuxPollInterval)
@@ -1074,14 +1103,15 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
 
+	lastActivityAt := time.Now()
 	for {
 		select {
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; %s", promptWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return fmt.Errorf("timed out after %s waiting for Claude Code prompt", promptWait)
+			return fmt.Errorf("timed out after %s waiting for Claude Code prompt", maxWait)
 		case <-ticker.C:
 			captured, err := captureTmuxPane(deadline, sessionName)
 			if err != nil {
@@ -1103,11 +1133,26 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 					if err := runCommand(deadline, nil, "tmux", args...); err != nil {
 						return fmt.Errorf("failed to continue Claude Code resumed session without compaction: %w", err)
 					}
+					lastActivityAt = time.Now()
 					continue
 				}
 			}
 			if hasReadyInputPrompt(captured) {
 				return nil
+			}
+			// Reset the inactivity window while Claude is busy (compacting,
+			// thinking, running tools) so a slow-but-progressing resume isn't
+			// aborted before the input prompt appears.
+			if hasClaudeActivity(captured) || isClaudeCompactionInProgress(captured) {
+				lastActivityAt = time.Now()
+				continue
+			}
+			if time.Since(lastActivityAt) >= promptWait {
+				captured, _ := captureTmuxPane(context.Background(), sessionName)
+				if strings.TrimSpace(captured) != "" {
+					return fmt.Errorf("timed out after %s of inactivity waiting for Claude Code prompt; %s", promptWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				}
+				return fmt.Errorf("timed out after %s of inactivity waiting for Claude Code prompt", promptWait)
 			}
 		}
 	}
@@ -2265,6 +2310,16 @@ func isClaudeTUIStatusLine(trimmed string) bool {
 		(strings.Contains(lower, "ctrl+o") || strings.Contains(lower, "full summary") || strings.Contains(lower, "history"))
 }
 
+// isClaudeCompactionInProgress reports whether the pane is actively compacting
+// (or otherwise summarizing) the conversation — the long-running resume step
+// that must NOT count against waitForTmuxPrompt's inactivity window. Matches
+// the in-progress wording ("Compacting…" / "Summarizing…") but not the
+// finished "Compacted" status line handled by isClaudeTUIStatusLine.
+func isClaudeCompactionInProgress(captured string) bool {
+	lower := strings.ToLower(strings.ReplaceAll(captured, " ", " "))
+	return strings.Contains(lower, "compacting") || strings.Contains(lower, "summarizing")
+}
+
 func hasTrailingClaudeTUIStatus(text string) bool {
 	lines := strings.Split(strings.ReplaceAll(text, "\u00a0", " "), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -2471,6 +2526,22 @@ func promptReadyTimeout() time.Duration {
 		return parsed
 	}
 	return tmuxlaunch.PromptWait(EnvClaudeExperimentalPromptWaitSeconds)
+}
+
+// promptReadyMaxWait is the absolute ceiling waitForTmuxPrompt will wait for a
+// ready input prompt while Claude keeps reporting activity (e.g. a long
+// compaction on resume). The inactivity window (promptReadyTimeout) handles a
+// hung pane; this only bounds a pane that looks busy forever. Defaults to a
+// generous multiple of the inactivity window so real compactions complete.
+func promptReadyMaxWait(idleWait time.Duration) time.Duration {
+	if parsed, ok := claudePositiveDurationFromEnv(EnvClaudeTmuxPromptMaxWaitSeconds); ok {
+		return parsed
+	}
+	maxWait := idleWait * 8
+	if maxWait < 15*time.Minute {
+		maxWait = 15 * time.Minute
+	}
+	return maxWait
 }
 
 func persistentInteractiveIdleTimeout() time.Duration {

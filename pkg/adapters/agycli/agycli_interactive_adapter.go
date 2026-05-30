@@ -1490,6 +1490,11 @@ func startAgyTmuxSession(ctx context.Context, sessionName string, args []string,
 		return fmt.Errorf("failed to start Agy interactive session %q: %w", sessionName, err)
 	}
 	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	// Pin the window size to manual so the detached session keeps the size we
+	// launched at instead of collapsing to default-size (80x24), which reflows
+	// the TUI into half-width and makes the captured pane unreadable.
+	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "window-size", "manual")
+	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "focus-events", "on")
 	return nil
 }
 
