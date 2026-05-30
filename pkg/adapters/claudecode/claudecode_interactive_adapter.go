@@ -2234,7 +2234,9 @@ func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string,
 	// colorize the snapshot via ansi_up. Cursor positioning sequences are
 	// stripped by stripClaudeANSIPreserveColors in streamClaudeTerminalSnapshot
 	// before the snapshot leaves the adapter so they don't garble rendering.
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-S", "-"+defaultTmuxCaptureLines)
+	// -J joins wrapped lines so the frontend can handle wrapping natively without
+	// hard splitting words mid-line.
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-J", "-S", "-"+defaultTmuxCaptureLines)
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
@@ -3024,6 +3026,10 @@ func killClaudeInteractiveSession(ctx context.Context, sessionName string) error
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
 	}
+	// Reap the pane process trees (CLI + spawned MCP node subprocesses) before
+	// killing the session — kill-session only SIGHUPs the pane process, so the
+	// children would otherwise orphan and leak.
+	tmuxcontrol.ReapSessionProcessTree(ctx, sessionName)
 	if err := runCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
 		if isTmuxMissingSessionError(err) || isTmuxNoServerError(err) {
 			return nil

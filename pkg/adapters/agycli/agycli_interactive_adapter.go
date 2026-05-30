@@ -2613,7 +2613,9 @@ func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, 
 	// colorize the snapshot via ansi_up. Cursor positioning sequences are
 	// stripped at the next layer (stripAgyANSIPreserveColors) so they don't
 	// garble the rendered output.
-	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-S", "-3000", "-t", sessionName)
+	// -J joins wrapped lines so the frontend can handle wrapping natively without
+	// hard splitting words mid-line.
+	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
 }
 
 func agyCapturedAfterBaseline(captured, baseline string) string {
