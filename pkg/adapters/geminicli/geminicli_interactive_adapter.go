@@ -76,7 +76,7 @@ var geminiInteractiveRegistry = struct {
 }
 
 var geminiPersistentRegistry = struct {
-	sync.Mutex
+	sync.RWMutex
 	sessions map[string]*geminiInteractiveSession
 }{
 	sessions: map[string]*geminiInteractiveSession{},
@@ -307,26 +307,42 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	}, nil
 }
 
+// adoptExistingGeminiSession finalizes reuse of an already-registered persistent
+// session. It MUST be called without the global registry lock held: it blocks on
+// existing.mu (held for a full turn) and would otherwise pin the registry lock.
+// On success it returns with existing.mu held, matching the
+// acquireGeminiInteractiveSession contract.
+func adoptExistingGeminiSession(existing *geminiInteractiveSession) (*geminiInteractiveSession, bool, error) {
+	existing.mu.Lock()
+	if existing.initErr != nil {
+		err := existing.initErr
+		existing.mu.Unlock()
+		return nil, false, err
+	}
+	if existing.idleTimer != nil {
+		existing.idleTimer.Stop()
+		existing.idleTimer = nil
+	}
+	existing.lastUsed = time.Now()
+	return existing, true, nil
+}
+
 // acquireGeminiInteractiveSession returns with session.mu held. The caller must
 // either releaseGeminiInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
 func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*geminiInteractiveSession, bool, error) {
-	geminiPersistentRegistry.Lock()
-	if existing := geminiPersistentRegistry.sessions[ownerSessionID]; existing != nil {
-		existing.mu.Lock()
-		if existing.initErr != nil {
-			err := existing.initErr
-			existing.mu.Unlock()
-			geminiPersistentRegistry.Unlock()
-			return nil, false, err
-		}
-		if existing.idleTimer != nil {
-			existing.idleTimer.Stop()
-			existing.idleTimer = nil
-		}
-		existing.lastUsed = time.Now()
-		geminiPersistentRegistry.Unlock()
-		return existing, true, nil
+	// Look up an existing session under the global registry lock, then RELEASE
+	// it before locking the per-session mutex. existing.mu is held for the full
+	// duration of a turn; taking it while still holding the global registry lock
+	// (as this used to) pins that lock for an entire turn and stalls every other
+	// owner's lookups — including a live /steer message via geminiPersistentSession,
+	// which then hangs indefinitely. closeGeminiPersistentSession already follows
+	// this drop-then-lock ordering; acquire must too.
+	geminiPersistentRegistry.RLock()
+	existing := geminiPersistentRegistry.sessions[ownerSessionID]
+	geminiPersistentRegistry.RUnlock()
+	if existing != nil {
+		return adoptExistingGeminiSession(existing)
 	}
 
 	now := time.Now()
@@ -337,6 +353,15 @@ func (g *GeminiCLIAdapter) acquireGeminiInteractiveSession(ctx context.Context, 
 		lastUsed:        now,
 	}
 	session.mu.Lock()
+	geminiPersistentRegistry.Lock()
+	if raced := geminiPersistentRegistry.sessions[ownerSessionID]; raced != nil {
+		// Another turn for this owner registered a session in the window between
+		// our lookup above and re-acquiring the lock here. Discard the one we
+		// just built (never registered, no tmux launched) and reuse the winner.
+		geminiPersistentRegistry.Unlock()
+		session.mu.Unlock()
+		return adoptExistingGeminiSession(raced)
+	}
 	geminiPersistentRegistry.sessions[ownerSessionID] = session
 	geminiPersistentRegistry.Unlock()
 
@@ -614,7 +639,7 @@ func CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	if name == "" {
 		return
 	}
-	geminiPersistentRegistry.Lock()
+	geminiPersistentRegistry.RLock()
 	owner := ""
 	for o, s := range geminiPersistentRegistry.sessions {
 		if s != nil && s.tmuxSessionName == name {
@@ -622,7 +647,7 @@ func CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 			break
 		}
 	}
-	geminiPersistentRegistry.Unlock()
+	geminiPersistentRegistry.RUnlock()
 	if owner == "" {
 		return
 	}
@@ -813,8 +838,8 @@ func SendGeminiInteractiveInput(ctx context.Context, ownerSessionID, message str
 }
 
 func geminiPersistentSession(ownerSessionID string) (*geminiInteractiveSession, bool) {
-	geminiPersistentRegistry.Lock()
-	defer geminiPersistentRegistry.Unlock()
+	geminiPersistentRegistry.RLock()
+	defer geminiPersistentRegistry.RUnlock()
 	session := geminiPersistentRegistry.sessions[strings.TrimSpace(ownerSessionID)]
 	return session, session != nil
 }
