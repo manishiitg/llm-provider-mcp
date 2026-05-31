@@ -2247,6 +2247,8 @@ func isAgyTUILine(line string) bool {
 		return true
 	}
 	return strings.Contains(lower, "ctrl+") ||
+		strings.HasSuffix(lower, "collapse)") ||
+		strings.HasSuffix(lower, "to collapse)") ||
 		strings.Contains(lower, "esc to") ||
 		strings.Contains(lower, "press enter") ||
 		strings.Contains(lower, "run everything") ||
@@ -2344,7 +2346,13 @@ func isAgyToolStatusLine(line string) bool {
 }
 
 func isAgyThoughtStatusLine(line string) bool {
-	trimmed := strings.TrimSpace(strings.TrimLeft(line, "▸ "))
+	// Strip any leading triangle/arrow glyphs (▸ right U+25B8, ▾ down U+25BE)
+	// and spaces before checking. Agy uses both depending on whether the thought
+	// block is collapsed (▾) or expanded (▸).
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.TrimLeftFunc(trimmed, func(r rune) bool {
+		return r == '▸' || r == '▾' || r == ' '
+	})
 	lower := strings.ToLower(trimmed)
 	return strings.HasPrefix(lower, "thought for ") ||
 		strings.HasPrefix(lower, "thought process")
