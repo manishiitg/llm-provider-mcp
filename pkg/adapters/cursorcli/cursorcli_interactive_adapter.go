@@ -1330,7 +1330,11 @@ func sendCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runCursorCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
 		return fmt.Errorf("failed to load Cursor input into tmux buffer: %w", err)
 	}
-	if err := runCursorCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+	// Raw paste (no -p): -p enables bracketed paste, which Cursor collapses to an
+	// opaque "[Pasted text #N]" block in the pane. -r preserves embedded LFs as
+	// literal newlines (not CR), so multi-line input stays in the draft without
+	// submitting early, while the actual text stays readable in the terminal.
+	if err := runCursorCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Cursor interactive session: %w", err)
 	}
 	waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second)
