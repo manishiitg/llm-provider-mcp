@@ -10,8 +10,8 @@ const (
 	EnvColumns = "CODING_AGENT_TMUX_COLUMNS"
 	EnvRows    = "CODING_AGENT_TMUX_ROWS"
 
-	DefaultColumns = 160
-	DefaultRows    = 48
+	DefaultColumns = 120
+	DefaultRows    = 36
 
 	minColumns = 80
 	minRows    = 24
