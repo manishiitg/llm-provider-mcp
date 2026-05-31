@@ -38,6 +38,12 @@ const (
 	minTmuxMajorVersion            = 3
 	claudeIdleStableWindow         = 1200 * time.Millisecond
 	claudeTailFallbackMaxLines     = 120
+	// defaultClaudeInteractiveStalePaneBackstop is a detection-independent
+	// backstop for the assistant-response wait loop: if the pane has produced
+	// activity and then frozen (byte-identical) for this long, the turn is over
+	// but ready-prompt detection failed to recognize it. Generous so it never
+	// trips a real turn. Set the env var to 0 to disable.
+	defaultClaudeInteractiveStalePaneBackstop = 120 * time.Second
 	promptPasteVisibleStableWindow = 900 * time.Millisecond
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 	promptPasteLiveInputWait       = 2 * time.Second
@@ -52,6 +58,11 @@ const (
 	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
 	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
 	EnvClaudeTmuxStreamTmuxScreen     = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	// EnvClaudeInteractiveStalePaneBackstopSeconds bounds how long the
+	// assistant-response loop will keep waiting on a pane that produced activity
+	// and then went byte-identical without ever reaching a ready prompt. Set to
+	// 0 to disable the backstop.
+	EnvClaudeInteractiveStalePaneBackstopSeconds = "CLAUDE_CODE_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 
 	// Legacy env names kept for existing deployments and test runners.
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
@@ -1949,6 +1960,13 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
+	stalePaneBackstop := claudeInteractiveStalePaneBackstop()
+	// Stale-pane backstop tracking: the raw capture from the previous tick and
+	// the time it last changed. Tracked at the top of every tick, independent of
+	// all the branch logic below, so a ready-prompt detection bug that keeps the
+	// loop in a "not ready" branch can never suppress it.
+	var backstopPrevCapture string
+	var paneUnchangedSince time.Time
 
 	for {
 		select {
@@ -1981,6 +1999,29 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			}
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Stale-pane backstop. Independent of hasReadyEmptyInputPrompt and
+			// every branch below: if the pane has produced activity and then
+			// frozen (byte-identical) for longer than the backstop, the turn is
+			// over but completion detection failed to recognize it (e.g. a
+			// leftover spinner frame or status line holding the pane "not
+			// ready"). Extract whatever response is present and return it rather
+			// than spin forever (the call context has no turn deadline by
+			// default). sawActivity guards the no-input case where the pane never
+			// changed from baseline.
+			if captured != backstopPrevCapture {
+				backstopPrevCapture = captured
+				paneUnchangedSince = time.Now()
+			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
+				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, "", endMarker)
+				if !ok || strings.TrimSpace(content) == "" {
+					content = forcedClaudeResponseFromCaptured(captured, paneBaseline)
+				}
+				if strings.TrimSpace(content) != "" {
+					return captured, nil
+				}
+				return captured, fmt.Errorf("Claude Code CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -2583,6 +2624,20 @@ func persistentInteractiveIdleTimeout() time.Duration {
 		return defaultPersistentIdleTimeout
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// claudeInteractiveStalePaneBackstop returns the stale-pane backstop duration
+// for the assistant-response loop. An explicit 0 (or negative) disables it.
+func claudeInteractiveStalePaneBackstop() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv(EnvClaudeInteractiveStalePaneBackstopSeconds)); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil {
+			if seconds <= 0 {
+				return 0
+			}
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return defaultClaudeInteractiveStalePaneBackstop
 }
 
 func claudePositiveDurationFromEnv(keys ...string) (time.Duration, bool) {

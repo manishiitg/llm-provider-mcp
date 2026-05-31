@@ -33,6 +33,12 @@ const (
 	defaultGeminiInteractiveTimeout     = 0
 	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
 	defaultGeminiInteractiveRetention   = 30 * time.Minute
+	// defaultGeminiInteractiveStalePaneBackstop bounds how long the response-wait
+	// loop will tolerate a byte-frozen pane after activity before giving up on
+	// ready-prompt detection and extracting whatever response is present. This is
+	// a detection-independent backstop so a prompt-detection failure on a frozen
+	// pane can never hang the turn forever. Set the env var to 0 to disable.
+	defaultGeminiInteractiveStalePaneBackstop = 120 * time.Second
 	geminiInteractiveStableWindow       = 1200 * time.Millisecond
 	geminiActivityScanNonEmptyLines     = 160
 	geminiPromptPasteVisibleWait        = 1500 * time.Millisecond
@@ -44,6 +50,8 @@ const (
 	EnvGeminiInteractiveIdleTimeoutSeconds = "GEMINI_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
 	EnvGeminiInteractivePromptWaitSeconds  = "GEMINI_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvGeminiInteractiveStreamTmuxScreen   = "GEMINI_CLI_STREAM_TMUX_SCREEN"
+
+	EnvGeminiInteractiveStalePaneBackstopSeconds = "GEMINI_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
 type geminiInteractiveSession struct {
@@ -179,7 +187,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 		return nil, err
 	}
 
-	captured, err := waitForGeminiInteractiveResponse(callCtx, session, baseline, opts.StreamChan)
+	captured, err := waitForGeminiInteractiveResponse(callCtx, session, baseline, prompt, historicalAssistantTexts, opts.StreamChan)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		if ctx.Err() != nil {
@@ -1186,10 +1194,11 @@ func geminiInputAccepted(ctx context.Context, sessionName string, lastCaptured *
 	}
 }
 
-func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiInteractiveSession, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiInteractiveSession, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
 	sessionName := session.tmuxSessionName
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	stalePaneBackstop := geminiInteractiveStalePaneBackstop()
 	var sawActivity bool
 	var idleSince time.Time
 	var lastCaptured string
@@ -1197,6 +1206,12 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 	var lastTerminalStreamedAt time.Time
 	var lastDraftSubmit time.Time
 	var draftSubmitAttempts int
+	// Stale-pane backstop tracking: the raw capture from the previous tick and
+	// the time it last changed. This is tracked at the top of every tick,
+	// independent of all the branch logic below, so a prompt-detection bug that
+	// keeps the loop in a "not ready" branch can never suppress it.
+	var backstopPrevCapture string
+	var paneUnchangedSince time.Time
 	streamTerminalScreen := geminiInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1217,6 +1232,27 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 			}
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Stale-pane backstop. Independent of hasGeminiReadyPrompt and every
+			// branch below: if the pane has produced activity and then frozen
+			// (byte-identical) for longer than the backstop, the turn is over but
+			// completion detection failed to recognize it (e.g. a leftover spinner
+			// frame or tool card holding the pane "not ready"). Extract whatever
+			// response is present and return it rather than hang forever. Tracked at
+			// the very top of the tick so no earlier continue can skip it.
+			if captured != backstopPrevCapture {
+				backstopPrevCapture = captured
+				paneUnchangedSince = time.Now()
+			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
+				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				content := parseGeminiInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				if strings.TrimSpace(content) == "" {
+					content = forcedGeminiInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				}
+				if strings.TrimSpace(content) != "" {
+					return captured, nil
+				}
+				return captured, fmt.Errorf("Gemini CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
 			}
 			if hasGeminiReadyPrompt(captured) {
 				if liveMessage, ok := popGeminiLiveInput(session); ok {
@@ -2173,6 +2209,10 @@ func geminiInteractiveCallContext(ctx context.Context) (context.Context, context
 
 func geminiInteractiveIdleTimeout() time.Duration {
 	return geminiDurationFromEnv(EnvGeminiInteractiveIdleTimeoutSeconds, defaultGeminiInteractiveIdleTimeout)
+}
+
+func geminiInteractiveStalePaneBackstop() time.Duration {
+	return geminiDurationFromEnvAllowZero(EnvGeminiInteractiveStalePaneBackstopSeconds, defaultGeminiInteractiveStalePaneBackstop)
 }
 
 func geminiInteractiveRetention() time.Duration {

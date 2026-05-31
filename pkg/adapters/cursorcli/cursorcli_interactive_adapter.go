@@ -43,6 +43,12 @@ const (
 	// response loop spins forever because every completion branch is gated
 	// behind sawActivity and the call context has no deadline by default.
 	defaultCursorInteractiveFirstActivityTimeout = 90 * time.Second
+	// Detection-independent backstop: if the pane produced activity and then
+	// froze (byte-identical) for longer than this after the turn finished, the
+	// turn is over but completion detection (hasCursorReadyPrompt) failed to
+	// recognize it. Rather than spin forever, extract whatever response is
+	// present and return it (or fail cleanly if there is none).
+	defaultCursorInteractiveStalePaneBackstop = 120 * time.Second
 
 	EnvCursorInteractiveSessionPrefix               = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCursorInteractiveTimeoutSeconds              = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -50,6 +56,7 @@ const (
 	EnvCursorInteractivePromptWaitSeconds           = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCursorInteractiveStreamTmuxScreen            = "CURSOR_CLI_STREAM_TMUX_SCREEN"
 	EnvCursorInteractiveFirstActivityTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
+	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
 type cursorInteractiveSession struct {
@@ -1426,6 +1433,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	defer ticker.Stop()
 	waitStartedAt := time.Now()
 	firstActivityTimeout := cursorInteractiveFirstActivityTimeout()
+	stalePaneBackstop := cursorInteractiveStalePaneBackstop()
 	var sawActivity bool
 	var idleSince time.Time
 	var readyWithoutContentSince time.Time
@@ -1436,6 +1444,12 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastTerminalStreamedAt time.Time
 	var lastWebSearchApprovalAt time.Time
 	var lastMCPToolApprovalAt time.Time
+	// Stale-pane backstop tracking: the raw capture from the previous tick and
+	// the time it last changed. This is tracked at the top of every tick,
+	// independent of all the branch logic below, so a prompt-detection bug that
+	// keeps the loop in a "not ready" branch can never suppress it.
+	var backstopPrevCapture string
+	var paneUnchangedSince time.Time
 	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1450,6 +1464,28 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			delta := cursorCapturedAfterBaseline(captured, baseline)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Stale-pane backstop. Independent of hasCursorReadyPrompt and every
+			// branch below: if the pane has produced activity and then frozen
+			// (byte-identical) for longer than the backstop, the turn is over but
+			// completion detection failed to recognize it (e.g. a stale status
+			// line or leftover spinner frame holding the pane "not ready"). Extract
+			// whatever response is present and return it rather than hang forever.
+			// Gated on sawActivity so a never-delivered prompt (pane frozen at
+			// baseline) falls through to the first-activity timeout instead.
+			if captured != backstopPrevCapture {
+				backstopPrevCapture = captured
+				paneUnchangedSince = time.Now()
+			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
+				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				if strings.TrimSpace(content) == "" {
+					content = forcedCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				}
+				if strings.TrimSpace(content) != "" {
+					return captured, nil
+				}
+				return captured, fmt.Errorf("Cursor Agent CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -2287,6 +2323,13 @@ func cursorInteractiveIdleTimeout() time.Duration {
 // fails cleanly even when caller and provider both run without a turn deadline.
 func cursorInteractiveFirstActivityTimeout() time.Duration {
 	return cursorDurationFromEnv(EnvCursorInteractiveFirstActivityTimeoutSeconds, defaultCursorInteractiveFirstActivityTimeout)
+}
+
+// cursorInteractiveStalePaneBackstop bounds how long the response-wait loop will
+// tolerate a byte-frozen pane after activity before returning, independent of
+// prompt detection. Guards against a hang when hasCursorReadyPrompt never trips.
+func cursorInteractiveStalePaneBackstop() time.Duration {
+	return cursorDurationFromEnv(EnvCursorInteractiveStalePaneBackstopSeconds, defaultCursorInteractiveStalePaneBackstop)
 }
 
 // cursorBrailleSpinner reports whether r is one of the CLI's animated spinner

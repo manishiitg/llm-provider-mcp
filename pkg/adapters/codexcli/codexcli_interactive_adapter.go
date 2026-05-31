@@ -37,11 +37,20 @@ const (
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160
 
-	EnvCodexInteractiveSessionPrefix      = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCodexInteractiveTimeoutSeconds     = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCodexInteractiveIdleTimeoutSeconds = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCodexInteractivePromptWaitSeconds  = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCodexInteractiveStreamTmuxScreen   = "CODEX_CLI_STREAM_TMUX_SCREEN"
+	// defaultCodexInteractiveStalePaneBackstop is a detection-independent backstop
+	// for the response-wait loop: codexcli has no turn timeout, so if prompt
+	// detection (hasCodexReadyPrompt) never recognizes completion AND the tmux
+	// pane is byte-frozen after the turn produced activity, the loop would spin
+	// forever. This bounds that case. Only ever consulted once sawActivity is set,
+	// so it never trips a never-delivered prompt (that is the no-input case).
+	defaultCodexInteractiveStalePaneBackstop = 120 * time.Second
+
+	EnvCodexInteractiveSessionPrefix            = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCodexInteractiveIdleTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCodexInteractivePromptWaitSeconds        = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCodexInteractiveStreamTmuxScreen         = "CODEX_CLI_STREAM_TMUX_SCREEN"
+	EnvCodexInteractiveStalePaneBackstopSeconds = "CODEX_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
 type codexInteractiveSession struct {
@@ -1329,12 +1338,19 @@ func sendCodexInputToTmux(ctx context.Context, sessionName, message string) erro
 func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	stalePaneBackstop := codexInteractiveStalePaneBackstop()
 	var sawActivity bool
 	var idleSince time.Time
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var dismissedRateReminder bool
+	// Stale-pane backstop tracking: the raw capture from the previous tick and
+	// the time it last changed. Tracked at the top of every tick, independent of
+	// all the branch logic below, so a prompt-detection bug that keeps the loop
+	// in a "not ready" branch can never suppress it.
+	var backstopPrevCapture string
+	var paneUnchangedSince time.Time
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1349,6 +1365,22 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			delta := codexCapturedAfterBaseline(captured, baseline)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Stale-pane backstop. Independent of hasCodexReadyPrompt and every
+			// branch below: if the pane has produced activity and then frozen
+			// (byte-identical) for longer than the backstop, the turn is over but
+			// completion detection failed to recognize it. Return the pane the same
+			// way the ready-prompt success path does (return captured, nil) and let
+			// the caller extract — codexcli's response extraction needs the prompt
+			// and history which the success path also defers to the caller. Only
+			// armed once sawActivity is set, so a never-delivered prompt (pane never
+			// changed from baseline) never trips it.
+			if captured != backstopPrevCapture {
+				backstopPrevCapture = captured
+				paneUnchangedSince = time.Now()
+			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
+				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				return captured, nil
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -3214,6 +3246,13 @@ func codexInteractiveStreamTmuxScreenEnabled() bool {
 	default:
 		return true
 	}
+}
+
+// codexInteractiveStalePaneBackstop bounds how long the response-wait loop will
+// tolerate a byte-frozen pane after the turn has produced activity but no ready
+// prompt was detected. Detection-independent backstop against a silent hang.
+func codexInteractiveStalePaneBackstop() time.Duration {
+	return codexDurationFromEnv(EnvCodexInteractiveStalePaneBackstopSeconds, defaultCodexInteractiveStalePaneBackstop)
 }
 
 func codexDurationFromEnv(key string, fallback time.Duration) time.Duration {
