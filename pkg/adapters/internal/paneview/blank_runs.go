@@ -28,6 +28,7 @@ func CollapseBlankRuns(s string) string {
 		return s
 	}
 	lines := strings.Split(s, "\n")
+	lines = pruneInputBoxTrailer(lines)
 	lines = pruneSpinnerLines(lines)
 	out := make([]string, 0, len(lines))
 	blankRun := 0
@@ -98,5 +99,59 @@ func hasBraille(s string) bool {
 		}
 	}
 	return false
+}
+
+// pruneInputBoxTrailer removes the agy input-box region and everything below
+// it. The input box appears as a run of ─ box-drawing characters (the top
+// border), followed by the › prompt line, followed by another ─ run (bottom
+// border). Below the bottom border the pane contains empty space and animation
+// cursor-positioning artifacts ("oa", "ad", "di" — fragments of a word being
+// overwritten mid-frame) that must not be shown to the user.
+//
+// We find the last run of ≥20 consecutive ─ characters (the bottom border of
+// the input box, which is always the wider of the two) and strip from the top
+// border (the ─ run just above the › line) onward. Using the last long ─ run
+// as the anchor avoids false-positives on ─ dividers inside tool output.
+func pruneInputBoxTrailer(lines []string) []string {
+	// Find the index of the last box-border line (≥20 ─ chars).
+	lastBorderIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) >= 20 && isAllDashes(trimmed) {
+			lastBorderIdx = i
+		}
+	}
+	if lastBorderIdx < 0 {
+		return lines
+	}
+	// Walk back from lastBorderIdx to find the matching top border
+	// (the ─ line just before the › prompt). The top border is the
+	// nearest ─ line above lastBorderIdx.
+	topBorderIdx := -1
+	for i := lastBorderIdx - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if len(trimmed) >= 20 && isAllDashes(trimmed) {
+			topBorderIdx = i
+			break
+		}
+		// Allow only blank lines and a single › prompt line between the two borders.
+		if strings.TrimSpace(trimmed) != "" && !strings.HasPrefix(strings.TrimSpace(trimmed), ">") {
+			break
+		}
+	}
+	cutAt := lastBorderIdx + 1 // strip from bottom border onward
+	if topBorderIdx >= 0 {
+		cutAt = topBorderIdx // strip from top border onward (cleaner)
+	}
+	return lines[:cutAt]
+}
+
+func isAllDashes(s string) bool {
+	for _, r := range s {
+		if r != '─' && r != '-' && r != '━' {
+			return false
+		}
+	}
+	return true
 }
 
