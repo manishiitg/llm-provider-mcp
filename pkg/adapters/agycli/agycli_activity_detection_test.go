@@ -39,18 +39,17 @@ func TestAgyActivityDetectsSpinnerPrefixedStatus(t *testing.T) {
 	}
 }
 
-// hasAgyLiveGenerationActivity gates ready-prompt detection: while a spinner is
-// animating, the turn must not be considered complete even though agy already
-// draws the "> " input box at the bottom of the pane.
+// hasAgyLiveGenerationActivity gates ready-prompt detection: while generation is
+// actively in progress, the turn must not be considered complete. The reliable
+// live signals are "composing"/"ctrl+c to stop"/"esc to interrupt" and an
+// in-flight tool card ("○ …") shown WITHOUT a stable ready input prompt.
 func TestAgyLiveGenerationActivityDetectsSpinner(t *testing.T) {
-	// Mirrors the real failing pane: spinner + "Generating…" above a ready "> ".
+	// A genuinely-live pane: a running tool card and a stop hint, no stable
+	// input prompt yet (agy has not drawn the idle "> " box).
 	generating := strings.ToLower(strings.Join([]string{
 		"○ api-bridge/slow_contract(Call slow_contract)",
 		"⣾ Generating...",
-		"└ Tip: Press ctrl+g to open an external editor for long prompts.",
-		"────────",
-		"> ",
-		"────────",
+		"└ Press ctrl+c to stop",
 	}, "\n"))
 	if !hasAgyLiveGenerationActivity(generating) {
 		t.Fatalf("hasAgyLiveGenerationActivity = false for an actively-generating pane; want true")
@@ -70,5 +69,30 @@ func TestAgyLiveGenerationActivityDetectsSpinner(t *testing.T) {
 	}, "\n"))
 	if hasAgyLiveGenerationActivity(done) {
 		t.Fatalf("hasAgyLiveGenerationActivity = true for a settled pane; want false")
+	}
+}
+
+// Regression for the silent hang where a COMPLETED message-sequence turn never
+// returned. agy leaves a finished tool card ("○ api-bridge/...(ctrl+o to
+// expand)") in the scrollback. With the ready input prompt ("> ") visible and
+// the pane byte-stable, that historical "○ " card must NOT be read as live
+// generation — otherwise hasAgyReadyPrompt stays false forever and the response
+// loop blocks indefinitely, so the step's completion notification never fires.
+func TestAgyCompletedToolCardWithReadyPromptIsNotLive(t *testing.T) {
+	// Mirrors the real hung pane: a completed tool card + final response text +
+	// a stable "> " input box, with NO active spinner near the input.
+	pane := strings.ToLower(strings.Join([]string{
+		"○ api-bridge/execute_shell_command(Get raw response) (ctrl+o to expand)",
+		"  ### Active Session Context",
+		"  The login session remains active in the background context on the Dashboard.",
+		"────────────────────────────────────────────────────────────",
+		"> ",
+		"────────────────────────────────────────────────────────────",
+	}, "\n"))
+	if hasAgyLiveGenerationActivity(pane) {
+		t.Fatalf("hasAgyLiveGenerationActivity = true for a completed pane with a historical ○ tool card and a ready prompt; want false")
+	}
+	if !hasAgyReadyPrompt(pane) {
+		t.Fatalf("hasAgyReadyPrompt = false for a completed, stable pane with a visible '> ' prompt; want true (turn is done)")
 	}
 }

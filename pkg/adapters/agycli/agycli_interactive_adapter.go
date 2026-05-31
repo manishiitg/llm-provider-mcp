@@ -2558,8 +2558,18 @@ func hasAgyLiveGenerationActivity(cleaned string) bool {
 		if strings.Contains(lower, "ctrl+c to stop") ||
 			strings.Contains(lower, "ctrl+c to cancel") ||
 			strings.Contains(lower, "esc to interrupt") ||
-			strings.Contains(lower, "composing") ||
-			strings.HasPrefix(lower, "○ ") {
+			strings.Contains(lower, "composing") {
+			return true
+		}
+		// A line beginning with the open-circle bullet ("○ ") is agy's marker
+		// for a tool card. While a turn is mid-flight that signals a still-running
+		// tool, but a COMPLETED tool card keeps the same "○ …(ctrl+o to expand)"
+		// shape and lingers in the scrollback after the turn ends. Once the ready
+		// input prompt ("> ") is visible the turn is finished, so a historical
+		// "○ " card must NOT be read as live generation — otherwise a completed,
+		// byte-stable pane is held "not ready" forever and the response loop hangs.
+		// Gate it behind !readyInputVisible, matching the "esc to cancel" rule below.
+		if strings.HasPrefix(lower, "○ ") && !readyInputVisible {
 			return true
 		}
 		if strings.Contains(lower, "esc to cancel") && !readyInputVisible {
