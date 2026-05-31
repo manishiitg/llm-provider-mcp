@@ -42,16 +42,16 @@ const (
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 	promptPasteLiveInputWait       = 2 * time.Second
 
-	EnvClaudeTmuxSessionPrefix      = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
-	EnvClaudeTmuxTimeoutSeconds     = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
-	EnvClaudeTmuxPromptWaitSeconds  = "CLAUDE_CODE_TMUX_PROMPT_WAIT_SECONDS"
+	EnvClaudeTmuxSessionPrefix     = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
+	EnvClaudeTmuxTimeoutSeconds    = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
+	EnvClaudeTmuxPromptWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_WAIT_SECONDS"
 	// EnvClaudeTmuxPromptMaxWaitSeconds caps the total time waitForTmuxPrompt
 	// will wait for a ready input prompt while Claude is actively working
 	// (e.g. compacting a long conversation on resume). The prompt-wait above
 	// is a sliding inactivity window; this is the absolute backstop.
 	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
 	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeTmuxStreamTmuxScreen   = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	EnvClaudeTmuxStreamTmuxScreen     = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
 
 	// Legacy env names kept for existing deployments and test runners.
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
@@ -3276,10 +3276,19 @@ func streamClaudeStatusLine(ctx context.Context, sessionName string, streamChan 
 	claudeStatusLineStreamed[sessionName] = trimmed
 	claudeStatusLineStreamMu.Unlock()
 
-	status, err := parseClaudeStatusLineJSON(raw, "claude-3-5-sonnet") // default fallback model if unknown
+	// Pass no default model: the real model comes from the statusLine JSON
+	// (model.display_name). Fabricating "claude-3-5-sonnet" here would show a
+	// wrong model whenever a different Claude model is in use.
+	status, err := parseClaudeStatusLineJSON(raw, "")
 	if err != nil {
 		return false
 	}
+	// Tag the owning tmux session so downstream consumers can attribute this
+	// telemetry to the exact coding-agent pane (a session may host several).
+	if status.Metadata == nil {
+		status.Metadata = map[string]interface{}{}
+	}
+	status.Metadata["tmux_session"] = sessionName
 
 	select {
 	case streamChan <- llmtypes.StreamChunk{
@@ -3295,18 +3304,18 @@ func streamClaudeStatusLine(ctx context.Context, sessionName string, streamChan 
 func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.StatusLine, error) {
 	// Parse with standard mapping, supporting both camelCase and snake_case or customized Claude Code output
 	var payload struct {
-		InputTokens               int `json:"input_tokens"`
-		InputTokensCamel          int `json:"inputTokens"`
-		OutputTokens              int `json:"output_tokens"`
-		OutputTokensCamel         int `json:"outputTokens"`
-		CacheCreationInputTokens  int `json:"cache_creation_input_tokens"`
-		CacheCreationInputCamel   int `json:"cacheCreationInputTokens"`
-		CacheReadInputTokens      int `json:"cache_read_input_tokens"`
-		CacheReadInputCamel       int `json:"cacheReadInputTokens"`
-		TotalInputTokens          int `json:"total_input_tokens"`
-		TotalInputCamel           int `json:"totalInputTokens"`
-		TotalOutputTokens         int `json:"total_output_tokens"`
-		TotalOutputCamel          int `json:"totalOutputTokens"`
+		InputTokens              int `json:"input_tokens"`
+		InputTokensCamel         int `json:"inputTokens"`
+		OutputTokens             int `json:"output_tokens"`
+		OutputTokensCamel        int `json:"outputTokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheCreationInputCamel  int `json:"cacheCreationInputTokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheReadInputCamel      int `json:"cacheReadInputTokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalInputCamel          int `json:"totalInputTokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		TotalOutputCamel         int `json:"totalOutputTokens"`
 	}
 
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &payload); err != nil {
@@ -3359,9 +3368,60 @@ func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.Statu
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(raw, &rawMap); err == nil {
 		status.Metadata = rawMap
+
+		// Claude Code's native statusLine input carries the real model and cost,
+		// which the token-focused struct above ignores. Extract them defensively
+		// from the raw map so we surface the actual model (not a hardcoded
+		// default) and the cost — without breaking the custom token format that
+		// has neither. model may be an object ({id, display_name}) or a string.
+		switch m := rawMap["model"].(type) {
+		case map[string]interface{}:
+			if dn, _ := m["display_name"].(string); strings.TrimSpace(dn) != "" {
+				status.Model = dn
+			} else if id, _ := m["id"].(string); strings.TrimSpace(id) != "" {
+				status.Model = id
+			}
+		case string:
+			if strings.TrimSpace(m) != "" {
+				status.Model = m
+			}
+		}
+		switch cost := rawMap["cost"].(type) {
+		case map[string]interface{}:
+			if c := claudeFloatFromAny(cost["total_cost_usd"]); c > 0 {
+				status.CostUSD = c
+			}
+		default:
+			if c := claudeFloatFromAny(rawMap["total_cost_usd"]); c > 0 {
+				status.CostUSD = c
+			}
+		}
+	}
+
+	// "claude-code"/"claudecode" are placeholder ids equal to the provider name;
+	// emitting them as Model renders a duplicate "claudecode · claude-code".
+	if status.Model == "claude-code" || status.Model == "claudecode" {
+		status.Model = ""
 	}
 
 	return status, nil
+}
+
+// claudeFloatFromAny coerces a JSON-decoded number (float64) — or a numeric
+// string — into a float64, returning 0 when the value isn't numeric.
+func claudeFloatFromAny(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	}
+	return 0
 }
 
 // GetStatusLine retrieves a snapshot of the current statusline for the active session.
@@ -3393,12 +3453,10 @@ func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessio
 		return nil, fmt.Errorf("failed to read statusline payload: %w", err)
 	}
 
-	modelID := c.modelID
-	if modelID == "" {
-		modelID = "claude-3-5-sonnet"
-	}
-
-	status, err := parseClaudeStatusLineJSON(raw, modelID)
+	// Use the adapter's configured model as the fallback; the statusLine JSON's
+	// model (when present) overrides it inside parseClaudeStatusLineJSON, and the
+	// "claude-code" placeholder is stripped there.
+	status, err := parseClaudeStatusLineJSON(raw, c.modelID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse statusline payload: %w", err)
 	}

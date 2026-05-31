@@ -67,6 +67,44 @@ var agyInteractiveRegistry = struct {
 	sessions: map[string]string{},
 }
 
+var agyActiveSessionsRegistry = struct {
+	sync.RWMutex
+	workingDirs map[string]string
+}{
+	workingDirs: map[string]string{},
+}
+
+func registerAgyActiveSessionWorkingDir(tmuxSessionName, workingDir string) {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	workingDir = strings.TrimSpace(workingDir)
+	if tmuxSessionName == "" || workingDir == "" {
+		return
+	}
+	agyActiveSessionsRegistry.Lock()
+	defer agyActiveSessionsRegistry.Unlock()
+	agyActiveSessionsRegistry.workingDirs[tmuxSessionName] = workingDir
+}
+
+func unregisterAgyActiveSessionWorkingDir(tmuxSessionName string) {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if tmuxSessionName == "" {
+		return
+	}
+	agyActiveSessionsRegistry.Lock()
+	defer agyActiveSessionsRegistry.Unlock()
+	delete(agyActiveSessionsRegistry.workingDirs, tmuxSessionName)
+}
+
+func getAgyActiveSessionWorkingDir(tmuxSessionName string) string {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if tmuxSessionName == "" {
+		return ""
+	}
+	agyActiveSessionsRegistry.RLock()
+	defer agyActiveSessionsRegistry.RUnlock()
+	return agyActiveSessionsRegistry.workingDirs[tmuxSessionName]
+}
+
 var agyPersistentRegistry = struct {
 	sync.Mutex
 	sessions map[string]*agyInteractiveSession
@@ -475,7 +513,11 @@ func captureAgyStatuslineUsageAtIdle(ctx context.Context, session *agyInteractiv
 		return agyStatuslineUsage{}, false
 	}
 
-	tempDir, err = os.MkdirTemp("", "agy-statusline-usage-*")
+	if session.persistent {
+		tempDir, err = os.MkdirTemp("/tmp", "agy-statusline-usage-*")
+	} else {
+		tempDir, err = os.MkdirTemp(session.workingDir, "agy-statusline-usage-*")
+	}
 	if err != nil {
 		logAgyStatuslineUsageCaptureError(logger, "create temp dir", err)
 		return agyStatuslineUsage{}, false
@@ -677,6 +719,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 				existing.idleTimer = nil
 			}
 			existing.lastUsed = time.Now()
+			registerAgyActiveSessionWorkingDir(existing.tmuxSessionName, existing.workingDir)
 			agyPersistentRegistry.Unlock()
 			return existing, nil
 		}
@@ -737,6 +780,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 		}
 		return nil, err
 	}
+	registerAgyActiveSessionWorkingDir(session.tmuxSessionName, session.workingDir)
 	registerAgyInteractiveSession(ownerSessionID, session.tmuxSessionName)
 	return session, nil
 }
@@ -1431,10 +1475,11 @@ func registerAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
 
 func unregisterAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	agyInteractiveRegistry.Lock()
-	defer agyInteractiveRegistry.Unlock()
 	if current := agyInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
 		delete(agyInteractiveRegistry.sessions, ownerSessionID)
 	}
+	agyInteractiveRegistry.Unlock()
+	unregisterAgyActiveSessionWorkingDir(tmuxSessionName)
 }
 
 func activeAgyInteractiveSession(ownerSessionID string) (string, bool) {
@@ -2892,11 +2937,42 @@ var (
 )
 
 func agyStatuslinePath(sessionName string) string {
+	workingDir := getAgyActiveSessionWorkingDir(sessionName)
+	var persistent bool
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && (sess.tmuxSessionName == sessionName || sess.ownerSessionID == sessionName) {
+			workingDir = sess.workingDir
+			persistent = sess.persistent
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+
+	if persistent {
+		// Persistent session (main agent) runs on the host (no workspace isolation).
+		// We use a global, secure, stable path in /tmp to avoid polluting workingDir.
+		// /tmp is world-writable, so both backend process and tmux session can access it
+		// without TMPDIR-based environment mismatches.
+		return filepath.Join("/tmp", fmt.Sprintf("agy_statusline_%s.json", sessionName))
+	}
+
+	if workingDir != "" {
+		// Bounded sessions (workflow steps) run in isolated environments (workspace isolation).
+		// They can only read/write files inside the mounted workingDir.
+		return filepath.Join(workingDir, fmt.Sprintf("agy_statusline_%s.json", sessionName))
+	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agy_statusline_%s.json", sessionName))
 }
 
 func configureAgyStatusline(ctx context.Context, session *agyInteractiveSession, logger interfaces.Logger) error {
-	tempDir, err := os.MkdirTemp("", "agy-statusline-config-*")
+	var tempDir string
+	var err error
+	if session.persistent {
+		tempDir, err = os.MkdirTemp("/tmp", "agy-statusline-config-*")
+	} else {
+		tempDir, err = os.MkdirTemp(session.workingDir, "agy-statusline-config-*")
+	}
 	if err != nil {
 		return err
 	}
@@ -2976,9 +3052,11 @@ func streamAgyStatusLine(ctx context.Context, sessionName string, streamChan cha
 		return false
 	}
 
-	// Build the generic StatusLine
+	// Build the generic StatusLine. Use the adapter's canonical display name
+	// ("agy-cli", as used everywhere else in this adapter) so consumers can
+	// render the provider verbatim without re-mapping the id.
 	status := &llmtypes.StatusLine{
-		Provider: "agy",
+		Provider: "agy-cli",
 	}
 
 	// Look up the session to get the model ID
@@ -2991,7 +3069,12 @@ func streamAgyStatusLine(ctx context.Context, sessionName string, streamChan cha
 		}
 	}
 	agyPersistentRegistry.Unlock()
-	status.Model = modelID
+	// "agy-cli" is the placeholder model id used when no real model is
+	// configured; it equals the provider name, so emitting it as Model renders a
+	// duplicate "agy-cli · agy-cli". Only set a model when it's a distinct value.
+	if modelID != "" && modelID != "agy-cli" {
+		status.Model = modelID
+	}
 
 	// Map token counts
 	current := payload.ContextWindow.CurrentUsage
@@ -3036,6 +3119,12 @@ func streamAgyStatusLine(ctx context.Context, sessionName string, streamChan cha
 	if err := json.Unmarshal([]byte(trimmed), &rawMap); err == nil {
 		status.Metadata = rawMap
 	}
+	// Tag the owning tmux session so downstream consumers can attribute this
+	// telemetry to the exact coding-agent pane (a session may host several).
+	if status.Metadata == nil {
+		status.Metadata = map[string]interface{}{}
+	}
+	status.Metadata["tmux_session"] = sessionName
 
 	select {
 	case streamChan <- llmtypes.StreamChunk{
@@ -3101,8 +3190,12 @@ func (c *AgyCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (*l
 	}
 
 	status := &llmtypes.StatusLine{
-		Provider: "agy",
-		Model:    c.modelID,
+		Provider: "agy-cli",
+	}
+	// Skip the "agy-cli" placeholder model id so the label doesn't render a
+	// duplicate "agy-cli · agy-cli" (see streamAgyStatusLine).
+	if c.modelID != "" && c.modelID != "agy-cli" {
+		status.Model = c.modelID
 	}
 
 	// Map token counts

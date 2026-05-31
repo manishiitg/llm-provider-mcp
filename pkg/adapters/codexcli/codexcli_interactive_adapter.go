@@ -53,12 +53,12 @@ type codexInteractiveSession struct {
 	// any pre-existing operator AGENTS.md byte-for-byte. nil if the
 	// flag wasn't enabled for this session.
 	projectInstructionCleanup func()
-	workingDir           string
-	idleTimer            *time.Timer
-	initErr              error
-	createdAt            time.Time
-	lastUsed             time.Time
-	mu                   sync.Mutex
+	workingDir                string
+	idleTimer                 *time.Timer
+	initErr                   error
+	createdAt                 time.Time
+	lastUsed                  time.Time
+	mu                        sync.Mutex
 }
 
 var codexInteractiveRegistry = struct {
@@ -2781,7 +2781,132 @@ func selectedCodexRateLimitReminderOption(captured string) int {
 	return 0
 }
 
+var (
+	codexStatusLineStreamMu sync.Mutex
+	codexStatusLineStreamed = make(map[string]string) // sessionName -> last streamed token signature
+)
+
+// codexWorkingDirForSession maps a tmux session name to its working dir via the
+// persistent registry, so the statusline reader can locate the right rollout.
+func codexWorkingDirForSession(sessionName string) string {
+	codexPersistentRegistry.Lock()
+	defer codexPersistentRegistry.Unlock()
+	for _, sess := range codexPersistentRegistry.sessions {
+		if sess != nil && sess.tmuxSessionName == sessionName {
+			return sess.workingDir
+		}
+	}
+	return ""
+}
+
+func codexIntFromRef(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// streamCodexStatusLine emits a generic StatusLine chunk built from codex's local
+// rollout JSONL (~/.codex/sessions/.../rollout-*.jsonl). Codex in tmux mode has
+// no statusline command hook (unlike agy/claude) and no stdout JSON, so the
+// rollout's token_count snapshot is the structured source — see
+// readCodexTranscriptUsage. Token counts refresh per completed turn, not
+// sub-second; the dedup below suppresses no-op re-emits.
+func streamCodexStatusLine(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) bool {
+	if streamChan == nil {
+		return false
+	}
+	status := buildCodexStatusLine(sessionName, codexWorkingDirForSession(sessionName))
+	if status == nil {
+		return false
+	}
+
+	sig := fmt.Sprintf("%d:%d:%d:%s", status.InputTokens, status.OutputTokens, status.CacheReadInputTokens, status.Model)
+	codexStatusLineStreamMu.Lock()
+	if codexStatusLineStreamed[sessionName] == sig {
+		codexStatusLineStreamMu.Unlock()
+		return false
+	}
+	codexStatusLineStreamed[sessionName] = sig
+	codexStatusLineStreamMu.Unlock()
+
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeStatusLine,
+		StatusLine: status,
+	}:
+		return true
+	default:
+		return false
+	}
+}
+
+// buildCodexStatusLine reads the freshest rollout for workingDir and assembles a
+// generic StatusLine (codex-cli, real model, input/output/cached tokens) tagged
+// with the owning tmux session. Returns nil when no usage is available yet.
+func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
+	// Require the session's working dir: readCodexTranscriptUsage with an empty
+	// dir would match ANY freshest rollout under ~/.codex/sessions (a different
+	// project/session, or none belonging to us), so without it we'd attribute
+	// unrelated telemetry — and could starve the terminal chunk by emitting
+	// spuriously into the stream channel.
+	if strings.TrimSpace(workingDir) == "" {
+		return nil
+	}
+	gi, model, _ := readCodexTranscriptUsage(time.Time{}, workingDir)
+	if gi == nil {
+		return nil
+	}
+	input := codexIntFromRef(gi.PromptTokens)
+	output := codexIntFromRef(gi.CompletionTokens)
+	cached := codexIntFromRef(gi.CachedContentTokens)
+	if input == 0 && output == 0 && cached == 0 {
+		return nil
+	}
+	meta := map[string]interface{}{}
+	if strings.TrimSpace(tmuxSession) != "" {
+		meta["tmux_session"] = tmuxSession
+	}
+	return &llmtypes.StatusLine{
+		Provider:             "codex-cli",
+		Model:                model,
+		InputTokens:          input,
+		OutputTokens:         output,
+		CacheReadInputTokens: cached,
+		TotalInputTokens:     input + cached,
+		TotalOutputTokens:    output,
+		Metadata:             meta,
+	}
+}
+
+// GetStatusLine returns a snapshot of the current statusline for the session,
+// satisfying llmtypes.StatusLineProvider. Codex sources it from the local
+// rollout JSONL — see streamCodexStatusLine for the tmux-mode rationale.
+func (c *CodexCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (*llmtypes.StatusLine, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required")
+	}
+	var tmuxSession, workingDir string
+	codexPersistentRegistry.Lock()
+	for _, sess := range codexPersistentRegistry.sessions {
+		if sess != nil && (sess.ownerSessionID == sessionID || sess.tmuxSessionName == sessionID) {
+			tmuxSession = sess.tmuxSessionName
+			workingDir = sess.workingDir
+			break
+		}
+	}
+	codexPersistentRegistry.Unlock()
+
+	status := buildCodexStatusLine(tmuxSession, workingDir)
+	if status == nil {
+		return nil, fmt.Errorf("no statusline usage available for codex session %q", sessionID)
+	}
+	return status, nil
+}
+
 func streamCodexTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	streamCodexStatusLine(ctx, sessionName, streamChan)
 	snapshot, err := captureCodexPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
