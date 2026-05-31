@@ -2084,7 +2084,9 @@ func captureCursorPaneForDisplay(ctx context.Context, sessionName string) (strin
 	// colorize the snapshot via ansi_up. Cursor positioning sequences are
 	// stripped by stripCursorANSIPreserveColors before the snapshot leaves
 	// the adapter so they don't garble the rendered output.
-	return runCursorCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-S", "-3000", "-t", sessionName)
+	// -J joins wrapped lines so the frontend can handle wrapping natively without
+	// hard splitting words mid-line.
+	return runCursorCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
 }
 
 func cursorCapturedAfterBaseline(captured, baseline string) string {
@@ -2133,6 +2135,10 @@ func killCursorTmuxSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
 	}
+	// Reap the pane process trees (CLI + spawned MCP node subprocesses) before
+	// killing the session — kill-session only SIGHUPs the pane process, so the
+	// children would otherwise orphan and leak.
+	tmuxcontrol.ReapSessionProcessTree(ctx, sessionName)
 	if err := runCursorCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
 		if isCursorTmuxSessionLostError(err) {
 			return nil

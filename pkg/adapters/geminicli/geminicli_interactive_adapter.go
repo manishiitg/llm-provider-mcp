@@ -2085,7 +2085,9 @@ func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (strin
 	// colorize the snapshot via ansi_up. Cursor positioning sequences are
 	// stripped by stripGeminiANSIPreserveColors before the snapshot leaves
 	// the adapter so they don't garble the rendered output.
-	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-S", "-3000", "-t", sessionName)
+	// -J joins wrapped lines so the frontend can handle wrapping natively without
+	// hard splitting words mid-line.
+	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
 }
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {
@@ -2130,6 +2132,10 @@ func killGeminiTmuxSession(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
 	}
+	// Reap the pane process trees (CLI + spawned MCP node subprocesses) before
+	// killing the session — kill-session only SIGHUPs the pane process, so the
+	// children would otherwise orphan and leak.
+	tmuxcontrol.ReapSessionProcessTree(ctx, sessionName)
 	if err := runGeminiCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
 		if strings.Contains(err.Error(), "can't find session") ||
 			strings.Contains(err.Error(), "no server running") ||

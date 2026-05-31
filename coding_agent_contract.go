@@ -29,12 +29,18 @@ type CodingAgentProviderContract struct {
 	CLIName     string
 	Transport   CodingAgentTransport
 
-	RequiresWorkingDir      bool
-	RequiresOwnerSessionID  bool
-	UsesPersistentSession   bool
-	SupportsLiveInput       bool
-	SupportsInterrupt       bool
-	SupportsTerminalStream  bool
+	RequiresWorkingDir     bool
+	RequiresOwnerSessionID bool
+	UsesPersistentSession  bool
+	SupportsLiveInput      bool
+	SupportsInterrupt      bool
+	SupportsTerminalStream bool
+	// SupportsStatusLine reports whether the adapter implements the
+	// llmtypes.StatusLineProvider interface and emits a StreamChunkTypeStatusLine
+	// chunk (canonical provider name, owning tmux_session in Metadata, no
+	// placeholder model). Consumers surface its real-time token/cost telemetry in
+	// the terminal pane. Certified by CertStatusLine.
+	SupportsStatusLine      bool
 	SupportsFinalExtraction bool
 	SupportsNativeResume    bool
 	UsesMCPBridge           bool
@@ -178,6 +184,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsLiveInput:             true,
 		SupportsInterrupt:             true,
 		SupportsTerminalStream:        true,
+		SupportsStatusLine:            true,
 		SupportsFinalExtraction:       true,
 		SupportsNativeResume:          true,
 		UsesMCPBridge:                 true,
@@ -210,6 +217,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsLiveInput:       true,
 		SupportsInterrupt:       true,
 		SupportsTerminalStream:  true,
+		SupportsStatusLine:      true,
 		SupportsFinalExtraction: true,
 		// Wired end-to-end: mcpagent.Agent.CodexSessionID is populated by the
 		// adapter, session_handle persists it, llmproviders.WithCodexResumeSessionID
@@ -330,6 +338,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsLiveInput:       true,
 		SupportsInterrupt:       true,
 		SupportsTerminalStream:  true,
+		SupportsStatusLine:      true,
 		SupportsFinalExtraction: true,
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
@@ -350,8 +359,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// session-scoped files under <workingDir>/.agents/, cleans
 		// them up on teardown. The directory pattern mirrors cursor's
 		// .cursor/{rules,mcp.json,hooks.json} but namespaced to .agents.
-		WorkingDirInstructionFile: ".agents/rules",          // directory of .md rule files (mlp-system-*.md per session)
-		UserInstructionFile:       "~/.agents/rules",        // user-level mirror
+		WorkingDirInstructionFile: ".agents/rules",   // directory of .md rule files (mlp-system-*.md per session)
+		UserInstructionFile:       "~/.agents/rules", // user-level mirror
 		WorkingDirMCPConfigFile:   ".agents/mcp_config.json",
 		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},

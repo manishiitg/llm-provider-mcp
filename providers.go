@@ -155,6 +155,31 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
 }
 
+// interactiveSessionPrefixes are the tmux session-name prefixes used by every
+// coding-agent CLI transport. Kept in sync with each adapter's
+// <provider>InteractiveSessionPrefix() default.
+var interactiveSessionPrefixes = []string{
+	"mlp-gemini-cli-int",
+	"mlp-agy-cli-int",
+	"mlp-codex-cli-int",
+	"mlp-cursor-cli-int",
+	"mlp-claude-code",
+}
+
+// SweepOrphanedInteractiveTmuxSessions reaps and kills every coding-agent tmux
+// session (and its orphaned process tree) left over from a PREVIOUS backend run.
+// It finds sessions by name prefix rather than the in-process registries, which
+// are empty on a fresh boot — so this is the recovery path for sessions stranded
+// by an ungraceful exit (crash, SIGKILL, sleep). Returns the count swept.
+//
+// CAUTION: prefix matching also catches sessions owned by a concurrent backend
+// or test sharing the same tmux server. Call this ONLY at single-instance
+// startup (e.g. the desktop app), never from a context where another owner may
+// hold live sessions.
+func SweepOrphanedInteractiveTmuxSessions(ctx context.Context) int {
+	return tmuxcontrol.SweepInteractiveSessions(ctx, interactiveSessionPrefixes)
+}
+
 // Close*InteractiveSessionForOwner force-closes the persistent CLI
 // session for the given owner. Callers reach for these when something
 // about the session must change in a way the running CLI process can't

@@ -49,8 +49,8 @@ func TestCursorInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 func TestCursorInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
 	t.Setenv(EnvCursorInteractivePromptWaitSeconds, "")
-	if got := cursorInteractivePromptWait(); got != 120*time.Second {
-		t.Fatalf("cursorInteractivePromptWait default = %v, want 120s", got)
+	if got := cursorInteractivePromptWait(); got != 300*time.Second {
+		t.Fatalf("cursorInteractivePromptWait default = %v, want 300s", got)
 	}
 
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
@@ -111,12 +111,6 @@ func TestCursorTerminalStreamCapturesRawScreenRows(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "capture-pane" ]; then
   printf '%s\n' "$*" > "$TMUX_TEST_CAPTURE_ARGS"
-  for arg in "$@"; do
-    if [ "$arg" = "-J" ]; then
-      echo "terminal display capture must not use -J" >&2
-      exit 9
-    fi
-  done
   printf 'screen row one\nscreen row two\n'
   exit 0
 fi
@@ -144,8 +138,8 @@ exit 1
 	if err != nil {
 		t.Fatalf("read capture args: %v", err)
 	}
-	if strings.Contains(string(args), " -J") {
-		t.Fatalf("terminal display capture used joined rows: %q", string(args))
+	if !strings.Contains(string(args), " -J") {
+		t.Fatalf("terminal display capture did not use joined rows (-J): %q", string(args))
 	}
 }
 

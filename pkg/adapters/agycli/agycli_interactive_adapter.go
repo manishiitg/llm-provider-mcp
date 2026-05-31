@@ -45,17 +45,19 @@ const (
 )
 
 type agyInteractiveSession struct {
-	ownerSessionID  string
-	tmuxSessionName string
-	workingDir      string
-	persistent      bool
-	cleanupFiles    func()
-	releaseMCPLease func()
-	idleTimer       *time.Timer
-	initErr         error
-	createdAt       time.Time
-	lastUsed        time.Time
-	mu              sync.Mutex
+	ownerSessionID       string
+	tmuxSessionName      string
+	workingDir           string
+	persistent           bool
+	cleanupFiles         func()
+	releaseMCPLease      func()
+	idleTimer            *time.Timer
+	initErr              error
+	createdAt            time.Time
+	lastUsed             time.Time
+	modelID              string
+	statuslineConfigured bool
+	mu                   sync.Mutex
 }
 
 var agyInteractiveRegistry = struct {
@@ -63,6 +65,44 @@ var agyInteractiveRegistry = struct {
 	sessions map[string]string
 }{
 	sessions: map[string]string{},
+}
+
+var agyActiveSessionsRegistry = struct {
+	sync.RWMutex
+	workingDirs map[string]string
+}{
+	workingDirs: map[string]string{},
+}
+
+func registerAgyActiveSessionWorkingDir(tmuxSessionName, workingDir string) {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	workingDir = strings.TrimSpace(workingDir)
+	if tmuxSessionName == "" || workingDir == "" {
+		return
+	}
+	agyActiveSessionsRegistry.Lock()
+	defer agyActiveSessionsRegistry.Unlock()
+	agyActiveSessionsRegistry.workingDirs[tmuxSessionName] = workingDir
+}
+
+func unregisterAgyActiveSessionWorkingDir(tmuxSessionName string) {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if tmuxSessionName == "" {
+		return
+	}
+	agyActiveSessionsRegistry.Lock()
+	defer agyActiveSessionsRegistry.Unlock()
+	delete(agyActiveSessionsRegistry.workingDirs, tmuxSessionName)
+}
+
+func getAgyActiveSessionWorkingDir(tmuxSessionName string) string {
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if tmuxSessionName == "" {
+		return ""
+	}
+	agyActiveSessionsRegistry.RLock()
+	defer agyActiveSessionsRegistry.RUnlock()
+	return agyActiveSessionsRegistry.workingDirs[tmuxSessionName]
 }
 
 var agyPersistentRegistry = struct {
@@ -194,6 +234,14 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 			close(opts.StreamChan)
 		}
 		return nil, err
+	}
+
+	if !session.statuslineConfigured {
+		if err := configureAgyStatusline(callCtx, session, c.logger); err == nil {
+			session.statuslineConfigured = true
+		} else if c.logger != nil {
+			c.logger.Debugf("Failed to configure Antigravity CLI statusline: %v", err)
+		}
 	}
 
 	if launchOnly {
@@ -465,7 +513,11 @@ func captureAgyStatuslineUsageAtIdle(ctx context.Context, session *agyInteractiv
 		return agyStatuslineUsage{}, false
 	}
 
-	tempDir, err = os.MkdirTemp("", "agy-statusline-usage-*")
+	if session.persistent {
+		tempDir, err = os.MkdirTemp("/tmp", "agy-statusline-usage-*")
+	} else {
+		tempDir, err = os.MkdirTemp(session.workingDir, "agy-statusline-usage-*")
+	}
 	if err != nil {
 		logAgyStatuslineUsageCaptureError(logger, "create temp dir", err)
 		return agyStatuslineUsage{}, false
@@ -667,6 +719,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 				existing.idleTimer = nil
 			}
 			existing.lastUsed = time.Now()
+			registerAgyActiveSessionWorkingDir(existing.tmuxSessionName, existing.workingDir)
 			agyPersistentRegistry.Unlock()
 			return existing, nil
 		}
@@ -679,6 +732,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 		persistent:      persistent,
 		createdAt:       now,
 		lastUsed:        now,
+		modelID:         c.modelID,
 	}
 	session.mu.Lock()
 	if persistent {
@@ -726,6 +780,7 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 		}
 		return nil, err
 	}
+	registerAgyActiveSessionWorkingDir(session.tmuxSessionName, session.workingDir)
 	registerAgyInteractiveSession(ownerSessionID, session.tmuxSessionName)
 	return session, nil
 }
@@ -1329,8 +1384,24 @@ func cleanAgyWorkingDirKey(workingDir string) string {
 }
 
 func agyMCPConfigFingerprint(config string) string {
-	var decoded interface{}
+	var decoded map[string]interface{}
 	if err := json.Unmarshal([]byte(config), &decoded); err == nil {
+		// Normalize session-specific and scope-specific fields from env maps
+		if mcpServers, ok := decoded["mcpServers"].(map[string]interface{}); ok {
+			for _, srv := range mcpServers {
+				if srvMap, ok := srv.(map[string]interface{}); ok {
+					if env, ok := srvMap["env"].(map[string]interface{}); ok {
+						delete(env, "MCP_SESSION_ID")
+						delete(env, "MCP_VIRTUAL_SCOPE_ID")
+						if apiURL, ok := env["MCP_API_URL"].(string); ok {
+							if idx := strings.Index(apiURL, "/s/"); idx != -1 {
+								env["MCP_API_URL"] = apiURL[:idx]
+							}
+						}
+					}
+				}
+			}
+		}
 		if canonical, err := json.Marshal(decoded); err == nil {
 			config = string(canonical)
 		}
@@ -1404,10 +1475,11 @@ func registerAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
 
 func unregisterAgyInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	agyInteractiveRegistry.Lock()
-	defer agyInteractiveRegistry.Unlock()
 	if current := agyInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
 		delete(agyInteractiveRegistry.sessions, ownerSessionID)
 	}
+	agyInteractiveRegistry.Unlock()
+	unregisterAgyActiveSessionWorkingDir(tmuxSessionName)
 }
 
 func activeAgyInteractiveSession(ownerSessionID string) (string, bool) {
@@ -2022,7 +2094,6 @@ func normalizeAgyPaneLine(line string) string {
 	line = strings.TrimPrefix(line, "│")
 	line = strings.TrimSuffix(line, "│")
 	line = strings.TrimSpace(line)
-	line = strings.TrimSpace(strings.TrimPrefix(line, "• "))
 	// Agy labels each assistant turn with a literal "Assistant:" header. Strip
 	// it so the kept response reads as plain prose (and matches what the user
 	// sees in the chat panel for Claude/Gemini, which have no such label).
@@ -2196,6 +2267,10 @@ func isAgyThoughtStatusLine(line string) bool {
 func isAgyBoxDrawingLine(line string) bool {
 	if line == "" {
 		return true
+	}
+	// If the line contains a vertical column separator, it's a table row, not a TUI divider line.
+	if strings.Contains(line, "│") || strings.Contains(line, "|") {
+		return false
 	}
 	for _, r := range line {
 		if strings.ContainsRune("─━▀▄▁▂▃▅▆▇█▌▐▝▜▗▟▘▛▙▚▞▖╭╮╰╯│┌┐└┘├┤┬┴┼╞╪╡╘╧╛╔╗╚╝═║╠╣╦╩╬╌╍╎╏┄┅┆┇┈┉┊┋ ", r) {
@@ -2502,6 +2577,7 @@ func hasAgyActivity(captured string) bool {
 }
 
 func streamAgyTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
+	streamAgyStatusLine(ctx, sessionName, streamChan)
 	snapshot, err := captureAgyPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
@@ -2594,7 +2670,9 @@ func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, 
 	// colorize the snapshot via ansi_up. Cursor positioning sequences are
 	// stripped at the next layer (stripAgyANSIPreserveColors) so they don't
 	// garble the rendered output.
-	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-S", "-3000", "-t", sessionName)
+	// -J joins wrapped lines so the frontend can handle wrapping natively without
+	// hard splitting words mid-line.
+	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
 }
 
 func agyCapturedAfterBaseline(captured, baseline string) string {
@@ -2851,4 +2929,317 @@ func stripAgyANSIPreserveColors(s string) string {
 		b.WriteByte(ch)
 	}
 	return paneview.CollapseBlankRuns(b.String())
+}
+
+var (
+	agyStatusLineStreamMu sync.Mutex
+	agyStatusLineStreamed = make(map[string]string) // sessionName -> raw JSON content of last streamed statusline
+)
+
+func agyStatuslinePath(sessionName string) string {
+	workingDir := getAgyActiveSessionWorkingDir(sessionName)
+	var persistent bool
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && (sess.tmuxSessionName == sessionName || sess.ownerSessionID == sessionName) {
+			workingDir = sess.workingDir
+			persistent = sess.persistent
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+
+	if persistent {
+		// Persistent session (main agent) runs on the host (no workspace isolation).
+		// We use a global, secure, stable path in /tmp to avoid polluting workingDir.
+		// /tmp is world-writable, so both backend process and tmux session can access it
+		// without TMPDIR-based environment mismatches.
+		return filepath.Join("/tmp", fmt.Sprintf("agy_statusline_%s.json", sessionName))
+	}
+
+	if workingDir != "" {
+		// Bounded sessions (workflow steps) run in isolated environments (workspace isolation).
+		// They can only read/write files inside the mounted workingDir.
+		return filepath.Join(workingDir, fmt.Sprintf("agy_statusline_%s.json", sessionName))
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("agy_statusline_%s.json", sessionName))
+}
+
+func configureAgyStatusline(ctx context.Context, session *agyInteractiveSession, logger interfaces.Logger) error {
+	var tempDir string
+	var err error
+	if session.persistent {
+		tempDir, err = os.MkdirTemp("/tmp", "agy-statusline-config-*")
+	} else {
+		tempDir, err = os.MkdirTemp(session.workingDir, "agy-statusline-config-*")
+	}
+	if err != nil {
+		return err
+	}
+	outputPath := agyStatuslinePath(session.tmuxSessionName)
+	scriptPath := filepath.Join(tempDir, "statusline.sh")
+
+	// Create helper script that cat's stdin to outputPath
+	scriptContent := fmt.Sprintf("#!/bin/sh\ncat > %s\n", agyShellQuote(outputPath))
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return err
+	}
+
+	command := "/statusline sh " + agyShellQuote(scriptPath)
+	if err := typeAgyInputToTmux(ctx, session.tmuxSessionName, command); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return err
+	}
+
+	// Register a cleanup file helper so the temp dir gets removed on session exit
+	oldCleanup := session.cleanupFiles
+	session.cleanupFiles = func() {
+		if oldCleanup != nil {
+			oldCleanup()
+		}
+		_ = os.RemoveAll(tempDir)
+		_ = os.Remove(outputPath)
+	}
+	return nil
+}
+
+func streamAgyStatusLine(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) bool {
+	if streamChan == nil {
+		return false
+	}
+	outputPath := agyStatuslinePath(sessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return false
+	}
+
+	// Deduplicate streams
+	agyStatusLineStreamMu.Lock()
+	last := agyStatusLineStreamed[sessionName]
+	if last == trimmed {
+		agyStatusLineStreamMu.Unlock()
+		return false
+	}
+	agyStatusLineStreamed[sessionName] = trimmed
+	agyStatusLineStreamMu.Unlock()
+
+	// Parse the raw JSON
+	var payload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		ContextWindow            struct {
+			TotalInputTokens  int `json:"total_input_tokens"`
+			TotalOutputTokens int `json:"total_output_tokens"`
+			CurrentUsage      struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"current_usage"`
+		} `json:"context_window"`
+	}
+
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return false
+	}
+
+	// Build the generic StatusLine. Use the adapter's canonical display name
+	// ("agy-cli", as used everywhere else in this adapter) so consumers can
+	// render the provider verbatim without re-mapping the id.
+	status := &llmtypes.StatusLine{
+		Provider: "agy-cli",
+	}
+
+	// Look up the session to get the model ID
+	var modelID string
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && sess.tmuxSessionName == sessionName {
+			modelID = sess.modelID
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+	// "agy-cli" is the placeholder model id used when no real model is
+	// configured; it equals the provider name, so emitting it as Model renders a
+	// duplicate "agy-cli · agy-cli". Only set a model when it's a distinct value.
+	if modelID != "" && modelID != "agy-cli" {
+		status.Model = modelID
+	}
+
+	// Map token counts
+	current := payload.ContextWindow.CurrentUsage
+	if current.InputTokens > 0 || current.OutputTokens > 0 || current.CacheCreationInputTokens > 0 || current.CacheReadInputTokens > 0 {
+		status.InputTokens = current.InputTokens
+		status.OutputTokens = current.OutputTokens
+		status.CacheCreationInputTokens = current.CacheCreationInputTokens
+		status.CacheReadInputTokens = current.CacheReadInputTokens
+	} else {
+		status.InputTokens = payload.InputTokens
+		status.OutputTokens = payload.OutputTokens
+		status.CacheCreationInputTokens = payload.CacheCreationInputTokens
+		status.CacheReadInputTokens = payload.CacheReadInputTokens
+	}
+
+	if status.InputTokens <= 0 {
+		if payload.ContextWindow.TotalInputTokens > 0 {
+			status.InputTokens = payload.ContextWindow.TotalInputTokens
+		} else if payload.TotalInputTokens > 0 {
+			status.InputTokens = payload.TotalInputTokens
+		}
+	}
+	if status.OutputTokens <= 0 {
+		if payload.ContextWindow.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.ContextWindow.TotalOutputTokens
+		} else if payload.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.TotalOutputTokens
+		}
+	}
+
+	status.TotalInputTokens = payload.TotalInputTokens
+	if status.TotalInputTokens <= 0 {
+		status.TotalInputTokens = payload.ContextWindow.TotalInputTokens
+	}
+	status.TotalOutputTokens = payload.TotalOutputTokens
+	if status.TotalOutputTokens <= 0 {
+		status.TotalOutputTokens = payload.ContextWindow.TotalOutputTokens
+	}
+
+	// We can also put raw payload or extra metadata fields if needed
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &rawMap); err == nil {
+		status.Metadata = rawMap
+	}
+	// Tag the owning tmux session so downstream consumers can attribute this
+	// telemetry to the exact coding-agent pane (a session may host several).
+	if status.Metadata == nil {
+		status.Metadata = map[string]interface{}{}
+	}
+	status.Metadata["tmux_session"] = sessionName
+
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeStatusLine,
+		StatusLine: status,
+	}:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetStatusLine retrieves a snapshot of the current statusline for the active session.
+// Satisfies the llmtypes.StatusLineProvider interface.
+func (c *AgyCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (*llmtypes.StatusLine, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required")
+	}
+
+	// Find the session in the registry
+	var tmuxSessionName string
+	agyPersistentRegistry.Lock()
+	for _, sess := range agyPersistentRegistry.sessions {
+		if sess != nil && (sess.ownerSessionID == sessionID || sess.tmuxSessionName == sessionID) {
+			tmuxSessionName = sess.tmuxSessionName
+			break
+		}
+	}
+	agyPersistentRegistry.Unlock()
+
+	if tmuxSessionName == "" {
+		tmuxSessionName = sessionID // Fallback: treat sessionID as the tmux session name
+	}
+
+	outputPath := agyStatuslinePath(tmuxSessionName)
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read statusline payload: %w", err)
+	}
+
+	var payload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		TotalInputTokens         int `json:"total_input_tokens"`
+		TotalOutputTokens        int `json:"total_output_tokens"`
+		ContextWindow            struct {
+			TotalInputTokens  int `json:"total_input_tokens"`
+			TotalOutputTokens int `json:"total_output_tokens"`
+			CurrentUsage      struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"current_usage"`
+		} `json:"context_window"`
+	}
+
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse statusline payload: %w", err)
+	}
+
+	status := &llmtypes.StatusLine{
+		Provider: "agy-cli",
+	}
+	// Skip the "agy-cli" placeholder model id so the label doesn't render a
+	// duplicate "agy-cli · agy-cli" (see streamAgyStatusLine).
+	if c.modelID != "" && c.modelID != "agy-cli" {
+		status.Model = c.modelID
+	}
+
+	// Map token counts
+	current := payload.ContextWindow.CurrentUsage
+	if current.InputTokens > 0 || current.OutputTokens > 0 || current.CacheCreationInputTokens > 0 || current.CacheReadInputTokens > 0 {
+		status.InputTokens = current.InputTokens
+		status.OutputTokens = current.OutputTokens
+		status.CacheCreationInputTokens = current.CacheCreationInputTokens
+		status.CacheReadInputTokens = current.CacheReadInputTokens
+	} else {
+		status.InputTokens = payload.InputTokens
+		status.OutputTokens = payload.OutputTokens
+		status.CacheCreationInputTokens = payload.CacheCreationInputTokens
+		status.CacheReadInputTokens = payload.CacheReadInputTokens
+	}
+
+	if status.InputTokens <= 0 {
+		if payload.ContextWindow.TotalInputTokens > 0 {
+			status.InputTokens = payload.ContextWindow.TotalInputTokens
+		} else if payload.TotalInputTokens > 0 {
+			status.InputTokens = payload.TotalInputTokens
+		}
+	}
+	if status.OutputTokens <= 0 {
+		if payload.ContextWindow.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.ContextWindow.TotalOutputTokens
+		} else if payload.TotalOutputTokens > 0 {
+			status.OutputTokens = payload.TotalOutputTokens
+		}
+	}
+
+	status.TotalInputTokens = payload.TotalInputTokens
+	if status.TotalInputTokens <= 0 {
+		status.TotalInputTokens = payload.ContextWindow.TotalInputTokens
+	}
+	status.TotalOutputTokens = payload.TotalOutputTokens
+	if status.TotalOutputTokens <= 0 {
+		status.TotalOutputTokens = payload.ContextWindow.TotalOutputTokens
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(raw, &rawMap); err == nil {
+		status.Metadata = rawMap
+	}
+
+	return status, nil
 }

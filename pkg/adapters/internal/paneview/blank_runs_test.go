@@ -18,9 +18,15 @@ func TestCollapseBlankRuns(t *testing.T) {
 		{name: "whitespace-only lines treated as blank",
 			in:   "a\n   \n\t\n  \nb",
 			want: "a\n\n\nb"},
-		{name: "spinner-frame pattern from agy capture",
+		{name: "spinner-frame pattern from agy capture (stale pruned, active kept)",
 			in:   "⣟ Generating...\n\n\n\n\n\n\n\n\n\n\n⣽ Generating.\n",
-			want: "⣟ Generating...\n\n\n⣽ Generating.\n"},
+			want: "⣽ Generating.\n"},
+		{name: "stale spinner pattern (pruned when followed by non-blank lines)",
+			in:   "⣟ Generating...\n\n\n● Done\n\n",
+			want: "● Done\n\n"},
+		{name: "multiple stale spinners and one active spinner",
+			in:   "⣟ Generating...\n⣽ Generating.\n● Step 1\n⣻ Generating..\n\n",
+			want: "● Step 1\n⣻ Generating..\n\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

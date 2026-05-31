@@ -90,12 +90,33 @@ const (
 	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
 	StreamChunkTypeTerminal      StreamChunkType = "terminal" // Live terminal/screen snapshot
+	StreamChunkTypeStatusLine    StreamChunkType = "status_line" // Generic real-time statusline snapshot
 )
+
+// StatusLine represents a generic unified statusline payload from interactive CLIs
+type StatusLine struct {
+	Provider                  string                 `json:"provider"`                    // e.g. "agy", "claudecode"
+	Model                     string                 `json:"model,omitempty"`             // e.g. "claude-3-5-sonnet"
+	InputTokens               int                    `json:"input_tokens,omitempty"`      // Session input tokens for the current turn/session
+	OutputTokens              int                    `json:"output_tokens,omitempty"`     // Session output tokens for the current turn/session
+	CacheCreationInputTokens int                    `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                    `json:"cache_read_input_tokens,omitempty"`
+	TotalInputTokens          int                    `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens         int                    `json:"total_output_tokens,omitempty"`
+	CostUSD                   float64                `json:"cost_usd,omitempty"`          // Cumulative estimated cost in USD
+	Metadata                  map[string]interface{} `json:"metadata,omitempty"`          // Generic/custom provider fields (e.g., git branch, effort, rate limits)
+}
+
+// StatusLineProvider is an interface that interactive adapters can implement
+// to support fetching real-time statusline snapshots.
+type StatusLineProvider interface {
+	GetStatusLine(ctx context.Context, sessionID string) (*StatusLine, error)
+}
 
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	Type         StreamChunkType // Type of chunk: "content" or "tool_call"
+	Type         StreamChunkType // Type of chunk: "content", "tool_call", "terminal", or "status_line"
 	Content      string          // Text content (when Type is "content")
 	Metadata     map[string]interface{}
 	ToolCall     *ToolCall     // Complete tool call (when Type is "tool_call")
@@ -104,6 +125,7 @@ type StreamChunk struct {
 	ToolArgs     string        // JSON arguments of the tool call (when Type is "tool_call_end")
 	ToolResult   string        // Tool execution result (when Type is "tool_call_end")
 	ToolDuration time.Duration // Duration of the tool call (when Type is "tool_call_end")
+	StatusLine   *StatusLine   // Generic statusline snapshot (when Type is "status_line")
 }
 
 // ToolCall represents a tool/function call request

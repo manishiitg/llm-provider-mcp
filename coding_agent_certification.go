@@ -24,6 +24,7 @@ const (
 	CertSlowToolFalseIdle         CodingAgentCertificationID = "slow_tool_false_idle"
 	CertDoneDetection             CodingAgentCertificationID = "done_detection"
 	CertFinalExtraction           CodingAgentCertificationID = "final_extraction"
+	CertStatusLine                CodingAgentCertificationID = "statusline"
 	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
 	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
 	CertLiveInput                 CodingAgentCertificationID = "live_input"
@@ -99,6 +100,7 @@ var codingAgentCapabilityCertifications = []struct {
 	{"mcp bridge", func(c CodingAgentProviderContract) bool { return c.UsesMCPBridge }, []CodingAgentCertificationID{CertMCPBridge}},
 	{"bridge only tools", func(c CodingAgentProviderContract) bool { return c.SupportsBridgeOnlyTools }, []CodingAgentCertificationID{CertBridgeOnlyTools}},
 	{"terminal stream", func(c CodingAgentProviderContract) bool { return c.SupportsTerminalStream }, []CodingAgentCertificationID{CertFreshLaunch}},
+	{"statusline", func(c CodingAgentProviderContract) bool { return c.SupportsStatusLine }, []CodingAgentCertificationID{CertStatusLine}},
 	{"final extraction", func(c CodingAgentProviderContract) bool { return c.SupportsFinalExtraction }, []CodingAgentCertificationID{CertFinalExtraction}},
 	{"persistent session", func(c CodingAgentProviderContract) bool { return c.UsesPersistentSession }, []CodingAgentCertificationID{CertMultiTurn, CertStaleDraftCleanup}},
 	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput}},
@@ -117,6 +119,12 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
 			Description: "starts Claude Code tmux transport and carries the first user prompt",
 			RealE2E:     true,
+		},
+		{
+			ID:          CertStatusLine,
+			TestFile:    "pkg/adapters/claudecode/claudecode_statusline_stream_test.go",
+			TestName:    "TestStreamClaudeStatusLineEmitsChunk",
+			Description: "emits a status_line chunk carrying the real model (display_name), cost, tokens, and owning tmux session — no hardcoded default model",
 		},
 		{
 			ID:          CertResumeCompactionStartup,
@@ -315,6 +323,12 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
 			Description: "starts Codex CLI tmux transport, reaches ready, and streams terminal-only chunks",
 			RealE2E:     true,
+		},
+		{
+			ID:          CertStatusLine,
+			TestFile:    "pkg/adapters/codexcli/codexcli_statusline_stream_test.go",
+			TestName:    "TestStreamCodexStatusLineEmitsChunk",
+			Description: "emits a status_line chunk from the rollout JSONL token_count (uncached/cached/output tokens, real model, tmux session) — tmux mode has no statusline command hook",
 		},
 		{
 			ID:          CertResumeCompactionStartup,
@@ -553,6 +567,12 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
 			Description: "starts Antigravity CLI tmux transport, reaches ready, and streams terminal-only chunks",
 			RealE2E:     true,
+		},
+		{
+			ID:          CertStatusLine,
+			TestFile:    "pkg/adapters/agycli/agycli_statusline_stream_test.go",
+			TestName:    "TestStreamAgyStatusLineEmitsFullChunk",
+			Description: "emits a status_line chunk with full token telemetry + owning tmux session, canonical agy-cli provider name, and no placeholder model",
 		},
 		{
 			ID:          CertStartupTerminalVisibility,

@@ -28,6 +28,7 @@ func CollapseBlankRuns(s string) string {
 		return s
 	}
 	lines := strings.Split(s, "\n")
+	lines = pruneSpinnerLines(lines)
 	out := make([]string, 0, len(lines))
 	blankRun := 0
 	for _, line := range lines {
@@ -42,5 +43,60 @@ func CollapseBlankRuns(s string) string {
 		blankRun = 0
 		out = append(out, trimmed)
 	}
+
+	// Trim leading empty lines
+	start := 0
+	for start < len(out) && out[start] == "" {
+		start++
+	}
+	out = out[start:]
+
 	return strings.Join(out, "\n")
 }
+
+// pruneSpinnerLines identifies lines containing Braille spinner characters.
+// Any historical spinner frame that has been scrolled up (meaning there are
+// non-blank lines following it) is pruned. Only the active spinner frame
+// at the very end (followed only by blank lines) is preserved.
+func pruneSpinnerLines(lines []string) []string {
+	lastBrailleIdx := -1
+	for i, line := range lines {
+		if hasBraille(line) {
+			lastBrailleIdx = i
+		}
+	}
+	if lastBrailleIdx == -1 {
+		return lines
+	}
+
+	isActive := true
+	for j := lastBrailleIdx + 1; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) != "" {
+			isActive = false
+			break
+		}
+	}
+
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if hasBraille(line) {
+			if i == lastBrailleIdx && isActive {
+				out = append(out, line)
+			}
+			// Otherwise, prune it (skip)
+		} else {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func hasBraille(s string) bool {
+	for _, r := range s {
+		if r >= 0x2800 && r <= 0x28FF {
+			return true
+		}
+	}
+	return false
+}
+
