@@ -718,12 +718,17 @@ func logAgyStatuslineUsageCaptureError(logger interfaces.Logger, stage string, e
 func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*agyInteractiveSession, error) {
 	if persistent {
 		agyPersistentRegistry.Lock()
-		if existing := agyPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+		existing := agyPersistentRegistry.sessions[ownerSessionID]
+		if existing != nil {
+			// Release the registry (map) lock BEFORE taking the per-session lock.
+			// session.mu is held for a whole turn; holding the global map lock
+			// across it stalls every other acquire behind a busy session
+			// (lock-held-across-blocking-call deadlock).
+			agyPersistentRegistry.Unlock()
 			existing.mu.Lock()
 			if existing.initErr != nil {
 				err := existing.initErr
 				existing.mu.Unlock()
-				agyPersistentRegistry.Unlock()
 				return nil, err
 			}
 			if existing.idleTimer != nil {
@@ -732,7 +737,6 @@ func (c *AgyCLIAdapter) acquireAgyInteractiveSession(ctx context.Context, ownerS
 			}
 			existing.lastUsed = time.Now()
 			registerAgyActiveSessionWorkingDir(existing.tmuxSessionName, existing.workingDir)
-			agyPersistentRegistry.Unlock()
 			return existing, nil
 		}
 	}

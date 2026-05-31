@@ -412,12 +412,17 @@ func estimateCursorTmuxTokens(prompt, content string) (int, int) {
 func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*cursorInteractiveSession, error) {
 	if persistent {
 		cursorPersistentRegistry.Lock()
-		if existing := cursorPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+		existing := cursorPersistentRegistry.sessions[ownerSessionID]
+		if existing != nil {
+			// Release the registry (map) lock BEFORE taking the per-session lock.
+			// session.mu is held for a whole turn; holding the global map lock
+			// across it stalls every other acquire behind a busy session
+			// (lock-held-across-blocking-call deadlock).
+			cursorPersistentRegistry.Unlock()
 			existing.mu.Lock()
 			if existing.initErr != nil {
 				err := existing.initErr
 				existing.mu.Unlock()
-				cursorPersistentRegistry.Unlock()
 				return nil, err
 			}
 			if existing.idleTimer != nil {
@@ -425,7 +430,6 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 				existing.idleTimer = nil
 			}
 			existing.lastUsed = time.Now()
-			cursorPersistentRegistry.Unlock()
 			return existing, nil
 		}
 	}

@@ -88,6 +88,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
 	}
 	persistent := codexPersistentInteractiveFromOptions(opts)
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateContentInteractive ENTER owner=%s persistent=%v workingDir=%q", ownerSessionID, persistent, codexWorkingDirFromOptions(opts))
 
 	turnStart := time.Now().UTC()
 
@@ -151,6 +152,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 	}()
 
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s → acquire returned tmux=%s; waitForCodexPrompt(1) START", ownerSessionID, session.tmuxSessionName)
 	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
@@ -160,6 +162,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		cleanupFailedCodexInteractiveSession(failedSession)
 		return nil, err
 	}
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s tmux=%s → waitForCodexPrompt(1) DONE; reset + waitForCodexPrompt(2) START", ownerSessionID, session.tmuxSessionName)
 	resetCodexPaneForTurn(callCtx, session.tmuxSessionName)
 	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
@@ -170,6 +173,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		cleanupFailedCodexInteractiveSession(failedSession)
 		return nil, err
 	}
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s tmux=%s → waitForCodexPrompt(2) DONE; proceeding to send prompt", ownerSessionID, session.tmuxSessionName)
 
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
 		var lastSnapshot string
@@ -403,13 +407,25 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
 func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*codexInteractiveSession, error) {
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire ENTER owner=%s → locking registry", ownerSessionID)
 	codexPersistentRegistry.Lock()
-	if existing := codexPersistentRegistry.sessions[ownerSessionID]; existing != nil {
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → registry locked", ownerSessionID)
+	existing := codexPersistentRegistry.sessions[ownerSessionID]
+	if existing != nil {
+		// Release the GLOBAL registry lock BEFORE taking the per-session lock.
+		// session.mu is held for the duration of a whole turn; acquiring it
+		// while still holding the global map lock stalls every other codex
+		// acquire behind a busy session (a lock-held-across-blocking-call
+		// deadlock — the exact hang that froze background step orchestrators).
+		// The two locks have different lifetimes: the registry lock guards the
+		// map only; grab the pointer under it, release it, then take the
+		// per-session lock. Holding a pointer keeps the session valid even if a
+		// concurrent teardown removes it from the map (initErr guards that).
+		codexPersistentRegistry.Unlock()
 		existing.mu.Lock()
 		if existing.initErr != nil {
 			err := existing.initErr
 			existing.mu.Unlock()
-			codexPersistentRegistry.Unlock()
 			return nil, err
 		}
 		if existing.idleTimer != nil {
@@ -417,7 +433,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			existing.idleTimer = nil
 		}
 		existing.lastUsed = time.Now()
-		codexPersistentRegistry.Unlock()
+		c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → REUSING existing session tmux=%s", ownerSessionID, existing.tmuxSessionName)
 		return existing, nil
 	}
 
@@ -445,6 +461,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// inject equivalent configuration. The workspace projection is
 	// additive and useful when downstream tooling reads codex's on-disk
 	// conventions directly.
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s NEW session tmux=%s workingDir=%q → buildCodexInteractiveArgs START", ownerSessionID, session.tmuxSessionName, workingDir)
 	args, systemPromptTempFile, projectCleanup, err := c.buildCodexInteractiveArgs(opts, systemPrompt)
 	if err != nil {
 		session.initErr = err
@@ -452,6 +469,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		removeCodexPersistentSession(ownerSessionID, session)
 		return nil, err
 	}
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → buildCodexInteractiveArgs DONE (%d args)", ownerSessionID, len(args))
 	session.systemPromptTempFile = systemPromptTempFile
 	session.projectInstructionCleanup = projectCleanup
 
@@ -464,7 +482,9 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 && workingDir != "" {
 		_ = c.ProjectSkills(workingDir, attachedSkills)
 	}
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → startCodexTmuxSession tmux=%s START", ownerSessionID, session.tmuxSessionName)
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
+		c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → startCodexTmuxSession tmux=%s FAILED: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
 			_ = os.Remove(systemPromptTempFile)
@@ -478,6 +498,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, err
 	}
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
+	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s DONE → tmux=%s started + registered", ownerSessionID, session.tmuxSessionName)
 	return session, nil
 }
 

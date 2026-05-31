@@ -2813,12 +2813,17 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	}
 
 	claudeInteractivePersistentRegistry.Lock()
-	if existing := claudeInteractivePersistentRegistry.sessions[ownerSessionID]; existing != nil {
+	existing := claudeInteractivePersistentRegistry.sessions[ownerSessionID]
+	if existing != nil {
+		// Release the registry (map) lock BEFORE taking the per-session lock.
+		// session.mu is held for a whole turn; holding the global map lock
+		// across it stalls every other acquire behind a busy session
+		// (lock-held-across-blocking-call deadlock).
+		claudeInteractivePersistentRegistry.Unlock()
 		existing.mu.Lock()
 		if existing.initErr != nil {
 			err := existing.initErr
 			existing.mu.Unlock()
-			claudeInteractivePersistentRegistry.Unlock()
 			return nil, err
 		}
 		if existing.idleTimer != nil {
@@ -2826,7 +2831,6 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			existing.idleTimer = nil
 		}
 		existing.lastUsed = time.Now()
-		claudeInteractivePersistentRegistry.Unlock()
 		return existing, nil
 	}
 
