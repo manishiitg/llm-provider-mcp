@@ -30,6 +30,7 @@ func CollapseBlankRuns(s string) string {
 	lines := strings.Split(s, "\n")
 	lines = pruneInputBoxTrailer(lines)
 	lines = pruneSpinnerLines(lines)
+	lines = pruneSpinnerWordFragments(lines)
 	out := make([]string, 0, len(lines))
 	blankRun := 0
 	for _, line := range lines {
@@ -99,6 +100,125 @@ func hasBraille(s string) bool {
 		}
 	}
 	return false
+}
+
+// spinnerStatusWords are the words CLI agents animate in their in-place spinner
+// ("⣾ Generating…", "Working…", "Loading…", …). When tmux flattens that
+// animation into scrollback, the leading glyph can land on a different column
+// than the text, leaving bare staggered fragments like "oading", "king..",
+// "enerat", "Worki", "nerati" — each a substring of one of these words.
+var spinnerStatusWords = []string{
+	"loading", "working", "generating", "thinking", "analyzing", "exploring",
+	"reviewing", "confirming", "refining", "investigating", "searching",
+	"reading", "writing", "calling", "running", "navigating", "examining",
+	"identifying", "saving", "extracting", "discovering", "processing",
+	"waiting", "fetching", "building", "planning", "composing", "retrieving",
+	"downloading", "uploading", "connecting", "preparing", "finalizing",
+}
+
+// spinnerFragmentKind classifies a line as a frame of an animated spinner status
+// word (with any leading Braille glyph stripped onto another column):
+//
+//	"strong" — a multi-char letter fragment (2..14) that is a substring of a
+//	           known status word ("oading", "king", "enerat", "worki"). Two or
+//	           more of these in a row is unambiguous spinner noise.
+//	"weak"   — a dots-only frame ("..", "...") or a single-letter frame ("g").
+//	           Too ambiguous to identify spinner noise on its own (a lone "a" or
+//	           "I" is real), so it is dropped ONLY when surrounded by a strong run.
+//	""       — not a fragment (real content).
+func spinnerFragmentKind(line string) string {
+	t := strings.TrimSpace(line)
+	if t != "" {
+		r := []rune(t)
+		if r[0] >= 0x2800 && r[0] <= 0x28FF {
+			t = strings.TrimSpace(string(r[1:]))
+		}
+	}
+	if t == "" {
+		return "" // blank — handled by the blank-run collapser, not here
+	}
+	core := strings.Trim(t, ". ")
+	if core == "" {
+		return "weak" // dots-only frame
+	}
+	if len(core) > 14 {
+		return ""
+	}
+	lower := strings.ToLower(core)
+	for _, r := range lower {
+		if r < 'a' || r > 'z' {
+			return "" // punctuation/structure → real content, not a fragment
+		}
+	}
+	matched := false
+	for _, w := range spinnerStatusWords {
+		if strings.Contains(w, lower) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	if len(core) == 1 {
+		return "weak" // single letter — ambiguous alone
+	}
+	return "strong"
+}
+
+// pruneSpinnerWordFragments removes runs of spinner-word fragments left behind
+// when an in-place spinner animation is flattened into the captured pane. A
+// region is treated as spinner noise only when it contains 2+ STRONG fragments
+// (multi-char status-word pieces); within that region, weak fragments (dots,
+// single letters) and the strong fragments are dropped. Blank lines between
+// fragments do not break a run. An isolated short word that merely happens to be
+// a substring of a status word is preserved, so real content is never eaten.
+func pruneSpinnerWordFragments(lines []string) []string {
+	n := len(lines)
+	kind := make([]string, n)
+	for i, l := range lines {
+		kind[i] = spinnerFragmentKind(l)
+	}
+	drop := make([]bool, n)
+	i := 0
+	for i < n {
+		if kind[i] == "" {
+			i++
+			continue
+		}
+		// Extend a run over fragments (strong/weak) and the blanks between them.
+		j := i
+		strongCount := 0
+		last := i
+		for j < n {
+			if kind[j] != "" {
+				if kind[j] == "strong" {
+					strongCount++
+				}
+				last = j
+				j++
+			} else if strings.TrimSpace(lines[j]) == "" {
+				j++ // blank between fragments — tentatively part of the run
+			} else {
+				break
+			}
+		}
+		if strongCount >= 2 {
+			for k := i; k <= last; k++ {
+				if kind[k] != "" {
+					drop[k] = true
+				}
+			}
+		}
+		i = j
+	}
+	out := make([]string, 0, n)
+	for i, l := range lines {
+		if !drop[i] {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // pruneInputBoxTrailer removes the agy input-box region and everything below
