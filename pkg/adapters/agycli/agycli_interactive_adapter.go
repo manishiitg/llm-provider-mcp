@@ -47,6 +47,16 @@ const (
 	// the response loop would spin forever because every completion/failsafe
 	// branch is gated behind sawActivity. Generous so it never trips a real turn.
 	defaultAgyInteractiveFirstActivityTimeout = 90 * time.Second
+	// Backstop for a turn that produced activity and then went completely
+	// silent — the pane is byte-for-byte unchanged for this long — but
+	// hasAgyReadyPrompt never reported ready (e.g. a prompt-detection bug like a
+	// stale "○ " tool card or a leftover spinner frame holding the turn "not
+	// ready" forever). Without this, the loop spins indefinitely because the
+	// default turn timeout is 0. When it trips we extract whatever response text
+	// is on the pane and return it (or fail if empty) instead of hanging. Set
+	// generously so a genuinely slow-but-alive turn (whose pane keeps changing)
+	// never trips it — only a frozen pane does.
+	defaultAgyInteractiveStalePaneBackstop = 120 * time.Second
 
 	EnvAgyInteractiveSessionPrefix               = "AGY_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvAgyInteractiveTimeoutSeconds              = "AGY_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -54,6 +64,7 @@ const (
 	EnvAgyInteractivePromptWaitSeconds           = "AGY_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvAgyInteractiveStreamTmuxScreen            = "AGY_CLI_STREAM_TMUX_SCREEN"
 	EnvAgyInteractiveFirstActivityTimeoutSeconds = "AGY_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
+	EnvAgyInteractiveStalePaneBackstopSeconds    = "AGY_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
 type agyInteractiveSession struct {
@@ -1926,6 +1937,7 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 	defer ticker.Stop()
 	waitStartedAt := time.Now()
 	firstActivityTimeout := agyInteractiveFirstActivityTimeout()
+	stalePaneBackstop := agyInteractiveStalePaneBackstop()
 	var sawActivity bool
 	var idleSince time.Time
 	var readyWithoutContentSince time.Time
@@ -1939,6 +1951,12 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 	var lastTerminalStreamedAt time.Time
 	var lastWebSearchApprovalAt time.Time
 	var lastFeedbackSkipAt time.Time
+	// Stale-pane backstop tracking: the raw capture from the previous tick and
+	// the time it last changed. This is tracked at the top of every tick,
+	// independent of all the branch logic below, so a prompt-detection bug that
+	// keeps the loop in a "not ready" branch can never suppress it.
+	var backstopPrevCapture string
+	var paneUnchangedSince time.Time
 	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1953,6 +1971,26 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 			delta := agyCapturedAfterBaseline(captured, baseline)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Stale-pane backstop. Independent of hasAgyReadyPrompt and every
+			// branch below: if the pane has produced activity and then frozen
+			// (byte-identical) for longer than the backstop, the turn is over but
+			// completion detection failed to recognize it (e.g. a stale "○ " tool
+			// card or leftover spinner frame holding the pane "not ready"). Extract
+			// whatever response is present and return it rather than hang forever.
+			if captured != backstopPrevCapture {
+				backstopPrevCapture = captured
+				paneUnchangedSince = time.Now()
+			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
+				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				content := parseAgyInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				if strings.TrimSpace(content) == "" {
+					content = forcedAgyInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				}
+				if strings.TrimSpace(content) != "" {
+					return captured, nil
+				}
+				return captured, fmt.Errorf("Antigravity CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamAgyTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -2907,6 +2945,10 @@ func agyInteractiveIdleTimeout() time.Duration {
 // cleanly even when the caller and provider both run without a turn deadline.
 func agyInteractiveFirstActivityTimeout() time.Duration {
 	return agyDurationFromEnv(EnvAgyInteractiveFirstActivityTimeoutSeconds, defaultAgyInteractiveFirstActivityTimeout)
+}
+
+func agyInteractiveStalePaneBackstop() time.Duration {
+	return agyDurationFromEnv(EnvAgyInteractiveStalePaneBackstopSeconds, defaultAgyInteractiveStalePaneBackstop)
 }
 
 func agyInteractiveRetention() time.Duration {
