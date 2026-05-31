@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
@@ -35,12 +36,20 @@ const (
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 	cursorBootBannerPromptGrace         = 2 * time.Second
+	// Hard cap on how long we wait for the CLI to show ANY activity after the
+	// prompt is submitted. A live turn shows "Thinking…"/streaming within
+	// seconds; if nothing appears within this window the input never reached the
+	// pane (paste/Enter swallowed during launch), and without this cap the
+	// response loop spins forever because every completion branch is gated
+	// behind sawActivity and the call context has no deadline by default.
+	defaultCursorInteractiveFirstActivityTimeout = 90 * time.Second
 
-	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCursorInteractiveIdleTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCursorInteractivePromptWaitSeconds  = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCursorInteractiveStreamTmuxScreen   = "CURSOR_CLI_STREAM_TMUX_SCREEN"
+	EnvCursorInteractiveSessionPrefix               = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCursorInteractiveTimeoutSeconds              = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCursorInteractiveIdleTimeoutSeconds          = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCursorInteractivePromptWaitSeconds           = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCursorInteractiveStreamTmuxScreen            = "CURSOR_CLI_STREAM_TMUX_SCREEN"
+	EnvCursorInteractiveFirstActivityTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
 )
 
 type cursorInteractiveSession struct {
@@ -1401,6 +1410,8 @@ func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message st
 func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	waitStartedAt := time.Now()
+	firstActivityTimeout := cursorInteractiveFirstActivityTimeout()
 	var sawActivity bool
 	var idleSince time.Time
 	var readyWithoutContentSince time.Time
@@ -1458,7 +1469,21 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			if strings.TrimSpace(delta) != "" {
 				sawActivity = true
 			}
-			if !sawActivity || !hasCursorReadyPrompt(captured) {
+			if !sawActivity {
+				// The CLI has shown nothing since the prompt was submitted.
+				// Every completion/failsafe path below requires sawActivity, so
+				// without this cap a never-delivered prompt spins here forever
+				// (the call context has no deadline by default). Fail cleanly so
+				// the step surfaces an error instead of hanging.
+				if firstActivityTimeout > 0 && time.Since(waitStartedAt) >= firstActivityTimeout {
+					captured, _ := captureCursorPane(context.Background(), sessionName)
+					return captured, fmt.Errorf("Cursor Agent CLI produced no activity within %s of submitting the prompt — the input was likely not delivered to the tmux pane; latest pane:\n%s", firstActivityTimeout, captured)
+				}
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			if !hasCursorReadyPrompt(captured) {
 				idleSince = time.Time{}
 				lastCaptured = captured
 				continue
@@ -1543,6 +1568,12 @@ func extractCursorVisibleAssistantText(delta string) string {
 			if len(out) > 0 && out[len(out)-1] != "" {
 				out = append(out, "")
 			}
+			continue
+		}
+		// A line beginning with a Braille spinner glyph is the CLI's live/stale
+		// generation status (e.g. "⣾ Generating…"); never assistant content, so
+		// skip it — otherwise the loop can return "Generating…" as the answer.
+		if cursorLineStartsWithSpinner(strings.TrimSpace(trimmed)) {
 			continue
 		}
 		if isCursorTUILine(trimmed) || isCursorToolStatusLine(trimmed) || isCursorBoxDrawingLine(trimmed) {
@@ -2016,16 +2047,24 @@ func hasCursorActivity(captured string) bool {
 		if lower == "" {
 			continue
 		}
+		// A Braille spinner glyph at the start of a line means the CLI is
+		// mid-animation (e.g. "⣾ Generating…"); treat it as activity directly.
+		if cursorLineStartsWithSpinner(lower) {
+			return true
+		}
+		// Match status words even when prefixed by a spinner/bullet glyph.
+		keyword := cursorActivityKeyword(lower)
 		if strings.Contains(lower, "esc to interrupt") ||
 			strings.Contains(lower, "ctrl+c to cancel") ||
 			strings.Contains(lower, "ctrl+c to stop") ||
 			strings.Contains(lower, "composing") ||
-			strings.HasPrefix(lower, "thinking") ||
-			strings.HasPrefix(lower, "working") ||
-			strings.HasPrefix(lower, "running") ||
-			strings.HasPrefix(lower, "editing") ||
-			strings.HasPrefix(lower, "applying") ||
-			strings.HasPrefix(lower, "calling ") {
+			strings.HasPrefix(keyword, "thinking") ||
+			strings.HasPrefix(keyword, "working") ||
+			strings.HasPrefix(keyword, "running") ||
+			strings.HasPrefix(keyword, "generating") ||
+			strings.HasPrefix(keyword, "editing") ||
+			strings.HasPrefix(keyword, "applying") ||
+			strings.HasPrefix(keyword, "calling ") {
 			return true
 		}
 	}
@@ -2185,6 +2224,35 @@ func cursorInteractiveCallContext(ctx context.Context) (context.Context, context
 
 func cursorInteractiveIdleTimeout() time.Duration {
 	return cursorDurationFromEnv(EnvCursorInteractiveIdleTimeoutSeconds, defaultCursorInteractiveIdleTimeout)
+}
+
+// cursorInteractiveFirstActivityTimeout bounds the wait for the CLI's first sign
+// of activity after the prompt is submitted. Always > 0 so a lost-input hang
+// fails cleanly even when caller and provider both run without a turn deadline.
+func cursorInteractiveFirstActivityTimeout() time.Duration {
+	return cursorDurationFromEnv(EnvCursorInteractiveFirstActivityTimeoutSeconds, defaultCursorInteractiveFirstActivityTimeout)
+}
+
+// cursorBrailleSpinner reports whether r is one of the CLI's animated spinner
+// glyphs (Unicode Braille Patterns, U+2800–U+28FF), e.g. the leading glyph in
+// "⣾ Generating…". A line starting with one is a reliable "actively generating"
+// signal that completed markers (▸ ● ○) are not.
+func cursorBrailleSpinner(r rune) bool { return r >= 0x2800 && r <= 0x28FF }
+
+// cursorLineStartsWithSpinner reports whether the trimmed, lowercased line begins
+// with an animated Braille spinner glyph.
+func cursorLineStartsWithSpinner(lower string) bool {
+	for _, r := range lower {
+		return cursorBrailleSpinner(r)
+	}
+	return false
+}
+
+// cursorActivityKeyword strips any leading spinner glyph / bullet / punctuation
+// so a status word matches even when the live spinner prefixes it, e.g.
+// "⣾ generating…" → "generating…".
+func cursorActivityKeyword(lower string) string {
+	return strings.TrimLeftFunc(lower, func(r rune) bool { return !unicode.IsLetter(r) })
 }
 
 func cursorInteractiveRetention() time.Duration {
