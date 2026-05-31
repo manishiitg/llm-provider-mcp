@@ -15,7 +15,7 @@ const EnvPromptWaitSeconds = "CODING_SDK_TMUX_PROMPT_WAIT_SECONDS"
 const EnvRetentionSeconds = "CODING_SDK_TMUX_RETENTION_SECONDS"
 
 const defaultStartConcurrency = 1
-const defaultPromptWait = 120 * time.Second
+const defaultPromptWait = 300 * time.Second
 
 var startGate = struct {
 	sync.Mutex
