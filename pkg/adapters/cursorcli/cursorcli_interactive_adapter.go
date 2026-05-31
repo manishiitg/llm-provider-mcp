@@ -522,6 +522,12 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		args = append(args, "--model", modelToUse)
 	}
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		// NOTE: --force and --approve-mcps do NOT reliably suppress cursor's
+		// per-tool-call "Run this MCP tool?" gate (verified repeatedly — they
+		// affect server/command approval, not the per-call MCP prompt). Do not
+		// remove the tmux-pane auto-allowlist in waitForCursorInteractiveResponse
+		// (hasCursorMCPToolApprovalPrompt → send Tab) on the assumption these
+		// flags handle it; that prompt-scrape is the only dependable mechanism.
 		if force, ok := opts.Metadata.Custom[MetadataKeyForce].(bool); ok && force {
 			args = append(args, "--force")
 		}
@@ -1421,6 +1427,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var lastWebSearchApprovalAt time.Time
+	var lastMCPToolApprovalAt time.Time
 	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1440,6 +1447,26 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			// Auto-allowlist MCP tool calls. Cursor gates each MCP tool call
+			// behind a "Run this MCP tool?" prompt, and --force/--approve-mcps do
+			// NOT reliably suppress it (see buildCursorInteractiveLaunch), so this
+			// pane-scrape is the only dependable way through. In an orchestrated
+			// bridge session the tools must run, so press Tab (Allowlist MCP Tool)
+			// — observed to clear the current gate; cursor re-prompts per call, so
+			// this fires again on each reappearance (rate-limited). Without it the
+			// turn stalls here forever, and the "→ Run (once)" line otherwise looks
+			// like a ready prompt, so the loop could even report a bogus completion.
+			if hasCursorMCPToolApprovalPrompt(captured) {
+				if lastMCPToolApprovalAt.IsZero() || time.Since(lastMCPToolApprovalAt) >= time.Second {
+					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Tab"); err == nil {
+						lastMCPToolApprovalAt = time.Now()
+					}
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
 			}
 			if autoApproveWebSearch && hasCursorWebSearchApprovalPrompt(captured) {
 				if lastWebSearchApprovalAt.IsZero() || time.Since(lastWebSearchApprovalAt) >= 2*time.Second {
@@ -1938,6 +1965,12 @@ func hasCursorReadyPrompt(captured string) bool {
 	if hasCursorWebSearchApprovalPrompt(captured) {
 		return false
 	}
+	// The MCP-tool approval prompt renders a "→ Run (once)" line whose arrow
+	// otherwise looks like a ready input marker — never treat it as ready, or the
+	// loop reports a bogus completion while the tool call is still gated.
+	if hasCursorMCPToolApprovalPrompt(captured) {
+		return false
+	}
 	cleaned := strings.ToLower(stripCursorANSI(captured))
 	if !hasCursorReadyMarker(cleaned) {
 		return false
@@ -2031,6 +2064,21 @@ func hasCursorWebSearchApprovalPrompt(captured string) bool {
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
 		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
+}
+
+// hasCursorMCPToolApprovalPrompt detects Cursor's per-tool-call approval gate:
+//
+//	Run this MCP tool?
+//	 → Run (once) (y)
+//	   Allowlist MCP Tool (tab)
+//	   Reject & propose changes (p)
+//	   Skip (esc or n)
+//
+// It appears for every MCP tool call unless cursor is launched with --force.
+func hasCursorMCPToolApprovalPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripCursorANSI(captured))
+	return strings.Contains(cleaned, "run this mcp tool") ||
+		strings.Contains(cleaned, "allowlist mcp tool")
 }
 
 func cursorTrustPromptResponse(captured string) string {
