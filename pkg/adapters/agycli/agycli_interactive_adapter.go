@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
@@ -36,12 +37,23 @@ const (
 	defaultAgyInteractiveIdleTimeout = 20 * time.Minute
 	defaultAgyInteractiveRetention   = 30 * time.Minute
 	agyInteractiveStableWindow       = 1200 * time.Millisecond
+	// Number of paste+verify attempts before declaring the prompt input lost.
+	// A not-yet-ready pane swallows the first paste; a retry typically lands it.
+	agyPasteMaxAttempts = 3
+	// Hard cap on how long we wait for the CLI to show ANY activity after the
+	// prompt is submitted. A live agy turn shows "Thinking…"/streaming within
+	// seconds; if nothing appears within this window the input never reached the
+	// pane (e.g. paste/Enter was swallowed during launch), and without this cap
+	// the response loop would spin forever because every completion/failsafe
+	// branch is gated behind sawActivity. Generous so it never trips a real turn.
+	defaultAgyInteractiveFirstActivityTimeout = 90 * time.Second
 
-	EnvAgyInteractiveSessionPrefix      = "AGY_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvAgyInteractiveTimeoutSeconds     = "AGY_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvAgyInteractiveIdleTimeoutSeconds = "AGY_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvAgyInteractivePromptWaitSeconds  = "AGY_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvAgyInteractiveStreamTmuxScreen   = "AGY_CLI_STREAM_TMUX_SCREEN"
+	EnvAgyInteractiveSessionPrefix               = "AGY_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvAgyInteractiveTimeoutSeconds              = "AGY_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvAgyInteractiveIdleTimeoutSeconds          = "AGY_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvAgyInteractivePromptWaitSeconds           = "AGY_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvAgyInteractiveStreamTmuxScreen            = "AGY_CLI_STREAM_TMUX_SCREEN"
+	EnvAgyInteractiveFirstActivityTimeoutSeconds = "AGY_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
 )
 
 type agyInteractiveSession struct {
@@ -1586,6 +1598,8 @@ func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, st
 	var feedbackSkipped bool
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
+	var draftClearAttempts int
+	var lastDraftClearAt time.Time
 	streamTerminalScreen := agyInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
@@ -1625,6 +1639,21 @@ func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, st
 			if hasAgyReadyPrompt(captured) {
 				return trustSeen, nil
 			}
+			// A leftover draft in the input box (common when a persistent
+			// session is reused across turns) makes the prompt line read
+			// "> <text>", which is not a ready marker — so readiness never
+			// trips and the turn would block until the deadline. Clear it here
+			// so the prompt becomes ready. Bounded + rate-limited so a pane that
+			// is genuinely not ready for other reasons still falls through to
+			// the timeout rather than looping on key presses.
+			if draftClearAttempts < 3 && (lastDraftClearAt.IsZero() || time.Since(lastDraftClearAt) >= 500*time.Millisecond) {
+				if _, shouldClear := agyPromptDraftToClearBeforePaste(captured); shouldClear {
+					_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u")
+					_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-a", "C-k")
+					draftClearAttempts++
+					lastDraftClearAt = time.Now()
+				}
+			}
 		}
 	}
 }
@@ -1648,16 +1677,43 @@ func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error 
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to close Agy tmux input temp file: %w", err)
 	}
-	if err := runAgyCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
-		return fmt.Errorf("failed to load Agy input into tmux buffer: %w", err)
+	// Paste, then verify the draft actually landed in the prompt before pressing
+	// Enter. A swallowed paste (e.g. the CLI is still initializing) used to go
+	// undetected here — Enter was sent into an empty prompt and the turn silently
+	// stalled, only surfacing much later via the response-loop's no-activity
+	// cutoff. Retrying the paste self-heals a not-yet-ready pane and, if the input
+	// still never lands, fails fast at submit time with a clear error.
+	drafted := false
+	for attempt := 1; attempt <= agyPasteMaxAttempts; attempt++ {
+		if err := runAgyCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
+			return fmt.Errorf("failed to load Agy input into tmux buffer: %w", err)
+		}
+		// Do not pass paste-buffer -p here. Agy treats bracketed paste as a
+		// collapsed "[Pasted text #N]" block; raw tmux paste is still fast, preserves
+		// embedded LFs with -r, and leaves the prompt text readable in the pane.
+		if err := runAgyCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+			return fmt.Errorf("failed to paste input into Agy interactive session: %w", err)
+		}
+		if waitForAgyInputDraftVisible(ctx, sessionName, message, 2*time.Second) {
+			drafted = true
+			break
+		}
+		// The exact-message match can miss on unusual prompts; if any non-empty
+		// draft is sitting on the prompt line, the paste did land — accept it.
+		if captured, err := captureAgyPane(ctx, sessionName); err == nil {
+			if _, ok := agyUnsubmittedPromptDraft(captured); ok {
+				drafted = true
+				break
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 	}
-	// Do not pass paste-buffer -p here. Agy treats bracketed paste as a
-	// collapsed "[Pasted text #N]" block; raw tmux paste is still fast, preserves
-	// embedded LFs with -r, and leaves the prompt text readable in the pane.
-	if err := runAgyCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste input into Agy interactive session: %w", err)
+	if !drafted {
+		captured, _ := captureAgyPane(context.Background(), sessionName)
+		return fmt.Errorf("Agy interactive prompt did not accept the pasted input after %d attempts — the CLI pane was not ready and the input would be lost; latest pane:\n%s", agyPasteMaxAttempts, captured)
 	}
-	waitForAgyInputDraftVisible(ctx, sessionName, message, 2*time.Second)
 	if err := runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit input to Agy interactive session: %w", err)
 	}
@@ -1837,9 +1893,12 @@ func truncateAgyDraftForError(draft string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) {
+// waitForAgyInputDraftVisible polls until the pasted message is visible in the
+// prompt draft, returning true once seen or false if the timeout elapses. The
+// boolean lets the caller detect a swallowed paste (CLI not ready) and retry.
+func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) bool {
 	if strings.TrimSpace(message) == "" {
-		return
+		return false
 	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1848,11 +1907,11 @@ func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message strin
 	for {
 		select {
 		case <-deadline.Done():
-			return
+			return false
 		case <-ticker.C:
 			captured, err := captureAgyPane(deadline, sessionName)
 			if err == nil && agyPaneShowsPromptDraft(captured, message) {
-				return
+				return true
 			}
 		}
 	}
@@ -1861,6 +1920,8 @@ func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message strin
 func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	waitStartedAt := time.Now()
+	firstActivityTimeout := agyInteractiveFirstActivityTimeout()
 	var sawActivity bool
 	var idleSince time.Time
 	var readyWithoutContentSince time.Time
@@ -1935,7 +1996,21 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 			if strings.TrimSpace(delta) != "" {
 				sawActivity = true
 			}
-			if !sawActivity || !hasAgyReadyPrompt(captured) {
+			if !sawActivity {
+				// The CLI has shown nothing since the prompt was submitted.
+				// Every completion/failsafe path below requires sawActivity, so
+				// without this cap a never-delivered prompt spins here forever
+				// (the call context has no deadline by default). Fail cleanly so
+				// the step surfaces an error instead of hanging.
+				if firstActivityTimeout > 0 && time.Since(waitStartedAt) >= firstActivityTimeout {
+					captured, _ := captureAgyPane(context.Background(), sessionName)
+					return captured, fmt.Errorf("Antigravity CLI produced no activity within %s of submitting the prompt — the input was likely not delivered to the tmux pane; latest pane:\n%s", firstActivityTimeout, captured)
+				}
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
+			}
+			if !hasAgyReadyPrompt(captured) {
 				idleSince = time.Time{}
 				lastCaptured = captured
 				continue
@@ -2055,6 +2130,13 @@ func extractAgyVisibleAssistantText(delta string) string {
 		}
 		if isAgyToolStatusLine(trimmed) {
 			out = out[:0]
+			continue
+		}
+		// A line beginning with a Braille spinner glyph is agy's live/stale
+		// generation status (e.g. "⣾ Generating…", or a frozen "⣟ Gener … ,N
+		// tokens" left behind after a slow turn). It is never assistant content,
+		// so skip it — otherwise the loop can return "Generating…" as the answer.
+		if agyLineStartsWithSpinner(strings.TrimSpace(trimmed)) {
 			continue
 		}
 		if isAgyTUILine(trimmed) || isAgyBoxDrawingLine(trimmed) {
@@ -2552,24 +2634,53 @@ func agyTrustPromptResponse(captured string) string {
 	return "y"
 }
 
+// agyBrailleSpinner reports whether r is one of agy's animated spinner glyphs.
+// agy renders its in-progress status with a leading Braille Patterns glyph
+// (U+2800–U+28FF), e.g. "⣾ Generating…"; a line beginning with one is a
+// reliable "actively generating" signal that completed markers (▸ ● ○) are not.
+func agyBrailleSpinner(r rune) bool { return r >= 0x2800 && r <= 0x28FF }
+
+// agyLineStartsWithSpinner reports whether the trimmed, lowercased line begins
+// with an animated Braille spinner glyph.
+func agyLineStartsWithSpinner(lower string) bool {
+	for _, r := range lower {
+		return agyBrailleSpinner(r)
+	}
+	return false
+}
+
+// agyActivityKeyword strips any leading spinner glyph / bullet / punctuation so
+// a status word matches even when the live spinner prefixes it, e.g.
+// "⣾ generating…" → "generating…".
+func agyActivityKeyword(lower string) string {
+	return strings.TrimLeftFunc(lower, func(r rune) bool { return !unicode.IsLetter(r) })
+}
+
 func hasAgyActivity(captured string) bool {
 	for _, line := range strings.Split(stripAgyANSI(captured), "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
 		if lower == "" {
 			continue
 		}
+		// A Braille spinner glyph anywhere at the start of a line means agy is
+		// mid-animation (e.g. "⣾ Generating…"); treat it as activity directly.
+		if agyLineStartsWithSpinner(lower) {
+			return true
+		}
+		// Match status words even when prefixed by a spinner/bullet glyph.
+		keyword := agyActivityKeyword(lower)
 		if strings.Contains(lower, "esc to interrupt") ||
 			strings.Contains(lower, "esc to cancel") ||
 			strings.Contains(lower, "ctrl+c to cancel") ||
 			strings.Contains(lower, "ctrl+c to stop") ||
 			strings.Contains(lower, "composing") ||
-			strings.HasPrefix(lower, "thinking") ||
-			strings.HasPrefix(lower, "working") ||
-			strings.HasPrefix(lower, "running") ||
-			strings.HasPrefix(lower, "generating") ||
-			strings.HasPrefix(lower, "editing") ||
-			strings.HasPrefix(lower, "applying") ||
-			strings.HasPrefix(lower, "calling ") {
+			strings.HasPrefix(keyword, "thinking") ||
+			strings.HasPrefix(keyword, "working") ||
+			strings.HasPrefix(keyword, "running") ||
+			strings.HasPrefix(keyword, "generating") ||
+			strings.HasPrefix(keyword, "editing") ||
+			strings.HasPrefix(keyword, "applying") ||
+			strings.HasPrefix(keyword, "calling ") {
 			return true
 		}
 	}
@@ -2767,6 +2878,13 @@ func agyInteractiveCallContext(ctx context.Context) (context.Context, context.Ca
 
 func agyInteractiveIdleTimeout() time.Duration {
 	return agyDurationFromEnv(EnvAgyInteractiveIdleTimeoutSeconds, defaultAgyInteractiveIdleTimeout)
+}
+
+// agyInteractiveFirstActivityTimeout bounds the wait for the CLI's first sign of
+// activity after the prompt is submitted. Always > 0 so a lost-input hang fails
+// cleanly even when the caller and provider both run without a turn deadline.
+func agyInteractiveFirstActivityTimeout() time.Duration {
+	return agyDurationFromEnv(EnvAgyInteractiveFirstActivityTimeoutSeconds, defaultAgyInteractiveFirstActivityTimeout)
 }
 
 func agyInteractiveRetention() time.Duration {
