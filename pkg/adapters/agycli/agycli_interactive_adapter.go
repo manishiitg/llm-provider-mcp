@@ -2072,7 +2072,18 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 				lastCaptured = captured
 				continue
 			}
-			if captured != lastCaptured {
+			// Stability check. We only reach here once hasAgyReadyPrompt(captured)
+			// is true (gated above), i.e. the idle "> " input box is showing — so
+			// the turn is effectively done. Compare with the spinner animation
+			// normalized OUT: agy can leave a spinner glyph cycling ("⣽"→"⣾"→"⣷",
+			// "Generating…"→"Generating.") after the ready prompt is already up. The
+			// raw bytes then change every ~100ms and the pane never looks "stable",
+			// so completion never fires and the turn hangs forever even though the
+			// answer is right there. Normalizing the cycling spinner lets the stable
+			// window elapse and the turn complete. This is safe precisely because
+			// we are past the ready-prompt gate — a genuinely mid-work spinner (no
+			// "> " box yet) fails that gate and never reaches this comparison.
+			if agySpinnerStableKey(captured) != agySpinnerStableKey(lastCaptured) {
 				lastCaptured = captured
 				idleSince = time.Now()
 				continue
@@ -2699,6 +2710,65 @@ func agyTrustPromptResponse(captured string) string {
 // (U+2800–U+28FF), e.g. "⣾ Generating…"; a line beginning with one is a
 // reliable "actively generating" signal that completed markers (▸ ● ○) are not.
 func agyBrailleSpinner(r rune) bool { return r >= 0x2800 && r <= 0x28FF }
+
+// agySpinnerStatusWords are the words agy animates in its in-place spinner
+// ("⣾ Generating…", "Thinking…", "Working…"). Used to normalize a cycling
+// spinner out of the pane for the stability comparison.
+var agySpinnerStatusWords = []string{
+	"generating", "thinking", "working", "loading", "analyzing", "exploring",
+	"reviewing", "confirming", "refining", "investigating", "searching",
+	"reading", "writing", "calling", "running", "navigating", "examining",
+	"identifying", "saving", "extracting", "discovering", "processing",
+	"waiting", "fetching", "building", "planning", "composing", "retrieving",
+}
+
+// agyIsAnimatedSpinnerLine reports whether a line is an animated spinner status
+// line whose bytes cycle on their own (the Braille glyph rotating, the trailing
+// dots growing) while agy is otherwise idle. Leading marker glyphs (Braille, ●,
+// ○, ▸, ▾) and spaces are stripped first; a line that is then empty (glyph only)
+// or begins with a known status word is treated as animation.
+func agyIsAnimatedSpinnerLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if t == "" {
+		return false
+	}
+	t = strings.TrimLeftFunc(t, func(r rune) bool {
+		return r == ' ' || r == '●' || r == '○' || r == '▸' || r == '▾' || agyBrailleSpinner(r)
+	})
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return true // glyph-only frame
+	}
+	lower := strings.ToLower(t)
+	for _, w := range agySpinnerStatusWords {
+		if strings.HasPrefix(lower, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// agySpinnerStableKey returns the pane with animated spinner lines removed, so a
+// spinner cycling in place (after the ready prompt is already up) does not read
+// as a content change. Real output changes still change the key. Used only for
+// the post-ready-prompt stability comparison — see waitForAgyInteractiveResponse.
+func agySpinnerStableKey(captured string) string {
+	if captured == "" {
+		return ""
+	}
+	lines := strings.Split(captured, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if agyIsAnimatedSpinnerLine(line) {
+			continue
+		}
+		out = append(out, strings.TrimRight(line, " \t\r"))
+	}
+	return strings.Join(out, "\n")
+}
 
 // agyLineStartsWithSpinner reports whether the trimmed, lowercased line begins
 // with an animated Braille spinner glyph.

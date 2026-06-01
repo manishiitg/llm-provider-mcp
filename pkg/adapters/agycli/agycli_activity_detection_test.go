@@ -96,3 +96,48 @@ func TestAgyCompletedToolCardWithReadyPromptIsNotLive(t *testing.T) {
 		t.Fatalf("hasAgyReadyPrompt = false for a completed, stable pane with a visible '> ' prompt; want true (turn is done)")
 	}
 }
+
+// Regression for the spinner-cycling hang: agy leaves a "⣯ Generating…" status
+// line cycling above its idle "> " input box even after the turn is done and the
+// answer is printed. The completion loop compares pane stability, and the
+// cycling Braille glyph used to mutate the raw bytes every ~100ms so the pane
+// never looked "stable for 1.2s" — the turn hung forever even though the answer
+// was right there. agySpinnerStableKey must normalize that line out so two
+// frames that differ ONLY by the spinner produce the same key.
+//
+// The two panes below are the real captures from the stuck routing step
+// (mlp-agy-cli-int-…-553dcce4), 1.5s apart — identical except the spinner glyph.
+func TestAgySpinnerStableKeyIgnoresCyclingSpinner(t *testing.T) {
+	frame := func(glyph string) string {
+		return strings.Join([]string{
+			"● api-bridge/execute_shell_command(Find json files) (ctrl+o to expand)",
+			"",
+			"  {",
+			"  \"selected_route_id\": \"password-found\",",
+			"  \"reasoning\": \"Based on credentials.json, 'has_password' is true.\"",
+			"  }",
+			glyph + " Generating...",
+			"└ Tip: Start your message with ! to run a shell command.",
+			"───────────────────────────────────────────────",
+			">",
+			"───────────────────────────────────────────────",
+		}, "\n")
+	}
+	a := frame("⣯")
+	b := frame("⣷")
+	if a == b {
+		t.Fatal("test setup error: frames should differ by the spinner glyph")
+	}
+	if agySpinnerStableKey(a) != agySpinnerStableKey(b) {
+		t.Fatalf("agySpinnerStableKey must be identical for frames differing only by the cycling spinner;\nA=%q\nB=%q", agySpinnerStableKey(a), agySpinnerStableKey(b))
+	}
+	// The real answer must still be present in the key (we only strip the spinner).
+	if !strings.Contains(agySpinnerStableKey(a), "password-found") {
+		t.Fatalf("stable key dropped real content; got %q", agySpinnerStableKey(a))
+	}
+	// And the ready prompt must be detected as ready (so the loop reaches the
+	// stability check at all).
+	if !hasAgyReadyPrompt(strings.ToLower(a)) {
+		t.Fatal("hasAgyReadyPrompt should be true for a finished pane with a visible '> ' box")
+	}
+}
