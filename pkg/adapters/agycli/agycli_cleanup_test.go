@@ -501,12 +501,12 @@ func TestAgyWorkspaceMCPConfigLeaseRejectsConcurrentConflicts(t *testing.T) {
 
 func TestAgyWorkspaceMCPConfigLeaseAllowsConcurrentSessionVariations(t *testing.T) {
 	workDir := t.TempDir()
-	
+
 	// Create two sessions with different MCP_SESSION_ID and MCP_API_URL (with session suffix path)
 	first := &agyInteractiveSession{ownerSessionID: "first"}
 	firstOpts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"alpha","env":{"MCP_SESSION_ID":"session-abc","MCP_API_URL":"http://127.0.0.1:8081/s/session-abc","MCP_VIRTUAL_SCOPE_ID":"scope-1"}}}}`)(firstOpts)
-	
+
 	releaseFirst, err := acquireAgyWorkspaceMCPConfigLease(workDir, firstOpts, first)
 	if err != nil {
 		t.Fatalf("first lease error = %v", err)
@@ -516,7 +516,7 @@ func TestAgyWorkspaceMCPConfigLeaseAllowsConcurrentSessionVariations(t *testing.
 	second := &agyInteractiveSession{ownerSessionID: "second"}
 	secondOpts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"alpha","env":{"MCP_SESSION_ID":"session-xyz","MCP_API_URL":"http://127.0.0.1:8081/s/session-xyz","MCP_VIRTUAL_SCOPE_ID":"scope-2"}}}}`)(secondOpts)
-	
+
 	releaseSecond, err := acquireAgyWorkspaceMCPConfigLease(workDir, secondOpts, second)
 	if err != nil {
 		t.Fatalf("concurrent lease should succeed because session-specific parameters are normalized/fingerprinted identically: %v", err)
@@ -682,6 +682,11 @@ func TestPrepareAgyProjectFilesWritesBridgeOnlyHooksAndCleansUp(t *testing.T) {
 	}
 	if decision.Decision != "deny" || !strings.Contains(decision.Reason, "api-bridge.execute_shell_command") {
 		t.Fatalf("bridge-only hook decision = %#v, want deny with bridge guidance", decision)
+	}
+	for _, want := range []string{"$MCP_CUSTOM", "list_published_llms", "list_provider_models", "Do not read or edit config/ files for LLM/provider configuration"} {
+		if !strings.Contains(decision.Reason, want) {
+			t.Fatalf("bridge-only hook reason missing %q:\n%s", want, decision.Reason)
+		}
 	}
 
 	cleanup()
