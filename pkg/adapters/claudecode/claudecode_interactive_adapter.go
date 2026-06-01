@@ -1791,7 +1791,15 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prom
 			// so the submit loop would declare success while our text sits
 			// unsent in the box. Require the draft to have cleared first, the
 			// same check the live-steering path uses.
-			if draft, ok := latestClaudePromptDraft(captured); ok && claudePromptDraftStillMatchesMessage(draft, prompt) {
+			draft, ok := latestClaudePromptDraft(captured)
+			if !ok {
+				// Missing ❯ line is a transient repaint, not proof of submission
+				// (same false-success that left auto-notifications stuck as
+				// unsubmitted drafts). Keep polling rather than falling through
+				// to the hasClaudeActivity shortcut below.
+				continue
+			}
+			if claudePromptDraftStillMatchesMessage(draft, prompt) {
 				continue
 			}
 			if hasClaudeActivity(captured) {
@@ -1834,9 +1842,19 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 			lastCaptured = captured
 			draft, ok := latestClaudePromptDraft(captured)
 			if !ok {
-				if hasClaudeActivity(captured) {
-					return nil
-				}
+				// No ❯ input line in this frame. This is almost always a
+				// transient TUI repaint mid-paste, NOT proof the message was
+				// submitted: Claude Code keeps the ❯ input visible (empty) even
+				// while a turn runs, so a genuine submit shows up as an
+				// empty/changed draft on the ok branch below. Previously this
+				// returned success whenever hasClaudeActivity was true, but that
+				// activity is frequently just residual spinner output from
+				// Claude's *prior* turn — so an unsubmitted draft (e.g. a pasted
+				// multi-line AUTO-NOTIFICATION) got reported as sent, the next
+				// paste stacked on top of it, and notifications piled up
+				// unsubmitted in the input box. Treat a missing prompt line as
+				// inconclusive and keep polling; the submit retry loop will press
+				// Enter again until the draft positively clears.
 				continue
 			}
 			if !claudePromptDraftStillMatchesMessage(draft, message) {

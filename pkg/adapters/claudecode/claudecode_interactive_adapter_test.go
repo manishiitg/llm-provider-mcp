@@ -1548,6 +1548,51 @@ func TestClaudePromptDraftStillMatchesMessage(t *testing.T) {
 	}
 }
 
+// TestMultiLineAutoNotificationDraftIsDetectedAsUnsubmitted reproduces the live
+// bug where a multi-line AUTO-NOTIFICATION pasted into a Claude Code main agent
+// sat unsubmitted in the ❯ box. Claude Code wraps a multi-line paste so only the
+// first row carries the ❯ marker; the draft-detection helpers must still report
+// the message as present so the submit retry loop keeps pressing Enter instead
+// of declaring a false success and stacking the next paste on top.
+func TestMultiLineAutoNotificationDraftIsDetectedAsUnsubmitted(t *testing.T) {
+	message := "[AUTO-NOTIFICATION] Workflow run 'Workflow step -> step-4-execution-evaluate-archival-and-kb-integrity' (ID: workflow-full-1780321008665288000-step-0-1780325169668301000) [workflow=Workflow/check-form-26as-xspaces] started.\n  Ack briefly. Do NOT call tools; completion will arrive as a separate AUTO-NOTIFICATION."
+	pane := `
+✻ Cooked for 21s
+
+────────────────────────────────────────────────────────────────────── mcp-agent ──
+❯ [AUTO-NOTIFICATION] Workflow run 'Workflow step ->
+  step-4-execution-evaluate-archival-and-kb-integrity' (ID:
+  workflow-full-1780321008665288000-step-0-1780325169668301000)
+  [workflow=Workflow/check-form-26as-xspaces] started.
+  Ack briefly. Do NOT call tools; completion will arrive as a separate AUTO-NOTIFICATION.
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`
+	draft, ok := latestClaudePromptDraft(pane)
+	if !ok {
+		t.Fatal("latestClaudePromptDraft ok = false, want true for a wrapped multi-line draft")
+	}
+	if !claudePromptDraftStillMatchesMessage(draft, message) {
+		t.Fatalf("multi-line notification draft %q must be treated as still unsubmitted (not a false submit success)", draft)
+	}
+}
+
+// TestMissingPromptLineIsInconclusiveNotSubmitted documents the core fix: a pane
+// frame with no ❯ input row (a transient TUI repaint) must NOT be read as proof
+// of submission. latestClaudePromptDraft returns ok=false, and the submit-wait
+// loops now treat that as inconclusive (keep polling) rather than returning
+// success on residual activity — which previously left drafts stuck unsubmitted.
+func TestMissingPromptLineIsInconclusiveNotSubmitted(t *testing.T) {
+	pane := `
+⏺ Calling api-bridge… (ctrl+o to expand)
+
+✽ Leavening… (16s · ↓ 858 tokens · thinking with high effort)
+`
+	if _, ok := latestClaudePromptDraft(pane); ok {
+		t.Fatal("latestClaudePromptDraft ok = true for a frame with no ❯ input row; want false (inconclusive)")
+	}
+}
+
 func TestClaudeLatestAssistantResponseRejectsToolProgress(t *testing.T) {
 	pane := `
 ⏺ Calling api-bridge… (ctrl+o to expand)
