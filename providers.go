@@ -87,7 +87,7 @@ const (
 	ProviderDeepgram              Provider = "deepgram"
 
 	DefaultCodexCLIModel  = "high"
-	DefaultCursorCLIModel = "cursor-cli"
+	DefaultCursorCLIModel = "composer-2.5"
 	DefaultAgyCLIModel    = "agy-cli"
 	DefaultOpenCodeModel  = "opencode-cli"
 
