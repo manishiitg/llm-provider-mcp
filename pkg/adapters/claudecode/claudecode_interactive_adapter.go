@@ -47,6 +47,16 @@ const (
 	promptPasteVisibleStableWindow = 900 * time.Millisecond
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 	promptPasteLiveInputWait       = 2 * time.Second
+	// Submit timing. After a bracketed paste-buffer, the Claude Code TUI commits
+	// the draft only once it has consumed the bracketed-paste END marker. Sending
+	// the submit keys before that commit lands the Enter on an uncommitted draft —
+	// it becomes a newline (or is dropped) and the message sits unsubmitted in the
+	// input box until a human presses Enter. These give the paste a settle beat,
+	// space retries onto calm repaint frames, and try more times before giving up.
+	claudePasteSettleBeforeSubmit = 250 * time.Millisecond
+	claudeSubmitKeyGap            = 60 * time.Millisecond
+	claudeSubmitRetryBackoff      = 250 * time.Millisecond
+	claudeSubmitMaxAttempts       = 5
 
 	EnvClaudeTmuxSessionPrefix     = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
 	EnvClaudeTmuxTimeoutSeconds    = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
@@ -1304,11 +1314,15 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		return nil
 	}
 
+	// Let the bracketed paste commit before the first Enter (see submitClaudePrompt).
+	sleepCtx(ctx, claudePasteSettleBeforeSubmit)
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= claudeSubmitMaxAttempts; attempt++ {
+		if attempt > 1 {
+			sleepCtx(ctx, claudeSubmitRetryBackoff)
+		}
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
-		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
-		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
+		if err := submitClaudePrompt(ctx, sessionName); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
 		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, prompt); err == nil {
@@ -1346,10 +1360,16 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		// even though the draft is already visible in the TUI. Still submit once
 		// so the user's message does not sit unsubmitted in the input line.
 	}
+	// Let the bracketed paste commit before the first Enter — the paste wait above
+	// is best-effort and frequently times out while Claude is busy, in which case
+	// we would otherwise submit onto an uncommitted draft.
+	sleepCtx(ctx, claudePasteSettleBeforeSubmit)
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
-		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
+	for attempt := 1; attempt <= claudeSubmitMaxAttempts; attempt++ {
+		if attempt > 1 {
+			sleepCtx(ctx, claudeSubmitRetryBackoff)
+		}
+		if err := submitClaudePrompt(ctx, sessionName); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
 		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
@@ -1366,6 +1386,38 @@ func claudeSubmitPromptKeys() []string {
 	// Enter is sent while the cursor/focus is not at the accepted end of input.
 	// Move to the end first, then submit.
 	return []string{"C-e", "Enter"}
+}
+
+// submitClaudePrompt dispatches the move-to-end + Enter sequence as discrete key
+// events with a short gap between them, instead of one coalesced send-keys call.
+// Sent together, the Claude Code TUI can apply Enter before the C-e cursor move
+// has taken effect on a freshly bracket-pasted draft, so the Enter lands as a
+// newline (or is dropped) and the message never submits. Separating them — after
+// the caller has let the paste settle — makes "go to end, then submit"
+// deterministic.
+func submitClaudePrompt(ctx context.Context, sessionName string) error {
+	for i, key := range claudeSubmitPromptKeys() {
+		if i > 0 {
+			sleepCtx(ctx, claudeSubmitKeyGap)
+		}
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sleepCtx sleeps for d unless ctx is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) error {
