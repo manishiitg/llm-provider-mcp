@@ -32,7 +32,7 @@ func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
 		case "medium":
 			meta.ModelName = "Medium (GPT-5.4)"
 		case "low":
-			meta.ModelName = "Low (GPT-5.4 Mini)"
+			meta.ModelName = "Low (GPT-5.3 Codex Spark)"
 		}
 
 		models = append(models, meta)
@@ -48,7 +48,7 @@ func resolveCodexCLIModelID(modelID string) string {
 	case "medium":
 		return "gpt-5.4"
 	case "low":
-		return "gpt-5.4-mini"
+		return "gpt-5.3-codex-spark"
 	default:
 		return strings.TrimSpace(modelID)
 	}

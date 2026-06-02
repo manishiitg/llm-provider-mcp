@@ -75,12 +75,12 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentHighReasoningRef(providerID, "high")
+		high := codingAgentHighReasoningRef(providerID, "gpt-5.5")
 		return &CodingAgentDefaultTierModels{
 			Main:   high,
 			High:   high,
-			Medium: codingAgentHighReasoningRef(providerID, "medium"),
-			Low:    codingAgentHighReasoningRef(providerID, "low"),
+			Medium: codingAgentHighReasoningRef(providerID, "gpt-5.4"),
+			Low:    codingAgentHighReasoningRef(providerID, "gpt-5.3-codex-spark"),
 			Phase:  high,
 		}, true
 	case ProviderClaudeCode:
