@@ -23,10 +23,6 @@ type CodingAgentDefaultTierModels struct {
 	Phase  CodingAgentTierModelRef `json:"phase"`
 }
 
-func codingAgentTierModelRef(provider, modelID string) CodingAgentTierModelRef {
-	return CodingAgentTierModelRef{Provider: provider, ModelID: modelID}
-}
-
 func codingAgentHighReasoningRef(provider, modelID string) CodingAgentTierModelRef {
 	return CodingAgentTierModelRef{
 		Provider: provider,
@@ -39,7 +35,7 @@ func sameCodingAgentTierModels(provider, modelID string) *CodingAgentDefaultTier
 	if strings.TrimSpace(modelID) == "" {
 		modelID = provider
 	}
-	ref := codingAgentTierModelRef(provider, modelID)
+	ref := codingAgentHighReasoningRef(provider, modelID)
 	return &CodingAgentDefaultTierModels{
 		Main:   ref,
 		High:   ref,
@@ -54,13 +50,13 @@ func opencodeSubProviderTierModel(sp opencodecli.OpenCodeSubProvider, tier strin
 	if shortcut, ok := sp.TierShortcuts[tier]; ok && strings.TrimSpace(shortcut) != "" {
 		modelID = strings.TrimSpace(shortcut)
 	}
-	return codingAgentTierModelRef(sp.ID, modelID)
+	return codingAgentHighReasoningRef(sp.ID, modelID)
 }
 
 func opencodeSubProviderDefaultTierModels(sp opencodecli.OpenCodeSubProvider) *CodingAgentDefaultTierModels {
 	high := opencodeSubProviderTierModel(sp, "high")
 	return &CodingAgentDefaultTierModels{
-		Main:   codingAgentTierModelRef(sp.ID, sp.DefaultModelID),
+		Main:   codingAgentHighReasoningRef(sp.ID, sp.DefaultModelID),
 		High:   high,
 		Medium: opencodeSubProviderTierModel(sp, "medium"),
 		Low:    opencodeSubProviderTierModel(sp, "low"),
@@ -93,21 +89,21 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Phase:  high,
 		}, true
 	case ProviderGeminiCLI:
-		high := codingAgentTierModelRef(providerID, "high")
+		high := codingAgentHighReasoningRef(providerID, "high")
 		return &CodingAgentDefaultTierModels{
-			Main:   codingAgentTierModelRef(providerID, "auto"),
+			Main:   codingAgentHighReasoningRef(providerID, "auto"),
 			High:   high,
-			Medium: codingAgentTierModelRef(providerID, "medium"),
-			Low:    codingAgentTierModelRef(providerID, "low"),
+			Medium: codingAgentHighReasoningRef(providerID, "medium"),
+			Low:    codingAgentHighReasoningRef(providerID, "low"),
 			Phase:  high,
 		}, true
 	case ProviderOpenCodeCLI:
-		high := codingAgentTierModelRef(providerID, "high")
+		high := codingAgentHighReasoningRef(providerID, "high")
 		return &CodingAgentDefaultTierModels{
-			Main:   codingAgentTierModelRef(providerID, DefaultOpenCodeModel),
+			Main:   codingAgentHighReasoningRef(providerID, DefaultOpenCodeModel),
 			High:   high,
-			Medium: codingAgentTierModelRef(providerID, "medium"),
-			Low:    codingAgentTierModelRef(providerID, "low"),
+			Medium: codingAgentHighReasoningRef(providerID, "medium"),
+			Low:    codingAgentHighReasoningRef(providerID, "low"),
 			Phase:  high,
 		}, true
 	case ProviderCursorCLI:
