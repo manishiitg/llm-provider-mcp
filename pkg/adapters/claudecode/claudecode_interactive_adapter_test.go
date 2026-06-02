@@ -959,6 +959,38 @@ Would you like to compact the conversation or continue without compacting?
 	}
 }
 
+// TestResumeCompressionPromptIgnoresScrollbackKeywords guards the false-positive
+// that typed a stray "continue" into a normal prompt (garbling e.g. a "1. do it"
+// draft into "1. do itcontinue"). A pane whose scrollback merely mentions
+// compact/continue/context/conversation — but is NOT the actual resume prompt —
+// must not trigger the text-"continue" path.
+func TestResumeCompressionPromptIgnoresScrollbackKeywords(t *testing.T) {
+	panes := []string{
+		// Normal numbered prompt with keyword-bearing scrollback above it.
+		`
+⏺ I can compact the report or continue with the current context window.
+  Here's the conversation so far...
+
+❯ 1. do it
+─────────────────────────────────────────────────── mcp-agent ──
+  ⏵⏵ don't ask on (shift+tab to cycle)
+`,
+		// Assistant prose that happens to use all the loose keywords.
+		`
+⏺ To continue, I'll compact the context and resume the conversation flow.
+❯
+`,
+	}
+	for i, pane := range panes {
+		if isClaudeResumeCompressionPrompt(pane) {
+			t.Fatalf("pane[%d]: isClaudeResumeCompressionPrompt = true for non-prompt scrollback", i)
+		}
+		if got := claudeResumeCompressionPromptSubmitKeys(pane); got != nil {
+			t.Fatalf("pane[%d]: claudeResumeCompressionPromptSubmitKeys = %#v, want nil (no stray continue)", i, got)
+		}
+	}
+}
+
 func TestTmuxTimeoutEnv(t *testing.T) {
 	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "")
 	if got := tmuxTimeout(); got != 0 {

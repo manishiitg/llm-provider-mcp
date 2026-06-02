@@ -1268,15 +1268,18 @@ func claudeResumeSelectMenuKeys(captured string) []string {
 
 func isClaudeResumeCompressionPrompt(captured string) bool {
 	normalized := strings.ToLower(strings.ReplaceAll(captured, "\u00a0", " "))
-	if !(strings.Contains(normalized, "compress") || strings.Contains(normalized, "compact")) {
-		return false
-	}
-	if !strings.Contains(normalized, "continue") {
-		return false
-	}
-	return strings.Contains(normalized, "resume") ||
-		strings.Contains(normalized, "conversation") ||
-		strings.Contains(normalized, "context")
+	// Match the DISTINCTIVE wording of Claude Code's legacy text resume prompt
+	// ("Would you like to compact the conversation or continue without
+	// compacting?"), not loose keyword co-occurrence. The old check matched any
+	// pane containing compact/compress + continue + resume/conversation/context
+	// \u2014 which normal scrollback frequently does \u2014 so we'd type a stray "continue"
+	// into whatever input was focused, garbling real drafts (e.g. turning a
+	// "1. do it" prompt into "1. do itcontinue"). These phrases only appear in
+	// the actual prompt.
+	return strings.Contains(normalized, "without compacting") ||
+		strings.Contains(normalized, "without compaction") ||
+		strings.Contains(normalized, "continue without compact") ||
+		(strings.Contains(normalized, "would you like to compact") && strings.Contains(normalized, "continue"))
 }
 
 func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
