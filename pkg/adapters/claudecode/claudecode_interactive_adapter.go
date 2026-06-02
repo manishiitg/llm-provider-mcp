@@ -47,16 +47,16 @@ const (
 	promptPasteVisibleStableWindow = 900 * time.Millisecond
 	promptPasteInvisibleGrace      = 1500 * time.Millisecond
 	promptPasteLiveInputWait       = 2 * time.Second
-	// Submit timing. After a bracketed paste-buffer, the Claude Code TUI commits
-	// the draft only once it has consumed the bracketed-paste END marker. Sending
-	// the submit keys before that commit lands the Enter on an uncommitted draft —
-	// it becomes a newline (or is dropped) and the message sits unsubmitted in the
-	// input box until a human presses Enter. These give the paste a settle beat,
-	// space retries onto calm repaint frames, and try more times before giving up.
-	claudePasteSettleBeforeSubmit = 250 * time.Millisecond
-	claudeSubmitKeyGap            = 60 * time.Millisecond
-	claudeSubmitRetryBackoff      = 250 * time.Millisecond
-	claudeSubmitMaxAttempts       = 5
+	// Compaction handling. While Claude Code is compacting/summarizing the
+	// conversation it replaces the input box with a "Compacting…/Summarizing…"
+	// status and refuses input — pasting+submitting into that window fuses our
+	// text onto a prior draft or leaves it stuck unsubmitted. So a send waits for
+	// compaction to finish first, then paste/submit runs against a real prompt.
+	// This is the ONLY window where a send blocks; outside it the wait is a
+	// single cheap pane read and the send stays fast.
+	claudeCompactionMaxWait      = 5 * time.Minute
+	claudeCompactionPollInterval = 500 * time.Millisecond
+	claudeCompactionEndGrace     = 300 * time.Millisecond
 
 	EnvClaudeTmuxSessionPrefix     = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
 	EnvClaudeTmuxTimeoutSeconds    = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
@@ -1296,6 +1296,9 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 	bufferName := "mlp-claude-prompt-" + randomHex(6)
 	prompt = strings.TrimRight(prompt, "\n")
 
+	if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
+		return err
+	}
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
 	}
@@ -1314,15 +1317,11 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		return nil
 	}
 
-	// Let the bracketed paste commit before the first Enter (see submitClaudePrompt).
-	sleepCtx(ctx, claudePasteSettleBeforeSubmit)
 	var lastErr error
-	for attempt := 1; attempt <= claudeSubmitMaxAttempts; attempt++ {
-		if attempt > 1 {
-			sleepCtx(ctx, claudeSubmitRetryBackoff)
-		}
+	for attempt := 1; attempt <= 3; attempt++ {
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
-		if err := submitClaudePrompt(ctx, sessionName); err != nil {
+		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
+		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
 		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, prompt); err == nil {
@@ -1340,6 +1339,9 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Claude Code tmux input is empty")
+	}
+	if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
+		return err
 	}
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
@@ -1360,16 +1362,10 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		// even though the draft is already visible in the TUI. Still submit once
 		// so the user's message does not sit unsubmitted in the input line.
 	}
-	// Let the bracketed paste commit before the first Enter — the paste wait above
-	// is best-effort and frequently times out while Claude is busy, in which case
-	// we would otherwise submit onto an uncommitted draft.
-	sleepCtx(ctx, claudePasteSettleBeforeSubmit)
 	var lastErr error
-	for attempt := 1; attempt <= claudeSubmitMaxAttempts; attempt++ {
-		if attempt > 1 {
-			sleepCtx(ctx, claudeSubmitRetryBackoff)
-		}
-		if err := submitClaudePrompt(ctx, sessionName); err != nil {
+	for attempt := 1; attempt <= 3; attempt++ {
+		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
+		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
 		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
@@ -1388,23 +1384,43 @@ func claudeSubmitPromptKeys() []string {
 	return []string{"C-e", "Enter"}
 }
 
-// submitClaudePrompt dispatches the move-to-end + Enter sequence as discrete key
-// events with a short gap between them, instead of one coalesced send-keys call.
-// Sent together, the Claude Code TUI can apply Enter before the C-e cursor move
-// has taken effect on a freshly bracket-pasted draft, so the Enter lands as a
-// newline (or is dropped) and the message never submits. Separating them — after
-// the caller has let the paste settle — makes "go to end, then submit"
-// deterministic.
-func submitClaudePrompt(ctx context.Context, sessionName string) error {
-	for i, key := range claudeSubmitPromptKeys() {
-		if i > 0 {
-			sleepCtx(ctx, claudeSubmitKeyGap)
-		}
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key); err != nil {
-			return err
+// waitForClaudeCompactionToSettle blocks while the pane is actively compacting or
+// summarizing the conversation, returning once that finishes. Claude Code refuses
+// input during compaction, so pasting then would mangle the message; waiting lets
+// the subsequent paste/submit run against a restored prompt. It is a fast no-op
+// (one pane read) when no compaction is in progress, so it adds no latency to the
+// common path. On timeout it returns an error rather than send into a still-
+// compacting pane.
+func waitForClaudeCompactionToSettle(ctx context.Context, sessionName string) error {
+	if captured, err := captureTmuxPane(ctx, sessionName); err == nil && !isClaudeCompactionInProgress(captured) {
+		return nil
+	}
+	deadline, cancel := context.WithTimeout(ctx, claudeCompactionMaxWait)
+	defer cancel()
+	ticker := time.NewTicker(claudeCompactionPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("Claude Code still compacting after %s; not sending to avoid mangling input", claudeCompactionMaxWait)
+		case <-ticker.C:
+			captured, err := captureTmuxPane(deadline, sessionName)
+			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return err
+				}
+				continue
+			}
+			if !isClaudeCompactionInProgress(captured) {
+				// Let the TUI restore the input box before we paste into it.
+				sleepCtx(deadline, claudeCompactionEndGrace)
+				return nil
+			}
 		}
 	}
-	return nil
 }
 
 // sleepCtx sleeps for d unless ctx is cancelled first.
