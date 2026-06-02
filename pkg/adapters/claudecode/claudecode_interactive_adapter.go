@@ -57,6 +57,13 @@ const (
 	claudeCompactionMaxWait      = 5 * time.Minute
 	claudeCompactionPollInterval = 500 * time.Millisecond
 	claudeCompactionEndGrace     = 300 * time.Millisecond
+	// Clearing a stale draft. A stuck draft can be multi-line (e.g. a previously
+	// unsubmitted auto-notification), and one C-u only clears the current line —
+	// so the earlier lines remain and the next paste stacks onto them. Repeat the
+	// clear until the input line reads empty, bounded so a non-clearing TUI can't
+	// spin forever.
+	claudeDraftClearMaxRounds = 8
+	claudeDraftClearSettle    = 100 * time.Millisecond
 
 	EnvClaudeTmuxSessionPrefix     = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
 	EnvClaudeTmuxTimeoutSeconds    = "CLAUDE_CODE_TMUX_TIMEOUT_SECONDS"
@@ -1448,13 +1455,48 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 	if !shouldClear {
 		return nil
 	}
-	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u"); err != nil {
-		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
+	// Repeat C-e + C-u until the input line is empty so multi-line stale drafts are
+	// fully cleared (a single C-u leaves the earlier lines, which the next paste
+	// would stack onto). This only runs once we have decided to clear (idle pane
+	// with a real stale draft); the busy-pane gate above still protects legitimately
+	// queued messages from being touched.
+	for round := 0; round < claudeDraftClearMaxRounds; round++ {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u"); err != nil {
+			return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
+		}
+		sleepCtx(ctx, claudeDraftClearSettle)
+		cleared, err := claudePromptDraftCleared(ctx, sessionName)
+		if err != nil {
+			if isClaudeTmuxSessionLostError(err) {
+				return err
+			}
+			continue // transient capture/repaint; try the next round
+		}
+		if cleared {
+			return nil
+		}
 	}
+	// Did not confirm an empty line within the bounded rounds — fall back to the
+	// timed wait so we still surface a failure rather than paste onto a dirty draft.
 	if err := waitForClaudePromptDraftCleared(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
 	}
 	return nil
+}
+
+// claudePromptDraftCleared reports whether the live ❯ input line is now empty or
+// a placeholder — i.e. nothing stale remains for the next paste to stack onto. A
+// missing ❯ line (transient repaint) is treated as not-yet-confirmed.
+func claudePromptDraftCleared(ctx context.Context, sessionName string) (bool, error) {
+	captured, err := captureTmuxPane(ctx, sessionName)
+	if err != nil {
+		return false, err
+	}
+	draft, placeholder, ok := latestClaudePromptDraftRaw(captured)
+	if !ok {
+		return false, nil
+	}
+	return strings.TrimSpace(draft) == "" || placeholder, nil
 }
 
 func claudePromptDraftToClearBeforePaste(captured string) (string, bool) {
