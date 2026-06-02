@@ -84,7 +84,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Phase:  high,
 		}, true
 	case ProviderClaudeCode:
-		high := codingAgentHighReasoningRef(providerID, "claude-opus-4-6")
+		high := codingAgentHighReasoningRef(providerID, "claude-opus-4-8")
 		return &CodingAgentDefaultTierModels{
 			Main:   codingAgentHighReasoningRef(providerID, "claude-code"),
 			High:   high,
