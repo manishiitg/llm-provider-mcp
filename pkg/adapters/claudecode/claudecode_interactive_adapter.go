@@ -1316,12 +1316,21 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste prompt into Claude Code tmux session: %w", err)
 	}
-	promptSubmitted, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste)
-	if err != nil {
-		return err
-	}
-	if promptSubmitted {
-		return nil
+	// Wait for the pasted draft to appear, best-effort. Do NOT early-return on a
+	// "submitted" signal: a bracketed paste never auto-submits in Claude Code, so
+	// any "looks submitted" reading here is a false positive (usually residual
+	// activity from the agent's just-finished turn). Trusting it skipped the
+	// submit keystroke entirely, leaving the prompt (e.g. an AUTO-NOTIFICATION)
+	// sitting unsubmitted in the ❯ box until the response wait hit its inactivity
+	// timeout ("all LLMs failed … waiting for Claude Code prompt"). So always run
+	// the submit loop and verify the draft actually cleared.
+	if _, err := waitForPromptPaste(ctx, sessionName, paneBeforePaste); err != nil {
+		if ctx.Err() != nil || isClaudeTmuxSessionLostError(err) {
+			return err
+		}
+		// Paste detection can time out even when the draft is visible (Claude's
+		// busy status line changes wording); still attempt the submit so the
+		// prompt doesn't sit unsubmitted.
 	}
 
 	var lastErr error
