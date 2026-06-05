@@ -1147,6 +1147,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	ticker := time.NewTicker(defaultTmuxPollInterval)
 	defer ticker.Stop()
 	resumePromptHandled := false
+	trustPromptHandled := false
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
@@ -1185,6 +1186,18 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 					continue
 				}
 			}
+			// Claude Code shows a one-time "Is this a project you trust?" folder
+			// safety prompt on first launch in a fresh workspace (the per-run temp
+			// dir is always new), which blocks the input prompt and eventually times
+			// out. Auto-accept it ("1. Yes, I trust this folder").
+			if !trustPromptHandled && isClaudeTrustFolderPrompt(captured) {
+				trustPromptHandled = true
+				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "1", "C-m"); err != nil {
+					return fmt.Errorf("failed to accept Claude Code trust-folder prompt: %w", err)
+				}
+				lastActivityAt = time.Now()
+				continue
+			}
 			if hasReadyInputPrompt(captured) {
 				return nil
 			}
@@ -1204,6 +1217,15 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			}
 		}
 	}
+}
+
+// isClaudeTrustFolderPrompt detects Claude Code's first-launch "Is this a
+// project you created or one you trust?" folder-trust dialog so the caller can
+// auto-accept it instead of hanging until the inactivity timeout.
+func isClaudeTrustFolderPrompt(captured string) bool {
+	c := strings.ToLower(captured)
+	return strings.Contains(c, "yes, i trust this folder") ||
+		(strings.Contains(c, "trust this folder") && strings.Contains(c, "no, exit"))
 }
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
