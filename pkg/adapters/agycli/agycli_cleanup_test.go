@@ -55,7 +55,7 @@ func TestCleanupAgyCLIInteractiveSessionsDoesNotBlockOnBusySession(t *testing.T)
 	}
 }
 
-func TestAgyGeneratingPaneWithPromptMarkerIsStillActive(t *testing.T) {
+func TestAgyGeneratingStatusWithReadyPromptIsReady(t *testing.T) {
 	pane := `
 > Call the api-bridge slow_contract MCP tool
 
@@ -70,10 +70,10 @@ func TestAgyGeneratingPaneWithPromptMarkerIsStillActive(t *testing.T) {
 esc to cancel
 `
 	if !hasAgyActivity(pane) {
-		t.Fatal("generating pane should be classified active")
+		t.Fatal("generating status should still be classified as activity")
 	}
-	if hasAgyReadyPrompt(pane) {
-		t.Fatal("generating pane with prompt marker should not be classified ready")
+	if !hasAgyReadyPrompt(pane) {
+		t.Fatal("stale generating status with ready input prompt should be classified ready")
 	}
 }
 
