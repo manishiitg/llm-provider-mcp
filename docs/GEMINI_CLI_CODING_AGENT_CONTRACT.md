@@ -1,129 +1,116 @@
-# Gemini CLI Coding Agent Contract
+# Gemini CLI Coding Agent Contract Specification
 
-This document defines the behavior we rely on when `gemini-cli` is used as a
-coding-agent backend. Gemini CLI has two transports:
+## 🌟 Overview
+This document defines the interface and execution contracts we rely on when using `gemini-cli` (`gemini`) as an agentic coding backend. The adapter is fully integrated under the `llmtypes.Model` interface and operates on a dual-transport model.
 
-- `stream-json`: structured `gemini --output-format stream-json --prompt ...`,
-  used for workflow and deterministic agent runs.
-- `persistent-interactive`: tmux-backed Gemini TUI, used for interactive chat
-  when users need to send messages while Gemini is already working.
+---
 
-The shared terminal-agent patterns are documented in
-`docs/CODING_AGENT_TRANSPORT_PATTERNS.md`.
+## 🏗️ Dual-Transport Model
 
-## Launch
+`gemini-cli` supports two distinct transport modes:
 
-By default, Gemini CLI uses the structured non-interactive transport:
-
-- Run `gemini --output-format stream-json`.
-- Pass the user prompt with `--prompt`.
-- Pass system instructions with `GEMINI_SYSTEM_MD`.
-- Pass project settings through a scoped `.gemini/settings.json`.
-- Capture `gemini_session_id` and `gemini_project_dir_id` from stream-json
-  responses for native resume.
-
-Interactive chat may enable tmux with
-`WithGeminiPersistentInteractiveSession(true)` and
-`WithGeminiInteractiveSessionID(<app-session-id>)`.
-
-## Tools
-
-Gemini receives MCP bridge servers through project settings:
-
-- `.gemini/settings.json`
-- `.gemini/policies/*.toml`
-- optional hooks under `.gemini/hooks`
-
-When running as a policy-controlled workflow/chat agent, built-in filesystem and
-shell tools should stay denied by policy and the MCP bridge should be the
-intended tool surface.
-
-## Multi-Turn Chat
-
-Workflow multi-turn state is based on Gemini's native session id and project
-directory id, not a persistent tmux session.
-
-Normal flow:
-
-1. Start with `gemini --output-format stream-json --prompt <latest prompt>`.
-2. Capture `gemini_session_id` and `gemini_project_dir_id`.
-3. Resume with `gemini --output-format stream-json --resume <session_id>
-   --prompt <latest prompt>` from the same project directory.
-4. Send only the latest user message on resume.
-
-Interactive chat flow:
-
-1. Start `gemini --model gemini-3.1-flash-lite` inside tmux from a project
-   directory scoped to the app session id, unless the caller explicitly
-   selects another Gemini model.
-2. Register `app_session_id -> tmux_session_name`.
-3. Paste the user message with `tmux load-buffer`, `tmux paste-buffer -p -r`,
-   and `tmux send-keys C-m`.
-4. While Gemini is still working, route `/steer` messages to the same tmux
-   session and paste them directly into the TUI.
-5. After Gemini returns to idle, keep the tmux session alive for follow-up chat.
-6. Close the tmux session after the idle timeout.
-
-## Done Detection
-
-The interactive adapter considers a turn done only after Gemini returns to an
-idle prompt containing `Type your message`.
-
-The parser ignores Gemini TUI chrome such as:
-
-- logo and auth text
-- update notices
-- keyboard shortcut/footer text
-- workspace/model footer
-- box drawing borders
-- the echoed user prompt
-
-## Tests
-
-Default tests are deterministic and credit-free. They cover pure parser,
-normalization, and stream-delta logic using static pane/event fixtures captured
-from real CLI behavior.
-
-Provider-contract validation must run the real Gemini CLI E2E. The real E2E is
-environment-gated so regular CI does not spend credits accidentally.
-
-Important tests:
-
-- `TestGeminiCLIInteractiveIntegrationFlashLite` (real Gemini CLI)
-- `TestGeminiCLIRealInteractiveTmuxFullContract` (real Gemini CLI full
-  tmux chat contract)
-- `TestGeminiCLIRealInteractiveMCPBridgeContract` (real Gemini CLI with MCP
-  bridge and policy)
-- `TestGeminiCLIRealInteractiveLiveInputAndEscapeContract` (real Gemini CLI
-  live input plus Escape/cancel path)
-- `TestGeminiCLIRealInteractivePastedAtHandleDoesNotBecomePath` (real Gemini
-  CLI pasted prompt with a literal `@handle`; verifies the TUI does not expand
-  it as an `@path` file reference)
-- `TestGeminiCLIRealStreamJSONContract` (real Gemini CLI structured transport
-  plus native resume)
-- `TestGeminiCLIRealStreamJSONMCPBridgeContract` (real Gemini CLI structured
-  MCP bridge and policy)
-- `TestGeminiCLISearchWebSmoke` (real Gemini CLI native Google web search;
-  asserts a streamed web-search tool event)
-
-Run the real persistent interactive contract tests with:
-
-```sh
-RUN_GEMINI_CLI_REAL_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLIRealInteractive|TestGeminiCLIInteractiveIntegrationFlashLite' -v -timeout 6m
+```mermaid
+graph TD
+    Config[LLM Config] --> TransportCheck{Default Setup}
+    TransportCheck -->|tmux / default| TMUX[Stateful TMUX Transport]
+    TransportCheck -->|Structured Fallback| STR[Stateless Print Transport]
+    
+    TMUX -->|Default TUI| PersistentTUI[Persistent Terminal TUI Session]
+    STR -->|stream-json / opt-in| StatelessPipe[gemini --output-format stream-json]
 ```
 
-Run the real structured transport contract tests with:
+### 1. Stateful TMUX Transport (Default Path)
+*   **Behavior:** Spawns a persistent, stateful `tmux` terminal session running the interactive Gemini CLI TUI. The orchestrator interacts with Gemini programmatically by pasting prompts directly into the terminal, observing state updates, and reading completed assistant turns.
+*   **Status:** Default execution path for interactive chat. Fully matches the shape and contract of Claude Code, Codex, Cursor, and Antigravity.
 
-```sh
-RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLIRealStreamJSON' -v -timeout 6m
+### 2. Stateless Print/Stream Transport (Structured Fallback)
+*   **Behavior:** Runs `gemini --output-format stream-json --prompt <latest_prompt>`.
+*   **Status:** Used for non-tmux execution, automated workflows, batch/cron contexts, or headless servers without tmux available.
+
+---
+
+## 🖥️ Stateful TMUX Transport Details (Default)
+
+### Session Registry & Lifecycle
+Long-running terminal sessions are mapped and maintained in an in-memory registry keyed by the calling application's session identifier:
+```text
+application_session_id ──> mlp-gemini-cli-int_xxx
+```
+*   **Model Selection:** Launches `gemini` inside tmux. Unless a specific Gemini model is overridden by the caller, it defaults to the latest configured lightweight model (e.g. `gemini-3.1-flash-lite`).
+*   **Interaction Loop:** Inputs are pasted using `tmux load-buffer`, `tmux paste-buffer -p -r`, and `tmux send-keys C-m`.
+*   **Live Steering:** While Gemini is working, live `/steer` messages are routed to the same tmux session and pasted directly into the TUI.
+*   **Teardown:** Close tmux sessions after idle timeouts or explicit cleanup.
+
+### Token & Cost Tracking
+Unlike generic tmux estimates based on text lengths, Gemini CLI TUI writes accurate execution transcripts natively. The adapter reads these files from:
+```text
+~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl
+```
+This enables the adapter to surface exact input/output/cache tokens and USD costs directly from real execution logs!
+
+### Workspace Settings & Policies
+Workspace rules and custom configurations are isolated under the active directory:
+*   **System Prompts:** Loaded natively from `<workingDir>/GEMINI.md` or user-level `~/.gemini/GEMINI.md` rules.
+*   **MCP Configs:** Scoped settings and custom MCP servers are loaded from `<workingDir>/.gemini/settings.json` or `~/.gemini/settings.json`.
+*   **Tool Controls:** Security policies under `.gemini/policies/*.toml` and optional hooks under `.gemini/hooks` ensure built-in shell/filesystem commands remain blocked, routing all programmatic edits through our policy-controlled MCP bridge.
+
+### Turn Completion & Done Detection
+A turn is considered completed only after Gemini returns to an idle input line showing the prompt marker:
+```text
+Type your message
+```
+The parser filters out TUI decorations, updates, shortcuts, borders, and user prompt echoes to extract only the generated assistant content.
+
+---
+
+## 📑 Stateless Print/Stream Transport Details (Fallback)
+
+### Launch Parameters
+For single-turn or stateless programmatic execution, the CLI is invoked with:
+```bash
+gemini \
+  --output-format stream-json \
+  --prompt "<prompt>"
+```
+*   **System Prompts:** Passed via the `GEMINI_SYSTEM_MD` environment variable.
+*   **Workspace Configs:** Handled via the scoped `.gemini/settings.json`.
+*   **Resume Parameters:** Captures `gemini_session_id` and `gemini_project_dir_id` from stream-json responses, allowing the next turn to resume conversational states via:
+    ```bash
+    gemini \
+      --output-format stream-json \
+      --resume <session_id> \
+      --prompt "<next_prompt>"
+    ```
+
+---
+
+## 🧪 Testing
+
+The Gemini CLI has comprehensive, real E2E test coverage across both transport layers.
+
+### 1. Running Real TMUX Transport Tests
+Requires a real `gemini` CLI installed and a valid `GEMINI_API_KEY`:
+```bash
+export RUN_GEMINI_CLI_REAL_E2E=1
+export GEMINI_API_KEY=<key>
+go test -v ./pkg/adapters/geminicli -run 'TestGeminiCLIRealInteractive|TestGeminiCLIInteractiveIntegrationFlashLite' -timeout 6m
 ```
 
-Run the real native web-search contract test with:
-
-```sh
-RUN_GEMINI_CLI_SEARCH_WEB_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLISearchWebSmoke' -v -timeout 4m
+### 2. Running Real Structured Transport Tests
+Requires a real `gemini` CLI installed and a valid `GEMINI_API_KEY`:
+```bash
+export RUN_GEMINI_CLI_STREAM_JSON_E2E=1
+export GEMINI_API_KEY=<key>
+go test -v ./pkg/adapters/geminicli -run 'TestGeminiCLIRealStreamJSON' -timeout 6m
 ```
 
-These tests must be run before releasing Gemini CLI transport changes. Static
-parser fixtures remain useful for UI quality regressions, but transport
-behavior must be proven against the real CLI.
+### 3. Running Native Web-Search Tests
+Requires a real `gemini` CLI installed and a valid `GEMINI_API_KEY`:
+```bash
+export RUN_GEMINI_CLI_SEARCH_WEB_E2E=1
+export GEMINI_API_KEY=<key>
+go test -v ./pkg/adapters/geminicli -run 'TestGeminiCLISearchWebSmoke' -timeout 4m
+```
+
+> [!IMPORTANT]
+> Always run E2E validation tests before releasing Gemini CLI transport changes. Static parser fixtures remain useful for UI quality regressions, but transport behavior must be proven against the real CLI.

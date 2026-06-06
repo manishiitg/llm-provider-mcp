@@ -3716,7 +3716,12 @@ func claudeStatusExtras(rawMap map[string]interface{}) []string {
 			if _, present := win["used_percentage"]; !present {
 				continue
 			}
-			extras = append(extras, llmtypes.FormatUsageExtra(w.label, claudeFloatFromAny(win["used_percentage"])))
+			extras = append(extras, llmtypes.FormatUsageExtraWithReset(
+				w.label,
+				claudeFloatFromAny(win["used_percentage"]),
+				int64(claudeFloatFromAny(win["resets_at"])),
+				time.Now(),
+			))
 		}
 	}
 	if cw, ok := rawMap["context_window"].(map[string]interface{}); ok {

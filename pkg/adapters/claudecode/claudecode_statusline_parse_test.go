@@ -87,8 +87,8 @@ func TestParseClaudeStatusLineJSON_RateLimitExtras(t *testing.T) {
 		"output_tokens": 76,
 		"cost": {"total_cost_usd": 151.13},
 		"rate_limits": {
-			"five_hour": {"used_percentage": 24.0, "resets_at": 1780566347},
-			"seven_day": {"used_percentage": 41.0, "resets_at": 1781153147}
+			"five_hour": {"used_percentage": 24.0, "resets_at": 0},
+			"seven_day": {"used_percentage": 41.0, "resets_at": 0}
 		}
 	}`)
 	status, err := parseClaudeStatusLineJSON(raw, "")

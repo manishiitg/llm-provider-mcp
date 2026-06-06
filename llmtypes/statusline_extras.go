@@ -3,6 +3,8 @@ package llmtypes
 import (
 	"fmt"
 	"math"
+	"strings"
+	"time"
 )
 
 // StatusExtrasMetaKey is the StatusLine.Metadata key under which an adapter
@@ -21,6 +23,30 @@ const StatusExtrasMetaKey = "status_extras"
 // StatusExtrasMetaKey. usedPercent is 0-100.
 func FormatUsageExtra(label string, usedPercent float64) string {
 	return fmt.Sprintf("%s %d%%", label, int(math.Round(usedPercent)))
+}
+
+// FormatUsageExtraWithReset renders "<label> <pct>% →<reset>" where reset is the
+// absolute wall-clock time (server-local) the window resets, derived from a unix
+// epoch: a clock time ("3:30pm") when the reset is under 24h away, otherwise a
+// weekday ("Sat"). A zero or already-passed resetsAt yields no →suffix (just the
+// plain "<label> <pct>%"), so stale/absent reset data degrades cleanly. now is
+// passed in for deterministic testing; callers use time.Now().
+func FormatUsageExtraWithReset(label string, usedPercent float64, resetsAt int64, now time.Time) string {
+	base := FormatUsageExtra(label, usedPercent)
+	if resetsAt <= 0 {
+		return base
+	}
+	reset := time.Unix(resetsAt, 0).In(now.Location())
+	if !reset.After(now) {
+		return base
+	}
+	var when string
+	if reset.Sub(now) < 24*time.Hour {
+		when = strings.ToLower(reset.Format("3:04pm")) // e.g. "3:30pm"
+	} else {
+		when = reset.Format("Mon") // e.g. "Sat"
+	}
+	return base + " →" + when
 }
 
 // SetStatusExtras stores display-ready extra segments on a StatusLine's

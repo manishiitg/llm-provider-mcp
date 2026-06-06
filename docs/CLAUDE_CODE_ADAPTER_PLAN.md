@@ -1,20 +1,63 @@
-# Claude Code CLI Adapter
+# Claude Code CLI Adapter Specification
 
-## Overview
-LLM provider adapter for [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`). Uses the local `claude` CLI as an LLM provider, leveraging its agentic capabilities and efficient local context handling.
+## 🌟 Overview
+The `claudecode` adapter in `multi-llm-provider-go` serves as a bridge to Anthropic's [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`). It exposes Claude's advanced local agentic capabilities, terminal execution powers, and efficient local context handling under the unified `llmtypes.Model` interface.
 
-## Architecture
+---
 
-### Multi-Turn Conversation (Stream-JSON)
-The `llmtypes.Model` interface defines `GenerateContent` as a stateless operation. We map this to the CLI using **stateless conversation playback piped via stdin**:
+## 🏗️ Dual-Transport Architecture
+To support both stateful interactive chats and lightweight stateless pipeline execution, the adapter supports a **Dual-Transport Model**:
 
-1.  **Extract System Prompt:** Identify system messages and pass via `--system-prompt`.
-2.  **Construct JSON History:** Convert conversation history (User/Assistant turns) into stream-json objects.
-3.  **Execute via Stdin:** Pipe to `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages`.
-4.  **Parse Streamed Output:** Real-time JSON stream parsing with tool event extraction.
-
-### CLI Flags
+```mermaid
+graph TD
+    Config[LLM Config] --> TransportCheck{CLAUDE_CODE_TRANSPORT?}
+    TransportCheck -->|tmux / default| TMUX[Stateful TMUX Transport]
+    TransportCheck -->|print / legacy| PRINT[Stateless Print Transport]
+    
+    TMUX -->|Primary Production Path| StatefulTUI[Persistent Terminal TUI Session]
+    PRINT -->|Legacy / Opt-in| StatelessPipe[claude -p stream-json]
 ```
+
+### 1. Stateful TMUX Transport (Primary & Default)
+*   **Transport Mode:** `CLAUDE_CODE_TRANSPORT=tmux` (or `experimental`).
+*   **Behavior:** Spawns a persistent, stateful `tmux` terminal session running the interactive Claude Code TUI. The orchestrator interacts with Claude Code programmatically by pasting prompts directly into the terminal, observing state updates, and reading completed assistant turns.
+*   **Status:** Production-ready and certified across all **26 standard tmux capabilities** (such as session-loss recovery, live input routing, workspace MCP config mapping, and slow-tool false-idle protection).
+
+### 2. Stateless Print/Stream Transport (Legacy)
+*   **Transport Mode:** `CLAUDE_CODE_TRANSPORT=print`.
+*   **Behavior:** Treats the Claude CLI as a stateless chat completion endpoint. For every turn, the adapter replays the full conversation history from stdin using the CLI's specialized JSON communication mode.
+*   **Status:** Legacy/Deprecated fallback. Requires `CLAUDE_CODE_ALLOW_LEGACY_PRINT=1` to be explicitly enabled in the environment.
+
+---
+
+## 🖥️ Stateful TMUX Transport Details
+
+### Session Registry & Lifecycle
+Long-running terminal sessions are mapped and maintained in an memory registry keyed by the calling application's session identifier:
+```text
+application_session_id ──> CLAUDE_CODE_TMUX_SESSION_PREFIX_int_xxx
+```
+*   **Reuse:** Completed turns return the terminal to an idle ready-prompt, keeping the tmux session alive for subsequent turns.
+*   **Cleanup:** Process teardown cleans up registered active sessions gracefully using `/exit`, falling back to hard tmux SIGKILL only when unresponsive. Stranded sessions from previous backend runs are reaped at startup via `SweepOrphanedInteractiveTmuxSessions`.
+
+### Pasting & Submission Safety
+Claude Code can undergo expensive **compaction/summarization** routines when conversations grow long. During this compaction window, it locks input and displays a `Compacting…` or `Summarizing…` status line. 
+*   **Compaction Gate:** The adapter monitors terminal lines and holds back subsequent prompt pasting until the input line becomes active and ready, preventing prompts from being pasted into inactive windows.
+*   **Draft Clearing:** Before pasting a new user message, the adapter actively checks for any unsubmitted draft lines and clears them (simulating repetitive `C-u` clear keystrokes) to prevent text fusion.
+
+### Workspace Conventions
+The interactive adapter maps workspace instructions and tool permissions using project-level directory hooks under the working directory:
+*   **System Prompts:** Written under `<workingDir>/.agents/rules/mlp-system-*.md` for loaded rules.
+*   **MCP Configs:** Settings and MCP bridge configurations are written into `<workingDir>/.agents/mcp_config.json`.
+*   **Workspace Hooks:** Custom restrictions (e.g. blocking native shell commands while keeping MCP tools active) are written to `<workingDir>/.agents/hooks.json`.
+
+---
+
+## 📑 Stateless Print/Stream Transport Details (Legacy)
+
+### Stateless Playback Piping
+The print transport pipes the accumulated chat history through `stdin` using the following CLI flags:
+```bash
 claude -p \
   --output-format stream-json \
   --input-format stream-json \
@@ -25,100 +68,42 @@ claude -p \
   --dangerously-skip-permissions
 ```
 
-### Tool Management
-Claude Code has a built-in toolset (Bash, Read, Write, Edit, Glob, Grep, WebSearch, etc.). The adapter supports:
-*   `WithMCPConfig(json)` — Ephemeral MCP server configuration for a session.
-*   `WithDangerouslySkipPermissions()` — Bypass permission checks for autonomous execution.
-*   `WithClaudeCodeTools(tools)` — Whitelist specific tools via `--tools` flag.
+### JSON Stream Event Flow
+The adapter parses the CLI's stdout line-by-line in real time, converting native events into `llmtypes.StreamChunk` events:
 
-## Stream Event Parsing
-
-The adapter parses the CLI's real-time JSON stream to extract tool call events for observability.
-
-### Event Flow
-```
-CLI Output                              → Adapter Action
-─────────────────────────────────────────────────────────
-"type": "system"                        → Skip (metadata)
-"type": "stream_event"
-  event.type: "content_block_start"
-    content_block.type: "tool_use"      → Emit StreamChunkTypeToolCallStart
-                                          Buffer pendingToolCall with startTime
-  event.type: "content_block_delta"
-    delta.type: "text_delta"            → Emit StreamChunkTypeContent
-    delta.type: "input_json_delta"      → Accumulate tool args
-  event.type: "content_block_stop"      → Save args to pending buffer (wait for result)
-"type": "user"
-  content[].type: "tool_result"         → Match by tool_use_id, emit StreamChunkTypeToolCallEnd
-                                          with args + result + duration
-"type": "assistant"                     → Skip if stream_events present (dedup)
-"type": "result"                        → Flush pending tools, parse final response
-```
-
-### Pending Tool Buffering
-Tool calls are buffered between `content_block_stop` and the `tool_result` message to capture:
-*   **ToolArgs** — Complete JSON arguments accumulated from `input_json_delta` chunks
-*   **ToolResult** — Execution result from the CLI's internal tool loop
-*   **ToolDuration** — Wall-clock time from `content_block_start` to `tool_result`
-
-If the CLI exits before returning a result, pending tools are flushed at `"type": "result"` without result content.
-
-### Playback Deduplication
-*   Counts historical AI messages in conversation to skip them during playback.
-*   Skips consolidated `assistant` messages when `stream_event`s provide real-time deltas.
-
-## StreamChunk Types
-
-```go
-const (
-    StreamChunkTypeContent       StreamChunkType = "content"
-    StreamChunkTypeToolCall      StreamChunkType = "tool_call"
-    StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
-    StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
-)
-
-type StreamChunk struct {
-    Type         StreamChunkType
-    Content      string          // Text content
-    ToolCall     *ToolCall       // Complete tool call
-    ToolName     string          // Tool name (start/end)
-    ToolCallID   string          // Tool call ID (start/end)
-    ToolArgs     string          // JSON arguments (end)
-    ToolResult   string          // Execution result (end)
-    ToolDuration time.Duration   // Duration from start to result (end)
-}
-```
-
-## Data Mapping
-
-| CLI JSON Field | Go Struct Field | Description |
+| Event Type | Event Content | Adapter Action |
 | :--- | :--- | :--- |
-| `result` | `Choices[0].Content` | Generated text content |
-| `usage.input_tokens` | `Usage.InputTokens` | Prompt tokens |
-| `usage.output_tokens` | `Usage.OutputTokens` | Response tokens |
-| `usage.cache_read_input_tokens` | `Usage.CacheTokens` | Cache read tokens |
-| `total_cost_usd` | `GenerationInfo.Additional["cost_usd"]` | Estimated cost |
-| `permission_denials` | `GenerationInfo.Additional["permission_denials"]` | Denied tool calls |
+| `"type": "system"` | Metadata | Ignored. |
+| `"type": "stream_event"` | `content_block_start` with `tool_use` | Emits `StreamChunkTypeToolCallStart`. |
+| `"type": "stream_event"` | `content_block_delta` with `input_json_delta` | Accumulates JSON arguments. |
+| `"type": "stream_event"` | `content_block_stop` | Saves completed arguments to buffer. |
+| `"type": "user"` | `tool_result` | Matches by ID; emits `StreamChunkTypeToolCallEnd`. |
+| `"type": "result"` | Final Text response | Flushes remaining tools and returns text. |
 
-## Known Limitations
+---
 
-### HTTP/SSE MCP Servers
-The CLI cannot dynamically bootstrap remote HTTP/SSE MCP servers via `--mcp-config` in headless mode (`-p`). Use `stdio` based local servers only.
+## 🧪 Testing
 
-### Nested Sessions
-CLI cannot be launched inside another Claude Code session. Unset the `CLAUDECODE` environment variable for testing.
+Both transports have distinct integration and contract test coverage suites.
 
-### Tool Result Availability
-Tool results are captured from the CLI's internal `tool_result` messages. If interrupted before returning a result, the `ToolCallEnd` chunk will have empty `ToolResult`.
-
-## Testing
-
+### Running Interactive / TMUX Tests
 ```bash
-# Integration test (requires claude CLI installed)
+# Verify interactive/tmux suite (requires tmux 3.x+ and claude CLI installed)
+export RUN_CLAUDE_CODE_REAL_E2E=1
+export RUN_CLAUDE_CODE_INTERACTIVE_E2E=1
+go test -v ./pkg/adapters/claudecode -run TestClaudeCodeInteractive -timeout 120s
+```
+
+### Running Stateless / Print Tests
+```bash
+# Verify legacy print suite
+export RUN_CLAUDE_CODE_REAL_E2E=1
 go test -v ./pkg/adapters/claudecode -run TestClaudeCodeStreaming -timeout 60s
 ```
 
-## Files
-*   `pkg/adapters/claudecode/claudecode_adapter.go` — Main adapter implementation
-*   `pkg/adapters/claudecode/claudecode_stream_integration_test.go` — Integration test
-*   `llmtypes/types.go` — StreamChunk types
+---
+
+## 📁 File Structure Map
+*   [claudecode_interactive_adapter.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_interactive_adapter.go) — Stateful TMUX-backed TUI implementation (default path).
+*   [claudecode_adapter.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_adapter.go) — Stateless Stream-JSON implementation (legacy path).
+*   [claudecode_structured_contract_test.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_structured_contract_test.go) — Contract test suites validating capabilities and transitions.
