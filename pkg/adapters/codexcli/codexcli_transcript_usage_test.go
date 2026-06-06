@@ -184,7 +184,7 @@ func TestReadCodexTranscriptUsageSurfacesRateLimitExtras(t *testing.T) {
 	ts := turnStart.Add(2 * time.Second).Format(time.RFC3339Nano)
 	lines := []string{
 		`{"type":"session_meta","timestamp":"` + ts + `","payload":{"id":"aaaabbbb-cccc-4ddd-8eee-ffff00001111","cwd":"/x"}}`,
-		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"cached_input_tokens":120,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":580}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":1780566347},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1781153147}}}}`,
+		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"cached_input_tokens":120,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":580}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":0},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":0}}}}`,
 	}
 	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("write rollout: %v", err)
@@ -226,7 +226,7 @@ func TestBuildCodexStatusLineSurfacesRateLimitExtras(t *testing.T) {
 	lines := []string{
 		`{"type":"session_meta","timestamp":"` + ts + `","payload":{"id":"bbbbcccc-dddd-4eee-8fff-000011112222","cwd":"` + tmpHome + `"}}`,
 		`{"type":"turn_context","timestamp":"` + ts + `","payload":{"model":"gpt-5.4"}}`,
-		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":15000,"cached_input_tokens":2000,"output_tokens":273,"reasoning_output_tokens":40,"total_tokens":15273}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":1780566347},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1781153147}}}}`,
+		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":15000,"cached_input_tokens":2000,"output_tokens":273,"reasoning_output_tokens":40,"total_tokens":15273}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":0},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":0}}}}`,
 	}
 	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("write rollout: %v", err)

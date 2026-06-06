@@ -203,7 +203,7 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	// Carry display-ready statusline extras (rate-limit usage, context fill,
 	// effort, plan) so buildCodexStatusLine can expose them generically (see
 	// llmtypes.StatusExtrasMetaKey).
-	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort); len(extras) > 0 {
+	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort, time.Now()); len(extras) > 0 {
 		if gi.Additional == nil {
 			gi.Additional = map[string]interface{}{}
 		}
@@ -216,6 +216,7 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 type codexRateLimitWindow struct {
 	UsedPercent   float64 `json:"used_percent"`
 	WindowMinutes int     `json:"window_minutes"`
+	ResetsAt      int64   `json:"resets_at"`
 }
 
 // codexRateLimits mirrors the rate_limits block Codex attaches to token_count
@@ -231,14 +232,14 @@ type codexRateLimits struct {
 // context-window fill ("ctx N%"), reasoning effort ("xhigh"), and plan ("pro").
 // Each input is optional — absent ones are skipped so the footer shows only what
 // codex actually reported. Window labels derive from window_minutes (300→"5h").
-func codexStatusExtras(rl *codexRateLimits, promptTokens, contextWindow int, effort string) []string {
+func codexStatusExtras(rl *codexRateLimits, promptTokens, contextWindow int, effort string, now time.Time) []string {
 	var extras []string
 	if rl != nil {
 		if w := rl.Primary; w != nil {
-			extras = append(extras, llmtypes.FormatUsageExtra(codexWindowLabel(w.WindowMinutes, "5h"), w.UsedPercent))
+			extras = append(extras, llmtypes.FormatUsageExtraWithReset(codexWindowLabel(w.WindowMinutes, "5h"), w.UsedPercent, w.ResetsAt, now))
 		}
 		if w := rl.Secondary; w != nil {
-			extras = append(extras, llmtypes.FormatUsageExtra(codexWindowLabel(w.WindowMinutes, "7d"), w.UsedPercent))
+			extras = append(extras, llmtypes.FormatUsageExtraWithReset(codexWindowLabel(w.WindowMinutes, "7d"), w.UsedPercent, w.ResetsAt, now))
 		}
 	}
 	if contextWindow > 0 && promptTokens > 0 {
