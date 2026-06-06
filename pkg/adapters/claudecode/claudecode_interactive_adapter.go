@@ -30,23 +30,23 @@ const (
 	// Default to no provider-level turn timeout. Workflow/background callers own
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
-	defaultTmuxTimeout             = 0
-	defaultPersistentIdleTimeout   = 20 * time.Minute
-	defaultBoundedRetention        = 30 * time.Minute
-	defaultTmuxPollInterval        = 750 * time.Millisecond
-	defaultTmuxCaptureLines        = "3000"
-	minTmuxMajorVersion            = 3
-	claudeIdleStableWindow         = 1200 * time.Millisecond
-	claudeTailFallbackMaxLines     = 120
+	defaultTmuxTimeout           = 0
+	defaultPersistentIdleTimeout = 20 * time.Minute
+	defaultBoundedRetention      = 30 * time.Minute
+	defaultTmuxPollInterval      = 750 * time.Millisecond
+	defaultTmuxCaptureLines      = "3000"
+	minTmuxMajorVersion          = 3
+	claudeIdleStableWindow       = 1200 * time.Millisecond
+	claudeTailFallbackMaxLines   = 120
 	// defaultClaudeInteractiveStalePaneBackstop is a detection-independent
 	// backstop for the assistant-response wait loop: if the pane has produced
 	// activity and then frozen (byte-identical) for this long, the turn is over
 	// but ready-prompt detection failed to recognize it. Generous so it never
 	// trips a real turn. Set the env var to 0 to disable.
 	defaultClaudeInteractiveStalePaneBackstop = 120 * time.Second
-	promptPasteVisibleStableWindow = 900 * time.Millisecond
-	promptPasteInvisibleGrace      = 1500 * time.Millisecond
-	promptPasteLiveInputWait       = 2 * time.Second
+	promptPasteVisibleStableWindow            = 900 * time.Millisecond
+	promptPasteInvisibleGrace                 = 1500 * time.Millisecond
+	promptPasteLiveInputWait                  = 250 * time.Millisecond
 	// Compaction handling. While Claude Code is compacting/summarizing the
 	// conversation it replaces the input box with a "Compacting…/Summarizing…"
 	// status and refuses input — pasting+submitting into that window fuses our
@@ -95,6 +95,13 @@ var claudeInteractiveSessionRegistry = struct {
 	sessions map[string]struct{}
 }{
 	sessions: map[string]struct{}{},
+}
+
+var claudeLiveInputSubmitBackoff = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
 }
 
 var claudeInteractiveOwnerRegistry = struct {
@@ -1401,12 +1408,12 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 		// so the user's message does not sit unsubmitted in the input line.
 	}
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for _, submitWait := range claudeLiveInputSubmitBackoff {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
-		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message); err == nil {
+		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message, submitWait); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -1956,8 +1963,11 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prom
 	}
 }
 
-func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message string) error {
-	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(150 * time.Millisecond)
