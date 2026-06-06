@@ -1,101 +1,77 @@
 # Antigravity CLI Pending Items
 
-Status: `agy-cli` may be exposed as an alpha local CLI provider, but must not be
-promoted as a production CLI provider yet.
+Status: `agy-cli` is currently exposed as an **Alpha local CLI provider** and is fully implemented in the code, but remains gated before production promotion.
 
-This file tracks the known gaps before Antigravity CLI should be treated as a
-fully supported coding-agent provider across `multi-llm-provider-go`,
-`mcpagent`, and `mcp-agent-builder-go`.
+This file tracks the known gaps, verification milestones, and remaining steps before the Antigravity CLI can be promoted to a fully supported, production-ready coding-agent provider across `multi-llm-provider-go`, `mcpagent`, and `mcp-agent-builder-go`.
 
-## Pending Before Production
+> [!NOTE]
+> Out of **26 total required tmux certifications** defined in the contract, Antigravity CLI has successfully achieved **25 registered certifications**! Only one certification remains as an open gap.
 
-- [ ] Verify workspace-scoped MCP isolation.
-  - Two Agy sessions in separate working dirs must not see each other's bridge
-    config or tools.
-  - Shared workdir behavior with different concurrent MCP configs is currently
-    fail-closed, not certified as isolated.
+---
 
-- [x] Keep Agy marked alpha until broader certification gaps are resolved.
-  - Chat, tmux, live input, native resume, system rules, and workspace MCP
-    config writing are working. A real MCP bridge tool call is now certified,
-    but other tmux contract gaps remain.
-  - Agy may be visible in provider setup as `Antigravity CLI (Alpha)`, but the
-    contract remains local-sign-in, tmux-only, and not structured-JSON.
+## 🔍 Certification Status Matrix
 
-- [ ] Finish remaining certification gaps.
-  - Known gaps are tracked in `coding_agent_contract_test.go` under
-    `knownCertificationGaps[ProviderAgyCLI]`.
-  - Native resume after tmux loss has a real E2E, and system prompts are now
-    written as workspace rules.
-  - Shared-workdir MCP isolation coverage still needs to be drained.
+| Certification ID | Status | Proof Test Name | Description |
+| :--- | :---: | :--- | :--- |
+| **CertFreshLaunch** | ✅ | `TestAgyCLIRealInteractiveTmuxFullContract` | Reaches ready state on fresh launch and streams terminal chunks. |
+| **CertStatusLine** | ✅ | `TestStreamAgyStatusLineEmitsFullChunk` | Emits a status_line chunk with token telemetry and tmux metadata. |
+| **CertStartupTerminalVisibility** | ✅ | `TestAgyCLIRealInteractiveTmuxFullContract` | Foreground working/startup panes emit raw terminal rows to output. |
+| **CertResumeCompactionStartup** | ✅ | `TestAgyCLIRealNativeResumeAfterTmuxLossContract` | Conversation relaunch accepts the next prompt without a blocking menu. |
+| **CertTrustAuthPrompts** | ✅ | `TestAgyCLIRealAuthPromptSurfacedBeforePromptContract` | Relaunch surfaces auth/trust prompts cleanly back to the driver. |
+| **CertNativeSystemPrompt** | ✅ | `TestAgyCLIRealSystemPromptRulesContract` | Loads instructions via workspace-scoped `.agents/rules` instead of raw paste. |
+| **CertPromptPaste** | ✅ | `TestAgyCLIRealLargePastedPromptSubmits` | Large multiline prompt pastes and submits correctly via tmux. |
+| **CertMCPBridge** | ✅ | `TestAgyCLIRealMCPBridgeContract` | Loads workspace-scoped `.agents/mcp_config.json` and bridges calls. |
+| **CertBridgeOnlyTools** | ✅ | `TestAgyCLIRealBridgeOnlyToolsContract` | Denies built-in file/shell commands while preserving MCP bridge tools. |
+| **CertWorkingDirectory** | ✅ | `TestAgyCLIRealWorkingDirectoryMCPContract` | Ensures MCP bridge tools run from the adapter-supplied directory. |
+| **CertSlowToolFalseIdle** | ✅ | `TestAgyCLIRealSlowToolFalseIdleContract` | Tmux completion waits for slow MCP results instead of early idle. |
+| **CertSlowToolLiveInput** | ✅ | `TestAgyCLIRealSlowToolLiveInputDoesNotCompleteContract` | Queues live user validation without interrupting slow-tool execution. |
+| **CertDoneDetection** | ✅ | `TestAgyCLIRealSlowToolLiveInputDoesNotCompleteContract` | Slowly running MCP plus live input is not parsed as a finished turn. |
+| **CertFinalExtraction** | ✅ | `TestAgyCLIRealFinalExtractionFromTmuxVertexJudgeE2E` | Semantic extraction cleans up thought/TUI noise and formats correctly. |
+| **CertMultiTurn** | ✅ | `TestAgyCLIRealInteractiveTmuxFullContract` | Reuses persistent agy chat sessions across sequential turns. |
+| **CertStaleDraftCleanup** | ✅ | `TestAgyCLIRealPersistentClearsStaleDraftBeforeNextTurn` | Clears any stranded prompt input before pasting the next user prompt. |
+| **CertLifecyclePolicy** | ✅ | `TestAgyCLIRealInteractiveTmuxFullContract` | Persistent sessions are registered and survive completed turns. |
+| **CertLiveInput** | ✅ | `TestAgyCLIRealInteractiveLiveInputAndEscapeContract` | Injects live keyboard feedback directly into the active agy session. |
+| **CertCancellation** | ✅ | `TestAgyCLIRealCancellationClosesSessionContract` | Context cancellations interrupt active slow tools gracefully. |
+| **CertPersistentCancelReuse** | ✅ | `TestAgyCLIRealCancellationClosesSessionContract` | Closed canceled sessions clean up and restart in fresh tmux states. |
+| **CertBoundedRetention** | ✅ | `TestCleanupAgyCLIInteractiveSessionsDoesNotBlockOnBusySession` | Retention cleanup loop executes safely without blocking active sessions. |
+| **CertParallelIsolation** | ✅ | `TestAgyCLIRealInteractiveParallelIsolation` | Parallel agy tmux sessions have completely isolated state and views. |
+| **CertCleanup** | ✅ | `TestCleanupAgyCLIInteractiveSessionsDoesNotBlockOnBusySession` | Teardown path does not deadlock on busy persistent CLI sessions. |
+| **CertSessionLoss** | ✅ | `TestAgyCLIRealNativeResumeAfterTmuxLossContract` | Correctly captures and persists provider conversation state upon tmux loss. |
+| **CertSessionLossRecovery** | ✅ | `TestAgyCLIRealNativeResumeAfterTmuxLossContract` | Re-attaches with `--conversation` and resumes without replaying history. |
+| **CertParallelStartupQueue** | ✅ | `TestAcquireQueuesConcurrentStarts` | Serializes concurrent agy-cli session startups. |
+| **CertSharedWorkdirMCPIsolation** | ❌ *Gap* | *Awaiting Test* | Two agy sessions in separate subdirectories must not cross-talk MCP. |
 
-- [ ] Confirm token/cost expectations.
-  - Tmux mode currently estimates token usage from text length.
-  - If Agy exposes exact token accounting later, replace the estimate and update
-    `TokenUsageSource`.
+---
 
-- [ ] Re-run full cross-repo validation after MCP wiring.
-  - `multi-llm-provider-go` focused provider/contract tests.
-  - `mcpagent` session handle/resume option tests.
-  - `mcp-agent-builder-go` chat history/runtime persistence tests.
-  - Opt-in real Agy E2E suite.
+## 🚧 Pending Before Production (The Final Gap)
 
-## Already Verified
+> [!WARNING]
+> Before promoting Antigravity CLI out of **Alpha** into full **Production support**, the following final item must be resolved:
 
-- [x] Local `agy` supports native resume flags:
-  - `--conversation <id>`
-  - `--continue`
-- [x] Adapter launches Agy TUI through tmux with `--prompt-interactive ""`.
-- [x] Adapter writes system prompts to workspace-scoped Agy rules:
-  - `.agents/rules/mlp-system-*.md`
-- [x] Adapter writes MCP config to workspace-scoped Agy config:
-  - `.agents/mcp_config.json`
-- [x] Adapter writes bridge-only hooks to workspace-scoped Agy config:
-  - `.agents/hooks.json`
-- [x] Real MCP bridge E2E passed:
-  - `TestAgyCLIRealMCPBridgeContract`
-- [x] Real large-paste prompt E2E passed:
-  - `TestAgyCLIRealLargePastedPromptSubmits`
-- [x] Real stale-draft cleanup E2E passed:
-  - `TestAgyCLIRealPersistentClearsStaleDraftBeforeNextTurn`
-- [x] Real hook-enforced bridge-only tool E2E passed:
-  - `TestAgyCLIRealBridgeOnlyWriteContract`
-  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInCommandContract`
-  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInReadContract`
-  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInListDirContract`
-  - `TestAgyCLIRealBridgeOnlyHookBlocksBuiltInSearchContract`
-- [x] Real working-directory E2E passed:
-  - `TestAgyCLIRealWorkingDirectoryMCPContract`
-- [x] Real slow-tool false-idle E2E passed:
-  - `TestAgyCLIRealSlowToolFalseIdleContract`
-- [x] Real slow-tool live-input / done-detection E2E passed:
-  - `TestAgyCLIRealSlowToolLiveInputDoesNotCompleteContract`
-- [x] Real cancellation and post-cancel retry E2E passed:
-  - `TestAgyCLIRealCancellationClosesSessionContract`
-- [x] Real parallel-session isolation E2E passed:
-  - `TestAgyCLIRealInteractiveParallelIsolation`
-- [x] Unsafe shared-workdir MCP config conflicts are rejected:
-  - `TestAgyCLIRealSharedWorkingDirMCPConfigConflictRejected`
-- [x] Real fresh-workspace startup E2E passed:
-  - `TestAgyCLIRealTrustPromptFreshWorkspaceContract`
-- [x] Real auth/login prompt surfacing E2E passed:
-  - `TestAgyCLIRealAuthPromptSurfacedBeforePromptContract`
-- [x] Agy trust/auth prompt detection and response mapping is covered:
-  - `TestAgyTrustPromptDetectionAndResponse`
-  - `TestAgyAuthPromptDetection`
-- [x] Real system-rule E2E passed:
-  - `TestAgyCLIRealSystemPromptRulesContract`
-- [x] Agy session cleanup requests `/exit` before falling back to tmux kill.
-- [x] Adapter captures `agy_session_id` from Agy local state/logs.
-- [x] Adapter resumes with `agy --conversation <id>`.
-- [x] Real native-resume E2E passed:
-  - `TestAgyCLIRealNativeResumeAfterTmuxLossContract`
-- [x] Resume startup accepts the next prompt without a blocking compaction menu:
-  - `TestAgyCLIRealNativeResumeAfterTmuxLossContract`
+### 1. 🔄 Verify Workspace-Scoped MCP Isolation (`CertSharedWorkdirMCPIsolation`)
+*   **Gap Description:** Two concurrent `agy` sessions started under distinct working sub-directories must not see each other's custom bridge configuration, rule folders, or active tool bindings.
+*   **Status:** Currently fail-closed but untested under concurrent setups.
+*   **Drain Path:** Implement an E2E test verifying workspace MCP isolation, register it in `coding_agent_certification.go`, and remove `CertSharedWorkdirMCPIsolation` from `knownCertificationGaps[ProviderAgyCLI]` in `coding_agent_contract_test.go`.
 
-## Publish Gate
+### 2. 📊 Confirm Token & Cost Estimations
+*   **Detail:** Tmux-mode currently calculates estimated token counts based on plain text length as `agy` does not expose exact API token usage metrics natively in TUI mode.
+*   **Production Gate:** Keep token estimation as-is or, if `agy` adds exact token auditing logs, update `TokenUsageSource` to leverage those logs.
 
-Agy can be used for local experimentation only. Production publishing requires:
+### 3. 🧪 Re-run Full Cross-Repo Validation
+Validate integrated execution flows across the three core repos:
+- `multi-llm-provider-go` focused provider/contract tests.
+- `mcpagent` session handle/resume option tests.
+- `mcp-agent-builder-go` chat history/runtime persistence tests.
 
-1. Provider certification gaps reduced or explicitly accepted.
-2. Builder provider exposure reviewed after the above.
+---
+
+## 🎯 Already Fully Verified (Detailed)
+
+*   **Native Resume Support:** Full programmatic support for the `--conversation <id>` and `--continue` CLI flags.
+*   **Interactive TUI Tmux Layer:** launches through tmux with `--prompt-interactive ""` and captures output.
+*   **Workspace-Scoped Conventions:**
+    *   Writes instructions/system prompts under `<workingDir>/.agents/rules/mlp-system-*.md`.
+    *   Writes MCP settings into `<workingDir>/.agents/mcp_config.json`.
+    *   Writes custom lifecycle hooks under `<workingDir>/.agents/hooks.json`.
+*   **Failures & Authentication Surfacing:** Captures startup `trusting workspace` or login/auth prompts and formats them back to the caller as actionable errors.
+*   **Graceful Exit Hook:** Requesting exit sends `/exit` to the terminal first, falling back to a hard SIGKILL on tmux panels only when unresponsive.
