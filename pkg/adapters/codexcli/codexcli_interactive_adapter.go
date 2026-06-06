@@ -2920,7 +2920,7 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 	if strings.TrimSpace(tmuxSession) != "" {
 		meta["tmux_session"] = tmuxSession
 	}
-	return &llmtypes.StatusLine{
+	status := &llmtypes.StatusLine{
 		Provider:             "codex-cli",
 		Model:                model,
 		InputTokens:          input,
@@ -2930,6 +2930,14 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 		TotalOutputTokens:    output,
 		Metadata:             meta,
 	}
+	// Expose plan rate-limit usage (parsed from the rollout's token_count
+	// rate_limits) as generic statusline extras, same contract as other CLIs.
+	if gi.Additional != nil {
+		if extras, ok := gi.Additional[llmtypes.StatusExtrasMetaKey].([]string); ok {
+			status.SetStatusExtras(extras)
+		}
+	}
+	return status
 }
 
 // GetStatusLine returns a snapshot of the current statusline for the session,

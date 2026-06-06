@@ -76,3 +76,73 @@ func TestParseClaudeStatusLineJSON_ModelAsString(t *testing.T) {
 		t.Errorf("Model = %q, want claude-sonnet-4-6", status.Model)
 	}
 }
+
+// TestParseClaudeStatusLineJSON_RateLimitExtras covers Claude Code's rate_limits
+// block (Pro/Max plan usage). Both windows must surface as display-ready usage
+// segments under Metadata["status_extras"], the generic per-provider contract.
+func TestParseClaudeStatusLineJSON_RateLimitExtras(t *testing.T) {
+	raw := []byte(`{
+		"model": {"display_name": "Opus 4.8"},
+		"input_tokens": 472,
+		"output_tokens": 76,
+		"cost": {"total_cost_usd": 151.13},
+		"rate_limits": {
+			"five_hour": {"used_percentage": 24.0, "resets_at": 1780566347},
+			"seven_day": {"used_percentage": 41.0, "resets_at": 1781153147}
+		}
+	}`)
+	status, err := parseClaudeStatusLineJSON(raw, "")
+	if err != nil {
+		t.Fatalf("parseClaudeStatusLineJSON: %v", err)
+	}
+	extras, ok := status.Metadata["status_extras"].([]string)
+	if !ok {
+		t.Fatalf("Metadata[status_extras] = %#v, want []string", status.Metadata["status_extras"])
+	}
+	want := []string{"5h 24%", "7d 41%"}
+	if len(extras) != len(want) || extras[0] != want[0] || extras[1] != want[1] {
+		t.Fatalf("extras = %v, want %v", extras, want)
+	}
+}
+
+// TestParseClaudeStatusLineJSON_NoRateLimitsNoExtras proves the extras key is
+// absent (not an empty list) when no rate_limits are present — e.g. before the
+// first API response, or for non-subscription auth.
+func TestParseClaudeStatusLineJSON_NoRateLimitsNoExtras(t *testing.T) {
+	status, err := parseClaudeStatusLineJSON([]byte(`{"input_tokens": 10}`), "")
+	if err != nil {
+		t.Fatalf("parseClaudeStatusLineJSON: %v", err)
+	}
+	if _, present := status.Metadata["status_extras"]; present {
+		t.Fatalf("status_extras present, want absent: %#v", status.Metadata["status_extras"])
+	}
+}
+
+// TestParseClaudeStatusLineJSON_ContextAndEffortExtras proves context-window fill
+// (ctx%) and reasoning effort surface as extras alongside rate limits, in order.
+func TestParseClaudeStatusLineJSON_ContextAndEffortExtras(t *testing.T) {
+	raw := []byte(`{
+		"model": {"display_name": "Opus 4.8"},
+		"input_tokens": 100,
+		"rate_limits": {
+			"five_hour": {"used_percentage": 24.0},
+			"seven_day": {"used_percentage": 41.0}
+		},
+		"context_window": {"used_percentage": 7},
+		"effort": {"level": "high"}
+	}`)
+	status, err := parseClaudeStatusLineJSON(raw, "")
+	if err != nil {
+		t.Fatalf("parseClaudeStatusLineJSON: %v", err)
+	}
+	extras, _ := status.Metadata["status_extras"].([]string)
+	want := []string{"5h 24%", "7d 41%", "ctx 7%", "high"}
+	if len(extras) != len(want) {
+		t.Fatalf("extras = %v, want %v", extras, want)
+	}
+	for i := range want {
+		if extras[i] != want[i] {
+			t.Fatalf("extras[%d] = %q, want %q (full: %v)", i, extras[i], want[i], extras)
+		}
+	}
+}

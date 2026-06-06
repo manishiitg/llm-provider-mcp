@@ -3420,6 +3420,38 @@ var (
 	claudeStatusLineStreamed = make(map[string]string) // sessionName -> raw JSON content of last streamed statusline
 )
 
+// readClaudeStatuslineWithWait reads the statusline temp file, polling until it
+// exists and is non-empty. Claude writes it asynchronously when its TUI renders
+// the statusLine command, which can lag a freshly-returned turn — so a one-shot
+// read races the render. Bounded by the smaller of ~15s and the context
+// deadline; returns the last read error if the file never materializes.
+func readClaudeStatuslineWithWait(ctx context.Context, outputPath string) ([]byte, error) {
+	deadline := time.Now().Add(15 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	var lastErr error
+	for {
+		raw, err := os.ReadFile(outputPath)
+		if err == nil && len(bytes.TrimSpace(raw)) > 0 {
+			return raw, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("statusline payload at %s is empty", outputPath)
+		}
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
 func claudeStatuslinePath(sessionName string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("claude_statusline_%s.json", sessionName))
 }
@@ -3617,6 +3649,11 @@ func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.Statu
 				status.CostUSD = c
 			}
 		}
+
+		// Expose plan rate-limit usage, context fill, and effort as generic
+		// statusline extras so UIs can render them next to cost without knowing
+		// Claude Code's schema.
+		status.SetStatusExtras(claudeStatusExtras(rawMap))
 	}
 
 	// "claude-code"/"claudecode" are placeholder ids equal to the provider name;
@@ -3645,6 +3682,46 @@ func claudeFloatFromAny(v interface{}) float64 {
 	return 0
 }
 
+// claudeStatusExtras turns Claude Code's native statusLine fields into
+// display-ready segments, in footer order: plan rate-limit usage ("5h N%",
+// "7d N%"), context-window fill ("ctx N%"), and reasoning effort ("xhigh").
+// Every field is optional — rate_limits only appears for Pro/Max after the first
+// API response, each window may be independently absent, and effort/context may
+// be missing — so a missing field simply yields no segment. Schema:
+//
+//	"rate_limits":    {"five_hour": {"used_percentage": 24.0}, "seven_day": {"used_percentage": 41.0}}
+//	"context_window": {"used_percentage": 4}
+//	"effort":         {"level": "xhigh"}
+func claudeStatusExtras(rawMap map[string]interface{}) []string {
+	var extras []string
+	if rl, ok := rawMap["rate_limits"].(map[string]interface{}); ok {
+		for _, w := range []struct{ key, label string }{
+			{"five_hour", "5h"},
+			{"seven_day", "7d"},
+		} {
+			win, ok := rl[w.key].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if _, present := win["used_percentage"]; !present {
+				continue
+			}
+			extras = append(extras, llmtypes.FormatUsageExtra(w.label, claudeFloatFromAny(win["used_percentage"])))
+		}
+	}
+	if cw, ok := rawMap["context_window"].(map[string]interface{}); ok {
+		if _, present := cw["used_percentage"]; present {
+			extras = append(extras, llmtypes.FormatUsageExtra("ctx", claudeFloatFromAny(cw["used_percentage"])))
+		}
+	}
+	if eff, ok := rawMap["effort"].(map[string]interface{}); ok {
+		if level, _ := eff["level"].(string); strings.TrimSpace(level) != "" {
+			extras = append(extras, level)
+		}
+	}
+	return extras
+}
+
 // GetStatusLine retrieves a snapshot of the current statusline for the active session.
 // Satisfies the llmtypes.StatusLineProvider interface.
 func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessionID string) (*llmtypes.StatusLine, error) {
@@ -3669,7 +3746,7 @@ func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessio
 	}
 
 	outputPath := claudeStatuslinePath(tmuxSessionName)
-	raw, err := os.ReadFile(outputPath)
+	raw, err := readClaudeStatuslineWithWait(ctx, outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read statusline payload: %w", err)
 	}

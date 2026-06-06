@@ -3,6 +3,7 @@ package codexcli
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -107,9 +108,18 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		ID    string `json:"id"`
 		CWD   string `json:"cwd"`
 		Model string `json:"model"`
-		Info  struct {
+		// Effort is the reasoning effort carried on turn_context events (e.g.
+		// "xhigh", "high").
+		Effort string `json:"effort"`
+		Info   struct {
 			LastTokenUsage tokenSnapshot `json:"last_token_usage"`
+			// ModelContextWindow is the model's max context size, reported on
+			// token_count events — the denominator for context-fill percentage.
+			ModelContextWindow int `json:"model_context_window"`
 		} `json:"info"`
+		// Codex attaches plan rate-limit windows alongside info on each
+		// token_count event (primary ≈ 5h, secondary ≈ 7d). See codexRateLimits.
+		RateLimits *codexRateLimits `json:"rate_limits"`
 	}
 	type event struct {
 		Type      string       `json:"type"`
@@ -118,7 +128,10 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	}
 
 	var latest *tokenSnapshot
+	var latestRateLimits *codexRateLimits
 	var latestModel string
+	var latestEffort string
+	var latestContextWindow int
 	var sessionCWD string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
@@ -139,11 +152,22 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 			}
 		}
 		switch {
-		case ev.Type == "turn_context" && ev.Payload.Model != "":
-			latestModel = ev.Payload.Model
+		case ev.Type == "turn_context":
+			if ev.Payload.Model != "" {
+				latestModel = ev.Payload.Model
+			}
+			if ev.Payload.Effort != "" {
+				latestEffort = ev.Payload.Effort
+			}
 		case ev.Type == "event_msg" && ev.Payload.Type == "token_count":
 			snap := ev.Payload.Info.LastTokenUsage
 			latest = &snap
+			if ev.Payload.Info.ModelContextWindow > 0 {
+				latestContextWindow = ev.Payload.Info.ModelContextWindow
+			}
+			if ev.Payload.RateLimits != nil {
+				latestRateLimits = ev.Payload.RateLimits
+			}
 		}
 	}
 	if latest == nil || (latest.InputTokens+latest.OutputTokens+latest.CachedInputTokens) == 0 {
@@ -176,7 +200,72 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	if latest.ReasoningOutputTokens > 0 {
 		gi.ReasoningTokens = intRef(latest.ReasoningOutputTokens)
 	}
+	// Carry display-ready statusline extras (rate-limit usage, context fill,
+	// effort, plan) so buildCodexStatusLine can expose them generically (see
+	// llmtypes.StatusExtrasMetaKey).
+	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort); len(extras) > 0 {
+		if gi.Additional == nil {
+			gi.Additional = map[string]interface{}{}
+		}
+		gi.Additional[llmtypes.StatusExtrasMetaKey] = extras
+	}
 	return gi, latestModel, threadID, sessionCWD
+}
+
+// codexRateLimitWindow is one of Codex's rolling rate-limit windows.
+type codexRateLimitWindow struct {
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes int     `json:"window_minutes"`
+}
+
+// codexRateLimits mirrors the rate_limits block Codex attaches to token_count
+// events. primary is the short (≈5h) window, secondary the long (≈7d) window.
+type codexRateLimits struct {
+	Primary   *codexRateLimitWindow `json:"primary"`
+	Secondary *codexRateLimitWindow `json:"secondary"`
+	PlanType  string                `json:"plan_type"`
+}
+
+// codexStatusExtras renders Codex's per-turn statusline extras into display-ready
+// segments, in footer order: plan rate-limit usage ("5h N%", "7d N%"),
+// context-window fill ("ctx N%"), reasoning effort ("xhigh"), and plan ("pro").
+// Each input is optional — absent ones are skipped so the footer shows only what
+// codex actually reported. Window labels derive from window_minutes (300→"5h").
+func codexStatusExtras(rl *codexRateLimits, promptTokens, contextWindow int, effort string) []string {
+	var extras []string
+	if rl != nil {
+		if w := rl.Primary; w != nil {
+			extras = append(extras, llmtypes.FormatUsageExtra(codexWindowLabel(w.WindowMinutes, "5h"), w.UsedPercent))
+		}
+		if w := rl.Secondary; w != nil {
+			extras = append(extras, llmtypes.FormatUsageExtra(codexWindowLabel(w.WindowMinutes, "7d"), w.UsedPercent))
+		}
+	}
+	if contextWindow > 0 && promptTokens > 0 {
+		extras = append(extras, llmtypes.FormatUsageExtra("ctx", float64(promptTokens)/float64(contextWindow)*100))
+	}
+	if effort != "" {
+		extras = append(extras, effort)
+	}
+	if rl != nil && rl.PlanType != "" {
+		extras = append(extras, rl.PlanType)
+	}
+	return extras
+}
+
+// codexWindowLabel renders a window length in minutes as a compact label
+// (e.g. 300 → "5h", 10080 → "7d"), using fallback when minutes is unset.
+func codexWindowLabel(minutes int, fallback string) string {
+	switch {
+	case minutes <= 0:
+		return fallback
+	case minutes%1440 == 0:
+		return fmt.Sprintf("%dd", minutes/1440)
+	case minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	default:
+		return fmt.Sprintf("%dm", minutes)
+	}
 }
 
 func codexThreadIDFromRolloutPath(path string) string {

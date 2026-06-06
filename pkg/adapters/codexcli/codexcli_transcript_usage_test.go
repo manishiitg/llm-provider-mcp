@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // TestReadCodexTranscriptUsageTakesLatestEventInTurn proves the
@@ -162,4 +164,133 @@ func TestReadCodexTranscriptUsageFiltersByWorkingDir(t *testing.T) {
 
 func inputTokensString(v int) string {
 	return strconv.Itoa(v)
+}
+
+// TestReadCodexTranscriptUsageSurfacesRateLimitExtras proves the rollout's
+// token_count rate_limits block (primary ≈ 5h, secondary ≈ 7d) is parsed into
+// display-ready usage extras under Additional[StatusExtrasMetaKey], labelled
+// from window_minutes.
+func TestReadCodexTranscriptUsageSurfacesRateLimitExtras(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	dayDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "06", "04")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rollout := filepath.Join(dayDir, "rollout-2026-06-04T12-00-00-aaaabbbb-cccc-4ddd-8eee-ffff00001111.jsonl")
+
+	turnStart := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(2 * time.Second).Format(time.RFC3339Nano)
+	lines := []string{
+		`{"type":"session_meta","timestamp":"` + ts + `","payload":{"id":"aaaabbbb-cccc-4ddd-8eee-ffff00001111","cwd":"/x"}}`,
+		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"cached_input_tokens":120,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":580}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":1780566347},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1781153147}}}}`,
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	mtime := turnStart.Add(5 * time.Second)
+	if err := os.Chtimes(rollout, mtime, mtime); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	gi, _, _ := readCodexTranscriptUsage(turnStart, "/x")
+	if gi == nil || gi.Additional == nil {
+		t.Fatalf("expected GenerationInfo with Additional, got %#v", gi)
+	}
+	extras, ok := gi.Additional[llmtypes.StatusExtrasMetaKey].([]string)
+	if !ok {
+		t.Fatalf("Additional[%q] = %#v, want []string", llmtypes.StatusExtrasMetaKey, gi.Additional[llmtypes.StatusExtrasMetaKey])
+	}
+	want := []string{"5h 8%", "7d 1%"}
+	if len(extras) != len(want) || extras[0] != want[0] || extras[1] != want[1] {
+		t.Fatalf("extras = %v, want %v", extras, want)
+	}
+}
+
+// TestBuildCodexStatusLineSurfacesRateLimitExtras exercises the full adapter-side
+// path (readCodexTranscriptUsage → gi.Additional → buildCodexStatusLine →
+// SetStatusExtras), proving rate-limit usage lands on StatusLine.Metadata under
+// the status_extras key the UI renders — not just inside GenerationInfo.
+func TestBuildCodexStatusLineSurfacesRateLimitExtras(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	dayDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "06", "04")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rollout := filepath.Join(dayDir, "rollout-2026-06-04T13-00-00-bbbbcccc-dddd-4eee-8fff-000011112222.jsonl")
+	now := time.Now()
+	ts := now.Add(-2 * time.Second).Format(time.RFC3339Nano)
+	lines := []string{
+		`{"type":"session_meta","timestamp":"` + ts + `","payload":{"id":"bbbbcccc-dddd-4eee-8fff-000011112222","cwd":"` + tmpHome + `"}}`,
+		`{"type":"turn_context","timestamp":"` + ts + `","payload":{"model":"gpt-5.4"}}`,
+		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":15000,"cached_input_tokens":2000,"output_tokens":273,"reasoning_output_tokens":40,"total_tokens":15273}},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":1780566347},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1781153147}}}}`,
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	status := buildCodexStatusLine("codex-sess-1", tmpHome)
+	if status == nil {
+		t.Fatal("buildCodexStatusLine returned nil")
+	}
+	if status.Provider != "codex-cli" {
+		t.Fatalf("Provider = %q, want codex-cli", status.Provider)
+	}
+	extras, ok := status.Metadata[llmtypes.StatusExtrasMetaKey].([]string)
+	if !ok {
+		t.Fatalf("Metadata[%q] = %#v, want []string", llmtypes.StatusExtrasMetaKey, status.Metadata[llmtypes.StatusExtrasMetaKey])
+	}
+	want := []string{"5h 8%", "7d 1%"}
+	if len(extras) != len(want) || extras[0] != want[0] || extras[1] != want[1] {
+		t.Fatalf("extras = %v, want %v", extras, want)
+	}
+	// tmux_session must still be tagged alongside the new extras.
+	if got, _ := status.Metadata["tmux_session"].(string); got != "codex-sess-1" {
+		t.Fatalf("tmux_session = %q, want codex-sess-1", got)
+	}
+}
+
+// TestReadCodexTranscriptUsageSurfacesAllExtras proves the full extras set —
+// rate limits (5h/7d), context fill (ctx%), reasoning effort, and plan type —
+// is parsed in footer order from token_count + turn_context.
+func TestReadCodexTranscriptUsageSurfacesAllExtras(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dayDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "06", "06")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rollout := filepath.Join(dayDir, "rollout-2026-06-06T12-00-00-ccccdddd-eeee-4fff-8000-111122223333.jsonl")
+	turnStart := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(2 * time.Second).Format(time.RFC3339Nano)
+	lines := []string{
+		`{"type":"session_meta","timestamp":"` + ts + `","payload":{"id":"ccccdddd-eeee-4fff-8000-111122223333","cwd":"/x"}}`,
+		`{"type":"turn_context","timestamp":"` + ts + `","payload":{"model":"gpt-5.5","effort":"xhigh"}}`,
+		`{"type":"event_msg","timestamp":"` + ts + `","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":25840,"cached_input_tokens":0,"output_tokens":80,"total_tokens":25920},"model_context_window":258400},"rate_limits":{"primary":{"used_percent":8.0,"window_minutes":300,"resets_at":1},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":2},"plan_type":"pro"}}}`,
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	mtime := turnStart.Add(5 * time.Second)
+	if err := os.Chtimes(rollout, mtime, mtime); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	gi, _, _ := readCodexTranscriptUsage(turnStart, "/x")
+	if gi == nil || gi.Additional == nil {
+		t.Fatalf("expected GenerationInfo with Additional, got %#v", gi)
+	}
+	extras, _ := gi.Additional[llmtypes.StatusExtrasMetaKey].([]string)
+	want := []string{"5h 8%", "7d 1%", "ctx 10%", "xhigh", "pro"}
+	if len(extras) != len(want) {
+		t.Fatalf("extras = %v, want %v", extras, want)
+	}
+	for i := range want {
+		if extras[i] != want[i] {
+			t.Fatalf("extras[%d] = %q, want %q (full: %v)", i, extras[i], want[i], extras)
+		}
+	}
 }
