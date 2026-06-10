@@ -141,3 +141,24 @@ func TestAgySpinnerStableKeyIgnoresCyclingSpinner(t *testing.T) {
 		t.Fatal("hasAgyReadyPrompt should be true for a finished pane with a visible '> ' box")
 	}
 }
+
+// Agy prefixes tool-result detail lines with "⎿" (U+23BF). The startup
+// statusline config emits "⎿  Statusline set to: …", which leaked into the
+// extracted assistant text (the tmux full-contract e2e captured it as the
+// model's first reply instead of the requested token). This locks that any
+// "⎿"-prefixed line is treated as tool transcript and dropped.
+func TestExtractAgyVisibleAssistantTextDropsToolResultContinuation(t *testing.T) {
+	delta := strings.Join([]string{
+		"⎿  Statusline set to: sh '/tmp/agy-statusline-config-3497103522/statusline.sh'",
+		"REAL_AGY_TMUX_219b20db",
+	}, "\n")
+
+	got := extractAgyVisibleAssistantText(delta)
+	want := "REAL_AGY_TMUX_219b20db"
+	if got != want {
+		t.Fatalf("visible assistant text = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "Statusline set to") {
+		t.Errorf("statusline tool-result line leaked into assistant text: %q", got)
+	}
+}

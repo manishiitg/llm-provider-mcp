@@ -2325,6 +2325,13 @@ func isAgyTUILine(line string) bool {
 func isAgyToolStatusLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	lower := strings.ToLower(trimmed)
+	// "⎿" (U+23BF) is Agy's tool-result continuation marker — it prefixes the
+	// output detail of a tool/command card (e.g. "⎿  Statusline set to: …" from
+	// the startup statusline config). It is never assistant prose, so any line
+	// beginning with it is tool transcript.
+	if strings.HasPrefix(trimmed, "⎿") {
+		return true
+	}
 	nativeToolLine := strings.TrimSpace(strings.TrimLeft(trimmed, "●○◦* "))
 	nativeToolLower := strings.ToLower(nativeToolLine)
 	if strings.HasPrefix(nativeToolLower, "bash(") ||

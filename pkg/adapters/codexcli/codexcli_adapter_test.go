@@ -513,6 +513,23 @@ func TestExtractCodexVisibleAssistantTextDropsFlattenedToolStatusReplay(t *testi
 	assertCodexNoInternalStatus(t, got)
 }
 
+// Codex CLI 0.137.0 renders a footer hint "shift + ← edit last queued message"
+// below the input box. Before the chrome-list update it leaked into the
+// extracted assistant text (e.g. the parallel-isolation e2e captured it as the
+// model reply). This locks that it's now classified as terminal chrome.
+func TestExtractCodexVisibleAssistantTextDropsQueuedMessageFooterHint(t *testing.T) {
+	visible := `PAR_LEFT_89997b00
+─────────────────────────────────────
+›
+  shift + ← edit last queued message`
+
+	got := extractCodexVisibleAssistantText(visible)
+	want := "PAR_LEFT_89997b00"
+	if got != want {
+		t.Fatalf("visible assistant text = %q, want %q", got, want)
+	}
+}
+
 func TestExtractCodexVisibleAssistantTextDropsToolReplayFragments(t *testing.T) {
 	visible := `ver"})
 environment.

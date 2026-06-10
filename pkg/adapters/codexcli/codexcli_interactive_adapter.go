@@ -2030,6 +2030,7 @@ func isCodexTUILine(line string) bool {
 		strings.Contains(lower, "called api-bridge") ||
 		isCodexQueuedInputLine(trimmed) ||
 		strings.Contains(lower, "sent immediately") ||
+		strings.Contains(lower, "edit last queued message") ||
 		trimmed == "immediately)" ||
 		strings.HasPrefix(trimmed, "↳ ") ||
 		strings.Contains(lower, "tmux focus-events") ||
