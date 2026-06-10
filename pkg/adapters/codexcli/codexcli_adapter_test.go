@@ -31,7 +31,7 @@ func codexCLIRealContractModelFromEnv() string {
 	if model := strings.TrimSpace(os.Getenv("CODEX_CLI_REAL_CONTRACT_MODEL")); model != "" {
 		return model
 	}
-	return "gpt-5.3-codex-spark"
+	return "gpt-5.4-mini"
 }
 
 func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {

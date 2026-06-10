@@ -477,7 +477,7 @@ func TestCodexCLIStructuredNoInternalMemory(t *testing.T) {
 func TestCodexCLIStructuredModelOverride(t *testing.T) {
 	requireRealCodexCLIStreamJSONE2E(t)
 
-	adapter := NewCodexCLIAdapter("", "o3-mini", quietCodexStreamLogger{})
+	adapter := NewCodexCLIAdapter("", "gpt-5.4-mini", quietCodexStreamLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
