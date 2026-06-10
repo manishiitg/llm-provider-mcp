@@ -1,7 +1,6 @@
 package codexcli
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +23,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -3171,7 +3171,7 @@ func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
 }
 
 func captureCodexPane(ctx context.Context, sessionName string) (string, error) {
-	return runCodexCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePane(ctx, sessionName, 3000)
 }
 
 func captureCodexPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -3181,7 +3181,7 @@ func captureCodexPaneForDisplay(ctx context.Context, sessionName string) (string
 	// the adapter so they don't garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return runCodexCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
 }
 
 func codexCapturedAfterBaseline(captured, baseline string) string {
@@ -3294,17 +3294,7 @@ func runCodexCommand(ctx context.Context, stdin io.Reader, name string, args ...
 }
 
 func runCodexCommandOutput(ctx context.Context, stdin io.Reader, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if stdin != nil {
-		cmd.Stdin = stdin
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
+	return tmuxexec.RunCommandOutput(ctx, stdin, nil, name, args...)
 }
 
 func codexRandomHex(n int) string {

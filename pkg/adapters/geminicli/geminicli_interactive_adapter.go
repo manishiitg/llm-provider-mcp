@@ -1,7 +1,6 @@
 package geminicli
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -23,6 +22,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -39,11 +39,11 @@ const (
 	// a detection-independent backstop so a prompt-detection failure on a frozen
 	// pane can never hang the turn forever. Set the env var to 0 to disable.
 	defaultGeminiInteractiveStalePaneBackstop = 120 * time.Second
-	geminiInteractiveStableWindow       = 1200 * time.Millisecond
-	geminiActivityScanNonEmptyLines     = 160
-	geminiPromptPasteVisibleWait        = 1500 * time.Millisecond
-	geminiPromptSubmitSettleWait        = 350 * time.Millisecond
-	geminiPromptSubmitMaxAttempts       = 5
+	geminiInteractiveStableWindow             = 1200 * time.Millisecond
+	geminiActivityScanNonEmptyLines           = 160
+	geminiPromptPasteVisibleWait              = 1500 * time.Millisecond
+	geminiPromptSubmitSettleWait              = 350 * time.Millisecond
+	geminiPromptSubmitMaxAttempts             = 5
 
 	EnvGeminiInteractiveSessionPrefix      = "GEMINI_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvGeminiInteractiveTimeoutSeconds     = "GEMINI_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -2113,7 +2113,7 @@ func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
 }
 
 func captureGeminiPane(ctx context.Context, sessionName string) (string, error) {
-	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePane(ctx, sessionName, 3000)
 }
 
 func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -2123,7 +2123,7 @@ func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (strin
 	// the adapter so they don't garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return runGeminiCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
 }
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {
@@ -2264,17 +2264,7 @@ func runGeminiCommand(ctx context.Context, stdin io.Reader, name string, args ..
 }
 
 func runGeminiCommandOutput(ctx context.Context, stdin io.Reader, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if stdin != nil {
-		cmd.Stdin = stdin
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, geminiCommandString(args), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
+	return tmuxexec.RunCommandOutput(ctx, stdin, geminiCommandString, name, args...)
 }
 
 func geminiCommandString(args []string) string {

@@ -1,0 +1,82 @@
+// Package tmuxexec holds the tmux subprocess primitives shared by the
+// interactive CLI adapters (codex, gemini, cursor, agy). Before this package
+// each adapter carried a byte-identical copy of the exec boilerplate and the
+// capture-pane call; the only real variation was gemini's need to redact API
+// keys from error messages, which RunCommandOutput supports via an optional
+// ArgFormatter.
+//
+// NOTE: the claudecode adapter deliberately does NOT use this package — its
+// runCommandOutput merges stdout and stderr into one buffer and returns the
+// combined output, which several of its pane parsers rely on. That is a
+// different contract from the stdout-only behavior here.
+package tmuxexec
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+// ArgFormatter renders command args for inclusion in an error message. Adapters
+// pass one to redact secrets (e.g. gemini redacts GEMINI_API_KEY=…); nil means
+// the args are joined verbatim with spaces.
+type ArgFormatter func(args []string) string
+
+// RunCommandOutput runs name+args, returning captured stdout. stdout and stderr
+// are captured separately; on failure the error includes the (optionally
+// redacted) command and trimmed stderr, and the partial stdout is still
+// returned. This matches the prior per-adapter runXxxCommandOutput contract.
+func RunCommandOutput(ctx context.Context, stdin io.Reader, fmtArgs ArgFormatter, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		argStr := strings.Join(args, " ")
+		if fmtArgs != nil {
+			argStr = fmtArgs(args)
+		}
+		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, argStr, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// RunCommand runs name+args and discards stdout, returning only the error.
+func RunCommand(ctx context.Context, stdin io.Reader, fmtArgs ArgFormatter, name string, args ...string) error {
+	_, err := RunCommandOutput(ctx, stdin, fmtArgs, name, args...)
+	return err
+}
+
+// CapturePane captures the visible pane plus `scrollbackLines` of scrollback for
+// the given tmux session, joining wrapped lines (-J). scrollbackLines<=0
+// captures only the visible region. Escape sequences are NOT preserved — use
+// CapturePaneANSI when colors/SGR are needed (e.g. for display streaming).
+func CapturePane(ctx context.Context, sessionName string, scrollbackLines int) (string, error) {
+	return capturePane(ctx, sessionName, scrollbackLines, false)
+}
+
+// CapturePaneANSI is CapturePane with -e, preserving escape sequences so the
+// captured text keeps its SGR color codes.
+func CapturePaneANSI(ctx context.Context, sessionName string, scrollbackLines int) (string, error) {
+	return capturePane(ctx, sessionName, scrollbackLines, true)
+}
+
+func capturePane(ctx context.Context, sessionName string, scrollbackLines int, preserveEscapes bool) (string, error) {
+	args := []string{"capture-pane", "-p"}
+	if preserveEscapes {
+		args = append(args, "-e")
+	}
+	args = append(args, "-J")
+	if scrollbackLines > 0 {
+		args = append(args, "-S", "-"+strconv.Itoa(scrollbackLines))
+	}
+	args = append(args, "-t", sessionName)
+	return RunCommandOutput(ctx, nil, nil, "tmux", args...)
+}

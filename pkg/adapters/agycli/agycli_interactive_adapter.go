@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -2910,7 +2911,7 @@ func resetAgyPaneForTurn(ctx context.Context, sessionName string) {
 }
 
 func captureAgyPane(ctx context.Context, sessionName string) (string, error) {
-	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePane(ctx, sessionName, 3000)
 }
 
 func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -2920,7 +2921,7 @@ func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, 
 	// garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return runAgyCommandOutput(ctx, nil, "tmux", "capture-pane", "-p", "-e", "-J", "-S", "-3000", "-t", sessionName)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
 }
 
 func agyCapturedAfterBaseline(captured, baseline string) string {
@@ -3077,17 +3078,7 @@ func runAgyCommand(ctx context.Context, stdin io.Reader, name string, args ...st
 }
 
 func runAgyCommandOutput(ctx context.Context, stdin io.Reader, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if stdin != nil {
-		cmd.Stdin = stdin
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
+	return tmuxexec.RunCommandOutput(ctx, stdin, nil, name, args...)
 }
 
 func agyShellJoin(args []string) string {
