@@ -3156,29 +3156,7 @@ func stripAgyANSI(s string) string {
 // so leaving those sequences in would print as garbage. SGR is the only
 // class of escape that's safe to forward verbatim.
 func stripAgyANSIPreserveColors(s string) string {
-	var b, esc strings.Builder
-	inEscape := false
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if inEscape {
-			esc.WriteByte(ch)
-			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
-				if ch == 'm' {
-					b.WriteString(esc.String())
-				}
-				esc.Reset()
-				inEscape = false
-			}
-			continue
-		}
-		if ch == 0x1b {
-			esc.WriteByte(ch)
-			inEscape = true
-			continue
-		}
-		b.WriteByte(ch)
-	}
-	return paneview.CollapseBlankRuns(b.String())
+	return paneview.StripANSIPreserveColors(s)
 }
 
 var (

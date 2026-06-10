@@ -18,6 +18,47 @@ import "strings"
 // gaps.
 const maxConsecutiveBlankLines = 2
 
+// StripANSIPreserveColors removes ANSI escape sequences EXCEPT SGR (Select
+// Graphic Rendition: color, bold, dim, underline — sequences terminated by
+// 'm'), then collapses blank-run noise. The preserved SGR codes let the
+// frontend colorize the rendered pane snapshot via ansi_up; cursor-positioning
+// and screen-clear sequences are dropped because ansi_up does not emulate
+// VT100 movement.
+//
+// All five interactive tmux adapters (claude-code, codex, gemini, cursor, agy)
+// fed `capture-pane -e` output through a byte-identical copy of this before it
+// reached the UI; the logic now lives here once.
+//
+// An escape is terminated by the first ASCII letter; only a final 'm' keeps the
+// sequence. A trailing incomplete escape (buffer cut mid-sequence) is dropped,
+// which is the desired behavior — a half-written color code must not reach the
+// renderer.
+func StripANSIPreserveColors(s string) string {
+	var b, esc strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inEscape {
+			esc.WriteByte(ch)
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+				if ch == 'm' {
+					b.WriteString(esc.String())
+				}
+				esc.Reset()
+				inEscape = false
+			}
+			continue
+		}
+		if ch == 0x1b {
+			esc.WriteByte(ch)
+			inEscape = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return CollapseBlankRuns(b.String())
+}
+
 // CollapseBlankRuns squeezes any run of blank/whitespace-only lines down to at
 // most maxConsecutiveBlankLines and trims trailing whitespace from each line.
 //
@@ -274,4 +315,3 @@ func isAllDashes(s string) bool {
 	}
 	return true
 }
-

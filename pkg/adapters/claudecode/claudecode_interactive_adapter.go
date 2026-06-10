@@ -2437,29 +2437,7 @@ func captureTmuxPane(ctx context.Context, sessionName string) (string, error) {
 // through ansi_up to colorize the rendered pane snapshot. Cursor positioning
 // is dropped because ansi_up does not emulate VT100 movement.
 func stripClaudeANSIPreserveColors(s string) string {
-	var b, esc strings.Builder
-	inEscape := false
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if inEscape {
-			esc.WriteByte(ch)
-			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
-				if ch == 'm' {
-					b.WriteString(esc.String())
-				}
-				esc.Reset()
-				inEscape = false
-			}
-			continue
-		}
-		if ch == 0x1b {
-			esc.WriteByte(ch)
-			inEscape = true
-			continue
-		}
-		b.WriteByte(ch)
-	}
-	return paneview.CollapseBlankRuns(b.String())
+	return paneview.StripANSIPreserveColors(s)
 }
 
 func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string, error) {

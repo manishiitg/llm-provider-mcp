@@ -1,6 +1,9 @@
 package paneview
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCollapseBlankRuns(t *testing.T) {
 	tests := []struct {
@@ -33,7 +36,7 @@ func TestCollapseBlankRuns(t *testing.T) {
 		// text. A whole screen of these fragment-runs must collapse away, leaving
 		// only genuine content.
 		{name: "staggered spinner-word fragments (no braille) pruned",
-			in: "or\n..\noading\nng\nner\nking..\nenerat\nin\nting..\ning...\nen\nng.\nWorki\nrking.\nng\ng.\nor\n..\nnerati\nGenerating...",
+			in:   "or\n..\noading\nng\nner\nking..\nenerat\nin\nting..\ning...\nen\nng.\nWorki\nrking.\nng\ng.\nor\n..\nnerati\nGenerating...",
 			want: ""},
 		{name: "spinner-word fragments around real content keep the content",
 			in:   "Here is the real answer line.\noading\nking..\nWorki\nrking.\nGenerating...\nAnother real line.",
@@ -48,5 +51,72 @@ func TestCollapseBlankRuns(t *testing.T) {
 				t.Fatalf("CollapseBlankRuns(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStripANSIPreserveColors(t *testing.T) {
+	esc := "\x1b"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain text untouched", in: "hello world", want: "hello world"},
+		{
+			name: "SGR color preserved",
+			in:   esc + "[31mRED" + esc + "[0m",
+			want: esc + "[31mRED" + esc + "[0m",
+		},
+		{
+			name: "bold preserved",
+			in:   esc + "[1mbold" + esc + "[22m",
+			want: esc + "[1mbold" + esc + "[22m",
+		},
+		{
+			name: "cursor-position stripped (ends in H)",
+			in:   esc + "[2;5Hmoved",
+			want: "moved",
+		},
+		{
+			name: "clear-screen stripped (ends in J)",
+			in:   esc + "[2Jcleared",
+			want: "cleared",
+		},
+		{
+			name: "mixed: keep color, drop cursor move",
+			in:   esc + "[31m" + esc + "[5;1Hred-after-move" + esc + "[0m",
+			want: esc + "[31m" + "red-after-move" + esc + "[0m",
+		},
+		{
+			name: "incomplete trailing escape dropped",
+			in:   "visible" + esc + "[38;5;",
+			want: "visible",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := StripANSIPreserveColors(tt.in); got != tt.want {
+				t.Errorf("StripANSIPreserveColors(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Agy historically broke by surfacing the "Generating…" spinner frame as the
+// response. Spinner pruning runs inside CollapseBlankRuns (which
+// StripANSIPreserveColors calls), so a scrolled-up spinner frame followed by
+// real content must not survive into the displayed snapshot. This locks that
+// the shared strip path keeps that behavior.
+func TestStripANSIPreserveColorsPrunesScrolledSpinner(t *testing.T) {
+	esc := "\x1b"
+	// A historical spinner frame (Braille glyph) colored via SGR, followed by
+	// real assistant content — the spinner frame should be pruned.
+	in := esc + "[2m⣾ Generating…" + esc + "[0m\nActual answer here"
+	got := StripANSIPreserveColors(in)
+	if !strings.Contains(got, "Actual answer here") {
+		t.Fatalf("real content lost: %q", got)
+	}
+	if strings.Contains(got, "Generating") {
+		t.Errorf("scrolled-up spinner frame leaked into snapshot: %q", got)
 	}
 }
