@@ -14,6 +14,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
@@ -3335,7 +3336,12 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 
 	// Check if we have a valid response
 	if err != nil {
-		p.logger.Infof("❌ LLM generation failed - provider: %s, model: %s, error: %v", string(p.provider), p.modelID, err)
+		// Classify so consumers can branch on cause (rate limit vs auth vs
+		// outage) via llmerrors.KindOf instead of string-matching. The
+		// original error stays in the chain (Unwrap), so existing
+		// string-based handling keeps working.
+		err = llmerrors.Classify(string(p.provider), p.modelID, err)
+		p.logger.Infof("❌ LLM generation failed - provider: %s, model: %s, kind: %s, error: %v", string(p.provider), p.modelID, llmerrors.KindOf(err), err)
 
 		// Emit LLM generation error event with rich debugging information
 		errorMetadata := LLMMetadata{
@@ -3348,6 +3354,7 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 				"message_content": extractMessageContentAsString(messages),
 				"error":           err.Error(),
 				"error_type":      fmt.Sprintf("%T", err),
+				"error_kind":      string(llmerrors.KindOf(err)),
 				"debug_note":      "Enhanced error logging for turn 2 debugging",
 			},
 		}
