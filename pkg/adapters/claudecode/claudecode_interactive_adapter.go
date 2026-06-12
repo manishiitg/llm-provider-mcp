@@ -2300,20 +2300,9 @@ func equalStringSlices(a, b []string) bool {
 }
 
 func detectTmuxFatalStatus(captured string) string {
-	// Claude Code's usage-limit wording varies ("You've hit your limit",
-	// "You've hit your session limit", "You've hit your usage limit") and is
-	// followed by a distinctive "/usage-credits to finish…" line. Match on the
-	// stable fragments rather than one exact phrase — a wording change here used
-	// to slip past detection, leaving the session wedged at the limit (TUI keeps
-	// an idle prompt) and the run hung "running" forever. The returned text
-	// contains "usage limit" so downstream classifies it as quota-exhausted.
-	lower := strings.ToLower(captured)
 	switch {
-	case strings.Contains(lower, "hit your limit"),
-		strings.Contains(lower, "hit your session limit"),
-		strings.Contains(lower, "hit your usage limit"),
-		strings.Contains(lower, "usage-credits to finish"):
-		return "usage limit reached"
+	case strings.Contains(captured, "You've hit your limit"):
+		return "rate limit reached"
 	case strings.Contains(captured, "Not logged in"):
 		return "not logged in"
 	case strings.Contains(captured, "Pane is dead"):
