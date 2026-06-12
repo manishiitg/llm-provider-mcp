@@ -34,7 +34,8 @@ const (
 	defaultPersistentIdleTimeout = 20 * time.Minute
 	defaultBoundedRetention      = 30 * time.Minute
 	defaultTmuxPollInterval      = 750 * time.Millisecond
-	defaultTmuxCaptureLines      = "3000"
+	defaultTmuxCaptureLines      = "10000"
+	defaultTmuxHistoryLimit      = "20000"
 	minTmuxMajorVersion          = 3
 	claudeIdleStableWindow       = 1200 * time.Millisecond
 	claudeTailFallbackMaxLines   = 120
@@ -835,6 +836,9 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	}
 	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("failed to configure Claude Code tmux session %q: %w", sessionName, err)
+	}
+	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", defaultTmuxHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Claude Code tmux history for session %q: %w", sessionName, err)
 	}
 	// Pin the window size to manual. The session is detached (no attached
 	// client), so tmux's default window-size "latest" recomputes the size

@@ -97,6 +97,27 @@ func TestAgyCompletedToolCardWithReadyPromptIsNotLive(t *testing.T) {
 	}
 }
 
+func TestAgyDetectorsIgnoreStaleScrollbackOutsideVisiblePane(t *testing.T) {
+	pane := `Workspace trust required
+Do you trust the contents of this project?
+Yes, I trust this folder
+⣾ Generating...
+` + strings.Repeat("ordinary completed output\n", 40) + `
+────────────────────────────────────────
+>
+────────────────────────────────────────
+Gemini 3.5 Flash`
+	if hasAgyTrustPrompt(pane) {
+		t.Fatal("stale trust prompt outside the visible pane must not be treated as current")
+	}
+	if hasAgyActivity(pane) {
+		t.Fatal("stale activity outside the visible pane must not be treated as current")
+	}
+	if !hasAgyReadyPrompt(pane) {
+		t.Fatal("current visible ready prompt should still be detected")
+	}
+}
+
 // Regression for the spinner-cycling hang: agy leaves a "⣯ Generating…" status
 // line cycling above its idle "> " input box even after the turn is done and the
 // answer is printed. The completion loop compares pane stability, and the

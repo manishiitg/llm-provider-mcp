@@ -21,6 +21,18 @@ import (
 	"strings"
 )
 
+const (
+	// DefaultScrollbackLines is the provider-side pane capture window for
+	// tmux-backed coding CLIs. Keep this aligned with the app terminal route so
+	// streamed snapshots and direct terminal reads expose the same scroll depth.
+	DefaultScrollbackLines = 10000
+
+	// DefaultHistoryLimit is passed to tmux as a string because set-option
+	// expects argv values. It must be larger than DefaultScrollbackLines so tmux
+	// retains enough history for captures and browser scrollback.
+	DefaultHistoryLimit = "20000"
+)
+
 // ArgFormatter renders command args for inclusion in an error message. Adapters
 // pass one to redact secrets (e.g. gemini redacts GEMINI_API_KEY=…); nil means
 // the args are joined verbatim with spaces.

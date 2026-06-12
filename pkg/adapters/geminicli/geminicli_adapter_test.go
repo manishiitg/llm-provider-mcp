@@ -11,6 +11,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -81,6 +82,60 @@ exit 1
 	}
 	if !strings.Contains(string(args), " -J") {
 		t.Fatalf("terminal display capture did not use joined rows (-J): %q", string(args))
+	}
+	if want := fmt.Sprintf(" -S -%d", tmuxexec.DefaultScrollbackLines); !strings.Contains(string(args), want) {
+		t.Fatalf("terminal display capture did not request %s: %q", want, string(args))
+	}
+}
+
+func TestGeminiStartSessionSetsHistoryLimit(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/tmux-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TEST_ARGS"
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", argsPath)
+
+	if err := startGeminiTmuxSession(context.Background(), "history-session", []string{"gemini"}, nil, t.TempDir()); err != nil {
+		t.Fatalf("startGeminiTmuxSession returned error: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read tmux args: %v", err)
+	}
+	want := "set-option -t history-session history-limit " + tmuxexec.DefaultHistoryLimit
+	if !strings.Contains(string(args), want) {
+		t.Fatalf("tmux args missing history limit %q:\n%s", want, string(args))
+	}
+}
+
+func TestGeminiResetPaneForTurnPreservesScrollback(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/tmux-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TEST_ARGS"
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", argsPath)
+
+	resetGeminiPaneForTurn(context.Background(), "history-session")
+	args, err := os.ReadFile(argsPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read tmux args: %v", err)
+	}
+	if strings.Contains(string(args), "clear-history") {
+		t.Fatalf("resetGeminiPaneForTurn should preserve tmux history, got args:\n%s", string(args))
 	}
 }
 
@@ -949,6 +1004,26 @@ func TestGeminiReadyPromptAcceptsV042StarPrompt(t *testing.T) {
 	}
 	if hasGeminiActivity(pane) {
 		t.Fatalf("v0.42 star prompt should not count as active generation")
+	}
+}
+
+func TestGeminiDetectorsIgnoreStaleScrollbackOutsideVisiblePane(t *testing.T) {
+	pane := `Do you trust the files in this folder?
+Trust folder
+Generating...
+` + strings.Repeat("ordinary completed output\n", 180) + `
+ >   Type your message or @path/to/file
+ workspace (/directory)                            sandbox               /model
+ /tmp/project                                      no sandbox   Auto (Gemini 3)
+`
+	if hasGeminiTrustPrompt(pane) {
+		t.Fatal("stale trust prompt outside the visible pane must not be treated as current")
+	}
+	if hasGeminiActivity(pane) {
+		t.Fatal("stale activity outside the visible pane must not be treated as current")
+	}
+	if !hasGeminiReadyPrompt(pane) {
+		t.Fatal("current visible ready prompt should still be detected")
 	}
 }
 

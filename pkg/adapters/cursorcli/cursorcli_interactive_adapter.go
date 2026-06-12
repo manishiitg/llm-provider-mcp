@@ -1230,6 +1230,9 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 		return fmt.Errorf("failed to start Cursor interactive session %q: %w", sessionName, err)
 	}
 	_ = runCursorCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	if err := runCursorCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Cursor tmux history for session %q: %w", sessionName, err)
+	}
 	// Pin the window size to manual so the detached session keeps the size we
 	// launched at instead of collapsing to default-size (80x24), which reflows
 	// the TUI into half-width and makes the captured pane unreadable.
@@ -1276,14 +1279,15 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
-			if hasCursorTrustPrompt(captured) && !trustSubmitted {
-				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(captured))
+			visible := cursorVisiblePaneText(captured)
+			if hasCursorTrustPrompt(visible) && !trustSubmitted {
+				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(visible))
 				trustSubmitted = true
 				consecutiveReadyTicks = 0
 				bootBannerReadySince = time.Time{}
 				continue
 			}
-			cleaned := strings.ToLower(stripCursorANSI(captured))
+			cleaned := strings.ToLower(stripCursorANSI(visible))
 			if cursorBootBannerAcceptableAfterGrace(cleaned) {
 				consecutiveReadyTicks = 0
 				if bootBannerReadySince.IsZero() {
@@ -2003,19 +2007,20 @@ func cursorPaneShowsPromptDraft(captured, prompt string) bool {
 }
 
 func hasCursorReadyPrompt(captured string) bool {
-	if hasCursorTrustPrompt(captured) {
+	visible := cursorVisiblePaneText(captured)
+	if hasCursorTrustPrompt(visible) {
 		return false
 	}
-	if hasCursorWebSearchApprovalPrompt(captured) {
+	if hasCursorWebSearchApprovalPrompt(visible) {
 		return false
 	}
 	// The MCP-tool approval prompt renders a "→ Run (once)" line whose arrow
 	// otherwise looks like a ready input marker — never treat it as ready, or the
 	// loop reports a bogus completion while the tool call is still gated.
-	if hasCursorMCPToolApprovalPrompt(captured) {
+	if hasCursorMCPToolApprovalPrompt(visible) {
 		return false
 	}
-	cleaned := strings.ToLower(stripCursorANSI(captured))
+	cleaned := strings.ToLower(stripCursorANSI(visible))
 	if !hasCursorReadyMarker(cleaned) {
 		return false
 	}
@@ -2035,7 +2040,7 @@ func hasCursorReadyPrompt(captured string) bool {
 	// Cursor leaves stale status lines (Running..., Thinking...) in the pane
 	// after a tool finishes. Once the → prompt is visible, stale activity
 	// text should not keep the turn open forever.
-	if hasCursorActivity(captured) && !strings.Contains(cleaned, "→") {
+	if hasCursorActivity(visible) && !strings.Contains(cleaned, "→") {
 		return false
 	}
 	return true
@@ -2092,7 +2097,7 @@ func hasCursorReadyMarker(cleaned string) bool {
 }
 
 func hasCursorTrustPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripCursorANSI(captured))
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
 	if strings.Contains(cleaned, "trusting workspace") {
 		return false
 	}
@@ -2104,7 +2109,7 @@ func hasCursorTrustPrompt(captured string) bool {
 }
 
 func hasCursorWebSearchApprovalPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripCursorANSI(captured))
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
 		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
@@ -2120,7 +2125,7 @@ func hasCursorWebSearchApprovalPrompt(captured string) bool {
 //
 // It appears for every MCP tool call unless cursor is launched with --force.
 func hasCursorMCPToolApprovalPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripCursorANSI(captured))
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "run this mcp tool") ||
 		strings.Contains(cleaned, "allowlist mcp tool")
 }
@@ -2134,7 +2139,7 @@ func cursorTrustPromptResponse(captured string) string {
 }
 
 func hasCursorActivity(captured string) bool {
-	for _, line := range strings.Split(stripCursorANSI(captured), "\n") {
+	for _, line := range strings.Split(stripCursorANSI(cursorVisiblePaneText(captured)), "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
 		if lower == "" {
 			continue
@@ -2161,6 +2166,18 @@ func hasCursorActivity(captured string) bool {
 		}
 	}
 	return false
+}
+
+func cursorVisiblePaneText(captured string) string {
+	_, rows := tmuxsize.Size()
+	if rows <= 0 {
+		rows = tmuxsize.DefaultRows
+	}
+	lines := strings.Split(captured, "\n")
+	if len(lines) <= rows {
+		return captured
+	}
+	return strings.Join(lines[len(lines)-rows:], "\n")
 }
 
 func streamCursorTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
@@ -2197,17 +2214,18 @@ func interruptCursorInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetCursorPaneForTurn(ctx context.Context, sessionName string) {
-	// Only trim tmux's external scrollback to bound memory growth. We
-	// intentionally do NOT send C-l (0x0C) anymore: Cursor's raw-mode TUI
+	// Preserve tmux scrollback for browser/UI history. We intentionally do NOT
+	// send C-l (0x0C) anymore: Cursor's raw-mode TUI
 	// catches that keystroke as "clear display", which wipes the visible
 	// chat history the operator is watching in the browser terminal pane.
+	// Memory is bounded by the session history-limit, and per-turn parsing is
+	// anchored to the captured baseline.
 	// Baseline-diff logic in cursorCapturedAfterBaseline tolerates an
 	// already-populated pane via LastIndex(captured, baseline).
-	_ = runCursorCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
 func captureCursorPane(ctx context.Context, sessionName string) (string, error) {
-	return tmuxexec.CapturePane(ctx, sessionName, 3000)
+	return tmuxexec.CapturePane(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func captureCursorPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -2217,7 +2235,7 @@ func captureCursorPaneForDisplay(ctx context.Context, sessionName string) (strin
 	// the adapter so they don't garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func cursorCapturedAfterBaseline(captured, baseline string) string {

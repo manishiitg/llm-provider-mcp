@@ -74,6 +74,9 @@ exit 1
 	if !strings.Contains(string(args), " -J") {
 		t.Fatalf("terminal display capture did not use joined rows (-J): %q", string(args))
 	}
+	if !strings.Contains(string(args), " -S -"+defaultTmuxCaptureLines) {
+		t.Fatalf("terminal display capture did not request %s lines: %q", defaultTmuxCaptureLines, string(args))
+	}
 }
 
 func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
@@ -85,6 +88,34 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
+	}
+}
+
+func TestClaudeStartSessionSetsHistoryLimit(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/tmux-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TEST_ARGS"
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", argsPath)
+
+	adapter := NewClaudeCodeInteractiveAdapter("claude-code", nil)
+	if err := adapter.startSession(context.Background(), "history-session", []string{"claude"}, ""); err != nil {
+		t.Fatalf("startSession returned error: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read tmux args: %v", err)
+	}
+	want := "set-option -t history-session history-limit " + defaultTmuxHistoryLimit
+	if !strings.Contains(string(args), want) {
+		t.Fatalf("tmux args missing history limit %q:\n%s", want, string(args))
 	}
 }
 

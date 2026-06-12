@@ -12,7 +12,7 @@ import (
 // production hang where a COMPLETED agy turn was never recognized as done.
 //
 // The real incident: a message_sequence turn finished its work (files written,
-// pane idle with a "> " prompt), but a stale "○ " tool card left in the 3000-line
+// pane idle with a "> " prompt), but a stale "○ " tool card left in the tmux
 // scrollback held hasAgyReadyPrompt false forever. Because the call context has
 // no deadline and every completion branch is gated behind hasAgyReadyPrompt, the
 // loop spun for 20+ minutes — executeMessageSequenceItem never returned, so the

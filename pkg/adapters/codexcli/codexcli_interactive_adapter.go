@@ -1139,6 +1139,9 @@ func startCodexTmuxSession(ctx context.Context, sessionName string, args []strin
 		return fmt.Errorf("failed to start Codex interactive session %q: %w", sessionName, err)
 	}
 	_ = runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	if err := runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Codex tmux history for session %q: %w", sessionName, err)
+	}
 	// Pin the window size to manual so the detached session keeps the size we
 	// launched at instead of collapsing to default-size (80x24), which reflows
 	// the TUI into half-width and makes the captured pane unreadable.
@@ -2681,8 +2684,7 @@ func dismissCodexTrustPrompt(ctx context.Context, sessionName, captured string) 
 // We match on distinctive bottom-line directives that are stable
 // across hook-count variations. Either form returns true.
 func hasCodexHookTrustReviewPrompt(captured string) bool {
-	// captureCodexPane uses -S -3000 so the returned content includes
-	// 3000 lines of scrollback. Anchor text from a dismissed prompt
+	// captureCodexPane includes a deep scrollback window. Anchor text from a dismissed prompt
 	// stays in scrollback indefinitely, so a naïve substring match
 	// over the full buffer reports the prompt as "still showing" long
 	// after we dismissed it — which then makes waitForCodexPrompt
@@ -3171,7 +3173,7 @@ func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
 }
 
 func captureCodexPane(ctx context.Context, sessionName string) (string, error) {
-	return tmuxexec.CapturePane(ctx, sessionName, 3000)
+	return tmuxexec.CapturePane(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func captureCodexPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -3181,7 +3183,7 @@ func captureCodexPaneForDisplay(ctx context.Context, sessionName string) (string
 	// the adapter so they don't garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func codexCapturedAfterBaseline(captured, baseline string) string {

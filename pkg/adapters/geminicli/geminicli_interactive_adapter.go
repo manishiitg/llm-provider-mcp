@@ -1007,6 +1007,9 @@ func startGeminiTmuxSession(ctx context.Context, sessionName string, args []stri
 		return fmt.Errorf("failed to start Gemini interactive session %q: %w", sessionName, err)
 	}
 	_ = runGeminiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	if err := runGeminiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Gemini tmux history for session %q: %w", sessionName, err)
+	}
 	// Pin the window size to manual so the detached session keeps the size we
 	// launched at instead of collapsing to default-size (80x24), which reflows
 	// the TUI into half-width and makes the captured pane unreadable.
@@ -1266,7 +1269,7 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 				}
 			}
 			if hasGeminiUnsubmittedDraft(captured) {
-				active := hasGeminiActivity(captured)
+				active := hasGeminiActivity(delta)
 				if !active && draftSubmitAttempts >= geminiPromptSubmitMaxAttempts {
 					return captured, fmt.Errorf("Gemini CLI prompt remained unsubmitted after %d submit attempts; %s", geminiPromptSubmitMaxAttempts, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 				}
@@ -1283,7 +1286,7 @@ func waitForGeminiInteractiveResponse(ctx context.Context, session *geminiIntera
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
-			if hasGeminiActivity(captured) {
+			if hasGeminiActivity(delta) {
 				sawActivity = true
 				idleSince = time.Time{}
 				lastCaptured = captured
@@ -1843,7 +1846,7 @@ func isGeminiActiveStatusLine(line string) bool {
 }
 
 func hasGeminiTrustPrompt(captured string) bool {
-	lower := strings.ToLower(stripGeminiANSI(captured))
+	lower := strings.ToLower(stripGeminiANSI(geminiVisiblePaneText(captured)))
 	return (strings.Contains(lower, "do you trust the files in this folder") &&
 		strings.Contains(lower, "trust folder")) ||
 		(strings.Contains(lower, "do you trust the following folders being added to this workspace") &&
@@ -1851,7 +1854,7 @@ func hasGeminiTrustPrompt(captured string) bool {
 }
 
 func hasGeminiReadyPrompt(captured string) bool {
-	lines := strings.Split(stripGeminiANSI(captured), "\n")
+	lines := strings.Split(stripGeminiANSI(geminiVisiblePaneText(captured)), "\n")
 	seenNonEmpty := 0
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 16; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -1867,7 +1870,7 @@ func hasGeminiReadyPrompt(captured string) bool {
 }
 
 func hasGeminiUnsubmittedDraft(captured string) bool {
-	lines := strings.Split(stripGeminiANSI(captured), "\n")
+	lines := strings.Split(stripGeminiANSI(geminiVisiblePaneText(captured)), "\n")
 
 	// Gemini 0.42 renders the active input box immediately above the footer
 	// that starts with "workspace (/directory)". Limit draft detection to that
@@ -1908,6 +1911,18 @@ func hasGeminiUnsubmittedDraft(captured string) bool {
 		}
 	}
 	return false
+}
+
+func geminiVisiblePaneText(captured string) string {
+	_, rows := tmuxsize.Size()
+	if rows <= 0 {
+		rows = tmuxsize.DefaultRows
+	}
+	lines := strings.Split(captured, "\n")
+	if len(lines) <= rows {
+		return captured
+	}
+	return strings.Join(lines[len(lines)-rows:], "\n")
 }
 
 func isGeminiWorkspaceFooterLine(line string) bool {
@@ -2106,14 +2121,13 @@ func interruptGeminiInteractiveSession(sessionName string, logger interfaces.Log
 }
 
 func resetGeminiPaneForTurn(ctx context.Context, sessionName string) {
-	// Only trim tmux's external scrollback to bound memory growth. The visible
-	// pane stays intact for the browser terminal; per-turn parsing is still
-	// anchored to the captured baseline.
-	_ = runGeminiCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
+	// Preserve tmux scrollback for browser/UI history. Memory is bounded by the
+	// session history-limit, and per-turn parsing is anchored to the captured
+	// baseline.
 }
 
 func captureGeminiPane(ctx context.Context, sessionName string) (string, error) {
-	return tmuxexec.CapturePane(ctx, sessionName, 3000)
+	return tmuxexec.CapturePane(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -2123,7 +2137,7 @@ func captureGeminiPaneForDisplay(ctx context.Context, sessionName string) (strin
 	// the adapter so they don't garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func geminiCapturedAfterBaseline(captured, baseline string) string {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
@@ -98,6 +99,36 @@ exit 1
 	}
 	if !strings.Contains(string(args), " -J") {
 		t.Fatalf("terminal display capture did not use joined rows (-J): %q", string(args))
+	}
+	if want := fmt.Sprintf(" -S -%d", tmuxexec.DefaultScrollbackLines); !strings.Contains(string(args), want) {
+		t.Fatalf("terminal display capture did not request %s: %q", want, string(args))
+	}
+}
+
+func TestCodexStartSessionSetsHistoryLimit(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/tmux-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TEST_ARGS"
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", argsPath)
+
+	if err := startCodexTmuxSession(context.Background(), "history-session", []string{"codex"}, ""); err != nil {
+		t.Fatalf("startCodexTmuxSession returned error: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read tmux args: %v", err)
+	}
+	want := "set-option -t history-session history-limit " + tmuxexec.DefaultHistoryLimit
+	if !strings.Contains(string(args), want) {
+		t.Fatalf("tmux args missing history limit %q:\n%s", want, string(args))
 	}
 }
 

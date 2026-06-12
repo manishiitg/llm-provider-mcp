@@ -1590,6 +1590,9 @@ func startAgyTmuxSession(ctx context.Context, sessionName string, args []string,
 		return fmt.Errorf("failed to start Agy interactive session %q: %w", sessionName, err)
 	}
 	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	if err := runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Agy tmux history for session %q: %w", sessionName, err)
+	}
 	// Pin the window size to manual so the detached session keeps the size we
 	// launched at instead of collapsing to default-size (80x24), which reflows
 	// the TUI into half-width and makes the captured pane unreadable.
@@ -1638,21 +1641,22 @@ func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, st
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
-			if hasAgyTrustPrompt(captured) && !trustSubmitted {
+			visible := agyVisiblePaneText(captured)
+			if hasAgyTrustPrompt(visible) && !trustSubmitted {
 				trustSeen = true
-				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, agyTrustPromptResponse(captured))
+				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, agyTrustPromptResponse(visible))
 				trustSubmitted = true
 				continue
 			}
-			if hasAgyAuthPrompt(captured) {
+			if hasAgyAuthPrompt(visible) {
 				return trustSeen, agyAuthPromptError(captured)
 			}
-			if hasAgyFeedbackPrompt(captured) && !feedbackSkipped {
+			if hasAgyFeedbackPrompt(visible) && !feedbackSkipped {
 				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "0")
 				feedbackSkipped = true
 				continue
 			}
-			if hasAgyReadyPrompt(captured) {
+			if hasAgyReadyPrompt(visible) {
 				return trustSeen, nil
 			}
 			// A leftover draft in the input box (common when a persistent
@@ -2574,19 +2578,20 @@ func agyPaneShowsPromptDraft(captured, prompt string) bool {
 }
 
 func hasAgyReadyPrompt(captured string) bool {
-	if hasAgyTrustPrompt(captured) {
+	visible := agyVisiblePaneText(captured)
+	if hasAgyTrustPrompt(visible) {
 		return false
 	}
-	if hasAgyAuthPrompt(captured) {
+	if hasAgyAuthPrompt(visible) {
 		return false
 	}
-	if hasAgyWebSearchApprovalPrompt(captured) {
+	if hasAgyWebSearchApprovalPrompt(visible) {
 		return false
 	}
-	if hasAgyFeedbackPrompt(captured) {
+	if hasAgyFeedbackPrompt(visible) {
 		return false
 	}
-	cleaned := strings.ToLower(stripAgyANSI(captured))
+	cleaned := strings.ToLower(stripAgyANSI(visible))
 	if !hasAgyReadyMarker(cleaned) {
 		return false
 	}
@@ -2599,7 +2604,7 @@ func hasAgyReadyPrompt(captured string) bool {
 	// after a tool finishes. Once the → prompt is visible, stale activity
 	// text should not keep the turn open forever. Recent Agy builds can use a
 	// plain ">" input line after completion, so accept either structural prompt.
-	if hasAgyActivity(captured) && !hasAgyReadyInputPromptLine(cleaned) {
+	if hasAgyActivity(visible) && !hasAgyReadyInputPromptLine(cleaned) {
 		return false
 	}
 	return true
@@ -2662,7 +2667,7 @@ func hasAgyReadyInputPromptLine(cleaned string) bool {
 }
 
 func hasAgyTrustPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripAgyANSI(captured))
+	cleaned := strings.ToLower(stripAgyANSI(agyVisiblePaneText(captured)))
 	if strings.Contains(cleaned, "trusting workspace") {
 		return false
 	}
@@ -2675,7 +2680,7 @@ func hasAgyTrustPrompt(captured string) bool {
 }
 
 func hasAgyAuthPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripAgyANSI(captured))
+	cleaned := strings.ToLower(stripAgyANSI(agyVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "welcome to the antigravity cli") &&
 		strings.Contains(cleaned, "not signed in") &&
 		(strings.Contains(cleaned, "select login method") ||
@@ -2688,14 +2693,14 @@ func agyAuthPromptError(captured string) error {
 }
 
 func hasAgyWebSearchApprovalPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripAgyANSI(captured))
+	cleaned := strings.ToLower(stripAgyANSI(agyVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
 		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
 }
 
 func hasAgyFeedbackPrompt(captured string) bool {
-	cleaned := strings.ToLower(stripAgyANSI(captured))
+	cleaned := strings.ToLower(stripAgyANSI(agyVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "how's the cli experience so far") &&
 		strings.Contains(cleaned, "help us improve") &&
 		strings.Contains(cleaned, "[0] skip")
@@ -2795,7 +2800,7 @@ func agyActivityKeyword(lower string) string {
 }
 
 func hasAgyActivity(captured string) bool {
-	for _, line := range strings.Split(stripAgyANSI(captured), "\n") {
+	for _, line := range strings.Split(stripAgyANSI(agyVisiblePaneText(captured)), "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
 		if lower == "" {
 			continue
@@ -2823,6 +2828,18 @@ func hasAgyActivity(captured string) bool {
 		}
 	}
 	return false
+}
+
+func agyVisiblePaneText(captured string) string {
+	_, rows := tmuxsize.Size()
+	if rows <= 0 {
+		rows = tmuxsize.DefaultRows
+	}
+	lines := strings.Split(captured, "\n")
+	if len(lines) <= rows {
+		return captured
+	}
+	return strings.Join(lines[len(lines)-rows:], "\n")
 }
 
 func streamAgyTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
@@ -2901,17 +2918,18 @@ func waitForAgyTmuxSessionGone(ctx context.Context, sessionName string, timeout 
 }
 
 func resetAgyPaneForTurn(ctx context.Context, sessionName string) {
-	// Only trim tmux's external scrollback to bound memory growth. We
-	// intentionally do NOT send C-l (0x0C) anymore: Agy's raw-mode TUI
+	// Preserve tmux scrollback for browser/UI history. We intentionally do NOT
+	// send C-l (0x0C) anymore: Agy's raw-mode TUI
 	// catches that keystroke as "clear display", which wipes the visible
 	// chat history the operator is watching in the browser terminal pane.
+	// Memory is bounded by the session history-limit, and per-turn parsing is
+	// anchored to the captured baseline.
 	// Baseline-diff logic in agyCapturedAfterBaseline tolerates an
 	// already-populated pane via LastIndex(captured, baseline).
-	_ = runAgyCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
 func captureAgyPane(ctx context.Context, sessionName string) (string, error) {
-	return tmuxexec.CapturePane(ctx, sessionName, 3000)
+	return tmuxexec.CapturePane(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
@@ -2921,7 +2939,7 @@ func captureAgyPaneForDisplay(ctx context.Context, sessionName string) (string, 
 	// garble the rendered output.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
 	// hard splitting words mid-line.
-	return tmuxexec.CapturePaneANSI(ctx, sessionName, 3000)
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, tmuxexec.DefaultScrollbackLines)
 }
 
 func agyCapturedAfterBaseline(captured, baseline string) string {
