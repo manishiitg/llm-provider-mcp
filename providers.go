@@ -86,6 +86,7 @@ const (
 	ProviderMiniMaxCodingPlan     Provider = "minimax-coding-plan"
 	ProviderElevenLabs            Provider = "elevenlabs"
 	ProviderDeepgram              Provider = "deepgram"
+	ProviderOllama                Provider = "ollama"
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "composer-2.5"
@@ -355,6 +356,14 @@ type ProviderAPIKeys struct {
 	Bedrock           *BedrockConfig
 	Azure             *AzureAPIConfig
 
+	// OllamaBaseURL is the Ollama server base URL (e.g. "http://localhost:11434"
+	// for local, or a cloud endpoint). Falls back to OLLAMA_BASE_URL env var,
+	// then "http://localhost:11434".
+	OllamaBaseURL *string
+	// OllamaAPIKey is the optional API key for Ollama Cloud. Not required for
+	// local Ollama deployments.
+	OllamaAPIKey *string
+
 	// OpenCodeCLISubKeys holds credentials for OpenCode CLI sub-provider
 	// tiles, keyed by the env-var the OpenCode bundled SDK reads
 	// (KIMI_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY,
@@ -411,6 +420,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.ZAI = key
 	case ProviderKimi:
 		k.Kimi = key
+	case ProviderOllama:
+		k.OllamaBaseURL = key
 	}
 }
 
@@ -477,6 +488,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:
 		llm, err = initializeMiniMaxCodingPlan(config)
+	case ProviderOllama:
+		llm, err = initializeOllama(config)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
@@ -1263,6 +1276,71 @@ func initializeZAIWithFallback(config Config) (llmtypes.Model, error) {
 	}
 
 	return nil, fmt.Errorf("all Z.AI models failed: %w", err)
+}
+
+// initializeOllama creates and configures an Ollama LLM instance using the
+// OpenAI-compatible Chat Completions API exposed by the Ollama server.
+func initializeOllama(config Config) (llmtypes.Model, error) {
+	// Base URL from config or env, defaulting to local Ollama
+	baseURL := ""
+	if config.APIKeys != nil && config.APIKeys.OllamaBaseURL != nil && *config.APIKeys.OllamaBaseURL != "" {
+		baseURL = strings.TrimRight(*config.APIKeys.OllamaBaseURL, "/")
+	}
+	if baseURL == "" {
+		if v := os.Getenv("OLLAMA_BASE_URL"); v != "" {
+			baseURL = strings.TrimRight(v, "/")
+		}
+	}
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	// API key is optional for local Ollama; required for cloud deployments
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.OllamaAPIKey != nil && *config.APIKeys.OllamaAPIKey != "" {
+		apiKey = *config.APIKeys.OllamaAPIKey
+	}
+	if apiKey == "" {
+		if v := os.Getenv("OLLAMA_API_KEY"); v != "" {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		apiKey = "ollama" // local Ollama ignores the key; placeholder satisfies the SDK
+	}
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = "llama3.2"
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), modelID, config.Temperature, config.TraceID, LLMMetadata{
+		ModelVersion: modelID,
+		CustomFields: map[string]string{"provider": "ollama", "operation": "llm_initialization"},
+	})
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	// Ollama exposes an OpenAI-compatible /v1 endpoint
+	client := openaisdk.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL+"/v1"),
+	)
+
+	llm := openaiadapter.NewCompatibleOpenAIAdapter(&client, modelID, logger, openaiadapter.OpenAICompatibilityConfig{
+		ProviderName: "ollama",
+	})
+
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, LLMMetadata{
+		ModelVersion: modelID,
+		CustomFields: map[string]string{"provider": "ollama", "status": StatusLLMInitialized},
+	})
+
+	logger.Infof("Initialized Ollama LLM - base_url: %s, model_id: %s", baseURL, modelID)
+	return llm, nil
 }
 
 // initializeOpenRouterWithFallback creates an OpenRouter LLM with fallback models for rate limiting
@@ -3123,10 +3201,11 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
 	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
-		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIOpenRouter, ProviderOpenCodeCLIFree:
+		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIOpenRouter, ProviderOpenCodeCLIFree,
+		ProviderOllama:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan, ollama", provider)
 	}
 }
 
@@ -4812,6 +4891,9 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	case "z-ai":
 		fmt.Printf("[API KEY VALIDATION] Testing Z.AI API key\n")
 		isValid, message, err = validateZAIAPIKey(req.APIKey, req.ModelID, req.Options)
+	case "ollama":
+		fmt.Printf("[API KEY VALIDATION] Testing Ollama connectivity\n")
+		isValid, message, err = validateOllamaConnectivity(req.APIKey, req.ModelID, req.Options)
 	case "kimi":
 		fmt.Printf("[API KEY VALIDATION] Testing Kimi API key\n")
 		isValid, message, err = validateKimiAPIKey(req.APIKey, req.ModelID, req.Options)
@@ -5191,6 +5273,56 @@ func validateOpenAIAPIKey(apiKey string, modelID string, options map[string]inte
 
 	fmt.Printf("[OPENAI VALIDATION SUCCESS] OpenAI API key is valid\n")
 	return true, fmt.Sprintf("OpenAI API key is valid for model %s", modelID), nil
+}
+
+// validateOllamaConnectivity tests connectivity to an Ollama server by hitting
+// /api/tags. The API key is optional (not required for local deployments).
+func validateOllamaConnectivity(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
+	fmt.Printf("[OLLAMA VALIDATION] Starting connectivity check\n")
+
+	baseURL := "http://localhost:11434"
+	if v, ok := options["base_url"].(string); ok && v != "" {
+		baseURL = strings.TrimRight(v, "/")
+	} else if v := os.Getenv("OLLAMA_BASE_URL"); v != "" {
+		baseURL = strings.TrimRight(v, "/")
+	}
+
+	if modelID == "" {
+		modelID = "llama3.2"
+	}
+
+	config := Config{
+		Provider: ProviderOllama,
+		ModelID:  modelID,
+		Logger:   &noopLoggerImpl{},
+		Context:  context.Background(),
+		APIKeys: &ProviderAPIKeys{
+			OllamaBaseURL: &baseURL,
+			OllamaAPIKey:  &apiKey,
+		},
+	}
+
+	llm, err := initializeOllama(config)
+	if err != nil {
+		return false, fmt.Sprintf("Failed to connect to Ollama at %s: %v", baseURL, err), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err = llm.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role:  llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly: OK"}},
+		},
+	})
+	if err != nil {
+		fmt.Printf("[OLLAMA VALIDATION ERROR] %v\n", err)
+		return false, fmt.Sprintf("Ollama at %s responded with an error: %v", baseURL, err), nil
+	}
+
+	fmt.Printf("[OLLAMA VALIDATION SUCCESS] Connected to %s, model %s\n", baseURL, modelID)
+	return true, fmt.Sprintf("Connected to Ollama at %s, model %s is available", baseURL, modelID), nil
 }
 
 // validateAnthropicAPIKey validates an Anthropic API key by making a real GenerateContent call
