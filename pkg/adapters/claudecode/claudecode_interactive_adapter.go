@@ -1441,7 +1441,7 @@ func claudeSubmitPromptKeys() []string {
 // common path. On timeout it returns an error rather than send into a still-
 // compacting pane.
 func waitForClaudeCompactionToSettle(ctx context.Context, sessionName string) error {
-	if captured, err := captureTmuxPane(ctx, sessionName); err == nil && !isClaudeCompactionInProgress(captured) {
+	if captured, err := captureTmuxPane(ctx, sessionName); err == nil && !claudeCompactionBlocksInput(captured) {
 		return nil
 	}
 	deadline, cancel := context.WithTimeout(ctx, claudeCompactionMaxWait)
@@ -1463,9 +1463,12 @@ func waitForClaudeCompactionToSettle(ctx context.Context, sessionName string) er
 				}
 				continue
 			}
-			if !isClaudeCompactionInProgress(captured) {
-				// Let the TUI restore the input box before we paste into it.
-				sleepCtx(deadline, claudeCompactionEndGrace)
+			if !claudeCompactionBlocksInput(captured) {
+				// If the box isn't back up yet (compaction just ended), give the
+				// TUI a moment to restore the input line before we paste.
+				if !hasReadyInputPrompt(captured) {
+					sleepCtx(deadline, claudeCompactionEndGrace)
+				}
 				return nil
 			}
 		}
@@ -2546,6 +2549,16 @@ func isClaudeTUIStatusLine(trimmed string) bool {
 func isClaudeCompactionInProgress(captured string) bool {
 	lower := strings.ToLower(strings.ReplaceAll(captured, " ", " "))
 	return strings.Contains(lower, "compacting") || strings.Contains(lower, "summarizing")
+}
+
+// claudeCompactionBlocksInput reports whether compaction is currently REPLACING
+// the input box — the only state in which a send must wait. isClaudeCompactionInProgress
+// is a loose substring match that also fires on the words "compacting"/"summarizing"
+// appearing in scrollback or the workflow's own conversation content; gating it on
+// "no ready ❯ prompt" means a pane that is actually accepting input is never treated
+// as compacting, which prevents a spurious multi-minute stall on every such send.
+func claudeCompactionBlocksInput(captured string) bool {
+	return isClaudeCompactionInProgress(captured) && !hasReadyInputPrompt(captured)
 }
 
 func hasTrailingClaudeTUIStatus(text string) bool {
