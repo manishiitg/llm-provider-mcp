@@ -738,6 +738,98 @@ Missing required output file. Fix the specific issue above and re-produce the re
 }
 
 // ---------------------------------------------------------------------------
+// E2E: Cursor natively queues a mid-turn user message and processes it after
+// the current turn completes (live input, no server queue in between).
+// ---------------------------------------------------------------------------
+
+func TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-live-process-" + cursorRandomHex(4)
+	workDir := t.TempDir()
+	bridgeToken := "CURSOR_LIVE_PROCESS_" + cursorRandomHex(5)
+	firstDone := "CURSOR_FIRST_DONE_" + cursorRandomHex(5)
+	liveAck := "CURSOR_LIVE_ACK_" + cursorRandomHex(5)
+
+	// The cursor slow-MCP contract server bakes its delay in internally (cursor's
+	// TUI ask mode refuses a tool that exposes a delay parameter), so the prompt
+	// asks for delay_ms 8000 as the intent while the server enforces the real
+	// busy window; the marker file proves the tool started.
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeCursorSlowContractMCPServer(t, slowToolMarker)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	preApproveCursorMCP(t, workDir, mcpConfig, "api-bridge")
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resultCh := make(chan cursorRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. If a follow-up user message arrives while you are working, handle it after the current tool call finishes. Keep answers concise."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge MCP tool named contract_echo_token with token %s and delay_ms 8000. Do not answer until the tool returns. Then reply exactly %s.", bridgeToken, firstDone)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithWorkingDir(workDir),
+			WithForce(),
+			WithMCPConfig(mcpConfig),
+			WithApproveMCPs(),
+			llmtypes.WithStreamingChan(streamChan),
+		)
+		out := cursorRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	tmuxSession := waitForCursorRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForCursorRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	// Deliver the follow-up WHILE cursor is busy in the slow tool, via the raw
+	// adapter path (no server queue in between) — proving cursor-agent itself
+	// queues the mid-turn message and processes it after the current turn.
+	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, also reply exactly %s and nothing else.", liveAck)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendCursorInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendCursorInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	// Let GenerateContent COMPLETE (do not cancel). The native queue must have
+	// processed the follow-up so the final content carries the LIVE_ACK marker.
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			pane, _ := captureCursorPane(context.Background(), tmuxSession)
+			t.Fatalf("GenerateContent error = %v (content=%q)\npane:\n%s", got.err, got.content, pane)
+		}
+		if !strings.Contains(got.content, liveAck) {
+			pane, _ := captureCursorPane(context.Background(), tmuxSession)
+			t.Fatalf("queued follow-up was NOT processed by cursor-agent; final content=%q\npane:\n%s", got.content, pane)
+		}
+		t.Logf("OK: cursor-agent natively queued + processed the mid-turn follow-up (found %s in final content)", liveAck)
+	case <-time.After(4 * time.Minute):
+		pane, _ := captureCursorPane(context.Background(), tmuxSession)
+		t.Fatalf("timed out waiting for cursor to process the queued live input; pane:\n%s", pane)
+	}
+	_ = drainCursorStream(streamChan)
+}
+
+// ---------------------------------------------------------------------------
 // E2E: MCP bridge tool call via custom MCP server (tmux transport)
 // ---------------------------------------------------------------------------
 

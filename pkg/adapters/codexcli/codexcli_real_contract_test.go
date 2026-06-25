@@ -416,6 +416,98 @@ func TestCodexCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 	_ = drainCodexStream(streamChan)
 }
 
+// TestCodexCLIRealInteractiveLiveInputProcessesQueuedFollowupContract verifies
+// the property the steer-vs-queue removal depends on for CLI agents: a message
+// delivered mid-turn (while Codex is busy in a slow MCP tool) is queued by the
+// Codex CLI ITSELF and processed once the current turn completes. It sends the
+// follow-up via raw SendCodexInteractiveInput (bypassing the server steer/queue),
+// so a processed follow-up proves the CLI's own native queue did the work.
+func TestCodexCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	ownerSessionID := "codex-real-live-queue-" + codexRandomHex(4)
+	toolToken := "SLOW_CODEX_QUEUE_" + codexRandomHex(4)
+	firstDone := "CODEX_FIRST_DONE_" + codexRandomHex(4)
+	liveAck := "CODEX_LIVE_ACK_" + codexRandomHex(4)
+
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeCodexSlowContractMCPServer(t, slowToolMarker)
+	mcpCommandOverride, err := codexStringConfigOverride("mcp_servers.api-bridge.command", mcpServerPath)
+	if err != nil {
+		t.Fatalf("build MCP command override: %v", err)
+	}
+
+	paneDiag := func() string {
+		if sn, ok := activeCodexInteractiveSession(ownerSessionID); ok {
+			p, _ := captureCodexPaneForDisplay(context.Background(), sn)
+			return p
+		}
+		return "(no active session)"
+	}
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resultCh := make(chan codexRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "This is a Codex CLI transport test. Use only declared MCP tools. If a follow-up user message arrives while you are working, handle it after the current tool call finishes. Keep answers concise."}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge slow_contract MCP tool with token %s and delay_ms 8000. Do not answer until the tool returns. Then reply exactly %s.", toolToken, firstDone)}}},
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithDisableShellTool(),
+			WithApprovalPolicy("never"),
+			WithReasoningEffort("low"),
+			WithConfigOverrides([]string{mcpCommandOverride}),
+			llmtypes.WithStreamingChan(streamChan),
+		)
+		out := codexRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForCodexRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	// Deliver the follow-up WHILE Codex is busy in the slow tool, via the raw
+	// adapter path (no server queue in between).
+	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, also reply exactly %s and nothing else.", liveAck)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendCodexInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendCodexInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("GenerateContent error = %v (content=%q)", got.err, got.content)
+		}
+		if !strings.Contains(got.content, liveAck) {
+			t.Fatalf("queued follow-up was NOT processed by the CLI; final content=%q\npane:\n%s", got.content, paneDiag())
+		}
+		t.Logf("OK: Codex CLI natively queued + processed the mid-turn follow-up (found %s in final content)", liveAck)
+	case <-time.After(3 * time.Minute):
+		t.Fatalf("timed out waiting for Codex to process the queued live input; pane:\n%s", paneDiag())
+	}
+	_ = drainCodexStream(streamChan)
+}
+
 func requireRealCodexCLIE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_CODEX_CLI_REAL_E2E") == "" && os.Getenv("RUN_CODEX_CLI_INTERACTIVE_E2E") == "" {

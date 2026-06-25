@@ -426,6 +426,98 @@ func TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeTmuxIntegrationLiveInputProcessesQueuedFollowup verifies the
+// property the steer-vs-queue removal depends on for CLI agents: a message
+// delivered mid-turn (while Claude is busy in a slow MCP tool) is queued by the
+// Claude Code CLI ITSELF and processed once the current turn completes. It sends
+// the follow-up via raw SendClaudeCodeInput (bypassing the server steer/queue),
+// so a processed follow-up proves the CLI's own native queue did the work.
+func TestClaudeCodeTmuxIntegrationLiveInputProcessesQueuedFollowup(t *testing.T) {
+	skipClaudeInteractiveLiveE2E(t)
+
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+
+	ownerSessionID := "claude-live-queue-" + randomHex(4)
+	toolToken := "SLOW_CLAUDE_QUEUE_" + randomHex(4)
+	firstDone := "CLAUDE_FIRST_DONE_" + randomHex(4)
+	liveAck := "CLAUDE_LIVE_ACK_" + randomHex(4)
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpServerPath := writeClaudeInteractiveSlowMCPServer(t, slowToolMarker)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
+
+	paneDiag := func() string {
+		if sn, ok := activeClaudeInteractiveOwner(ownerSessionID); ok {
+			p, _ := captureTmuxPaneForDisplay(context.Background(), sn)
+			return p
+		}
+		return "(no active session)"
+	}
+
+	resultCh := make(chan claudeInteractiveRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	go func() {
+		resp, err := adapter.GenerateContent(
+			parentCtx,
+			[]llmtypes.MessageContent{
+				{
+					Role:  llmtypes.ChatMessageTypeSystem,
+					Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "This is a Claude Code transport test. Use only declared MCP tools. If a follow-up user message arrives while you are working, handle it after the current tool call finishes. Keep answers concise."}},
+				},
+				{
+					Role:  llmtypes.ChatMessageTypeHuman,
+					Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Call the api-bridge slow_contract MCP tool with token " + toolToken + " and delay_ms 8000. Do not answer until the tool returns. Then reply exactly " + firstDone + "."}},
+				},
+			},
+			WithInteractiveSessionID(ownerSessionID),
+			WithMCPConfig(mcpConfig),
+			WithClaudeCodeTools(""),
+			WithAllowedTools("mcp__api-bridge__slow_contract"),
+			WithEffort("low"),
+		)
+		out := claudeInteractiveRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	waitForIntegrationInteractiveSession(t, ownerSessionID, 30*time.Second, startupErrCh)
+	waitForClaudeInteractiveFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	// Deliver the follow-up WHILE Claude is busy in the slow tool, via the raw
+	// adapter path (no server queue in between).
+	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, also reply exactly %s and nothing else.", liveAck)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendClaudeCodeInput(sendCtx, ownerSessionID, liveMessage); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendClaudeCodeInput error = %v", err)
+	}
+	sendCancel()
+
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("GenerateContent error = %v (content=%q)", got.err, got.content)
+		}
+		if !strings.Contains(got.content, liveAck) {
+			t.Fatalf("queued follow-up was NOT processed by the CLI; final content=%q\npane:\n%s", got.content, paneDiag())
+		}
+		t.Logf("OK: Claude Code natively queued + processed the mid-turn follow-up (found %s in final content)", liveAck)
+	case <-time.After(3 * time.Minute):
+		t.Fatalf("timed out waiting for Claude to process the queued live input; pane:\n%s", paneDiag())
+	}
+}
+
 func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
