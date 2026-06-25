@@ -561,6 +561,29 @@ func TestExtractCodexVisibleAssistantTextDropsQueuedMessageFooterHint(t *testing
 	}
 }
 
+// Codex wraps a long user prompt across terminal lines: only the FIRST line
+// carries the "›" marker; continuation lines are indented with no marker. The
+// "›" line is correctly dropped as chrome, but the wrapped tail used to start a
+// fresh assistant segment and leak into the extracted answer. This locks that
+// the wrap is absorbed into the prompt chrome and the real answer is returned.
+func TestExtractCodexVisibleAssistantTextDropsWrappedPromptContinuation(t *testing.T) {
+	visible := `› Call the api-bridge slow_contract MCP tool with token SLOW_CODEX_QUEUE_09d66aa8 and delay_ms 8000. Do not answer
+  until the tool returns. Then reply exactly CODEX_FIRST_DONE_5e322e38.
+• Called api-bridge.slow_contract({"token":"SLOW_CODEX_QUEUE_09d66aa8","delay_ms":8000})
+  └ SLOW_BRIDGE_TOOL_OK_SLOW_CODEX_QUEUE_09d66aa8
+› Follow-up task: after the current answer completes, also reply exactly CODEX_LIVE_ACK_891ecff1 and nothing else.
+• CODEX_FIRST_DONE_5e322e38`
+
+	got := extractCodexVisibleAssistantText(visible)
+	if strings.Contains(got, "until the tool returns") {
+		t.Fatalf("wrapped prompt tail leaked into assistant text: %q", got)
+	}
+	want := "CODEX_FIRST_DONE_5e322e38"
+	if got != want {
+		t.Fatalf("visible assistant text = %q, want %q", got, want)
+	}
+}
+
 func TestExtractCodexVisibleAssistantTextDropsToolReplayFragments(t *testing.T) {
 	visible := `ver"})
 environment.

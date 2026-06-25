@@ -527,6 +527,85 @@ func TestPiCLIRealSlowToolLiveInputAndCancellationContract(t *testing.T) {
 	}
 }
 
+// TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract verifies the
+// property the steer-vs-queue removal depends on for the Pi CLI: a message
+// delivered mid-turn (while Pi is busy in a slow MCP tool) is queued by the Pi
+// CLI ITSELF and processed once the current turn completes. The follow-up is
+// delivered via raw SendPiInteractiveInput (bypassing the server queue), so a
+// processed follow-up proves Pi's own native queue did the work. Unlike the
+// cancellation contract, GenerateContent is allowed to COMPLETE.
+func TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	adapter := newRealPiCLIAdapter(t)
+	ownerSessionID := "pi-real-live-process-" + piRandomHex(4)
+	workDir := t.TempDir()
+	token := "PI_LIVE_PROCESS_" + piRandomHex(5)
+	firstDone := "PI_FIRST_DONE_" + piRandomHex(5)
+	liveAck := "PI_LIVE_ACK_" + piRandomHex(5)
+	slowToolMarker := filepath.Join(t.TempDir(), "slow-tool-started")
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiSlowMCPServer(t, "PI_LIVE_SECRET", slowToolMarker))
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resultCh := make(chan piRealResult, 1)
+	startupErrCh := make(chan error, 1)
+	go func() {
+		resp, err := adapter.GenerateContent(parentCtx, []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Do not answer until slow tools return. If a follow-up user message arrives while you are working, handle it after the current tool call finishes."),
+			llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, fmt.Sprintf("Call the api-bridge MCP tool slow_contract with token %s and delay_ms 8000. Do not answer until the tool returns. Then reply exactly %s.", token, firstDone)),
+		},
+			WithInteractiveSessionID(ownerSessionID),
+			WithPersistentInteractiveSession(true),
+			WithWorkingDir(workDir),
+			WithMCPConfig(mcpConfig),
+		)
+		out := piRealResult{err: err}
+		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+			out.content = resp.Choices[0].Content
+		}
+		if err != nil {
+			select {
+			case startupErrCh <- err:
+			default:
+			}
+		}
+		resultCh <- out
+	}()
+
+	session := waitForPiRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	waitForPiRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
+
+	// Deliver the follow-up WHILE Pi is busy in the slow tool, via the raw
+	// adapter path (no server queue in between).
+	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, also reply exactly %s and nothing else.", liveAck)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendPiInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
+		sendCancel()
+		cancel()
+		t.Fatalf("SendPiInteractiveInput error = %v", err)
+	}
+	sendCancel()
+
+	// Let GenerateContent COMPLETE (do NOT cancel). The queued follow-up must be
+	// processed natively by Pi and surface in the final content.
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("GenerateContent error = %v (content=%q)", got.err, got.content)
+		}
+		if !strings.Contains(got.content, liveAck) {
+			pane, _ := capturePiPane(context.Background(), session.tmuxSessionName)
+			t.Fatalf("queued follow-up was NOT processed by the Pi CLI; final content=%q\npane:\n%s", got.content, pane)
+		}
+		t.Logf("OK: Pi CLI natively queued + processed the mid-turn follow-up (found %s in final content)", liveAck)
+	case <-time.After(3 * time.Minute):
+		pane, _ := capturePiPane(context.Background(), session.tmuxSessionName)
+		t.Fatalf("timed out waiting for Pi to process the queued live input; pane:\n%s", pane)
+	}
+}
+
 func requireRealPiCLIContractE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_PI_CLI_REAL_E2E") == "" {

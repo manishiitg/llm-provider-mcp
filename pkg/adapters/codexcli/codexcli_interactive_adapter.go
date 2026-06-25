@@ -1670,8 +1670,8 @@ type codexNormalizedSnapshot struct {
 }
 
 func normalizeCodexPaneSnapshot(raw string) codexNormalizedSnapshot {
-	lines := normalizeCodexPaneLines(raw)
-	segments := segmentCodexLines(lines)
+	lines, wrapEligible := normalizeCodexPaneLinesWithMeta(raw)
+	segments := segmentCodexLines(lines, wrapEligible)
 	assistantText := assistantTextFromCodexSegments(segments)
 	return codexNormalizedSnapshot{
 		AssistantText: assistantText,
@@ -1681,19 +1681,48 @@ func normalizeCodexPaneSnapshot(raw string) codexNormalizedSnapshot {
 }
 
 func normalizeCodexPaneLines(raw string) []string {
+	lines, _ := normalizeCodexPaneLinesWithMeta(raw)
+	return lines
+}
+
+// normalizeCodexPaneLinesWithMeta is normalizeCodexPaneLines plus a parallel
+// wrapEligible flag per emitted line. A line is wrap-eligible when its raw
+// source line was indented and carried NO "•" event-block bullet — i.e. it is a
+// candidate continuation of a wrapped "›" prompt that the TUI split across
+// terminal rows. normalizeCodexPaneLine trims the leading indentation and the
+// bullet, destroying that signal, so we capture it here before normalization.
+func normalizeCodexPaneLinesWithMeta(raw string) ([]string, []bool) {
 	raw = normalizeCodexInlineTUIBoundaries(raw)
 	raw = expandCodexEscapedToolNewlines(raw)
 	rawLines := strings.Split(raw, "\n")
 	lines := make([]string, 0, len(rawLines))
+	wrapEligible := make([]bool, 0, len(rawLines))
 	for _, line := range rawLines {
+		eligible := isCodexWrapEligibleRawLine(line)
 		normalized := normalizeCodexPaneLine(line)
 		for _, splitLine := range splitCodexWorkingStatusPrefix(normalized) {
 			if splitLine != "" && !isCodexBulletOnlyLine(splitLine) {
 				lines = append(lines, splitLine)
+				wrapEligible = append(wrapEligible, eligible)
 			}
 		}
 	}
-	return lines
+	return lines, wrapEligible
+}
+
+// isCodexWrapEligibleRawLine reports whether a raw pane line (ANSI stripped) is
+// indented and has no leading "•" bullet. Codex marks each new event/message
+// block with a "•" bullet; a genuine wrapped-prompt tail has neither a "›"
+// marker nor a bullet, only the wrap indentation.
+func isCodexWrapEligibleRawLine(line string) bool {
+	stripped := stripCodexANSI(line)
+	if strings.TrimSpace(stripped) == "" {
+		return false
+	}
+	if stripped[0] != ' ' && stripped[0] != '\t' {
+		return false
+	}
+	return !strings.HasPrefix(strings.TrimSpace(stripped), "•")
 }
 
 func expandCodexEscapedToolNewlines(raw string) string {
@@ -1747,7 +1776,7 @@ func splitCodexWorkingStatusPrefix(line string) []string {
 	return []string{strings.TrimSpace(matches[1]), strings.TrimSpace(matches[2])}
 }
 
-func segmentCodexLines(lines []string) []codexSegment {
+func segmentCodexLines(lines []string, wrapEligible []bool) []codexSegment {
 	segments := make([]codexSegment, 0, len(lines))
 	current := codexSegment{}
 	flush := func() {
@@ -1762,6 +1791,7 @@ func segmentCodexLines(lines []string) []codexSegment {
 		if i+1 < len(lines) {
 			nextLine = lines[i+1]
 		}
+		lineWrapEligible := i < len(wrapEligible) && wrapEligible[i]
 		if current.Kind == codexSegmentToolStatus &&
 			(isCodexToolContinuationLine(line) || isCodexContextualToolContinuationLine(current.Lines, line, nextLine)) {
 			current.Lines = append(current.Lines, line)
@@ -1772,6 +1802,11 @@ func segmentCodexLines(lines []string) []codexSegment {
 			continue
 		}
 		if current.Kind == codexSegmentAssistant && isCodexAssistantAnswerContinuationLine(current.Lines, line) {
+			current.Lines = append(current.Lines, line)
+			continue
+		}
+		if current.Kind == codexSegmentChrome && lineWrapEligible &&
+			isCodexPromptWrapContinuationLine(current.Lines, line) {
 			current.Lines = append(current.Lines, line)
 			continue
 		}
@@ -2271,6 +2306,41 @@ func isCodexAssistantAnswerContinuationLine(currentLines []string, line string) 
 		strings.HasPrefix(lower, "equivalent relative path") ||
 		strings.HasPrefix(lower, "relative path") ||
 		strings.Contains(lower, "workspace root:")
+}
+
+// isCodexPromptWrapContinuationLine reports whether line is a wrapped
+// continuation of a "›" user prompt that the TUI split across terminal lines.
+// Codex renders only the FIRST line of a long prompt with the "›" marker; the
+// continuation lines are indented with no marker, so classifyCodexLine falls
+// through to its default (assistant_text) case and the wrapped tail leaks into
+// the extracted answer. We absorb such a line into the prompt's chrome segment,
+// but only when the chrome segment we are extending is itself a "›" prompt and
+// the candidate line would otherwise be plain assistant text — keeping this
+// narrow so real assistant replies are never swallowed.
+func isCodexPromptWrapContinuationLine(currentLines []string, line string) bool {
+	if len(currentLines) == 0 {
+		return false
+	}
+	if !isCodexPromptMarkerLine(currentLines[len(currentLines)-1]) {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	// Only absorb lines that would otherwise be classified as assistant text;
+	// anything with its own structural classification (tool/plan/chrome/etc.)
+	// must keep it so the existing handling applies.
+	return classifyCodexLine(trimmed) == codexSegmentAssistant
+}
+
+// isCodexPromptMarkerLine reports whether line is a rendered "›" user-prompt
+// line (the marker plus the first wrapped chunk of the prompt text).
+func isCodexPromptMarkerLine(line string) bool {
+	trimmed := strings.TrimSpace(stripCodexANSI(line))
+	return trimmed == "›" || trimmed == ">" || trimmed == "❯" ||
+		strings.HasPrefix(trimmed, "› ") ||
+		strings.HasPrefix(trimmed, "❯ ")
 }
 
 func codexAssistantAnswerIntroducesPath(line string) bool {
