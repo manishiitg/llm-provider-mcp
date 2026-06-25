@@ -39,6 +39,19 @@ func TestAgyActivityDetectsSpinnerPrefixedStatus(t *testing.T) {
 	}
 }
 
+func TestAgyAnimatedSpinnerStatusDetectsLoading(t *testing.T) {
+	pane := strings.Join([]string{
+		"AGY_FIRST_DONE_abc123",
+		"> Follow-up task: reply exactly AGY_LIVE_ACK_abc123",
+		"⣽ Loading...",
+		"────────────────────────────────────────",
+		">",
+	}, "\n")
+	if !hasAgyAnimatedSpinnerStatus(pane) {
+		t.Fatal("expected visible Agy loading spinner to extend empty-content wait")
+	}
+}
+
 // hasAgyLiveGenerationActivity gates ready-prompt detection: while generation is
 // actively in progress, the turn must not be considered complete. The reliable
 // live signals are "composing"/"ctrl+c to stop"/"esc to interrupt" and an

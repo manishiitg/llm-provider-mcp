@@ -237,6 +237,77 @@ func TestAgyFinalExtractionKeepsAnswerMatchingPromptSuffix(t *testing.T) {
 	)
 }
 
+func TestAgyFinalExtractionDropsWrappedPromptContinuationBeforeSpinner(t *testing.T) {
+	prompt := "Call the api-bridge slow_contract MCP tool with delay_ms 8000. Do not answer\nuntil the tool returns. Then reply exactly AGY_FIRST_DONE_abc123."
+	pane := `
+> Call the api-bridge slow_contract MCP tool with delay_ms 8000. Do not answer
+  until the tool returns. Then reply exactly AGY_FIRST_DONE_abc123.
+⣾ Generating...
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+
+	content := parseAgyInteractiveResponse(pane, "", prompt, nil)
+	if content != "" {
+		t.Fatalf("content = %q, want empty prompt-continuation echo", content)
+	}
+}
+
+func TestAgyFinalExtractionDropsVisuallyWrappedPromptTailBeforeSpinner(t *testing.T) {
+	prompt := "Call the api-bridge slow_contract MCP tool with token AGY_LIVE_PROCESS_abc123 and delay_ms 8000. Do not answer until the tool returns. Then reply exactly AGY_FIRST_DONE_abc123."
+	pane := `
+> Call the api-bridge slow_contract MCP tool with token AGY_LIVE_PROCESS_abc123 and delay_ms 8000. Do not answer
+  until the tool returns. Then reply exactly AGY_FIRST_DONE_abc123.
+⣾ Generating...
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+
+	content := parseAgyInteractiveResponse(pane, "", prompt, nil)
+	if content != "" {
+		t.Fatalf("content = %q, want empty visually-wrapped prompt-tail echo", content)
+	}
+}
+
+func TestAgyFinalExtractionDropsTipChromeBeforeSpinner(t *testing.T) {
+	prompt := "Call the api-bridge slow_contract MCP tool with token AGY_LIVE_PROCESS_abc123 and delay_ms 8000. Do not answer until the tool returns. Then reply exactly AGY_FIRST_DONE_abc123."
+	pane := `
+> Call the api-bridge slow_contract MCP tool with token AGY_LIVE_PROCESS_abc123 and delay_ms 8000. Do not answer
+  until the tool returns. Then reply exactly AGY_FIRST_DONE_abc123.
+└ Tip: Use /context to see what files are in the conversation.
+⣾ Generating...
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+
+	content := parseAgyInteractiveResponse(pane, "", prompt, nil)
+	if content != "" {
+		t.Fatalf("content = %q, want empty TUI chrome", content)
+	}
+}
+
+func TestAgyFinalExtractionDropsTriangleFollowupUserEcho(t *testing.T) {
+	pane := `
+AGY_FIRST_DONE_abc123
+────────────────────────────────────────
+> Follow-up task: after the current answer completes, reply exactly AGY_LIVE_ACK_abc123 and nothing else.
+⣽ Loading...
+▸ Follow-up task: after the current answer completes, reply exactly AGY_LIVE_ACK_abc123 and nothing else.
+AGY_LIVE_ACK_abc123
+────────────────────────────────────────
+>
+────────────────────────────────────────
+`
+
+	content := parseAgyInteractiveResponse(pane, "", "", []string{"AGY_FIRST_DONE_abc123"})
+	if content != "AGY_LIVE_ACK_abc123" {
+		t.Fatalf("content = %q, want live ack only", content)
+	}
+}
+
 func TestAgyFinalExtractionVertexJudgeE2E(t *testing.T) {
 	testcontracts.RequireVertexFinalExtractionJudgeE2E(t)
 

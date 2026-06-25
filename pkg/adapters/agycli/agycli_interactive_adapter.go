@@ -2110,7 +2110,11 @@ func waitForAgyInteractiveResponse(ctx context.Context, sessionName, baseline, p
 						idleSince = time.Time{}
 						continue
 					}
-					if time.Since(readyWithoutContentSince) >= 15*time.Second {
+					emptyContentTimeout := 15 * time.Second
+					if hasAgyAnimatedSpinnerStatus(captured) {
+						emptyContentTimeout = firstActivityTimeout
+					}
+					if time.Since(readyWithoutContentSince) >= emptyContentTimeout {
 						return captured, fmt.Errorf("Antigravity CLI returned to the prompt without visible assistant output; latest pane:\n%s", captured)
 					}
 					continue
@@ -2132,7 +2136,11 @@ func parseAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, hi
 	text := extractAgyVisibleAssistantText(delta)
 	text = stripAgyEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripAgyHistoricalAssistantText(text, historicalAssistantTexts)
-	return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if agyExtractedTextIsPromptContinuationEcho(delta, text, echoedUserPrompt) {
+		return ""
+	}
+	return text
 }
 
 func forcedAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, historicalAssistantTexts []string) string {
@@ -2140,7 +2148,76 @@ func forcedAgyInteractiveResponse(captured, baseline, echoedUserPrompt string, h
 	text := extractAgyVisibleAssistantText(delta)
 	text = stripAgyEchoedUserPrompt(text, echoedUserPrompt)
 	text = stripAgyHistoricalAssistantText(text, historicalAssistantTexts)
-	return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if agyExtractedTextIsPromptContinuationEcho(delta, text, echoedUserPrompt) {
+		return ""
+	}
+	return text
+}
+
+func agyExtractedTextIsPromptContinuationEcho(delta, text, prompt string) bool {
+	textLines := normalizedAgyPromptComparableLines(text)
+	if len(textLines) == 0 || strings.TrimSpace(prompt) == "" {
+		return false
+	}
+	if !agyLinesMatchPromptSpan(textLines, normalizedAgyPromptComparableLines(prompt)) {
+		return false
+	}
+	continuationLines := agyPromptContinuationEchoLines(delta)
+	return agyComparableLinesEqual(textLines, continuationLines)
+}
+
+func agyPromptContinuationEchoLines(delta string) []string {
+	var collecting bool
+	var sawSpinnerStatus bool
+	var lines []string
+	for _, rawLine := range strings.Split(stripAgyANSI(delta), "\n") {
+		trimmed := normalizeAgyPaneLine(rawLine)
+		if draft, ok := agyPromptLineDraft(trimmed); ok {
+			if strings.TrimSpace(draft) != "" && !isAgyPromptPlaceholder(draft) {
+				collecting = true
+				lines = lines[:0]
+				continue
+			}
+			if collecting {
+				break
+			}
+			continue
+		}
+		if !collecting {
+			continue
+		}
+		normalized := strings.TrimSpace(normalizeAgyPromptLine(trimmed))
+		if normalized == "" {
+			continue
+		}
+		if isAgyThoughtStatusLine(trimmed) || isAgyToolStatusLine(trimmed) {
+			collecting = false
+			sawSpinnerStatus = false
+			lines = nil
+			continue
+		}
+		if agyLineStartsWithSpinner(normalized) {
+			sawSpinnerStatus = true
+			break
+		}
+		if isAgyTipLine(trimmed) {
+			continue
+		}
+		if isAgyPromptBoundaryLine(trimmed) ||
+			isAgyTUILine(trimmed) ||
+			isAgyBoxDrawingLine(trimmed) {
+			collecting = false
+			sawSpinnerStatus = false
+			lines = nil
+			continue
+		}
+		lines = append(lines, normalized)
+	}
+	if !sawSpinnerStatus {
+		return nil
+	}
+	return lines
 }
 
 func extractAgyVisibleAssistantText(delta string) string {
@@ -2300,7 +2377,8 @@ func isAgyTUILine(line string) bool {
 	if trimmed == "" {
 		return true
 	}
-	return strings.Contains(lower, "ctrl+") ||
+	return isAgyTipLine(trimmed) ||
+		strings.Contains(lower, "ctrl+") ||
 		strings.HasSuffix(lower, "collapse)") ||
 		strings.HasSuffix(lower, "to collapse)") ||
 		strings.Contains(lower, "esc to") ||
@@ -2308,6 +2386,7 @@ func isAgyTUILine(line string) bool {
 		strings.Contains(lower, "run everything") ||
 		strings.Contains(lower, "ask (shift+tab") ||
 		strings.HasPrefix(lower, "v20") ||
+		strings.HasPrefix(trimmed, "▸ ") ||
 		strings.Contains(lower, "try composer") ||
 		strings.Contains(lower, "composer") && strings.Contains(lower, "fast") ||
 		strings.Contains(trimmed, " · ") ||
@@ -2325,6 +2404,11 @@ func isAgyTUILine(line string) bool {
 		// Agy labels each user turn with a literal "User:" header. It is a
 		// structural marker, not response prose, so drop it from extraction.
 		strings.HasPrefix(lower, "user:")
+}
+
+func isAgyTipLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(lower, "└ tip:") || strings.HasPrefix(lower, "tip:")
 }
 
 func isAgyToolStatusLine(line string) bool {
@@ -2559,6 +2643,59 @@ func nonEmptyAgyLines(text string) []string {
 	return lines
 }
 
+func normalizedAgyPromptComparableLines(text string) []string {
+	rawLines := nonEmptyAgyLines(text)
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		normalized := strings.TrimSpace(normalizeAgyPromptLine(line))
+		if normalized != "" {
+			lines = append(lines, normalized)
+		}
+	}
+	return lines
+}
+
+func agyLinesMatchPromptSpan(lines, promptLines []string) bool {
+	if len(lines) == 0 || len(promptLines) == 0 || len(lines) > len(promptLines) {
+		return false
+	}
+	if len(lines) == 1 {
+		line := normalizeAgyPromptLine(lines[0])
+		if len([]rune(line)) >= 32 {
+			for _, promptLine := range promptLines {
+				if strings.Contains(normalizeAgyPromptLine(promptLine), line) {
+					return true
+				}
+			}
+		}
+	}
+	for promptStart := 0; promptStart+len(lines) <= len(promptLines); promptStart++ {
+		matched := true
+		for i := range lines {
+			if !agyPromptLinesEqual(lines[i], promptLines[promptStart+i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func agyComparableLinesEqual(a, b []string) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !agyPromptLinesEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func agyPaneShowsPromptDraft(captured, prompt string) bool {
 	captured = strings.ToLower(stripAgyANSI(captured))
 	for _, line := range nonEmptyAgyLines(prompt) {
@@ -2755,6 +2892,15 @@ func agyIsAnimatedSpinnerLine(line string) bool {
 	lower := strings.ToLower(t)
 	for _, w := range agySpinnerStatusWords {
 		if strings.HasPrefix(lower, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAgyAnimatedSpinnerStatus(captured string) bool {
+	for _, line := range strings.Split(stripAgyANSI(agyVisiblePaneText(captured)), "\n") {
+		if agyIsAnimatedSpinnerLine(line) {
 			return true
 		}
 	}
