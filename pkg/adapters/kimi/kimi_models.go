@@ -7,12 +7,13 @@ import (
 )
 
 const (
-	ModelKimiCode = "kimi-code"
-	ModelKimiK26  = "kimi-k2.6"
+	ModelKimiCode    = "kimi-code"
+	ModelKimiK26     = "kimi-k2.6"
+	ModelKimiK27Code = "kimi-k2.7-code"
 )
 
 func GetDefaultVisibleKimiModelIDs() []string {
-	return []string{ModelKimiK26}
+	return []string{ModelKimiK26, ModelKimiK27Code}
 }
 
 func GetAllKimiModels() []*llmtypes.ModelMetadata {
@@ -21,6 +22,14 @@ func GetAllKimiModels() []*llmtypes.ModelMetadata {
 			Provider:          "kimi",
 			ModelID:           ModelKimiK26,
 			ModelName:         "Kimi K2.6 Vision",
+			ContextWindow:     262144,
+			SupportsToolCalls: true,
+			SupportsJSONMode:  true,
+		},
+		{
+			Provider:          "kimi",
+			ModelID:           ModelKimiK27Code,
+			ModelName:         "Kimi K2.7 Code",
 			ContextWindow:     262144,
 			SupportsToolCalls: true,
 			SupportsJSONMode:  true,

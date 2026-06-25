@@ -21,7 +21,6 @@ projects per-session files into that dir:
 - Codex:       `AGENTS.md`, `.codex/config.toml`
 - Cursor:     `.cursor/rules/mlp-system.mdc`, `.cursor/mcp.json`, `.cursor/hooks.json`
 - Gemini:     `GEMINI.md`, `.gemini/settings.json`, `.gemini/hooks/...`
-- OpenCode:   `AGENTS.md`, `opencode.jsonc`, `.opencode/plugins/...`
 - Antigravity: `.agents/rules/mlp-system.md`, `.agents/mcp_config.json`, `.agents/hooks.json`
 
 All instruction-file paths are now fixed-name single-file conventions
@@ -157,7 +156,6 @@ NOT in each adapter. The pattern:
 | Codex | `--sandbox workspace-write` | Confines apply_patch + shell to cwd (tmp dir). Outside writes blocked. |
 | Cursor | `--force` (already set) | Already permit-all |
 | Gemini | `--approval-mode yolo` (already set) | Already permit-all |
-| OpenCode | `--dangerously-skip-permissions` (already set) | Already permit-all; tools-deny block separately limits builtins |
 | Agy | `--sandbox workspace-write` | Same as codex |
 
 For codex specifically: setting `--sandbox workspace-write` AND
@@ -214,7 +212,7 @@ What STAYS the same:
 
 ### 6.2 Updated existing tests
 
-- Project-artifacts E2Es (claude/codex/gemini/opencode) currently
+- Project-artifacts E2Es (claude/codex/gemini/agy) currently
   pre-seed operator content in `t.TempDir()` and verify
   byte-restore. With isolation on, byte-restore wouldn't trigger
   (no operator content in the fresh tmp dir). Add a parallel test

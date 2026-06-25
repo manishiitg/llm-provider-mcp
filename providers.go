@@ -29,7 +29,7 @@ import (
 	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
-	opencodecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/opencodecli"
+	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 	zaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 
@@ -56,41 +56,29 @@ func ForceCompleteCodingAgentTmuxSession(sessionName string) bool {
 type Provider string
 
 const (
-	ProviderBedrock     Provider = "bedrock"
-	ProviderOpenAI      Provider = "openai"
-	ProviderAnthropic   Provider = "anthropic"
-	ProviderOpenRouter  Provider = "openrouter"
-	ProviderVertex      Provider = "vertex"
-	ProviderAzure       Provider = "azure"
-	ProviderZAI         Provider = "z-ai"
-	ProviderKimi        Provider = "kimi"
-	ProviderClaudeCode  Provider = "claude-code"
-	ProviderGeminiCLI   Provider = "gemini-cli"
-	ProviderCodexCLI    Provider = "codex-cli"
-	ProviderCursorCLI   Provider = "cursor-cli"
-	ProviderAgyCLI      Provider = "agy-cli"
-	ProviderOpenCodeCLI Provider = "opencode-cli"
-
-	// OpenCode CLI sub-provider tiles. Each routes through the same
-	// `opencode` binary but with sub-provider-scoped credentials and
-	// a curated model catalog. The catalog lives in
-	// pkg/adapters/opencodecli/opencodecli_subproviders.go.
-	ProviderOpenCodeCLIKimi       Provider = "opencode-cli-kimi"
-	ProviderOpenCodeCLIDeepSeek   Provider = "opencode-cli-deepseek"
-	ProviderOpenCodeCLIQwen       Provider = "opencode-cli-qwen"
-	ProviderOpenCodeCLIMiniMax    Provider = "opencode-cli-minimax"
-	ProviderOpenCodeCLIGLM        Provider = "opencode-cli-glm"
-	ProviderOpenCodeCLIOpenRouter Provider = "opencode-cli-openrouter"
-	ProviderOpenCodeCLIFree       Provider = "opencode-cli-free"
-	ProviderMiniMax               Provider = "minimax"
-	ProviderMiniMaxCodingPlan     Provider = "minimax-coding-plan"
-	ProviderElevenLabs            Provider = "elevenlabs"
-	ProviderDeepgram              Provider = "deepgram"
+	ProviderBedrock           Provider = "bedrock"
+	ProviderOpenAI            Provider = "openai"
+	ProviderAnthropic         Provider = "anthropic"
+	ProviderOpenRouter        Provider = "openrouter"
+	ProviderVertex            Provider = "vertex"
+	ProviderAzure             Provider = "azure"
+	ProviderZAI               Provider = "z-ai"
+	ProviderKimi              Provider = "kimi"
+	ProviderClaudeCode        Provider = "claude-code"
+	ProviderGeminiCLI         Provider = "gemini-cli"
+	ProviderCodexCLI          Provider = "codex-cli"
+	ProviderCursorCLI         Provider = "cursor-cli"
+	ProviderAgyCLI            Provider = "agy-cli"
+	ProviderPiCLI             Provider = "pi-cli"
+	ProviderMiniMax           Provider = "minimax"
+	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
+	ProviderElevenLabs        Provider = "elevenlabs"
+	ProviderDeepgram          Provider = "deepgram"
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "composer-2.5"
 	DefaultAgyCLIModel    = "agy-cli"
-	DefaultOpenCodeModel  = "opencode-cli"
+	DefaultPiCLIModel     = picli.DefaultModelID
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported normal value: "tmux" for Claude Code TUI mode.
@@ -110,9 +98,9 @@ const (
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
 // (cols × rows) for any newly-launched coding-agent tmux session (Claude
-// Code, Codex CLI, Cursor CLI, Gemini CLI, Agy CLI). Pass <=0 for either axis to clear
-// that axis's override and fall back to the env/default value. Sizes outside
-// the package's safe band are clamped, not rejected.
+// Code, Codex CLI, Cursor CLI, Gemini CLI, Agy CLI, Pi CLI). Pass <=0 for either
+// axis to clear that axis's override and fall back to the env/default value.
+// Sizes outside the package's safe band are clamped, not rejected.
 func SetCodingAgentTmuxSize(columns, rows int) {
 	tmuxsize.SetPreferredSize(columns, rows)
 }
@@ -143,11 +131,10 @@ func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
 	return agycli.CleanupAgyCLIInteractiveSessions(ctx)
 }
 
-// CleanupOpenCodeCLIInteractiveSessions is retained for callers that still
-// perform provider-wide cleanup; OpenCode CLI currently uses structured JSON and
-// has no live tmux sessions to clean up.
-func CleanupOpenCodeCLIInteractiveSessions(ctx context.Context) error {
-	return opencodecli.CleanupOpenCodeCLIInteractiveSessions(ctx)
+// CleanupPiCLIInteractiveSessions removes Pi CLI tmux sessions registered by
+// this process.
+func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
+	return picli.CleanupPiCLIInteractiveSessions(ctx)
 }
 
 // CleanupGeminiCLIInteractiveSessions removes Gemini CLI tmux sessions
@@ -162,6 +149,7 @@ func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
 var interactiveSessionPrefixes = []string{
 	"mlp-gemini-cli-int",
 	"mlp-agy-cli-int",
+	"mlp-pi-cli-int",
 	"mlp-codex-cli-int",
 	"mlp-cursor-cli-int",
 	"mlp-claude-code",
@@ -196,6 +184,10 @@ func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	agycli.CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
+func ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	picli.ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
 func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	cursorcli.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
@@ -221,6 +213,10 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 
 func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	agycli.CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	picli.ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason)
 }
 
 func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
@@ -263,10 +259,10 @@ func SendAgyCLIInteractiveInput(ctx context.Context, sessionID, message string) 
 	return agycli.SendAgyInteractiveInput(ctx, sessionID, message)
 }
 
-// SendOpenCodeCLIInteractiveInput is unsupported while OpenCode CLI uses the
-// structured JSON transport.
-func SendOpenCodeCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return opencodecli.SendOpenCodeInteractiveInput(ctx, sessionID, message)
+// SendPiCLIInteractiveInput sends user input to a live Pi CLI interactive tmux
+// session registered for the owning application session.
+func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return picli.SendPiInteractiveInput(ctx, sessionID, message)
 }
 
 // SendGeminiCLIInteractiveInput sends user input to a live Gemini CLI
@@ -299,16 +295,16 @@ func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string)
 	return agycli.SendAgyInteractiveControlKey(ctx, sessionID, key)
 }
 
+// SendPiCLIInteractiveControlKey injects a tmux control key into a registered
+// Pi CLI interactive session.
+func SendPiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return picli.SendPiInteractiveControlKey(ctx, sessionID, key)
+}
+
 // SendGeminiCLIInteractiveControlKey injects a tmux control key into a
 // registered Gemini CLI interactive session.
 func SendGeminiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
 	return geminicli.SendGeminiInteractiveControlKey(ctx, sessionID, key)
-}
-
-// SendOpenCodeCLIInteractiveControlKey is unsupported while OpenCode CLI uses
-// the structured JSON transport.
-func SendOpenCodeCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
-	return opencodecli.SendOpenCodeInteractiveControlKey(ctx, sessionID, key)
 }
 
 // Config holds configuration for LLM initialization
@@ -345,7 +341,7 @@ type ProviderAPIKeys struct {
 	CodexCLI          *string
 	CursorCLI         *string
 	AgyCLI            *string
-	OpenCodeCLI       *string
+	PiCLI             *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
 	ElevenLabs        *string
@@ -354,14 +350,6 @@ type ProviderAPIKeys struct {
 	Kimi              *string
 	Bedrock           *BedrockConfig
 	Azure             *AzureAPIConfig
-
-	// OpenCodeCLISubKeys holds credentials for OpenCode CLI sub-provider
-	// tiles, keyed by the env-var the OpenCode bundled SDK reads
-	// (KIMI_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY,
-	// MINIMAX_API_KEY, ZHIPU_API_KEY). When `Provider` is one of the
-	// opencode-cli-* tiles, InitializeLLM picks the matching entry and
-	// passes it to NewOpenCodeCLIAdapterForSubProvider.
-	OpenCodeCLISubKeys map[string]string
 }
 
 // AzureAPIConfig holds Azure-specific configuration
@@ -397,8 +385,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.CursorCLI = key
 	case ProviderAgyCLI:
 		k.AgyCLI = key
-	case ProviderOpenCodeCLI:
-		k.OpenCodeCLI = key
+	case ProviderPiCLI:
+		k.PiCLI = key
 	case ProviderMiniMax:
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
@@ -464,15 +452,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCursorCLI(config)
 	case ProviderAgyCLI:
 		llm, err = initializeAgyCLI(config)
-	case ProviderOpenCodeCLI,
-		ProviderOpenCodeCLIKimi,
-		ProviderOpenCodeCLIDeepSeek,
-		ProviderOpenCodeCLIQwen,
-		ProviderOpenCodeCLIMiniMax,
-		ProviderOpenCodeCLIGLM,
-		ProviderOpenCodeCLIOpenRouter,
-		ProviderOpenCodeCLIFree:
-		llm, err = initializeOpenCodeCLI(config)
+	case ProviderPiCLI:
+		llm, err = initializePiCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:
@@ -2278,7 +2259,7 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 	}
 
 	if modelID == kimiadapter.ModelKimiCode {
-		err := fmt.Errorf("kimi-code is no longer supported as a Kimi provider model; use OpenCode CLI for Kimi Code coding-agent plans")
+		err := fmt.Errorf("kimi-code is no longer supported as a Kimi provider model; use kimi-k2.7-code for Kimi coding API workloads or Pi CLI for multi-model coding-agent plans")
 		errorMetadata := LLMMetadata{
 			ModelVersion: modelID,
 			User:         "kimi_user",
@@ -2590,19 +2571,16 @@ func initializeAgyCLI(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
-// initializeOpenCodeCLI creates and configures an OpenCode CLI adapter
-// instance. When `config.Provider` is one of the OpenCode sub-provider
-// tiles (opencode-cli-kimi, ..., opencode-cli-free), the returned adapter
-// is preconfigured with that tile's scope so every call automatically
-// injects the matching per-sub-provider env var.
-func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
+// initializePiCLI creates and configures a Pi Coding Agent CLI adapter
+// instance.
+func initializePiCLI(config Config) (llmtypes.Model, error) {
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,
 		MaxTokens:    0,
 		TopP:         config.Temperature,
-		User:         "opencode_cli_user",
+		User:         "pi_cli_user",
 		CustomFields: map[string]string{
-			"provider":  string(config.Provider),
+			"provider":  "pi-cli",
 			"operation": OperationLLMInitialization,
 		},
 	}
@@ -2611,66 +2589,46 @@ func initializeOpenCodeCLI(config Config) (llmtypes.Model, error) {
 
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = DefaultOpenCodeModel
+		modelID = DefaultPiCLIModel
 	}
 
 	logger := config.Logger
 	if logger == nil {
 		logger = &noopLoggerImpl{}
 	}
-	logger.Infof("Initializing OpenCode CLI adapter - provider: %s, model_id: %s", config.Provider, modelID)
+	logger.Infof("Initializing Pi CLI adapter - model_id: %s", modelID)
 
-	sharedAPIKey := ""
-	if config.APIKeys != nil && config.APIKeys.OpenCodeCLI != nil {
-		sharedAPIKey = *config.APIKeys.OpenCodeCLI
-		logger.Infof("OpenCode CLI: using shared API key from config (length=%d)", len(sharedAPIKey))
-	} else if envKey := os.Getenv("OPENCODE_API_KEY"); envKey != "" {
-		sharedAPIKey = envKey
-		logger.Infof("OpenCode CLI: using shared API key from OPENCODE_API_KEY env var (length=%d)", len(sharedAPIKey))
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.PiCLI != nil {
+		apiKey = *config.APIKeys.PiCLI
+		logger.Infof("Pi CLI: using API key from config (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("PI_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Pi CLI: using API key from PI_API_KEY env var (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("GEMINI_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Pi CLI: using API key from GEMINI_API_KEY env var (length=%d)", len(apiKey))
+	} else if envKey := os.Getenv("GOOGLE_API_KEY"); envKey != "" {
+		apiKey = envKey
+		logger.Infof("Pi CLI: using API key from GOOGLE_API_KEY env var (length=%d)", len(apiKey))
 	} else {
-		logger.Infof("OpenCode CLI: no explicit shared API key — will use OpenCode's own provider auth")
+		logger.Infof("Pi CLI: no explicit API key — will use Pi CLI/provider local auth if available")
 	}
 
-	var llm llmtypes.Model
-	if IsOpenCodeSubProvider(config.Provider) {
-		// Look up the sub-provider catalog entry; route into the
-		// sub-provider-scoped constructor so every call inherits the
-		// right env-var injection.
-		sp, found := opencodecli.FindOpenCodeSubProvider(string(config.Provider))
-		if !found {
-			return nil, fmt.Errorf("unknown OpenCode sub-provider %q", config.Provider)
-		}
-		subAPIKey := ""
-		if config.APIKeys != nil && config.APIKeys.OpenCodeCLISubKeys != nil {
-			subAPIKey = strings.TrimSpace(config.APIKeys.OpenCodeCLISubKeys[sp.APIKeyEnvVar])
-		}
-		if subAPIKey == "" && sp.APIKeyEnvVar != "" {
-			// Fall back to the process env if the caller did not pass a
-			// key map. This keeps developer ergonomics: set
-			// KIMI_API_KEY=… in .env and the Kimi tile just works.
-			subAPIKey = os.Getenv(sp.APIKeyEnvVar)
-		}
-		if sp.RequiresAPIKey && subAPIKey == "" {
-			return nil, fmt.Errorf("%s requires an API key (env %s) but none was provided", sp.DisplayName, sp.APIKeyEnvVar)
-		}
-		logger.Infof("OpenCode CLI sub-provider: %s (env=%s, key_present=%v)", sp.ID, sp.APIKeyEnvVar, subAPIKey != "")
-		llm = opencodecli.NewOpenCodeCLIAdapterForSubProvider(sharedAPIKey, modelID, sp, subAPIKey, logger)
-	} else {
-		llm = opencodecli.NewOpenCodeCLIAdapter(sharedAPIKey, modelID, logger)
-	}
+	llm := picli.NewPiCLIAdapter(apiKey, modelID, logger)
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,
-		User:         "opencode_cli_user",
+		User:         "pi_cli_user",
 		CustomFields: map[string]string{
-			"provider":     string(config.Provider),
+			"provider":     "pi-cli",
 			"status":       StatusLLMInitialized,
 			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized OpenCode CLI adapter - provider: %s, model_id: %s", config.Provider, modelID)
+	logger.Infof("Initialized Pi CLI adapter - model_id: %s", modelID)
 	return llm, nil
 }
 
@@ -2756,14 +2714,6 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return DefaultAgyCLIModel
-	case ProviderOpenCodeCLI:
-		if primaryModel := os.Getenv("OPENCODE_CLI_PRIMARY_MODEL"); primaryModel != "" {
-			return primaryModel
-		}
-		if primaryModel := os.Getenv("OPENCODE_PRIMARY_MODEL"); primaryModel != "" {
-			return primaryModel
-		}
-		return DefaultOpenCodeModel
 	default:
 		return ""
 	}
@@ -2933,16 +2883,6 @@ func GetDefaultFallbackModels(provider Provider) []string {
 			return models
 		}
 		return []string{}
-	case ProviderOpenCodeCLI:
-		fallbackModelsEnv := os.Getenv("OPENCODE_CLI_FALLBACK_MODELS")
-		if fallbackModelsEnv == "" {
-			fallbackModelsEnv = os.Getenv("OPENCODE_FALLBACK_MODELS")
-		}
-		models := parseFallbackModelsEnv(fallbackModelsEnv)
-		if len(models) > 0 {
-			return models
-		}
-		return []string{}
 	default:
 		return []string{}
 	}
@@ -3100,20 +3040,6 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("AGY_CROSS_FALLBACK_PROVIDER")
 		}
 		return prefixModelsWithProvider(models, crossProvider)
-	case ProviderOpenCodeCLI:
-		crossFallbackEnv := os.Getenv("OPENCODE_CLI_CROSS_FALLBACK_MODELS")
-		if crossFallbackEnv == "" {
-			crossFallbackEnv = os.Getenv("OPENCODE_CROSS_FALLBACK_MODELS")
-		}
-		models := parseFallbackModelsEnv(crossFallbackEnv)
-		if len(models) == 0 {
-			return []string{}
-		}
-		crossProvider := os.Getenv("OPENCODE_CLI_CROSS_FALLBACK_PROVIDER")
-		if crossProvider == "" {
-			crossProvider = os.Getenv("OPENCODE_CROSS_FALLBACK_PROVIDER")
-		}
-		return prefixModelsWithProvider(models, crossProvider)
 	default:
 		return []string{}
 	}
@@ -3122,39 +3048,11 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderOpenCodeCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan,
-		ProviderOpenCodeCLIKimi, ProviderOpenCodeCLIDeepSeek, ProviderOpenCodeCLIQwen, ProviderOpenCodeCLIMiniMax, ProviderOpenCodeCLIGLM, ProviderOpenCodeCLIOpenRouter, ProviderOpenCodeCLIFree:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderPiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, opencode-cli, opencode-cli-kimi, opencode-cli-deepseek, opencode-cli-qwen, opencode-cli-minimax, opencode-cli-glm, opencode-cli-openrouter, opencode-cli-free, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, pi-cli, minimax, minimax-coding-plan", provider)
 	}
-}
-
-// IsOpenCodeCLIProvider reports whether the provider is the legacy
-// opencode-cli tile or any of its sub-provider tiles (Kimi / DeepSeek /
-// Qwen / MiniMax / GLM / Free). Useful for code paths that branch on the
-// transport (all of these go through `opencode run`).
-func IsOpenCodeCLIProvider(p Provider) bool {
-	switch p {
-	case ProviderOpenCodeCLI,
-		ProviderOpenCodeCLIKimi,
-		ProviderOpenCodeCLIDeepSeek,
-		ProviderOpenCodeCLIQwen,
-		ProviderOpenCodeCLIMiniMax,
-		ProviderOpenCodeCLIGLM,
-		ProviderOpenCodeCLIOpenRouter,
-		ProviderOpenCodeCLIFree:
-		return true
-	default:
-		return false
-	}
-}
-
-// IsOpenCodeSubProvider reports whether the provider is one of the
-// OpenCode CLI sub-provider tiles (i.e. anything except the legacy
-// opencode-cli tile).
-func IsOpenCodeSubProvider(p Provider) bool {
-	return IsOpenCodeCLIProvider(p) && p != ProviderOpenCodeCLI
 }
 
 // ProviderAwareLLM is a wrapper around LLM that preserves provider information
@@ -4002,14 +3900,6 @@ func WithAgyResumeSessionID(id string) llmtypes.CallOption {
 	return agycli.WithResumeSessionID(id)
 }
 
-// WithOpenCodeResumeSessionID sets the --session <id> flag so opencode
-// resumes a chat by its session id (the value opencode emits in its
-// structured output). Mirrors the claude-code / gemini / codex / cursor
-// equivalents.
-func WithOpenCodeResumeSessionID(id string) llmtypes.CallOption {
-	return opencodecli.WithResumeSessionID(id)
-}
-
 // WithCodexInteractiveSessionID links a Codex CLI interactive run to the
 // owning application session so live follow-up input can be sent to it.
 func WithCodexInteractiveSessionID(id string) llmtypes.CallOption {
@@ -4200,81 +4090,51 @@ func WithAgySandbox(mode string) llmtypes.CallOption {
 	return agycli.WithSandbox(mode)
 }
 
-// WithOpenCodeWorkingDir sets the OpenCode CLI workspace/cwd.
-func WithOpenCodeWorkingDir(dir string) llmtypes.CallOption {
-	return opencodecli.WithWorkingDir(dir)
+// WithPiWorkingDir sets the Pi CLI workspace/cwd for tmux launch.
+func WithPiWorkingDir(dir string) llmtypes.CallOption {
+	return picli.WithWorkingDir(dir)
 }
 
-// WithOpenCodeWriteProjectInstructionFile controls whether the OpenCode
-// adapter ALSO drops the per-session system prompt at
-// <workingDir>/AGENTS.md (OpenCode's project-instructions convention,
-// same file as codex), in addition to the in-prompt "[System
-// Instructions]" prefix. ON by default; pass false to opt out. Cleanup
-// byte-restores any pre-existing AGENTS.md; a process crash between
-// write and cleanup destroys the operator's prior content.
-func WithOpenCodeWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
-	return opencodecli.WithWriteProjectInstructionFile(enabled)
+// WithPiInteractiveSessionID links a Pi CLI tmux run to the owning application
+// session for live follow-up input.
+func WithPiInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return picli.WithInteractiveSessionID(sessionID)
 }
 
-// WithOpenCodeProjectInstructionOnly carries the per-session system prompt
-// solely via the projected AGENTS.md and skips the in-band "[System
-// Instructions]" prefix on the run prompt, so the prompt is applied once
-// instead of doubled. OFF by default. Falls back to the in-band prefix if the
-// projection is disabled or its write fails.
-func WithOpenCodeProjectInstructionOnly(enabled bool) llmtypes.CallOption {
-	return opencodecli.WithProjectInstructionOnly(enabled)
+// WithPiPersistentInteractiveSession keeps the Pi CLI tmux session alive
+// across turns.
+func WithPiPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return picli.WithPersistentInteractiveSession(enabled)
 }
 
-// WithOpenCodeInteractiveSessionID is retained for API compatibility. OpenCode
-// CLI currently uses structured JSON; use resume session metadata for
-// multi-turn continuation.
-func WithOpenCodeInteractiveSessionID(sessionID string) llmtypes.CallOption {
-	return opencodecli.WithInteractiveSessionID(sessionID)
+// WithPiResumeSessionID resumes a Pi native session created with --session-id.
+func WithPiResumeSessionID(sessionID string) llmtypes.CallOption {
+	return picli.WithResumeSessionID(sessionID)
 }
 
-// WithOpenCodePersistentInteractiveSession is retained for API compatibility.
-// OpenCode CLI currently uses structured JSON invocations instead of live tmux.
-func WithOpenCodePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
-	return opencodecli.WithPersistentInteractiveSession(enabled)
+// WithPiProvider overrides Pi's provider routing while keeping model selection
+// separate. Model IDs can also be provider-qualified, e.g.
+// google/gemini-3.5-flash.
+func WithPiProvider(provider string) llmtypes.CallOption {
+	return picli.WithProvider(provider)
 }
 
-// WithOpenCodeMCPConfig writes a temporary/restored opencode.jsonc MCP config.
-func WithOpenCodeMCPConfig(config string) llmtypes.CallOption {
-	return opencodecli.WithMCPConfig(config)
+// WithPiMCPConfig writes a Pi project MCP config override into .pi/mcp.json
+// for the adapter-owned working directory.
+func WithPiMCPConfig(config string) llmtypes.CallOption {
+	return picli.WithMCPConfig(config)
 }
 
-// WithOpenCodeProjectConfig writes a temporary/restored opencode.jsonc config.
-func WithOpenCodeProjectConfig(config string) llmtypes.CallOption {
-	return opencodecli.WithProjectConfig(config)
+// WithPiBridgeOnlyTools disables Pi's built-in tools while leaving explicit
+// extension/custom tools, including the MCP adapter, enabled.
+func WithPiBridgeOnlyTools(enabled bool) llmtypes.CallOption {
+	return picli.WithBridgeOnlyTools(enabled)
 }
 
-// WithOpenCodeAgent sets the OpenCode --agent flag.
-func WithOpenCodeAgent(agent string) llmtypes.CallOption {
-	return opencodecli.WithAgent(agent)
-}
-
-// WithOpenCodeSubProvider scopes a single OpenCode CLI call to one
-// sub-provider tile (e.g. "opencode-cli-kimi"). Used by dispatchers that
-// want to re-scope a call without rebuilding the adapter — when the
-// adapter was already constructed for a tile via
-// NewOpenCodeCLIAdapterForSubProvider, the call-time option wins.
-func WithOpenCodeSubProvider(id string) llmtypes.CallOption {
-	return opencodecli.WithOpenCodeSubProvider(id)
-}
-
-// WithOpenCodeSubProviderAPIKey attaches a credential for a single
-// OpenCode-backed sub-provider, keyed by the env-var name the OpenCode
-// bundled SDK reads (KIMI_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY,
-// MINIMAX_API_KEY, ZHIPU_API_KEY).
-func WithOpenCodeSubProviderAPIKey(envVar, apiKey string) llmtypes.CallOption {
-	return opencodecli.WithOpenCodeSubProviderAPIKey(envVar, apiKey)
-}
-
-// WithOpenCodeSubProviderAPIKeys replaces the whole per-sub-provider key
-// map. Useful for the server-side handler that already loaded the full
-// credential set from the workspace-encrypted store.
-func WithOpenCodeSubProviderAPIKeys(keys map[string]string) llmtypes.CallOption {
-	return opencodecli.WithOpenCodeSubProviderAPIKeys(keys)
+// WithPiMCPExtension overrides the Pi extension source used for MCP support.
+// The default is npm:pi-mcp-adapter.
+func WithPiMCPExtension(source string) llmtypes.CallOption {
+	return picli.WithMCPExtension(source)
 }
 
 // LLM Configuration Management Functions
@@ -4289,7 +4149,6 @@ type LLMDefaultsResponse struct {
 	AzureConfig             map[string]interface{} `json:"azure_config"`
 	ZAIConfig               map[string]interface{} `json:"zai_config"`
 	KimiConfig              map[string]interface{} `json:"kimi_config"`
-	OpenCodeConfig          map[string]interface{} `json:"opencode_cli_config"`
 	MinimaxConfig           map[string]interface{} `json:"minimax_config"`
 	MinimaxCodingPlanConfig map[string]interface{} `json:"minimax_coding_plan_config"`
 	ElevenLabsConfig        map[string]interface{} `json:"elevenlabs_config"`
@@ -4495,16 +4354,6 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	kimiAPIKey := os.Getenv("KIMI_API_KEY")
 
-	// OpenCode CLI configuration
-	opencodeModel := os.Getenv("OPENCODE_CLI_PRIMARY_MODEL")
-	if opencodeModel == "" {
-		opencodeModel = os.Getenv("OPENCODE_PRIMARY_MODEL")
-	}
-	if opencodeModel == "" {
-		opencodeModel = DefaultOpenCodeModel
-	}
-	opencodeAPIKey := os.Getenv("OPENCODE_API_KEY")
-
 	// MiniMax configuration
 	minimaxModel := os.Getenv("MINIMAX_PRIMARY_MODEL")
 	if minimaxModel == "" {
@@ -4587,12 +4436,6 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"fallback_models": []string{},
 			"api_key":         kimiAPIKey,
 		},
-		OpenCodeConfig: map[string]interface{}{
-			"provider":        "opencode-cli",
-			"model_id":        opencodeModel,
-			"fallback_models": []string{},
-			"api_key":         opencodeAPIKey,
-		},
 		MinimaxConfig: map[string]interface{}{
 			"provider":        "minimax",
 			"model_id":        minimaxModel,
@@ -4625,7 +4468,6 @@ func GetLLMDefaults() LLMDefaultsResponse {
 			"azure":               getAzureAvailableModels(),
 			"z-ai":                getZAIAvailableModels(),
 			"kimi":                getKimiAvailableModels(),
-			"opencode-cli":        getOpenCodeAvailableModels(),
 			"minimax":             getMiniMaxAvailableModels(),
 			"minimax-coding-plan": getMiniMaxCodingPlanAvailableModels(),
 			"elevenlabs":          getElevenLabsAvailableModels(),
@@ -4666,25 +4508,6 @@ func getKimiAvailableModels() []string {
 	}
 
 	return kimiadapter.GetDefaultVisibleKimiModelIDs()
-}
-
-func getOpenCodeAvailableModels() []string {
-	modelsStr := os.Getenv("OPENCODE_CLI_AVAILABLE_MODELS")
-	if modelsStr == "" {
-		modelsStr = os.Getenv("OPENCODE_AVAILABLE_MODELS")
-	}
-	if modelsStr != "" {
-		var models []string
-		for _, m := range strings.Split(modelsStr, ",") {
-			if t := strings.TrimSpace(m); t != "" {
-				models = append(models, t)
-			}
-		}
-		if len(models) > 0 {
-			return models
-		}
-	}
-	return []string{DefaultOpenCodeModel, "openai/gpt-5.1", "anthropic/claude-sonnet-4-5"}
 }
 
 // getMiniMaxCodingPlanAvailableModels returns Anthropic model names available via MiniMax coding plan
@@ -4815,9 +4638,6 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 	case "kimi":
 		fmt.Printf("[API KEY VALIDATION] Testing Kimi API key\n")
 		isValid, message, err = validateKimiAPIKey(req.APIKey, req.ModelID, req.Options)
-	case "opencode-cli":
-		fmt.Printf("[API KEY VALIDATION] Testing OpenCode CLI runtime\n")
-		isValid, message, err = validateOpenCodeCLI(req.APIKey, req.ModelID, req.Options)
 	default:
 		fmt.Printf("[API KEY VALIDATION WARN] Unsupported provider: %s\n", req.Provider)
 		return APIKeyValidationResponse{
@@ -4847,52 +4667,6 @@ func ValidateAPIKey(req APIKeyValidationRequest) APIKeyValidationResponse {
 		Message:          message,
 		CorrectedOptions: correctedOptions,
 	}
-}
-
-func validateOpenCodeCLI(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {
-	fmt.Printf("[OPENCODE VALIDATION] Starting OpenCode CLI validation\n")
-
-	if modelID == "" {
-		modelID = DefaultOpenCodeModel
-	}
-
-	noopLog := &noopLoggerImpl{}
-	temperature := extractTemperatureFromOptions(options)
-
-	config := Config{
-		Provider:    ProviderOpenCodeCLI,
-		ModelID:     modelID,
-		Temperature: temperature,
-		Logger:      noopLog,
-		Context:     context.Background(),
-	}
-	if strings.TrimSpace(apiKey) != "" {
-		config.APIKeys = &ProviderAPIKeys{OpenCodeCLI: &apiKey}
-	}
-
-	llm, err := initializeOpenCodeCLI(config)
-	if err != nil {
-		return false, fmt.Sprintf("Failed to create OpenCode CLI instance: %v", err), nil
-	}
-
-	callOptions := createCallOptionsFromMap(options)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	resp, err := llm.GenerateContent(ctx, []llmtypes.MessageContent{
-		{
-			Role:  llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly: OPENCODE_OK"}},
-		},
-	}, callOptions...)
-	if err != nil {
-		return false, fmt.Sprintf("OpenCode CLI test generation failed: %v", err), nil
-	}
-	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "OPENCODE_OK") {
-		return false, "OpenCode CLI returned an unexpected validation response", nil
-	}
-
-	return true, fmt.Sprintf("OpenCode CLI is working for model %s", modelID), nil
 }
 
 func validateZAIAPIKey(apiKey string, modelID string, options map[string]interface{}) (bool, string, error) {

@@ -16,13 +16,13 @@ import (
 //
 //   - <workingDir>/AGENTS.md           — per-session system prompt
 //   - <workingDir>/.codex/config.toml  — [mcp_servers.NAME] tables
-//                                        (only when mcpServersJSON is
-//                                        provided via WithMCPServers)
+//     (only when mcpServersJSON is
+//     provided via WithMCPServers)
 //   - <workingDir>/.codex/hooks.json   — PreToolUse deny entry
-//                                        pointing at the deny script
+//     pointing at the deny script
 //   - <workingDir>/.codex/hooks/deny-builtin.sh — POSIX deny script
-//                                        that exits 2 on built-in
-//                                        tool invocations
+//     that exits 2 on built-in
+//     tool invocations
 //
 // Each artifact captures any pre-existing operator content and restores
 // it byte-for-byte at session teardown. The returned cleanup is a
@@ -87,7 +87,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS gating, no per-session
 	// auto-dismiss flakiness. The denyBuiltins parameter is retained on
 	// the function signature for API symmetry with the other adapters
-	// (gemini, opencode) but is a no-op here. Operators who want
+	// (gemini, cursor, agy) but is a no-op here. Operators who want
 	// deny-builtin behavior on codex should call WithDisableShellTool /
 	// WithDisableFeatures via the adapter options instead.
 	_ = denyBuiltins

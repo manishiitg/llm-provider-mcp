@@ -21,12 +21,12 @@ import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 //
 // Steps 2 and 3 must move together; the drift test fails otherwise.
 var nativeResumeRegistry = map[Provider]func(sessionID string) llmtypes.CallOption{
-	ProviderClaudeCode:  WithResumeSessionID,
-	ProviderCodexCLI:    WithCodexResumeSessionID,
-	ProviderGeminiCLI:   WithGeminiResumeSessionID,
-	ProviderCursorCLI:   WithCursorResumeSessionID,
-	ProviderAgyCLI:      WithAgyResumeSessionID,
-	ProviderOpenCodeCLI: WithOpenCodeResumeSessionID,
+	ProviderClaudeCode: WithResumeSessionID,
+	ProviderCodexCLI:   WithCodexResumeSessionID,
+	ProviderGeminiCLI:  WithGeminiResumeSessionID,
+	ProviderCursorCLI:  WithCursorResumeSessionID,
+	ProviderAgyCLI:     WithAgyResumeSessionID,
+	ProviderPiCLI:      WithPiResumeSessionID,
 }
 
 // NativeResumeOption returns the CallOption that resumes sessionID for the

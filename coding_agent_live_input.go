@@ -51,8 +51,8 @@ func SendCodingAgentLiveInput(ctx context.Context, provider Provider, modelID, o
 		return SendCursorCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderAgyCLI:
 		return SendAgyCLIInteractiveInput(ctx, ownerSessionID, message)
-	case ProviderOpenCodeCLI:
-		return SendOpenCodeCLIInteractiveInput(ctx, ownerSessionID, message)
+	case ProviderPiCLI:
+		return SendPiCLIInteractiveInput(ctx, ownerSessionID, message)
 	default:
 		return &CodingAgentContinuationError{
 			Kind:     CodingAgentContinuationErrorNonContinuable,

@@ -11,12 +11,12 @@ package llmproviders
 // lives in the adapter packages.
 //
 // To add transcript-reader support for a new CLI:
-//   1. Implement the reader function in the adapter package (e.g.
-//      cursorcli/cursorcli_transcript_messages.go, geminicli/
-//      geminicli_transcript_usage.go).
-//   2. Register the provider here with the path template.
-//   3. Flip contract.AdapterReadsTranscript to true and populate
-//      contract.TranscriptPathTemplate with the same string.
+//  1. Implement the reader function in the adapter package (e.g.
+//     cursorcli/cursorcli_transcript_messages.go, geminicli/
+//     geminicli_transcript_usage.go).
+//  2. Register the provider here with the path template.
+//  3. Flip contract.AdapterReadsTranscript to true and populate
+//     contract.TranscriptPathTemplate with the same string.
 //
 // Steps 2 and 3 must move together; the drift test fails otherwise.
 type TranscriptReaderInfo struct {
@@ -29,14 +29,6 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	},
 	ProviderGeminiCLI: {
 		PathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
-	},
-	ProviderOpenCodeCLI: {
-		// Unique among readers: opencode persists into a single
-		// SQLite file (~/.local/share/opencode/opencode.db) and we
-		// query it indirectly by shelling out to `opencode export
-		// <sessionID>`. The CLI subcommand is part of the stable
-		// public surface so we don't take a sqlite3 dep.
-		PathTemplate: "opencode export <sessionID>  // reads ~/.local/share/opencode/opencode.db via the CLI's export subcommand",
 	},
 }
 

@@ -22,6 +22,8 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 		provider   Provider
 		model      string
 		binaryName string
+		require    func(*testing.T)
+		setup      func(*testing.T)
 		config     func(string) Config
 		options    func(string, string) []llmtypes.CallOption
 		cleanup    func(context.Context) error
@@ -71,12 +73,47 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 			},
 			cleanup: CleanupCodexCLIInteractiveSessions,
 		},
+		{
+			name:     "pi-cli",
+			provider: ProviderPiCLI,
+			model:    codingAgentContinuationE2EModel("PI_CLI_REAL_CONTRACT_MODEL", DefaultPiCLIModel),
+			require: func(t *testing.T) {
+				requireCodingAgentContinuationPiRuntime(t)
+				if firstNonEmptyCodingAgentContinuationEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY") == "" {
+					t.Skip("GEMINI_API_KEY, GOOGLE_API_KEY, or PI_API_KEY is required for real Pi CLI continuation test")
+				}
+			},
+			setup: func(t *testing.T) {
+				t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
+			},
+			config: func(model string) Config {
+				return Config{
+					Provider: ProviderPiCLI,
+					ModelID:  model,
+				}
+			},
+			options: func(ownerID, workDir string) []llmtypes.CallOption {
+				return []llmtypes.CallOption{
+					WithPiInteractiveSessionID(ownerID),
+					WithPiPersistentInteractiveSession(true),
+					WithPiWorkingDir(workDir),
+				}
+			},
+			cleanup: CleanupPiCLIInteractiveSessions,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requireCodingAgentContinuationBinary(t, "tmux")
-			requireCodingAgentContinuationBinary(t, tt.binaryName)
+			if tt.require != nil {
+				tt.require(t)
+			} else {
+				requireCodingAgentContinuationBinary(t, tt.binaryName)
+			}
+			if tt.setup != nil {
+				tt.setup(t)
+			}
 			if tt.cleanup != nil {
 				t.Cleanup(func() { _ = tt.cleanup(context.Background()) })
 			}
@@ -152,9 +189,35 @@ func codingAgentContinuationE2EModel(envName, fallback string) string {
 
 func requireCodingAgentContinuationBinary(t *testing.T, binaryName string) {
 	t.Helper()
+	if strings.TrimSpace(binaryName) == "" {
+		return
+	}
 	if _, err := exec.LookPath(binaryName); err != nil {
 		t.Skipf("%s not found in PATH", binaryName)
 	}
+}
+
+func requireCodingAgentContinuationPiRuntime(t *testing.T) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("PI_BIN")) != "" {
+		return
+	}
+	if _, err := exec.LookPath("pi"); err == nil {
+		return
+	}
+	if _, err := exec.LookPath("npx"); err == nil {
+		return
+	}
+	t.Skip("pi not found in PATH and npx fallback unavailable")
+}
+
+func firstNonEmptyCodingAgentContinuationEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func killCodingAgentContinuationTmuxSession(t *testing.T, sessionName string) {

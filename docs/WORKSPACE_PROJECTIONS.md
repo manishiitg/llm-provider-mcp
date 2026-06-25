@@ -48,9 +48,7 @@ projection is useful when:
 - An operator auditing a running session wants to see the prompt /
   MCP config / hooks at the conventional path without spelunking
   through tmux capture or temp files.
-- A CLI's hook/permission system *only* loads from on-disk config
-  (opencode's tool-disable block lives in `opencode.jsonc`; no in-flag
-  path exists).
+- A CLI's hook/permission system *only* loads from on-disk config.
 
 ON by default; the workspace-write risk surface (crash-window during
 write/restore, discovery prompts on some CLIs) is bounded by byte-restore
@@ -69,9 +67,9 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | Claude Code | `CLAUDE.md`                                 | `.mcp.json` *(unsafe)*                          | n/a (use `--allowed-tools` / `--disallowed-tools`)                    |
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
-| OpenCode    | `AGENTS.md`                                 | `opencode.jsonc` (`"mcp"` key, merged with deny block) | `opencode.jsonc` `"tools": {"read": false, ...}` block (config-only, no plugin) |
 | Cursor      | `.cursor/rules/mlp-system.mdc`              | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
 | Antigravity | `.agents/rules/mlp-system.md`               | `.agents/mcp_config.json`                       | `.agents/hooks.json` (deny entries inline)                            |
+| Pi          | n/a (`--append-system-prompt`)              | `.pi/mcp.json`                                  | n/a — use Pi's `--no-builtin-tools` flag                              |
 
 ### Notes per CLI
 
@@ -84,6 +82,11 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
   under the tool-specific rules dir, removed at session teardown. The
   one-chat-per-workdir assumption applies.
 - **Antigravity's `.agents/rules/mlp-system.md`** ditto.
+- **Pi's `.pi/mcp.json`** is a Pi-owned project override consumed by
+  `pi-mcp-adapter`. The adapter restores any pre-existing bytes on
+  cleanup and removes the file only when it created it from nothing.
+  Bridge-only mode uses Pi's native `--no-builtin-tools` flag, so no
+  denial hook file is projected.
 - **`AGENTS.md` / `GEMINI.md` / `CLAUDE.md`** are single-file
   conventions. Byte-restore captures any pre-existing operator content
   and writes it back at session teardown. If the orchestrator process
@@ -234,14 +237,6 @@ their live CLIs and ship enabled-by-default under the flag:
   hooks block without a review screen, even with `hooks.BeforeTool`
   entries. (Notable: gemini behaves better here than codex despite
   using the same hook event family.)
-- **OpenCode's `opencode.jsonc` `"tools": {…false}` block** — opencode
-  honors the config-based tool-disable without any plugin auto-load
-  or discovery prompt. Earlier versions of this adapter dropped a JS
-  plugin at `.opencode/plugins/deny-builtin.js`; that approach was
-  abandoned after empirical testing showed opencode 1.15.4 didn't
-  reliably fire the plugin's `tool.execute.before` hook. The
-  config-block path is opencode's documented happy path and verified
-  live by `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires`.
 - **Claude's `CLAUDE.md`** — Claude Code's memory layer auto-loads the
   root-level project-instructions file at startup with no discovery
   prompt.
@@ -255,10 +250,7 @@ their live CLIs and ship enabled-by-default under the flag:
   no-op.
 - Format invariants: codex TOML emitter (key ordering, bare vs quoted
   keys, env subtable), gemini hooks matcher covers documented tool
-  names, opencode `"tools"` block disables `read`/`write`/`bash` and
-  friends (and uses `apply_patch`, not `patch`), opencode MCP entries
-  merge caller-side `{command, args}` into the single-array
-  `command: ["exe", arg, …]` shape opencode 1.15.4 requires.
+  names, and cursor/antigravity hook projections preserve their schema.
 
 ### Real-CLI E2E (gated per CLI)
 
@@ -267,7 +259,6 @@ their live CLIs and ship enabled-by-default under the flag:
 | Claude Code | `RUN_CLAUDE_CODE_TMUX_INTEGRATION=1`       | PASS   |
 | Codex       | `RUN_CODEX_CLI_REAL_E2E=1`                          | PASS   |
 | Gemini      | `RUN_GEMINI_CLI_REAL_E2E=1` + `GEMINI_API_KEY`     | PASS   |
-| OpenCode    | `RUN_OPENCODE_CLI_REAL_E2E=1`                       | PASS   |
 | Cursor      | `RUN_CURSOR_CLI_REAL_E2E=1`                         | covered by older `cursorcli_deny_builtin_hooks_test.go` |
 | Antigravity | `RUN_AGY_CLI_REAL_E2E=1`                            | PASS (`TestAgyCLIRealSystemPromptRulesContract`) |
 
@@ -284,11 +275,8 @@ mode is in use, and asserts:
 
 ### What's NOT covered yet
 
-- **Behavioral deny-hook verification for non-OpenCode CLIs.**
-  OpenCode is now covered by
-  `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires` (asserts the
-  sentinel file content cannot leak when the `tools` block disables
-  `read`). Equivalent behavioral tests for codex/gemini/cursor still
+- **Behavioral deny-hook verification for CLIs.**
+  Equivalent behavioral tests for codex/gemini/cursor still
   don't exist; the missing piece for those CLIs is "the CLI honors
   the deny config we drop", as distinct from "the file we wrote
   lands in the right place."

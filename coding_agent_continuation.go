@@ -232,8 +232,11 @@ func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.Cod
 		if workingDir != "" {
 			out = append(out, WithAgyWorkingDir(workingDir))
 		}
-	case ProviderOpenCodeCLI:
-		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Provider: provider, Reason: "opencode-cli has no provider-native continuation handle yet"}
+	case ProviderPiCLI:
+		out = append(out, WithPiResumeSessionID(resumeID))
+		if workingDir != "" {
+			out = append(out, WithPiWorkingDir(workingDir))
+		}
 	default:
 		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonApplicable, Provider: provider, Reason: "provider-native coding-agent continuation is not implemented"}
 	}

@@ -29,6 +29,12 @@ type CodingAgentProviderContract struct {
 	CLIName     string
 	Transport   CodingAgentTransport
 
+	// Deprecated marks coding-agent providers that remain runnable for old
+	// sessions/configs but should not be offered for new user setup.
+	Deprecated          bool
+	DeprecationReason   string
+	ReplacementProvider Provider
+
 	RequiresWorkingDir     bool
 	RequiresOwnerSessionID bool
 	UsesPersistentSession  bool
@@ -87,8 +93,8 @@ type CodingAgentProviderContract struct {
 	// show a "do you trust the files in this folder?" dialog; Agy 1.0.2 creates
 	// fresh projects without that dialog in our E2E environment, but still has a
 	// startup login picker that the adapter must detect and surface instead of
-	// parsing as ready/output. Structured-only CLIs (Gemini, OpenCode) do not
-	// render these TUI prompts.
+	// parsing as ready/output. Structured-only CLIs do not render these TUI
+	// prompts.
 	//
 	// Pairs with CertTrustAuthPrompts in codingAgentCapabilityCertifications:
 	// when RequiresWorkspaceTrust=true, the provider must have a registered
@@ -114,9 +120,8 @@ type CodingAgentProviderContract struct {
 	// flow (stored credentials, OAuth, etc.) and no env-based shortcut
 	// works — e.g. cursor-agent uses cursor.sh's logged-in identity.
 	//
-	// For OpenCode-style multi-provider CLIs, list the canonical primary
-	// vars only (e.g. ANTHROPIC_API_KEY for the anthropic sub-provider);
-	// sub-provider routing lives in adapter-specific configuration.
+	// For multi-provider CLIs, list the canonical primary vars only;
+	// provider routing lives in adapter-specific configuration.
 	APIKeyEnvVars []string
 
 	// HandlesCtrlCCleanExit reports whether sending Ctrl+C (0x03 keystroke
@@ -158,8 +163,8 @@ type CodingAgentProviderContract struct {
 
 	// WorkingDirMCPConfigFile names the file/directory the CLI auto-loads
 	// for project-scoped MCP server configuration (e.g. ".cursor/mcp.json",
-	// ".gemini/settings.json", "opencode.jsonc"). The orchestrator writes
-	// to these paths today as part of bridge injection — adapters resolve
+	// ".gemini/settings.json"). The orchestrator writes to these paths today
+	// as part of bridge injection — adapters resolve
 	// them via package-local helpers (WithCursorMCPConfig, etc.), this
 	// field is purely documentation so workflow authors know which files
 	// in their step folder are conventionally owned by the orchestrator.
@@ -289,9 +294,12 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserMCPConfigFile:         "~/.cursor/mcp.json",
 	},
 	ProviderGeminiCLI: {
-		Provider:    ProviderGeminiCLI,
-		DisplayName: "Gemini CLI",
-		CLIName:     "gemini",
+		Provider:            ProviderGeminiCLI,
+		DisplayName:         "Gemini CLI",
+		CLIName:             "gemini",
+		Deprecated:          true,
+		DeprecationReason:   "Gemini CLI is retained for existing sessions only; prefer Antigravity CLI for new Google-backed coding-agent setup.",
+		ReplacementProvider: ProviderAgyCLI,
 		// Gemini CLI runs in the tmux interactive transport by default — same
 		// shape as Claude Code / Codex / Cursor / Agy. The structured
 		// (--output-format stream-json) path is kept available as the
@@ -364,48 +372,41 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		WorkingDirMCPConfigFile:   ".agents/mcp_config.json",
 		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},
-	ProviderOpenCodeCLI: {
-		Provider:                ProviderOpenCodeCLI,
-		DisplayName:             "OpenCode CLI",
-		CLIName:                 "opencode",
-		Transport:               CodingAgentTransportStructured,
+	ProviderPiCLI: {
+		Provider:                ProviderPiCLI,
+		DisplayName:             "Pi CLI",
+		CLIName:                 "pi",
+		Transport:               CodingAgentTransportTmux,
 		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  false,
-		UsesPersistentSession:   false,
-		SupportsLiveInput:       false,
-		SupportsInterrupt:       false,
-		SupportsTerminalStream:  false,
+		RequiresOwnerSessionID:  true,
+		UsesPersistentSession:   true,
+		SupportsLiveInput:       true,
+		SupportsInterrupt:       true,
+		SupportsTerminalStream:  true,
+		SupportsStatusLine:      true,
 		SupportsFinalExtraction: true,
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   false,
-		ProcessScopedCleanup:    false,
-		HandlesTmuxSessionLoss:  false,
-		StructuredFallback:      true,
-		ImageInputInteractive:   true,
+		LaunchesViaLoginShell:   true,
+		ProcessScopedCleanup:    true,
+		HandlesTmuxSessionLoss:  true,
+		StructuredFallback:      false,
+		ImageInputInteractive:   false,
 		SurfacesTokenUsage:      true,
-		// Primary path is stream-json (step_finish events), with a
-		// post-hoc `opencode export <sessionID>` enrichment as a
-		// backstop when the upstream endpoint omits step_finish
-		// (observed on the hosted free tier for short responses).
-		// Both paths are exact — no estimation involved — so we
-		// classify by the canonical primary.
-		TokenUsageSource: "stream-json",
-		// True: after each turn the adapter shells out to
-		// `opencode export <sessionID>` to recover the conversation
-		// messages (text + tool calls) and aggregate token usage from
-		// opencode's local SQLite store. This populates
-		// CodingProviderIntermediateMessages so the host's
-		// conversation log captures the full internal trail.
-		AdapterReadsTranscript:    true,
-		TranscriptPathTemplate:    "opencode export <sessionID>  // reads ~/.local/share/opencode/opencode.db via the CLI's export subcommand",
-		APIKeyEnvVars:             []string{"OPENCODE_API_KEY"},
-		WorkingDirInstructionFile: "AGENTS.md", // OpenCode follows the OpenAI-style AGENTS.md convention.
-		UserInstructionFile:       "~/.opencode/AGENTS.md",
-		WorkingDirMCPConfigFile:   "opencode.jsonc", // adapter writes this when WithOpenCodeMCPConfig is provided
-		UserMCPConfigFile:         "~/.opencode/opencode.jsonc",
+		TokenUsageSource:        "estimated",
+		AdapterReadsTranscript:  false,
+		APIKeyEnvVars:           []string{"PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"},
+		// Pi follows AGENTS.md-style project instructions, but this adapter
+		// injects per-session system guidance through --append-system-prompt
+		// rather than writing durable project files. MCP is provided through
+		// the pi-mcp-adapter extension and a restored session-scoped .pi/mcp.json
+		// project override; --no-builtin-tools provides the bridge-only gate.
+		WorkingDirInstructionFile: "AGENTS.md",
+		UserInstructionFile:       "~/.pi/agent/AGENTS.md",
+		WorkingDirMCPConfigFile:   ".pi/mcp.json",
+		UserMCPConfigFile:         "~/.pi/agent/mcp.json",
 	},
 }
 

@@ -20,7 +20,6 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
 		{name: "agy cli", provider: ProviderAgyCLI, wantTmux: true, wantFound: true},
 		{name: "gemini cli", provider: ProviderGeminiCLI, wantTmux: true, wantFound: true},
-		{name: "opencode cli", provider: ProviderOpenCodeCLI, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
 		{name: "openai", provider: ProviderOpenAI},
@@ -63,6 +62,36 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 						t.Fatalf("tmux coding-agent contract missing %s", name)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestDeprecatedCodingAgentContractsKeepRuntimeButPointToReplacement(t *testing.T) {
+	tests := []struct {
+		provider Provider
+		want     Provider
+	}{
+		{provider: ProviderGeminiCLI, want: ProviderAgyCLI},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			contract, ok := GetCodingAgentProviderContract(tt.provider, "")
+			if !ok {
+				t.Fatalf("missing coding-agent contract for %s", tt.provider)
+			}
+			if !contract.Deprecated {
+				t.Fatalf("%s should be marked deprecated for new setup", tt.provider)
+			}
+			if contract.ReplacementProvider != tt.want {
+				t.Fatalf("replacement = %q, want %q", contract.ReplacementProvider, tt.want)
+			}
+			if strings.TrimSpace(contract.DeprecationReason) == "" {
+				t.Fatal("deprecated provider must explain the replacement path")
+			}
+			if !contract.SupportsFinalExtraction {
+				t.Fatal("deprecated provider remains runnable and must keep its runtime contract")
 			}
 		})
 	}
@@ -233,7 +262,7 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // entry will fail TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification.
 //
 // History: every provider's coding-agent capability claims were originally
-// enforced only for Claude Code + Codex. Cursor, Agy, Gemini, OpenCode
+// enforced only for Claude Code + Codex. Cursor, Agy, Gemini
 // declared the same capabilities without proof, which let real bugs ship
 // (e.g. cursor's "claims UsesMCPBridge=true" while in --print mode it
 // returned zero tokens / zero tool calls on a real workflow run). The
@@ -277,12 +306,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
 		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
 		CertTrustAuthPrompts, CertWorkingDirectory,
-	},
-	// OpenCode is structured-only (no tmux suite required).
-	// CertMCPBridge has landed; remaining IDs await their own e2e tests.
-	ProviderOpenCodeCLI: {
-		CertDoneDetection, CertFreshLaunch,
-		CertNativeSystemPrompt, CertPromptPaste, CertWorkingDirectory,
 	},
 }
 
@@ -367,6 +390,28 @@ func TestCodingAgentCertificationReferencesExistingTests(t *testing.T) {
 	}
 }
 
+func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
+	certs := CodingAgentProviderCertifications(ProviderPiCLI)
+	if len(certs) == 0 {
+		t.Fatal("pi-cli has no registered certifications")
+	}
+	for _, cert := range certs {
+		if !cert.RealE2E {
+			t.Fatalf("pi-cli certification %s must be backed by real Pi E2E, got %#v", cert.ID, cert)
+		}
+		hasPiEnvGuard := false
+		for _, env := range cert.Env {
+			if strings.HasPrefix(env, "RUN_PI_CLI_") || env == "RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1" {
+				hasPiEnvGuard = true
+				break
+			}
+		}
+		if !hasPiEnvGuard {
+			t.Fatalf("pi-cli certification %s must name its real E2E env guard, got %#v", cert.ID, cert.Env)
+		}
+	}
+}
+
 func TestClaudeAndCodexSessionLossRecoveryCertificationUsesRealE2E(t *testing.T) {
 	for _, provider := range []Provider{ProviderClaudeCode, ProviderCodexCLI} {
 		var found *CodingAgentCertification
@@ -418,12 +463,6 @@ func TestStructuredCLIAdaptersMirrorAssistantTextToTerminal(t *testing.T) {
 			adapterFile: "pkg/adapters/cursorcli/cursorcli_adapter.go",
 			testFile:    "pkg/adapters/cursorcli/cursorcli_adapter_test.go",
 			testName:    "TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal",
-		},
-		{
-			name:        "opencode cli",
-			adapterFile: "pkg/adapters/opencodecli/opencodecli_adapter.go",
-			testFile:    "pkg/adapters/opencodecli/opencodecli_adapter_test.go",
-			testName:    "TestOpenCodeCLIStructuredStreamMirrorsAssistantTextToTerminal",
 		},
 	}
 

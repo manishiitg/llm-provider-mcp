@@ -400,20 +400,6 @@ Gemini CLI:
   tmux contract, because the CLI is being deprecated and the project is not
   carrying new tmux-specific surface for it.
 
-OpenCode CLI:
-
-- Default structured transport: `opencode run --format json --dangerously-skip-permissions`.
-  Emits NDJSON events (`step_start`, `text`, `tool_use`, `step_finish`) with
-  token usage and cost.
-- OpenCode is not part of the tmux coding-agent contract. Treat OpenCode as a
-  structured JSON coding provider unless a future change explicitly restores a
-  tmux contract and its full E2E certification.
-- Default model selector: `opencode-cli`, which means "do not pass --model; let
-  OpenCode use its configured/account default".
-- Model overrides are passed as OpenCode provider/model selectors through
-  `--model <provider/model>`.
-- Workflow and chat both use the structured transport by default.
-
 ## Image Input Contract
 
 `llmtypes.ImageContent` must never be silently dropped.
@@ -431,8 +417,6 @@ OpenCode CLI:
   implemented for the TUI session.
 - Gemini CLI: rejects image input in the current adapter because the supported
   headless/tmux transport has no image attachment flag.
-- OpenCode CLI structured: rejects `llmtypes.ImageContent` directly; workspace
-  image tools may still pass local file paths in a text prompt.
 
 ## Launch Contract
 
@@ -793,9 +777,6 @@ Native resume metadata:
 - Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
   `--resume <session_id>` from the same project/settings dir and the same
   caller workspace supplied via `--include-directories`.
-- OpenCode CLI structured: `opencode_session_id` when available, resumed with
-  `opencode run --session <session_id>` from the same workspace.
-
 On native resume, prefer sending only the latest user message when the provider
 session/thread is proven to retain context. If a provider does not reliably
 retain context in the current CLI build, the adapter must replay a bounded
@@ -1200,28 +1181,13 @@ Cursor CLI tmux:
 
 Kimi:
 
-- No tmux coding-agent contract. `kimi-code` is intentionally removed; use
-  OpenCode CLI for Kimi Code-style coding-agent workflows.
-
-OpenCode CLI structured JSON:
-
-- `TestOpenCodeCLIStructuredBasicRun`
-- `TestOpenCodeCLIStructuredTokenUsage`
-- `TestOpenCodeCLIStructuredSystemPrompt`
-- `TestOpenCodeCLIStructuredStreaming`
-- `TestOpenCodeCLIStructuredToolUseProducesToolChunks`
-- `TestOpenCodeCLIStructuredSessionIDInMetadata`
-- `TestOpenCodeCLIStructuredMultiTurnResume`
-- `TestOpenCodeCLIStructuredNoInternalMemory`
-- `TestOpenCodeCLIStructuredNoInjectedStrings`
+- No tmux coding-agent contract. `kimi-code` is intentionally removed; use Pi
+  CLI or Antigravity CLI for new coding-agent workflows.
 
 Known certification gaps:
 
 - Codex CLI should get a dedicated `LargePastedPromptSubmits` test, even though
   its full contract already covers multiline paste and same-session context.
-- OpenCode CLI is structured JSON only now; validate it with the structured E2E
-  tests above, not the tmux release gate.
-
 Cursor CLI MCP bridge notes:
 
 - Cursor CLI's MCP tool exposure in TUI mode requires per-workspace pre-approval
@@ -1285,12 +1251,6 @@ Current Cursor CLI real contract command:
 
 ```sh
 RUN_CURSOR_CLI_REAL_E2E=1 RUN_CURSOR_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/cursorcli -run 'TestCursorCLIRealInteractive' -v -timeout 6m
-```
-
-Current OpenCode CLI structured real contract command:
-
-```sh
-RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli -run 'TestOpenCodeCLIStructured' -v -timeout 6m
 ```
 
 Current legacy structured transport real contract commands:

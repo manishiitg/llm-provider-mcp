@@ -9,12 +9,11 @@ Covered providers:
 - `codex-cli` — `codex exec --json`
 - `cursor-cli` — `cursor-agent --print --output-format stream-json`
 - `gemini-cli` — `gemini --output-format stream-json`
-- `opencode-cli` — `opencode run --format json` (structured-only, no tmux)
 
 The provider-level coding-agent contract in `coding_agent_contract.go` decides
 which transport host applications should use by default. Claude Code, Codex CLI,
-and Cursor CLI use the tmux interactive transport. Gemini CLI and OpenCode CLI
-use structured JSON only. The two transports are complementary:
+and Cursor CLI use the tmux interactive transport. Gemini CLI uses structured
+JSON only. The two transports are complementary:
 
 - Tmux: persistent chat, live input, terminal streaming, interrupt, multi-turn.
 - Structured: per-turn, native token/cost, clean tool events, no tmux dependency.
@@ -31,7 +30,6 @@ the provider-level contract.
 | Codex CLI | `codex exec --json` | `--model`, `--config` |
 | Cursor CLI | `cursor-agent --print --output-format stream-json --stream-partial-output` | `--trust`, `--force`, `--workspace`, `--model`, `--mode` |
 | Gemini CLI | `gemini --output-format stream-json` | `--prompt`, `--model` |
-| OpenCode CLI | `opencode run --format json` | `--dangerously-skip-permissions` (default on), `--dir`, `--model`, `--session`, `--continue` |
 
 ## Event Formats by Provider
 
@@ -75,15 +73,6 @@ the provider-level contract.
 {"type":"result","subtype":"success","result":"...","session_id":"...","usage":{...}}
 ```
 
-### OpenCode CLI (run --format json)
-
-```jsonl
-{"type":"step_start","timestamp":...,"sessionID":"ses_...","part":{...}}
-{"type":"text","timestamp":...,"sessionID":"ses_...","part":{"type":"text","text":"Hello"}}
-{"type":"tool_use","timestamp":...,"sessionID":"ses_...","part":{"type":"tool","tool":"bash","callID":"...","state":{"status":"completed","input":{...},"output":"..."}}}
-{"type":"step_finish","timestamp":...,"sessionID":"ses_...","part":{"reason":"stop","tokens":{"total":8134,"input":8113,"output":2,"reasoning":19,"cache":{"write":0,"read":0}},"cost":0}}
-```
-
 ## Normative Structured Agent Contract
 
 ### 1. Launch
@@ -110,7 +99,7 @@ The adapter must:
   available (Claude Code `--system-prompt-file`, Cursor `.cursor/rules`,
   Gemini `GEMINI_SYSTEM_MD`)
 - fall back to prepending system instructions to the prompt when no native
-  mechanism exists (OpenCode `[System Instructions]\n...\n\n[User Message]\n...`)
+  mechanism exists
 - build user conversation from all non-system messages
 - reject empty prompts with a clear error
 
@@ -187,18 +176,7 @@ The adapter must:
 
 Every structured CLI subprocess MUST be torn down by the adapter using
 this exact sequence once a **terminal-state** event (`result` /
-`task_complete` / `done` / opencode `step_finish` with
-`reason != "tool-calls"` / equivalent) is observed on stdout:
-
-**OpenCode-specific carve-out:** opencode emits `step_finish` between
-multi-step turns (e.g. before a tool call, then again after the tool
-result feeds back into the next step). Only the final step_finish has
-`reason == "stop"` (or `"length"`, `"content_filter"`, etc.).
-Intermediate ones have `reason == "tool-calls"` and MUST NOT trigger
-the shutdown sequence — terminating opencode there cuts the turn off
-before the final assistant text is produced (regression history:
-TestOpenCodeCLIStructuredMCPBridge silently failed for months because
-the adapter terminated on the post-tool-call step_finish).
+`task_complete` / `done` / equivalent) is observed on stdout:
 
 ```
 SIGTERM  →  10s  →  SIGTERM  →  10s  →  SIGTERM  →  5s  →  SIGKILL
@@ -427,75 +405,31 @@ RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/gem
 
 **Gaps:** none.
 
-### OpenCode CLI (`opencode run --format json`)
-
-```sh
-# Free-tier by default — no API key required. Pinned to
-# opencode/deepseek-v4-flash-free via the freeTierTestModel() helper
-# in opencodecli_real_test.go. Override the model with
-# OPENCODE_CLI_REAL_E2E_MODEL=<provider/model> for paid-tier coverage.
-RUN_OPENCODE_CLI_REAL_E2E=1 go test ./pkg/adapters/opencodecli -v -timeout 15m
-```
-
-| Area | Test |
-|---|---|
-| Fresh launch | `TestOpenCodeCLIStructuredBasicRun` |
-| System prompt | `TestOpenCodeCLIStructuredSystemPrompt` |
-| Token usage | `TestOpenCodeCLIStructuredTokenUsage` |
-| Streaming text | `TestOpenCodeCLIStructuredStreaming` |
-| Tool call events | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
-| Session metadata | `TestOpenCodeCLIStructuredSessionIDInMetadata` |
-| Multi-step tool use | `TestOpenCodeCLIStructuredToolUseProducesToolChunks` |
-| Model override | `TestOpenCodeCLIStructuredModelOverride` (skipped on free tier; needs `ANTHROPIC_API_KEY` or `RUN_OPENCODE_PAID_MODEL_OVERRIDE=1`) |
-| Image path | `TestOpenCodeCLIRealImagePathAnalysis` (skipped when running on the default free-tier model; needs a vision-capable override via `OPENCODE_CLI_REAL_E2E_MODEL`) |
-| Web search | `TestOpenCodeCLIRealSearchWeb` |
-| Live web search | `TestOpenCodeCLIRealSearchWebLiveData` |
-| Error handling | `TestOpenCodeCLIStructuredErrorHandling` |
-| MCP bridge | `TestOpenCodeCLIStructuredMCPBridge` (exercises canonical `{"mcpServers":{name:{"command":"<exe>","args":[...]}}}` input → opencode 1.15.4's `{"mcp":{name:{"command":["<exe>",...]}}}` after adapter merge) |
-| Multi-turn resume | `TestOpenCodeCLIStructuredMultiTurnResume` |
-| No injected strings | `TestOpenCodeCLIStructuredNoInjectedStrings` |
-| No internal memory | `TestOpenCodeCLIStructuredNoInternalMemory` |
-| Tool disable (behavioral) | `TestOpenCodeCLIRealDenyBuiltinHookActuallyFires` (asserts sentinel does not leak when `WithWriteProjectInstructionFile(true)` writes the `tools:{read:false,...}` block into `opencode.jsonc`) |
-| Tool disable (config) | `TestOpenCodeCLIStructuredToolDisable` |
-| Sandboxed MCP | `TestOpenCodeCLIStructuredSandboxedMCP` (limitation: `*:deny` blocks all including MCP) |
-| Project-artifacts lifecycle | `TestOpenCodeCLIRealProjectArtifactsLifecycle` (operator-owned `AGENTS.md` and `opencode.jsonc` both byte-restored after the adapter's merged config write) |
-| Multi-turn memory (builder layer) | `TestMultiTurnChatE2E_OpenCode` in `mcp-agent-builder-go/agent_go/cmd/server/` (3 turns via native `--session`, asserts intermediate-message splice + non-zero token surface via `opencode export <id>` sidecar) |
-| Graceful cancel | `TestOpenCodeCLIStructuredGracefulCancel` |
-
-**Gaps:** free-tier endpoint does not emit `step_finish` events for short
-responses, so the adapter falls back to `opencode export <sessionID>` after
-every turn to recover tokens + conversation history. Paid sub-providers
-(Kimi, GLM, etc.) surface tokens through the stream-json path directly and
-do not need the export fallback.
-
 ## Full Provider Coverage Matrix
 
-| Area | Claude | Codex | Cursor | Gemini | OpenCode |
-|---|:---:|:---:|:---:|:---:|:---:|
-| 1. Fresh launch | yes | yes | yes | yes | yes |
-| 2. Working directory | yes | yes | yes | yes | yes |
-| 3. System prompt | yes | yes | yes | yes | yes |
-| 4. Token usage | yes | yes | yes | yes | yes |
-| 5. Streaming text | yes | yes | yes | yes | yes |
-| 6. Streaming tool calls | yes | yes | yes | yes | yes |
-| 7. Session metadata | yes | yes | yes | yes | yes |
-| 8. Multi-step tool use | yes | yes | yes | yes | yes |
-| 9. Model override | yes | yes | yes | yes | yes |
-| 10. Image path | yes | yes | yes | yes | yes |
-| 11. Web search | yes | yes | yes | yes | yes |
-| 12. Live web search | yes | yes | yes | yes | yes |
-| 13. Cancellation | yes | yes | yes | yes | yes |
-| 14. Error handling | yes | yes | yes | yes | yes |
-| 15. MCP bridge | yes | yes | yes | yes | yes |
-| 16. Tool disable | yes | yes | yes | yes | yes |
-| 17. Multi-turn resume | yes | yes | yes | yes | yes |
-| 18. No injected strings | yes | yes | yes | yes | yes |
-| 19. No internal memory | yes | yes | yes | yes | yes |
-| 20. Graceful cancel | yes | yes | yes | yes | yes |
-| 21. Sandboxed MCP | yes | yes | yes | yes | n/a† |
-
-† OpenCode's permission system is all-or-nothing (`"*":"deny"` blocks all tools including MCP).
-Sandboxed MCP for OpenCode must be implemented at the orchestration layer (mcpagent).
+| Area | Claude | Codex | Cursor | Gemini |
+|---|:---:|:---:|:---:|:---:|
+| 1. Fresh launch | yes | yes | yes | yes |
+| 2. Working directory | yes | yes | yes | yes |
+| 3. System prompt | yes | yes | yes | yes |
+| 4. Token usage | yes | yes | yes | yes |
+| 5. Streaming text | yes | yes | yes | yes |
+| 6. Streaming tool calls | yes | yes | yes | yes |
+| 7. Session metadata | yes | yes | yes | yes |
+| 8. Multi-step tool use | yes | yes | yes | yes |
+| 9. Model override | yes | yes | yes | yes |
+| 10. Image path | yes | yes | yes | yes |
+| 11. Web search | yes | yes | yes | yes |
+| 12. Live web search | yes | yes | yes | yes |
+| 13. Cancellation | yes | yes | yes | yes |
+| 14. Error handling | yes | yes | yes | yes |
+| 15. MCP bridge | yes | yes | yes | yes |
+| 16. Tool disable | yes | yes | yes | yes |
+| 17. Multi-turn resume | yes | yes | yes | yes |
+| 18. No injected strings | yes | yes | yes | yes |
+| 19. No internal memory | yes | yes | yes | yes |
+| 20. Graceful cancel | yes | yes | yes | yes |
+| 21. Sandboxed MCP | yes | yes | yes | yes |
 
 ## Related Docs
 

@@ -49,7 +49,7 @@ func TestInitializeKimiCodeIsRemoved(t *testing.T) {
 	if err == nil {
 		t.Fatal("initializeKimi returned nil error for removed kimi-code model")
 	}
-	if !strings.Contains(err.Error(), "use OpenCode CLI") {
-		t.Fatalf("initializeKimi error = %q, want OpenCode guidance", err.Error())
+	if !strings.Contains(err.Error(), "use kimi-k2.7-code") {
+		t.Fatalf("initializeKimi error = %q, want Kimi replacement guidance", err.Error())
 	}
 }

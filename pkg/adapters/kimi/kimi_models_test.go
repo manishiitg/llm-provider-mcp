@@ -2,13 +2,29 @@ package kimi
 
 import "testing"
 
-func TestGetDefaultVisibleKimiModelIDsIncludesVisionOnly(t *testing.T) {
+func TestGetDefaultVisibleKimiModelIDs(t *testing.T) {
 	models := GetDefaultVisibleKimiModelIDs()
-	if len(models) != 1 {
-		t.Fatalf("len(models) = %d, want 1", len(models))
+	want := []string{ModelKimiK26, ModelKimiK27Code}
+	if len(models) != len(want) {
+		t.Fatalf("len(models) = %d, want %d", len(models), len(want))
 	}
-	if models[0] != ModelKimiK26 {
-		t.Fatalf("models[0] = %q, want %q", models[0], ModelKimiK26)
+	for i, id := range want {
+		if models[i] != id {
+			t.Fatalf("models[%d] = %q, want %q", i, models[i], id)
+		}
+	}
+}
+
+func TestGetKimiModelMetadataK27Code(t *testing.T) {
+	meta, err := GetKimiModelMetadata(ModelKimiK27Code)
+	if err != nil {
+		t.Fatalf("GetKimiModelMetadata returned error: %v", err)
+	}
+	if meta.ModelID != ModelKimiK27Code {
+		t.Fatalf("ModelID = %q, want %q", meta.ModelID, ModelKimiK27Code)
+	}
+	if !meta.SupportsToolCalls {
+		t.Fatal("SupportsToolCalls = false, want true")
 	}
 }
 

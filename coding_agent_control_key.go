@@ -71,8 +71,8 @@ func SendCodingAgentControlKey(ctx context.Context, provider Provider, modelID, 
 		return SendCursorCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderAgyCLI:
 		return SendAgyCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
-	case ProviderOpenCodeCLI:
-		return SendOpenCodeCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
+	case ProviderPiCLI:
+		return SendPiCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	default:
 		return &CodingAgentContinuationError{
 			Kind:     CodingAgentContinuationErrorNonContinuable,

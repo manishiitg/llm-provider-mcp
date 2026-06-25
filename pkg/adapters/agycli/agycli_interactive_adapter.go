@@ -180,7 +180,7 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 	// claude-code's --json-schema, so we append the schema to the prompt
 	// with explicit instructions. Same prompt-appended fallback used by
 	// claude-code's interactive adapter and the gemini / codex / cursor /
-	// opencode adapters.
+	// other coding-agent adapters.
 	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
 		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
 		if err != nil {

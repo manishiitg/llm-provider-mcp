@@ -13,7 +13,6 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/opencodecli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/zai"
 )
@@ -63,9 +62,6 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Antigravity CLI
 	allModels = append(allModels, agycli.GetAllAgyCLIModels()...)
-
-	// OpenCode CLI
-	allModels = append(allModels, opencodecli.GetAllOpenCodeCLIModels()...)
 
 	// OpenRouter - fetch dynamically from API (cached for 24 hours)
 	openRouterModels := openai.GetAllOpenRouterModels()

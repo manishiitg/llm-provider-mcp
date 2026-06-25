@@ -1,6 +1,6 @@
 // Package paneview holds helpers for normalising tmux pane snapshots
 // before they reach the UI. Adapters that stream live capture-pane output
-// (claude-code, codex, gemini, cursor, agy, opencode) all share the same
+// (claude-code, codex, gemini, cursor, agy, pi) all share the same
 // hygiene needs, so the logic lives once here.
 package paneview
 
