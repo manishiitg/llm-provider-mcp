@@ -30,6 +30,9 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	ProviderGeminiCLI: {
 		PathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
 	},
+	ProviderPiCLI: {
+		PathTemplate: "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
+	},
 }
 
 // TranscriptReaderFor returns the transcript reader metadata for a provider,

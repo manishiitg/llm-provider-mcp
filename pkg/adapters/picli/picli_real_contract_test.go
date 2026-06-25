@@ -58,6 +58,7 @@ func TestPiCLIRealTmuxFullContract(t *testing.T) {
 	if !strings.Contains(content, systemToken) || !strings.Contains(content, pasteToken) {
 		t.Fatalf("content = %q, want system token %s and paste token %s", content, systemToken, pasteToken)
 	}
+	assertPiResponseHasTranscriptUsage(t, resp)
 	statusLine := assertPiStreamHasTerminalContentAndStatusLine(t, stream)
 	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
 	if !ok || handle.Provider != "pi-cli" || handle.TmuxSession == "" || handle.NativeSessionID == "" {
@@ -580,10 +581,35 @@ func assertPiStreamHasTerminalContentAndStatusLine(t *testing.T, streamChan <-ch
 	if strings.TrimSpace(statusLine.Model) == "" {
 		t.Fatal("expected Pi statusline to include selected provider/model route")
 	}
-	if got := statusLine.Metadata["pi_token_usage_source"]; got != "estimated" {
-		t.Fatalf("statusline pi_token_usage_source = %#v, want estimated", got)
+	if got := statusLine.Metadata["pi_token_usage_source"]; got != "transcript-file" {
+		t.Fatalf("statusline pi_token_usage_source = %#v, want transcript-file", got)
 	}
 	return statusLine
+}
+
+func assertPiResponseHasTranscriptUsage(t *testing.T, resp *llmtypes.ContentResponse) {
+	t.Helper()
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil || resp.Choices[0].GenerationInfo == nil {
+		t.Fatalf("missing Pi GenerationInfo: %#v", resp)
+	}
+	gi := resp.Choices[0].GenerationInfo
+	if gi.InputTokens == nil || *gi.InputTokens == 0 || gi.OutputTokens == nil || *gi.OutputTokens == 0 || gi.TotalTokens == nil || *gi.TotalTokens == 0 {
+		t.Fatalf("expected transcript-backed token usage, got GenerationInfo=%#v", gi)
+	}
+	additional := gi.Additional
+	if got := additional["pi_token_usage_source"]; got != "transcript-file" {
+		t.Fatalf("pi_token_usage_source = %#v, want transcript-file; additional=%#v", got, additional)
+	}
+	if got, _ := additional["pi_transcript_file"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("missing pi_transcript_file in additional=%#v", additional)
+	}
+	if got, ok := additional["cost_usd"].(float64); !ok || got <= 0 {
+		t.Fatalf("cost_usd = %#v, want positive float64; additional=%#v", additional["cost_usd"], additional)
+	}
+	intermediate, ok := llmtypes.ExtractCodingProviderIntermediateMessages(gi)
+	if !ok || len(intermediate.Messages) < 2 {
+		t.Fatalf("expected Pi transcript conversation messages, got %#v ok=%v", intermediate, ok)
+	}
 }
 
 func waitForPiRealActiveSession(t *testing.T, ownerSessionID string, timeout time.Duration, errCh <-chan error) *piInteractiveSession {

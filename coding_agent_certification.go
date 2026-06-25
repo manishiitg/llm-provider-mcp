@@ -783,7 +783,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/picli/picli_real_contract_test.go",
 			TestName:    "TestPiCLIRealTmuxFullContract",
 			Env:         []string{"RUN_PI_CLI_REAL_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
-			Description: "real Pi tmux run emits a status_line chunk with selected provider/model route, estimated token telemetry, and owning tmux session",
+			Description: "real Pi tmux run emits a status_line chunk with selected provider/model route, transcript-backed token/cost telemetry when available, and owning tmux session",
 			RealE2E:     true,
 		},
 		{

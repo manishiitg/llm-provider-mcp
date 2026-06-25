@@ -90,6 +90,8 @@ func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 
 func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	t.Setenv(EnvPiStatuslineExtension, "")
+	sessionDir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", sessionDir)
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 	WithBridgeOnlyTools(true)(opts)
@@ -106,6 +108,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
 		"-e\x00npm:pi-mcp-adapter",
 		"--session-id\x00mlp-pi-test-123",
+		"--session-dir\x00" + sessionDir,
 		"--no-builtin-tools",
 	} {
 		if !strings.Contains(joined, want) {
@@ -118,9 +121,13 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	if got := strings.Join(env, "\n"); !strings.Contains(got, "MLP_PI_MARKER_FILE=/tmp/markers.jsonl") {
 		t.Fatalf("env = %#v, want marker file", env)
 	}
+	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_CODING_AGENT_SESSION_DIR="+sessionDir) {
+		t.Fatalf("env = %#v, want Pi session dir", env)
+	}
 }
 
 func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
 
 	t.Run("call option override", func(t *testing.T) {
@@ -160,6 +167,7 @@ func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) 
 }
 
 func TestPiLaunchArgsDerivesSessionScopedMCPEnv(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{
 		"mcpServers": {
@@ -208,6 +216,7 @@ func TestPiLaunchArgsDerivesSessionScopedMCPEnv(t *testing.T) {
 }
 
 func TestPiLaunchArgsRejectsBridgeOnlyWithoutMCPConfig(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 	opts := &llmtypes.CallOptions{}
 	WithBridgeOnlyTools(true)(opts)
 
@@ -218,6 +227,7 @@ func TestPiLaunchArgsRejectsBridgeOnlyWithoutMCPConfig(t *testing.T) {
 }
 
 func TestPiLaunchArgsRejectsInvalidNativeSessionID(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
 	if _, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/markers.jsonl", "", "-bad-", nil); err == nil {
 		t.Fatal("piLaunchArgs() error = nil, want invalid native session id to fail")

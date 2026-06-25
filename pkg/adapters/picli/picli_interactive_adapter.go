@@ -68,6 +68,15 @@ type piInteractiveSession struct {
 	mcpFingerprint    string
 	bridgeOnlyTools   bool
 	mcpExtension      string
+	tokenUsageSource  string
+	transcriptPath    string
+	costUSD           float64
+	inputCostUSD      float64
+	outputCostUSD     float64
+	cacheReadCostUSD  float64
+	cacheWriteCostUSD float64
+	cacheReadTokens   int
+	cacheWriteTokens  int
 	inputTokens       int
 	outputTokens      int
 	totalInputTokens  int
@@ -169,6 +178,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 
 	startOffset, _ := piMarkerFileSize(session.markerPath)
 	p.logInfof("Executing Pi CLI tmux session: %s", session.tmuxSessionName)
+	turnStart := time.Now().Add(-1 * time.Second)
 	if err := sendPiInputToTmux(ctx, session.tmuxSessionName, prompt); err != nil {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
@@ -196,8 +206,39 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	}
 
 	inputTokens, outputTokens := estimatePiTmuxTokens(prompt, content)
+	totalTokens := inputTokens + outputTokens
+	tokenUsageSource := "estimated"
+	var transcriptMessages []llmtypes.MessageContent
+	session.transcriptPath = ""
+	session.cacheReadTokens = 0
+	session.cacheWriteTokens = 0
+	session.costUSD = 0
+	session.inputCostUSD = 0
+	session.outputCostUSD = 0
+	session.cacheReadCostUSD = 0
+	session.cacheWriteCostUSD = 0
+	if transcript := readPiTranscriptSummary(session.nativeSessionID, turnStart); transcript != nil {
+		session.transcriptPath = transcript.Path
+		if len(transcript.Messages) > 0 {
+			transcriptMessages = transcript.Messages
+		}
+		if transcript.hasUsage() {
+			inputTokens = transcript.InputTokens
+			outputTokens = transcript.OutputTokens
+			totalTokens = transcript.TotalTokens
+			tokenUsageSource = "transcript-file"
+			session.cacheReadTokens = transcript.CacheReadTokens
+			session.cacheWriteTokens = transcript.CacheWriteTokens
+			session.costUSD = transcript.TotalCostUSD
+			session.inputCostUSD = transcript.InputCostUSD
+			session.outputCostUSD = transcript.OutputCostUSD
+			session.cacheReadCostUSD = transcript.CacheReadCostUSD
+			session.cacheWriteCostUSD = transcript.CacheWriteCostUSD
+		}
+	}
 	session.inputTokens = inputTokens
 	session.outputTokens = outputTokens
+	session.tokenUsageSource = tokenUsageSource
 	session.totalInputTokens += inputTokens
 	session.totalOutputTokens += outputTokens
 	streamPiStatusLine(ctx, session, opts.StreamChan)
@@ -220,20 +261,25 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	}
 
 	additional := piResponseAdditional(session, persistent)
-	additional["pi_token_usage_source"] = "estimated"
-	totalTokens := inputTokens + outputTokens
+	additional["pi_token_usage_source"] = tokenUsageSource
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtr(inputTokens),
 		OutputTokens: intPtr(outputTokens),
 		TotalTokens:  intPtr(totalTokens),
 		Additional:   additional,
 	}
+	if session.cacheReadTokens > 0 {
+		genInfo.CachedContentTokens = intPtr(session.cacheReadTokens)
+	}
+	if len(transcriptMessages) == 0 {
+		transcriptMessages = []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeAI, content),
+		}
+	}
 	llmtypes.AttachCodingProviderIntermediateMessages(genInfo, llmtypes.CodingProviderIntermediateMessages{
 		Provider:  "pi-cli",
 		Transport: llmtypes.CodingProviderTransportTmux,
-		Messages: []llmtypes.MessageContent{
-			llmtypes.TextPart(llmtypes.ChatMessageTypeAI, content),
-		},
+		Messages:  transcriptMessages,
 	})
 	llmtypes.AttachCodingProviderSessionHandle(genInfo, piSessionHandle(session, llmtypes.CodingProviderSessionStatusIdle))
 
@@ -433,6 +479,13 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, markerPath, 
 		"--no-context-files",
 		"--session-id", nativeSessionID,
 	)
+	if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
+		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
+		}
+		args = append(args, "--session-dir", sessionDir)
+		env = append(env, "PI_CODING_AGENT_SESSION_DIR="+sessionDir)
+	}
 	if bridgeOnlyTools {
 		args = append(args, "--no-builtin-tools")
 	}
@@ -999,20 +1052,35 @@ func piStatusLine(session *piInteractiveSession) *llmtypes.StatusLine {
 		"pi_interactive_session":    session.tmuxSessionName,
 		"pi_session_id":             session.nativeSessionID,
 		"pi_persistent_interactive": session.persistent,
-		"pi_token_usage_source":     "estimated",
+		"pi_token_usage_source":     piTokenUsageSource(session),
 	}
 	if session.workingDir != "" {
 		metadata["working_dir"] = session.workingDir
 	}
-	return &llmtypes.StatusLine{
-		Provider:          "pi-cli",
-		Model:             session.modelID,
-		InputTokens:       session.inputTokens,
-		OutputTokens:      session.outputTokens,
-		TotalInputTokens:  session.totalInputTokens,
-		TotalOutputTokens: session.totalOutputTokens,
-		Metadata:          metadata,
+	if session.transcriptPath != "" {
+		metadata["pi_transcript_file"] = session.transcriptPath
 	}
+	if session.costUSD > 0 {
+		metadata["cost_usd"] = session.costUSD
+	}
+	return &llmtypes.StatusLine{
+		Provider:             "pi-cli",
+		Model:                session.modelID,
+		InputTokens:          session.inputTokens,
+		OutputTokens:         session.outputTokens,
+		CacheReadInputTokens: session.cacheReadTokens,
+		TotalInputTokens:     session.totalInputTokens,
+		TotalOutputTokens:    session.totalOutputTokens,
+		CostUSD:              session.costUSD,
+		Metadata:             metadata,
+	}
+}
+
+func piTokenUsageSource(session *piInteractiveSession) string {
+	if session == nil || strings.TrimSpace(session.tokenUsageSource) == "" {
+		return "estimated"
+	}
+	return session.tokenUsageSource
 }
 
 func capturePiPane(ctx context.Context, sessionName string) (string, error) {
@@ -1044,6 +1112,28 @@ func piResponseAdditional(session *piInteractiveSession, persistent bool) map[st
 	}
 	if !persistent {
 		additional["pi_interactive_retention_seconds"] = int(piInteractiveRetention().Seconds())
+	}
+	if session.tokenUsageSource != "" {
+		additional["pi_token_usage_source"] = session.tokenUsageSource
+	}
+	if session.transcriptPath != "" {
+		additional["pi_transcript_file"] = session.transcriptPath
+	}
+	if session.cacheReadTokens > 0 {
+		additional["cache_read_input_tokens"] = session.cacheReadTokens
+	}
+	if session.cacheWriteTokens > 0 {
+		additional["cache_creation_input_tokens"] = session.cacheWriteTokens
+	}
+	if session.costUSD > 0 {
+		additional["cost_usd"] = session.costUSD
+		additional["input_cost_usd"] = session.inputCostUSD
+		additional["output_cost_usd"] = session.outputCostUSD
+		additional["cache_cost_usd"] = session.cacheReadCostUSD + session.cacheWriteCostUSD
+		additional["pi_cost_input_usd"] = session.inputCostUSD
+		additional["pi_cost_output_usd"] = session.outputCostUSD
+		additional["pi_cost_cache_read_usd"] = session.cacheReadCostUSD
+		additional["pi_cost_cache_write_usd"] = session.cacheWriteCostUSD
 	}
 	return additional
 }

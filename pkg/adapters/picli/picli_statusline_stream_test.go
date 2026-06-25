@@ -2,6 +2,7 @@ package picli
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
@@ -10,13 +11,17 @@ import (
 
 var _ llmtypes.StatusLineProvider = (*PiCLIAdapter)(nil)
 
-func TestStreamPiStatusLineEmitsEstimatedChunk(t *testing.T) {
+func TestStreamPiStatusLineEmitsTokenSourceChunk(t *testing.T) {
 	session := &piInteractiveSession{
 		ownerSessionID:    "owner-1",
 		tmuxSessionName:   "tmux-pi-1",
 		workingDir:        t.TempDir(),
 		persistent:        true,
 		modelID:           "google/gemini-3.5-flash",
+		tokenUsageSource:  "transcript-file",
+		transcriptPath:    filepath.Join(t.TempDir(), "session.jsonl"),
+		costUSD:           0.00123,
+		cacheReadTokens:   3,
 		inputTokens:       11,
 		outputTokens:      7,
 		totalInputTokens:  31,
@@ -37,7 +42,16 @@ func TestStreamPiStatusLineEmitsEstimatedChunk(t *testing.T) {
 	if sl.Model != "google/gemini-3.5-flash" {
 		t.Fatalf("status model = %q, want selected Pi model route", sl.Model)
 	}
-	if got := sl.Metadata["pi_token_usage_source"]; got != "estimated" {
-		t.Fatalf("pi_token_usage_source = %#v, want estimated", got)
+	if got := sl.Metadata["pi_token_usage_source"]; got != "transcript-file" {
+		t.Fatalf("pi_token_usage_source = %#v, want transcript-file", got)
+	}
+	if got, _ := sl.Metadata["pi_transcript_file"].(string); got == "" {
+		t.Fatal("expected pi_transcript_file metadata")
+	}
+	if sl.CostUSD != 0.00123 {
+		t.Fatalf("CostUSD = %v, want 0.00123", sl.CostUSD)
+	}
+	if sl.CacheReadInputTokens != 3 {
+		t.Fatalf("CacheReadInputTokens = %d, want 3", sl.CacheReadInputTokens)
 	}
 }

@@ -395,8 +395,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		StructuredFallback:      false,
 		ImageInputInteractive:   false,
 		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "estimated",
-		AdapterReadsTranscript:  false,
+		TokenUsageSource:        "transcript-file",
+		AdapterReadsTranscript:  true,
+		TranscriptPathTemplate:  "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
 		APIKeyEnvVars:           []string{"PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"},
 		// Pi follows AGENTS.md-style project instructions, but this adapter
 		// injects per-session system guidance through --append-system-prompt
