@@ -1731,3 +1731,41 @@ func argValue(args []string, key string) string {
 	}
 	return ""
 }
+
+// Regression: a send must not stall when the words "compacting"/"summarizing"
+// appear in the conversation content while the ❯ input prompt is ready. The old
+// loose detector treated any such pane as "still compacting" and blocked the
+// send for the full claudeCompactionMaxWait, surfacing as
+// "all LLMs failed … still compacting after 5m0s".
+func TestClaudeCompactionDoesNotBlockReadyPromptWithContentWords(t *testing.T) {
+	pane := `
+● I'll start by summarizing the results and compacting the data into a report.
+─────────────────────────────────────────────────── mcp-agent ──
+❯
+`
+	if !isClaudeCompactionInProgress(pane) {
+		t.Fatal("precondition: loose detector should match the content words")
+	}
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("precondition: the ❯ input prompt should be detected as ready")
+	}
+	if claudeCompactionBlocksInput(pane) {
+		t.Fatal("claudeCompactionBlocksInput = true for a ready prompt with content words; want false")
+	}
+}
+
+// A genuine compaction replaces the input box with a status line (no ❯ prompt),
+// so a send must wait.
+func TestClaudeCompactionBlocksInputDuringRealCompaction(t *testing.T) {
+	pane := `
+● Working on the request
+─────────────────────────────────────────────────── mcp-agent ──
+✶ Compacting conversation… (esc to interrupt · 12.3k tokens)
+`
+	if hasReadyInputPrompt(pane) {
+		t.Fatal("precondition: no ❯ prompt should be ready during active compaction")
+	}
+	if !claudeCompactionBlocksInput(pane) {
+		t.Fatal("claudeCompactionBlocksInput = false during active compaction; want true")
+	}
+}
