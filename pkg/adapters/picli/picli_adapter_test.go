@@ -89,6 +89,7 @@ func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 }
 
 func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
+	t.Setenv(EnvPiStatuslineExtension, "")
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 	WithBridgeOnlyTools(true)(opts)
@@ -102,6 +103,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	for _, want := range []string{
 		"--no-extensions",
 		"-e\x00/tmp/marker.ts",
+		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
 		"-e\x00npm:pi-mcp-adapter",
 		"--session-id\x00mlp-pi-test-123",
 		"--no-builtin-tools",
@@ -116,6 +118,45 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	if got := strings.Join(env, "\n"); !strings.Contains(got, "MLP_PI_MARKER_FILE=/tmp/markers.jsonl") {
 		t.Fatalf("env = %#v, want marker file", env)
 	}
+}
+
+func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) {
+	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
+
+	t.Run("call option override", func(t *testing.T) {
+		opts := &llmtypes.CallOptions{}
+		WithStatuslineExtension("npm:@example/statusline@1.2.3")(opts)
+		args, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+		if err != nil {
+			t.Fatalf("piLaunchArgs() error = %v", err)
+		}
+		if joined := strings.Join(args, "\x00"); !strings.Contains(joined, "-e\x00npm:@example/statusline@1.2.3") {
+			t.Fatalf("args = %#v, want statusline override", args)
+		}
+	})
+
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv(EnvPiStatuslineExtension, "npm:@example/env-statusline@2.0.0")
+		args, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", nil)
+		if err != nil {
+			t.Fatalf("piLaunchArgs() error = %v", err)
+		}
+		if joined := strings.Join(args, "\x00"); !strings.Contains(joined, "-e\x00npm:@example/env-statusline@2.0.0") {
+			t.Fatalf("args = %#v, want env statusline override", args)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		opts := &llmtypes.CallOptions{}
+		WithStatuslineExtension("off")(opts)
+		args, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+		if err != nil {
+			t.Fatalf("piLaunchArgs() error = %v", err)
+		}
+		if joined := strings.Join(args, "\x00"); strings.Contains(joined, "statusline") {
+			t.Fatalf("args = %#v, statusline extension should be disabled", args)
+		}
+	})
 }
 
 func TestPiLaunchArgsDerivesSessionScopedMCPEnv(t *testing.T) {

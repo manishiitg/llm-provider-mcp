@@ -4137,6 +4137,13 @@ func WithPiMCPExtension(source string) llmtypes.CallOption {
 	return picli.WithMCPExtension(source)
 }
 
+// WithPiStatuslineExtension overrides the Pi statusline extension source.
+// The default is npm:@narumitw/pi-statusline@0.8.0. Pass "off", "false",
+// "0", or "none" to disable the adapter-managed statusline extension.
+func WithPiStatuslineExtension(source string) llmtypes.CallOption {
+	return picli.WithStatuslineExtension(source)
+}
+
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults

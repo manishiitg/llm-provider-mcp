@@ -38,6 +38,7 @@ const (
 	EnvPiInteractiveUseNpxFallback      = "PI_CLI_USE_NPX_FALLBACK"
 	EnvPiInteractiveNpmIgnoreScripts    = "PI_CLI_NPM_IGNORE_SCRIPTS"
 	EnvPiInteractiveRetentionSeconds    = "PI_CLI_INTERACTIVE_RETENTION_SECONDS"
+	EnvPiStatuslineExtension            = "PI_CLI_STATUSLINE_EXTENSION"
 	defaultPiInteractiveNpxPackage      = "@earendil-works/pi-coding-agent"
 	defaultPiProvider                   = "google"
 	defaultPiModel                      = "gemini-3.5-flash"
@@ -421,6 +422,9 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, markerPath, 
 		"--no-extensions",
 		"-e", extensionPath,
 	)
+	if statuslineExtension := piStatuslineExtensionFromOptions(opts); statuslineExtension != "" {
+		args = append(args, "-e", statuslineExtension)
+	}
 	if strings.TrimSpace(mcpConfig) != "" {
 		args = append(args, "-e", piMCPExtensionFromOptions(opts))
 	}

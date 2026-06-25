@@ -1,6 +1,7 @@
 package picli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -16,8 +17,10 @@ const (
 	MetadataKeyMCPConfig             = "pi_mcp_config"
 	MetadataKeyBridgeOnlyTools       = "pi_bridge_only_tools"
 	MetadataKeyMCPExtension          = "pi_mcp_extension"
+	MetadataKeyStatuslineExtension   = "pi_statusline_extension"
 
-	defaultPiMCPExtension = "npm:pi-mcp-adapter"
+	defaultPiMCPExtension        = "npm:pi-mcp-adapter"
+	defaultPiStatuslineExtension = "npm:@narumitw/pi-statusline@0.8.0"
 )
 
 // WithWorkingDir sets the Pi CLI workspace/cwd for tmux launch.
@@ -89,6 +92,16 @@ func WithMCPExtension(source string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMCPExtension] = source
+	}
+}
+
+// WithStatuslineExtension overrides the Pi statusline extension source.
+// Pass "off", "false", "0", or "none" to disable the adapter-managed
+// statusline extension for a call.
+func WithStatuslineExtension(source string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStatuslineExtension] = source
 	}
 }
 
@@ -179,4 +192,26 @@ func piMCPExtensionFromOptions(opts *llmtypes.CallOptions) string {
 		}
 	}
 	return defaultPiMCPExtension
+}
+
+func piStatuslineExtensionFromOptions(opts *llmtypes.CallOptions) string {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if source, ok := opts.Metadata.Custom[MetadataKeyStatuslineExtension].(string); ok {
+			return normalizePiOptionalExtensionSource(source, defaultPiStatuslineExtension)
+		}
+	}
+	return normalizePiOptionalExtensionSource(os.Getenv(EnvPiStatuslineExtension), defaultPiStatuslineExtension)
+}
+
+func normalizePiOptionalExtensionSource(source, fallback string) string {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
+		return fallback
+	}
+	switch strings.ToLower(trimmed) {
+	case "0", "false", "no", "off", "none", "disabled", "disable":
+		return ""
+	default:
+		return trimmed
+	}
 }
