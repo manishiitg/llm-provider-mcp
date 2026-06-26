@@ -1162,7 +1162,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	defer ticker.Stop()
 	resumePromptHandled := false
 	trustPromptHandled := false
-	chromePromptHandled := false
+	featurePromptsDismissed := 0
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
@@ -1213,14 +1213,17 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				lastActivityAt = time.Now()
 				continue
 			}
-			// Claude Code can show a "Claude in Chrome extension detected" startup
-			// modal when the Chrome extension is present, which blocks the input
-			// prompt and times the session out. --no-chrome should prevent it, but
-			// dismiss it defensively (Esc keeps browser tools off) across CLI versions.
-			if !chromePromptHandled && isClaudeChromePrompt(captured) {
-				chromePromptHandled = true
+			// Claude Code shows optional onboarding/feature modals on startup
+			// (e.g. "Claude in Chrome extension detected", "Try the new fullscreen
+			// renderer?") which block the input prompt and time the session out.
+			// Decline them with Esc. --no-chrome prevents the Chrome one; this is the
+			// defensive, future-proof catch for the whole class. Capped so a prompt
+			// Esc fails to clear can't spin forever. The trust-folder security prompt
+			// is excluded (handled above with "1. Yes").
+			if featurePromptsDismissed < 5 && isClaudeDismissableFeaturePrompt(captured) {
+				featurePromptsDismissed++
 				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
-					return fmt.Errorf("failed to dismiss Claude Code chrome prompt: %w", err)
+					return fmt.Errorf("failed to dismiss Claude Code feature prompt: %w", err)
 				}
 				lastActivityAt = time.Now()
 				continue
@@ -1255,13 +1258,22 @@ func isClaudeTrustFolderPrompt(captured string) bool {
 		(strings.Contains(c, "trust this folder") && strings.Contains(c, "no, exit"))
 }
 
-// isClaudeChromePrompt detects the "Claude in Chrome extension detected" startup
-// modal (offered when the Chrome extension is present) which blocks the input
-// prompt until dismissed. Esc keeps browser tools off.
-func isClaudeChromePrompt(captured string) bool {
+// isClaudeDismissableFeaturePrompt detects claude's optional startup onboarding /
+// feature modals — a numbered menu offering to turn on a new feature, with a
+// decline option ("Not now", "keep browser tools off", "Maybe later", ...). These
+// block the input prompt; Esc declines them safely. Examples: "Claude in Chrome
+// extension detected", "Try the new fullscreen renderer?". The trust-folder
+// security prompt is explicitly excluded (it needs an affirmative "1. Yes").
+func isClaudeDismissableFeaturePrompt(captured string) bool {
+	if isClaudeTrustFolderPrompt(captured) {
+		return false
+	}
 	c := strings.ToLower(captured)
-	return strings.Contains(c, "claude in chrome") &&
-		(strings.Contains(c, "keep browser tools off") || strings.Contains(c, "use my browser"))
+	hasMenu := strings.Contains(c, "❯ 1.") || (strings.Contains(c, "1.") && strings.Contains(c, "2."))
+	hasDecline := strings.Contains(c, "not now") || strings.Contains(c, "maybe later") ||
+		strings.Contains(c, "keep browser tools off") || strings.Contains(c, "no thanks") ||
+		strings.Contains(c, "no, keep")
+	return hasMenu && hasDecline
 }
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {

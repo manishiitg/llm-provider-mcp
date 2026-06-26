@@ -1770,20 +1770,25 @@ func TestClaudeCompactionBlocksInputDuringRealCompaction(t *testing.T) {
 	}
 }
 
-func TestIsClaudeChromePrompt(t *testing.T) {
-	modal := `  Claude in Chrome extension detected
-
-  Claude will use your Chrome browser by default — navigating sites, filling forms, and capturing screenshots in your
-  existing session.
-
+func TestIsClaudeDismissableFeaturePrompt(t *testing.T) {
+	chrome := `  Claude in Chrome extension detected
   ❯ 1. Yes, use my browser
     2. No, keep browser tools off
-
   Enter to confirm · Esc to keep browser tools off`
-	if !isClaudeChromePrompt(modal) {
-		t.Fatal("expected the Chrome-extension modal to be detected")
+	fullscreen := `  Try the new fullscreen renderer?
+  ❯ 1. Yes, try it
+    2. Not now`
+	trust := "Is this a project you trust?\n❯ 1. Yes, I trust this folder\n  2. No, exit"
+	if !isClaudeDismissableFeaturePrompt(chrome) {
+		t.Fatal("chrome extension modal should be dismissable")
 	}
-	if isClaudeChromePrompt("> ready prompt, no modal here") {
+	if !isClaudeDismissableFeaturePrompt(fullscreen) {
+		t.Fatal("fullscreen renderer modal should be dismissable")
+	}
+	if isClaudeDismissableFeaturePrompt(trust) {
+		t.Fatal("trust-folder security prompt must NOT be auto-dismissed")
+	}
+	if isClaudeDismissableFeaturePrompt("> ready prompt, no modal") {
 		t.Fatal("false positive on a normal pane")
 	}
 }
