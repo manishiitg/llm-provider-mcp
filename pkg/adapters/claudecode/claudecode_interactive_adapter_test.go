@@ -1769,3 +1769,21 @@ func TestClaudeCompactionBlocksInputDuringRealCompaction(t *testing.T) {
 		t.Fatal("claudeCompactionBlocksInput = false during active compaction; want true")
 	}
 }
+
+func TestIsClaudeChromePrompt(t *testing.T) {
+	modal := `  Claude in Chrome extension detected
+
+  Claude will use your Chrome browser by default — navigating sites, filling forms, and capturing screenshots in your
+  existing session.
+
+  ❯ 1. Yes, use my browser
+    2. No, keep browser tools off
+
+  Enter to confirm · Esc to keep browser tools off`
+	if !isClaudeChromePrompt(modal) {
+		t.Fatal("expected the Chrome-extension modal to be detected")
+	}
+	if isClaudeChromePrompt("> ready prompt, no modal here") {
+		t.Fatal("false positive on a normal pane")
+	}
+}

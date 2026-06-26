@@ -624,7 +624,10 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		}
 	}
 
-	args := []string{"claude", "--permission-mode", "dontAsk"}
+	// --no-chrome prevents the "Claude in Chrome extension detected" startup modal
+	// (offered in dontAsk mode when the Chrome extension is present), which would
+	// otherwise block the input prompt and time the session out after 5m.
+	args := []string{"claude", "--permission-mode", "dontAsk", "--no-chrome"}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	} else if nativeSessionID != "" {
@@ -1159,6 +1162,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	defer ticker.Stop()
 	resumePromptHandled := false
 	trustPromptHandled := false
+	chromePromptHandled := false
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
@@ -1209,6 +1213,18 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				lastActivityAt = time.Now()
 				continue
 			}
+			// Claude Code can show a "Claude in Chrome extension detected" startup
+			// modal when the Chrome extension is present, which blocks the input
+			// prompt and times the session out. --no-chrome should prevent it, but
+			// dismiss it defensively (Esc keeps browser tools off) across CLI versions.
+			if !chromePromptHandled && isClaudeChromePrompt(captured) {
+				chromePromptHandled = true
+				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+					return fmt.Errorf("failed to dismiss Claude Code chrome prompt: %w", err)
+				}
+				lastActivityAt = time.Now()
+				continue
+			}
 			if hasReadyInputPrompt(captured) {
 				return nil
 			}
@@ -1237,6 +1253,15 @@ func isClaudeTrustFolderPrompt(captured string) bool {
 	c := strings.ToLower(captured)
 	return strings.Contains(c, "yes, i trust this folder") ||
 		(strings.Contains(c, "trust this folder") && strings.Contains(c, "no, exit"))
+}
+
+// isClaudeChromePrompt detects the "Claude in Chrome extension detected" startup
+// modal (offered when the Chrome extension is present) which blocks the input
+// prompt until dismissed. Esc keeps browser tools off.
+func isClaudeChromePrompt(captured string) bool {
+	c := strings.ToLower(captured)
+	return strings.Contains(c, "claude in chrome") &&
+		(strings.Contains(c, "keep browser tools off") || strings.Contains(c, "use my browser"))
 }
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
