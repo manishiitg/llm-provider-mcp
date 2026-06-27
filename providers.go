@@ -348,8 +348,11 @@ type ProviderAPIKeys struct {
 	Deepgram          *string
 	ZAI               *string
 	Kimi              *string
-	Bedrock           *BedrockConfig
-	Azure             *AzureAPIConfig
+	// PiProviderKeys stores Pi sub-provider API keys keyed by Pi provider id
+	// (for example "google", "zai", "zai-coding-cn", "deepseek").
+	PiProviderKeys map[string]string
+	Bedrock        *BedrockConfig
+	Azure          *AzureAPIConfig
 }
 
 // AzureAPIConfig holds Azure-specific configuration
@@ -416,6 +419,12 @@ func (k *ProviderAPIKeys) Clone() *ProviderAPIKeys {
 	if k.Azure != nil {
 		a := *k.Azure
 		out.Azure = &a
+	}
+	if k.PiProviderKeys != nil {
+		out.PiProviderKeys = make(map[string]string, len(k.PiProviderKeys))
+		for provider, key := range k.PiProviderKeys {
+			out.PiProviderKeys[provider] = key
+		}
 	}
 	return &out
 }
@@ -2598,19 +2607,10 @@ func initializePiCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Pi CLI adapter - model_id: %s", modelID)
 
-	apiKey := ""
-	if config.APIKeys != nil && config.APIKeys.PiCLI != nil {
-		apiKey = *config.APIKeys.PiCLI
-		logger.Infof("Pi CLI: using API key from config (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("PI_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Pi CLI: using API key from PI_API_KEY env var (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("GEMINI_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Pi CLI: using API key from GEMINI_API_KEY env var (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("GOOGLE_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Pi CLI: using API key from GOOGLE_API_KEY env var (length=%d)", len(apiKey))
+	piProvider := piProviderFromModelID(modelID)
+	apiKey, apiKeySource := piCLIAPIKeyForProvider(config.APIKeys, piProvider)
+	if apiKey != "" {
+		logger.Infof("Pi CLI: using API key from %s for provider %s (length=%d)", apiKeySource, piProvider, len(apiKey))
 	} else {
 		logger.Infof("Pi CLI: no explicit API key — will use Pi CLI/provider local auth if available")
 	}
@@ -2630,6 +2630,156 @@ func initializePiCLI(config Config) (llmtypes.Model, error) {
 
 	logger.Infof("Initialized Pi CLI adapter - model_id: %s", modelID)
 	return llm, nil
+}
+
+func piProviderFromModelID(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" || strings.EqualFold(modelID, string(ProviderPiCLI)) || strings.EqualFold(modelID, "auto") {
+		return "google"
+	}
+	if slash := strings.Index(modelID, "/"); slash > 0 {
+		return normalizePiProviderID(modelID[:slash])
+	}
+	return "google"
+}
+
+func normalizePiProviderID(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func piCLIAPIKeyForProvider(keys *ProviderAPIKeys, provider string) (string, string) {
+	provider = normalizePiProviderID(provider)
+	if provider == "" {
+		provider = "google"
+	}
+
+	if keys != nil {
+		if key := piProviderKeyFromMap(keys.PiProviderKeys, provider); key != "" {
+			return key, "Pi provider workspace auth"
+		}
+		switch provider {
+		case "google", "google-vertex":
+			if key := derefTrim(keys.PiCLI); key != "" {
+				return key, "Pi CLI workspace auth"
+			}
+			if key := derefTrim(keys.Vertex); key != "" {
+				return key, "Gemini/Vertex workspace auth"
+			}
+			if key := derefTrim(keys.GeminiCLI); key != "" {
+				return key, "Gemini CLI workspace auth"
+			}
+		case "openai":
+			if key := derefTrim(keys.OpenAI); key != "" {
+				return key, "OpenAI workspace auth"
+			}
+		case "anthropic":
+			if key := derefTrim(keys.Anthropic); key != "" {
+				return key, "Anthropic workspace auth"
+			}
+		case "openrouter":
+			if key := derefTrim(keys.OpenRouter); key != "" {
+				return key, "OpenRouter workspace auth"
+			}
+		case "zai":
+			if key := derefTrim(keys.ZAI); key != "" {
+				return key, "Z.AI workspace auth"
+			}
+		case "kimi-coding", "moonshotai", "moonshotai-cn":
+			if key := derefTrim(keys.Kimi); key != "" {
+				return key, "Kimi workspace auth"
+			}
+		case "minimax":
+			if key := derefTrim(keys.MiniMax); key != "" {
+				return key, "MiniMax workspace auth"
+			}
+		}
+	}
+
+	for _, envName := range piProviderEnvNames(provider) {
+		if envKey := strings.TrimSpace(os.Getenv(envName)); envKey != "" {
+			return envKey, envName + " env var"
+		}
+	}
+	return "", ""
+}
+
+func piProviderKeyFromMap(keys map[string]string, provider string) string {
+	if keys == nil {
+		return ""
+	}
+	for _, candidate := range piProviderKeyAliases(provider) {
+		if key := strings.TrimSpace(keys[candidate]); key != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+func piProviderKeyAliases(provider string) []string {
+	switch normalizePiProviderID(provider) {
+	case "google-vertex":
+		return []string{"google-vertex", "google"}
+	case "moonshotai", "moonshotai-cn":
+		return []string{normalizePiProviderID(provider), "kimi-coding"}
+	default:
+		return []string{normalizePiProviderID(provider)}
+	}
+}
+
+func piProviderEnvNames(provider string) []string {
+	switch normalizePiProviderID(provider) {
+	case "google", "google-vertex":
+		return []string{"PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}
+	case "openai":
+		return []string{"OPENAI_API_KEY"}
+	case "anthropic":
+		return []string{"ANTHROPIC_API_KEY"}
+	case "openrouter":
+		return []string{"OPENROUTER_API_KEY"}
+	case "deepseek":
+		return []string{"DEEPSEEK_API_KEY"}
+	case "nvidia":
+		return []string{"NVIDIA_API_KEY"}
+	case "mistral":
+		return []string{"MISTRAL_API_KEY"}
+	case "groq":
+		return []string{"GROQ_API_KEY"}
+	case "cerebras":
+		return []string{"CEREBRAS_API_KEY"}
+	case "xai":
+		return []string{"XAI_API_KEY"}
+	case "zai":
+		return []string{"ZAI_API_KEY"}
+	case "zai-coding-cn":
+		return []string{"ZAI_CODING_CN_API_KEY"}
+	case "opencode", "opencode-go":
+		return []string{"OPENCODE_API_KEY"}
+	case "fireworks":
+		return []string{"FIREWORKS_API_KEY"}
+	case "together":
+		return []string{"TOGETHER_API_KEY"}
+	case "kimi-coding", "moonshotai", "moonshotai-cn":
+		return []string{"KIMI_API_KEY"}
+	case "minimax":
+		return []string{"MINIMAX_API_KEY"}
+	case "minimax-cn":
+		return []string{"MINIMAX_CN_API_KEY"}
+	case "vercel-ai-gateway":
+		return []string{"AI_GATEWAY_API_KEY"}
+	default:
+		normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(normalizePiProviderID(provider)))
+		if normalized == "" {
+			return nil
+		}
+		return []string{normalized + "_API_KEY"}
+	}
+}
+
+func derefTrim(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 // GetDefaultModel returns the default model for each provider from environment variables

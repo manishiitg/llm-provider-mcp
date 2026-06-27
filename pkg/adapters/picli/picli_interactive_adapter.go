@@ -693,15 +693,49 @@ func piAPIKeyEnv(provider, apiKey string) []string {
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "google", "google-vertex":
-		return []string{"GEMINI_API_KEY=" + apiKey, "GOOGLE_API_KEY=" + apiKey}
+		return []string{"GEMINI_API_KEY=" + apiKey, "GOOGLE_API_KEY=" + apiKey, "PI_API_KEY=" + apiKey}
 	case "openai":
 		return []string{"OPENAI_API_KEY=" + apiKey}
 	case "anthropic":
 		return []string{"ANTHROPIC_API_KEY=" + apiKey}
 	case "openrouter":
 		return []string{"OPENROUTER_API_KEY=" + apiKey}
+	case "deepseek":
+		return []string{"DEEPSEEK_API_KEY=" + apiKey}
+	case "nvidia":
+		return []string{"NVIDIA_API_KEY=" + apiKey}
+	case "mistral":
+		return []string{"MISTRAL_API_KEY=" + apiKey}
+	case "groq":
+		return []string{"GROQ_API_KEY=" + apiKey}
+	case "cerebras":
+		return []string{"CEREBRAS_API_KEY=" + apiKey}
+	case "xai":
+		return []string{"XAI_API_KEY=" + apiKey}
+	case "zai":
+		return []string{"ZAI_API_KEY=" + apiKey}
+	case "zai-coding-cn":
+		return []string{"ZAI_CODING_CN_API_KEY=" + apiKey}
+	case "opencode", "opencode-go":
+		return []string{"OPENCODE_API_KEY=" + apiKey}
+	case "fireworks":
+		return []string{"FIREWORKS_API_KEY=" + apiKey}
+	case "together":
+		return []string{"TOGETHER_API_KEY=" + apiKey}
+	case "kimi-coding", "moonshotai", "moonshotai-cn":
+		return []string{"KIMI_API_KEY=" + apiKey}
+	case "minimax":
+		return []string{"MINIMAX_API_KEY=" + apiKey}
+	case "minimax-cn":
+		return []string{"MINIMAX_CN_API_KEY=" + apiKey}
+	case "vercel-ai-gateway":
+		return []string{"AI_GATEWAY_API_KEY=" + apiKey}
 	default:
-		return []string{"PI_API_KEY=" + apiKey}
+		normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(strings.TrimSpace(provider))))
+		if normalized == "" {
+			return []string{"PI_API_KEY=" + apiKey}
+		}
+		return []string{normalized + "_API_KEY=" + apiKey}
 	}
 }
 
@@ -1350,7 +1384,29 @@ func piRedactArgs(args []string) string {
 	redacted := make([]string, len(args))
 	copy(redacted, args)
 	for i, arg := range redacted {
-		for _, key := range []string{"GEMINI_API_KEY=", "GOOGLE_API_KEY=", "OPENAI_API_KEY=", "ANTHROPIC_API_KEY=", "OPENROUTER_API_KEY=", "PI_API_KEY="} {
+		for _, key := range []string{
+			"GEMINI_API_KEY=",
+			"GOOGLE_API_KEY=",
+			"OPENAI_API_KEY=",
+			"ANTHROPIC_API_KEY=",
+			"OPENROUTER_API_KEY=",
+			"PI_API_KEY=",
+			"DEEPSEEK_API_KEY=",
+			"NVIDIA_API_KEY=",
+			"MISTRAL_API_KEY=",
+			"GROQ_API_KEY=",
+			"CEREBRAS_API_KEY=",
+			"XAI_API_KEY=",
+			"ZAI_API_KEY=",
+			"ZAI_CODING_CN_API_KEY=",
+			"OPENCODE_API_KEY=",
+			"FIREWORKS_API_KEY=",
+			"TOGETHER_API_KEY=",
+			"KIMI_API_KEY=",
+			"MINIMAX_API_KEY=",
+			"MINIMAX_CN_API_KEY=",
+			"AI_GATEWAY_API_KEY=",
+		} {
 			if strings.HasPrefix(arg, key) {
 				redacted[i] = key + "<redacted>"
 			}
