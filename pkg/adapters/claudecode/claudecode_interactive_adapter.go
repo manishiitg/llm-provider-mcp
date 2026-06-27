@@ -1213,15 +1213,16 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				lastActivityAt = time.Now()
 				continue
 			}
-			// Claude shows a "Resume from summary / Resume full session" prompt when
-			// resuming a large/old session. It blocks the input prompt, and unlike a
-			// feature modal Esc would CANCEL the resume — so accept the highlighted
-			// recommended default ("Resume from summary") with Enter to let the resume
-			// proceed. Shares the dismissal cap below.
-			if featurePromptsDismissed < 5 && isClaudeResumePrompt(captured) {
+			// Catch-all for any OTHER numbered choice menu blocking the prompt — the
+			// "Resume from summary / Resume full session" prompt, or a future startup
+			// choice claude adds. Trust ("1. Yes") and feature-onboarding (Esc) are
+			// handled above and excluded inside the predicate; here we accept claude's
+			// highlighted recommended default with Enter (its convention for the safe
+			// "proceed" option) so the session is never stuck on an unrecognized menu.
+			if featurePromptsDismissed < 5 && isClaudeBlockingChoiceMenu(captured) {
 				featurePromptsDismissed++
 				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
-					return fmt.Errorf("failed to accept Claude Code resume prompt: %w", err)
+					return fmt.Errorf("failed to accept Claude Code choice menu: %w", err)
 				}
 				lastActivityAt = time.Now()
 				continue
@@ -1289,14 +1290,23 @@ func isClaudeDismissableFeaturePrompt(captured string) bool {
 	return hasMenu && hasDecline
 }
 
-// isClaudeResumePrompt detects the "Resume from summary / Resume full session"
-// menu claude shows when resuming a large or old session. It blocks the input
-// prompt; the adapter accepts the highlighted recommended default (Resume from
-// summary) with Enter so the resume proceeds.
-func isClaudeResumePrompt(captured string) bool {
+// isClaudeBlockingChoiceMenu is the generic catch-all for a numbered selection
+// menu that blocks the input prompt and is explicitly awaiting a choice (e.g.
+// "Resume from summary / Resume full session", or a future startup choice). It
+// EXCLUDES the two cases with a known non-default action — the trust prompt
+// (needs "1. Yes") and feature-onboarding prompts (need Esc to decline) — so it
+// only fires on an otherwise-unrecognized choice, where pressing Enter accepts
+// claude's highlighted recommended default (its convention for the safe
+// "proceed" option). The "awaiting a choice" gate keeps it off normal output
+// that merely contains "1." / "2.".
+func isClaudeBlockingChoiceMenu(captured string) bool {
+	if isClaudeTrustFolderPrompt(captured) || isClaudeDismissableFeaturePrompt(captured) {
+		return false
+	}
 	c := strings.ToLower(captured)
-	return strings.Contains(c, "resume from summary") &&
-		(strings.Contains(c, "resume full session") || strings.Contains(c, "don't ask me again"))
+	hasMenu := strings.Contains(c, "❯ 1.") || (strings.Contains(c, "1.") && strings.Contains(c, "2."))
+	awaitingChoice := strings.Contains(c, "enter to confirm") || strings.Contains(c, "press enter")
+	return hasMenu && awaitingChoice
 }
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
