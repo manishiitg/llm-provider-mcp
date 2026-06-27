@@ -44,6 +44,7 @@ const (
 	EnvPiMCPOutputGuard                 = "PI_CLI_MCP_OUTPUT_GUARD"
 	EnvPiMCPResultMaxChars              = "PI_CLI_MCP_RESULT_MAX_CHARS"
 	EnvPiMCPResultMaxLines              = "PI_CLI_MCP_RESULT_MAX_LINES"
+	EnvPiMCPResultMaxLineChars          = "PI_CLI_MCP_RESULT_MAX_LINE_CHARS"
 	EnvPiMCPDetailsMaxKeys              = "PI_CLI_MCP_DETAILS_MAX_KEYS"
 	EnvPiNodeOptions                    = "PI_CLI_NODE_OPTIONS"
 	EnvPiNodeMaxOldSpaceMB              = "PI_CLI_NODE_MAX_OLD_SPACE_MB"
@@ -537,7 +538,7 @@ func piMCPOutputGuardEnabled() bool {
 
 func piMCPOutputGuardEnv() []string {
 	var env []string
-	for _, key := range []string{EnvPiMCPResultMaxChars, EnvPiMCPResultMaxLines, EnvPiMCPDetailsMaxKeys} {
+	for _, key := range []string{EnvPiMCPResultMaxChars, EnvPiMCPResultMaxLines, EnvPiMCPResultMaxLineChars, EnvPiMCPDetailsMaxKeys} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			env = append(env, key+"="+value)
 		}
@@ -1849,6 +1850,7 @@ func piRandomHex(n int) string {
 func piMCPOutputGuardExtensionSource() string {
 	return `const DEFAULT_MAX_RESULT_CHARS = 20000;
 const DEFAULT_MAX_RESULT_LINES = 200;
+const DEFAULT_MAX_RESULT_LINE_CHARS = 120;
 const DEFAULT_MAX_DETAILS_KEYS = 20;
 
 function envInt(name: string, fallback: number): number {
@@ -1883,43 +1885,75 @@ function looksLikeMcpResult(event: any): boolean {
 type ClipState = {
 	chars: number;
 	lineBreaks: number;
+	lineChars: number;
 };
 
-function clipText(text: string, state: ClipState, maxChars: number, maxLines: number): { text: string; truncated: boolean } {
-	const remainingChars = Math.max(maxChars - state.chars, 0);
-	const remainingLineBreaks = Math.max(maxLines - state.lineBreaks, 0);
-	if (remainingChars <= 0 || remainingLineBreaks <= 0) {
-		return { text: "", truncated: text.length > 0 };
+function appendLineBreak(out: string[], state: ClipState, maxChars: number, maxLines: number): boolean {
+	if (state.chars >= maxChars || state.lineBreaks >= maxLines) {
+		return false;
 	}
-	let end = Math.min(text.length, remainingChars);
-	let addedLineBreaks = 0;
-	for (let i = 0; i < end; i++) {
-		if (text.charCodeAt(i) === 10) {
-			addedLineBreaks++;
-			if (addedLineBreaks >= remainingLineBreaks) {
-				end = i + 1;
+	out.push("\n");
+	state.chars++;
+	state.lineBreaks++;
+	state.lineChars = 0;
+	return true;
+}
+
+function clipText(text: string, state: ClipState, maxChars: number, maxLines: number, maxLineChars: number): { text: string; truncated: boolean; wrapped: boolean } {
+	if (state.chars >= maxChars || state.lineBreaks >= maxLines) {
+		return { text: "", truncated: text.length > 0, wrapped: false };
+	}
+	const out: string[] = [];
+	let truncated = false;
+	let wrapped = false;
+	for (let i = 0; i < text.length; i++) {
+		if (state.chars >= maxChars || state.lineBreaks >= maxLines) {
+			truncated = true;
+			break;
+		}
+		const ch = text[i];
+		if (ch === "\n") {
+			if (!appendLineBreak(out, state, maxChars, maxLines)) {
+				truncated = true;
+				break;
+			}
+			continue;
+		}
+		if (state.lineChars >= maxLineChars) {
+			if (!appendLineBreak(out, state, maxChars, maxLines)) {
+				truncated = true;
+				break;
+			}
+			wrapped = true;
+			if (state.chars >= maxChars) {
+				truncated = true;
 				break;
 			}
 		}
+		out.push(ch);
+		state.chars++;
+		state.lineChars++;
 	}
-	const clipped = text.slice(0, end);
-	state.chars += clipped.length;
-	state.lineBreaks += addedLineBreaks;
-	return { text: clipped, truncated: clipped.length < text.length };
+	return { text: out.join(""), truncated, wrapped };
 }
 
-function compactContent(content: unknown, maxChars: number, maxLines: number) {
+function compactContent(content: unknown, maxChars: number, maxLines: number, maxLineChars: number) {
 	if (!Array.isArray(content)) {
-		return { content, changed: false, omittedBlocks: 0 };
+		return { content, changed: false, omittedBlocks: 0, wrapped: false };
 	}
-	const state: ClipState = { chars: 0, lineBreaks: 0 };
+	const state: ClipState = { chars: 0, lineBreaks: 0, lineChars: 0 };
 	const next: unknown[] = [];
 	let changed = false;
+	let wrapped = false;
 	let omittedBlocks = 0;
 	for (const block of content) {
 		if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
-			const clipped = clipText(block.text, state, maxChars, maxLines);
+			const clipped = clipText(block.text, state, maxChars, maxLines, maxLineChars);
 			if (clipped.truncated) changed = true;
+			if (clipped.wrapped) {
+				changed = true;
+				wrapped = true;
+			}
 			if (clipped.text.length > 0) {
 				next.push({ ...block, text: clipped.text });
 			} else if (block.text.length > 0) {
@@ -1932,13 +1966,13 @@ function compactContent(content: unknown, maxChars: number, maxLines: number) {
 	if (changed || omittedBlocks > 0) {
 		next.push({
 			type: "text",
-			text: "\n\n[mlp-mcp-output-guard: MCP output was capped before Pi stored it at " + maxChars + " chars / " + maxLines + " lines. Re-run a narrower command or write large output to a file and inspect slices.]"
+			text: "\n\n[mlp-mcp-output-guard: MCP output was compacted before Pi rendered it at " + maxChars + " chars / " + maxLines + " lines / " + maxLineChars + " chars per line. Re-run a narrower command or write large output to a file and inspect slices.]"
 		});
 	}
-	return { content: next, changed, omittedBlocks };
+	return { content: next, changed, omittedBlocks, wrapped };
 }
 
-function compactDetails(event: any, changed: boolean, omittedBlocks: number, maxChars: number, maxLines: number, maxDetailsKeys: number) {
+function compactDetails(event: any, changed: boolean, omittedBlocks: number, wrapped: boolean, maxChars: number, maxLines: number, maxLineChars: number, maxDetailsKeys: number) {
 	const details = event?.details;
 	const keys = isRecord(details) ? Object.keys(details).slice(0, maxDetailsKeys) : [];
 	return {
@@ -1948,9 +1982,11 @@ function compactDetails(event: any, changed: boolean, omittedBlocks: number, max
 		originalDetailsKeys: keys,
 		removedMcpResult: isRecord(details) && hasOwn(details, "mcpResult"),
 		outputTruncated: changed,
+		outputWrapped: wrapped,
 		omittedBlocks,
 		maxResultChars: maxChars,
-		maxResultLines: maxLines
+		maxResultLines: maxLines,
+		maxResultLineChars: maxLineChars
 	};
 }
 
@@ -1967,6 +2003,7 @@ function setToolsCollapsed(ctx: any) {
 export default function mlpMcpOutputGuard(pi: any) {
 	const maxChars = envInt("PI_CLI_MCP_RESULT_MAX_CHARS", DEFAULT_MAX_RESULT_CHARS);
 	const maxLines = envInt("PI_CLI_MCP_RESULT_MAX_LINES", DEFAULT_MAX_RESULT_LINES);
+	const maxLineChars = envInt("PI_CLI_MCP_RESULT_MAX_LINE_CHARS", DEFAULT_MAX_RESULT_LINE_CHARS);
 	const maxDetailsKeys = envInt("PI_CLI_MCP_DETAILS_MAX_KEYS", DEFAULT_MAX_DETAILS_KEYS);
 
 	pi.on("session_start", async (_event: any, ctx: any) => {
@@ -1975,10 +2012,10 @@ export default function mlpMcpOutputGuard(pi: any) {
 
 	pi.on("tool_result", async (event: any) => {
 		if (!looksLikeMcpResult(event)) return;
-		const compacted = compactContent(event?.content, maxChars, maxLines);
+		const compacted = compactContent(event?.content, maxChars, maxLines, maxLineChars);
 		const result: any = {
 			content: compacted.content,
-			details: compactDetails(event, compacted.changed, compacted.omittedBlocks, maxChars, maxLines, maxDetailsKeys)
+			details: compactDetails(event, compacted.changed, compacted.omittedBlocks, compacted.wrapped, maxChars, maxLines, maxLineChars, maxDetailsKeys)
 		};
 		if (typeof event?.isError === "boolean") {
 			result.isError = event.isError;

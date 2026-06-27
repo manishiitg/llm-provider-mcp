@@ -138,6 +138,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	t.Setenv(EnvPiNodeMaxOldSpaceMB, "")
 	t.Setenv(EnvPiMCPResultMaxChars, "1234")
 	t.Setenv(EnvPiMCPResultMaxLines, "55")
+	t.Setenv(EnvPiMCPResultMaxLineChars, "99")
 	t.Setenv("NODE_OPTIONS", "")
 	sessionDir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", sessionDir)
@@ -174,7 +175,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	if got := strings.Join(env, "\n"); !strings.Contains(got, "NODE_OPTIONS=--max-old-space-size=4096") {
 		t.Fatalf("env = %#v, want Pi node old-space guard", env)
 	}
-	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_CLI_MCP_RESULT_MAX_CHARS=1234") || !strings.Contains(got, "PI_CLI_MCP_RESULT_MAX_LINES=55") {
+	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_CLI_MCP_RESULT_MAX_CHARS=1234") || !strings.Contains(got, "PI_CLI_MCP_RESULT_MAX_LINES=55") || !strings.Contains(got, "PI_CLI_MCP_RESULT_MAX_LINE_CHARS=99") {
 		t.Fatalf("env = %#v, want Pi MCP output guard limits", env)
 	}
 	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_STATUSLINE_PRESET=classic") {
@@ -194,6 +195,9 @@ func TestPiMCPOutputGuardExtensionSourceCoversMCPResults(t *testing.T) {
 		`setToolsExpanded(false)`,
 		`PI_CLI_MCP_RESULT_MAX_CHARS`,
 		`PI_CLI_MCP_RESULT_MAX_LINES`,
+		`PI_CLI_MCP_RESULT_MAX_LINE_CHARS`,
+		`DEFAULT_MAX_RESULT_LINE_CHARS = 120`,
+		`outputWrapped`,
 		`mlp-mcp-output-guard`,
 	} {
 		if !strings.Contains(source, want) {
