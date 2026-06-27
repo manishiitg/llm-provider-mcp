@@ -69,6 +69,7 @@ func CollapseBlankRuns(s string) string {
 		return s
 	}
 	lines := strings.Split(s, "\n")
+	lines = stripTrailingSpinnerCells(lines)
 	lines = pruneInputBoxTrailer(lines)
 	lines = pruneSpinnerLines(lines)
 	lines = pruneSpinnerWordFragments(lines)
@@ -95,6 +96,38 @@ func CollapseBlankRuns(s string) string {
 	out = out[start:]
 
 	return strings.Join(out, "\n")
+}
+
+func stripTrailingSpinnerCells(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = stripTrailingSpinnerCell(line)
+	}
+	return out
+}
+
+func stripTrailingSpinnerCell(line string) string {
+	brailleIdx := -1
+	for idx, r := range line {
+		if r >= 0x2800 && r <= 0x28FF {
+			brailleIdx = idx
+			break
+		}
+	}
+	if brailleIdx <= 0 {
+		return line
+	}
+	prefix := strings.TrimRight(line[:brailleIdx], " \t\r")
+	if strings.TrimSpace(prefix) == "" {
+		return line
+	}
+	suffix := strings.ToLower(strings.TrimSpace(line[brailleIdx:]))
+	for _, word := range spinnerStatusWords {
+		if strings.Contains(suffix, word) {
+			return prefix
+		}
+	}
+	return line
 }
 
 // pruneSpinnerLines identifies lines containing Braille spinner characters.

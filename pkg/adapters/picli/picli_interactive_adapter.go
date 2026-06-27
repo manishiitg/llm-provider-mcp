@@ -23,6 +23,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -1221,7 +1222,7 @@ func streamPiTerminalSnapshotChanged(ctx context.Context, sessionName string, st
 	if streamChan == nil {
 		return false
 	}
-	snapshot, err := capturePiPane(ctx, sessionName)
+	snapshot, err := capturePiPaneForDisplay(ctx, sessionName)
 	if err != nil || strings.TrimSpace(snapshot) == "" || snapshot == *last {
 		return false
 	}
@@ -1297,8 +1298,20 @@ func capturePiPane(ctx context.Context, sessionName string) (string, error) {
 	return tmuxexec.CapturePane(ctx, sessionName, piInteractiveTerminalScrollbackLine)
 }
 
+func capturePiPaneForDisplay(ctx context.Context, sessionName string) (string, error) {
+	snapshot, err := tmuxexec.CapturePaneANSI(ctx, sessionName, 0)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(stripPiANSIPreserveColors(snapshot), "\n"), nil
+}
+
 func capturePiPaneANSI(ctx context.Context, sessionName string) (string, error) {
 	return tmuxexec.CapturePaneANSI(ctx, sessionName, piInteractiveTerminalScrollbackLine)
+}
+
+func stripPiANSIPreserveColors(s string) string {
+	return paneview.StripANSIPreserveColors(s)
 }
 
 func piPaneShowsPromptDraft(captured, prompt string) bool {

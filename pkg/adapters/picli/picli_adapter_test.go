@@ -479,6 +479,40 @@ func TestPiPaneShowsPromptDraftRequiresCursorNearDraftWhenANSIIsPresent(t *testi
 	}
 }
 
+func TestStreamPiTerminalSnapshotUsesVisibleCleanDisplay(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available on this host")
+	}
+
+	sessionName := "mlp-pi-test-display-" + piRandomHex(6)
+	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
+
+	script := `for i in $(seq 1 20); do echo "OLD_SCROLL_$i"; done; clear; printf 'FINAL_CONTENT    ⠧ Working...\n'; sleep 60`
+	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "80", "-y", "8", "bash", "-lc", script).CombinedOutput(); err != nil {
+		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	stream := make(chan llmtypes.StreamChunk, 1)
+	var last string
+	if !streamPiTerminalSnapshotChanged(context.Background(), sessionName, stream, &last) {
+		t.Fatal("streamPiTerminalSnapshotChanged returned false")
+	}
+	chunk := <-stream
+	if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+		t.Fatalf("chunk type = %q, want terminal", chunk.Type)
+	}
+	if !strings.Contains(chunk.Content, "FINAL_CONTENT") {
+		t.Fatalf("streamed content missing final visible text: %q", chunk.Content)
+	}
+	if strings.Contains(chunk.Content, "OLD_SCROLL_") {
+		t.Fatalf("streamed content included scrollback: %q", chunk.Content)
+	}
+	if strings.Contains(chunk.Content, "Working") || strings.Contains(chunk.Content, "⠧") {
+		t.Fatalf("streamed content included stale spinner cell: %q", chunk.Content)
+	}
+}
+
 func TestEnsurePiInputSubmittedSendsRecoveryEnter(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available on this host")
