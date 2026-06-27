@@ -196,7 +196,7 @@ func TestPiMCPOutputGuardExtensionSourceCoversMCPResults(t *testing.T) {
 		`PI_CLI_MCP_RESULT_MAX_CHARS`,
 		`PI_CLI_MCP_RESULT_MAX_LINES`,
 		`PI_CLI_MCP_RESULT_MAX_LINE_CHARS`,
-		`DEFAULT_MAX_RESULT_LINE_CHARS = 120`,
+		`DEFAULT_MAX_RESULT_LINE_CHARS = 48`,
 		`outputWrapped`,
 		`mlp-mcp-output-guard`,
 	} {

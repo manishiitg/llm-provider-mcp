@@ -1850,7 +1850,7 @@ func piRandomHex(n int) string {
 func piMCPOutputGuardExtensionSource() string {
 	return `const DEFAULT_MAX_RESULT_CHARS = 20000;
 const DEFAULT_MAX_RESULT_LINES = 200;
-const DEFAULT_MAX_RESULT_LINE_CHARS = 120;
+const DEFAULT_MAX_RESULT_LINE_CHARS = 48;
 const DEFAULT_MAX_DETAILS_KEYS = 20;
 
 function envInt(name: string, fallback: number): number {

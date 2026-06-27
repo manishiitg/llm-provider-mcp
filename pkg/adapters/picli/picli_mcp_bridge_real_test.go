@@ -96,7 +96,6 @@ func TestPiCLIRealMCPOutputGuardCompactsLongSingleLineResult(t *testing.T) {
 
 	t.Setenv(EnvPiMCPResultMaxChars, "5000")
 	t.Setenv(EnvPiMCPResultMaxLines, "80")
-	t.Setenv(EnvPiMCPResultMaxLineChars, "40")
 
 	workDir := t.TempDir()
 	serverPath := filepath.Join(workDir, "pi-mcp-long-line-server.js")
