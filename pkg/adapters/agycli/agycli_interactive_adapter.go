@@ -35,7 +35,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultAgyInteractiveTimeout     = 0
-	defaultAgyInteractiveIdleTimeout = 20 * time.Minute
+	defaultAgyInteractiveIdleTimeout = 3 * time.Hour
 	defaultAgyInteractiveRetention   = 30 * time.Minute
 	agyInteractiveStableWindow       = 1200 * time.Millisecond
 	// Number of paste+verify attempts before declaring the prompt input lost.

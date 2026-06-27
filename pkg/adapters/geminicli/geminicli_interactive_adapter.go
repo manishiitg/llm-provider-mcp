@@ -31,7 +31,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultGeminiInteractiveTimeout     = 0
-	defaultGeminiInteractiveIdleTimeout = 20 * time.Minute
+	defaultGeminiInteractiveIdleTimeout = 3 * time.Hour
 	defaultGeminiInteractiveRetention   = 30 * time.Minute
 	// defaultGeminiInteractiveStalePaneBackstop bounds how long the response-wait
 	// loop will tolerate a byte-frozen pane after activity before giving up on

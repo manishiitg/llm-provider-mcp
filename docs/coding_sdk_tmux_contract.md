@@ -371,6 +371,8 @@ Cursor CLI:
 
 Antigravity CLI:
 
+- Deprecated for new setup. Existing/restored `agy-cli` sessions remain runnable,
+  but new Google/Gemini-backed coding-agent setup should use `pi-cli`.
 - Interactive transport: `agy --prompt-interactive` TUI inside tmux.
 - The adapter must place flags such as `--dangerously-skip-permissions` before
   `--prompt-interactive`; args after `--prompt-interactive` are interpreted by
@@ -390,8 +392,8 @@ Antigravity CLI:
   `--prompt-interactive`. The adapter captures the conversation id from
   Antigravity's local conversation state/history and surfaces it as
   `agy_session_id`.
-- MCP bridge behavior is not certified until a real Agy bridge E2E proves the
-  workspace config is loaded and callable.
+- MCP bridge behavior is certified by `TestAgyCLIRealMCPBridgeContract`, which
+  proves the workspace config is loaded and a real bridge tool is callable.
 
 Gemini CLI:
 

@@ -298,8 +298,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:         "Gemini CLI",
 		CLIName:             "gemini",
 		Deprecated:          true,
-		DeprecationReason:   "Gemini CLI is retained for existing sessions only; prefer Antigravity CLI for new Google-backed coding-agent setup.",
-		ReplacementProvider: ProviderAgyCLI,
+		DeprecationReason:   "Gemini CLI is retained for existing sessions only; prefer Pi CLI for new Google-backed coding-agent setup.",
+		ReplacementProvider: ProviderPiCLI,
 		// Gemini CLI runs in the tmux interactive transport by default — same
 		// shape as Claude Code / Codex / Cursor / Agy. The structured
 		// (--output-format stream-json) path is kept available as the
@@ -339,6 +339,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		Provider:                ProviderAgyCLI,
 		DisplayName:             "Antigravity CLI",
 		CLIName:                 "agy",
+		Deprecated:              true,
+		DeprecationReason:       "Antigravity CLI is retained for existing sessions only; prefer Pi CLI because Pi supports Gemini model routing through one integration.",
+		ReplacementProvider:     ProviderPiCLI,
 		Transport:               CodingAgentTransportTmux,
 		RequiresWorkingDir:      true,
 		RequiresOwnerSessionID:  true,

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	defaultPiInteractiveIdleTimeout = 20 * time.Minute
+	defaultPiInteractiveIdleTimeout = 3 * time.Hour
 	defaultPiInteractiveRetention   = 30 * time.Minute
 
 	EnvPiBinary                         = "PI_BIN"
@@ -39,14 +40,26 @@ const (
 	EnvPiInteractiveNpmIgnoreScripts    = "PI_CLI_NPM_IGNORE_SCRIPTS"
 	EnvPiInteractiveRetentionSeconds    = "PI_CLI_INTERACTIVE_RETENTION_SECONDS"
 	EnvPiStatuslineExtension            = "PI_CLI_STATUSLINE_EXTENSION"
+	EnvPiStatuslinePreset               = "PI_STATUSLINE_PRESET"
+	EnvPiMCPOutputGuard                 = "PI_CLI_MCP_OUTPUT_GUARD"
+	EnvPiMCPResultMaxChars              = "PI_CLI_MCP_RESULT_MAX_CHARS"
+	EnvPiMCPResultMaxLines              = "PI_CLI_MCP_RESULT_MAX_LINES"
+	EnvPiMCPDetailsMaxKeys              = "PI_CLI_MCP_DETAILS_MAX_KEYS"
+	EnvPiNodeOptions                    = "PI_CLI_NODE_OPTIONS"
+	EnvPiNodeMaxOldSpaceMB              = "PI_CLI_NODE_MAX_OLD_SPACE_MB"
+	defaultPiStatuslinePreset           = "classic"
+	defaultPiNodeMaxOldSpaceMB          = "4096"
 	defaultPiInteractiveNpxPackage      = "@earendil-works/pi-coding-agent"
 	defaultPiProvider                   = "google"
 	defaultPiModel                      = "gemini-3.5-flash"
 	piInteractiveMarkerExtensionFile    = "mlp-marker.ts"
+	piInteractiveMCPOutputGuardFile     = "mlp-mcp-output-guard.ts"
 	piInteractiveMarkerJSONLFile        = "markers.jsonl"
 	piInteractiveMarkerPollInterval     = 100 * time.Millisecond
 	piInteractiveTerminalPollInterval   = 750 * time.Millisecond
 	piInteractiveTerminalScrollbackLine = 10000
+	piPromptPasteVisibleWait            = 1500 * time.Millisecond
+	piPromptSubmitSettleWait            = 1500 * time.Millisecond
 )
 
 type piInteractiveSession struct {
@@ -388,6 +401,13 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	if err := os.WriteFile(extensionPath, []byte(piMarkerExtensionSource()), 0o600); err != nil {
 		return nil, fmt.Errorf("failed to write Pi marker extension: %w", err)
 	}
+	outputGuardPath := ""
+	if piMCPOutputGuardEnabled() {
+		outputGuardPath = filepath.Join(tempDir, piInteractiveMCPOutputGuardFile)
+		if err := os.WriteFile(outputGuardPath, []byte(piMCPOutputGuardExtensionSource()), 0o600); err != nil {
+			return nil, fmt.Errorf("failed to write Pi MCP output guard extension: %w", err)
+		}
+	}
 	markerPath := filepath.Join(tempDir, piInteractiveMarkerJSONLFile)
 	if err := os.WriteFile(markerPath, nil, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to initialize Pi marker file: %w", err)
@@ -424,7 +444,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	session.cleanupFiles = cleanupFiles
-	args, env, err := p.piLaunchArgs(provider, model, extensionPath, markerPath, systemPrompt, nativeSessionID, opts)
+	args, env, err := p.piLaunchArgs(provider, model, extensionPath, outputGuardPath, markerPath, systemPrompt, nativeSessionID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +465,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	return session, nil
 }
 
-func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, markerPath, systemPrompt, nativeSessionID string, opts *llmtypes.CallOptions) ([]string, []string, error) {
+func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardExtensionPath, markerPath, systemPrompt, nativeSessionID string, opts *llmtypes.CallOptions) ([]string, []string, error) {
 	args, env, err := piCommandPrefix()
 	if err != nil {
 		return nil, nil, err
@@ -468,8 +488,12 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, markerPath, 
 		"--no-extensions",
 		"-e", extensionPath,
 	)
+	if strings.TrimSpace(outputGuardExtensionPath) != "" {
+		args = append(args, "-e", outputGuardExtensionPath)
+	}
 	if statuslineExtension := piStatuslineExtensionFromOptions(opts); statuslineExtension != "" {
 		args = append(args, "-e", statuslineExtension)
+		env = append(env, piStatuslinePresetEnv())
 	}
 	if strings.TrimSpace(mcpConfig) != "" {
 		args = append(args, "-e", piMCPExtensionFromOptions(opts))
@@ -493,9 +517,63 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, markerPath, 
 		args = append(args, "--append-system-prompt", systemPrompt)
 	}
 	env = append(env, "MLP_PI_MARKER_FILE="+markerPath)
+	env = append(env, piNodeOptionsEnv()...)
+	if strings.TrimSpace(outputGuardExtensionPath) != "" {
+		env = append(env, piMCPOutputGuardEnv()...)
+	}
 	env = append(env, piAPIKeyEnv(provider, p.apiKey)...)
 	env = append(env, piBridgeShellEnvFromMCPConfig(mcpConfig)...)
 	return args, env, nil
+}
+
+func piMCPOutputGuardEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvPiMCPOutputGuard))) {
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return true
+	}
+}
+
+func piMCPOutputGuardEnv() []string {
+	var env []string
+	for _, key := range []string{EnvPiMCPResultMaxChars, EnvPiMCPResultMaxLines, EnvPiMCPDetailsMaxKeys} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+func piStatuslinePresetEnv() string {
+	preset := strings.TrimSpace(os.Getenv(EnvPiStatuslinePreset))
+	if preset == "" {
+		preset = defaultPiStatuslinePreset
+	}
+	return EnvPiStatuslinePreset + "=" + preset
+}
+
+func piNodeOptionsEnv() []string {
+	if configured := strings.TrimSpace(os.Getenv(EnvPiNodeOptions)); configured != "" {
+		return []string{"NODE_OPTIONS=" + configured}
+	}
+	existing := strings.TrimSpace(os.Getenv("NODE_OPTIONS"))
+	if strings.Contains(existing, "--max-old-space-size") {
+		return nil
+	}
+	maxOldSpaceMB := strings.TrimSpace(os.Getenv(EnvPiNodeMaxOldSpaceMB))
+	if maxOldSpaceMB == "" {
+		maxOldSpaceMB = defaultPiNodeMaxOldSpaceMB
+	}
+	switch strings.ToLower(maxOldSpaceMB) {
+	case "0", "false", "no", "off", "disabled":
+		return nil
+	}
+	value := "--max-old-space-size=" + maxOldSpaceMB
+	if existing != "" {
+		value = existing + " " + value
+	}
+	return []string{"NODE_OPTIONS=" + value}
 }
 
 func writePiLaunchScript(path string, args []string) error {
@@ -823,6 +901,27 @@ func piSessionScopedMCPURL(apiURL, sessionID string) string {
 }
 
 func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
+	tmuxArgs := piTmuxNewSessionArgs(sessionName, args, env, workingDir)
+	startArgs := piTmuxNewSessionWithExtendedKeysArgs(tmuxArgs)
+	if err := runPiCommand(ctx, nil, "tmux", startArgs...); err != nil {
+		if !isTmuxUnknownExtendedKeysOption(err) {
+			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
+		}
+		if err := runPiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
+		}
+	}
+	_ = runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "extended-keys", "on")
+	_ = runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "extended-keys-format", "csi-u")
+	_ = runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	if err := runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
+		return fmt.Errorf("failed to configure Pi tmux history for session %q: %w", sessionName, err)
+	}
+	_ = runPiCommand(ctx, nil, "tmux", "set-window-option", "-t", sessionName, "window-size", "manual")
+	return nil
+}
+
+func piTmuxNewSessionArgs(sessionName string, args []string, env []string, workingDir string) []string {
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	for _, entry := range env {
@@ -831,15 +930,27 @@ func startPiTmuxSession(ctx context.Context, sessionName string, args []string, 
 		}
 	}
 	tmuxArgs = append(tmuxArgs, shelllaunch.Command(args, workingDir))
-	if err := runPiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
-		return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
+	return tmuxArgs
+}
+
+func piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs []string) []string {
+	startArgs := []string{
+		"set-option", "-g", "extended-keys", "on", ";",
+		"set-option", "-g", "extended-keys-format", "csi-u", ";",
 	}
-	_ = runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
-	if err := runPiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
-		return fmt.Errorf("failed to configure Pi tmux history for session %q: %w", sessionName, err)
+	return append(startArgs, newSessionArgs...)
+}
+
+func isTmuxUnknownExtendedKeysOption(err error) bool {
+	if err == nil {
+		return false
 	}
-	_ = runPiCommand(ctx, nil, "tmux", "set-window-option", "-t", sessionName, "window-size", "manual")
-	return nil
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "extended-keys") &&
+		(strings.Contains(msg, "invalid option") ||
+			strings.Contains(msg, "unknown option") ||
+			strings.Contains(msg, "unknown value") ||
+			strings.Contains(msg, "not a valid option"))
 }
 
 func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
@@ -865,13 +976,77 @@ func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
 		return fmt.Errorf("failed to load Pi input into tmux buffer: %w", err)
 	}
 	_ = runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
+	beforePaste, _ := capturePiPane(ctx, sessionName)
 	if err := runPiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Pi interactive session: %w", err)
 	}
-	if err := runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+	waitForPiInputDraftVisible(ctx, sessionName, message, beforePaste, piPromptPasteVisibleWait)
+	if err := submitPiInputInTmux(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Pi interactive session: %w", err)
 	}
+	ensurePiInputSubmitted(ctx, sessionName, message)
 	return nil
+}
+
+func submitPiInputInTmux(ctx context.Context, sessionName string) error {
+	return runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter")
+}
+
+func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, beforePaste string, timeout time.Duration) {
+	if strings.TrimSpace(message) == "" || timeout <= 0 {
+		return
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
+			captured, err := capturePiPaneANSI(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			if piPaneShowsPromptDraft(captured, message) {
+				return
+			}
+			if beforePaste != "" && stripPiANSI(captured) != beforePaste && !piPaneLooksIdle(captured) {
+				return
+			}
+		}
+	}
+}
+
+// ensurePiInputSubmitted is a best-effort recovery for the Pi TUI prompt
+// editor. A tmux paste can race the submit key, or Pi can consume the first
+// key while leaving the draft visible; if the same draft is still active in
+// the bottom editor region, send one more Enter.
+func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) {
+	deadline, cancel := context.WithTimeout(ctx, piPromptSubmitSettleWait)
+	defer cancel()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
+			captured, err := capturePiPaneANSI(deadline, sessionName)
+			if err != nil {
+				continue
+			}
+			if !piPaneShowsPromptDraft(captured, message) {
+				return
+			}
+			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
+				return
+			}
+			_ = submitPiInputInTmux(deadline, sessionName)
+			return
+		}
+	}
 }
 
 type piMarker struct {
@@ -1119,6 +1294,133 @@ func piTokenUsageSource(session *piInteractiveSession) string {
 
 func capturePiPane(ctx context.Context, sessionName string) (string, error) {
 	return tmuxexec.CapturePane(ctx, sessionName, piInteractiveTerminalScrollbackLine)
+}
+
+func capturePiPaneANSI(ctx context.Context, sessionName string) (string, error) {
+	return tmuxexec.CapturePaneANSI(ctx, sessionName, piInteractiveTerminalScrollbackLine)
+}
+
+func piPaneShowsPromptDraft(captured, prompt string) bool {
+	rawLines, plainLines := piPromptEditorRegion(captured)
+	promptLines := piComparablePromptLines(prompt)
+	if len(rawLines) == 0 || len(promptLines) == 0 {
+		return false
+	}
+	firstMatch := -1
+	lastMatch := -1
+	for i, line := range plainLines {
+		compactLine := piCompactDraftText(line)
+		if compactLine == "" {
+			continue
+		}
+		for _, promptLine := range promptLines {
+			if strings.Contains(compactLine, promptLine) {
+				if firstMatch == -1 {
+					firstMatch = i
+				}
+				lastMatch = i
+				break
+			}
+		}
+	}
+	if firstMatch == -1 {
+		return false
+	}
+	if !piPaneHasStatusLine(captured) || !strings.Contains(captured, "\x1b[7m") {
+		return true
+	}
+	searchEnd := lastMatch + 2
+	if searchEnd >= len(rawLines) {
+		searchEnd = len(rawLines) - 1
+	}
+	for i := firstMatch; i <= searchEnd; i++ {
+		if strings.Contains(rawLines[i], "\x1b[7m") {
+			return true
+		}
+	}
+	return false
+}
+
+func piPromptEditorRegion(captured string) ([]string, []string) {
+	rawLines := strings.Split(captured, "\n")
+	plainLines := strings.Split(stripPiANSI(captured), "\n")
+	limit := len(rawLines)
+	if len(plainLines) < limit {
+		limit = len(plainLines)
+	}
+	statusIdx := limit
+	foundStatus := false
+	for i := limit - 1; i >= 0; i-- {
+		if strings.Contains(plainLines[i], "π •") {
+			statusIdx = i
+			foundStatus = true
+			break
+		}
+	}
+	if !foundStatus {
+		return rawLines[:limit], plainLines[:limit]
+	}
+	start := statusIdx - 24
+	if start < 0 {
+		start = 0
+	}
+	return rawLines[start:statusIdx], plainLines[start:statusIdx]
+}
+
+func piComparablePromptLines(prompt string) []string {
+	var lines []string
+	for _, line := range strings.Split(stripPiANSI(prompt), "\n") {
+		compact := piCompactDraftText(line)
+		if len([]rune(compact)) < 8 {
+			continue
+		}
+		if len([]rune(compact)) > 160 {
+			compact = string([]rune(compact)[:160])
+		}
+		lines = append(lines, compact)
+	}
+	return lines
+}
+
+func piCompactDraftText(s string) string {
+	s = stripPiANSI(s)
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func piPaneHasStatusLine(captured string) bool {
+	return strings.Contains(stripPiANSI(captured), "π •")
+}
+
+func piPaneLooksIdle(captured string) bool {
+	return strings.Contains(strings.ToLower(stripPiANSI(captured)), " idle")
+}
+
+func stripPiANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inEscape {
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if ch == 0x1b {
+			inEscape = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
 }
 
 func emitPiChunk(ctx context.Context, streamChan chan<- llmtypes.StreamChunk, chunk llmtypes.StreamChunk) {
@@ -1542,6 +1844,149 @@ func piRandomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+func piMCPOutputGuardExtensionSource() string {
+	return `const DEFAULT_MAX_RESULT_CHARS = 20000;
+const DEFAULT_MAX_RESULT_LINES = 200;
+const DEFAULT_MAX_DETAILS_KEYS = 20;
+
+function envInt(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toolNameOf(event: any): string {
+	const value = event?.toolName;
+	return typeof value === "string" ? value : "";
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function looksLikeMcpResult(event: any): boolean {
+	const toolName = toolNameOf(event);
+	if (toolName === "mcp" || toolName.startsWith("mcp_") || toolName.startsWith("api_bridge_") || toolName.includes("_mcp_")) {
+		return true;
+	}
+	const details = event?.details;
+	return isRecord(details) && hasOwn(details, "mcpResult");
+}
+
+type ClipState = {
+	chars: number;
+	lineBreaks: number;
+};
+
+function clipText(text: string, state: ClipState, maxChars: number, maxLines: number): { text: string; truncated: boolean } {
+	const remainingChars = Math.max(maxChars - state.chars, 0);
+	const remainingLineBreaks = Math.max(maxLines - state.lineBreaks, 0);
+	if (remainingChars <= 0 || remainingLineBreaks <= 0) {
+		return { text: "", truncated: text.length > 0 };
+	}
+	let end = Math.min(text.length, remainingChars);
+	let addedLineBreaks = 0;
+	for (let i = 0; i < end; i++) {
+		if (text.charCodeAt(i) === 10) {
+			addedLineBreaks++;
+			if (addedLineBreaks >= remainingLineBreaks) {
+				end = i + 1;
+				break;
+			}
+		}
+	}
+	const clipped = text.slice(0, end);
+	state.chars += clipped.length;
+	state.lineBreaks += addedLineBreaks;
+	return { text: clipped, truncated: clipped.length < text.length };
+}
+
+function compactContent(content: unknown, maxChars: number, maxLines: number) {
+	if (!Array.isArray(content)) {
+		return { content, changed: false, omittedBlocks: 0 };
+	}
+	const state: ClipState = { chars: 0, lineBreaks: 0 };
+	const next: unknown[] = [];
+	let changed = false;
+	let omittedBlocks = 0;
+	for (const block of content) {
+		if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+			const clipped = clipText(block.text, state, maxChars, maxLines);
+			if (clipped.truncated) changed = true;
+			if (clipped.text.length > 0) {
+				next.push({ ...block, text: clipped.text });
+			} else if (block.text.length > 0) {
+				omittedBlocks++;
+			}
+			continue;
+		}
+		next.push(block);
+	}
+	if (changed || omittedBlocks > 0) {
+		next.push({
+			type: "text",
+			text: "\n\n[mlp-mcp-output-guard: MCP output was capped before Pi stored it at " + maxChars + " chars / " + maxLines + " lines. Re-run a narrower command or write large output to a file and inspect slices.]"
+		});
+	}
+	return { content: next, changed, omittedBlocks };
+}
+
+function compactDetails(event: any, changed: boolean, omittedBlocks: number, maxChars: number, maxLines: number, maxDetailsKeys: number) {
+	const details = event?.details;
+	const keys = isRecord(details) ? Object.keys(details).slice(0, maxDetailsKeys) : [];
+	return {
+		mlpMcpOutputGuard: true,
+		toolName: toolNameOf(event),
+		originalDetailsType: Array.isArray(details) ? "array" : typeof details,
+		originalDetailsKeys: keys,
+		removedMcpResult: isRecord(details) && hasOwn(details, "mcpResult"),
+		outputTruncated: changed,
+		omittedBlocks,
+		maxResultChars: maxChars,
+		maxResultLines: maxLines
+	};
+}
+
+function setToolsCollapsed(ctx: any) {
+	const setToolsExpanded = ctx?.ui?.setToolsExpanded;
+	if (typeof setToolsExpanded !== "function") return;
+	try {
+		setToolsExpanded(false);
+	} catch {
+		// Pi versions without this UI API should still run the output guard.
+	}
+}
+
+export default function mlpMcpOutputGuard(pi: any) {
+	const maxChars = envInt("PI_CLI_MCP_RESULT_MAX_CHARS", DEFAULT_MAX_RESULT_CHARS);
+	const maxLines = envInt("PI_CLI_MCP_RESULT_MAX_LINES", DEFAULT_MAX_RESULT_LINES);
+	const maxDetailsKeys = envInt("PI_CLI_MCP_DETAILS_MAX_KEYS", DEFAULT_MAX_DETAILS_KEYS);
+
+	pi.on("session_start", async (_event: any, ctx: any) => {
+		setToolsCollapsed(ctx);
+	});
+
+	pi.on("tool_result", async (event: any) => {
+		if (!looksLikeMcpResult(event)) return;
+		const compacted = compactContent(event?.content, maxChars, maxLines);
+		const result: any = {
+			content: compacted.content,
+			details: compactDetails(event, compacted.changed, compacted.omittedBlocks, maxChars, maxLines, maxDetailsKeys)
+		};
+		if (typeof event?.isError === "boolean") {
+			result.isError = event.isError;
+		}
+		return result;
+	});
+}
+`
 }
 
 func piMarkerExtensionSource() string {

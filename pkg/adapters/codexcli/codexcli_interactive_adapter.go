@@ -32,7 +32,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultCodexInteractiveTimeout     = 0
-	defaultCodexInteractiveIdleTimeout = 20 * time.Minute
+	defaultCodexInteractiveIdleTimeout = 3 * time.Hour
 	defaultCodexInteractiveRetention   = 30 * time.Minute
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160

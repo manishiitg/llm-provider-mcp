@@ -1,8 +1,8 @@
-# Antigravity CLI Pending Items
+# Antigravity CLI Deprecated Runtime Notes
 
-Status: `agy-cli` is currently exposed as an **Alpha local CLI provider** and is fully implemented in the code, but remains gated before production promotion.
+Status: `agy-cli` is now **deprecated for new setup**. It remains fully implemented and runnable for existing sessions, restored chat history, and regression coverage, but new Google-backed coding-agent setup should use `pi-cli`.
 
-This file tracks the known gaps, verification milestones, and remaining steps before the Antigravity CLI can be promoted to a fully supported, production-ready coding-agent provider across `multi-llm-provider-go`, `mcpagent`, and `mcp-agent-builder-go`.
+This file tracks the retained runtime contract, known gaps, and verification milestones for keeping existing Antigravity CLI sessions safe while Pi CLI becomes the preferred Google/Gemini-backed coding-agent provider.
 
 > [!NOTE]
 > Out of **26 total required tmux certifications** defined in the contract, Antigravity CLI has successfully achieved **25 registered certifications**! Only one certification remains as an open gap.
@@ -43,10 +43,10 @@ This file tracks the known gaps, verification milestones, and remaining steps be
 
 ---
 
-## 🚧 Pending Before Production (The Final Gap)
+## 🚧 Retained Runtime Gap
 
 > [!WARNING]
-> Before promoting Antigravity CLI out of **Alpha** into full **Production support**, the following final item must be resolved:
+> Agy is not currently a production-promotion target for new setup. If it is ever re-promoted, the following final item must be resolved first:
 
 ### 1. 🔄 Verify Workspace-Scoped MCP Isolation (`CertSharedWorkdirMCPIsolation`)
 *   **Gap Description:** Two concurrent `agy` sessions started under distinct working sub-directories must not see each other's custom bridge configuration, rule folders, or active tool bindings.
@@ -55,7 +55,7 @@ This file tracks the known gaps, verification milestones, and remaining steps be
 
 ### 2. 📊 Confirm Token & Cost Estimations
 *   **Detail:** Tmux-mode currently calculates estimated token counts based on plain text length as `agy` does not expose exact API token usage metrics natively in TUI mode.
-*   **Production Gate:** Keep token estimation as-is or, if `agy` adds exact token auditing logs, update `TokenUsageSource` to leverage those logs.
+*   **Runtime Note:** Keep token estimation as-is for restored Agy sessions, or update `TokenUsageSource` if `agy` adds exact token auditing logs.
 
 ### 3. 🧪 Re-run Full Cross-Repo Validation
 Validate integrated execution flows across the three core repos:

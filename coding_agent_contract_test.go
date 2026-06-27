@@ -72,7 +72,8 @@ func TestDeprecatedCodingAgentContractsKeepRuntimeButPointToReplacement(t *testi
 		provider Provider
 		want     Provider
 	}{
-		{provider: ProviderGeminiCLI, want: ProviderAgyCLI},
+		{provider: ProviderGeminiCLI, want: ProviderPiCLI},
+		{provider: ProviderAgyCLI, want: ProviderPiCLI},
 	}
 
 	for _, tt := range tests {

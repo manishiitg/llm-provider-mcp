@@ -32,7 +32,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultCursorInteractiveTimeout     = 0
-	defaultCursorInteractiveIdleTimeout = 20 * time.Minute
+	defaultCursorInteractiveIdleTimeout = 3 * time.Hour
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 	cursorBootBannerPromptGrace         = 2 * time.Second

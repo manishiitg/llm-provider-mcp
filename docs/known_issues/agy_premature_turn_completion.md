@@ -1,14 +1,14 @@
-# Known issue: agy interactive adapter declares turns "done" prematurely
+# Resolved issue: agy interactive adapter declared turns "done" prematurely
 
 **Component:** `pkg/adapters/agycli/agycli_interactive_adapter.go`
 **Observed with:** Antigravity CLI `1.0.12`, Gemini 3.5 Flash
 **Severity:** real production bug (turns cut short during tool-loading / early generation), not test-only
-**Status:** diagnosed; fix deferred (needs careful design — see "Why the obvious fix is wrong")
+**Status:** resolved in `f5687b3` (`Fix Agy prompt echo completion detection`)
 
 ## Symptom
 
-`GenerateContent` returns in ~8s with the wrapped tail of the user's own prompt as the
-"answer", **before agy has even called a tool**. Reproduced by
+`GenerateContent` returned in ~8s with the wrapped tail of the user's own prompt as the
+"answer", **before agy had even called a tool**. Reproduced by
 `TestAgyCLIRealInteractiveLiveInputProcessesQueuedFollowupContract` (real-E2E):
 
 ```
@@ -27,15 +27,15 @@ Live pane capture at the moment of the false completion:
 
 ## Root cause
 
-Turn-completion in `hasAgyReadyPrompt` (~line 2580) accepts the turn as **done** when:
+The original turn-completion path in `hasAgyReadyPrompt` accepted the turn as **done** when:
 1. a `>` input box is visible (`hasAgyReadyMarker`) — agy shows one **even while busy**, and
 2. no recognized live-generation signal is present (`hasAgyLiveGenerationActivity`, ~2613).
 
 `hasAgyLiveGenerationActivity` only recognizes `"ctrl+c to stop"`, `"esc to interrupt"`,
 `"composing"`, `○ ` tool cards, `"esc to cancel"`. It does **not** recognize agy 1.0.12's
 spinner busy-states (`⣾ Generating…`, `⣷ Discovering Tool Functionality…`). So while agy is
-actively generating/loading tools, the detector reports "not busy", the always-present `>`
-box satisfies "ready", and the turn is declared complete — returning the prompt-echo
+actively generating/loading tools, the detector reported "not busy", the always-present `>`
+box satisfied "ready", and the turn was declared complete — returning the prompt-echo
 (itself a secondary wrapped-prompt extraction leak, same class as the codex bug fixed on
 branch `codex-fix-and-queue-tests`).
 
@@ -55,23 +55,26 @@ the content is identical (`⣾ Generating…` + `>` box). The only difference is
 the **stability mechanism over time**, not a per-line classification. The naive patch was
 verified to break both tests; it was reverted.
 
-## Correct fix (proposed, not yet implemented)
+## Correct fix (implemented)
 
-Distinguish "stable because **done**" from "stable because **momentarily paused mid-generation**".
-Require evidence of an actual turn before accepting stability as completion, e.g.:
+The shipped fix distinguishes "stable because **done**" from "stable because
+**momentarily paused mid-generation**" by requiring evidence of real assistant output
+before accepting readiness as terminal:
 
 - Do **not** accept `hasAgyReadyPrompt` as terminal while the extracted assistant text is empty
-  / equal to the echoed user prompt **and** a `Generating…`/spinner status is present — i.e.
-  require a **non-empty real answer** (or a confirmed post-submit pane change) before completing.
+  / equal to the echoed user prompt **and** a `Generating...`/spinner status is present — i.e.
+  require a **non-empty real answer** before completing.
 - Keep ignoring the cycling spinner for the stability key (don't regress
   `TestAgySpinnerStableKeyIgnoresCyclingSpinner`); the gate is "no real answer yet", not "spinner present".
+- Drop wrapped prompt tails and Agy TUI chrome from final extraction so prompt echoes are not
+  surfaced as assistant answers.
 
-This keeps both existing unit tests green AND fixes the live premature-completion. Validate with:
-- `go test ./pkg/adapters/agycli -count=1` (unit suite must stay green), and
-- `RUN_AGY_CLI_REAL_E2E=1 go test ./pkg/adapters/agycli -run TestAgyCLIRealInteractiveLiveInputProcessesQueuedFollowupContract` (must engage the tool and process the queued follow-up — it passed at 31s under the temporary patch, confirming agy itself queues+processes correctly once completion detection is fixed).
+Validation run after the fix:
+- `go test ./pkg/adapters/agycli -count=1`
+- `go test . -count=1`
+- `RUN_AGY_CLI_REAL_E2E=1 go test ./pkg/adapters/agycli -run TestAgyCLIRealInteractiveLiveInputProcessesQueuedFollowupContract -count=1 -v -timeout 4m`
 
 ## What is NOT in question
 
-Agy's CLI **does** natively queue + process a mid-turn message — confirmed: under the temporary
-patch the E2E passed (31.46s) with the queued follow-up's marker in the final content. This bug
-is purely the **adapter's completion detection**, not agy's input handling.
+Agy's CLI **does** natively queue + process a mid-turn message. The passing real E2E
+confirms the bug was purely the **adapter's completion detection**, not Agy's input handling.
