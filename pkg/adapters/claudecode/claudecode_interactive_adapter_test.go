@@ -74,8 +74,8 @@ exit 1
 	if !strings.Contains(string(args), " -J") {
 		t.Fatalf("terminal display capture did not use joined rows (-J): %q", string(args))
 	}
-	if !strings.Contains(string(args), " -S -"+defaultTmuxCaptureLines) {
-		t.Fatalf("terminal display capture did not request %s lines: %q", defaultTmuxCaptureLines, string(args))
+	if strings.Contains(string(args), " -S ") {
+		t.Fatalf("terminal display capture should use visible pane only, got args: %q", string(args))
 	}
 }
 
@@ -1789,6 +1789,29 @@ func TestIsClaudeDismissableFeaturePrompt(t *testing.T) {
 		t.Fatal("trust-folder security prompt must NOT be auto-dismissed")
 	}
 	if isClaudeDismissableFeaturePrompt("> ready prompt, no modal") {
+		t.Fatal("false positive on a normal pane")
+	}
+}
+
+func TestIsClaudeResumePrompt(t *testing.T) {
+	prompt := `This session is 2h 2m old and 203.9k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming
+  from a summary.
+
+  ❯ 1. Resume from summary (recommended)
+    2. Resume full session as-is
+    3. Don't ask me again
+
+  Enter to confirm · Esc to cancel`
+	if !isClaudeResumePrompt(prompt) {
+		t.Fatal("expected the resume-from-summary prompt to be detected")
+	}
+	// Must NOT be handled as a feature prompt — that would Esc-cancel the resume.
+	if isClaudeDismissableFeaturePrompt(prompt) {
+		t.Fatal("resume prompt must not be Esc-dismissed as a feature prompt")
+	}
+	if isClaudeResumePrompt("> ready prompt, no resume menu") {
 		t.Fatal("false positive on a normal pane")
 	}
 }

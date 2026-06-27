@@ -31,7 +31,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultTmuxTimeout           = 0
-	defaultPersistentIdleTimeout = 20 * time.Minute
+	defaultPersistentIdleTimeout = 3 * time.Hour
 	defaultBoundedRetention      = 30 * time.Minute
 	defaultTmuxPollInterval      = 750 * time.Millisecond
 	defaultTmuxCaptureLines      = "10000"
@@ -1213,6 +1213,19 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				lastActivityAt = time.Now()
 				continue
 			}
+			// Claude shows a "Resume from summary / Resume full session" prompt when
+			// resuming a large/old session. It blocks the input prompt, and unlike a
+			// feature modal Esc would CANCEL the resume — so accept the highlighted
+			// recommended default ("Resume from summary") with Enter to let the resume
+			// proceed. Shares the dismissal cap below.
+			if featurePromptsDismissed < 5 && isClaudeResumePrompt(captured) {
+				featurePromptsDismissed++
+				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
+					return fmt.Errorf("failed to accept Claude Code resume prompt: %w", err)
+				}
+				lastActivityAt = time.Now()
+				continue
+			}
 			// Claude Code shows optional onboarding/feature modals on startup
 			// (e.g. "Claude in Chrome extension detected", "Try the new fullscreen
 			// renderer?") which block the input prompt and time the session out.
@@ -1274,6 +1287,16 @@ func isClaudeDismissableFeaturePrompt(captured string) bool {
 		strings.Contains(c, "keep browser tools off") || strings.Contains(c, "no thanks") ||
 		strings.Contains(c, "no, keep")
 	return hasMenu && hasDecline
+}
+
+// isClaudeResumePrompt detects the "Resume from summary / Resume full session"
+// menu claude shows when resuming a large or old session. It blocks the input
+// prompt; the adapter accepts the highlighted recommended default (Resume from
+// summary) with Enter so the resume proceeds.
+func isClaudeResumePrompt(captured string) bool {
+	c := strings.ToLower(captured)
+	return strings.Contains(c, "resume from summary") &&
+		(strings.Contains(c, "resume full session") || strings.Contains(c, "don't ask me again"))
 }
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
@@ -2491,8 +2514,10 @@ func captureTmuxPaneForDisplay(ctx context.Context, sessionName string) (string,
 	// stripped by stripClaudeANSIPreserveColors in streamClaudeTerminalSnapshot
 	// before the snapshot leaves the adapter so they don't garble rendering.
 	// -J joins wrapped lines so the frontend can handle wrapping natively without
-	// hard splitting words mid-line.
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-J", "-S", "-"+defaultTmuxCaptureLines)
+	// hard splitting words mid-line. Display snapshots intentionally capture only
+	// the visible pane: deep scrollback flattens prior spinner/redraw frames into
+	// duplicate rows before the app can render the current screen.
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-J")
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
