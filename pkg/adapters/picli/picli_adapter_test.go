@@ -147,7 +147,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	WithBridgeOnlyTools(true)(opts)
 
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+	args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts)
 	if err != nil {
 		t.Fatalf("piLaunchArgs() error = %v", err)
 	}
@@ -158,6 +158,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"-e\x00/tmp/mcp-output-guard.ts",
 		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
 		"-e\x00npm:pi-mcp-adapter",
+		"--no-approve",
 		"--session-id\x00mlp-pi-test-123",
 		"--session-dir\x00" + sessionDir,
 		"--no-builtin-tools",
@@ -265,7 +266,7 @@ func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) 
 	t.Run("call option override", func(t *testing.T) {
 		opts := &llmtypes.CallOptions{}
 		WithStatuslineExtension("npm:@example/statusline@1.2.3")(opts)
-		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts)
 		if err != nil {
 			t.Fatalf("piLaunchArgs() error = %v", err)
 		}
@@ -280,7 +281,7 @@ func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) 
 	t.Run("env override", func(t *testing.T) {
 		t.Setenv(EnvPiStatuslineExtension, "npm:@example/env-statusline@2.0.0")
 		t.Setenv(EnvPiStatuslinePreset, "tokyo-night")
-		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", nil)
+		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", nil)
 		if err != nil {
 			t.Fatalf("piLaunchArgs() error = %v", err)
 		}
@@ -295,7 +296,7 @@ func TestPiLaunchArgsStatuslineExtensionCanBeOverriddenOrDisabled(t *testing.T) 
 	t.Run("disabled", func(t *testing.T) {
 		opts := &llmtypes.CallOptions{}
 		WithStatuslineExtension("off")(opts)
-		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+		args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts)
 		if err != nil {
 			t.Fatalf("piLaunchArgs() error = %v", err)
 		}
@@ -328,7 +329,7 @@ func TestPiLaunchArgsDerivesSessionScopedMCPEnv(t *testing.T) {
 	WithBridgeOnlyTools(true)(opts)
 
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	_, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts)
+	_, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts)
 	if err != nil {
 		t.Fatalf("piLaunchArgs() error = %v", err)
 	}
@@ -363,7 +364,7 @@ func TestPiLaunchArgsRejectsBridgeOnlyWithoutMCPConfig(t *testing.T) {
 	WithBridgeOnlyTools(true)(opts)
 
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	if _, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", opts); err == nil {
+	if _, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts); err == nil {
 		t.Fatal("piLaunchArgs() error = nil, want bridge-only without MCP config to fail")
 	}
 }
@@ -371,7 +372,7 @@ func TestPiLaunchArgsRejectsBridgeOnlyWithoutMCPConfig(t *testing.T) {
 func TestPiLaunchArgsRejectsInvalidNativeSessionID(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	if _, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "-bad-", nil); err == nil {
+	if _, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "-bad-", "", nil); err == nil {
 		t.Fatal("piLaunchArgs() error = nil, want invalid native session id to fail")
 	}
 }
@@ -585,7 +586,7 @@ func TestPreparePiProjectFilesWritesMCPConfigAndCleansUp(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	cleanup, err := preparePiProjectFiles(workDir, opts)
+	cleanup, err := preparePiProjectFiles(workDir, "", opts)
 	if err != nil {
 		t.Fatalf("preparePiProjectFiles() error = %v", err)
 	}
@@ -633,7 +634,7 @@ func TestPreparePiProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"new"}}}`)(opts)
 
-	cleanup, err := preparePiProjectFiles(workDir, opts)
+	cleanup, err := preparePiProjectFiles(workDir, "", opts)
 	if err != nil {
 		t.Fatalf("preparePiProjectFiles() error = %v", err)
 	}
@@ -652,6 +653,82 @@ func TestPreparePiProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 	}
 	if string(restored) != string(original) {
 		t.Fatalf("restored mcp.json = %q, want original %q", restored, original)
+	}
+}
+
+func TestPreparePiProjectFilesWritesSystemPromptFileAndCleansUp(t *testing.T) {
+	workDir := t.TempDir()
+	cleanup, err := preparePiProjectFiles(workDir, "follow the managed prompt", &llmtypes.CallOptions{})
+	if err != nil {
+		t.Fatalf("preparePiProjectFiles() error = %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("preparePiProjectFiles() cleanup = nil, want cleanup")
+	}
+
+	promptPath := filepath.Join(workDir, ".pi", "APPEND_SYSTEM.md")
+	body, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read Pi system prompt file: %v", err)
+	}
+	for _, want := range []string{"# MCP Agent System Instructions", "follow the managed prompt"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("APPEND_SYSTEM.md = %q, want %q", body, want)
+		}
+	}
+
+	cleanup()
+	if _, err := os.Stat(promptPath); !os.IsNotExist(err) {
+		t.Fatalf("APPEND_SYSTEM.md should be removed after cleanup, err=%v", err)
+	}
+}
+
+func TestPiProjectSkillsAndLaunchArgsLoadExplicitSkillPath(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
+	workDir := t.TempDir()
+	skills := []*llmtypes.Skill{{
+		Name:        "Agent Browser",
+		Description: "Drive a browser",
+		Content:     "# Agent Browser\n\nUse the browser carefully.\n",
+		SupportingFiles: []llmtypes.SkillFile{{
+			RelPath: "references/api.md",
+			Content: []byte("# API\n"),
+		}},
+	}}
+	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
+	if err := adapter.ProjectSkills(workDir, skills); err != nil {
+		t.Fatalf("ProjectSkills() error = %v", err)
+	}
+
+	skillPath := filepath.Join(workDir, ".pi", "skills", "agent-browser", "SKILL.md")
+	body, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read projected SKILL.md: %v", err)
+	}
+	for _, want := range []string{"name: agent-browser", "description: Drive a browser", "# Agent Browser"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("projected SKILL.md = %q, want %q", body, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".pi", "skills", "agent-browser", "references", "api.md")); err != nil {
+		t.Fatalf("projected supporting file missing: %v", err)
+	}
+
+	opts := &llmtypes.CallOptions{}
+	llmtypes.WithAttachedSkills(skills)(opts)
+	args, _, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", workDir, opts)
+	if err != nil {
+		t.Fatalf("piLaunchArgs() error = %v", err)
+	}
+	joined := strings.Join(args, "\x00")
+	for _, want := range []string{
+		"--no-skills",
+		"--no-approve",
+		"--skill\x00" + filepath.Join(workDir, ".pi", "skills"),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args = %#v, want %q", args, want)
+		}
 	}
 }
 

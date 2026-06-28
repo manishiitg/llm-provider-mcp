@@ -441,12 +441,15 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	session.releaseMCPLease = releaseMCPLease
-	cleanupFiles, err = preparePiProjectFiles(workingDir, opts)
+	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+		_ = p.ProjectSkills(workingDir, skills)
+	}
+	cleanupFiles, err = preparePiProjectFiles(workingDir, systemPrompt, opts)
 	if err != nil {
 		return nil, err
 	}
 	session.cleanupFiles = cleanupFiles
-	args, env, err := p.piLaunchArgs(provider, model, extensionPath, outputGuardPath, markerPath, systemPrompt, nativeSessionID, opts)
+	args, env, err := p.piLaunchArgs(provider, model, extensionPath, outputGuardPath, markerPath, systemPrompt, nativeSessionID, workingDir, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +470,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	return session, nil
 }
 
-func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardExtensionPath, markerPath, systemPrompt, nativeSessionID string, opts *llmtypes.CallOptions) ([]string, []string, error) {
+func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardExtensionPath, markerPath, systemPrompt, nativeSessionID, workingDir string, opts *llmtypes.CallOptions) ([]string, []string, error) {
 	args, env, err := piCommandPrefix()
 	if err != nil {
 		return nil, nil, err
@@ -503,8 +506,12 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	args = append(args,
 		"--no-skills",
 		"--no-context-files",
+		"--no-approve",
 		"--session-id", nativeSessionID,
 	)
+	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 && strings.TrimSpace(workingDir) != "" {
+		args = append(args, "--skill", piProjectedSkillsPath(workingDir))
+	}
 	if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
@@ -589,21 +596,48 @@ func writePiLaunchScript(path string, args []string) error {
 	return nil
 }
 
-func preparePiProjectFiles(workingDir string, opts *llmtypes.CallOptions) (func(), error) {
+func preparePiProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallOptions) (func(), error) {
+	cleanups := make([]func(), 0, 2)
+	addCleanup := func(cleanup func()) {
+		if cleanup != nil {
+			cleanups = append(cleanups, cleanup)
+		}
+	}
+	cleanupAll := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+
 	mcpConfig := piMCPConfigFromOptions(opts)
-	if strings.TrimSpace(mcpConfig) == "" {
+	if strings.TrimSpace(mcpConfig) != "" {
+		normalizedMCPConfig, err := normalizePiMCPConfig(mcpConfig)
+		if err != nil {
+			return nil, err
+		}
+		mcpPath := filepath.Join(workingDir, ".pi", "mcp.json")
+		cleanup, err := writePiRestoredFile(mcpPath, normalizedMCPConfig)
+		if err != nil {
+			return nil, err
+		}
+		addCleanup(cleanup)
+	}
+
+	if strings.TrimSpace(systemPrompt) != "" {
+		promptPath := filepath.Join(workingDir, ".pi", "APPEND_SYSTEM.md")
+		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
+		cleanup, err := writePiRestoredFile(promptPath, []byte(content))
+		if err != nil {
+			cleanupAll()
+			return nil, err
+		}
+		addCleanup(cleanup)
+	}
+
+	if len(cleanups) == 0 {
 		return nil, nil
 	}
-	normalizedMCPConfig, err := normalizePiMCPConfig(mcpConfig)
-	if err != nil {
-		return nil, err
-	}
-	mcpPath := filepath.Join(workingDir, ".pi", "mcp.json")
-	cleanup, err := writePiRestoredFile(mcpPath, normalizedMCPConfig)
-	if err != nil {
-		return nil, err
-	}
-	return cleanup, nil
+	return cleanupAll, nil
 }
 
 func normalizePiMCPConfig(configJSON string) ([]byte, error) {

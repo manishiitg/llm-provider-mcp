@@ -14,6 +14,7 @@ package llmtypes
 //   - agy-cli          → <workdir>/.agents/skills/<name>/
 //   - gemini-cli       → <workdir>/.agents/skills/<name>/
 //   - codex-cli        → <workdir>/.agents/skills/<name>/
+//   - pi-cli           → <workdir>/.pi/skills/<name>/
 //   - API transports   → not projected; surfaced through the system prompt listing
 //
 // The SKILL.md content is identical across providers; only the directory

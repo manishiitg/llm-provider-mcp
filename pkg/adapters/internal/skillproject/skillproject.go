@@ -1,6 +1,6 @@
 // Package skillproject writes Anthropic-format SKILL.md folders into a
 // provider's working directory. Every native-skill CLI (claude-code,
-// cursor-cli, gemini-cli, codex-cli, agy-cli) reads the
+// cursor-cli, gemini-cli, codex-cli, agy-cli, pi-cli) reads the
 // same file layout — SKILL.md with YAML frontmatter plus optional
 // scripts/, references/, assets/ subdirectories — so adapters share
 // this single writer and differ only in which subdirectory they project

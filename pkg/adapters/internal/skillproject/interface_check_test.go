@@ -16,6 +16,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
 type skillProjector interface {
@@ -28,4 +29,5 @@ var (
 	_ skillProjector = (*agycli.AgyCLIAdapter)(nil)
 	_ skillProjector = (*geminicli.GeminiCLIAdapter)(nil)
 	_ skillProjector = (*codexcli.CodexCLIAdapter)(nil)
+	_ skillProjector = (*picli.PiCLIAdapter)(nil)
 )
