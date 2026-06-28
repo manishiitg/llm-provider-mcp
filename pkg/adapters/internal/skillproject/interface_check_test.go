@@ -10,6 +10,11 @@ package skillproject_test
 // the import cycle the type-in-llmtypes split was designed to prevent.
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
@@ -31,3 +36,51 @@ var (
 	_ skillProjector = (*codexcli.CodexCLIAdapter)(nil)
 	_ skillProjector = (*picli.PiCLIAdapter)(nil)
 )
+
+func TestCLIAdaptersProjectSkillsToNativeDirectories(t *testing.T) {
+	skills := []*llmtypes.Skill{{
+		Name:        "Agent Browser",
+		Description: "Drive a browser",
+		Content:     "# Agent Browser\n\nUse the browser carefully.\n",
+		SupportingFiles: []llmtypes.SkillFile{{
+			RelPath: "references/api.md",
+			Content: []byte("# API\n"),
+		}},
+	}}
+
+	tests := []struct {
+		name         string
+		projector    skillProjector
+		skillsSubdir string
+	}{
+		{name: "claude-code", projector: &claudecode.ClaudeCodeAdapter{}, skillsSubdir: ".claude/skills"},
+		{name: "cursor-cli", projector: &cursorcli.CursorCLIAdapter{}, skillsSubdir: ".cursor/skills"},
+		{name: "agy-cli", projector: &agycli.AgyCLIAdapter{}, skillsSubdir: ".agents/skills"},
+		{name: "gemini-cli", projector: &geminicli.GeminiCLIAdapter{}, skillsSubdir: ".agents/skills"},
+		{name: "codex-cli", projector: &codexcli.CodexCLIAdapter{}, skillsSubdir: ".agents/skills"},
+		{name: "pi-cli", projector: &picli.PiCLIAdapter{}, skillsSubdir: ".pi/skills"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			if err := tt.projector.ProjectSkills(workdir, skills); err != nil {
+				t.Fatalf("ProjectSkills() error = %v", err)
+			}
+
+			skillDir := filepath.Join(workdir, filepath.FromSlash(tt.skillsSubdir), "agent-browser")
+			body, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+			if err != nil {
+				t.Fatalf("read projected SKILL.md: %v", err)
+			}
+			for _, want := range []string{"name: agent-browser", "description: Drive a browser", "# Agent Browser"} {
+				if !strings.Contains(string(body), want) {
+					t.Fatalf("projected SKILL.md = %q, want %q", body, want)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(skillDir, "references", "api.md")); err != nil {
+				t.Fatalf("projected supporting file missing: %v", err)
+			}
+		})
+	}
+}
