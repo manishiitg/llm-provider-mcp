@@ -71,6 +71,12 @@ func TestCodexCLIRealProjectArtifactsLifecycle(t *testing.T) {
 		WithApprovalPolicy("never"),
 		WithReasoningEffort("low"),
 		WithWriteProjectInstructionFile(true),
+		// Byte-restore of pre-existing operator content is opt-in
+		// (MetadataKeyRestoreProjectFiles is OFF by default). This test
+		// asserts the byte-restore lifecycle, so it must enable it;
+		// without the flag every run writes a fresh AGENTS.md and
+		// deletes it on cleanup (never restoring the operator pre-seed).
+		WithRestoreProjectFiles(true),
 		WithMCPServers(mcpJSON),
 	)
 	if callErr != nil {

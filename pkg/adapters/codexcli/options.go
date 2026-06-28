@@ -280,6 +280,7 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 //     that read codex's on-disk convention.
 //
 //   - <workingDir>/.codex/hooks.json
+//
 //   - <workingDir>/.codex/hooks/deny-builtin.sh
 //     The PreToolUse deny hook (matcher ^(Bash|apply_patch)$) and its
 //     exit-2 deny script. Forces the model to route through MCP servers
