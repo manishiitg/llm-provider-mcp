@@ -54,7 +54,7 @@ func TestCodexCLIRealIsolatedTmpDirDoesNotTouchOuterWorkspace(t *testing.T) {
 
 	_, callErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{
-			Role: llmtypes.ChatMessageTypeHuman,
+			Role:  llmtypes.ChatMessageTypeHuman,
 			Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly the word OK and nothing else."}},
 		},
 	},

@@ -2072,6 +2072,12 @@ func isCodexTUILine(line string) bool {
 		trimmed == "immediately)" ||
 		strings.HasPrefix(trimmed, "↳ ") ||
 		strings.Contains(lower, "tmux focus-events") ||
+		// codex 0.142.3 injects a "• You have N usage limit resets available.
+		// Run /usage to use one." system notice as its own event bullet. It is a
+		// codex notification, not model output, so treat it as chrome to keep it
+		// out of the extracted assistant answer.
+		strings.Contains(lower, "usage limit resets available") ||
+		strings.Contains(lower, "run /usage to use one") ||
 		strings.Contains(lower, "codex") && strings.Contains(lower, "model") ||
 		strings.HasPrefix(lower, "gpt-") && strings.Contains(lower, "·") ||
 		isCodexTokenStatusLine(trimmed) ||
@@ -2321,7 +2327,19 @@ func isCodexPromptWrapContinuationLine(currentLines []string, line string) bool 
 	if len(currentLines) == 0 {
 		return false
 	}
-	if !isCodexPromptMarkerLine(currentLines[len(currentLines)-1]) {
+	// The chrome segment must be a "›" user-prompt block. codex 0.142.3 renders
+	// a multi-line user prompt (or a terminal-wrapped one) as the "›" marker line
+	// FOLLOWED by SEVERAL indented, marker-less continuation lines. The previous
+	// implementation only matched when the marker was the IMMEDIATELY preceding
+	// line, so it absorbed just the first continuation; the remaining echoed
+	// prompt lines leaked into an assistant segment and corrupted final-answer
+	// extraction (e.g. a 4-line prompt echo leaving "first"/"second" lines that
+	// merged into the real answer). Match whenever this chrome segment already
+	// contains a prompt-marker line so EVERY continuation of a multi-line prompt
+	// echo is absorbed. Absorption naturally stops at the answer because codex
+	// renders the answer's first line with a "•" bullet (not wrap-eligible), which
+	// flushes the chrome segment.
+	if !codexChromeSegmentHasPromptMarker(currentLines) {
 		return false
 	}
 	trimmed := strings.TrimSpace(line)
@@ -2332,6 +2350,19 @@ func isCodexPromptWrapContinuationLine(currentLines []string, line string) bool 
 	// anything with its own structural classification (tool/plan/chrome/etc.)
 	// must keep it so the existing handling applies.
 	return classifyCodexLine(trimmed) == codexSegmentAssistant
+}
+
+// codexChromeSegmentHasPromptMarker reports whether a chrome segment's lines
+// include a rendered "›" user-prompt marker line, identifying the segment as a
+// prompt-echo block whose marker-less indented continuations should be absorbed
+// rather than leaked into the extracted assistant answer.
+func codexChromeSegmentHasPromptMarker(lines []string) bool {
+	for _, l := range lines {
+		if isCodexPromptMarkerLine(l) {
+			return true
+		}
+	}
+	return false
 }
 
 // isCodexPromptMarkerLine reports whether line is a rendered "›" user-prompt
@@ -2624,7 +2655,13 @@ func hasCodexQueuedInput(captured string) bool {
 			continue
 		}
 		seenNonEmpty++
-		if isCodexPromptWithInputLine(line) {
+		// A later "›" prompt — whether it carries typed input OR shows the
+		// rotating ghost placeholder of an EMPTY composer — means the composer
+		// returned to its interactive/ready state below this banner, so an
+		// earlier "messages queued after next tool call" banner is historical.
+		// (During an active queue the live "• Working" line keeps the pane
+		// active via hasCodexActivity, so not flagging queued here is safe.)
+		if isCodexPromptWithInputLine(line) || isCodexGhostPlaceholderPromptLine(line) {
 			seenLaterPromptWithInput = true
 			continue
 		}
@@ -2646,7 +2683,55 @@ func isCodexPromptWithInputLine(line string) bool {
 	}
 	for _, prefix := range []string{"› ", "❯ ", "> "} {
 		if strings.HasPrefix(trimmed, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)) != ""
+			body := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+			// codex 0.142.3+ renders a rotating dim "ghost" example prompt
+			// inside the EMPTY composer (e.g. "› Implement {feature}").
+			// That is a placeholder hint, NOT user-typed/queued input, so it
+			// must not be mistaken for an active prompt-with-input — doing so
+			// masks the "• Working"/"• Calling" activity lines that sit ABOVE
+			// the composer in the new TUI layout.
+			if isCodexGhostPlaceholderText(body) {
+				return false
+			}
+			return body != ""
+		}
+	}
+	return false
+}
+
+// codexGhostPlaceholders is the set of rotating example prompts codex
+// 0.142.3 shows as dim ghost text inside the empty composer. Sourced from
+// the codex binary's string table (the composer placeholder rotation).
+// When one of these appears after the "›" marker the composer is EMPTY.
+var codexGhostPlaceholders = map[string]struct{}{
+	"explain this codebase":                               {},
+	"summarize recent commits":                            {},
+	"implement {feature}":                                 {},
+	"find and fix a bug in @filename":                     {},
+	"write tests for @filename":                           {},
+	"improve documentation in @filename":                  {},
+	"run /review on my current changes":                   {},
+	"use /skills to list available skills":                {},
+	"check recently modified functions for compatibility": {},
+	"how many files have been modified?":                  {},
+	"will this algorithm scale well?":                     {},
+}
+
+// isCodexGhostPlaceholderText reports whether body (the text after the "›"
+// composer marker) is one of codex's rotating empty-composer ghost
+// placeholders rather than real user input.
+func isCodexGhostPlaceholderText(body string) bool {
+	_, ok := codexGhostPlaceholders[strings.ToLower(strings.TrimSpace(body))]
+	return ok
+}
+
+// isCodexGhostPlaceholderPromptLine reports whether line is a "›" composer
+// prompt whose body is a rotating ghost placeholder — i.e. an EMPTY composer.
+func isCodexGhostPlaceholderPromptLine(line string) bool {
+	trimmed := strings.TrimSpace(stripCodexANSI(line))
+	for _, prefix := range []string{"› ", "❯ ", "> "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return isCodexGhostPlaceholderText(strings.TrimPrefix(trimmed, prefix))
 		}
 	}
 	return false
@@ -3096,6 +3181,15 @@ func stripCodexEchoedUserPrompt(text, prompt string) string {
 	}
 
 	if bestLen < 2 {
+		return text
+	}
+	// If the matched run covers the ENTIRE extracted answer, this is not a leaked
+	// prompt echo — segmentation already routes true prompt echoes to chrome, so
+	// reaching here with a full-text match means the model's answer legitimately
+	// reproduces (quoted) prompt content verbatim (e.g. "reply with exactly these
+	// lines" tasks). Stripping it would yield an empty, failed extraction, so keep
+	// the answer intact.
+	if bestStart == 0 && bestLen == len(lines) {
 		return text
 	}
 	out := make([]string, 0, len(lines)-bestLen)

@@ -1132,6 +1132,11 @@ func TestCodexQueuedInputKeepsSessionActive(t *testing.T) {
 }
 
 func TestCodexHistoricalQueuedInputDoesNotBlockLaterPrompt(t *testing.T) {
+	// The bottom "›" line models a later REAL user prompt that supersedes the
+	// historical queued-input banner above. It must not be one of codex
+	// 0.142.3's rotating ghost-placeholder example prompts (e.g. "Run /review on
+	// my current changes"), which denote an EMPTY composer — the adapter now
+	// treats those as no-input, which would change this fixture's meaning.
 	pane := `
 • Calling api-bridge.execute_shell_command({"command":"python3 slow.py"})
 
@@ -1152,7 +1157,7 @@ func TestCodexHistoricalQueuedInputDoesNotBlockLaterPrompt(t *testing.T) {
 
 ────────────────────────────────────────────────────────────────────────────────
 
-› Run /review on my current changes
+› what changed in the latest run
 
   gpt-5.5 xhigh · ~/ai-work/mcp-agent-builder-go/workspace-docs/Workflow/instagram
 `

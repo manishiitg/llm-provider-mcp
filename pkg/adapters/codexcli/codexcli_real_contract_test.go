@@ -817,9 +817,20 @@ func TestCodexCLIRealInteractiveWorkingDirectoryContract(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(workDir); err == nil && resolved != workDir {
 		wantPaths = append(wantPaths, resolved)
 	}
+	// codex's TUI hard-wraps a long single-line answer across terminal rows,
+	// inserting a newline + continuation indent mid-path (it breaks at "/"
+	// path-separator boundaries, NOT at terminal width, so it cannot be
+	// reconstructed by line length). codex uses the SAME continuation indent for
+	// genuine multi-line answers, so the adapter cannot safely auto-unwrap it
+	// without corrupting multi-line replies. The reported cwd is a single
+	// whitespace-free path, so rejoin the TUI-wrapped segments by removing
+	// interior whitespace before asserting the exact path is present. This only
+	// undoes the display wrap; the full path substring is still required.
+	stripWhitespace := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	normalizedContent := stripWhitespace(content)
 	matched := false
 	for _, want := range wantPaths {
-		if strings.Contains(content, "CWD_REPORTED_"+want) {
+		if strings.Contains(normalizedContent, stripWhitespace("CWD_REPORTED_"+want)) {
 			matched = true
 			break
 		}
