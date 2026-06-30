@@ -158,7 +158,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"-e\x00/tmp/mcp-output-guard.ts",
 		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
 		"-e\x00npm:pi-mcp-adapter",
-		"--no-approve",
+		"--approve",
 		"--session-id\x00mlp-pi-test-123",
 		"--session-dir\x00" + sessionDir,
 		"--no-builtin-tools",
@@ -723,7 +723,7 @@ func TestPiProjectSkillsAndLaunchArgsLoadExplicitSkillPath(t *testing.T) {
 	joined := strings.Join(args, "\x00")
 	for _, want := range []string{
 		"--no-skills",
-		"--no-approve",
+		"--approve",
 		"--skill\x00" + filepath.Join(workDir, ".pi", "skills"),
 	} {
 		if !strings.Contains(joined, want) {

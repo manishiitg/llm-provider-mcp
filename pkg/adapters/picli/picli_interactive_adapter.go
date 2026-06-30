@@ -154,6 +154,10 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		}
 		return nil, err
 	}
+	// Publish the live tmux handle as soon as it exists. The host app can attach
+	// to the pane while Pi finishes startup instead of waiting for the first
+	// terminal/status snapshot after prompt submission.
+	streamPiStatusLine(ctx, session, opts.StreamChan)
 	releaseSession := true
 	defer func() {
 		if !releaseSession || session == nil {
@@ -506,7 +510,14 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	args = append(args,
 		"--no-skills",
 		"--no-context-files",
-		"--no-approve",
+		// Trust project-local .pi resources for this run. Pi runs in dynamic temp
+		// workspaces with no persistent trust store, so per-run --approve is the
+		// right knob: without it pi treats the workspace as untrusted and silently
+		// ignores project-local .pi resources (settings, prompts, SYSTEM.md, etc.).
+		// The --no-extensions/--no-skills/--no-context-files flags above keep the
+		// launch hermetic for the categories we don't want; --approve only lets the
+		// remaining project-local resources load.
+		"--approve",
 		"--session-id", nativeSessionID,
 	)
 	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 && strings.TrimSpace(workingDir) != "" {

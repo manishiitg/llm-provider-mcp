@@ -606,6 +606,70 @@ func TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing
 	}
 }
 
+// TestPiCLIRealProjectTrustLoadsProjectLocalResourceContract is the reproducer
+// for the "workspace trust" bug. pi only loads project-local `.pi` resources
+// when the (dynamic temp) workspace is TRUSTED for the run. The adapter used to
+// launch pi with `--no-approve` ("Ignore project-local files for this run"),
+// which left every dynamic temp workspace untrusted, so project-local `.pi`
+// resources were silently ignored.
+//
+// We use `.pi/APPEND_SYSTEM.md` as the trust signal because it is gated ONLY by
+// project trust (per docs/security.md it is one of the resources that "require
+// trust"), and it is NOT disabled by any of the hermetic flags the adapter
+// keeps: `--no-extensions`/`--no-skills` only gate `.pi/extensions`/`.pi/skills`,
+// and `--no-context-files` only gates AGENTS.md/CLAUDE.md context files, not the
+// SYSTEM.md / APPEND_SYSTEM.md system-prompt files. Per-run `--approve` /
+// `--no-approve` overrides project trust regardless of mode and saved decisions,
+// so this test isolates exactly the trust flag.
+//
+// The appended system prompt declares an unguessable random passcode. The user
+// prompt asks for that passcode WITHOUT ever stating it, so the model can only
+// answer correctly if pi actually loaded the trusted project-local file:
+//   - before the fix (--no-approve): file ignored -> passcode absent  -> RED
+//   - after fix   (--approve):     file loaded   -> passcode present -> GREEN
+//
+// The passcode is random hex, so a false GREEN (model guessing it) is
+// effectively impossible. Routed through the adapter so it guards the real
+// launch path.
+func TestPiCLIRealProjectTrustLoadsProjectLocalResourceContract(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	adapter := newRealPiCLIAdapter(t)
+	ownerSessionID := "pi-real-trust-" + piRandomHex(4)
+	workDir := t.TempDir()
+
+	passcode := "PI_TRUST_PASSCODE_" + piRandomHex(8)
+	piDir := filepath.Join(workDir, ".pi")
+	if err := os.MkdirAll(piDir, 0o700); err != nil {
+		t.Fatalf("create project-local .pi dir: %v", err)
+	}
+	appendSystem := "This workspace has a configured project passcode: " + passcode + "\n" +
+		"When the user asks for the project passcode, reply with exactly that passcode and nothing else."
+	if err := os.WriteFile(filepath.Join(piDir, "APPEND_SYSTEM.md"), []byte(appendSystem), 0o600); err != nil {
+		t.Fatalf("write project-local .pi/APPEND_SYSTEM.md: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Do not use tools. Answer only from your instructions."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What is the project passcode configured for this workspace? Reply with exactly the passcode and nothing else. Do not guess."),
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent project-trust error = %v", err)
+	}
+	got := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(got, passcode) {
+		t.Fatalf("content = %q, want project passcode %s from trusted project-local .pi/APPEND_SYSTEM.md; "+
+			"absent passcode means the workspace was launched untrusted (pi ignored project-local .pi resources)", got, passcode)
+	}
+}
+
 func requireRealPiCLIContractE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_PI_CLI_REAL_E2E") == "" {

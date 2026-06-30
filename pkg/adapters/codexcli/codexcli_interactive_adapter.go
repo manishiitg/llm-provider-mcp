@@ -1332,7 +1332,9 @@ func sendCodexInputToTmux(ctx context.Context, sessionName, message string) erro
 	if err := runCodexCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Codex interactive session: %w", err)
 	}
-	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+	// Codex 0.142's TUI accepts tmux's literal Enter key here, while C-m can
+	// leave the pasted text sitting in the input buffer without starting a turn.
+	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
 		return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
 	}
 	return nil
