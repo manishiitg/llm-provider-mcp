@@ -61,7 +61,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 		return &CodingAgentDefaultTierModels{
 			Main:   codingAgentHighReasoningRef(providerID, "claude-code"),
 			High:   high,
-			Medium: codingAgentHighReasoningRef(providerID, "claude-sonnet-4-6"),
+			Medium: codingAgentHighReasoningRef(providerID, "claude-sonnet-5"),
 			Low:    codingAgentHighReasoningRef(providerID, "claude-haiku-4-5-20251001"),
 			Phase:  high,
 		}, true
