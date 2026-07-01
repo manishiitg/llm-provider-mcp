@@ -31,6 +31,22 @@ type VideoGenerationOptions struct {
 	InputImage []byte
 	// InputImageMIMEType is the MIME type of InputImage, e.g. "image/png".
 	InputImageMIMEType string
+	// PreviousInteractionID references a prior generation for conversational
+	// video editing, when supported by the provider (e.g. Gemini Omni).
+	PreviousInteractionID string
+	// ReferenceImages are additional images for subject/style reference
+	// generation, when supported by the provider (e.g. Gemini Omni composing
+	// two distinct subjects, like a cat and a ball of yarn, into one scene).
+	// Distinct from InputImage/InputImageMIMEType, which is a single
+	// animate-this-image input. NOT a first-frame/last-frame interpolation
+	// primitive — providers may not support that at all.
+	ReferenceImages []VideoReferenceImage
+}
+
+// VideoReferenceImage is one image in a multi-image reference/subject-composition request.
+type VideoReferenceImage struct {
+	Data     []byte
+	MimeType string
 }
 
 // VideoGenerationOption is a functional option for configuring video generation.
@@ -97,6 +113,24 @@ func WithVideoInputImage(data []byte, mimeType string) VideoGenerationOption {
 	return func(opts *VideoGenerationOptions) {
 		opts.InputImage = data
 		opts.InputImageMIMEType = mimeType
+	}
+}
+
+// WithVideoPreviousInteractionID chains this request onto a prior generation
+// for conversational video editing, when supported by the provider.
+func WithVideoPreviousInteractionID(id string) VideoGenerationOption {
+	return func(opts *VideoGenerationOptions) {
+		opts.PreviousInteractionID = id
+	}
+}
+
+// WithVideoReferenceImages sets two or more subject/style reference images
+// to compose into one scene (e.g. "a cat" + "a ball of yarn" -> a cat batting
+// at a ball of yarn), when supported by the provider. This is NOT a
+// first-frame/last-frame interpolation control.
+func WithVideoReferenceImages(images ...VideoReferenceImage) VideoGenerationOption {
+	return func(opts *VideoGenerationOptions) {
+		opts.ReferenceImages = images
 	}
 }
 

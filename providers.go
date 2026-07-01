@@ -531,6 +531,7 @@ func InitializeImageGenerationModel(config Config) (llmtypes.ImageGenerationMode
 // InitializeVideoGenerationModel creates and initializes a video generation model.
 // Supported providers:
 //   - "veo-*" models use Google's GenerateVideos API
+//   - "gemini-omni-*" models use Google's Interactions API (video generation + conversational editing)
 func InitializeVideoGenerationModel(config Config) (llmtypes.VideoGenerationModel, error) {
 	switch config.Provider {
 	case ProviderVertex:
@@ -949,6 +950,10 @@ var vertexOnlyVeoModels = map[string]struct{}{
 func initializeVertexVeo(config Config) (llmtypes.VideoGenerationModel, error) {
 	modelID := config.ModelID
 
+	if strings.HasPrefix(strings.TrimSpace(modelID), "gemini-omni") {
+		return initializeGeminiOmni(config)
+	}
+
 	logger := config.Logger
 	if logger == nil {
 		logger = &noopLoggerImpl{}
@@ -1031,6 +1036,43 @@ func initializeVertexVeo(config Config) (llmtypes.VideoGenerationModel, error) {
 
 	logger.Infof("Initialized Veo video model - backend: %s, model_id: %s", backendLabel, modelID)
 	return vertexadapter.NewVertexVeoAdapter(client, modelID, logger), nil
+}
+
+const defaultGeminiOmniModelID = "gemini-omni-flash-preview"
+
+// initializeGeminiOmni creates a video generation adapter for Gemini Omni Flash,
+// via the Gemini Developer API's Interactions API. There is no Vertex AI GA
+// equivalent yet, so this is Gemini-API-key only (like Imagen and Gemini TTS).
+func initializeGeminiOmni(config Config) (llmtypes.VideoGenerationModel, error) {
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = defaultGeminiOmniModelID
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.Vertex != nil && *config.APIKeys.Vertex != "" {
+		apiKey = *config.APIKeys.Vertex
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("VERTEX_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("Gemini Omni video generation requires GEMINI_API_KEY, VERTEX_API_KEY, or GOOGLE_API_KEY (Gemini Developer API key)")
+	}
+
+	logger.Infof("Initialized Gemini Omni video model - backend: Gemini API (Interactions API), model_id: %s", modelID)
+	return vertexadapter.NewGeminiOmniAdapter(apiKey, modelID, logger), nil
 }
 
 func firstNonEmpty(values ...string) string {
