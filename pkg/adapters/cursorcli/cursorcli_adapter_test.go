@@ -67,20 +67,33 @@ func TestCursorInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
 }
 
 func TestHasCursorWebSearchApprovalPrompt(t *testing.T) {
-	pane := `┌──────────────────────────────┐
+	panes := []string{`┌──────────────────────────────┐
 │ 🔍 Web Search: capital of France │
 └──────────────────────────────┘
 
 Allow this web search?
  → Allow search (y)
    Auto-run everything (shift+tab)
-   Skip (esc or n)`
+   Skip (esc or n)`,
+		`┌──────────────────────────────┐
+│ 🌐 Open URL: https://example.com │
+└──────────────────────────────┘
 
-	if !hasCursorWebSearchApprovalPrompt(pane) {
-		t.Fatal("expected Cursor web-search approval prompt to be detected")
+Open this URL?
+ → Open (y)
+   Skip (esc or n)`,
+		`Allow opening URL https://example.com?
+ → Open link (y)
+   Skip (esc or n)`,
 	}
-	if hasCursorReadyPrompt(pane) {
-		t.Fatal("web-search approval prompt must not be treated as a ready prompt")
+
+	for _, pane := range panes {
+		if !hasCursorWebSearchApprovalPrompt(pane) {
+			t.Fatalf("expected Cursor web-access approval prompt to be detected:\n%s", pane)
+		}
+		if hasCursorReadyPrompt(pane) {
+			t.Fatalf("web-access approval prompt must not be treated as a ready prompt:\n%s", pane)
+		}
 	}
 }
 

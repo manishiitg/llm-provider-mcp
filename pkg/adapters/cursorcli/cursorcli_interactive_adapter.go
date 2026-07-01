@@ -1516,7 +1516,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				lastCaptured = captured
 				continue
 			}
-			if autoApproveWebSearch && hasCursorWebSearchApprovalPrompt(captured) {
+			if autoApproveWebSearch && hasCursorWebAccessApprovalPrompt(captured) {
 				if lastWebSearchApprovalAt.IsZero() || time.Since(lastWebSearchApprovalAt) >= 2*time.Second {
 					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "y"); err == nil {
 						lastWebSearchApprovalAt = time.Now()
@@ -2011,7 +2011,7 @@ func hasCursorReadyPrompt(captured string) bool {
 	if hasCursorTrustPrompt(visible) {
 		return false
 	}
-	if hasCursorWebSearchApprovalPrompt(visible) {
+	if hasCursorWebAccessApprovalPrompt(visible) {
 		return false
 	}
 	// The MCP-tool approval prompt renders a "→ Run (once)" line whose arrow
@@ -2109,10 +2109,19 @@ func hasCursorTrustPrompt(captured string) bool {
 }
 
 func hasCursorWebSearchApprovalPrompt(captured string) bool {
+	return hasCursorWebAccessApprovalPrompt(captured)
+}
+
+func hasCursorWebAccessApprovalPrompt(captured string) bool {
 	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
-		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow")
+		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow") ||
+		strings.Contains(cleaned, "open this url") ||
+		strings.Contains(cleaned, "open url") && strings.Contains(cleaned, "(y)") ||
+		strings.Contains(cleaned, "allow this url") ||
+		strings.Contains(cleaned, "allow opening") && strings.Contains(cleaned, "url") ||
+		strings.Contains(cleaned, "open link") && strings.Contains(cleaned, "(y)")
 }
 
 // hasCursorMCPToolApprovalPrompt detects Cursor's per-tool-call approval gate:

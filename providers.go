@@ -4209,6 +4209,13 @@ func WithCursorApproveMCPs() llmtypes.CallOption {
 	return cursorcli.WithApproveMCPs()
 }
 
+// WithCursorAutoApproveWebSearch allows Cursor Agent CLI's TUI approval
+// prompts for web search and opening URLs in an already-user-initiated agent
+// turn. It does not enable --force.
+func WithCursorAutoApproveWebSearch() llmtypes.CallOption {
+	return cursorcli.WithAutoApproveWebSearch()
+}
+
 // WithCursorDenyBuiltinTools installs a per-session .cursor/hooks.json
 // that denies cursor's built-in Shell and Read tools via the
 // beforeShellExecution + beforeReadFile hook events. The agent must then
