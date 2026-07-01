@@ -2117,6 +2117,9 @@ func hasCursorWebAccessApprovalPrompt(captured string) bool {
 	return strings.Contains(cleaned, "allow this web search") ||
 		strings.Contains(cleaned, "allow search (y)") ||
 		strings.Contains(cleaned, "web search:") && strings.Contains(cleaned, "allow") ||
+		strings.Contains(cleaned, "allow this web fetch") ||
+		strings.Contains(cleaned, "web fetch:") && strings.Contains(cleaned, "allow") ||
+		strings.Contains(cleaned, "fetch (y)") && strings.Contains(cleaned, "web fetch") ||
 		strings.Contains(cleaned, "open this url") ||
 		strings.Contains(cleaned, "open url") && strings.Contains(cleaned, "(y)") ||
 		strings.Contains(cleaned, "allow this url") ||

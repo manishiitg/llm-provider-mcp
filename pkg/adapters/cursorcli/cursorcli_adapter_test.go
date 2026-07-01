@@ -85,6 +85,14 @@ Open this URL?
 		`Allow opening URL https://example.com?
  → Open link (y)
    Skip (esc or n)`,
+		`┌──────────────────────────────┐
+│ 🌐 Web Fetch: https://example.com │
+└──────────────────────────────┘
+
+Allow this web fetch?
+ → Fetch (y)
+   Always allow example.com (tab)
+   Skip (esc or n)`,
 	}
 
 	for _, pane := range panes {
