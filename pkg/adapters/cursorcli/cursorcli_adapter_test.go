@@ -444,6 +444,26 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	}
 }
 
+func TestBuildCursorInteractiveLaunchOmitsModelForDefaultAlias(t *testing.T) {
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	workDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+
+	args, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Follow repo rules.", "test-session-build-default-launch")
+	if err != nil {
+		t.Fatalf("buildCursorInteractiveLaunch error = %v", err)
+	}
+	defer cleanup()
+
+	if !cursorArgsContainPair(args, "--workspace", workDir) {
+		t.Fatalf("args missing workspace: %v", args)
+	}
+	if cursorArgsContain(args, "--model") {
+		t.Fatalf("args = %v, default cursor-cli alias should not pin --model", args)
+	}
+}
+
 // TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup locks in the
 // new aggressive-cleanup contract: mid-session the orchestrator's
 // override config is visible, and on cleanup the entire .cursor/ tree

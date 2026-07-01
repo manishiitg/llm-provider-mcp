@@ -76,7 +76,7 @@ const (
 	ProviderDeepgram          Provider = "deepgram"
 
 	DefaultCodexCLIModel  = "high"
-	DefaultCursorCLIModel = "composer-2.5"
+	DefaultCursorCLIModel = "cursor-cli"
 	DefaultAgyCLIModel    = "agy-cli"
 	DefaultPiCLIModel     = picli.DefaultModelID
 
