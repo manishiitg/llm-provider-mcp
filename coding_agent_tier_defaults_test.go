@@ -64,3 +64,119 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       Provider
+		wantModelID    string
+		wantSameAsHigh bool
+		wantReasoning  string
+	}{
+		{
+			name:          "claude code uses sonnet 5 high",
+			provider:      ProviderClaudeCode,
+			wantModelID:   "claude-sonnet-5",
+			wantReasoning: "high",
+		},
+		{
+			name:           "codex follows high",
+			provider:       ProviderCodexCLI,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
+		},
+		{
+			name:           "cursor follows high",
+			provider:       ProviderCursorCLI,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
+		},
+		{
+			name:           "pi follows high",
+			provider:       ProviderPiCLI,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
+			if !ok {
+				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
+			}
+			if defaults.Pulse.Provider != string(tt.provider) {
+				t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, tt.provider)
+			}
+			if tt.wantSameAsHigh {
+				if defaults.Pulse.Provider != defaults.High.Provider ||
+					defaults.Pulse.ModelID != defaults.High.ModelID {
+					t.Fatalf("pulse = %+v, want same provider/model as high %+v", defaults.Pulse, defaults.High)
+				}
+			} else if defaults.Pulse.ModelID != tt.wantModelID {
+				t.Fatalf("pulse model_id = %q, want %q", defaults.Pulse.ModelID, tt.wantModelID)
+			}
+			if got := defaults.Pulse.Options["reasoning_effort"]; got != tt.wantReasoning {
+				t.Fatalf("pulse reasoning_effort = %#v, want %q", got, tt.wantReasoning)
+			}
+		})
+	}
+}
+
+func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       Provider
+		wantModelID    string
+		wantSameAsHigh bool
+		wantReasoning  string
+	}{
+		{
+			name:          "claude code uses auto improve default",
+			provider:      ProviderClaudeCode,
+			wantModelID:   "claude-fable-5",
+			wantReasoning: "high",
+		},
+		{
+			name:          "codex uses auto improve xhigh",
+			provider:      ProviderCodexCLI,
+			wantModelID:   "gpt-5.5",
+			wantReasoning: "xhigh",
+		},
+		{
+			name:           "cursor follows high",
+			provider:       ProviderCursorCLI,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
+		},
+		{
+			name:           "pi follows high",
+			provider:       ProviderPiCLI,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
+			if !ok {
+				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
+			}
+			if defaults.ChiefOfStaff.Provider != string(tt.provider) {
+				t.Fatalf("chief_of_staff provider = %q, want %q", defaults.ChiefOfStaff.Provider, tt.provider)
+			}
+			if tt.wantSameAsHigh {
+				if defaults.ChiefOfStaff.Provider != defaults.High.Provider ||
+					defaults.ChiefOfStaff.ModelID != defaults.High.ModelID {
+					t.Fatalf("chief_of_staff = %+v, want same provider/model as high %+v", defaults.ChiefOfStaff, defaults.High)
+				}
+			} else if defaults.ChiefOfStaff.ModelID != tt.wantModelID {
+				t.Fatalf("chief_of_staff model_id = %q, want %q", defaults.ChiefOfStaff.ModelID, tt.wantModelID)
+			}
+			if got := defaults.ChiefOfStaff.Options["reasoning_effort"]; got != tt.wantReasoning {
+				t.Fatalf("chief_of_staff reasoning_effort = %#v, want %q", got, tt.wantReasoning)
+			}
+		})
+	}
+}

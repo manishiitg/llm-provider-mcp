@@ -9,15 +9,18 @@ type CodingAgentTierModelRef struct {
 	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
-// CodingAgentDefaultTierModels describes the main/high/medium/low/phase and
-// auto-improve defaults a coding-agent plan exposes to downstream workflow UIs.
+// CodingAgentDefaultTierModels describes the main/high/medium/low/phase,
+// auto-improve, pulse, and Chief of Staff defaults a coding-agent plan exposes
+// to downstream workflow UIs.
 type CodingAgentDefaultTierModels struct {
-	Main        CodingAgentTierModelRef `json:"main"`
-	High        CodingAgentTierModelRef `json:"high"`
-	Medium      CodingAgentTierModelRef `json:"medium"`
-	Low         CodingAgentTierModelRef `json:"low"`
-	Phase       CodingAgentTierModelRef `json:"phase"`
-	AutoImprove CodingAgentTierModelRef `json:"auto_improve"`
+	Main         CodingAgentTierModelRef `json:"main"`
+	High         CodingAgentTierModelRef `json:"high"`
+	Medium       CodingAgentTierModelRef `json:"medium"`
+	Low          CodingAgentTierModelRef `json:"low"`
+	Phase        CodingAgentTierModelRef `json:"phase"`
+	AutoImprove  CodingAgentTierModelRef `json:"auto_improve"`
+	Pulse        CodingAgentTierModelRef `json:"pulse"`
+	ChiefOfStaff CodingAgentTierModelRef `json:"chief_of_staff"`
 }
 
 func codingAgentHighReasoningRef(provider, modelID string) CodingAgentTierModelRef {
@@ -34,12 +37,14 @@ func sameCodingAgentTierModels(provider, modelID string) *CodingAgentDefaultTier
 	}
 	ref := codingAgentHighReasoningRef(provider, modelID)
 	return &CodingAgentDefaultTierModels{
-		Main:        ref,
-		High:        ref,
-		Medium:      ref,
-		Low:         ref,
-		Phase:       ref,
-		AutoImprove: ref,
+		Main:         ref,
+		High:         ref,
+		Medium:       ref,
+		Low:          ref,
+		Phase:        ref,
+		AutoImprove:  ref,
+		Pulse:        ref,
+		ChiefOfStaff: ref,
 	}
 }
 
@@ -54,32 +59,40 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 		autoImprove := codingAgentHighReasoningRef(providerID, "gpt-5.5")
 		autoImprove.Options = map[string]interface{}{"reasoning_effort": "xhigh"}
 		return &CodingAgentDefaultTierModels{
-			Main:        high,
-			High:        high,
-			Medium:      codingAgentHighReasoningRef(providerID, "gpt-5.4"),
-			Low:         codingAgentHighReasoningRef(providerID, "gpt-5.3-codex-spark"),
-			Phase:       high,
-			AutoImprove: autoImprove,
+			Main:         high,
+			High:         high,
+			Medium:       codingAgentHighReasoningRef(providerID, "gpt-5.4"),
+			Low:          codingAgentHighReasoningRef(providerID, "gpt-5.3-codex-spark"),
+			Phase:        high,
+			AutoImprove:  autoImprove,
+			Pulse:        high,
+			ChiefOfStaff: autoImprove,
 		}, true
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-opus-4-8")
+		autoImprove := codingAgentHighReasoningRef(providerID, "claude-fable-5")
+		pulse := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		return &CodingAgentDefaultTierModels{
-			Main:        codingAgentHighReasoningRef(providerID, "claude-code"),
-			High:        high,
-			Medium:      codingAgentHighReasoningRef(providerID, "claude-sonnet-5"),
-			Low:         codingAgentHighReasoningRef(providerID, "claude-haiku-4-5-20251001"),
-			Phase:       high,
-			AutoImprove: codingAgentHighReasoningRef(providerID, "claude-fable-5"),
+			Main:         codingAgentHighReasoningRef(providerID, "claude-code"),
+			High:         high,
+			Medium:       codingAgentHighReasoningRef(providerID, "claude-sonnet-5"),
+			Low:          codingAgentHighReasoningRef(providerID, "claude-haiku-4-5-20251001"),
+			Phase:        high,
+			AutoImprove:  autoImprove,
+			Pulse:        pulse,
+			ChiefOfStaff: autoImprove,
 		}, true
 	case ProviderGeminiCLI:
 		high := codingAgentHighReasoningRef(providerID, "high")
 		return &CodingAgentDefaultTierModels{
-			Main:        codingAgentHighReasoningRef(providerID, "auto"),
-			High:        high,
-			Medium:      codingAgentHighReasoningRef(providerID, "medium"),
-			Low:         codingAgentHighReasoningRef(providerID, "low"),
-			Phase:       high,
-			AutoImprove: high,
+			Main:         codingAgentHighReasoningRef(providerID, "auto"),
+			High:         high,
+			Medium:       codingAgentHighReasoningRef(providerID, "medium"),
+			Low:          codingAgentHighReasoningRef(providerID, "low"),
+			Phase:        high,
+			AutoImprove:  high,
+			Pulse:        high,
+			ChiefOfStaff: high,
 		}, true
 	case ProviderCursorCLI:
 		return sameCodingAgentTierModels(providerID, DefaultCursorCLIModel), true
@@ -88,12 +101,14 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderPiCLI:
 		high := codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash")
 		return &CodingAgentDefaultTierModels{
-			Main:        codingAgentHighReasoningRef(providerID, DefaultPiCLIModel),
-			High:        high,
-			Medium:      codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash"),
-			Low:         codingAgentHighReasoningRef(providerID, "google/gemini-2.5-flash"),
-			Phase:       high,
-			AutoImprove: high,
+			Main:         codingAgentHighReasoningRef(providerID, DefaultPiCLIModel),
+			High:         high,
+			Medium:       codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash"),
+			Low:          codingAgentHighReasoningRef(providerID, "google/gemini-2.5-flash"),
+			Phase:        high,
+			AutoImprove:  high,
+			Pulse:        high,
+			ChiefOfStaff: high,
 		}, true
 	}
 
