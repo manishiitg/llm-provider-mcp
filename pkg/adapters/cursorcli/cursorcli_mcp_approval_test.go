@@ -37,3 +37,42 @@ func TestHasCursorMCPToolApprovalPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestHasCursorMCPServerApprovalPrompt(t *testing.T) {
+	approval := `Cursor Agent
+
+MCP server approval required
+api-bridge wants to run from .cursor/mcp.json.
+
+[y] Approve MCP server
+[n] Reject
+→ Plan, search, build anything`
+
+	if !hasCursorMCPServerApprovalPrompt(approval) {
+		t.Fatal("hasCursorMCPServerApprovalPrompt = false for startup MCP approval; want true")
+	}
+	if hasCursorReadyPrompt(approval) {
+		t.Fatal("hasCursorReadyPrompt = true on startup MCP approval pane; want false")
+	}
+	if got := cursorMCPServerApprovalResponse(approval); got != "y" {
+		t.Fatalf("cursorMCPServerApprovalResponse = %q, want y", got)
+	}
+
+	trustAll := `MCP servers configured for this workspace
+[a] Enable all MCP servers
+[w] Continue without MCP servers`
+	if !hasCursorMCPServerApprovalPrompt(trustAll) {
+		t.Fatal("hasCursorMCPServerApprovalPrompt = false for enable-all MCP pane; want true")
+	}
+	if got := cursorMCPServerApprovalResponse(trustAll); got != "a" {
+		t.Fatalf("cursorMCPServerApprovalResponse = %q, want a", got)
+	}
+
+	toolApproval := `api-bridge: execute_shell_command
+Run this MCP tool?
+ → Run (once) (y)
+   Allowlist MCP Tool (tab)`
+	if hasCursorMCPServerApprovalPrompt(toolApproval) {
+		t.Fatal("startup MCP detector must not match per-tool approval prompts")
+	}
+}

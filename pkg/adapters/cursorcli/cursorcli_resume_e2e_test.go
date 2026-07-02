@@ -118,9 +118,10 @@ func TestCursorCLIRealCrossRestartResume(t *testing.T) {
 }
 
 // TestCursorCLIRealCrossRestartResumeWithMCPBridge is the combined contract
-// missing from the separate resume-only and MCP-only E2Es: a native Cursor
-// session that was born with .cursor/mcp.json should still expose the MCP tools
-// after a simulated restart + cursor-agent --resume.
+// missing from the separate resume-only and MCP-only E2Es: the real tmux
+// startup handshake should approve MCP from Cursor's own pane, the first turn
+// should see api-bridge, and a native --resume launch with the same MCP config
+// should still expose api-bridge.
 func TestCursorCLIRealCrossRestartResumeWithMCPBridge(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
@@ -132,7 +133,6 @@ func TestCursorCLIRealCrossRestartResumeWithMCPBridge(t *testing.T) {
 
 	mcpServerPath := writeCursorTmuxContractMCPServer(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
-	preApproveCursorMCP(t, workingDir, mcpConfig, "api-bridge")
 
 	adapter1 := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	ownerSession1 := "cursor-resume-mcp-turn1-" + cursorRandomHex(4)

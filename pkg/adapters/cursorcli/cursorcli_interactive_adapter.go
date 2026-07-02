@@ -467,24 +467,6 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	session.workingDir = workingDir
 	session.cleanupFiles = cleanupFiles
 
-	// Pre-warm cursor's per-workspace MCP approval store BEFORE launching
-	// the interactive Composer. cursor's interactive TUI reads
-	// ~/.cursor/projects/<encoded-path>/mcp-approvals.json ONCE at startup
-	// to decide which mcp.json servers to load. The auto-approval that
-	// --approve-mcps triggers writes to that file, but in the interactive
-	// flow the write happens AFTER Composer has already finalized its
-	// tool list — too late, the bridge stays unloaded for the rest of
-	// the session.
-	//
-	// Workaround: run cursor-agent headless (-p) with --approve-mcps just
-	// long enough to trigger the auto-approve write, then kill it.
-	// Verified: a 1-second window is sufficient for cursor to compute
-	// the current mcp.json hash, write the approval entry, and return.
-	// The subsequent interactive launch then sees the bridge as approved
-	// at startup and loads api-bridge tools (execute_shell_command,
-	// diff_patch_workspace_file, get_api_spec) into the Composer tool list.
-	prewarmCursorMCPApproval(ctx, workingDir, env, c.logger)
-
 	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, workingDir); err != nil {
 		session.initErr = err
 		if cleanupFiles != nil {
@@ -1146,73 +1128,6 @@ func cursorAutoApproveWebSearchFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-// prewarmCursorMCPApproval runs cursor-agent in headless print-mode
-// briefly so cursor's auto-approve writes the current .cursor/mcp.json
-// content hash into ~/.cursor/projects/<encoded>/mcp-approvals.json
-// BEFORE the interactive Composer launch reads that file. Without this,
-// the interactive Composer reads approvals at startup, sees the bridge
-// as unapproved, and never refreshes — even though --approve-mcps
-// eventually writes the hash, it lands too late for the running session.
-//
-// The pre-warm itself is short-lived (~1s) because cursor performs the
-// approval write very early in its startup sequence, before the LLM is
-// invoked. We kill the headless process as soon as the work is done.
-// Failures are swallowed because they don't block the interactive
-// launch — at worst the user falls back to the same broken state we
-// had before this helper existed.
-//
-// The "ok" prompt is small enough that even if the LLM call did
-// proceed, cost would be minimal — but in practice the SIGTERM after
-// 1.5s lands before the LLM responds.
-func prewarmCursorMCPApproval(ctx context.Context, workingDir string, env []string, logger interfaces.Logger) {
-	if _, err := exec.LookPath("cursor-agent"); err != nil {
-		return
-	}
-	prewarmCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(prewarmCtx, "cursor-agent",
-		"--workspace", workingDir,
-		"--approve-mcps",
-		"-p", "ok",
-	)
-	cmd.Dir = workingDir
-	cmd.Env = append(os.Environ(), env...)
-	// We don't care about stdout/stderr; the side effect we want is the
-	// approval write before the process exits.
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		if logger != nil {
-			logger.Debugf("cursor MCP approval pre-warm failed to start: %v", err)
-		}
-		return
-	}
-	// Wait just long enough for cursor to write the approval entry,
-	// then terminate. Empirically 1.0–1.5s is sufficient.
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		// Process exited on its own (likely the LLM call returned faster
-		// than the timeout — unusual but harmless).
-	case <-time.After(1500 * time.Millisecond):
-		// The common case: kill the headless process now that the
-		// approval is written. SIGTERM first; SIGKILL as a fallback if
-		// it doesn't exit promptly.
-		_ = cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-done:
-		case <-time.After(500 * time.Millisecond):
-			_ = cmd.Process.Kill()
-			<-done
-		}
-	}
-}
-
 func startCursorTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
 	if workingDir == "" {
 		workingDir = cursorMustGetwd()
@@ -1248,6 +1163,7 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	var trustSubmitted bool
+	var lastMCPServerApprovalAt time.Time
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	// Debounce the ready signal: require it to hold across two
@@ -1283,6 +1199,16 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 			if hasCursorTrustPrompt(visible) && !trustSubmitted {
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(visible))
 				trustSubmitted = true
+				consecutiveReadyTicks = 0
+				bootBannerReadySince = time.Time{}
+				continue
+			}
+			if hasCursorMCPServerApprovalPrompt(visible) {
+				if lastMCPServerApprovalAt.IsZero() || time.Since(lastMCPServerApprovalAt) >= time.Second {
+					if err := runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorMCPServerApprovalResponse(visible)); err == nil {
+						lastMCPServerApprovalAt = time.Now()
+					}
+				}
 				consecutiveReadyTicks = 0
 				bootBannerReadySince = time.Time{}
 				continue
@@ -2020,6 +1946,9 @@ func hasCursorReadyPrompt(captured string) bool {
 	if hasCursorMCPToolApprovalPrompt(visible) {
 		return false
 	}
+	if hasCursorMCPServerApprovalPrompt(visible) {
+		return false
+	}
 	cleaned := strings.ToLower(stripCursorANSI(visible))
 	if !hasCursorReadyMarker(cleaned) {
 		return false
@@ -2140,6 +2069,42 @@ func hasCursorMCPToolApprovalPrompt(captured string) bool {
 	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
 	return strings.Contains(cleaned, "run this mcp tool") ||
 		strings.Contains(cleaned, "allowlist mcp tool")
+}
+
+// hasCursorMCPServerApprovalPrompt detects startup MCP server gates. These
+// happen before the user's message is submitted; if they are left unresolved,
+// Composer may build the turn's tool list without api-bridge.
+func hasCursorMCPServerApprovalPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
+	if strings.Contains(cleaned, "run this mcp tool") ||
+		strings.Contains(cleaned, "allowlist mcp tool") {
+		return false
+	}
+	if strings.Contains(cleaned, "mcp server") &&
+		(strings.Contains(cleaned, "approve") ||
+			strings.Contains(cleaned, "allow") ||
+			strings.Contains(cleaned, "enable") ||
+			strings.Contains(cleaned, "trust")) {
+		return true
+	}
+	if strings.Contains(cleaned, "api-bridge") &&
+		strings.Contains(cleaned, "mcp") &&
+		(strings.Contains(cleaned, "approve") ||
+			strings.Contains(cleaned, "allow") ||
+			strings.Contains(cleaned, "enable") ||
+			strings.Contains(cleaned, "[y]") ||
+			strings.Contains(cleaned, "(y)")) {
+		return true
+	}
+	return false
+}
+
+func cursorMCPServerApprovalResponse(captured string) string {
+	cleaned := strings.ToLower(stripCursorANSI(captured))
+	if strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "all mcp") || strings.Contains(cleaned, "enable all") {
+		return "a"
+	}
+	return "y"
 }
 
 func cursorTrustPromptResponse(captured string) string {
