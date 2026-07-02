@@ -465,7 +465,7 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 	}
 }
 
-func TestBuildCursorInteractiveLaunchOmitsModelForDefaultAlias(t *testing.T) {
+func TestBuildCursorInteractiveLaunchPinsDefaultAliasToComposer25(t *testing.T) {
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	workDir := t.TempDir()
 	opts := &llmtypes.CallOptions{}
@@ -480,8 +480,8 @@ func TestBuildCursorInteractiveLaunchOmitsModelForDefaultAlias(t *testing.T) {
 	if !cursorArgsContainPair(args, "--workspace", workDir) {
 		t.Fatalf("args missing workspace: %v", args)
 	}
-	if cursorArgsContain(args, "--model") {
-		t.Fatalf("args = %v, default cursor-cli alias should not pin --model", args)
+	if !cursorArgsContainPair(args, "--model", "composer-2.5") {
+		t.Fatalf("args = %v, default cursor-cli alias should pin --model composer-2.5", args)
 	}
 }
 

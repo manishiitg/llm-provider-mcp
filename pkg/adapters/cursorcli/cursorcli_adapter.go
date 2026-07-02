@@ -109,6 +109,14 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 	}
 
 	switch resolveCursorCLIModelID(modelID) {
+	case "composer-2.5":
+		return &llmtypes.ModelMetadata{
+			ModelID:           metadataModelID,
+			Provider:          "cursor-cli",
+			ModelName:         "Composer 2.5 (Cursor Agent CLI)",
+			ContextWindow:     200000,
+			SupportsToolCalls: true,
+		}, nil
 	case "gpt-5":
 		return &llmtypes.ModelMetadata{
 			ModelID:                 metadataModelID,

@@ -2,11 +2,17 @@ package cursorcli
 
 import "testing"
 
-func TestResolveCursorCLIModelIDLeavesDefaultUnpinned(t *testing.T) {
-	for _, modelID := range []string{"", "cursor-cli", "auto", "high", "medium", "low"} {
-		if got := resolveCursorCLIModelID(modelID); got != "" {
-			t.Fatalf("resolveCursorCLIModelID(%q) = %q, want empty default selector", modelID, got)
+func TestResolveCursorCLIModelIDPinsDefaultToComposer25(t *testing.T) {
+	for _, modelID := range []string{"", "cursor-cli", "high", "medium", "low"} {
+		if got := resolveCursorCLIModelID(modelID); got != "composer-2.5" {
+			t.Fatalf("resolveCursorCLIModelID(%q) = %q, want composer-2.5", modelID, got)
 		}
+	}
+}
+
+func TestResolveCursorCLIModelIDLeavesAutoUnpinned(t *testing.T) {
+	if got := resolveCursorCLIModelID("auto"); got != "" {
+		t.Fatalf("resolveCursorCLIModelID(auto) = %q, want empty selector", got)
 	}
 }
 

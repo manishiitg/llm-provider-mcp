@@ -951,6 +951,15 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			InputCostPer1MTokens:  10.00,
 			OutputCostPer1MTokens: 50.00,
 		}, nil
+	case "claude-opus-4-8":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              providerName,
+			ModelName:             "Claude Opus 4.8",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  5.00,
+			OutputCostPer1MTokens: 25.00,
+		}, nil
 	case "claude-opus-4-7":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,

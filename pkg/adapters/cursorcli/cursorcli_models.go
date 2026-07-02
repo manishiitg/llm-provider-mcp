@@ -30,12 +30,15 @@ func GetAllCursorCLIModels() []*llmtypes.ModelMetadata {
 // resolveCursorCLIModelID maps the LLM-config-side model alias to the concrete
 // --model arg passed to cursor-agent.
 //
-// Generic Runloop selectors intentionally omit --model and let Cursor choose
-// the account-valid default. Explicit Cursor model ids such as composer-2.5,
-// gpt-5, or sonnet-4-thinking still pass through unchanged.
+// Generic Runloop selectors pin Cursor to the current high-quality Composer
+// default. Use "auto" when the caller explicitly wants Cursor to choose the
+// account default without passing --model. Explicit Cursor model ids such as
+// composer-2.5, gpt-5, or sonnet-4-thinking still pass through unchanged.
 func resolveCursorCLIModelID(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "", "cursor-cli", "auto", "high", "medium", "low":
+	case "", "cursor-cli", "high", "medium", "low":
+		return "composer-2.5"
+	case "auto":
 		return ""
 	default:
 		return strings.TrimSpace(modelID)
