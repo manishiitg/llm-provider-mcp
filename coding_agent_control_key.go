@@ -7,11 +7,14 @@ import (
 )
 
 // allowedCodingAgentControlKeys is the whitelist of tmux key names accepted by
-// SendCodingAgentControlKey. Keep this short — adding keys broadens the attack
-// surface for stray UI events to disrupt a live CLI pane.
+// SendCodingAgentControlKey. Keep this short: these are the keys the UI may
+// need for interrupting a turn or answering common CLI prompts/menus.
 var allowedCodingAgentControlKeys = map[string]struct{}{
 	"Escape": {},
 	"C-c":    {},
+	"Enter":  {},
+	"Up":     {},
+	"Down":   {},
 }
 
 // IsAllowedCodingAgentControlKey reports whether key is on the whitelist
@@ -22,8 +25,8 @@ func IsAllowedCodingAgentControlKey(key string) bool {
 	return ok
 }
 
-// SendCodingAgentControlKey injects a tmux control key (e.g. "Escape", "C-c")
-// into a currently running coding-agent transport. Parallels
+// SendCodingAgentControlKey injects a tmux control key (e.g. "Escape", "C-c",
+// "Enter", "Up", "Down") into a currently running coding-agent transport. Parallels
 // SendCodingAgentLiveInput but sends a raw key instead of text. Returns a
 // CodingAgentContinuationError for non-applicable providers and a provider-
 // specific error if no live session is registered for the owner.
