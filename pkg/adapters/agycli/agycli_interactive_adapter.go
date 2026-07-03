@@ -1770,22 +1770,31 @@ func typeAgyInputToTmux(ctx context.Context, sessionName, message string) error 
 func ensureAgyInputSubmitted(ctx context.Context, sessionName, message string) {
 	deadline, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	ticker := time.NewTicker(150 * time.Millisecond)
+	// Verify-then-recover: return as soon as the draft leaves the input field
+	// (checked immediately, then every 50ms — the old single 150ms-delayed probe
+	// added a fixed 150ms to every send). If the draft is still sitting there
+	// after a grace period (the follow-ups menu swallowed the first Enter), send
+	// one recovery Enter and keep verifying until it clears or the deadline hits.
+	const recoveryGrace = 250 * time.Millisecond
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	started := time.Now()
+	recovered := false
 	for {
+		captured, err := captureAgyPane(deadline, sessionName)
+		if err == nil {
+			if !agyPaneShowsPromptDraft(captured, message) {
+				return
+			}
+			if !recovered && time.Since(started) >= recoveryGrace {
+				recovered = true
+				_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+			}
+		}
 		select {
 		case <-deadline.Done():
 			return
 		case <-ticker.C:
-			captured, err := captureAgyPane(deadline, sessionName)
-			if err != nil {
-				continue
-			}
-			if !agyPaneShowsPromptDraft(captured, message) {
-				return
-			}
-			_ = runAgyCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
-			return
 		}
 	}
 }
@@ -1925,14 +1934,14 @@ func waitForAgyInputDraftVisible(ctx context.Context, sessionName, message strin
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		captured, err := captureAgyPane(deadline, sessionName)
+		if err == nil && agyPaneShowsPromptDraft(captured, message) {
+			return true
+		}
 		select {
 		case <-deadline.Done():
 			return false
 		case <-ticker.C:
-			captured, err := captureAgyPane(deadline, sessionName)
-			if err == nil && agyPaneShowsPromptDraft(captured, message) {
-				return true
-			}
 		}
 	}
 }

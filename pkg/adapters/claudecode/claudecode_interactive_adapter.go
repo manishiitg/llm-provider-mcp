@@ -47,7 +47,6 @@ const (
 	defaultClaudeInteractiveStalePaneBackstop = 120 * time.Second
 	promptPasteVisibleStableWindow            = 900 * time.Millisecond
 	promptPasteInvisibleGrace                 = 1500 * time.Millisecond
-	promptPasteLiveInputWait                  = 250 * time.Millisecond
 	// Compaction handling. While Claude Code is compacting/summarizing the
 	// conversation it replaces the input box with a "Compacting…/Summarizing…"
 	// status and refuses input — pasting+submitting into that window fuses our
@@ -1492,22 +1491,19 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
 	}
-	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
 	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("failed to load Claude Code tmux input into tmux buffer: %w", err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
 	}
-	if _, err := waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, promptPasteLiveInputWait); err != nil {
-		if ctx.Err() != nil || isClaudeTmuxSessionLostError(err) {
-			return err
-		}
-		// Live steering is best-effort after paste-buffer succeeds. Claude Code's
-		// busy status line changes wording often, so paste detection can time out
-		// even though the draft is already visible in the TUI. Still submit once
-		// so the user's message does not sit unsubmitted in the input line.
-	}
+	// Submit immediately after the paste. The pty delivers the pasted bytes and
+	// the C-e/Enter keystrokes in order, so waiting for the draft to *render*
+	// first adds latency without changing what Claude Code receives. (The old
+	// pre-submit waitForPromptPasteWithTimeout(250ms) could never confirm within
+	// its own deadline — its stability window was 900ms — so every live send
+	// burned a fixed 250ms and then submitted anyway.) The submitted-draft
+	// verify + retry loop below remains the safety net for a swallowed Enter.
 	var lastErr error
 	for _, submitWait := range claudeLiveInputSubmitBackoff {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
@@ -2074,11 +2070,33 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(150 * time.Millisecond)
+	// Check immediately, then on a short interval: a ticker-only loop wastes a
+	// full interval before the first look even when the draft cleared instantly.
+	ticker := time.NewTicker(75 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastCaptured string
 	for {
+		captured, err := captureTmuxPane(deadline, sessionName)
+		if err != nil {
+			if isClaudeTmuxSessionLostError(err) {
+				return err
+			}
+		} else {
+			lastCaptured = captured
+			draft, ok := latestClaudePromptDraft(captured)
+			if ok && !claudePromptDraftStillMatchesMessage(draft, message) {
+				return nil
+			}
+			// A missing ❯ line is a transient TUI repaint mid-paste, NOT proof the
+			// message was submitted: Claude Code keeps the ❯ input visible (empty)
+			// even while a turn runs, so a genuine submit shows up as an
+			// empty/changed draft above. Residual spinner activity from Claude's
+			// *prior* turn used to be misread as success here, leaving pasted
+			// AUTO-NOTIFICATIONs stacked unsubmitted in the input box. Treat it as
+			// inconclusive and keep polling; the submit retry loop presses Enter
+			// again until the draft positively clears.
+		}
 		select {
 		case <-deadline.Done():
 			captured := lastCaptured
@@ -2090,34 +2108,6 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 			}
 			return fmt.Errorf("timed out waiting for Claude Code live input draft to clear")
 		case <-ticker.C:
-			captured, err := captureTmuxPane(deadline, sessionName)
-			if err != nil {
-				if isClaudeTmuxSessionLostError(err) {
-					return err
-				}
-				continue
-			}
-			lastCaptured = captured
-			draft, ok := latestClaudePromptDraft(captured)
-			if !ok {
-				// No ❯ input line in this frame. This is almost always a
-				// transient TUI repaint mid-paste, NOT proof the message was
-				// submitted: Claude Code keeps the ❯ input visible (empty) even
-				// while a turn runs, so a genuine submit shows up as an
-				// empty/changed draft on the ok branch below. Previously this
-				// returned success whenever hasClaudeActivity was true, but that
-				// activity is frequently just residual spinner output from
-				// Claude's *prior* turn — so an unsubmitted draft (e.g. a pasted
-				// multi-line AUTO-NOTIFICATION) got reported as sent, the next
-				// paste stacked on top of it, and notifications piled up
-				// unsubmitted in the input box. Treat a missing prompt line as
-				// inconclusive and keep polling; the submit retry loop will press
-				// Enter again until the draft positively clears.
-				continue
-			}
-			if !claudePromptDraftStillMatchesMessage(draft, message) {
-				return nil
-			}
 		}
 	}
 }

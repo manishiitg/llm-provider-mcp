@@ -1102,18 +1102,13 @@ func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste strin
 	deadline, cancel := context.WithTimeout(ctx, geminiPromptPasteVisibleWait)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Check immediately, then on a short interval: a ticker-only loop wastes a
+	// full interval before the first look even when the draft is already visible.
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		select {
-		case <-deadline.Done():
-			captured, _ := captureGeminiPane(context.Background(), sessionName)
-			return fmt.Errorf("timed out waiting for Gemini CLI prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
-		case <-ticker.C:
-			captured, err := captureGeminiPane(deadline, sessionName)
-			if err != nil {
-				continue
-			}
+		captured, err := captureGeminiPane(deadline, sessionName)
+		if err == nil {
 			if hasGeminiUnsubmittedDraft(captured) || hasGeminiActivity(captured) {
 				return nil
 			}
@@ -1121,7 +1116,7 @@ func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste strin
 				return nil
 			}
 			// Fast-response case: gemini may have accepted, processed, and
-			// returned to the ready prompt before our 100ms poll caught the
+			// returned to the ready prompt before the poll caught the
 			// intermediate "draft visible" or "active" state. If a new
 			// assistant marker (✦ / -> / →) has appeared since the paste
 			// baseline, the input was clearly received and the response is
@@ -1129,6 +1124,12 @@ func waitForGeminiInputDraft(ctx context.Context, sessionName, beforePaste strin
 			if beforePaste != "" && captured != beforePaste && hasNewGeminiAssistantMarker(captured, beforePaste) {
 				return nil
 			}
+		}
+		select {
+		case <-deadline.Done():
+			captured, _ := captureGeminiPane(context.Background(), sessionName)
+			return fmt.Errorf("timed out waiting for Gemini CLI prompt paste; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
+		case <-ticker.C:
 		}
 	}
 }
@@ -1178,21 +1179,22 @@ func geminiInputAccepted(ctx context.Context, sessionName string, lastCaptured *
 	deadline, cancel := context.WithTimeout(ctx, geminiPromptSubmitSettleWait)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Check immediately, then on a short interval, so a fast submit is
+	// confirmed without paying a full ticker period first.
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		select {
-		case <-deadline.Done():
-			return false
-		case <-ticker.C:
-			captured, err := captureGeminiPane(deadline, sessionName)
-			if err != nil {
-				continue
-			}
+		captured, err := captureGeminiPane(deadline, sessionName)
+		if err == nil {
 			*lastCaptured = captured
 			if hasGeminiActivity(captured) || !hasGeminiUnsubmittedDraft(captured) {
 				return true
 			}
+		}
+		select {
+		case <-deadline.Done():
+			return false
+		case <-ticker.C:
 		}
 	}
 }

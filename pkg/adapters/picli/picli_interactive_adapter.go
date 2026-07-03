@@ -1048,20 +1048,19 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		select {
-		case <-deadline.Done():
-			return
-		case <-ticker.C:
-			captured, err := capturePiPaneANSI(deadline, sessionName)
-			if err != nil {
-				continue
-			}
+		captured, err := capturePiPaneANSI(deadline, sessionName)
+		if err == nil {
 			if piPaneShowsPromptDraft(captured, message) {
 				return
 			}
 			if beforePaste != "" && stripPiANSI(captured) != beforePaste && !piPaneLooksIdle(captured) {
 				return
 			}
+		}
+		select {
+		case <-deadline.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -1073,25 +1072,34 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) {
 	deadline, cancel := context.WithTimeout(ctx, piPromptSubmitSettleWait)
 	defer cancel()
-	ticker := time.NewTicker(150 * time.Millisecond)
+	// Verify-then-recover: return as soon as the draft leaves the editor
+	// (checked immediately, then every 50ms — the old single 150ms-delayed probe
+	// added a fixed 150ms to every send). If the same draft is still active
+	// after a grace period, send one recovery Enter and keep verifying until it
+	// clears, the turn visibly starts, or the deadline hits.
+	const recoveryGrace = 250 * time.Millisecond
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	started := time.Now()
+	recovered := false
 	for {
-		select {
-		case <-deadline.Done():
-			return
-		case <-ticker.C:
-			captured, err := capturePiPaneANSI(deadline, sessionName)
-			if err != nil {
-				continue
-			}
+		captured, err := capturePiPaneANSI(deadline, sessionName)
+		if err == nil {
 			if !piPaneShowsPromptDraft(captured, message) {
 				return
 			}
 			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
 				return
 			}
-			_ = submitPiInputInTmux(deadline, sessionName)
+			if !recovered && time.Since(started) >= recoveryGrace {
+				recovered = true
+				_ = submitPiInputInTmux(deadline, sessionName)
+			}
+		}
+		select {
+		case <-deadline.Done():
 			return
+		case <-ticker.C:
 		}
 	}
 }
