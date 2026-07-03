@@ -43,6 +43,9 @@ func (a *VertexVeoAdapter) GenerateVideos(ctx context.Context, prompt string, op
 	for _, opt := range options {
 		opt(opts)
 	}
+	if len(opts.LastFrame) > 0 && len(opts.InputImage) == 0 {
+		return nil, fmt.Errorf("last frame requires an input image/first frame")
+	}
 
 	source := &genai.GenerateVideosSource{
 		Prompt: prompt,
@@ -77,6 +80,16 @@ func (a *VertexVeoAdapter) GenerateVideos(ctx context.Context, prompt string, op
 	}
 	if opts.GenerateAudio != nil {
 		config.GenerateAudio = opts.GenerateAudio
+	}
+	if len(opts.LastFrame) > 0 {
+		mimeType := opts.LastFrameMIMEType
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		config.LastFrame = &genai.Image{
+			ImageBytes: opts.LastFrame,
+			MIMEType:   mimeType,
+		}
 	}
 	if opts.PersonGeneration != "" {
 		config.PersonGeneration = opts.PersonGeneration

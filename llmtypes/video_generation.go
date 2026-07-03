@@ -31,6 +31,11 @@ type VideoGenerationOptions struct {
 	InputImage []byte
 	// InputImageMIMEType is the MIME type of InputImage, e.g. "image/png".
 	InputImageMIMEType string
+	// LastFrame is an optional final frame image for first-frame/last-frame video generation.
+	// It is only valid when InputImage is also provided.
+	LastFrame []byte
+	// LastFrameMIMEType is the MIME type of LastFrame, e.g. "image/png".
+	LastFrameMIMEType string
 	// PreviousInteractionID references a prior generation for conversational
 	// video editing, when supported by the provider (e.g. Gemini Omni).
 	PreviousInteractionID string
@@ -113,6 +118,15 @@ func WithVideoInputImage(data []byte, mimeType string) VideoGenerationOption {
 	return func(opts *VideoGenerationOptions) {
 		opts.InputImage = data
 		opts.InputImageMIMEType = mimeType
+	}
+}
+
+// WithVideoLastFrame sets the final image for first-frame/last-frame generation.
+// Providers that support this require an input/first-frame image as well.
+func WithVideoLastFrame(data []byte, mimeType string) VideoGenerationOption {
+	return func(opts *VideoGenerationOptions) {
+		opts.LastFrame = data
+		opts.LastFrameMIMEType = mimeType
 	}
 }
 

@@ -125,4 +125,5 @@ var (
 	WithVideoPersonGeneration     = llmtypes.WithVideoPersonGeneration
 	WithVideoSeed                 = llmtypes.WithVideoSeed
 	WithVideoInputImage           = llmtypes.WithVideoInputImage
+	WithVideoLastFrame            = llmtypes.WithVideoLastFrame
 )

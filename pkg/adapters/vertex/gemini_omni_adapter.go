@@ -87,6 +87,9 @@ func (a *GeminiOmniAdapter) GenerateVideos(ctx context.Context, prompt string, o
 	for _, opt := range options {
 		opt(opts)
 	}
+	if len(opts.LastFrame) > 0 {
+		return nil, fmt.Errorf("gemini omni video generation does not support last-frame interpolation through this adapter; use a Veo 3.1 model for last-frame control")
+	}
 
 	req := omniInteractionRequest{
 		Model:                 a.modelID,

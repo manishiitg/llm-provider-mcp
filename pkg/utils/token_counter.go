@@ -10,8 +10,12 @@ import (
 
 // TokenCounter provides provider/model-aware token counting using tiktoken
 type TokenCounter struct {
-	encodingCache sync.Map
 }
+
+var (
+	encodingCache   sync.Map
+	encodingCacheMu sync.Mutex
+)
 
 // NewTokenCounter creates a new token counter instance
 func NewTokenCounter() *TokenCounter {
@@ -142,28 +146,40 @@ func (tc *TokenCounter) getEncodingForModel(provider, modelID string) string {
 // countTokensWithEncoding counts tokens using the specified encoding
 // Uses caching to avoid re-initializing encodings
 func (tc *TokenCounter) countTokensWithEncoding(content string, encodingName string) (int, error) {
-	// Check cache first
-	if val, exists := tc.encodingCache.Load(encodingName); exists {
-		if enc, ok := val.(*tiktoken.Tiktoken); ok {
-			tokens := enc.Encode(content, nil, nil)
-			return len(tokens), nil
-		}
-	}
-
-	// Get encoding from tiktoken
-	encoding, err := tiktoken.GetEncoding(encodingName)
+	encoding, err := getCachedEncoding(encodingName)
 	if err != nil {
 		// Fallback to character-based approximation if encoding fails
 		// Rough estimation: 1 token ≈ 4 characters for English text
 		return len(content) / 4, err
 	}
 
-	// Cache the encoding for future use
-	tc.encodingCache.Store(encodingName, encoding)
-
 	// Count tokens
 	tokens := encoding.Encode(content, nil, nil)
 	return len(tokens), nil
+}
+
+func getCachedEncoding(encodingName string) (*tiktoken.Tiktoken, error) {
+	if val, exists := encodingCache.Load(encodingName); exists {
+		if enc, ok := val.(*tiktoken.Tiktoken); ok {
+			return enc, nil
+		}
+	}
+
+	encodingCacheMu.Lock()
+	defer encodingCacheMu.Unlock()
+
+	if val, exists := encodingCache.Load(encodingName); exists {
+		if enc, ok := val.(*tiktoken.Tiktoken); ok {
+			return enc, nil
+		}
+	}
+
+	encoding, err := tiktoken.GetEncoding(encodingName)
+	if err != nil {
+		return nil, err
+	}
+	encodingCache.Store(encodingName, encoding)
+	return encoding, nil
 }
 
 // CountTokensForModel is a convenience function that counts tokens using a Model interface
