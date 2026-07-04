@@ -24,10 +24,14 @@ type CodingAgentDefaultTierModels struct {
 }
 
 func codingAgentHighReasoningRef(provider, modelID string) CodingAgentTierModelRef {
+	return codingAgentReasoningRef(provider, modelID, "high")
+}
+
+func codingAgentReasoningRef(provider, modelID, effort string) CodingAgentTierModelRef {
 	return CodingAgentTierModelRef{
 		Provider: provider,
 		ModelID:  modelID,
-		Options:  map[string]interface{}{"reasoning_effort": "high"},
+		Options:  map[string]interface{}{"reasoning_effort": effort},
 	}
 }
 
@@ -55,18 +59,17 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentHighReasoningRef(providerID, "gpt-5.5")
-		autoImprove := codingAgentHighReasoningRef(providerID, "gpt-5.5")
-		autoImprove.Options = map[string]interface{}{"reasoning_effort": "xhigh"}
+		high := codingAgentReasoningRef(providerID, "gpt-5.5", "xhigh")
+		pulse := codingAgentHighReasoningRef(providerID, "gpt-5.5")
 		return &CodingAgentDefaultTierModels{
 			Main:         high,
 			High:         high,
 			Medium:       codingAgentHighReasoningRef(providerID, "gpt-5.4"),
 			Low:          codingAgentHighReasoningRef(providerID, "gpt-5.3-codex-spark"),
 			Phase:        high,
-			AutoImprove:  autoImprove,
-			Pulse:        high,
-			ChiefOfStaff: autoImprove,
+			AutoImprove:  high,
+			Pulse:        pulse,
+			ChiefOfStaff: high,
 		}, true
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-opus-4-8")

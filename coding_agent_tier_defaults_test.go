@@ -2,6 +2,46 @@ package llmproviders
 
 import "testing"
 
+func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      Provider
+		wantModelID   string
+		wantReasoning string
+	}{
+		{
+			name:          "codex uses gpt 5.5 xhigh",
+			provider:      ProviderCodexCLI,
+			wantModelID:   "gpt-5.5",
+			wantReasoning: "xhigh",
+		},
+		{
+			name:          "claude code uses opus high",
+			provider:      ProviderClaudeCode,
+			wantModelID:   "claude-opus-4-8",
+			wantReasoning: "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
+			if !ok {
+				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
+			}
+			if defaults.High.Provider != string(tt.provider) {
+				t.Fatalf("high provider = %q, want %q", defaults.High.Provider, tt.provider)
+			}
+			if defaults.High.ModelID != tt.wantModelID {
+				t.Fatalf("high model_id = %q, want %q", defaults.High.ModelID, tt.wantModelID)
+			}
+			if got := defaults.High.Options["reasoning_effort"]; got != tt.wantReasoning {
+				t.Fatalf("high reasoning_effort = %#v, want %q", got, tt.wantReasoning)
+			}
+		})
+	}
+}
+
 func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -80,10 +120,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:           "codex follows high",
-			provider:       ProviderCodexCLI,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
+			name:          "codex uses gpt 5.5 high",
+			provider:      ProviderCodexCLI,
+			wantModelID:   "gpt-5.5",
+			wantReasoning: "high",
 		},
 		{
 			name:           "cursor follows high",
