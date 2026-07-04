@@ -6,7 +6,6 @@ var knownClaudeCodeModels = []string{
 	"claude-code",
 	"claude-fable-5",
 	"claude-opus-4-8",
-	"claude-opus-4-7",
 	"claude-opus-4-6",
 	"claude-sonnet-5",
 	"claude-sonnet-4-6",
@@ -31,8 +30,6 @@ func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "Fable 5"
 		case "claude-opus-4-8":
 			meta.ModelName = "Opus 4.8"
-		case "claude-opus-4-7":
-			meta.ModelName = "Opus 4.7"
 		case "claude-opus-4-6":
 			meta.ModelName = "Opus 4.6"
 		case "claude-sonnet-5":
