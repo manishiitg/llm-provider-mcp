@@ -70,7 +70,6 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 		}, true
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-opus-4-8")
-		autoImprove := codingAgentHighReasoningRef(providerID, "claude-fable-5")
 		pulse := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		return &CodingAgentDefaultTierModels{
 			Main:         codingAgentHighReasoningRef(providerID, "claude-code"),
@@ -78,9 +77,9 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Medium:       codingAgentHighReasoningRef(providerID, "claude-sonnet-5"),
 			Low:          codingAgentHighReasoningRef(providerID, "claude-haiku-4-5-20251001"),
 			Phase:        high,
-			AutoImprove:  autoImprove,
+			AutoImprove:  high,
 			Pulse:        pulse,
-			ChiefOfStaff: autoImprove,
+			ChiefOfStaff: high,
 		}, true
 	case ProviderGeminiCLI:
 		high := codingAgentHighReasoningRef(providerID, "high")

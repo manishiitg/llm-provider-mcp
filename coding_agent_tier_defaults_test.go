@@ -12,9 +12,9 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 		wantProviderSet bool
 	}{
 		{
-			name:            "claude code uses fable",
+			name:            "claude code follows high",
 			provider:        ProviderClaudeCode,
-			wantModelID:     "claude-fable-5",
+			wantSameAsHigh:  true,
 			wantReasoning:   "high",
 			wantProviderSet: true,
 		},
@@ -132,10 +132,10 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:          "claude code uses auto improve default",
-			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-fable-5",
-			wantReasoning: "high",
+			name:           "claude code uses opus high",
+			provider:       ProviderClaudeCode,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
 		},
 		{
 			name:          "codex uses auto improve xhigh",
