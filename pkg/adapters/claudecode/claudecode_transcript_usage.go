@@ -28,7 +28,7 @@ import (
 // model string is the latest model seen on an in-turn assistant event
 // (claude-code can swap models mid-session via /model).
 func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
-	if sessionID == "" {
+	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil, ""
 	}
 	home, err := os.UserHomeDir()

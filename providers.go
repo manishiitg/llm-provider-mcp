@@ -506,9 +506,15 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 	return embeddingModel, nil
 }
 
+const defaultGeminiImageModelID = "gemini-3.1-flash-image"
+
+var legacyGeminiImageModelAliases = map[string]string{
+	"gemini-3.1-flash-image-preview": defaultGeminiImageModelID,
+	"gemini-3-pro-image-preview":     "gemini-3-pro-image",
+}
+
 // InitializeImageGenerationModel creates and initializes an image generation model.
 // Supported providers:
-//   - "imagen-*" models use the Imagen GenerateImages API
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
 //   - "minimax-coding-plan" uses MiniMax image generation with image-01
 //   - "codex-cli" uses the native Codex CLI image generation flow
@@ -672,18 +678,25 @@ func initializeAgyCLIImage(config Config) (llmtypes.ImageGenerationModel, error)
 }
 
 // initializeVertexImagen creates an image generation adapter using the Gemini API.
-// If the model starts with "gemini-", uses GenerateContent (native Gemini image output).
-// Otherwise assumes an Imagen model and uses the GenerateImages API.
+// Gemini image models use GenerateContent with native image output.
 // Uses GEMINI_API_KEY with the Gemini Developer API backend.
 func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error) {
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "gemini-3.1-flash-image-preview"
+		modelID = defaultGeminiImageModelID
 	}
 
 	logger := config.Logger
 	if logger == nil {
 		logger = &noopLoggerImpl{}
+	}
+	normalizedModelID := strings.ToLower(strings.TrimSpace(modelID))
+	if alias, ok := legacyGeminiImageModelAliases[normalizedModelID]; ok {
+		logger.Infof("Migrating legacy Gemini image model %s to %s", modelID, alias)
+		modelID = alias
+	} else if strings.HasPrefix(normalizedModelID, "imagen-") {
+		logger.Infof("Migrating deprecated Imagen image model %s to %s", modelID, defaultGeminiImageModelID)
+		modelID = defaultGeminiImageModelID
 	}
 
 	// Check config APIKeys first, then fall back to environment variables
@@ -701,7 +714,7 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 		apiKey = os.Getenv("GOOGLE_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Imagen image generation (or provide api_key in config)")
+		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Gemini image generation (or provide api_key in config)")
 	}
 
 	ctx := config.Context
@@ -714,7 +727,7 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create GenAI client for Imagen: %w", err)
+		return nil, fmt.Errorf("failed to create GenAI client for Gemini image generation: %w", err)
 	}
 
 	logger.Infof("Initialized Gemini image model - model_id: %s", modelID)

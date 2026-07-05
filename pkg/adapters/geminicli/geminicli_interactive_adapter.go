@@ -90,7 +90,14 @@ var geminiPersistentRegistry = struct {
 	sessions: map[string]*geminiInteractiveSession{},
 }
 
-func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (resp *llmtypes.ContentResponse, err error) {
+	var tmuxSessionName string
+	defer func() {
+		if isGeminiTmuxSessionLostError(err) {
+			err = llmtypes.WrapCodingAgentTmuxSessionLostError(err, "gemini-cli", tmuxSessionName, "tmux session lost")
+		}
+	}()
+
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; gemini-cli interactive mode requires tmux")
 	}
@@ -126,6 +133,7 @@ func (g *GeminiCLIAdapter) generateContentInteractive(ctx context.Context, messa
 	if err != nil {
 		return nil, err
 	}
+	tmuxSessionName = session.tmuxSessionName
 	releaseSession := true
 	defer func() {
 		if releaseSession && session != nil {
@@ -586,7 +594,7 @@ func prepareGeminiInteractiveProjectDir(ownerSessionID string, opts *llmtypes.Ca
 	if err := os.MkdirAll(geminiDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("failed to create Gemini interactive settings dir: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0o600); err != nil {
 		return "", "", fmt.Errorf("failed to write Gemini interactive settings: %w", err)
 	}
 	return projectDir, projectDirID, nil
@@ -994,16 +1002,15 @@ func startGeminiTmuxSession(ctx context.Context, sessionName string, args []stri
 	if workingDir == "" {
 		workingDir = geminiMustGetwd()
 	}
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithEnv(args, workingDir, env)
+	if err != nil {
+		return fmt.Errorf("failed to prepare Gemini launch environment: %w", err)
+	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
-	for _, entry := range env {
-		if strings.TrimSpace(entry) != "" {
-			tmuxArgs = append(tmuxArgs, "-e", entry)
-		}
-	}
-	shellCommand := shelllaunch.Command(args, workingDir)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runGeminiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		cleanupLaunchScript()
 		return fmt.Errorf("failed to start Gemini interactive session %q: %w", sessionName, err)
 	}
 	_ = runGeminiCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
@@ -2189,14 +2196,29 @@ func killGeminiTmuxSession(ctx context.Context, sessionName string) error {
 	// children would otherwise orphan and leak.
 	tmuxcontrol.ReapSessionProcessTree(ctx, sessionName)
 	if err := runGeminiCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
-		if strings.Contains(err.Error(), "can't find session") ||
-			strings.Contains(err.Error(), "no server running") ||
-			strings.Contains(err.Error(), "error connecting to") {
+		if isGeminiTmuxSessionLostError(err) {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func isGeminiTmuxSessionLostError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if llmtypes.IsCodingAgentTmuxSessionLostError(err) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "failed to connect to server") ||
+		strings.Contains(lower, "error connecting to") ||
+		strings.Contains(lower, "can't find pane") ||
+		strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "target pane not found") ||
+		strings.Contains(lower, "no current target")
 }
 
 func geminiInteractiveSessionPrefix() string {

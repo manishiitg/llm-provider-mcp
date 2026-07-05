@@ -42,16 +42,11 @@ func TestStreamCodexStatusLineEmitsChunk(t *testing.T) {
 	}
 
 	// Register the session so codexWorkingDirForSession resolves the rollout.
-	codexPersistentRegistry.Lock()
-	old := codexPersistentRegistry.sessions
-	codexPersistentRegistry.sessions = map[string]*codexInteractiveSession{
+	old := codexPersistentRegistry.Replace(map[string]*codexInteractiveSession{
 		sessionName: {tmuxSessionName: sessionName, workingDir: cwd},
-	}
-	codexPersistentRegistry.Unlock()
+	})
 	t.Cleanup(func() {
-		codexPersistentRegistry.Lock()
-		codexPersistentRegistry.sessions = old
-		codexPersistentRegistry.Unlock()
+		codexPersistentRegistry.Replace(old)
 	})
 
 	streamChan := make(chan llmtypes.StreamChunk, 1)

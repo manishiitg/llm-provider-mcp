@@ -54,6 +54,13 @@ func sameCodingAgentTierModels(provider, modelID string) *CodingAgentDefaultTier
 
 // GetCodingAgentDefaultTierModels returns the provider-owned workflow tier
 // defaults for coding-agent providers. Phase intentionally follows high.
+//
+// Update ritual when a coding-agent model changes:
+//   - update the provider's GetAll*Models registry so the selector is visible
+//     to UI/API callers;
+//   - update these tier defaults;
+//   - run TestCodingAgentDefaultTierModelsArePublished so stale hidden model
+//     IDs fail before release.
 func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTierModels, bool) {
 	providerID := strings.TrimSpace(string(provider))
 

@@ -627,6 +627,33 @@ func TestBuildAgyInteractiveLaunchAddsConversationBeforePromptInteractive(t *tes
 	}
 }
 
+func TestBuildAgyInteractiveLaunchDangerousSkipRequiresExplicitOptIn(t *testing.T) {
+	adapter := NewAgyCLIAdapter("", "agy-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(t.TempDir())(opts)
+
+	args, _, _, cleanup, err := adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
+	if err != nil {
+		t.Fatalf("build launch default: %v", err)
+	}
+	defer cleanup()
+	if containsString(args, "--dangerously-skip-permissions") {
+		t.Fatalf("default args unexpectedly skip permissions: %#v", args)
+	}
+
+	opts = &llmtypes.CallOptions{}
+	WithWorkingDir(t.TempDir())(opts)
+	WithDangerouslySkipPermissions(true)(opts)
+	args, _, _, cleanup, err = adapter.buildAgyInteractiveLaunch(opts, "", "test-session-agy")
+	if err != nil {
+		t.Fatalf("build launch opt-in: %v", err)
+	}
+	defer cleanup()
+	if !containsString(args, "--dangerously-skip-permissions") {
+		t.Fatalf("explicit opt-in args missing skip permissions: %#v", args)
+	}
+}
+
 func TestBuildAgyInteractiveLaunchAddsAPIKeyAliases(t *testing.T) {
 	adapter := NewAgyCLIAdapter("test-key", "agy-cli", &MockLogger{})
 	opts := &llmtypes.CallOptions{}

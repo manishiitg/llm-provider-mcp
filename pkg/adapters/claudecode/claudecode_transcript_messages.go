@@ -39,7 +39,7 @@ import (
 // Returns nil/empty on any error or if the transcript is missing.
 // Best-effort by design — never surfaces IO errors to the caller.
 func readClaudeTranscriptMessages(sessionID string, turnStart time.Time) []llmtypes.MessageContent {
-	if sessionID == "" {
+	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil
 	}
 	home, err := os.UserHomeDir()
@@ -65,7 +65,7 @@ func readClaudeTranscriptMessages(sessionID string, turnStart time.Time) []llmty
 		Message   json.RawMessage `json:"message"`
 	}
 	type assistantMessage struct {
-		ID      string                       `json:"id"`
+		ID      string                        `json:"id"`
 		Content []claudeAssistantContentBlock `json:"content"`
 	}
 	type userContentBlock struct {

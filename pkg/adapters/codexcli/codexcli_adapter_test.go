@@ -42,6 +42,21 @@ func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	}
 }
 
+func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	meta, err := adapter.GetModelMetadata("gpt-5.5")
+	if err != nil {
+		t.Fatalf("GetModelMetadata: %v", err)
+	}
+	if meta.InputCostPer1MTokens != 5.00 || meta.OutputCostPer1MTokens != 30.00 || meta.CachedInputCostPer1MTokens != 0.50 {
+		t.Fatalf("GPT-5.5 pricing = in %.2f cached %.2f out %.2f, want 5.00/0.50/30.00",
+			meta.InputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.OutputCostPer1MTokens)
+	}
+	if meta.ContextWindow != 1050000 {
+		t.Fatalf("ContextWindow = %d, want 1050000", meta.ContextWindow)
+	}
+}
+
 func TestCodexInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	t.Setenv(EnvCodexInteractiveStreamTmuxScreen, "")
 	if !codexInteractiveStreamTmuxScreenEnabled() {
@@ -130,6 +145,68 @@ exit 0
 	if !strings.Contains(string(args), want) {
 		t.Fatalf("tmux args missing history limit %q:\n%s", want, string(args))
 	}
+}
+
+func TestCodexStructuredFullAutoRequiresExplicitOptIn(t *testing.T) {
+	args := captureCodexStructuredArgs(t)
+	if codexArgsContain(args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("default args unexpectedly bypass approvals/sandbox: %v", args)
+	}
+
+	args = captureCodexStructuredArgs(t, WithFullAuto())
+	if !codexArgsContain(args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("WithFullAuto args missing bypass flag: %v", args)
+	}
+}
+
+func captureCodexStructuredArgs(t *testing.T, options ...llmtypes.CallOption) []string {
+	t.Helper()
+
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/codex-args.log"
+	codexPath := fakeBin + "/codex"
+	script := `#!/bin/sh
+: > "$CODEX_TEST_ARGS"
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "$CODEX_TEST_ARGS"
+done
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-test"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","id":"msg-1","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(codexPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_TEST_ARGS", argsPath)
+
+	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "say ok"},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("GenerateContent with fake codex: %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "ok" {
+		t.Fatalf("fake codex content = %q, want ok", got)
+	}
+
+	body, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read captured codex args: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
 }
 
 func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
@@ -241,6 +318,34 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	}
 }
 
+func TestCodexInteractiveArgsRejectInvalidResumeSessionID(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithResumeSessionID("--model")(opts)
+
+	if _, _, _, err := adapter.buildCodexInteractiveArgs(opts, ""); err == nil {
+		t.Fatal("buildCodexInteractiveArgs error = nil, want invalid resume id error")
+	}
+}
+
+func TestCodexStructuredRejectsInvalidResumeSessionIDBeforeLaunch(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
+	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "say ok"},
+			},
+		},
+	}, WithResumeSessionID("--model"))
+	if err == nil {
+		t.Fatal("GenerateContent error = nil, want invalid resume id error")
+	}
+	if !strings.Contains(err.Error(), "invalid codex resume session id") {
+		t.Fatalf("GenerateContent error = %v, want invalid resume id", err)
+	}
+}
+
 func TestWriteCodexImageContentFilesFromBase64(t *testing.T) {
 	raw := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
 	tempDir, paths, err := writeCodexImageContentFiles([]llmtypes.ImageContent{
@@ -273,6 +378,15 @@ func TestWriteCodexImageContentFilesFromBase64(t *testing.T) {
 func codexArgsContainPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func codexArgsContain(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
 			return true
 		}
 	}
@@ -594,7 +708,7 @@ auth: Bearer $MCP_API_TOKEN
 POST /tools/custom/list_llm_capabilities
 # List supported and currently usable LLM providers/models by capability.
 tored. Supports optional provider override, aspect ratio, resolution, number of im...
-mcp-agent-builder-go/workspace-docs/_users/default/Chats/image-model-test && curl -sS -X POST "$MCP_API_URL/tools/custom/image_gen" -H "Authorization: Bearer $MCP_API_TOKEN" -H "Content-Type: application/json" -d '{"provider":"vertex","model_id":"gemini-3.1-flash-image-preview","prompt":"A calm cyberpunk city skyline","aspect_ratio":"16:9","resolution":"1K","number_of_images":1,"output_path":"_users/default/Chats/image-model-test/vertex_test.png"}'"})
+mcp-agent-builder-go/workspace-docs/_users/default/Chats/image-model-test && curl -sS -X POST "$MCP_API_URL/tools/custom/image_gen" -H "Authorization: Bearer $MCP_API_TOKEN" -H "Content-Type: application/json" -d '{"provider":"vertex","model_id":"gemini-3.1-flash-image","prompt":"A calm cyberpunk city skyline","aspect_ratio":"16:9","resolution":"1K","number_of_images":1,"output_path":"_users/default/Chats/image-model-test/vertex_test.png"}'"})
 {"stdout": "", "stderr": "mkdir: /Users/mipl/ai-work/mcp-agent-builder-go: Operation not permitted\n", "exit_code": 1, "execution_time_ms": 30}
 32
 -rw-r--r--@ 1 mipl staff 0 30 Apr 15:42 _index.json

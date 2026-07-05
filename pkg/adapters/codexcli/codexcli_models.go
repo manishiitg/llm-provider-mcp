@@ -11,6 +11,9 @@ var knownCodexCLIModels = []string{
 	"high",
 	"medium",
 	"low",
+	"gpt-5.5",
+	"gpt-5.4",
+	"gpt-5.3-codex-spark",
 }
 
 // GetAllCodexCLIModels returns the frontend-visible Codex CLI models.
@@ -33,6 +36,12 @@ func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "Medium (GPT-5.4)"
 		case "low":
 			meta.ModelName = "Low (GPT-5.3 Codex Spark)"
+		case "gpt-5.5":
+			meta.ModelName = "GPT-5.5"
+		case "gpt-5.4":
+			meta.ModelName = "GPT-5.4"
+		case "gpt-5.3-codex-spark":
+			meta.ModelName = "GPT-5.3 Codex Spark"
 		}
 
 		models = append(models, meta)

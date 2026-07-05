@@ -113,7 +113,14 @@ var piWorkspaceMCPConfigRegistry = struct {
 	leases: map[string]map[*piInteractiveSession]string{},
 }
 
-func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (resp *llmtypes.ContentResponse, err error) {
+	var tmuxSessionName string
+	defer func() {
+		if isPiTmuxSessionLostError(err) {
+			err = llmtypes.WrapCodingAgentTmuxSessionLostError(err, "pi-cli", tmuxSessionName, "tmux session lost")
+		}
+	}()
+
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; pi-cli tmux mode requires tmux")
 	}
@@ -154,6 +161,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		}
 		return nil, err
 	}
+	tmuxSessionName = session.tmuxSessionName
 	// Publish the live tmux handle as soon as it exists. The host app can attach
 	// to the pane while Pi finishes startup instead of waiting for the first
 	// terminal/status snapshot after prompt submission.
@@ -948,13 +956,18 @@ func piSessionScopedMCPURL(apiURL, sessionID string) string {
 }
 
 func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
-	tmuxArgs := piTmuxNewSessionArgs(sessionName, args, env, workingDir)
+	tmuxArgs, cleanupLaunchScript, err := piTmuxNewSessionArgs(sessionName, args, env, workingDir)
+	if err != nil {
+		return err
+	}
 	startArgs := piTmuxNewSessionWithExtendedKeysArgs(tmuxArgs)
 	if err := runPiCommand(ctx, nil, "tmux", startArgs...); err != nil {
 		if !isTmuxUnknownExtendedKeysOption(err) {
+			cleanupLaunchScript()
 			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
 		}
 		if err := runPiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+			cleanupLaunchScript()
 			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
 		}
 	}
@@ -968,16 +981,15 @@ func startPiTmuxSession(ctx context.Context, sessionName string, args []string, 
 	return nil
 }
 
-func piTmuxNewSessionArgs(sessionName string, args []string, env []string, workingDir string) []string {
+func piTmuxNewSessionArgs(sessionName string, args []string, env []string, workingDir string) ([]string, func(), error) {
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithEnv(args, workingDir, env)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to prepare Pi launch environment: %w", err)
+	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
-	for _, entry := range env {
-		if strings.TrimSpace(entry) != "" {
-			tmuxArgs = append(tmuxArgs, "-e", entry)
-		}
-	}
-	tmuxArgs = append(tmuxArgs, shelllaunch.Command(args, workingDir))
-	return tmuxArgs
+	tmuxArgs = append(tmuxArgs, shellCommand)
+	return tmuxArgs, cleanupLaunchScript, nil
 }
 
 func piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs []string) []string {
@@ -1726,13 +1738,16 @@ func isPiTmuxSessionLostError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if llmtypes.IsCodingAgentTmuxSessionLostError(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
 		"can't find pane",
 		"can't find session",
 		"no server running on",
 		"target pane not found",
-		"tmux session",
+		"is no longer running",
 		"failed to capture",
 	} {
 		if strings.Contains(msg, needle) {

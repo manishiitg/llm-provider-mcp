@@ -1,6 +1,17 @@
 package llmproviders
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
+)
 
 func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 	tests := []struct {
@@ -218,5 +229,64 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 				t.Fatalf("chief_of_staff reasoning_effort = %#v, want %q", got, tt.wantReasoning)
 			}
 		})
+	}
+}
+
+func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
+	published := map[string]map[string]bool{}
+	for _, meta := range codingAgentPublishedModelMetadata() {
+		if meta == nil {
+			continue
+		}
+		provider := strings.TrimSpace(meta.Provider)
+		modelID := strings.TrimSpace(meta.ModelID)
+		if provider == "" || modelID == "" {
+			continue
+		}
+		if published[provider] == nil {
+			published[provider] = map[string]bool{}
+		}
+		published[provider][modelID] = true
+	}
+
+	for _, contract := range CodingAgentProviderContracts() {
+		defaults, ok := GetCodingAgentDefaultTierModels(contract.Provider)
+		if !ok {
+			t.Fatalf("missing tier defaults for coding-agent provider %s", contract.Provider)
+		}
+		for name, ref := range codingAgentDefaultTierModelRefs(defaults) {
+			provider := strings.TrimSpace(ref.Provider)
+			modelID := strings.TrimSpace(ref.ModelID)
+			if provider == "" || modelID == "" {
+				t.Fatalf("%s.%s default is incomplete: %+v", contract.Provider, name, ref)
+			}
+			if !published[provider][modelID] {
+				t.Fatalf("%s.%s default %s/%s is not published in model metadata registry", contract.Provider, name, provider, modelID)
+			}
+		}
+	}
+}
+
+func codingAgentPublishedModelMetadata() []*llmtypes.ModelMetadata {
+	var out []*llmtypes.ModelMetadata
+	out = append(out, claudecode.GetAllClaudeCodeModels()...)
+	out = append(out, codexcli.GetAllCodexCLIModels()...)
+	out = append(out, cursorcli.GetAllCursorCLIModels()...)
+	out = append(out, geminicli.GetAllGeminiCLIModels()...)
+	out = append(out, agycli.GetAllAgyCLIModels()...)
+	out = append(out, picli.GetAllPiCLIModels()...)
+	return out
+}
+
+func codingAgentDefaultTierModelRefs(defaults *CodingAgentDefaultTierModels) map[string]CodingAgentTierModelRef {
+	return map[string]CodingAgentTierModelRef{
+		"main":           defaults.Main,
+		"high":           defaults.High,
+		"medium":         defaults.Medium,
+		"low":            defaults.Low,
+		"phase":          defaults.Phase,
+		"auto_improve":   defaults.AutoImprove,
+		"pulse":          defaults.Pulse,
+		"chief_of_staff": defaults.ChiefOfStaff,
 	}
 }

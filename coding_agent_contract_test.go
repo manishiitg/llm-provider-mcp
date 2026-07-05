@@ -43,6 +43,9 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 			if !contract.UsesMCPBridge {
 				t.Fatal("coding-agent contract must use the MCP bridge")
 			}
+			if !contract.RequiresMCPBridgeConfig {
+				t.Fatal("coding-agent contract must require MCP bridge config")
+			}
 			if !contract.UsesNativeSystemPrompt {
 				t.Fatal("coding-agent contract must use native system/developer instructions")
 			}
@@ -133,6 +136,96 @@ func TestNativeResumeContractMatchesRegistry(t *testing.T) {
 		}
 		if !contract.SupportsNativeResume {
 			t.Errorf("nativeResumeRegistry has %s but its contract.SupportsNativeResume is false — flip the contract", provider)
+		}
+	}
+}
+
+func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Transport == CodingAgentTransportTmux && contract.RequiresOwnerSessionID {
+			if opt := CodingAgentInteractiveSessionOption(contract.Provider, "owner-session"); opt == nil {
+				t.Errorf("%s requires an owner session id but has no interactive-session option registry entry", contract.Provider)
+			}
+		}
+		if contract.Transport == CodingAgentTransportTmux && contract.UsesPersistentSession {
+			if opt := CodingAgentPersistentInteractiveOption(contract.Provider, true); opt == nil {
+				t.Errorf("%s uses persistent tmux sessions but has no persistent-session option registry entry", contract.Provider)
+			}
+		}
+		if contract.RequiresWorkingDir {
+			if opt := CodingAgentWorkingDirOption(contract.Provider, "/tmp/work"); opt == nil {
+				t.Errorf("%s requires a working dir but has no working-dir option registry entry", contract.Provider)
+			}
+		}
+	}
+
+	for provider := range codingAgentInteractiveSessionRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("interactive-session registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if contract.Transport != CodingAgentTransportTmux || !contract.RequiresOwnerSessionID {
+			t.Errorf("interactive-session registry has %s but contract does not require tmux owner sessions", provider)
+		}
+	}
+	for provider := range codingAgentPersistentInteractiveRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("persistent-session registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if contract.Transport != CodingAgentTransportTmux || !contract.UsesPersistentSession {
+			t.Errorf("persistent-session registry has %s but contract does not claim persistent tmux sessions", provider)
+		}
+	}
+	for provider := range codingAgentWorkingDirRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("working-dir registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if !contract.RequiresWorkingDir {
+			t.Errorf("working-dir registry has %s but contract does not require working dir", provider)
+		}
+	}
+	for provider := range codingAgentProjectDirIDRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("project-dir-id registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if !contract.SupportsNativeResume {
+			t.Errorf("project-dir-id registry has %s but contract does not support native resume", provider)
+		}
+	}
+}
+
+func TestCodingAgentMCPBridgeIsRequiredWhenUsed(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.UsesMCPBridge && !contract.RequiresMCPBridgeConfig {
+			t.Errorf("%s uses the MCP bridge but does not require bridge config", contract.Provider)
+		}
+		if contract.RequiresMCPBridgeConfig && !contract.UsesMCPBridge {
+			t.Errorf("%s requires bridge config but does not declare UsesMCPBridge", contract.Provider)
+		}
+	}
+}
+
+func TestProjectInstructionOnlyRegistryIsIntentional(t *testing.T) {
+	expected := map[Provider]bool{
+		ProviderClaudeCode: true,
+		ProviderCodexCLI:   true,
+		ProviderGeminiCLI:  true,
+	}
+	for provider := range expected {
+		if opt := CodingAgentProjectInstructionOnlyOption(provider, true); opt == nil {
+			t.Errorf("%s should have a project-instruction-only option", provider)
+		}
+	}
+	for provider := range codingAgentProjectInstructionOnlyRegistry {
+		if !expected[provider] {
+			t.Errorf("unexpected project-instruction-only registry entry for %s", provider)
 		}
 	}
 }
@@ -272,41 +365,26 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // Drain this map by writing the missing e2e tests + registering them in
 // codingAgentProviderCertifications.
 var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
-	// Cursor CLI is fully wired in the orchestrator. CertMCPBridge has
-	// landed (TestCursorCLIStructuredMCPBridge); remaining IDs are real
-	// gaps that need their own e2e tests, tracked as follow-up tasks.
+	// Cursor CLI is fully wired in the orchestrator and most tmux claims now
+	// point at real cursor-agent E2Es. Remaining IDs are real gaps that need
+	// their own e2e tests, tracked as follow-up tasks.
 	ProviderCursorCLI: {
-		CertBoundedRetention, CertCancellation, CertCleanup,
-		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
-		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
-		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
-		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
-		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
-		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
-		CertTrustAuthPrompts, CertWorkingDirectory,
+		CertBoundedRetention,
+		CertLifecyclePolicy,
+		CertPersistentCancelReuse,
+		CertStaleDraftCleanup,
+		CertTrustAuthPrompts,
 	},
-	ProviderAgyCLI: {
-		CertSharedWorkdirMCPIsolation,
-	},
-	// Gemini CLI is now tmux-default (matching Claude/Codex/Cursor/Agy) with
-	// structured as the opt-in fallback. The interactive adapter has its core
-	// e2e suite — full tmux contract, MCP bridge, live input, queued
-	// validation, shared-workdir MCP isolation, parallel startup queue and
-	// isolation, cleanup, trust prompt, image-path analysis, project artifact
-	// lifecycle — but it doesn't yet have explicit certification-registry
-	// entries for every claim in the tmux contract. The IDs below mirror the
-	// gap shape used for Cursor: a public TODO list of capabilities the
-	// contract claims but whose certification entry hasn't been wired up.
-	// Drain by registering each in codingAgentProviderCertifications.
+	// Gemini CLI is deprecated for new setup, so it is no longer held to the
+	// full active-provider tmux promotion bar. These are the remaining legacy
+	// runtime claims that stay true so restored Gemini sessions keep working,
+	// but they are not a reason to invest in new Gemini certification work;
+	// promote new Google/Gemini-backed flows through Pi CLI instead.
 	ProviderGeminiCLI: {
-		CertBoundedRetention, CertCancellation, CertCleanup,
-		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
+		CertCancellation, CertCleanup, CertFreshLaunch,
 		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
-		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
-		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
-		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
-		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
-		CertTrustAuthPrompts, CertWorkingDirectory,
+		CertSessionLoss, CertSessionLossRecovery, CertStaleDraftCleanup,
+		CertWorkingDirectory,
 	},
 }
 
@@ -409,6 +487,28 @@ func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 		}
 		if !hasPiEnvGuard {
 			t.Fatalf("pi-cli certification %s must name its real E2E env guard, got %#v", cert.ID, cert.Env)
+		}
+	}
+}
+
+func TestCursorCLICertificationsUseRealE2EOnly(t *testing.T) {
+	certs := CodingAgentProviderCertifications(ProviderCursorCLI)
+	if len(certs) == 0 {
+		t.Fatal("cursor-cli has no registered certifications")
+	}
+	for _, cert := range certs {
+		if !cert.RealE2E {
+			t.Fatalf("cursor-cli certification %s must be backed by real Cursor E2E, got %#v", cert.ID, cert)
+		}
+		hasCursorEnvGuard := false
+		for _, env := range cert.Env {
+			if strings.HasPrefix(env, "RUN_CURSOR_CLI_") {
+				hasCursorEnvGuard = true
+				break
+			}
+		}
+		if !hasCursorEnvGuard {
+			t.Fatalf("cursor-cli certification %s must name its real E2E env guard, got %#v", cert.ID, cert.Env)
 		}
 	}
 }

@@ -170,7 +170,12 @@ func TestContinueCodingAgentSessionRejectsNonApplicableAndMissingResume(t *testi
 func TestContinueCodingAgentSessionRetriesOnceAfterTmuxLoss(t *testing.T) {
 	stream := make(chan llmtypes.StreamChunk, 1)
 	model := &continuationTestModel{
-		errs: []error{errors.New("failed to capture Codex CLI session: exit status 1: can't find pane: dead-pane")},
+		errs: []error{llmtypes.WrapCodingAgentTmuxSessionLostError(
+			errors.New("failed to capture Codex CLI session: exit status 1: can't find pane: dead-pane"),
+			string(ProviderCodexCLI),
+			"dead-pane",
+			"tmux session lost",
+		)},
 	}
 	resp, err := ContinueCodingAgentSession(context.Background(), model, llmtypes.CodingProviderSessionHandle{
 		Provider:        string(ProviderCodexCLI),
@@ -196,6 +201,25 @@ func TestContinueCodingAgentSessionRetriesOnceAfterTmuxLoss(t *testing.T) {
 	}
 	if model.opts[1].StreamChan != nil {
 		t.Fatal("retry call should clear stream channel after first call owns it")
+	}
+}
+
+func TestContinueCodingAgentSessionDoesNotRetryStringMatchedTmuxLoss(t *testing.T) {
+	model := &continuationTestModel{
+		errs: []error{errors.New("failed to capture Codex CLI session: exit status 1: can't find pane: dead-pane")},
+	}
+	_, err := ContinueCodingAgentSession(context.Background(), model, llmtypes.CodingProviderSessionHandle{
+		Provider:        string(ProviderCodexCLI),
+		Transport:       llmtypes.CodingProviderTransportTmux,
+		NativeSessionID: "codex-thread",
+		WorkingDir:      "/tmp/work",
+		Model:           "gpt-5.4",
+	}, "what was the codeword?")
+	if err == nil {
+		t.Fatal("ContinueCodingAgentSession() error = nil, want original tmux-text error")
+	}
+	if len(model.messages) != 1 {
+		t.Fatalf("GenerateContent calls = %d, want 1", len(model.messages))
 	}
 }
 

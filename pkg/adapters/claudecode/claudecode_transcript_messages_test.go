@@ -157,3 +157,13 @@ func TestReadClaudeTranscriptMessagesHonorsTurnStart(t *testing.T) {
 		t.Fatalf("msgs[0].Parts[0] = %+v, want TextContent{Text:'current turn'}", msgs[0].Parts[0])
 	}
 }
+
+func TestReadClaudeTranscriptMessagesRejectsNonUUIDSessionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	for _, sessionID := range []string{"../secret", "--help", "deadbeef-0000-0000-0000-000000000000/extra"} {
+		if msgs := readClaudeTranscriptMessages(sessionID, time.Time{}); len(msgs) != 0 {
+			t.Fatalf("session %q returned %d messages, want none", sessionID, len(msgs))
+		}
+	}
+}

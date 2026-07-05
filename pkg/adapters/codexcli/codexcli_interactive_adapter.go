@@ -23,6 +23,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -70,21 +71,17 @@ type codexInteractiveSession struct {
 	mu                        sync.Mutex
 }
 
-var codexInteractiveRegistry = struct {
-	sync.RWMutex
-	sessions map[string]string
-}{
-	sessions: map[string]string{},
-}
+var codexInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
+var codexPersistentRegistry = sessionregistry.NewOwnerRegistry[*codexInteractiveSession]()
 
-var codexPersistentRegistry = struct {
-	sync.Mutex
-	sessions map[string]*codexInteractiveSession
-}{
-	sessions: map[string]*codexInteractiveSession{},
-}
+func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (resp *llmtypes.ContentResponse, err error) {
+	var tmuxSessionName string
+	defer func() {
+		if isCodexTmuxSessionLostError(err) {
+			err = llmtypes.WrapCodingAgentTmuxSessionLostError(err, "codex-cli", tmuxSessionName, "tmux session lost")
+		}
+	}()
 
-func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; codex-cli interactive mode requires tmux")
 	}
@@ -97,7 +94,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
 	}
 	persistent := codexPersistentInteractiveFromOptions(opts)
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateContentInteractive ENTER owner=%s persistent=%v workingDir=%q", ownerSessionID, persistent, codexWorkingDirFromOptions(opts))
+	c.logger.Debugf("codex interactive launch enter owner=%s persistent=%v workingDir=%q", ownerSessionID, persistent, codexWorkingDirFromOptions(opts))
 
 	turnStart := time.Now().UTC()
 
@@ -146,6 +143,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		})
 		return nil, err
 	}
+	tmuxSessionName = session.tmuxSessionName
 	inspector.EmitEvent("tmux_session_ready", map[string]interface{}{
 		"tmux_session_name": session.tmuxSessionName,
 		"elapsed_ms":        time.Since(acquireStart).Milliseconds(),
@@ -161,7 +159,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 	}()
 
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s → acquire returned tmux=%s; waitForCodexPrompt(1) START", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive acquired owner=%s tmux=%s; waiting for first prompt", ownerSessionID, session.tmuxSessionName)
 	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
@@ -171,7 +169,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		cleanupFailedCodexInteractiveSession(failedSession)
 		return nil, err
 	}
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s tmux=%s → waitForCodexPrompt(1) DONE; reset + waitForCodexPrompt(2) START", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive first prompt ready owner=%s tmux=%s; resetting pane", ownerSessionID, session.tmuxSessionName)
 	resetCodexPaneForTurn(callCtx, session.tmuxSessionName)
 	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
@@ -182,7 +180,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		cleanupFailedCodexInteractiveSession(failedSession)
 		return nil, err
 	}
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] generateInteractive owner=%s tmux=%s → waitForCodexPrompt(2) DONE; proceeding to send prompt", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive ready for prompt owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
 		var lastSnapshot string
@@ -416,11 +414,24 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
 func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*codexInteractiveSession, error) {
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire ENTER owner=%s → locking registry", ownerSessionID)
-	codexPersistentRegistry.Lock()
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → registry locked", ownerSessionID)
-	existing := codexPersistentRegistry.sessions[ownerSessionID]
-	if existing != nil {
+	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
+	now := time.Now()
+	workingDir := codexWorkingDirFromOptions(opts)
+	session, created, ok := codexPersistentRegistry.GetOrCreate(ownerSessionID, func() *codexInteractiveSession {
+		session := &codexInteractiveSession{
+			ownerSessionID:  ownerSessionID,
+			tmuxSessionName: newCodexTmuxSessionName(),
+			workingDir:      workingDir,
+			createdAt:       now,
+			lastUsed:        now,
+		}
+		session.mu.Lock()
+		return session
+	})
+	if !ok {
+		return nil, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
+	}
+	if !created {
 		// Release the GLOBAL registry lock BEFORE taking the per-session lock.
 		// session.mu is held for the duration of a whole turn; acquiring it
 		// while still holding the global map lock stalls every other codex
@@ -430,34 +441,20 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		// map only; grab the pointer under it, release it, then take the
 		// per-session lock. Holding a pointer keeps the session valid even if a
 		// concurrent teardown removes it from the map (initErr guards that).
-		codexPersistentRegistry.Unlock()
-		existing.mu.Lock()
-		if existing.initErr != nil {
-			err := existing.initErr
-			existing.mu.Unlock()
+		session.mu.Lock()
+		if session.initErr != nil {
+			err := session.initErr
+			session.mu.Unlock()
 			return nil, err
 		}
-		if existing.idleTimer != nil {
-			existing.idleTimer.Stop()
-			existing.idleTimer = nil
+		if session.idleTimer != nil {
+			session.idleTimer.Stop()
+			session.idleTimer = nil
 		}
-		existing.lastUsed = time.Now()
-		c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → REUSING existing session tmux=%s", ownerSessionID, existing.tmuxSessionName)
-		return existing, nil
+		session.lastUsed = time.Now()
+		c.logger.Debugf("codex interactive reusing session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
+		return session, nil
 	}
-
-	now := time.Now()
-	workingDir := codexWorkingDirFromOptions(opts)
-	session := &codexInteractiveSession{
-		ownerSessionID:  ownerSessionID,
-		tmuxSessionName: newCodexTmuxSessionName(),
-		workingDir:      workingDir,
-		createdAt:       now,
-		lastUsed:        now,
-	}
-	session.mu.Lock()
-	codexPersistentRegistry.sessions[ownerSessionID] = session
-	codexPersistentRegistry.Unlock()
 
 	// buildCodexInteractiveArgs also performs the opt-in workspace
 	// artifact projection (AGENTS.md system prompt, .codex/config.toml
@@ -470,7 +467,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// inject equivalent configuration. The workspace projection is
 	// additive and useful when downstream tooling reads codex's on-disk
 	// conventions directly.
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s NEW session tmux=%s workingDir=%q → buildCodexInteractiveArgs START", ownerSessionID, session.tmuxSessionName, workingDir)
+	c.logger.Debugf("codex interactive building args owner=%s tmux=%s workingDir=%q", ownerSessionID, session.tmuxSessionName, workingDir)
 	args, systemPromptTempFile, projectCleanup, err := c.buildCodexInteractiveArgs(opts, systemPrompt)
 	if err != nil {
 		session.initErr = err
@@ -478,7 +475,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		removeCodexPersistentSession(ownerSessionID, session)
 		return nil, err
 	}
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → buildCodexInteractiveArgs DONE (%d args)", ownerSessionID, len(args))
+	c.logger.Debugf("codex interactive built args owner=%s args=%d", ownerSessionID, len(args))
 	session.systemPromptTempFile = systemPromptTempFile
 	session.projectInstructionCleanup = projectCleanup
 
@@ -491,9 +488,9 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 && workingDir != "" {
 		_ = c.ProjectSkills(workingDir, attachedSkills)
 	}
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → startCodexTmuxSession tmux=%s START", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive starting tmux owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
-		c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s → startCodexTmuxSession tmux=%s FAILED: %v", ownerSessionID, session.tmuxSessionName, err)
+		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
 			_ = os.Remove(systemPromptTempFile)
@@ -507,7 +504,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, err
 	}
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
-	c.logger.Infof("🔎 [CODEX_LAUNCH_DEBUG] acquire owner=%s DONE → tmux=%s started + registered", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive started owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	return session, nil
 }
 
@@ -555,7 +552,13 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 		}
 	}
 
-	resumeSessionID := codexResumeSessionIDFromOptions(opts)
+	resumeSessionID, err := codexValidatedResumeSessionIDFromOptions(opts)
+	if err != nil {
+		if projectCleanup != nil {
+			projectCleanup()
+		}
+		return nil, "", nil, err
+	}
 	appendResumeSessionID := func(args []string) []string {
 		if resumeSessionID != "" {
 			args = append(args, resumeSessionID)
@@ -712,30 +715,20 @@ func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	if name == "" {
 		return
 	}
-	codexPersistentRegistry.Lock()
-	owner := ""
-	for o, s := range codexPersistentRegistry.sessions {
-		if s != nil && s.tmuxSessionName == name {
-			owner = o
-			break
-		}
-	}
-	codexPersistentRegistry.Unlock()
-	if owner == "" {
+	owner, _, ok := codexPersistentRegistry.Find(func(s *codexInteractiveSession) bool {
+		return s != nil && s.tmuxSessionName == name
+	})
+	if !ok || owner == "" {
 		return
 	}
 	closeCodexPersistentSession(owner, reason, nil)
 }
 
 func closeCodexPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
-	codexPersistentRegistry.Lock()
-	session := codexPersistentRegistry.sessions[ownerSessionID]
-	if session == nil {
-		codexPersistentRegistry.Unlock()
+	session, ok := codexPersistentRegistry.Delete(ownerSessionID)
+	if !ok || session == nil {
 		return
 	}
-	delete(codexPersistentRegistry.sessions, ownerSessionID)
-	codexPersistentRegistry.Unlock()
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -892,24 +885,14 @@ func cleanupFailedCodexInteractiveSession(session *codexInteractiveSession) {
 }
 
 func removeCodexPersistentSession(ownerSessionID string, session *codexInteractiveSession) {
-	codexPersistentRegistry.Lock()
-	defer codexPersistentRegistry.Unlock()
-	if current := codexPersistentRegistry.sessions[ownerSessionID]; current == session {
-		delete(codexPersistentRegistry.sessions, ownerSessionID)
-	}
+	codexPersistentRegistry.DeleteIf(ownerSessionID, session)
 }
 
 func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}
-	codexPersistentRegistry.Lock()
-	sessions := make([]*codexInteractiveSession, 0, len(codexPersistentRegistry.sessions))
-	for _, session := range codexPersistentRegistry.sessions {
-		sessions = append(sessions, session)
-	}
-	codexPersistentRegistry.sessions = map[string]*codexInteractiveSession{}
-	codexPersistentRegistry.Unlock()
+	sessions := codexPersistentRegistry.Drain()
 
 	var failures []string
 	for _, session := range sessions {
@@ -952,28 +935,19 @@ func stopCodexIdleTimerIfAvailable(session *codexInteractiveSession) {
 }
 
 func registerCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {
-	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
-	if ownerSessionID == "" || tmuxSessionName == "" {
+	if tmuxSessionName == "" {
 		return
 	}
-	codexInteractiveRegistry.Lock()
-	defer codexInteractiveRegistry.Unlock()
-	codexInteractiveRegistry.sessions[ownerSessionID] = tmuxSessionName
+	codexInteractiveRegistry.Set(ownerSessionID, tmuxSessionName)
 }
 
 func unregisterCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {
-	codexInteractiveRegistry.Lock()
-	defer codexInteractiveRegistry.Unlock()
-	if current := codexInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
-		delete(codexInteractiveRegistry.sessions, ownerSessionID)
-	}
+	codexInteractiveRegistry.DeleteIf(ownerSessionID, tmuxSessionName)
 }
 
 func activeCodexInteractiveSession(ownerSessionID string) (string, bool) {
-	codexInteractiveRegistry.RLock()
-	defer codexInteractiveRegistry.RUnlock()
-	sessionName, ok := codexInteractiveRegistry.sessions[strings.TrimSpace(ownerSessionID)]
+	sessionName, ok := codexInteractiveRegistry.Get(ownerSessionID)
 	return sessionName, ok && strings.TrimSpace(sessionName) != ""
 }
 
@@ -1004,13 +978,25 @@ func codexPersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
 }
 
 func codexResumeSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	sessionID, _ := codexValidatedResumeSessionIDFromOptions(opts)
+	return sessionID
+}
+
+func codexValidatedResumeSessionIDFromOptions(opts *llmtypes.CallOptions) (string, error) {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return ""
+		return "", nil
 	}
 	if sessionID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok {
-		return strings.TrimSpace(sessionID)
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return "", nil
+		}
+		if !isCodexSessionID(sessionID) {
+			return "", fmt.Errorf("invalid codex resume session id %q", sessionID)
+		}
+		return sessionID, nil
 	}
-	return ""
+	return "", nil
 }
 
 func splitCodexSystemPrompt(messages []llmtypes.MessageContent) (string, []llmtypes.MessageContent) {
@@ -3002,12 +2988,11 @@ var (
 // codexWorkingDirForSession maps a tmux session name to its working dir via the
 // persistent registry, so the statusline reader can locate the right rollout.
 func codexWorkingDirForSession(sessionName string) string {
-	codexPersistentRegistry.Lock()
-	defer codexPersistentRegistry.Unlock()
-	for _, sess := range codexPersistentRegistry.sessions {
-		if sess != nil && sess.tmuxSessionName == sessionName {
-			return sess.workingDir
-		}
+	_, sess, ok := codexPersistentRegistry.Find(func(sess *codexInteractiveSession) bool {
+		return sess != nil && sess.tmuxSessionName == sessionName
+	})
+	if ok && sess != nil {
+		return sess.workingDir
 	}
 	return ""
 }
@@ -3109,15 +3094,18 @@ func (c *CodexCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (
 		return nil, fmt.Errorf("session ID is required")
 	}
 	var tmuxSession, workingDir string
-	codexPersistentRegistry.Lock()
-	for _, sess := range codexPersistentRegistry.sessions {
+	if sess, ok := codexPersistentRegistry.Get(sessionID); ok && sess != nil {
+		tmuxSession = sess.tmuxSessionName
+		workingDir = sess.workingDir
+	} else {
+		_, sess, _ := codexPersistentRegistry.Find(func(sess *codexInteractiveSession) bool {
+			return sess != nil && sess.tmuxSessionName == sessionID
+		})
 		if sess != nil && (sess.ownerSessionID == sessionID || sess.tmuxSessionName == sessionID) {
 			tmuxSession = sess.tmuxSessionName
 			workingDir = sess.workingDir
-			break
 		}
 	}
-	codexPersistentRegistry.Unlock()
 
 	status := buildCodexStatusLine(tmuxSession, workingDir)
 	if status == nil {
@@ -3370,12 +3358,28 @@ func killCodexTmuxSession(ctx context.Context, sessionName string) error {
 	// children would otherwise orphan and leak.
 	tmuxcontrol.ReapSessionProcessTree(ctx, sessionName)
 	if err := runCodexCommand(ctx, nil, "tmux", "kill-session", "-t", sessionName); err != nil {
-		if strings.Contains(err.Error(), "can't find session") || strings.Contains(err.Error(), "no server running") {
+		if isCodexTmuxSessionLostError(err) {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func isCodexTmuxSessionLostError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if llmtypes.IsCodingAgentTmuxSessionLostError(err) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "failed to connect to server") ||
+		strings.Contains(lower, "can't find pane") ||
+		strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "target pane not found") ||
+		strings.Contains(lower, "no current target")
 }
 
 func codexInteractiveSessionPrefix() string {

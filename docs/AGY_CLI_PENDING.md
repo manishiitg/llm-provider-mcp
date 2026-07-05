@@ -2,10 +2,10 @@
 
 Status: `agy-cli` is now **deprecated for new setup**. It remains fully implemented and runnable for existing sessions, restored chat history, and regression coverage, but new Google-backed coding-agent setup should use `pi-cli`.
 
-This file tracks the retained runtime contract, known gaps, and verification milestones for keeping existing Antigravity CLI sessions safe while Pi CLI becomes the preferred Google/Gemini-backed coding-agent provider.
+This file tracks the retained runtime contract and verification milestones for keeping existing Antigravity CLI sessions safe while Pi CLI becomes the preferred Google/Gemini-backed coding-agent provider.
 
 > [!NOTE]
-> Out of **26 total required tmux certifications** defined in the contract, Antigravity CLI has successfully achieved **25 registered certifications**! Only one certification remains as an open gap.
+> Antigravity CLI is deprecated for new setup, so it is no longer held to the full active-provider tmux promotion bar. Its retained runtime claims still have registered proofs; the extra full-promotion workspace-isolation proof remains useful only if Agy is ever re-promoted.
 
 ---
 
@@ -39,7 +39,7 @@ This file tracks the retained runtime contract, known gaps, and verification mil
 | **CertSessionLoss** | ✅ | `TestAgyCLIRealNativeResumeAfterTmuxLossContract` | Correctly captures and persists provider conversation state upon tmux loss. |
 | **CertSessionLossRecovery** | ✅ | `TestAgyCLIRealNativeResumeAfterTmuxLossContract` | Re-attaches with `--conversation` and resumes without replaying history. |
 | **CertParallelStartupQueue** | ✅ | `TestAcquireQueuesConcurrentStarts` | Serializes concurrent agy-cli session startups. |
-| **CertSharedWorkdirMCPIsolation** | ❌ *Gap* | *Awaiting Test* | Two agy sessions in separate subdirectories must not cross-talk MCP. |
+| **CertSharedWorkdirMCPIsolation** | ⚪ *Re-promotion only* | *Awaiting Test* | Two agy sessions in separate subdirectories must not cross-talk MCP. |
 
 ---
 
@@ -51,7 +51,7 @@ This file tracks the retained runtime contract, known gaps, and verification mil
 ### 1. 🔄 Verify Workspace-Scoped MCP Isolation (`CertSharedWorkdirMCPIsolation`)
 *   **Gap Description:** Two concurrent `agy` sessions started under distinct working sub-directories must not see each other's custom bridge configuration, rule folders, or active tool bindings.
 *   **Status:** Currently fail-closed but untested under concurrent setups.
-*   **Drain Path:** Implement an E2E test verifying workspace MCP isolation, register it in `coding_agent_certification.go`, and remove `CertSharedWorkdirMCPIsolation` from `knownCertificationGaps[ProviderAgyCLI]` in `coding_agent_contract_test.go`.
+*   **Drain Path:** Implement an E2E test verifying workspace MCP isolation and register it in `coding_agent_certification.go` before treating Agy as an active provider again.
 
 ### 2. 📊 Confirm Token & Cost Estimations
 *   **Detail:** Tmux-mode currently calculates estimated token counts based on plain text length as `agy` does not expose exact API token usage metrics natively in TUI mode.

@@ -47,6 +47,11 @@ const (
 	CertCtrlCStatePreserved CodingAgentCertificationID = "ctrl_c_state_preserved"
 )
 
+// requiredTmuxCertificationIDs is the full promotion bar for an active tmux
+// coding-agent provider. Deprecated tmux providers keep legacy runtime wiring
+// for restored sessions, but they are not treated as new-provider promotion
+// targets; their certification requirements are derived from explicit
+// capability flags below instead.
 var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertResumeCompactionStartup,
@@ -522,24 +527,60 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCursorCLI: {
-		// CertMCPBridge — first cursor certification on file. Proves the
-		// adapter actually wires cursor's structured (--print) path through
-		// an MCP bridge subprocess and surfaces the tool's output. Until
-		// this was registered, cursor's UsesMCPBridge:true claim was
-		// unverified, and a real workflow run (HDFC read-credentials,
-		// 2026-05-24) silently produced 0 tokens / 0 tool calls because
-		// nobody noticed the bridge path wasn't being exercised.
-		//
-		// More cursor certifications (tmux suite, working dir, trust,
-		// resume, native system prompt, etc.) are tracked as
-		// knownCertificationGaps in coding_agent_contract_test.go and will
-		// be added as their e2e tests are written.
+		{
+			ID:          CertFreshLaunch,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "starts Cursor Agent CLI tmux transport, submits a prompt, streams terminal rows, and returns a final answer",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertResumeCompactionStartup,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_resume_e2e_test.go",
+			TestName:    "TestCursorCLIRealCrossRestartResume",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor native --resume survives process restart and accepts the next prompt without blocking startup",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStartupTerminalVisibility,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor startup/working panes emit terminal-only stream chunks before final completion",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertWorkingDirectory,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_isolated_workspace_e2e_test.go",
+			TestName:    "TestCursorCLIRealIsolatedTmpDirDoesNotTouchOuterWorkspace",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor runs in the requested isolated working directory without leaking .cursor artifacts into the outer workspace",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertNativeSystemPrompt,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorTmuxSystemPromptSteersWritesThroughBridge",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor loads tmux-mode system prompt through .cursor/rules and uses it to route writes through the MCP bridge",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPromptPaste,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "large multiline prompts paste and submit correctly through Cursor tmux",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertMCPBridge,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
-			TestName:    "TestCursorCLIStructuredMCPBridge",
-			Env:         []string{"RUN_CURSOR_CLI_STREAM_JSON_E2E=1"},
-			Description: "Cursor CLI calls a real MCP bridge tool through its structured (--print) path",
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveMCPBridgeContractTmux",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor CLI tmux transport loads a workspace MCP config and calls a real MCP bridge tool",
 			RealE2E:     true,
 		},
 		{
@@ -551,11 +592,107 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertSlowToolLiveInput,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "live validation input during a slow Cursor MCP tool does not complete the foreground turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolFalseIdle,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "slow MCP activity keeps Cursor classified active even if prompt-looking UI appears",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertDoneDetection,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealCompletionDetection",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "Cursor tmux pane is idle and ready only after the response has completed",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
 			TestName:    "TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
 			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1", "RUN_CURSOR_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
 			Description: "real Cursor CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and shell/TUI transcript removal",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMultiTurn,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "persistent Cursor tmux session keeps native multi-turn memory and reuses the same backing tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertLiveInput,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "live input routes into Cursor's active tmux session and is processed after the in-flight tool call",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCancellation,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveLiveInputAndEscapeContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "canceling a live Cursor tmux turn interrupts the running GenerateContent call",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertParallelIsolation,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveParallelIsolation",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "parallel Cursor tmux sessions keep final answers isolated from one another",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertParallelStartupQueue,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveParallelIsolation",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "concurrent Cursor tmux launches run through the shared startup gate without cross-session interference",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSharedWorkdirMCPIsolation,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveSharedWorkingDirMCPIsolation",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "parallel Cursor sessions with related workdirs keep MCP sessions and outputs isolated",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCleanup,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveCleanup",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "explicit Cursor cleanup unregisters and kills the backing tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSessionLoss,
+			TestFile:    "coding_agent_continuation_real_test.go",
+			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
+			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1", "RUN_CURSOR_CLI_REAL_E2E via subtest cursor-cli"},
+			Description: "Cursor tmux session loss is detected and exposed as a typed coding-agent session-loss condition",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSessionLossRecovery,
+			TestFile:    "coding_agent_continuation_real_test.go",
+			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
+			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1", "RUN_CURSOR_CLI_REAL_E2E via subtest cursor-cli"},
+			Description: "Cursor continuation after killed tmux starts a fresh tmux session and resumes provider-native memory",
 			RealE2E:     true,
 		},
 	},
@@ -1011,11 +1148,11 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 // provider's claimed capabilities.
 func RequiredCodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
 	seen := make(map[CodingAgentCertificationID]struct{}, len(requiredTmuxCertificationIDs))
-	if contract.Transport == CodingAgentTransportTmux {
+	if contract.Transport == CodingAgentTransportTmux && !contract.Deprecated {
 		for _, id := range requiredTmuxCertificationIDs {
 			seen[id] = struct{}{}
 		}
-	} else {
+	} else if contract.Transport != CodingAgentTransportTmux {
 		seen[CertFreshLaunch] = struct{}{}
 		seen[CertPromptPaste] = struct{}{}
 		seen[CertDoneDetection] = struct{}{}

@@ -238,6 +238,7 @@ func TestClaudeTmuxSessionLostErrorDetection(t *testing.T) {
 		{name: "no server", err: errors.New("failed to capture Claude Code tmux session: exit status 1: no server running on /private/tmp/tmux-501/default"), want: true},
 		{name: "missing pane", err: errors.New("failed to capture Claude Code tmux session: exit status 1: can't find pane: mlp-claude-code-1"), want: true},
 		{name: "missing session", err: errors.New("tmux kill-session failed: can't find session: mlp-claude-code-exp-1"), want: true},
+		{name: "typed lost session", err: llmtypes.WrapCodingAgentTmuxSessionLostError(errors.New("wrapped"), "claude-code", "mlp-claude-code-1", "tmux session lost"), want: true},
 		{name: "ordinary timeout", err: context.DeadlineExceeded},
 	}
 

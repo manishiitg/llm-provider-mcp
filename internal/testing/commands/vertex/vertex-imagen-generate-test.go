@@ -35,7 +35,7 @@ type vertexImagenGenerateFlags struct {
 var vertexImagenFlags vertexImagenGenerateFlags
 
 func init() {
-	VertexImagenGenerateTestCmd.Flags().StringVar(&vertexImagenFlags.model, "model", "", "Gemini/Imagen image model to use (default: gemini-3.1-flash-image-preview)")
+	VertexImagenGenerateTestCmd.Flags().StringVar(&vertexImagenFlags.model, "model", "", "Gemini image model to use (default: gemini-3.1-flash-image)")
 	VertexImagenGenerateTestCmd.Flags().StringVar(&vertexImagenFlags.prompt, "prompt", "", "Text prompt for image generation")
 	VertexImagenGenerateTestCmd.Flags().StringVar(&vertexImagenFlags.negativePrompt, "negative-prompt", "", "Negative prompt (what to exclude)")
 	VertexImagenGenerateTestCmd.Flags().StringVar(&vertexImagenFlags.aspectRatio, "aspect-ratio", "1:1", "Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4")
@@ -48,7 +48,7 @@ func runVertexImagenGenerateTest(cmd *cobra.Command, args []string) {
 
 	modelID := vertexImagenFlags.model
 	if modelID == "" {
-		modelID = "gemini-3.1-flash-image-preview"
+		modelID = "gemini-3.1-flash-image"
 	}
 
 	prompt := vertexImagenFlags.prompt

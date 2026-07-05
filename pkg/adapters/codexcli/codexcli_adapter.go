@@ -189,6 +189,11 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 		return nil, fmt.Errorf("codex cli execution failed: usage limit still active for %s: %s", modelToUse, cachedMsg)
 	}
 
+	resumeID, err := codexValidatedResumeSessionIDFromOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	// 0b. Check for 'codex' binary
 	if _, err := exec.LookPath("codex"); err != nil {
 		return nil, fmt.Errorf("codex cli not found in PATH. Please install it first (npm install -g @openai/codex)")
@@ -202,12 +207,12 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 		args = append(args, "--model", modelToUse)
 	}
 
-	// Handle full-auto mode (default for non-interactive use).
+	// Handle full-auto mode.
 	// Codex CLI 0.128 deprecates --full-auto and no longer uses it to approve
 	// non-interactive MCP calls; those calls come back as "user cancelled MCP
-	// tool call". The workflow runtime already provides its own sandbox and
-	// bridge-level guards, so bypass Codex's interactive approval layer here.
-	fullAuto := true // default to full-auto for programmatic use
+	// tool call". Keep the dangerous bypass opt-in so callers must explicitly
+	// choose to bypass Codex's approval and sandbox layers.
+	fullAuto := false
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if fa, ok := opts.Metadata.Custom[MetadataKeyFullAuto].(bool); ok {
 			fullAuto = fa
@@ -311,14 +316,6 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, opts *l
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if dir, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && dir != "" {
 			args = append(args, "--cd", dir)
-		}
-	}
-
-	// Handle resume session
-	resumeID := ""
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if rid, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && rid != "" {
-			resumeID = rid
 		}
 	}
 
@@ -1212,14 +1209,17 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 	switch {
 	case strings.Contains(modelID, "gpt-5.5"):
 		return &llmtypes.ModelMetadata{
-			ModelID:                 metadataModelID,
-			Provider:                "codex-cli",
-			ModelName:               "GPT-5.5",
-			ContextWindow:           1100000,
-			SupportsToolCalls:       true,
-			SupportsJSONMode:        true,
-			SupportsReasoningEffort: true,
-			ReasoningEffortLevels:   []string{"none", "low", "medium", "high", "xhigh"},
+			ModelID:                    metadataModelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-5.5",
+			ContextWindow:              1050000,
+			InputCostPer1MTokens:       5.00,
+			OutputCostPer1MTokens:      30.00,
+			CachedInputCostPer1MTokens: 0.50,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
 		}, nil
 
 	case strings.Contains(modelID, "gpt-5.4-mini"):

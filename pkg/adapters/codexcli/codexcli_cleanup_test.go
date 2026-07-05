@@ -19,16 +19,11 @@ func TestCleanupCodexCLIInteractiveSessionsDoesNotBlockOnBusySession(t *testing.
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	codexPersistentRegistry.Lock()
-	oldPersistent := codexPersistentRegistry.sessions
-	codexPersistentRegistry.sessions = map[string]*codexInteractiveSession{
+	oldPersistent := codexPersistentRegistry.Replace(map[string]*codexInteractiveSession{
 		session.ownerSessionID: session,
-	}
-	codexPersistentRegistry.Unlock()
+	})
 	t.Cleanup(func() {
-		codexPersistentRegistry.Lock()
-		codexPersistentRegistry.sessions = oldPersistent
-		codexPersistentRegistry.Unlock()
+		codexPersistentRegistry.Replace(oldPersistent)
 	})
 
 	done := make(chan error, 1)

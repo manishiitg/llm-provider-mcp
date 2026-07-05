@@ -405,9 +405,13 @@ func TestWritePiLaunchScriptKeepsTmuxCommandShort(t *testing.T) {
 }
 
 func TestPiTmuxLaunchEnablesExtendedKeysBeforeNewSession(t *testing.T) {
-	got := piTmuxNewSessionWithExtendedKeysArgs(
-		piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, "/tmp/work"),
-	)
+	newSessionArgs, cleanup, err := piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, "/tmp/work")
+	if err != nil {
+		t.Fatalf("piTmuxNewSessionArgs error = %v", err)
+	}
+	defer cleanup()
+
+	got := piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs)
 	wantPrefix := []string{
 		"set-option", "-g", "extended-keys", "on", ";",
 		"set-option", "-g", "extended-keys-format", "csi-u", ";",
@@ -422,8 +426,11 @@ func TestPiTmuxLaunchEnablesExtendedKeysBeforeNewSession(t *testing.T) {
 		}
 	}
 	joined := strings.Join(got, "\x00")
-	if !strings.Contains(joined, "-e\x00PI_API_KEY=secret") {
-		t.Fatalf("tmux args = %#v, want Pi API key env passed through", got)
+	if strings.Contains(joined, "PI_API_KEY=secret") || strings.Contains(joined, "-e\x00PI_API_KEY") {
+		t.Fatalf("tmux args leaked Pi API key env: %#v", got)
+	}
+	if !strings.Contains(joined, "/bin/sh") || !strings.Contains(joined, "mlp-coding-agent-launch-") {
+		t.Fatalf("tmux args = %#v, want launch script wrapper", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 var knownCursorCLIModels = []string{
 	"cursor-cli",
+	"composer-2.5",
 }
 
 // GetAllCursorCLIModels returns the frontend-visible Cursor Agent CLI models.

@@ -170,9 +170,8 @@ For Z.AI, image input was verified live with `glm-4.6v` on the Coding Plan endpo
 
 | Provider | Model | Cost | Aspect Ratios | Subject Reference (Editing) |
 |----------|-------|------|---------------|-----------------------------|
-| **Vertex AI** | imagen-4.0-generate-001 | $0.04/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
-| **Vertex AI** | imagen-4.0-fast-generate-001 | $0.02/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
-| **Vertex AI** | imagen-4.0-ultra-generate-001 | $0.06/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ❌ |
+| **Vertex AI** | gemini-3.1-flash-image | $0.067/1K image | 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9 | ✅ |
+| **Vertex AI** | gemini-3-pro-image | $0.134/1K-2K image | 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9 | ✅ |
 | **MiniMax** | image-01 | $0.0035/image | 1:1, 16:9, 9:16, 4:3, 3:4 | ✅ (URL) |
 | **Codex CLI** | codex-cli / gpt-5.4 / gpt-5.3-codex | token-priced | Prompt-driven | local input image (implemented) |
 

@@ -97,7 +97,7 @@ func ContinueCodingAgentSession(ctx context.Context, model llmtypes.Model, handl
 	}
 	messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, message))
 	resp, err := model.GenerateContent(ctx, messages, continuationOptions...)
-	if err == nil || !isCodingAgentContinuationRetryableTmuxLoss(err) {
+	if err == nil || !llmtypes.IsCodingAgentTmuxSessionLostError(err) {
 		return resp, err
 	}
 
@@ -201,66 +201,24 @@ func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.Cod
 	projectDirID := strings.TrimSpace(handle.ProjectDirID)
 
 	out := append([]llmtypes.CallOption{}, options...)
-	switch provider {
-	case ProviderClaudeCode:
-		out = append(out, WithResumeSessionID(resumeID))
-		if workingDir != "" {
-			out = append(out, WithClaudeCodeWorkingDir(workingDir))
-		}
-	case ProviderCodexCLI:
-		out = append(out, WithCodexResumeSessionID(resumeID))
-		if workingDir != "" {
-			out = append(out, WithCodexProjectDirID(workingDir))
-		} else if projectDirID != "" {
-			out = append(out, WithCodexProjectDirID(projectDirID))
-		}
-	case ProviderGeminiCLI:
-		out = append(out, WithGeminiResumeSessionID(resumeID))
-		if projectDirID != "" {
-			out = append(out, WithGeminiProjectDirID(projectDirID))
-		}
-		if workingDir != "" {
-			out = append(out, WithGeminiWorkingDir(workingDir))
-		}
-	case ProviderCursorCLI:
-		out = append(out, WithCursorResumeSessionID(resumeID))
-		if workingDir != "" {
-			out = append(out, WithCursorWorkingDir(workingDir))
-		}
-	case ProviderAgyCLI:
-		out = append(out, WithAgyResumeSessionID(resumeID))
-		if workingDir != "" {
-			out = append(out, WithAgyWorkingDir(workingDir))
-		}
-	case ProviderPiCLI:
-		out = append(out, WithPiResumeSessionID(resumeID))
-		if workingDir != "" {
-			out = append(out, WithPiWorkingDir(workingDir))
-		}
-	default:
+	resumeOption := NativeResumeOption(provider, resumeID)
+	if resumeOption == nil {
 		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonApplicable, Provider: provider, Reason: "provider-native coding-agent continuation is not implemented"}
 	}
-	return out, nil
-}
+	out = append(out, resumeOption)
 
-func isCodingAgentContinuationRetryableTmuxLoss(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, needle := range []string{
-		"can't find pane",
-		"can't find session",
-		"no server running on",
-		"target pane not found",
-		"tmux session",
-		"failed to capture",
-		"failed to wait for",
-		"timed out waiting for",
-	} {
-		if strings.Contains(msg, needle) {
-			return true
+	if workingDir != "" {
+		if option := CodingAgentWorkingDirOption(provider, workingDir); option != nil {
+			out = append(out, option)
 		}
 	}
-	return false
+	// Codex's ProjectDirID option is also its cwd option; do not let an older
+	// ProjectDirID override a fresher WorkingDir. Gemini's ProjectDirID is
+	// separate from cwd and remains useful even when WorkingDir is present.
+	if projectDirID != "" && (normalizeCodingAgentProvider(provider) != ProviderCodexCLI || workingDir == "") {
+		if option := CodingAgentProjectDirIDOption(provider, projectDirID); option != nil {
+			out = append(out, option)
+		}
+	}
+	return out, nil
 }
