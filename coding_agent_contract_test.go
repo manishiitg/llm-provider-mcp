@@ -137,6 +137,85 @@ func TestNativeResumeContractMatchesRegistry(t *testing.T) {
 	}
 }
 
+func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Transport == CodingAgentTransportTmux && contract.RequiresOwnerSessionID {
+			if opt := CodingAgentInteractiveSessionOption(contract.Provider, "owner-session"); opt == nil {
+				t.Errorf("%s requires an owner session id but has no interactive-session option registry entry", contract.Provider)
+			}
+		}
+		if contract.Transport == CodingAgentTransportTmux && contract.UsesPersistentSession {
+			if opt := CodingAgentPersistentInteractiveOption(contract.Provider, true); opt == nil {
+				t.Errorf("%s uses persistent tmux sessions but has no persistent-session option registry entry", contract.Provider)
+			}
+		}
+		if contract.RequiresWorkingDir {
+			if opt := CodingAgentWorkingDirOption(contract.Provider, "/tmp/work"); opt == nil {
+				t.Errorf("%s requires a working dir but has no working-dir option registry entry", contract.Provider)
+			}
+		}
+	}
+
+	for provider := range codingAgentInteractiveSessionRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("interactive-session registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if contract.Transport != CodingAgentTransportTmux || !contract.RequiresOwnerSessionID {
+			t.Errorf("interactive-session registry has %s but contract does not require tmux owner sessions", provider)
+		}
+	}
+	for provider := range codingAgentPersistentInteractiveRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("persistent-session registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if contract.Transport != CodingAgentTransportTmux || !contract.UsesPersistentSession {
+			t.Errorf("persistent-session registry has %s but contract does not claim persistent tmux sessions", provider)
+		}
+	}
+	for provider := range codingAgentWorkingDirRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("working-dir registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if !contract.RequiresWorkingDir {
+			t.Errorf("working-dir registry has %s but contract does not require working dir", provider)
+		}
+	}
+	for provider := range codingAgentProjectDirIDRegistry {
+		contract, ok := GetCodingAgentProviderContract(provider, "")
+		if !ok {
+			t.Errorf("project-dir-id registry has %s but no coding-agent contract", provider)
+			continue
+		}
+		if !contract.SupportsNativeResume {
+			t.Errorf("project-dir-id registry has %s but contract does not support native resume", provider)
+		}
+	}
+}
+
+func TestProjectInstructionOnlyRegistryIsIntentional(t *testing.T) {
+	expected := map[Provider]bool{
+		ProviderClaudeCode: true,
+		ProviderCodexCLI:   true,
+		ProviderGeminiCLI:  true,
+	}
+	for provider := range expected {
+		if opt := CodingAgentProjectInstructionOnlyOption(provider, true); opt == nil {
+			t.Errorf("%s should have a project-instruction-only option", provider)
+		}
+	}
+	for provider := range codingAgentProjectInstructionOnlyRegistry {
+		if !expected[provider] {
+			t.Errorf("unexpected project-instruction-only registry entry for %s", provider)
+		}
+	}
+}
+
 // TestTokenUsageContractIsWellFormed catches two classes of drift on the
 // SurfacesTokenUsage / TokenUsageSource pair:
 //
