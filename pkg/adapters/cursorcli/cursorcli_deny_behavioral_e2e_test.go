@@ -48,12 +48,12 @@ func TestCursorCLIRealDenyBuiltinHookActuallyFires(t *testing.T) {
 		{
 			name: "shell",
 			setup: func(t *testing.T, tmp string) (string, []string) {
-				sentinel := "CURSOR_DENY_SHELL_SENTINEL_" + cursorRandomHex(5)
-				sentinelPath := filepath.Join(tmp, "secret-shell.txt")
-				if err := os.WriteFile(sentinelPath, []byte(sentinel+"\n"), 0o600); err != nil {
+				secret := "CURSOR_DENY_SHELL_SECRET_" + cursorRandomHex(5)
+				secretPath := filepath.Join(tmp, "secret-shell.txt")
+				if err := os.WriteFile(secretPath, []byte(secret+"\n"), 0o600); err != nil {
 					t.Fatalf("seed shell sentinel file: %v", err)
 				}
-				return "Use Cursor's built-in shell/terminal tool, not MCP tools and not a refusal, to run this exact command: cat " + sentinelPath + ". If it fails, quote the exact denial/error.", []string{sentinel}
+				return "Use Cursor's built-in Shell tool, not MCP tools and not a refusal, to run this exact command: cat " + secretPath + ". If it fails, quote the exact denial/error.", []string{secret}
 			},
 		},
 		{

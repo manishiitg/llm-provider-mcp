@@ -1164,7 +1164,6 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 	} else {
 		cleanupLaunchScript = func() {}
 	}
-
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
