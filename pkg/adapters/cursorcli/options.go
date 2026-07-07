@@ -161,8 +161,9 @@ func WithPluginDirs(dirs []string) llmtypes.CallOption {
 	}
 }
 
-// WithAutoApproveWebSearch allows the Cursor TUI's web-search approval prompt
-// for a call that is already scoped to SearchWeb. It does not enable --force.
+// WithAutoApproveWebSearch allows Cursor Agent CLI's TUI approval prompts for
+// web search, web fetch, and opening URLs in an already user-initiated agent
+// turn. It does not enable --force.
 func WithAutoApproveWebSearch() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

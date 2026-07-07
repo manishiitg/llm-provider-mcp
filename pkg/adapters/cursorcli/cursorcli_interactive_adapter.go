@@ -2153,7 +2153,18 @@ func hasCursorWebAccessApprovalPrompt(captured string) bool {
 		strings.Contains(cleaned, "open url") && strings.Contains(cleaned, "(y)") ||
 		strings.Contains(cleaned, "allow this url") ||
 		strings.Contains(cleaned, "allow opening") && strings.Contains(cleaned, "url") ||
-		strings.Contains(cleaned, "open link") && strings.Contains(cleaned, "(y)")
+		strings.Contains(cleaned, "open link") && strings.Contains(cleaned, "(y)") ||
+		hasCursorOpenURLCommandApprovalText(cleaned)
+}
+
+func hasCursorOpenURLCommandApprovalText(cleaned string) bool {
+	hasURL := strings.Contains(cleaned, "https://") || strings.Contains(cleaned, "http://")
+	if !hasURL || !strings.Contains(cleaned, "run this command?") {
+		return false
+	}
+	return strings.Contains(cleaned, "$ open ") ||
+		strings.Contains(cleaned, "not in allowlist: open") ||
+		strings.Contains(cleaned, "shell(open)")
 }
 
 // hasCursorMCPToolApprovalPrompt detects Cursor's per-tool-call approval gate:

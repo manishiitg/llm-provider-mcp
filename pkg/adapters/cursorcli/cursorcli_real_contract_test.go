@@ -874,6 +874,71 @@ func TestCursorCLIRealInteractiveMCPBridgeContractTmux(t *testing.T) {
 	assertCursorInteractiveTerminalOnlyStream(t, streamChan)
 }
 
+func TestCursorCLIRealMCPBridgeExecuteShellWithBuiltinsDenied(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-mcp-shell-" + cursorRandomHex(4)
+	token := "BRIDGE_SHELL_REAL_" + cursorRandomHex(4)
+	workDir := t.TempDir()
+
+	mcpServerPath := writeCursorShellBridgeMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
+	preApproveCursorMCP(t, workDir, mcpConfig, "api-bridge")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Cursor built-in Shell is disabled in this session. For shell commands, call the api-bridge MCP tool execute_shell_command. Keep the final answer concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call api-bridge.execute_shell_command with command %q. Then reply with exactly the stdout value.", "printf "+token)}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithMCPConfig(mcpConfig),
+		WithApproveMCPs(),
+		WithDenyBuiltinTools(true),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	drained := drainCursorStream(streamChan)
+	if err != nil {
+		t.Fatalf("GenerateContent with MCP bridge shell error = %v\nstream:\n%s", err, drained.content)
+	}
+
+	content := ""
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
+		content = resp.Choices[0].Content
+	}
+	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
+	if !ok || tmuxSession == "" {
+		t.Fatalf("expected active Cursor tmux session for %s", ownerSessionID)
+	}
+	pane, captureErr := captureCursorPane(ctx, tmuxSession)
+	if captureErr != nil {
+		t.Fatalf("capture Cursor pane: %v", captureErr)
+	}
+
+	haystack := content + "\n" + drained.content + "\n" + pane
+	if !strings.Contains(haystack, token) {
+		t.Fatalf("MCP bridge shell result missing token %q\ncontent:\n%s\npane:\n%s", token, content, pane)
+	}
+	if !strings.Contains(strings.ToLower(haystack), "execute_shell_command") {
+		t.Fatalf("Cursor turn did not show api-bridge execute_shell_command usage\ncontent:\n%s\npane:\n%s", content, pane)
+	}
+	for _, blocked := range []string{
+		"run this command?",
+		"not in allowlist: printf",
+		"shell(printf",
+	} {
+		if strings.Contains(strings.ToLower(pane), blocked) {
+			t.Fatalf("Cursor appears to have used or stalled on built-in Shell marker %q despite MCP bridge routing:\n%s", blocked, pane)
+		}
+	}
+}
+
 // TestCursorTmuxSystemPromptSteersWritesThroughBridge answers a question the
 // previous design assumed away ("cursor's built-in tools cannot be disabled
 // via system prompt" — comment in mcpagent/agent/agent.go). In tmux mode
@@ -972,6 +1037,42 @@ rl.on("line", (line) => {
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write bridge MCP server: %v", err)
+	}
+	return path
+}
+
+func writeCursorShellBridgeMCPServer(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bridge-shell-mcp.js")
+	script := `#!/usr/bin/env node
+const { exec } = require("child_process");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") return send({jsonrpc:"2.0",id:msg.id,result:{protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"api-bridge",version:"1.0.0"}}});
+  if (msg.method === "notifications/initialized") return;
+  if (msg.method === "tools/list") return send({jsonrpc:"2.0",id:msg.id,result:{tools:[{
+    name: "execute_shell_command",
+    description: "Run a shell command through the api-bridge MCP server and return stdout, stderr, and exit code.",
+    inputSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } }, required: ["command"] }
+  }]}});
+  if (msg.method === "tools/call") {
+    const args = (msg.params && msg.params.arguments) || {};
+    const command = String(args.command || "");
+    exec(command, { timeout: 5000 }, (error, stdout, stderr) => {
+      const exitCode = error && Number.isInteger(error.code) ? error.code : 0;
+      send({jsonrpc:"2.0",id:msg.id,result:{content:[{type:"text",text:JSON.stringify({stdout,stderr,exit_code:exitCode})}],isError:false}});
+    });
+    return;
+  }
+  if (msg.id !== undefined) send({jsonrpc:"2.0",id:msg.id,result:{}});
+});
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write shell bridge MCP server: %v", err)
 	}
 	return path
 }

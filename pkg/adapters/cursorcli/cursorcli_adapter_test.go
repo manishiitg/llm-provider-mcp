@@ -93,6 +93,17 @@ Allow this web fetch?
  → Fetch (y)
    Always allow example.com (tab)
    Skip (esc or n)`,
+		`$ open "https://example.com/?cursor_approval_test=abc123" Waiting for approval...
+
+────────────────────────────────────────────────────────
+ $  open "https://example.com/?cursor_approval_test=abc123" in /tmp/work
+
+ Run this command?
+ Not in allowlist: open
+  → Run (once) (y)
+    Add Shell(open) to allowlist? (tab)
+    Run Everything (shift+tab)
+    Skip (esc or n)`,
 	}
 
 	for _, pane := range panes {
