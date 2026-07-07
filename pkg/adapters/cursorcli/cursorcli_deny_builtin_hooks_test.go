@@ -54,7 +54,7 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 		}
 	}
 	matcher, _ := parsed.Hooks["preToolUse"][0]["matcher"].(string)
-	for _, tool := range []string{"Read", "ListDir", "Glob", "Grep", "Search"} {
+	for _, tool := range []string{"Read", "ListDir", "Glob", "Grep", "Search", "Task", "Agent", "Subagent", "BackgroundAgent"} {
 		if !strings.Contains(matcher, tool) {
 			t.Fatalf("preToolUse matcher = %q, want built-in tool %s covered", matcher, tool)
 		}
@@ -72,8 +72,8 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 	if !strings.Contains(string(scriptRaw), "api-bridge") {
 		t.Errorf("deny script user_message should point at api-bridge; got:\n%s", scriptRaw)
 	}
-	if !strings.Contains(string(scriptRaw), "ListDir") || !strings.Contains(string(scriptRaw), "Grep") {
-		t.Errorf("deny script should name list/search built-ins; got:\n%s", scriptRaw)
+	if !strings.Contains(string(scriptRaw), "delegation") || !strings.Contains(string(scriptRaw), "subagents") {
+		t.Errorf("deny script should name delegation/subagent blocking; got:\n%s", scriptRaw)
 	}
 	info, err := os.Stat(scriptPath)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *
 	opts := &llmtypes.CallOptions{}
 	WithDenyBuiltinTools(true)(opts)
 
-	cleanup, err := prepareCursorProjectFiles(workDir, "", opts, "test-session-cursor")
+	cleanup, err := prepareCursorProjectFiles(workDir, "Original system prompt.", opts, "test-session-cursor")
 	if err != nil {
 		t.Fatalf("prepareCursorProjectFiles: %v", err)
 	}
@@ -173,9 +173,39 @@ func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *
 	if err != nil {
 		t.Fatalf("read generated cli.json: %v", err)
 	}
-	for _, resource := range []string{"Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)"} {
+	for _, resource := range []string{
+		"Shell(*)",
+		"Read(*)",
+		"ListDir(*)",
+		"Glob(*)",
+		"Grep(*)",
+		"Search(*)",
+		"Edit(*)",
+		"Write(*)",
+		"Task(*)",
+		"Agent(*)",
+		"Subagent(*)",
+		"BackgroundAgent(*)",
+		"CloudAgent(*)",
+		"Delegate(*)",
+	} {
 		if !strings.Contains(string(body), resource) {
 			t.Fatalf("cli.json = %s, want deny resource %s", string(body), resource)
+		}
+	}
+
+	ruleBody, err := os.ReadFile(filepath.Join(workDir, ".cursor", "rules", "mlp-system.mdc"))
+	if err != nil {
+		t.Fatalf("read generated system rule: %v", err)
+	}
+	for _, want := range []string{
+		"Original system prompt.",
+		"Do not start Cursor subagents",
+		"Complete the task in this same Cursor session",
+		"delegation tools are intentionally denied",
+	} {
+		if !strings.Contains(string(ruleBody), want) {
+			t.Fatalf("mlp-system.mdc = %s, want %q", string(ruleBody), want)
 		}
 	}
 }
