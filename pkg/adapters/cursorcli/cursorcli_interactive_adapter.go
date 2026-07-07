@@ -19,10 +19,12 @@ import (
 	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
@@ -118,21 +120,17 @@ type cursorInteractiveSession struct {
 	mu              sync.Mutex
 }
 
-var cursorInteractiveRegistry = struct {
-	sync.RWMutex
-	sessions map[string]string
-}{
-	sessions: map[string]string{},
-}
+var cursorInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
+var cursorPersistentRegistry = sessionregistry.NewOwnerRegistry[*cursorInteractiveSession]()
 
-var cursorPersistentRegistry = struct {
-	sync.Mutex
-	sessions map[string]*cursorInteractiveSession
-}{
-	sessions: map[string]*cursorInteractiveSession{},
-}
+func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (resp *llmtypes.ContentResponse, err error) {
+	var tmuxSessionName string
+	defer func() {
+		if isCursorTmuxSessionLostError(err) {
+			err = llmtypes.WrapCodingAgentTmuxSessionLostError(err, "cursor-cli", tmuxSessionName, "tmux session lost")
+		}
+	}()
 
-func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; cursor-cli tmux mode requires tmux")
 	}
@@ -205,6 +203,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		return nil, err
 	}
+	tmuxSessionName = session.tmuxSessionName
 	releaseSession := true
 	defer func() {
 		if !releaseSession || session == nil {
@@ -463,51 +462,44 @@ func estimateCursorTmuxTokens(prompt, content string) (int, int) {
 
 // acquireCursorInteractiveSession returns with session.mu held.
 func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*cursorInteractiveSession, error) {
-	if persistent {
-		cursorPersistentRegistry.Lock()
-		existing := cursorPersistentRegistry.sessions[ownerSessionID]
-		if existing != nil {
-			// Release the registry (map) lock BEFORE taking the per-session lock.
-			// session.mu is held for a whole turn; holding the global map lock
-			// across it stalls every other acquire behind a busy session
-			// (lock-held-across-blocking-call deadlock).
-			cursorPersistentRegistry.Unlock()
-			existing.mu.Lock()
-			if existing.initErr != nil {
-				err := existing.initErr
-				existing.mu.Unlock()
-				return nil, err
-			}
-			if existing.idleTimer != nil {
-				existing.idleTimer.Stop()
-				existing.idleTimer = nil
-			}
-			existing.lastUsed = time.Now()
-			return existing, nil
-		}
-	}
-
 	now := time.Now()
-	session := &cursorInteractiveSession{
-		ownerSessionID:  ownerSessionID,
-		tmuxSessionName: newCursorTmuxSessionName(),
-		persistent:      persistent,
-		createdAt:       now,
-		lastUsed:        now,
+	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
+		session := &cursorInteractiveSession{
+			ownerSessionID:  ownerSessionID,
+			tmuxSessionName: newCursorTmuxSessionName(),
+			persistent:      persistent,
+			createdAt:       now,
+			lastUsed:        now,
+		}
+		session.mu.Lock()
+		return session
+	})
+	if !ok {
+		return nil, fmt.Errorf("cursor-cli tmux mode requires an owner session ID")
 	}
-	session.mu.Lock()
-	if persistent {
-		cursorPersistentRegistry.sessions[ownerSessionID] = session
-		cursorPersistentRegistry.Unlock()
+	if !created {
+		// The registry lock protects only the owner map. Take the per-session
+		// lock after lookup so one busy Cursor turn does not block unrelated
+		// session acquisition.
+		session.mu.Lock()
+		if session.initErr != nil {
+			err := session.initErr
+			session.mu.Unlock()
+			return nil, err
+		}
+		if session.idleTimer != nil {
+			session.idleTimer.Stop()
+			session.idleTimer = nil
+		}
+		session.lastUsed = time.Now()
+		return session, nil
 	}
 
 	args, env, workingDir, cleanupFiles, err := c.buildCursorInteractiveLaunch(opts, systemPrompt, ownerSessionID)
 	if err != nil {
 		session.initErr = err
 		session.mu.Unlock()
-		if persistent {
-			removeCursorPersistentSession(ownerSessionID, session)
-		}
+		removeCursorPersistentSession(ownerSessionID, session)
 		return nil, err
 	}
 	session.workingDir = workingDir
@@ -519,9 +511,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 			cleanupFiles()
 		}
 		session.mu.Unlock()
-		if persistent {
-			removeCursorPersistentSession(ownerSessionID, session)
-		}
+		removeCursorPersistentSession(ownerSessionID, session)
 		return nil, err
 	}
 	registerCursorInteractiveSession(ownerSessionID, session.tmuxSessionName)
@@ -953,14 +943,10 @@ func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, l
 }
 
 func closeCursorPersistentSession(ownerSessionID, reason string, logger interfaces.Logger) {
-	cursorPersistentRegistry.Lock()
-	session := cursorPersistentRegistry.sessions[ownerSessionID]
-	if session == nil {
-		cursorPersistentRegistry.Unlock()
+	session, ok := cursorPersistentRegistry.Delete(ownerSessionID)
+	if !ok || session == nil {
 		return
 	}
-	delete(cursorPersistentRegistry.sessions, ownerSessionID)
-	cursorPersistentRegistry.Unlock()
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -986,16 +972,10 @@ func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	if name == "" {
 		return
 	}
-	cursorPersistentRegistry.Lock()
-	owner := ""
-	for o, s := range cursorPersistentRegistry.sessions {
-		if s != nil && s.tmuxSessionName == name {
-			owner = o
-			break
-		}
-	}
-	cursorPersistentRegistry.Unlock()
-	if owner == "" {
+	owner, _, ok := cursorPersistentRegistry.Find(func(session *cursorInteractiveSession) bool {
+		return session != nil && session.tmuxSessionName == name
+	})
+	if !ok || owner == "" {
 		return
 	}
 	closeCursorPersistentSession(owner, reason, nil)
@@ -1055,24 +1035,14 @@ func cleanupFailedCursorInteractiveSession(session *cursorInteractiveSession) {
 }
 
 func removeCursorPersistentSession(ownerSessionID string, session *cursorInteractiveSession) {
-	cursorPersistentRegistry.Lock()
-	defer cursorPersistentRegistry.Unlock()
-	if current := cursorPersistentRegistry.sessions[ownerSessionID]; current == session {
-		delete(cursorPersistentRegistry.sessions, ownerSessionID)
-	}
+	cursorPersistentRegistry.DeleteIf(ownerSessionID, session)
 }
 
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}
-	cursorPersistentRegistry.Lock()
-	sessions := make([]*cursorInteractiveSession, 0, len(cursorPersistentRegistry.sessions))
-	for _, session := range cursorPersistentRegistry.sessions {
-		sessions = append(sessions, session)
-	}
-	cursorPersistentRegistry.sessions = map[string]*cursorInteractiveSession{}
-	cursorPersistentRegistry.Unlock()
+	sessions := cursorPersistentRegistry.Drain()
 
 	var failures []string
 	for _, session := range sessions {
@@ -1111,23 +1081,15 @@ func registerCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	if ownerSessionID == "" || tmuxSessionName == "" {
 		return
 	}
-	cursorInteractiveRegistry.Lock()
-	defer cursorInteractiveRegistry.Unlock()
-	cursorInteractiveRegistry.sessions[ownerSessionID] = tmuxSessionName
+	cursorInteractiveRegistry.Set(ownerSessionID, tmuxSessionName)
 }
 
 func unregisterCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
-	cursorInteractiveRegistry.Lock()
-	defer cursorInteractiveRegistry.Unlock()
-	if current := cursorInteractiveRegistry.sessions[ownerSessionID]; current == tmuxSessionName {
-		delete(cursorInteractiveRegistry.sessions, ownerSessionID)
-	}
+	cursorInteractiveRegistry.DeleteIf(ownerSessionID, tmuxSessionName)
 }
 
 func activeCursorInteractiveSession(ownerSessionID string) (string, bool) {
-	cursorInteractiveRegistry.RLock()
-	defer cursorInteractiveRegistry.RUnlock()
-	sessionName, ok := cursorInteractiveRegistry.sessions[strings.TrimSpace(ownerSessionID)]
+	sessionName, ok := cursorInteractiveRegistry.Get(ownerSessionID)
 	return sessionName, ok && strings.TrimSpace(sessionName) != ""
 }
 
@@ -1191,16 +1153,23 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 	if workingDir == "" {
 		workingDir = cursorMustGetwd()
 	}
+	shellCommand := "cd " + cursorShellQuote(workingDir) + " && exec " + cursorShellJoin(args)
+	var cleanupLaunchScript func()
+	if len(env) > 0 {
+		var err error
+		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithEnv(args, workingDir, env)
+		if err != nil {
+			return fmt.Errorf("failed to prepare Cursor launch environment: %w", err)
+		}
+	} else {
+		cleanupLaunchScript = func() {}
+	}
+
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
-	for _, entry := range env {
-		if strings.TrimSpace(entry) != "" {
-			tmuxArgs = append(tmuxArgs, "-e", entry)
-		}
-	}
-	shellCommand := "cd " + cursorShellQuote(workingDir) + " && exec " + cursorShellJoin(args)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runCursorCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		cleanupLaunchScript()
 		return fmt.Errorf("failed to start Cursor interactive session %q: %w", sessionName, err)
 	}
 	_ = runCursorCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
@@ -2388,6 +2357,9 @@ func killCursorTmuxSession(ctx context.Context, sessionName string) error {
 func isCursorTmuxSessionLostError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if llmtypes.IsCodingAgentTmuxSessionLostError(err) {
+		return true
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "no server running") ||

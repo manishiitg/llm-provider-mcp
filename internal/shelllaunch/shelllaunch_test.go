@@ -63,6 +63,66 @@ func TestCommandDirectModeBypassesLoginShell(t *testing.T) {
 	}
 }
 
+func TestCommandWithEnvKeepsSecretsOutOfCommandString(t *testing.T) {
+	t.Setenv(EnvShellMode, "direct")
+
+	got, cleanup, err := CommandWithEnv(
+		[]string{"gemini", "--model", "gemini-3.1"},
+		"/tmp/user chat",
+		[]string{"GEMINI_API_KEY=secret-value", "GOOGLE_API_KEY=google-secret"},
+	)
+	if err != nil {
+		t.Fatalf("CommandWithEnv error = %v", err)
+	}
+	defer cleanup()
+
+	if strings.Contains(got, "secret-value") || strings.Contains(got, "google-secret") {
+		t.Fatalf("command string leaked secret: %q", got)
+	}
+	if strings.Contains(got, "GEMINI_API_KEY=") || strings.Contains(got, "GOOGLE_API_KEY=") {
+		t.Fatalf("command string leaked env names/values: %q", got)
+	}
+	if !strings.Contains(got, Quote("/bin/sh")) {
+		t.Fatalf("command = %q, want /bin/sh wrapper", got)
+	}
+
+	parts := strings.Split(got, "'")
+	var scriptPath string
+	for _, part := range parts {
+		if strings.Contains(part, "mlp-coding-agent-launch-") {
+			scriptPath = part
+			break
+		}
+	}
+	if scriptPath == "" {
+		t.Fatalf("command = %q, missing launch script path", got)
+	}
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat launch script: %v", err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o600 {
+		t.Fatalf("launch script mode = %#o, want 0600", gotMode)
+	}
+	body, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read launch script: %v", err)
+	}
+	if !strings.Contains(string(body), "secret-value") || !strings.Contains(string(body), "rm -f \"$0\"") {
+		t.Fatalf("launch script missing expected secret export/self-delete: %s", string(body))
+	}
+}
+
+func TestCommandWithEnvRejectsInvalidKey(t *testing.T) {
+	_, cleanup, err := CommandWithEnv([]string{"cmd"}, "/tmp/work", []string{"BAD-KEY=value"})
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("CommandWithEnv error = nil, want invalid key error")
+	}
+}
+
 func TestCommandSkipsUnsupportedShellOverride(t *testing.T) {
 	unsupported := writeExecutableShell(t, "tcsh")
 	supported := writeExecutableShell(t, "zsh")

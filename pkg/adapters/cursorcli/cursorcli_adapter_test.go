@@ -319,6 +319,9 @@ func TestCursorTmuxSessionLostErrorDetection(t *testing.T) {
 	if isCursorTmuxSessionLostError(nil) {
 		t.Fatal("nil error must not be classified as session loss")
 	}
+	if !isCursorTmuxSessionLostError(llmtypes.WrapCodingAgentTmuxSessionLostError(fmt.Errorf("wrapped"), "cursor-cli", "mlp-cursor-cli-int-123", "tmux session lost")) {
+		t.Fatal("typed tmux session lost error must be classified as session loss")
+	}
 	if isCursorTmuxSessionLostError(fmt.Errorf("permission denied")) {
 		t.Fatal("unrelated errors must not be classified as session loss")
 	}

@@ -19,16 +19,11 @@ func TestCleanupCursorCLIInteractiveSessionsDoesNotBlockOnBusySession(t *testing
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	cursorPersistentRegistry.Lock()
-	oldPersistent := cursorPersistentRegistry.sessions
-	cursorPersistentRegistry.sessions = map[string]*cursorInteractiveSession{
+	oldPersistent := cursorPersistentRegistry.Replace(map[string]*cursorInteractiveSession{
 		session.ownerSessionID: session,
-	}
-	cursorPersistentRegistry.Unlock()
+	})
 	t.Cleanup(func() {
-		cursorPersistentRegistry.Lock()
-		cursorPersistentRegistry.sessions = oldPersistent
-		cursorPersistentRegistry.Unlock()
+		cursorPersistentRegistry.Replace(oldPersistent)
 	})
 
 	done := make(chan error, 1)
