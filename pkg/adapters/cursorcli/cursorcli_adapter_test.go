@@ -105,6 +105,29 @@ Allow this web fetch?
 	}
 }
 
+func TestHasCursorModeSwitchPrompt(t *testing.T) {
+	pane := `╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Subagent prompt: List and update schedules                                                                      │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Switch to Agent mode?                                                                                           │
+│                                                                                                                 │
+│ Built-in shell/read tools are blocked in subagent session; switching to agent mode may restore MCP bridge       │
+│ access needed to update schedules.                                                                              │
+│                                                                                                                 │
+│  → Approve mode switch (y)                                                                                      │
+│    Reject (n or esc)                                                                                            │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`
+
+	if !hasCursorModeSwitchPrompt(pane) {
+		t.Fatalf("expected Cursor mode-switch prompt to be detected:\n%s", pane)
+	}
+	if hasCursorReadyPrompt(pane) {
+		t.Fatalf("mode-switch prompt must not be treated as a ready prompt:\n%s", pane)
+	}
+}
+
 func TestCursorInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	t.Setenv(EnvCursorInteractiveStreamTmuxScreen, "")
 	if !cursorInteractiveStreamTmuxScreenEnabled() {

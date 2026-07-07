@@ -59,6 +59,52 @@ const (
 	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
+var cursorBridgeOnlyDeniedTools = []string{
+	"Shell",
+	"Read",
+	"ListDir",
+	"Glob",
+	"Grep",
+	"Search",
+	"Edit",
+	"Write",
+	"Task",
+	"Agent",
+	"Subagent",
+	"BackgroundAgent",
+	"CloudAgent",
+	"Delegate",
+}
+
+func cursorBridgeOnlyDeniedToolMatcher() string {
+	return strings.Join(cursorBridgeOnlyDeniedTools, "|")
+}
+
+func cursorBridgeOnlyDeniedPermissionPatterns() []string {
+	patterns := make([]string, 0, len(cursorBridgeOnlyDeniedTools))
+	for _, tool := range cursorBridgeOnlyDeniedTools {
+		patterns = append(patterns, tool+"(*)")
+	}
+	return patterns
+}
+
+func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool) string {
+	if !denyBuiltin {
+		return systemPrompt
+	}
+	guidance := strings.TrimSpace(`Cursor bridge-only session rules:
+- Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Nested Cursor agents do not reliably inherit the api-bridge MCP config and can stall on interactive mode-switch prompts.
+- Complete the task in this same Cursor session using the api-bridge MCP tools.
+- Built-in filesystem, shell, edit, search, and delegation tools are intentionally denied by the orchestrator.`)
+	if strings.TrimSpace(systemPrompt) == "" {
+		return guidance
+	}
+	if strings.Contains(systemPrompt, guidance) {
+		return systemPrompt
+	}
+	return strings.TrimRight(systemPrompt, "\n") + "\n\n" + guidance
+}
+
 type cursorInteractiveSession struct {
 	ownerSessionID  string
 	tmuxSessionName string
@@ -572,6 +618,12 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		}
 	}
 
+	denyBuiltin := false
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		denyBuiltin, _ = opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool)
+	}
+	systemPrompt = cursorBridgeOnlySystemPrompt(systemPrompt, denyBuiltin)
+
 	// cursor-agent uses .git as the workspace-root marker for its
 	// .cursor/mcp.json discovery — it walks UP from cwd looking for
 	// .git and only loads .cursor/mcp.json next to the FIRST .git it
@@ -646,7 +698,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			}
 			addCleanup(cleanup)
 		}
-		if denyBuiltin, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && denyBuiltin {
+		if denyBuiltin {
 			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts))
 			if err != nil {
 				cleanupAll()
@@ -689,8 +741,8 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 }
 
 // writeCursorDenyBuiltinHooks installs a .cursor/hooks.json + deny script
-// that blocks cursor's built-in Shell / Read / ListDir / Glob / Grep /
-// Search / Edit / Write tools via cursor's hook system
+// that blocks cursor's built-in filesystem, shell, edit, search, and
+// delegation tools via cursor's hook system
 // (https://cursor.com/docs/hooks). The model is forced to call the MCP
 // bridge instead (api-bridge.execute_shell_command, api-bridge.read_file)
 // when the orchestrator has injected the bridge mcp.json.
@@ -714,12 +766,12 @@ func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool) (func(), e
 	script := `#!/bin/bash
 # Installed by the multi-llm-provider-go cursor adapter when
 # WithDenyBuiltinTools is enabled. Denies cursor's built-in filesystem,
-# shell, and edit tools so the agent routes through the MCP bridge
+# shell, edit, and delegation tools so the agent routes through the MCP bridge
 # (api-bridge.*) instead.
 input=$(cat)
 printf '%s\n' "$input" >> ` + cursorShellQuote(logPath) + `
 cat <<'JSON'
-{"permission":"deny","user_message":"Built-in Shell/Read/ListDir/Glob/Grep/Search/Edit/Write are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in Shell/Read/ListDir/Glob/Grep/Search/Edit/Write are DENIED. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, grep, find, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
+{"permission":"deny","user_message":"Built-in filesystem/shell/edit/search/delegation tools are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in filesystem/shell/edit/search/delegation tools are DENIED. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, grep, find, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, playwright) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
 JSON
 exit 0
 `
@@ -730,7 +782,7 @@ exit 0
 	hooksConfig := `{
   "version": 1,
   "hooks": {
-    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "Shell|Read|ListDir|Glob|Grep|Search|Edit|Write", "failClosed": true}],
+    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "` + cursorBridgeOnlyDeniedToolMatcher() + `", "failClosed": true}],
     "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}],
     "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}]
   }
@@ -769,8 +821,9 @@ exit 0
 }
 
 // writeCursorDenyBuiltinPermissionsCLI installs a .cursor/cli.json
-// whose permissions.deny rules block cursor's built-in Shell / Read /
-// Edit / Write tools at the permission gate that cursor evaluates
+// whose permissions.deny rules block cursor's built-in filesystem,
+// shell, edit, search, and delegation tools at the permission gate that
+// cursor evaluates
 // BEFORE prompting the user (and before the hooks.json hook runs).
 //
 // Why this is needed in addition to writeCursorDenyBuiltinHooks:
@@ -791,14 +844,20 @@ func writeCursorDenyBuiltinPermissionsCLI(cursorDir string, restorePrior bool) (
 	}
 	cliPath := filepath.Join(cursorDir, "cli.json")
 	previousCLI, cliExisted := readPreviousCursorFileIf(restorePrior, cliPath)
-	denyConfig := `{
-  "permissions": {
-    "allow": [],
-    "deny": ["Shell(*)", "Read(*)", "ListDir(*)", "Glob(*)", "Grep(*)", "Search(*)", "Edit(*)", "Write(*)"]
-  }
-}
-`
-	if err := os.WriteFile(cliPath, []byte(denyConfig), 0o600); err != nil {
+	denyConfig := struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+			Deny  []string `json:"deny"`
+		} `json:"permissions"`
+	}{}
+	denyConfig.Permissions.Allow = []string{}
+	denyConfig.Permissions.Deny = cursorBridgeOnlyDeniedPermissionPatterns()
+	denyConfigBytes, err := json.MarshalIndent(denyConfig, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cursor cli.json deny config: %w", err)
+	}
+	denyConfigBytes = append(denyConfigBytes, '\n')
+	if err := os.WriteFile(cliPath, denyConfigBytes, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to write cursor cli.json: %w", err)
 	}
 	return func() {
@@ -1383,6 +1442,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastTerminalStreamedAt time.Time
 	var lastWebSearchApprovalAt time.Time
 	var lastMCPToolApprovalAt time.Time
+	var lastModeSwitchRejectAt time.Time
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. This is tracked at the top of every tick,
 	// independent of all the branch logic below, so a prompt-detection bug that
@@ -1430,6 +1490,23 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			// Cursor can ask to switch into another agent mode when it tries
+			// nested delegation and finds the child session's built-in tools
+			// blocked. In bridge-only sessions, do not approve that transition:
+			// child Cursor agents do not reliably inherit our scoped MCP bridge
+			// config. Reject it so the parent session can continue or fail
+			// through the normal denied-tool path instead of hanging.
+			if hasCursorModeSwitchPrompt(captured) {
+				if lastModeSwitchRejectAt.IsZero() || time.Since(lastModeSwitchRejectAt) >= time.Second {
+					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "n"); err == nil {
+						lastModeSwitchRejectAt = time.Now()
+					}
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
 			}
 			// Auto-allowlist MCP tool calls. Cursor gates each MCP tool call
 			// behind a "Run this MCP tool?" prompt, and --force/--approve-mcps do
@@ -1958,6 +2035,9 @@ func hasCursorReadyPrompt(captured string) bool {
 	if hasCursorMCPServerApprovalPrompt(visible) {
 		return false
 	}
+	if hasCursorModeSwitchPrompt(visible) {
+		return false
+	}
 	cleaned := strings.ToLower(stripCursorANSI(visible))
 	if !hasCursorReadyMarker(cleaned) {
 		return false
@@ -2044,6 +2124,17 @@ func hasCursorTrustPrompt(captured string) bool {
 		strings.Contains(cleaned, "trust") && strings.Contains(cleaned, "workspace") &&
 			(strings.Contains(cleaned, "y/n") || strings.Contains(cleaned, "yes") ||
 				strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "[w]"))
+}
+
+func hasCursorModeSwitchPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
+	return strings.Contains(cleaned, "switch to agent mode") &&
+		(strings.Contains(cleaned, "approve mode switch") ||
+			strings.Contains(cleaned, "reject") ||
+			strings.Contains(cleaned, "mode switch")) &&
+		(strings.Contains(cleaned, "built-in shell/read tools are blocked") ||
+			strings.Contains(cleaned, "subagent session") ||
+			strings.Contains(cleaned, "mcp bridge"))
 }
 
 func hasCursorWebSearchApprovalPrompt(captured string) bool {
