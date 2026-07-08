@@ -398,7 +398,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	closeResumeRef := ""
 	responseSessionID := nativeSessionID
 	if !persistentInteractive {
-		closeResumeRef = closeClaudeSessionForResume(sessionName, c.logger)
+		closeResumeRef = closeClaudeSessionForResume(sessionName, nativeSessionID, c.logger)
 		if isUUIDLike(strings.TrimSpace(closeResumeRef)) {
 			responseSessionID = closeResumeRef
 		}
@@ -991,16 +991,6 @@ func buildTmuxPrompt(messages []llmtypes.MessageContent, opts *llmtypes.CallOpti
 			b.WriteString(tmuxMessagePartsToText(messages[latestIndex].Parts))
 			b.WriteString("\n")
 		}
-	}
-
-	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
-		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal JSON schema: %w", err)
-		}
-		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
-		b.Write(schemaBytes)
-		b.WriteString("\n")
 	}
 
 	return b.String(), nil
@@ -1708,8 +1698,13 @@ func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) er
 	}
 }
 
-func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) string {
-	closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func closeClaudeSessionForResume(sessionName, knownSessionID string, logger interfaces.Logger) string {
+	knownSessionID = strings.TrimSpace(knownSessionID)
+	timeout := 30 * time.Second
+	if isUUIDLike(knownSessionID) {
+		timeout = 5 * time.Second
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	promptCtx, promptCancel := context.WithTimeout(closeCtx, 10*time.Second)
@@ -1722,7 +1717,22 @@ func closeClaudeSessionForResume(sessionName string, logger interfaces.Logger) s
 		if logger != nil {
 			logger.Errorf("Failed to close Claude Code tmux session %s cleanly: %v", sessionName, err)
 		}
+		if isUUIDLike(knownSessionID) {
+			return knownSessionID
+		}
 		return ""
+	}
+	// Claude Code v2.1.x can treat the first Enter as "open/select the /exit
+	// slash-command menu" rather than executing the command. Send one more Enter
+	// after a tiny settle window; if the pane already exited this is a harmless
+	// best-effort no-op.
+	select {
+	case <-closeCtx.Done():
+	case <-time.After(250 * time.Millisecond):
+		_ = runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+	}
+	if isUUIDLike(knownSessionID) {
+		return knownSessionID
 	}
 
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -3221,7 +3231,7 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 	if logger != nil {
 		logger.Debugf("Closing persistent Claude Code tmux session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
-	_ = closeClaudeSessionForResume(session.tmuxSessionName, logger)
+	_ = closeClaudeSessionForResume(session.tmuxSessionName, session.nativeSessionID, logger)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = killClaudeInteractiveSession(cleanupCtx, session.tmuxSessionName)

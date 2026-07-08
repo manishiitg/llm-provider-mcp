@@ -3,7 +3,6 @@ package claudecode
 import (
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	llmproviders "github.com/manishiitg/multi-llm-provider-go"
@@ -45,17 +44,6 @@ func runClaudeCodeSearchWebTest(cmd *cobra.Command, args []string) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		log.Fatal("query is required")
-	}
-
-	if strings.TrimSpace(os.Getenv(llmproviders.EnvClaudeCodeTransport)) == "" {
-		if err := os.Setenv(llmproviders.EnvClaudeCodeTransport, llmproviders.ClaudeCodeTransportPrint); err != nil {
-			log.Fatalf("Failed to set Claude Code transport: %v", err)
-		}
-	}
-	if strings.TrimSpace(os.Getenv(llmproviders.EnvClaudeCodeAllowLegacyPrint)) == "" {
-		if err := os.Setenv(llmproviders.EnvClaudeCodeAllowLegacyPrint, "1"); err != nil {
-			log.Fatalf("Failed to allow Claude Code legacy print transport: %v", err)
-		}
 	}
 
 	llmInstance, err := llmproviders.InitializeLLM(llmproviders.Config{

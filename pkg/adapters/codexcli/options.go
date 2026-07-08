@@ -15,7 +15,6 @@ const (
 	MetadataKeyFullAuto              = "codex_full_auto"
 	MetadataKeyProjectDirID          = "codex_project_dir_id"
 	MetadataKeyConfigProfile         = "codex_config_profile"
-	MetadataKeyOutputSchema          = "codex_output_schema"
 	MetadataKeyAdditionalDirs        = "codex_additional_dirs"
 	MetadataKeyDisableFeatures       = "codex_disable_features"
 	MetadataKeyEnableFeatures        = "codex_enable_features"
@@ -47,8 +46,7 @@ const (
 	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature
 	// flag that carries the per-session system prompt SOLELY via the
 	// projected <workingDir>/AGENTS.md file and SKIPS the CLI-side
-	// injection (-c developer_instructions in the structured path,
-	// -c model_instructions_file in the interactive path). Default off;
+	// injection (-c model_instructions_file in the tmux path). Default off;
 	// the CLI injection is the primary path. When enabled, the CLI
 	// injection is skipped only if the AGENTS.md projection actually
 	// succeeded for that path — otherwise the adapter falls back to the
@@ -132,9 +130,9 @@ func WithSandbox(sandbox string) llmtypes.CallOption {
 	}
 }
 
-// WithFullAuto enables low-friction local work. Newer Codex CLI versions map
-// this to --dangerously-bypass-approvals-and-sandbox instead of deprecated
-// --full-auto.
+// WithFullAuto is kept for older callers. The tmux transport ignores this
+// metadata; use WithApprovalPolicy("never") and sandbox/config overrides for
+// current Codex CLI runs.
 func WithFullAuto() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -155,14 +153,6 @@ func WithConfigProfile(profile string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyConfigProfile] = profile
-	}
-}
-
-// WithOutputSchema sets the --output-schema flag for structured output.
-func WithOutputSchema(schemaPath string) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyOutputSchema] = schemaPath
 	}
 }
 
@@ -257,7 +247,7 @@ func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 }
 
 // WithPersistentInteractiveSession keeps the tmux-backed Codex TUI alive across
-// completed chat turns. Workflow runs should use the default exec-json path.
+// completed chat turns. Direct callers without this get a bounded tmux session.
 func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -313,8 +303,8 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 
 // WithProjectInstructionOnly makes the adapter carry the per-session system
 // prompt SOLELY via the projected <workingDir>/AGENTS.md file and SKIP the
-// CLI-side injection (-c developer_instructions in the structured path,
-// -c model_instructions_file in the interactive path). OFF by default. Codex
+// CLI-side injection (-c model_instructions_file in the tmux path). OFF by
+// default. Codex
 // auto-loads AGENTS.md as project instructions, so the prompt is still applied
 // — but only once, avoiding the doubled system prompt (and doubled token cost)
 // that results from passing the same bytes through both the CLI flag and

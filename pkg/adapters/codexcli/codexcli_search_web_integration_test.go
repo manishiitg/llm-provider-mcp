@@ -66,3 +66,36 @@ func requireRealCodexCLISearchWebE2E(t *testing.T) {
 		t.Fatalf("real Codex CLI web search test requires codex in PATH: %v", err)
 	}
 }
+
+type quietCodexStreamLogger struct{}
+
+func (quietCodexStreamLogger) Debugf(string, ...interface{}) {}
+func (quietCodexStreamLogger) Infof(string, ...any)          {}
+func (quietCodexStreamLogger) Errorf(string, ...any)         {}
+
+type codexStreamCapture struct {
+	content    string
+	toolStarts int
+	toolEnds   int
+}
+
+func collectCodexStream(streamChan <-chan llmtypes.StreamChunk) <-chan codexStreamCapture {
+	done := make(chan codexStreamCapture, 1)
+	go func() {
+		var capture codexStreamCapture
+		var content strings.Builder
+		for chunk := range streamChan {
+			switch chunk.Type {
+			case llmtypes.StreamChunkTypeContent:
+				content.WriteString(chunk.Content)
+			case llmtypes.StreamChunkTypeToolCallStart:
+				capture.toolStarts++
+			case llmtypes.StreamChunkTypeToolCallEnd:
+				capture.toolEnds++
+			}
+		}
+		capture.content = strings.TrimSpace(content.String())
+		done <- capture
+	}()
+	return done
+}

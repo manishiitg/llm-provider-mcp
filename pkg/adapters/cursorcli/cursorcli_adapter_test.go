@@ -93,6 +93,17 @@ Allow this web fetch?
  → Fetch (y)
    Always allow example.com (tab)
    Skip (esc or n)`,
+		`$ open "https://example.com/?cursor_approval_test=abc123" Waiting for approval...
+
+────────────────────────────────────────────────────────
+ $  open "https://example.com/?cursor_approval_test=abc123" in /tmp/work
+
+ Run this command?
+ Not in allowlist: open
+  → Run (once) (y)
+    Add Shell(open) to allowlist? (tab)
+    Run Everything (shift+tab)
+    Skip (esc or n)`,
 	}
 
 	for _, pane := range panes {
@@ -102,6 +113,29 @@ Allow this web fetch?
 		if hasCursorReadyPrompt(pane) {
 			t.Fatalf("web-access approval prompt must not be treated as a ready prompt:\n%s", pane)
 		}
+	}
+}
+
+func TestHasCursorModeSwitchPrompt(t *testing.T) {
+	pane := `╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Subagent prompt: List and update schedules                                                                      │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Switch to Agent mode?                                                                                           │
+│                                                                                                                 │
+│ Built-in shell/read tools are blocked in subagent session; switching to agent mode may restore MCP bridge       │
+│ access needed to update schedules.                                                                              │
+│                                                                                                                 │
+│  → Approve mode switch (y)                                                                                      │
+│    Reject (n or esc)                                                                                            │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`
+
+	if !hasCursorModeSwitchPrompt(pane) {
+		t.Fatalf("expected Cursor mode-switch prompt to be detected:\n%s", pane)
+	}
+	if hasCursorReadyPrompt(pane) {
+		t.Fatalf("mode-switch prompt must not be treated as a ready prompt:\n%s", pane)
 	}
 }
 
@@ -216,58 +250,6 @@ exit 0
 	}
 	if strings.Contains(string(args), "clear-history") {
 		t.Fatalf("resetCursorPaneForTurn should preserve tmux history, got args:\n%s", string(args))
-	}
-}
-
-func TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal(t *testing.T) {
-	// Cursor is now tmux-only by contract; GenerateContent no longer
-	// reaches generateContentStructured (the path this test exercises
-	// with a fake cursor-agent stub). Skip until the structured path
-	// is reinstated or this test is reworked to call the unexported
-	// structured method directly.
-	t.Skip("cursor-cli structured transport disabled (tmux-only contract); see cursorcli_adapter.go")
-	fakeBin := t.TempDir()
-	cursorPath := filepath.Join(fakeBin, "cursor-agent")
-	script := `#!/bin/sh
-printf '%s\n' '{"type":"system","session_id":"cursor-structured","model":"cursor-test"}'
-printf '%s\n' '{"type":"thinking","subtype":"delta","text":"thinking terminal mirror ok"}'
-printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"assistant terminal mirror ok"}]}}'
-printf '%s\n' '{"type":"result","result":"assistant terminal mirror ok","session_id":"cursor-structured","usage":{"inputTokens":1,"outputTokens":2}}'
-`
-	if err := os.WriteFile(cursorPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake cursor-agent: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	streamChan := make(chan llmtypes.StreamChunk, 32)
-	resp, err := adapter.GenerateContent(context.Background(),
-		[]llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "route this")},
-		llmtypes.WithStreamingChan(streamChan),
-	)
-	if err != nil {
-		t.Fatalf("GenerateContent() error = %v", err)
-	}
-	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "assistant terminal mirror ok") {
-		t.Fatalf("unexpected response: %#v", resp)
-	}
-
-	var assistantContent strings.Builder
-	var terminalContent strings.Builder
-	for chunk := range streamChan {
-		switch chunk.Type {
-		case llmtypes.StreamChunkTypeContent:
-			assistantContent.WriteString(chunk.Content)
-		case llmtypes.StreamChunkTypeTerminal:
-			terminalContent.WriteString(chunk.Content)
-			terminalContent.WriteString("\n")
-		}
-	}
-	if !strings.Contains(assistantContent.String(), "assistant terminal mirror ok") {
-		t.Fatalf("assistant stream missing final text: %q", assistantContent.String())
-	}
-	if !strings.Contains(terminalContent.String(), "assistant terminal mirror ok") {
-		t.Fatalf("terminal stream missing assistant text:\n%s", terminalContent.String())
 	}
 }
 
@@ -526,6 +508,34 @@ func TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup(t *testing.T) {
 
 	if _, err := os.Stat(cursorDir); !os.IsNotExist(err) {
 		t.Fatalf("cleanup must remove the full .cursor/ tree (including the operator's pre-existing cli.json); stat err = %v", err)
+	}
+}
+
+func TestPrepareCursorProjectFilesWritesMCPAllowlistCLIConfig(t *testing.T) {
+	workDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
+
+	cleanup, err := prepareCursorProjectFiles(workDir, "System text", opts, "test-session-mcp-allow")
+	if err != nil {
+		t.Fatalf("prepareCursorProjectFiles error = %v", err)
+	}
+	defer cleanup()
+
+	cursorDir := filepath.Join(workDir, ".cursor")
+	mcpBody, err := os.ReadFile(filepath.Join(cursorDir, "mcp.json"))
+	if err != nil {
+		t.Fatalf("read mcp.json: %v", err)
+	}
+	if !strings.Contains(string(mcpBody), `"type":"stdio"`) {
+		t.Fatalf("mcp.json = %s, want stdio type normalization", string(mcpBody))
+	}
+	cliBody, err := os.ReadFile(filepath.Join(cursorDir, "cli.json"))
+	if err != nil {
+		t.Fatalf("read cli.json: %v", err)
+	}
+	if !strings.Contains(string(cliBody), `Mcp(api-bridge:*)`) {
+		t.Fatalf("cli.json = %s, want MCP allowlist", string(cliBody))
 	}
 }
 

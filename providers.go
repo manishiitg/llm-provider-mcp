@@ -85,15 +85,16 @@ const (
 	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
-	// EnvClaudeCodeAllowLegacyPrint must be explicitly enabled before the legacy
-	// `claude -p` stream-json transport can be selected.
-	EnvClaudeCodeAllowLegacyPrint = "CLAUDE_CODE_ALLOW_LEGACY_PRINT"
 
 	ClaudeCodeTransportTmux = "tmux"
 	// ClaudeCodeTransportExperimental is kept as a legacy alias.
 	// Deprecated: use ClaudeCodeTransportTmux.
 	ClaudeCodeTransportExperimental = "experimental"
-	ClaudeCodeTransportPrint        = "print"
+	// ClaudeCodeTransportPrint is retained only so callers get a clear
+	// unsupported-transport error instead of an unknown symbol during migration.
+	//
+	// Deprecated: Claude Code uses tmux only.
+	ClaudeCodeTransportPrint = "print"
 )
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
@@ -326,8 +327,8 @@ type Config struct {
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
 	// initialized Claude Code model. Default is "tmux" (the interactive TUI
-	// transport). "print" selects the `claude -p` stream-json transport — an
-	// opt-in path a workflow step may request via its transport config.
+	// transport). The old "print" / `claude -p` stream-json transport is no
+	// longer supported.
 	ClaudeCodeTransport string
 }
 
@@ -2225,28 +2226,6 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
 	// a key that often has low/no credits. Users who want API-key billing should select the
 	// `anthropic` provider instead, which is a separate direct-API adapter.
-	if transport == ClaudeCodeTransportPrint {
-		logger.Infof("Claude Code: using legacy print transport with CLI OAuth credentials (`claude -p` stream-json)")
-
-		llm := claudecodeadapter.NewClaudeCodeAdapter("", modelID, logger)
-
-		successMetadata := LLMMetadata{
-			ModelVersion: modelID,
-			User:         "claude_code_user",
-			CustomFields: map[string]string{
-				"provider":     "claude-code",
-				"status":       StatusLLMInitialized,
-				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-				"mode":         ClaudeCodeTransportPrint,
-				"transport":    ClaudeCodeTransportPrint,
-			},
-		}
-		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-		logger.Infof("Initialized Claude Code print adapter - model_id: %s", modelID)
-		return llm, nil
-	}
-
 	logger.Infof("Claude Code: using tmux mode with CLI OAuth credentials (no `claude -p` invocation)")
 
 	// Create Claude Code tmux adapter.
@@ -2286,14 +2265,9 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
 		return ClaudeCodeTransportTmux, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
-		// Print / stream-json transport. Opt-in and rarely used — the default is
-		// tmux; a workflow step selects this explicitly via its transport config
-		// (step-level "structured"/"json" is mapped to this "print" value before
-		// it reaches here). Fully supported (not legacy-gated): the `claude -p`
-		// path passes the structured contract tests against the current CLI.
-		return ClaudeCodeTransportPrint, nil
+		return "", fmt.Errorf("Claude Code print/stream-json transport is no longer supported; use %s=%q", EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q (default) or %q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux, ClaudeCodeTransportPrint)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	}
 }
 

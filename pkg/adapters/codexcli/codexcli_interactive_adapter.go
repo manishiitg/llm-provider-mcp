@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -215,23 +214,6 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 
 	prompt := buildCodexInteractivePrompt(conversationMessages)
-	// JSON Schema structured output: prompt-appended fallback, same as the
-	// structured codex path and the gemini adapters.
-	if opts != nil && opts.JSONSchema != nil && opts.JSONSchema.Schema != nil {
-		schemaBytes, err := json.Marshal(opts.JSONSchema.Schema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal JSON schema: %w", err)
-		}
-		var b strings.Builder
-		b.WriteString(prompt)
-		if prompt != "" && !strings.HasSuffix(prompt, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("\nReturn a response that conforms to this JSON schema:\n")
-		b.Write(schemaBytes)
-		b.WriteString("\n")
-		prompt = b.String()
-	}
 	baseline, _ := captureCodexPane(callCtx, session.tmuxSessionName)
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
 	promptSentAt := time.Now()
@@ -3324,6 +3306,8 @@ func interruptCodexInteractiveSession(sessionName string, logger interfaces.Logg
 
 func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
 	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
+	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
+	_ = runCodexCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
 func captureCodexPane(ctx context.Context, sessionName string) (string, error) {

@@ -2,7 +2,6 @@ package codexcli
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -147,68 +146,6 @@ exit 0
 	}
 }
 
-func TestCodexStructuredFullAutoRequiresExplicitOptIn(t *testing.T) {
-	args := captureCodexStructuredArgs(t)
-	if codexArgsContain(args, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Fatalf("default args unexpectedly bypass approvals/sandbox: %v", args)
-	}
-
-	args = captureCodexStructuredArgs(t, WithFullAuto())
-	if !codexArgsContain(args, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Fatalf("WithFullAuto args missing bypass flag: %v", args)
-	}
-}
-
-func captureCodexStructuredArgs(t *testing.T, options ...llmtypes.CallOption) []string {
-	t.Helper()
-
-	fakeBin := t.TempDir()
-	argsPath := fakeBin + "/codex-args.log"
-	codexPath := fakeBin + "/codex"
-	script := `#!/bin/sh
-: > "$CODEX_TEST_ARGS"
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$CODEX_TEST_ARGS"
-done
-printf '%s\n' '{"type":"thread.started","thread_id":"thread-test"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","id":"msg-1","text":"ok"}}'
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
-`
-	if err := os.WriteFile(codexPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CODEX_TEST_ARGS", argsPath)
-
-	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{
-			Role: llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "say ok"},
-			},
-		},
-	}, options...)
-	if err != nil {
-		t.Fatalf("GenerateContent with fake codex: %v", err)
-	}
-	if got := resp.Choices[0].Content; got != "ok" {
-		t.Fatalf("fake codex content = %q, want ok", got)
-	}
-
-	body, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read captured codex args: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
-	}
-	return lines
-}
-
 func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCodexInteractiveTimeoutSeconds, "")
 	if got := codexInteractiveTimeout(); got != 0 {
@@ -328,53 +265,6 @@ func TestCodexInteractiveArgsRejectInvalidResumeSessionID(t *testing.T) {
 	}
 }
 
-func TestCodexStructuredRejectsInvalidResumeSessionIDBeforeLaunch(t *testing.T) {
-	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
-	_, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
-		{
-			Role: llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "say ok"},
-			},
-		},
-	}, WithResumeSessionID("--model"))
-	if err == nil {
-		t.Fatal("GenerateContent error = nil, want invalid resume id error")
-	}
-	if !strings.Contains(err.Error(), "invalid codex resume session id") {
-		t.Fatalf("GenerateContent error = %v, want invalid resume id", err)
-	}
-}
-
-func TestWriteCodexImageContentFilesFromBase64(t *testing.T) {
-	raw := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
-	tempDir, paths, err := writeCodexImageContentFiles([]llmtypes.ImageContent{
-		{
-			SourceType: "base64",
-			MediaType:  "image/png",
-			Data:       base64.StdEncoding.EncodeToString(raw),
-		},
-	})
-	if err != nil {
-		t.Fatalf("writeCodexImageContentFiles() error = %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	if len(paths) != 1 {
-		t.Fatalf("paths = %v, want one image path", paths)
-	}
-	if !strings.HasSuffix(paths[0], ".png") {
-		t.Fatalf("image path = %q, want .png extension", paths[0])
-	}
-	got, err := os.ReadFile(paths[0])
-	if err != nil {
-		t.Fatalf("read image file: %v", err)
-	}
-	if string(got) != string(raw) {
-		t.Fatalf("image bytes = %v, want %v", got, raw)
-	}
-}
-
 func codexArgsContainPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
@@ -382,27 +272,6 @@ func codexArgsContainPair(args []string, key, value string) bool {
 		}
 	}
 	return false
-}
-
-func codexArgsContain(args []string, want string) bool {
-	for _, arg := range args {
-		if arg == want {
-			return true
-		}
-	}
-	return false
-}
-
-func TestWriteCodexImageContentFilesRejectsURL(t *testing.T) {
-	_, _, err := writeCodexImageContentFiles([]llmtypes.ImageContent{
-		{SourceType: "url", Data: "https://example.com/image.png"},
-	})
-	if err == nil {
-		t.Fatal("writeCodexImageContentFiles() error = nil, want unsupported URL error")
-	}
-	if !strings.Contains(err.Error(), "image URLs are not supported") {
-		t.Fatalf("error = %v, want unsupported URL error", err)
-	}
 }
 
 func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
@@ -420,7 +289,7 @@ func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
 	if err == nil {
 		t.Fatal("GenerateContent() error = nil, want unsupported interactive image error")
 	}
-	if !strings.Contains(err.Error(), "interactive transport does not support llmtypes.ImageContent") {
+	if !strings.Contains(err.Error(), "tmux transport does not support llmtypes.ImageContent") {
 		t.Fatalf("GenerateContent() error = %v, want interactive image unsupported error", err)
 	}
 }
@@ -1434,14 +1303,6 @@ func assertCodexInteractiveTerminalOnlyStream(t *testing.T, streamChan <-chan ll
 	if drained.terminalCount == 0 {
 		t.Fatalf("interactive stream emitted no terminal snapshots")
 	}
-}
-
-func assertCodexStreamQuality(t *testing.T, streamed, want string) {
-	t.Helper()
-	if !strings.Contains(streamed, want) {
-		t.Fatalf("streamed content = %q, want assistant response containing %q", streamed, want)
-	}
-	assertCodexNoInternalStatus(t, streamed)
 }
 
 func assertCodexNoInternalStatus(t *testing.T, streamed string) {
