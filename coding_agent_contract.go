@@ -204,7 +204,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		LaunchesViaLoginShell:         true,
 		ProcessScopedCleanup:          true,
 		HandlesTmuxSessionLoss:        true,
-		StructuredFallback:            true,
+		StructuredFallback:            false,
 		ImageInputInteractive:         true,
 		SurfacesTokenUsage:            true,
 		TokenUsageSource:              "transcript-file",
@@ -245,7 +245,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		LaunchesViaLoginShell:     true,
 		ProcessScopedCleanup:      true,
 		HandlesTmuxSessionLoss:    true,
-		StructuredFallback:        true,
+		StructuredFallback:        false,
 		ImageInputInteractive:     true,
 		SurfacesTokenUsage:        true,
 		TokenUsageSource:          "transcript-file",
@@ -271,7 +271,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsTerminalStream:  true,
 		SupportsFinalExtraction: true,
 		// Wired end-to-end: mcpagent.Agent.CursorSessionID is populated by
-		// the structured adapter from cursor's stream-json init event,
+		// the tmux adapter from Cursor's local store.db sidecar,
 		// session_handle persists it, llmproviders.WithCursorResumeSessionID
 		// re-exports the resume option, and server.go's restore switch
 		// reads it back via `case "cursor-cli":`. The drift test in
@@ -285,15 +285,12 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		LaunchesViaLoginShell:   true,
 		ProcessScopedCleanup:    true,
 		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      true,
+		StructuredFallback:      false,
 		ImageInputInteractive:   true,
 		SurfacesTokenUsage:      true,
-		// Cursor's structured (--print) path parses stream-json exactly; the
-		// tmux interactive path falls back to a 4-chars-per-token heuristic
-		// in estimateCursorTmuxTokens. We classify by the higher-fidelity
-		// canonical path. Reports from tmux-mode runs should be flagged as
-		// approximate at the cost-ledger layer.
-		TokenUsageSource:          "stream-json",
+		// Cursor's tmux interactive path falls back to a 4-chars-per-token
+		// heuristic in estimateCursorTmuxTokens.
+		TokenUsageSource:          "estimated",
 		AdapterReadsTranscript:    true,
 		TranscriptPathTemplate:    "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
 		RequiresWorkspaceTrust:    true,
