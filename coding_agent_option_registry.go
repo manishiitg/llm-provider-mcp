@@ -10,6 +10,8 @@ func normalizeCodingAgentProvider(provider Provider) Provider {
 	return Provider(strings.ToLower(strings.TrimSpace(string(provider))))
 }
 
+// codingAgentInteractiveSessionRegistry maps a tmux coding-agent provider to
+// the public "own this interactive session by app session id" CallOption.
 var codingAgentInteractiveSessionRegistry = map[Provider]func(string) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodeInteractiveSessionID,
 	ProviderCodexCLI:   WithCodexInteractiveSessionID,

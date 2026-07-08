@@ -43,6 +43,9 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 			if !contract.UsesMCPBridge {
 				t.Fatal("coding-agent contract must use the MCP bridge")
 			}
+			if !contract.RequiresMCPBridgeConfig {
+				t.Fatal("coding-agent contract must require MCP bridge config")
+			}
 			if !contract.UsesNativeSystemPrompt {
 				t.Fatal("coding-agent contract must use native system/developer instructions")
 			}
@@ -194,6 +197,17 @@ func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
 		}
 		if !contract.SupportsNativeResume {
 			t.Errorf("project-dir-id registry has %s but contract does not support native resume", provider)
+		}
+	}
+}
+
+func TestCodingAgentMCPBridgeIsRequiredWhenUsed(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.UsesMCPBridge && !contract.RequiresMCPBridgeConfig {
+			t.Errorf("%s uses the MCP bridge but does not require bridge config", contract.Provider)
+		}
+		if contract.RequiresMCPBridgeConfig && !contract.UsesMCPBridge {
+			t.Errorf("%s requires bridge config but does not declare UsesMCPBridge", contract.Provider)
 		}
 	}
 }
@@ -351,41 +365,26 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // Drain this map by writing the missing e2e tests + registering them in
 // codingAgentProviderCertifications.
 var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
-	// Cursor CLI is fully wired in the orchestrator. CertMCPBridge has
-	// landed (TestCursorCLIStructuredMCPBridge); remaining IDs are real
-	// gaps that need their own e2e tests, tracked as follow-up tasks.
+	// Cursor CLI is fully wired in the orchestrator and most tmux claims now
+	// point at real cursor-agent E2Es. Remaining IDs are real gaps that need
+	// their own e2e tests, tracked as follow-up tasks.
 	ProviderCursorCLI: {
-		CertBoundedRetention, CertCancellation, CertCleanup,
-		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
-		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
-		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
-		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
-		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
-		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
-		CertTrustAuthPrompts, CertWorkingDirectory,
+		CertBoundedRetention,
+		CertLifecyclePolicy,
+		CertPersistentCancelReuse,
+		CertStaleDraftCleanup,
+		CertTrustAuthPrompts,
 	},
-	ProviderAgyCLI: {
-		CertSharedWorkdirMCPIsolation,
-	},
-	// Gemini CLI is now tmux-default (matching Claude/Codex/Cursor/Agy) with
-	// structured as the opt-in fallback. The interactive adapter has its core
-	// e2e suite — full tmux contract, MCP bridge, live input, queued
-	// validation, shared-workdir MCP isolation, parallel startup queue and
-	// isolation, cleanup, trust prompt, image-path analysis, project artifact
-	// lifecycle — but it doesn't yet have explicit certification-registry
-	// entries for every claim in the tmux contract. The IDs below mirror the
-	// gap shape used for Cursor: a public TODO list of capabilities the
-	// contract claims but whose certification entry hasn't been wired up.
-	// Drain by registering each in codingAgentProviderCertifications.
+	// Gemini CLI is deprecated for new setup, so it is no longer held to the
+	// full active-provider tmux promotion bar. These are the remaining legacy
+	// runtime claims that stay true so restored Gemini sessions keep working,
+	// but they are not a reason to invest in new Gemini certification work;
+	// promote new Google/Gemini-backed flows through Pi CLI instead.
 	ProviderGeminiCLI: {
-		CertBoundedRetention, CertCancellation, CertCleanup,
-		CertDoneDetection, CertFreshLaunch, CertLifecyclePolicy,
+		CertCancellation, CertCleanup, CertFreshLaunch,
 		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
-		CertParallelIsolation, CertParallelStartupQueue, CertPersistentCancelReuse,
-		CertPromptPaste, CertResumeCompactionStartup, CertSessionLoss,
-		CertSessionLossRecovery, CertSharedWorkdirMCPIsolation, CertSlowToolFalseIdle,
-		CertSlowToolLiveInput, CertStaleDraftCleanup, CertStartupTerminalVisibility,
-		CertTrustAuthPrompts, CertWorkingDirectory,
+		CertSessionLoss, CertSessionLossRecovery, CertStaleDraftCleanup,
+		CertWorkingDirectory,
 	},
 }
 
@@ -488,6 +487,28 @@ func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 		}
 		if !hasPiEnvGuard {
 			t.Fatalf("pi-cli certification %s must name its real E2E env guard, got %#v", cert.ID, cert.Env)
+		}
+	}
+}
+
+func TestCursorCLICertificationsUseRealE2EOnly(t *testing.T) {
+	certs := CodingAgentProviderCertifications(ProviderCursorCLI)
+	if len(certs) == 0 {
+		t.Fatal("cursor-cli has no registered certifications")
+	}
+	for _, cert := range certs {
+		if !cert.RealE2E {
+			t.Fatalf("cursor-cli certification %s must be backed by real Cursor E2E, got %#v", cert.ID, cert)
+		}
+		hasCursorEnvGuard := false
+		for _, env := range cert.Env {
+			if strings.HasPrefix(env, "RUN_CURSOR_CLI_") {
+				hasCursorEnvGuard = true
+				break
+			}
+		}
+		if !hasCursorEnvGuard {
+			t.Fatalf("cursor-cli certification %s must name its real E2E env guard, got %#v", cert.ID, cert.Env)
 		}
 	}
 }

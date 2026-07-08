@@ -74,6 +74,27 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 			cleanup: CleanupCodexCLIInteractiveSessions,
 		},
 		{
+			name:       "cursor-cli",
+			provider:   ProviderCursorCLI,
+			model:      codingAgentContinuationE2EModel("CURSOR_CLI_REAL_CONTRACT_MODEL", DefaultCursorCLIModel),
+			binaryName: "cursor-agent",
+			config: func(model string) Config {
+				return Config{
+					Provider: ProviderCursorCLI,
+					ModelID:  model,
+				}
+			},
+			options: func(ownerID, workDir string) []llmtypes.CallOption {
+				return []llmtypes.CallOption{
+					WithCursorInteractiveSessionID(ownerID),
+					WithCursorPersistentInteractiveSession(true),
+					WithCursorWorkingDir(workDir),
+					WithCursorDenyBuiltinTools(true),
+				}
+			},
+			cleanup: CleanupCursorCLIInteractiveSessions,
+		},
+		{
 			name:     "pi-cli",
 			provider: ProviderPiCLI,
 			model:    codingAgentContinuationE2EModel("PI_CLI_REAL_CONTRACT_MODEL", DefaultPiCLIModel),

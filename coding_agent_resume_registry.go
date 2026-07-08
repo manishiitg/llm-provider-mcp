@@ -35,7 +35,7 @@ var nativeResumeRegistry = map[Provider]func(sessionID string) llmtypes.CallOpti
 // hard-coding the per-provider option func, so the registry stays the
 // single source of truth.
 func NativeResumeOption(provider Provider, sessionID string) llmtypes.CallOption {
-	if fn, ok := nativeResumeRegistry[provider]; ok {
+	if fn, ok := nativeResumeRegistry[normalizeCodingAgentProvider(provider)]; ok {
 		return fn(sessionID)
 	}
 	return nil

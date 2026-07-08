@@ -11,10 +11,12 @@ import (
 // OpenAI model name constants
 const (
 	// GPT-5.2 family
-	ModelGPT52    = "gpt-5.2"
+	ModelGPT52 = "gpt-5.2"
 	// GPT-5.2 specialized variants
 	ModelGPT52Instant  = "gpt-5.2-instant"
 	ModelGPT52Thinking = "gpt-5.2-thinking"
+	// GPT-5.5 family
+	ModelGPT55 = "gpt-5.5"
 	// GPT-5.4 family
 	ModelGPT54     = "gpt-5.4"
 	ModelGPT54Mini = "gpt-5.4-mini"
@@ -72,6 +74,21 @@ func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 			SupportsJSONMode:        true,
 			SupportsReasoningEffort: true,
 			ReasoningEffortLevels:   []string{"low", "medium", "high"},
+		},
+		// GPT-5.5 frontier — 1.05M context, highest reasoning
+		ModelGPT55: {
+			ModelID:                    ModelGPT55,
+			ModelName:                  "GPT-5.5",
+			ContextWindow:              1050000,
+			InputCostPer1MTokens:       5.00,
+			OutputCostPer1MTokens:      30.00,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.50,
+			Provider:                   "openai",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
 		},
 		// GPT-5.4 flagship — 1.1M context, strongest reasoning
 		ModelGPT54: {

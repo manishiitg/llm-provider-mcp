@@ -19,16 +19,11 @@ func TestCleanupClaudeCodeTmuxSessionsDoesNotBlockOnBusyPersistentSession(t *tes
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	claudeInteractivePersistentRegistry.Lock()
-	oldPersistent := claudeInteractivePersistentRegistry.sessions
-	claudeInteractivePersistentRegistry.sessions = map[string]*claudeInteractivePersistentSession{
+	oldPersistent := claudeInteractivePersistentRegistry.Replace(map[string]*claudeInteractivePersistentSession{
 		session.ownerSessionID: session,
-	}
-	claudeInteractivePersistentRegistry.Unlock()
+	})
 	t.Cleanup(func() {
-		claudeInteractivePersistentRegistry.Lock()
-		claudeInteractivePersistentRegistry.sessions = oldPersistent
-		claudeInteractivePersistentRegistry.Unlock()
+		claudeInteractivePersistentRegistry.Replace(oldPersistent)
 	})
 
 	done := make(chan error, 1)

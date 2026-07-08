@@ -85,15 +85,16 @@ const (
 	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
-	// EnvClaudeCodeAllowLegacyPrint must be explicitly enabled before the legacy
-	// `claude -p` stream-json transport can be selected.
-	EnvClaudeCodeAllowLegacyPrint = "CLAUDE_CODE_ALLOW_LEGACY_PRINT"
 
 	ClaudeCodeTransportTmux = "tmux"
 	// ClaudeCodeTransportExperimental is kept as a legacy alias.
 	// Deprecated: use ClaudeCodeTransportTmux.
 	ClaudeCodeTransportExperimental = "experimental"
-	ClaudeCodeTransportPrint        = "print"
+	// ClaudeCodeTransportPrint is retained only so callers get a clear
+	// unsupported-transport error instead of an unknown symbol during migration.
+	//
+	// Deprecated: Claude Code uses tmux only.
+	ClaudeCodeTransportPrint = "print"
 )
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
@@ -326,8 +327,8 @@ type Config struct {
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
 	// initialized Claude Code model. Default is "tmux" (the interactive TUI
-	// transport). "print" selects the `claude -p` stream-json transport — an
-	// opt-in path a workflow step may request via its transport config.
+	// transport). The old "print" / `claude -p` stream-json transport is no
+	// longer supported.
 	ClaudeCodeTransport string
 }
 
@@ -506,9 +507,15 @@ func InitializeEmbeddingModel(config Config) (llmtypes.EmbeddingModel, error) {
 	return embeddingModel, nil
 }
 
+const defaultGeminiImageModelID = "gemini-3.1-flash-image"
+
+var legacyGeminiImageModelAliases = map[string]string{
+	"gemini-3.1-flash-image-preview": defaultGeminiImageModelID,
+	"gemini-3-pro-image-preview":     "gemini-3-pro-image",
+}
+
 // InitializeImageGenerationModel creates and initializes an image generation model.
 // Supported providers:
-//   - "imagen-*" models use the Imagen GenerateImages API
 //   - "gemini-*" models use GenerateContent with IMAGE response modality
 //   - "minimax-coding-plan" uses MiniMax image generation with image-01
 //   - "codex-cli" uses the native Codex CLI image generation flow
@@ -672,18 +679,25 @@ func initializeAgyCLIImage(config Config) (llmtypes.ImageGenerationModel, error)
 }
 
 // initializeVertexImagen creates an image generation adapter using the Gemini API.
-// If the model starts with "gemini-", uses GenerateContent (native Gemini image output).
-// Otherwise assumes an Imagen model and uses the GenerateImages API.
+// Gemini image models use GenerateContent with native image output.
 // Uses GEMINI_API_KEY with the Gemini Developer API backend.
 func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error) {
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "gemini-3.1-flash-image-preview"
+		modelID = defaultGeminiImageModelID
 	}
 
 	logger := config.Logger
 	if logger == nil {
 		logger = &noopLoggerImpl{}
+	}
+	normalizedModelID := strings.ToLower(strings.TrimSpace(modelID))
+	if alias, ok := legacyGeminiImageModelAliases[normalizedModelID]; ok {
+		logger.Infof("Migrating legacy Gemini image model %s to %s", modelID, alias)
+		modelID = alias
+	} else if strings.HasPrefix(normalizedModelID, "imagen-") {
+		logger.Infof("Migrating deprecated Imagen image model %s to %s", modelID, defaultGeminiImageModelID)
+		modelID = defaultGeminiImageModelID
 	}
 
 	// Check config APIKeys first, then fall back to environment variables
@@ -701,7 +715,7 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 		apiKey = os.Getenv("GOOGLE_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Imagen image generation (or provide api_key in config)")
+		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required for Gemini image generation (or provide api_key in config)")
 	}
 
 	ctx := config.Context
@@ -714,7 +728,7 @@ func initializeVertexImagen(config Config) (llmtypes.ImageGenerationModel, error
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create GenAI client for Imagen: %w", err)
+		return nil, fmt.Errorf("failed to create GenAI client for Gemini image generation: %w", err)
 	}
 
 	logger.Infof("Initialized Gemini image model - model_id: %s", modelID)
@@ -2212,28 +2226,6 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
 	// a key that often has low/no credits. Users who want API-key billing should select the
 	// `anthropic` provider instead, which is a separate direct-API adapter.
-	if transport == ClaudeCodeTransportPrint {
-		logger.Infof("Claude Code: using legacy print transport with CLI OAuth credentials (`claude -p` stream-json)")
-
-		llm := claudecodeadapter.NewClaudeCodeAdapter("", modelID, logger)
-
-		successMetadata := LLMMetadata{
-			ModelVersion: modelID,
-			User:         "claude_code_user",
-			CustomFields: map[string]string{
-				"provider":     "claude-code",
-				"status":       StatusLLMInitialized,
-				"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-				"mode":         ClaudeCodeTransportPrint,
-				"transport":    ClaudeCodeTransportPrint,
-			},
-		}
-		emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-		logger.Infof("Initialized Claude Code print adapter - model_id: %s", modelID)
-		return llm, nil
-	}
-
 	logger.Infof("Claude Code: using tmux mode with CLI OAuth credentials (no `claude -p` invocation)")
 
 	// Create Claude Code tmux adapter.
@@ -2273,14 +2265,9 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
 		return ClaudeCodeTransportTmux, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
-		// Print / stream-json transport. Opt-in and rarely used — the default is
-		// tmux; a workflow step selects this explicitly via its transport config
-		// (step-level "structured"/"json" is mapped to this "print" value before
-		// it reaches here). Fully supported (not legacy-gated): the `claude -p`
-		// path passes the structured contract tests against the current CLI.
-		return ClaudeCodeTransportPrint, nil
+		return "", fmt.Errorf("Claude Code print/stream-json transport is no longer supported; use %s=%q", EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q (default) or %q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux, ClaudeCodeTransportPrint)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	}
 }
 

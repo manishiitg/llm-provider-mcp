@@ -150,6 +150,16 @@ func TestReadClaudeTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 	}
 }
 
+func TestReadClaudeTranscriptUsageRejectsNonUUIDSessionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	for _, sessionID := range []string{"../secret", "--help", "deadbeef-1111-2222-3333-444455556666/extra"} {
+		if gi, model := readClaudeTranscriptUsage(sessionID, time.Time{}); gi != nil || model != "" {
+			t.Fatalf("session %q returned gi=%+v model=%q, want nil/empty", sessionID, gi, model)
+		}
+	}
+}
+
 func joinLines(lines []string) string {
 	out := ""
 	for _, l := range lines {

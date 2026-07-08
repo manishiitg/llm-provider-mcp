@@ -448,7 +448,7 @@ func (g *GeminiCLIAdapter) generateContentStructured(ctx context.Context, opts *
 			if err := os.MkdirAll(geminiDir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create Gemini settings dir: %w", err)
 			}
-			if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settingsJSON), 0o600); err != nil {
 				return nil, fmt.Errorf("failed to write Gemini settings: %w", err)
 			}
 			env = append(env, "GEMINI_PROJECT_DIR="+projectDir)

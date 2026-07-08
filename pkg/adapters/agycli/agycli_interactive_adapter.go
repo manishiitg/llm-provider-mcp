@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -147,7 +148,14 @@ var agyStatuslineCaptureMu sync.Mutex
 
 var errAgyAuthRequired = errors.New("Antigravity CLI authentication required")
 
-func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (resp *llmtypes.ContentResponse, err error) {
+	var tmuxSessionName string
+	defer func() {
+		if isAgyTmuxSessionLostError(err) {
+			err = llmtypes.WrapCodingAgentTmuxSessionLostError(err, "agy-cli", tmuxSessionName, "tmux session lost")
+		}
+	}()
+
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; agy-cli tmux mode requires tmux")
 	}
@@ -210,6 +218,7 @@ func (c *AgyCLIAdapter) generateContentTmux(ctx context.Context, messages []llmt
 		}
 		return nil, err
 	}
+	tmuxSessionName = session.tmuxSessionName
 	releaseSession := true
 	defer func() {
 		if !releaseSession || session == nil {
@@ -838,7 +847,7 @@ func (c *AgyCLIAdapter) buildAgyInteractiveLaunch(opts *llmtypes.CallOptions, sy
 
 	args := []string{"agy"}
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if enabled, ok := opts.Metadata.Custom["agy_dangerously_skip_permissions"].(bool); !ok || enabled {
+		if enabled, ok := opts.Metadata.Custom["agy_dangerously_skip_permissions"].(bool); ok && enabled {
 			args = append(args, "--dangerously-skip-permissions")
 		}
 		if sandbox, ok := opts.Metadata.Custom["agy_sandbox"].(string); ok && strings.TrimSpace(sandbox) != "" {
@@ -1577,16 +1586,22 @@ func startAgyTmuxSession(ctx context.Context, sessionName string, args []string,
 	if workingDir == "" {
 		workingDir = agyMustGetwd()
 	}
+	shellCommand := "cd " + agyShellQuote(workingDir) + " && exec " + agyShellJoin(args)
+	var cleanupLaunchScript func()
+	if len(env) > 0 {
+		var err error
+		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithEnv(args, workingDir, env)
+		if err != nil {
+			return fmt.Errorf("failed to prepare Agy launch environment: %w", err)
+		}
+	} else {
+		cleanupLaunchScript = func() {}
+	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
-	for _, entry := range env {
-		if strings.TrimSpace(entry) != "" {
-			tmuxArgs = append(tmuxArgs, "-e", entry)
-		}
-	}
-	shellCommand := "cd " + agyShellQuote(workingDir) + " && exec " + agyShellJoin(args)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	if err := runAgyCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		cleanupLaunchScript()
 		return fmt.Errorf("failed to start Agy interactive session %q: %w", sessionName, err)
 	}
 	_ = runAgyCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
@@ -3155,6 +3170,9 @@ func killAgyTmuxSession(ctx context.Context, sessionName string) error {
 func isAgyTmuxSessionLostError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if llmtypes.IsCodingAgentTmuxSessionLostError(err) {
+		return true
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "no server running") ||

@@ -10,7 +10,10 @@ import (
 	"google.golang.org/genai"
 )
 
-// VertexImagenAdapter implements llmtypes.ImageGenerationModel using Vertex AI Imagen
+// VertexImagenAdapter implements llmtypes.ImageGenerationModel using Vertex AI Imagen.
+//
+// Deprecated: Imagen endpoints are no longer exposed by provider initialization.
+// Use GeminiImageAdapter with gemini-3.1-flash-image instead.
 type VertexImagenAdapter struct {
 	client  *genai.Client
 	modelID string
@@ -27,27 +30,8 @@ func NewVertexImagenAdapter(client *genai.Client, modelID string, logger interfa
 	}
 }
 
-// imagenModels holds pricing metadata for Imagen models available via the Gemini Developer API
-var imagenModels = map[string]llmtypes.ModelMetadata{
-	"imagen-4.0-generate-001": {
-		ModelID:      "imagen-4.0-generate-001",
-		ModelName:    "Imagen 4",
-		Provider:     "vertex",
-		CostPerImage: 0.04,
-	},
-	"imagen-4.0-fast-generate-001": {
-		ModelID:      "imagen-4.0-fast-generate-001",
-		ModelName:    "Imagen 4 Fast",
-		Provider:     "vertex",
-		CostPerImage: 0.02,
-	},
-	"imagen-4.0-ultra-generate-001": {
-		ModelID:      "imagen-4.0-ultra-generate-001",
-		ModelName:    "Imagen 4 Ultra",
-		Provider:     "vertex",
-		CostPerImage: 0.06,
-	},
-}
+// imagenModels is intentionally empty; Imagen model IDs are no longer advertised.
+var imagenModels = map[string]llmtypes.ModelMetadata{}
 
 // GetModelMetadata returns pricing metadata for the given Imagen model ID.
 func (a *VertexImagenAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {

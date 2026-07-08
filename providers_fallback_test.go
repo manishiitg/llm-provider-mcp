@@ -28,32 +28,22 @@ func TestInitializeClaudeCodeDefaultUsesExperimentalTransport(t *testing.T) {
 	}
 }
 
-func TestInitializeClaudeCodeCanUsePrintTransport(t *testing.T) {
+func TestInitializeClaudeCodeRejectsPrintTransport(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
 	t.Setenv(EnvClaudeCodeMode, "")
-	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
 
-	llm, err := InitializeLLM(Config{
+	_, err := InitializeLLM(Config{
 		Provider: ProviderClaudeCode,
 		ModelID:  "claude-haiku-4-5-20251001",
 	})
-	if err != nil {
-		t.Fatalf("InitializeLLM() error = %v", err)
-	}
-
-	wrapped, ok := llm.(*ProviderAwareLLM)
-	if !ok {
-		t.Fatalf("InitializeLLM() returned %T, want *ProviderAwareLLM", llm)
-	}
-	if _, ok := wrapped.Model.(*claudecodeadapter.ClaudeCodeAdapter); !ok {
-		t.Fatalf("Claude Code print transport = %T, want *ClaudeCodeAdapter", wrapped.Model)
+	if err == nil {
+		t.Fatal("InitializeLLM() error = nil, want print transport rejection")
 	}
 }
 
 func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
 	t.Setenv(EnvClaudeCodeMode, "")
-	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
 
 	llm, err := InitializeLLM(Config{
 		Provider:            ProviderClaudeCode,
@@ -74,8 +64,6 @@ func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
 }
 
 func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
-	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "1")
-
 	tests := []struct {
 		name    string
 		raw     string
@@ -85,9 +73,9 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 		{name: "default", raw: "", want: ClaudeCodeTransportTmux},
 		{name: "legacy experimental alias", raw: "experimental", want: ClaudeCodeTransportTmux},
 		{name: "tmux", raw: "tmux", want: ClaudeCodeTransportTmux},
-		{name: "print", raw: "print", want: ClaudeCodeTransportPrint},
-		{name: "p alias", raw: "-p", want: ClaudeCodeTransportPrint},
-		{name: "agent sdk alias", raw: "agent-sdk", want: ClaudeCodeTransportPrint},
+		{name: "print", raw: "print", wantErr: true},
+		{name: "p alias", raw: "-p", wantErr: true},
+		{name: "agent sdk alias", raw: "agent-sdk", wantErr: true},
 		{name: "invalid", raw: "json", wantErr: true},
 	}
 
@@ -107,21 +95,6 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 				t.Fatalf("normalizeClaudeCodeTransport(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestNormalizeClaudeCodeTransportAcceptsPrintWithoutFlag(t *testing.T) {
-	// Print / stream-json is now a fully supported, opt-in transport (no longer
-	// gated behind CLAUDE_CODE_ALLOW_LEGACY_PRINT). A workflow step selects it
-	// explicitly; the default remains tmux.
-	t.Setenv(EnvClaudeCodeAllowLegacyPrint, "")
-
-	got, err := normalizeClaudeCodeTransport(ClaudeCodeTransportPrint)
-	if err != nil {
-		t.Fatalf("normalizeClaudeCodeTransport(print) error = %v, want nil (print is supported)", err)
-	}
-	if got != ClaudeCodeTransportPrint {
-		t.Fatalf("normalizeClaudeCodeTransport(print) = %q, want %q", got, ClaudeCodeTransportPrint)
 	}
 }
 

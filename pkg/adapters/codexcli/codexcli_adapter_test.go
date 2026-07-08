@@ -2,7 +2,6 @@ package codexcli
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -39,6 +38,21 @@ func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("CodexCLIAdapter should implement llmtypes.WebSearchModel")
+	}
+}
+
+func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	meta, err := adapter.GetModelMetadata("gpt-5.5")
+	if err != nil {
+		t.Fatalf("GetModelMetadata: %v", err)
+	}
+	if meta.InputCostPer1MTokens != 5.00 || meta.OutputCostPer1MTokens != 30.00 || meta.CachedInputCostPer1MTokens != 0.50 {
+		t.Fatalf("GPT-5.5 pricing = in %.2f cached %.2f out %.2f, want 5.00/0.50/30.00",
+			meta.InputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.OutputCostPer1MTokens)
+	}
+	if meta.ContextWindow != 1050000 {
+		t.Fatalf("ContextWindow = %d, want 1050000", meta.ContextWindow)
 	}
 }
 
@@ -241,32 +255,13 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	}
 }
 
-func TestWriteCodexImageContentFilesFromBase64(t *testing.T) {
-	raw := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
-	tempDir, paths, err := writeCodexImageContentFiles([]llmtypes.ImageContent{
-		{
-			SourceType: "base64",
-			MediaType:  "image/png",
-			Data:       base64.StdEncoding.EncodeToString(raw),
-		},
-	})
-	if err != nil {
-		t.Fatalf("writeCodexImageContentFiles() error = %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+func TestCodexInteractiveArgsRejectInvalidResumeSessionID(t *testing.T) {
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithResumeSessionID("--model")(opts)
 
-	if len(paths) != 1 {
-		t.Fatalf("paths = %v, want one image path", paths)
-	}
-	if !strings.HasSuffix(paths[0], ".png") {
-		t.Fatalf("image path = %q, want .png extension", paths[0])
-	}
-	got, err := os.ReadFile(paths[0])
-	if err != nil {
-		t.Fatalf("read image file: %v", err)
-	}
-	if string(got) != string(raw) {
-		t.Fatalf("image bytes = %v, want %v", got, raw)
+	if _, _, _, err := adapter.buildCodexInteractiveArgs(opts, ""); err == nil {
+		t.Fatal("buildCodexInteractiveArgs error = nil, want invalid resume id error")
 	}
 }
 
@@ -277,18 +272,6 @@ func codexArgsContainPair(args []string, key, value string) bool {
 		}
 	}
 	return false
-}
-
-func TestWriteCodexImageContentFilesRejectsURL(t *testing.T) {
-	_, _, err := writeCodexImageContentFiles([]llmtypes.ImageContent{
-		{SourceType: "url", Data: "https://example.com/image.png"},
-	})
-	if err == nil {
-		t.Fatal("writeCodexImageContentFiles() error = nil, want unsupported URL error")
-	}
-	if !strings.Contains(err.Error(), "image URLs are not supported") {
-		t.Fatalf("error = %v, want unsupported URL error", err)
-	}
 }
 
 func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
@@ -306,7 +289,7 @@ func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
 	if err == nil {
 		t.Fatal("GenerateContent() error = nil, want unsupported interactive image error")
 	}
-	if !strings.Contains(err.Error(), "interactive transport does not support llmtypes.ImageContent") {
+	if !strings.Contains(err.Error(), "tmux transport does not support llmtypes.ImageContent") {
 		t.Fatalf("GenerateContent() error = %v, want interactive image unsupported error", err)
 	}
 }
@@ -594,7 +577,7 @@ auth: Bearer $MCP_API_TOKEN
 POST /tools/custom/list_llm_capabilities
 # List supported and currently usable LLM providers/models by capability.
 tored. Supports optional provider override, aspect ratio, resolution, number of im...
-mcp-agent-builder-go/workspace-docs/_users/default/Chats/image-model-test && curl -sS -X POST "$MCP_API_URL/tools/custom/image_gen" -H "Authorization: Bearer $MCP_API_TOKEN" -H "Content-Type: application/json" -d '{"provider":"vertex","model_id":"gemini-3.1-flash-image-preview","prompt":"A calm cyberpunk city skyline","aspect_ratio":"16:9","resolution":"1K","number_of_images":1,"output_path":"_users/default/Chats/image-model-test/vertex_test.png"}'"})
+mcp-agent-builder-go/workspace-docs/_users/default/Chats/image-model-test && curl -sS -X POST "$MCP_API_URL/tools/custom/image_gen" -H "Authorization: Bearer $MCP_API_TOKEN" -H "Content-Type: application/json" -d '{"provider":"vertex","model_id":"gemini-3.1-flash-image","prompt":"A calm cyberpunk city skyline","aspect_ratio":"16:9","resolution":"1K","number_of_images":1,"output_path":"_users/default/Chats/image-model-test/vertex_test.png"}'"})
 {"stdout": "", "stderr": "mkdir: /Users/mipl/ai-work/mcp-agent-builder-go: Operation not permitted\n", "exit_code": 1, "execution_time_ms": 30}
 32
 -rw-r--r--@ 1 mipl staff 0 30 Apr 15:42 _index.json
@@ -1320,14 +1303,6 @@ func assertCodexInteractiveTerminalOnlyStream(t *testing.T, streamChan <-chan ll
 	if drained.terminalCount == 0 {
 		t.Fatalf("interactive stream emitted no terminal snapshots")
 	}
-}
-
-func assertCodexStreamQuality(t *testing.T, streamed, want string) {
-	t.Helper()
-	if !strings.Contains(streamed, want) {
-		t.Fatalf("streamed content = %q, want assistant response containing %q", streamed, want)
-	}
-	assertCodexNoInternalStatus(t, streamed)
 }
 
 func assertCodexNoInternalStatus(t *testing.T, streamed string) {

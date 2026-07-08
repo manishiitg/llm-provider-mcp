@@ -50,6 +50,11 @@ type CodingAgentProviderContract struct {
 	SupportsFinalExtraction bool
 	SupportsNativeResume    bool
 	UsesMCPBridge           bool
+	// RequiresMCPBridgeConfig means host apps must fail before launch if they
+	// cannot build and pass the provider's MCP bridge config. Coding agents
+	// should never silently fall back to tool-less or unrestricted built-in tool
+	// mode when the bridge is unavailable.
+	RequiresMCPBridgeConfig bool
 	SupportsBridgeOnlyTools bool
 	UsesNativeSystemPrompt  bool
 	LaunchesViaLoginShell   bool
@@ -193,6 +198,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsFinalExtraction:       true,
 		SupportsNativeResume:          true,
 		UsesMCPBridge:                 true,
+		RequiresMCPBridgeConfig:       true,
 		SupportsBridgeOnlyTools:       true,
 		UsesNativeSystemPrompt:        true,
 		LaunchesViaLoginShell:         true,
@@ -201,8 +207,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		StructuredFallback:            true,
 		ImageInputInteractive:         true,
 		SurfacesTokenUsage:            true,
-		TokenUsageSource:              "stream-json",
-		AdapterReadsTranscript:        false,
+		TokenUsageSource:              "transcript-file",
+		AdapterReadsTranscript:        true,
+		TranscriptPathTemplate:        "~/.claude/projects/*/<session-id>.jsonl",
 		RequiresWorkspaceTrust:        true,
 		RestoreAsksInteractivePrompts: true,
 		APIKeyEnvVars:                 []string{"ANTHROPIC_API_KEY"},
@@ -232,6 +239,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// enforces this matches the actual wiring.
 		SupportsNativeResume:      true,
 		UsesMCPBridge:             true,
+		RequiresMCPBridgeConfig:   true,
 		SupportsBridgeOnlyTools:   true,
 		UsesNativeSystemPrompt:    true,
 		LaunchesViaLoginShell:     true,
@@ -240,8 +248,9 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		StructuredFallback:        true,
 		ImageInputInteractive:     true,
 		SurfacesTokenUsage:        true,
-		TokenUsageSource:          "stream-json",
-		AdapterReadsTranscript:    false,
+		TokenUsageSource:          "transcript-file",
+		AdapterReadsTranscript:    true,
+		TranscriptPathTemplate:    "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
 		RequiresWorkspaceTrust:    true,
 		APIKeyEnvVars:             []string{"CODEX_API_KEY"},
 		WorkingDirInstructionFile: "AGENTS.md",
@@ -270,6 +279,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// wiring (nativeResumeRegistry membership).
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
+		RequiresMCPBridgeConfig: true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
 		LaunchesViaLoginShell:   true,
@@ -318,6 +328,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsFinalExtraction:   true,
 		SupportsNativeResume:      true,
 		UsesMCPBridge:             true,
+		RequiresMCPBridgeConfig:   true,
 		SupportsBridgeOnlyTools:   true,
 		UsesNativeSystemPrompt:    true,
 		LaunchesViaLoginShell:     true,
@@ -353,6 +364,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsFinalExtraction: true,
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
+		RequiresMCPBridgeConfig: true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
 		LaunchesViaLoginShell:   true,
@@ -390,6 +402,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsFinalExtraction: true,
 		SupportsNativeResume:    true,
 		UsesMCPBridge:           true,
+		RequiresMCPBridgeConfig: true,
 		SupportsBridgeOnlyTools: true,
 		UsesNativeSystemPrompt:  true,
 		LaunchesViaLoginShell:   true,

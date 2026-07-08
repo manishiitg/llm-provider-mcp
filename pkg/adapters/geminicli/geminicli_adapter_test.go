@@ -219,6 +219,13 @@ func TestGeminiWorkingDirKeepsProjectSettingsIsolated(t *testing.T) {
 		t.Fatalf("interactive project dir ID = %q, want session-a", interactiveDirID)
 	}
 	settingsPath := filepath.Join(interactiveDir, ".gemini", "settings.json")
+	settingsInfo, err := os.Stat(settingsPath)
+	if err != nil {
+		t.Fatalf("stat isolated settings: %v", err)
+	}
+	if gotMode := settingsInfo.Mode().Perm(); gotMode != 0o600 {
+		t.Fatalf("isolated settings mode = %#o, want 0600", gotMode)
+	}
 	settingsBytes, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("read isolated settings: %v", err)

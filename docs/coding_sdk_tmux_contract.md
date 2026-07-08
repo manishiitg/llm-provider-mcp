@@ -1335,7 +1335,7 @@ go run ./cmd/llm-test codex-cli-image-generate \
   --output-dir /tmp/mlp-codex-image-gen
 
 GEMINI_API_KEY=<key> go run ./cmd/llm-test vertex-imagen-generate \
-  --model gemini-3.1-flash-image-preview \
+  --model gemini-3.1-flash-image \
   --prompt "A simple red square icon centered on a white background" \
   --aspect-ratio 1:1 \
   --num-images 1 \
@@ -1347,7 +1347,7 @@ Builder/workspace image-generation virtual-tool contract command:
 ```sh
 WORKSPACE_API_URL=http://127.0.0.1:8081 go run . test image-gen-providers \
   --providers vertex,codex-cli \
-  --models vertex=gemini-3.1-flash-image-preview,codex-cli=codex-cli \
+  --models vertex=gemini-3.1-flash-image,codex-cli=codex-cli \
   --provider-timeout 4m
 ```
 

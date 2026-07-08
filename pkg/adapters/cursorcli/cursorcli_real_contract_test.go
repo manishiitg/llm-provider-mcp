@@ -1362,12 +1362,24 @@ func preApproveCursorMCPQuiet(workDir, mcpConfig, serverName string) {
 }
 
 func primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName string) error {
+	normalizedMCPConfig, err := normalizeCursorMCPConfigForCLI(mcpConfig)
+	if err != nil {
+		return err
+	}
 	cursorDir := filepath.Join(workDir, ".cursor")
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
 		return fmt.Errorf("create .cursor dir: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpConfig), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cursorDir, "mcp.json"), []byte(normalizedMCPConfig), 0o600); err != nil {
 		return fmt.Errorf("write mcp.json: %w", err)
+	}
+	if allowlistJSON, ok, err := cursorMCPAllowlistCLIConfig(normalizedMCPConfig); err != nil {
+		return err
+	} else if ok {
+		if err := os.WriteFile(filepath.Join(cursorDir, "cli.json"), []byte(allowlistJSON), 0o600); err != nil {
+			return fmt.Errorf("write cli.json: %w", err)
+		}
+		defer os.Remove(filepath.Join(cursorDir, "cli.json"))
 	}
 	defer os.Remove(filepath.Join(cursorDir, "mcp.json"))
 

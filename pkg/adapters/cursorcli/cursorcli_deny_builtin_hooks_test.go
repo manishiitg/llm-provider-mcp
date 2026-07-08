@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -158,8 +159,17 @@ func TestWriteCursorDenyBuiltinHooksRestoresPreExistingHooksJSON(t *testing.T) {
 	}
 }
 
-func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *testing.T) {
+func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(t *testing.T) {
 	workDir := t.TempDir()
+	cursorDir := filepath.Join(workDir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleCLI := filepath.Join(cursorDir, "cli.json")
+	if err := os.WriteFile(staleCLI, []byte(`{"permissions":{"allow":[],"deny":["Shell(*)"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	opts := &llmtypes.CallOptions{}
 	WithDenyBuiltinTools(true)(opts)
 
@@ -169,29 +179,11 @@ func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *
 	}
 	defer cleanup()
 
-	body, err := os.ReadFile(filepath.Join(workDir, ".cursor", "cli.json"))
-	if err != nil {
-		t.Fatalf("read generated cli.json: %v", err)
+	if _, err := os.Stat(staleCLI); !os.IsNotExist(err) {
+		t.Fatalf("deny-builtin mode must remove stale .cursor/cli.json; it hides MCP tools from Cursor Agent, stat err=%v", err)
 	}
-	for _, resource := range []string{
-		"Shell(*)",
-		"Read(*)",
-		"ListDir(*)",
-		"Glob(*)",
-		"Grep(*)",
-		"Search(*)",
-		"Edit(*)",
-		"Write(*)",
-		"Task(*)",
-		"Agent(*)",
-		"Subagent(*)",
-		"BackgroundAgent(*)",
-		"CloudAgent(*)",
-		"Delegate(*)",
-	} {
-		if !strings.Contains(string(body), resource) {
-			t.Fatalf("cli.json = %s, want deny resource %s", string(body), resource)
-		}
+	if _, err := os.Stat(filepath.Join(workDir, ".cursor", "hooks.json")); err != nil {
+		t.Fatalf("deny-builtin mode should install hooks.json: %v", err)
 	}
 
 	ruleBody, err := os.ReadFile(filepath.Join(workDir, ".cursor", "rules", "mlp-system.mdc"))
@@ -208,4 +200,108 @@ func TestPrepareCursorProjectFilesDenyBuiltinPermissionsCoversReadListSearch(t *
 			t.Fatalf("mlp-system.mdc = %s, want %q", string(ruleBody), want)
 		}
 	}
+}
+
+func TestBuildCursorInteractiveLaunchHydratesMCPBeforeTUILaunch(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "cursor-agent.log")
+	cursorPath := filepath.Join(fakeBin, "cursor-agent")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$CURSOR_AGENT_TEST_LOG"
+exit 0
+`
+	if err := os.WriteFile(cursorPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake cursor-agent: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CURSOR_AGENT_TEST_LOG", logPath)
+
+	workDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	WithApproveMCPs()(opts)
+	WithMCPConfig(`{"mcpServers":{"zeta":{"command":"node","args":["z.js"]},"api-bridge":{"command":"node","args":["bridge.js"]}}}`)(opts)
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	_, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Original system prompt.", "test-session-hydrate")
+	if err != nil {
+		t.Fatalf("buildCursorInteractiveLaunch: %v", err)
+	}
+	defer cleanup()
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake cursor-agent log: %v", err)
+	}
+	got := strings.FieldsFunc(strings.TrimSpace(string(raw)), func(r rune) bool { return r == '\n' || r == '\r' })
+	want := []string{
+		"mcp enable api-bridge",
+		"mcp list-tools api-bridge",
+		"mcp enable zeta",
+		"mcp list-tools zeta",
+	}
+	if len(got)%len(want) != 0 {
+		t.Fatalf("cursor-agent calls = %#v, want one or more complete hydration passes %#v", got, want)
+	}
+	for offset := 0; offset < len(got); offset += len(want) {
+		chunk := got[offset : offset+len(want)]
+		if strings.Join(chunk, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("cursor-agent calls = %#v, want repeated hydration pass %#v", got, want)
+		}
+	}
+}
+
+func TestPrepareCursorProjectFilesCreatesRealGitRootForNestedWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	parent := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "git", "-C", parent, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("init parent git repo: %v output=%s", err, string(out))
+	}
+	workDir := filepath.Join(parent, "workspace-docs", "_users", "default", "Chats")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected nested dir to see parent git before prepare: %v output=%s", err, string(before))
+	}
+	if cursorTestRealPath(strings.TrimSpace(string(before))) != cursorTestRealPath(parent) {
+		t.Fatalf("before prepare git root = %q, want parent %q", strings.TrimSpace(string(before)), parent)
+	}
+
+	opts := &llmtypes.CallOptions{}
+	WithDenyBuiltinTools(true)(opts)
+	cleanup, err := prepareCursorProjectFiles(workDir, "Original system prompt.", opts, "test-session-nested-git")
+	if err != nil {
+		t.Fatalf("prepareCursorProjectFiles: %v", err)
+	}
+
+	after, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected prepared dir to be its own git root: %v output=%s", err, string(after))
+	}
+	if cursorTestRealPath(strings.TrimSpace(string(after))) != cursorTestRealPath(workDir) {
+		t.Fatalf("after prepare git root = %q, want workflow dir %q", strings.TrimSpace(string(after)), workDir)
+	}
+
+	cleanup()
+	if _, err := os.Stat(filepath.Join(workDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup should remove temporary git marker, stat err=%v", err)
+	}
+}
+
+func cursorTestRealPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
