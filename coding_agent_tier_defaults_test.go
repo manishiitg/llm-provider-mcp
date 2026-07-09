@@ -77,9 +77,9 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 			wantProviderSet: true,
 		},
 		{
-			name:            "cursor follows high",
+			name:            "cursor uses grok 4.5",
 			provider:        ProviderCursorCLI,
-			wantSameAsHigh:  true,
+			wantModelID:     "grok-4.5",
 			wantReasoning:   "high",
 			wantProviderSet: true,
 		},
@@ -137,10 +137,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:           "cursor follows high",
-			provider:       ProviderCursorCLI,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
+			name:          "cursor uses grok 4.5 high",
+			provider:      ProviderCursorCLI,
+			wantModelID:   "grok-4.5",
+			wantReasoning: "high",
 		},
 		{
 			name:           "pi follows high",
@@ -195,7 +195,7 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 			wantReasoning: "xhigh",
 		},
 		{
-			name:           "cursor follows high",
+			name:           "cursor follows grok 4.5 high",
 			provider:       ProviderCursorCLI,
 			wantSameAsHigh: true,
 			wantReasoning:  "high",
@@ -230,6 +230,32 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
+	defaults, ok := GetCodingAgentDefaultTierModels(ProviderCursorCLI)
+	if !ok {
+		t.Fatal("GetCodingAgentDefaultTierModels(cursor-cli) ok = false")
+	}
+	check := func(name string, got CodingAgentTierModelRef, want string) {
+		t.Helper()
+		if got.Provider != string(ProviderCursorCLI) {
+			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderCursorCLI)
+		}
+		if got.ModelID != want {
+			t.Fatalf("%s model_id = %q, want %q", name, got.ModelID, want)
+		}
+		if got.Options["reasoning_effort"] != "high" {
+			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
+		}
+	}
+	check("high", defaults.High, "grok-4.5")
+	check("medium", defaults.Medium, "composer-2.5")
+	check("low", defaults.Low, "auto")
+	check("phase", defaults.Phase, "grok-4.5")
+	check("pulse", defaults.Pulse, "grok-4.5")
+	check("auto_improve", defaults.AutoImprove, "grok-4.5")
+	check("chief_of_staff", defaults.ChiefOfStaff, "grok-4.5")
 }
 
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
