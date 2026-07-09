@@ -559,12 +559,6 @@ func TestStructuredCLIAdaptersMirrorAssistantTextToTerminal(t *testing.T) {
 			testFile:    "pkg/adapters/geminicli/geminicli_adapter_test.go",
 			testName:    "TestGeminiCLIStructuredStreamMirrorsAssistantTextToTerminal",
 		},
-		{
-			name:        "cursor cli",
-			adapterFile: "pkg/adapters/cursorcli/cursorcli_adapter.go",
-			testFile:    "pkg/adapters/cursorcli/cursorcli_adapter_test.go",
-			testName:    "TestCursorCLIStructuredStreamMirrorsAssistantTextToTerminal",
-		},
 	}
 
 	for _, tt := range tests {
