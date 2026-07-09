@@ -174,6 +174,39 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 	}
 }
 
+func TestCodingAgentDefaultTierModelsClaudeBuilderAndMaintenanceDefaults(t *testing.T) {
+	defaults, ok := GetCodingAgentDefaultTierModels(ProviderClaudeCode)
+	if !ok {
+		t.Fatal("GetCodingAgentDefaultTierModels(claude-code) ok = false")
+	}
+
+	for name, got := range map[string]CodingAgentTierModelRef{
+		"main":  defaults.Main,
+		"phase": defaults.Phase,
+		"pulse": defaults.Pulse,
+	} {
+		if got.Provider != string(ProviderClaudeCode) {
+			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderClaudeCode)
+		}
+		if got.ModelID != "claude-sonnet-5" {
+			t.Fatalf("%s model_id = %q, want claude-sonnet-5", name, got.ModelID)
+		}
+		if got.Options["reasoning_effort"] != "high" {
+			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
+		}
+	}
+
+	if defaults.AutoImprove.Provider != string(ProviderClaudeCode) {
+		t.Fatalf("auto_improve provider = %q, want %q", defaults.AutoImprove.Provider, ProviderClaudeCode)
+	}
+	if defaults.AutoImprove.ModelID != "claude-opus-4-8" {
+		t.Fatalf("auto_improve model_id = %q, want claude-opus-4-8", defaults.AutoImprove.ModelID)
+	}
+	if defaults.AutoImprove.Options["reasoning_effort"] != "high" {
+		t.Fatalf("auto_improve reasoning_effort = %#v, want high", defaults.AutoImprove.Options["reasoning_effort"])
+	}
+}
+
 func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 	tests := []struct {
 		name           string
