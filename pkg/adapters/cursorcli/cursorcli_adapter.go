@@ -109,12 +109,28 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 	}
 
 	switch resolveCursorCLIModelID(modelID) {
+	case "":
+		return &llmtypes.ModelMetadata{
+			ModelID:           metadataModelID,
+			Provider:          "cursor-cli",
+			ModelName:         "Auto (Cursor Agent CLI)",
+			ContextWindow:     200000,
+			SupportsToolCalls: true,
+		}, nil
 	case "composer-2.5":
 		return &llmtypes.ModelMetadata{
 			ModelID:           metadataModelID,
 			Provider:          "cursor-cli",
 			ModelName:         "Composer 2.5 (Cursor Agent CLI)",
 			ContextWindow:     200000,
+			SupportsToolCalls: true,
+		}, nil
+	case "grok-4.5-xhigh":
+		return &llmtypes.ModelMetadata{
+			ModelID:           metadataModelID,
+			Provider:          "cursor-cli",
+			ModelName:         "Grok 4.5 (Cursor Agent CLI)",
+			ContextWindow:     500000,
 			SupportsToolCalls: true,
 		}, nil
 	case "gpt-5":
