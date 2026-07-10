@@ -1,4 +1,4 @@
-.PHONY: help lint lint-fix install-linter test build clean install-hooks scan-secrets install-act test-ci test-ci-job
+.PHONY: help lint lint-fix install-linter test build build-chat build-mcp build-all clean install-hooks scan-secrets install-act test-ci test-ci-job
 
 # Default target
 help:
@@ -10,6 +10,7 @@ help:
 	@echo "  make scan-secrets - Scan repository for secrets with gitleaks"
 	@echo "  make test        - Run Go tests"
 	@echo "  make build       - Build the project"
+	@echo "  make build-mcp   - Build the coding-agent delegation MCP server"
 	@echo "  make clean       - Clean build artifacts"
 	@echo ""
 	@echo "GitHub Actions (local testing with act):"
@@ -51,8 +52,14 @@ build-chat:
 	@echo "Building chat CLI..."
 	@go build -o bin/llm-chat ./cmd/llm-chat
 
+# Build coding-agent delegation MCP server
+build-mcp:
+	@echo "Building coding-agent delegation MCP server..."
+	@mkdir -p bin
+	@go build -o bin/llm-provider-mcp ./cmd/llm-provider-mcp
+
 # Build all binaries
-build-all: build build-chat
+build-all: build build-chat build-mcp
 	@echo "All binaries built successfully"
 
 # Install pre-commit hooks

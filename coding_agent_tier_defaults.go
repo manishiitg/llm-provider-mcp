@@ -126,7 +126,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Main:         codingAgentHighReasoningRef(providerID, DefaultPiCLIModel),
 			High:         high,
 			Medium:       codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash"),
-			Low:          codingAgentHighReasoningRef(providerID, "google/gemini-2.5-flash"),
+			Low:          codingAgentHighReasoningRef(providerID, DefaultPiCLIModel),
 			Phase:        high,
 			AutoImprove:  high,
 			Pulse:        high,

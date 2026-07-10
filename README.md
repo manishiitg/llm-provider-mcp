@@ -103,6 +103,220 @@ llm-providers/
 └── types.go                   # Type re-exports
 ```
 
+## Cross-CLI Delegation MCP Server
+
+`llm-provider-mcp` lets one coding-agent CLI delegate a one-shot background job
+to another coding-agent CLI through this module's existing tmux adapters. The
+MCP call returns immediately with a job ID; the caller polls that ID for progress
+and the final result.
+
+### One-command install
+
+Run the interactive installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/manishiitg/multi-llm-provider-go/main/scripts/install-mcp.sh \
+  | sh
+```
+
+The bootstrap installs the binary at `~/.local/bin/llm-provider-mcp`, then starts
+the Go setup wizard. The wizard detects local CLIs, asks which installed Codex
+and Claude Code hosts should receive the MCP registration, and then asks which
+Cursor, Pi, Codex, or Claude CLIs should be available as delegation targets.
+Interactive terminals use checklists: move with Up/Down, toggle any number of
+items with Space, and confirm with Enter. Redirected and accessible sessions use
+the text fallback.
+
+Setup also installs the bundled `delegate-coding-agent` skill in the current
+project for every selected host:
+
+- Codex: `.agents/skills/delegate-coding-agent/SKILL.md`
+- Claude Code: `.claude/skills/delegate-coding-agent/SKILL.md`
+
+The skill teaches the host how to choose a powerful, balanced, or fast model,
+start an asynchronous delegation, poll it without blocking, inspect tmux output,
+and verify the result. Re-running setup updates installer-managed copies but
+refuses to overwrite an unrelated skill with the same name. `uninstall` removes
+only copies marked as managed by this installer.
+
+For a noninteractive Codex install, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/manishiitg/multi-llm-provider-go/main/scripts/install-mcp.sh \
+  | sh -s -- --client codex --providers cursor-cli --non-interactive
+```
+
+For a noninteractive Claude Code install, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/manishiitg/multi-llm-provider-go/main/scripts/install-mcp.sh \
+  | sh -s -- --client claude --providers cursor-cli --non-interactive
+```
+
+The installer downloads a checksum-verified macOS or Linux release archive when
+one is available. Before the first MCP-enabled release, it falls back to building
+the command from `main` and requires Go 1.25.8 or newer. The binary is installed at
+`~/.local/bin/llm-provider-mcp` by default.
+
+The included smoke test performs MCP initialization and verifies all five tools;
+it does not invoke a provider or consume provider usage. Run
+`sh scripts/install-mcp.sh --help` for binary-only installation, custom provider
+allowlists, and installation directories.
+
+Project skills are intentionally local-only. Setup displays the exact current
+directory and skill paths and asks for confirmation before writing them. Claude
+Code's MCP registration is also available only to the current user in that
+project. Run setup from the intended project directory, and do not commit the
+generated skill directories unless you intentionally want to share them.
+
+The normal setup does not ask for a delegated working directory. The calling
+host should pass its current trusted project root to each delegation. Use
+`--workspace PATH` only when the MCP server should enforce a fixed root.
+
+Setup verifies authentication for every selected target: Cursor through its
+JSON status command, Codex through `codex login status`, Claude Code through its
+JSON auth status, and Pi through its available model catalog. A target that is
+not ready can open its native login flow directly from setup; credentials remain
+owned by that CLI and are never collected by this installer. Setup can then run
+optional small, read-only connectivity prompts with explicit consent. Running
+`llm-provider-mcp doctor` without arguments checks tmux, MCP, installation, and
+authentication for all four providers.
+
+Supported non-deprecated coding-agent providers are discovered from
+`CodingAgentProviderContracts()`. They currently include Claude Code, Codex CLI,
+Cursor CLI, and Pi CLI.
+
+Install or build the server:
+
+```bash
+go install github.com/manishiitg/multi-llm-provider-go/cmd/llm-provider-mcp@main
+
+# From a checkout
+make build-mcp
+```
+
+The server exposes five tools:
+
+- `list_coding_agents`
+- `list_coding_agent_models`
+- `delegate_coding_agent`
+- `get_coding_agent_job`
+- `cancel_coding_agent_job`
+
+`delegate_coding_agent` returns a `job_id`, `poll_after_seconds`, and
+`next_tool`. Poll `get_coding_agent_job` until the status is `completed`,
+`failed`, `cancelled`, or `timed_out`. A completed status contains the final
+provider response. After the detached tmux worker starts, running status also
+includes `tmux_session`, `tmux_capture_command`, and `tmux_attach_command`.
+Set `include_terminal_output` to `true` on `get_coding_agent_job` to receive a
+fresh, ANSI-cleaned, UTF-8-safe terminal tail. It captures 80 lines of
+scrollback and byte-bounds the model-facing tail to 4 KB.
+It uses the same shared tmux capture package as MCP Agent BuilderGo's `query_step`.
+Keep it `false` for ordinary polling to avoid repeatedly adding unchanged pane
+content to the host context. The capture command remains available for deeper
+history. The attach command is intended for a human terminal and is omitted
+after the session closes.
+
+The installed binary also provides lifecycle commands:
+
+```bash
+llm-provider-mcp setup
+llm-provider-mcp doctor
+llm-provider-mcp models cursor-cli
+llm-provider-mcp models cursor-cli --live
+llm-provider-mcp uninstall
+```
+
+### Selecting a delegated model
+
+Call `list_coding_agent_models` to discover curated selectors from the host, or
+run `llm-provider-mcp models PROVIDER` locally. `delegate_coding_agent` accepts
+an optional provider-specific `model`. For
+Cursor, omitting it currently uses `composer-2.5`:
+
+```json
+{
+  "provider": "cursor-cli",
+  "model": "composer-2.5",
+  "task": "Review the authentication flow",
+  "working_dir": "/current/trusted/project"
+}
+```
+
+The friendly selector `grok-4.5` maps to Cursor's `grok-4.5-xhigh`. Exact
+Cursor IDs such as `grok-4.5-medium` and `composer-2.5-fast` pass through
+unchanged. Run `cursor-agent models` to see the models available to the current
+Cursor account; availability can change independently of this module.
+
+The curated Pi CLI list keeps only the latest model in each supported family,
+with separate Gemini Flash and Pro tracks:
+
+- `google/gemini-3.5-flash`
+- `google/gemini-3.1-pro-preview`
+- `minimax/MiniMax-M2.7`
+- `zai/glm-5.2`
+- `moonshotai/kimi-k2.7-code`
+
+Pi also accepts dynamic OpenRouter selectors such as
+`openrouter/moonshotai/kimi-k2.7-code`. Use `openrouter/openrouter/free` for the
+OpenRouter free-model router. These are intentionally not hardcoded because
+OpenRouter's catalog changes independently.
+
+Register the built binary as a local stdio MCP server. For Codex, add it to
+`~/.codex/config.toml` or a trusted project's `.codex/config.toml`:
+
+```toml
+[mcp_servers.llm-provider]
+command = "/absolute/path/to/llm-provider-mcp"
+required = true
+startup_timeout_sec = 10
+tool_timeout_sec = 30
+```
+
+Claude Code and Cursor use the standard JSON stdio server shape in `.mcp.json`
+and `.cursor/mcp.json`, respectively:
+
+```json
+{
+  "mcpServers": {
+    "llm-provider": {
+      "command": "/absolute/path/to/llm-provider-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Pi can use the same server entry in `.pi/mcp.json` through its MCP adapter.
+Each target CLI must already be installed and authenticated on the machine.
+
+Job state is stored at `~/.local/state/llm-provider-mcp/jobs.db` by default.
+Configuration environment variables:
+
+- `LLM_PROVIDER_MCP_STATE`: override the SQLite state path.
+- `LLM_PROVIDER_MCP_ALLOWED_PROVIDERS`: comma-separated provider allowlist.
+- `LLM_PROVIDER_MCP_WORKSPACE_ROOTS`: OS path-list of allowed workspace roots.
+
+Detached tmux jobs use an unattended policy so they never wait on an approval
+dialog that the host cannot see. Standard coding tools are enabled by default:
+
+- Codex uses `approval_policy=never` with the `workspace-write` sandbox.
+- Cursor uses force approval with its sandbox enabled.
+- Claude Code uses `dontAsk`, project-scoped Read/Edit/Write rules, and a Bash
+  sandbox that fails closed when unavailable.
+- Pi trusts project-local resources for the run and enables its native coding
+  tools. Pi does not currently provide a hard workspace sandbox, so its Bash
+  and file tools retain the permissions of the local user running the MCP.
+
+All providers receive an explicit instruction not to access paths outside the
+delegated working directory. `LLM_PROVIDER_MCP_WORKSPACE_ROOTS` additionally
+restricts which working directories the MCP accepts, but it is not a process
+sandbox. Do not delegate untrusted prompts or repositories to Pi until a
+provider-independent sandbox is added.
+
+Push completion uses polling today. Native MCP Tasks notifications will be
+evaluated after Codex, Claude Code, Cursor, and Pi client behavior is certified.
+
 ## Configuration
 
 ### Environment Variables

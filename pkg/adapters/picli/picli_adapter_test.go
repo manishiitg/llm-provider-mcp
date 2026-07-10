@@ -57,6 +57,7 @@ func TestPiAPIKeyEnvUsesSelectedProvider(t *testing.T) {
 		{provider: "zai", want: []string{"ZAI_API_KEY=test-key"}},
 		{provider: "zai-coding-cn", want: []string{"ZAI_CODING_CN_API_KEY=test-key"}},
 		{provider: "kimi-coding", want: []string{"KIMI_API_KEY=test-key"}},
+		{provider: "moonshotai", want: []string{"MOONSHOT_API_KEY=test-key"}},
 		{provider: "minimax-cn", want: []string{"MINIMAX_CN_API_KEY=test-key"}},
 		{provider: "deepseek", want: []string{"DEEPSEEK_API_KEY=test-key"}},
 		{provider: "opencode-go", want: []string{"OPENCODE_API_KEY=test-key"}},
@@ -77,13 +78,36 @@ func TestPiRedactArgsCoversProviderKeys(t *testing.T) {
 		"ZAI_API_KEY=zai-secret",
 		"ZAI_CODING_CN_API_KEY=zai-cn-secret",
 		"KIMI_API_KEY=kimi-secret",
+		"MOONSHOT_API_KEY=moonshot-secret",
 		"MINIMAX_CN_API_KEY=minimax-secret",
 		"DEEPSEEK_API_KEY=deepseek-secret",
 		"OPENCODE_API_KEY=opencode-secret",
 	})
-	for _, secret := range []string{"openrouter-secret", "zai-secret", "zai-cn-secret", "kimi-secret", "minimax-secret", "deepseek-secret", "opencode-secret"} {
+	for _, secret := range []string{"openrouter-secret", "zai-secret", "zai-cn-secret", "kimi-secret", "moonshot-secret", "minimax-secret", "deepseek-secret", "opencode-secret"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("piRedactArgs leaked %q in %q", secret, got)
+		}
+	}
+}
+
+func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
+	models := GetAllPiCLIModels()
+	want := []string{
+		DefaultModelID,
+		ModelGemini31ProPreview,
+		ModelMiniMaxM27,
+		ModelGLM52,
+		ModelKimiK27Code,
+	}
+	if len(models) != len(want) {
+		t.Fatalf("GetAllPiCLIModels() returned %d models, want %d", len(models), len(want))
+	}
+	for index, modelID := range want {
+		if models[index].ModelID != modelID {
+			t.Fatalf("models[%d].ModelID = %q, want %q", index, models[index].ModelID, modelID)
+		}
+		if models[index].ModelSelectionMode != "dynamic" {
+			t.Fatalf("models[%d].ModelSelectionMode = %q, want dynamic", index, models[index].ModelSelectionMode)
 		}
 	}
 }
