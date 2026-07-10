@@ -81,8 +81,9 @@ jobs:
     
     - name: Run tests
       # Semantic final-extraction judges require a live Vertex/Gemini key and
-      # belong in the opt-in real E2E suite, not the deterministic PR suite.
-      run: go test ./... -v -skip 'FinalExtractionVertexJudgeE2E$'
+      # belong in the opt-in real E2E suite. Interactive adapter packages also
+      # share the runner's tmux service, so execute packages serially.
+      run: go test -p 1 ./... -v -skip 'FinalExtractionVertexJudgeE2E$'
 
   build:
     name: Build
