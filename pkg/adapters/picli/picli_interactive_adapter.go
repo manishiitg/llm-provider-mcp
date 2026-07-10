@@ -505,6 +505,9 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 		"--no-extensions",
 		"-e", extensionPath,
 	)
+	if thinking := piThinkingLevelFromOptions(opts); thinking != "" {
+		args = append(args, "--thinking", thinking)
+	}
 	if strings.TrimSpace(outputGuardExtensionPath) != "" {
 		args = append(args, "-e", outputGuardExtensionPath)
 	}
@@ -552,6 +555,26 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	env = append(env, piAPIKeyEnv(provider, p.apiKey)...)
 	env = append(env, piBridgeShellEnvFromMCPConfig(mcpConfig)...)
 	return args, env, nil
+}
+
+func piThinkingLevelFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil {
+		return ""
+	}
+	level := strings.ToLower(strings.TrimSpace(opts.ReasoningEffort))
+	if level == "" {
+		level = strings.ToLower(strings.TrimSpace(opts.ThinkingLevel))
+	}
+	switch level {
+	case "none", "off":
+		return "off"
+	case "minimal", "low", "medium", "high", "xhigh":
+		return level
+	case "max":
+		return "xhigh"
+	default:
+		return ""
+	}
 }
 
 func piMCPOutputGuardEnabled() bool {

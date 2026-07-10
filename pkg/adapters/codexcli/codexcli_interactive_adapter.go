@@ -3306,8 +3306,6 @@ func interruptCodexInteractiveSession(sessionName string, logger interfaces.Logg
 
 func resetCodexPaneForTurn(ctx context.Context, sessionName string) {
 	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
-	_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-l")
-	_ = runCodexCommand(ctx, nil, "tmux", "clear-history", "-t", sessionName)
 }
 
 func captureCodexPane(ctx context.Context, sessionName string) (string, error) {

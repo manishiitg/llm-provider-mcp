@@ -17,6 +17,10 @@ const (
 	ModelGPT52Thinking = "gpt-5.2-thinking"
 	// GPT-5.5 family
 	ModelGPT55 = "gpt-5.5"
+	// GPT-5.6 preview family
+	ModelGPT56Sol   = "gpt-5.6-sol"
+	ModelGPT56Terra = "gpt-5.6-terra"
+	ModelGPT56Luna  = "gpt-5.6-luna"
 	// GPT-5.4 family
 	ModelGPT54     = "gpt-5.4"
 	ModelGPT54Mini = "gpt-5.4-mini"
@@ -29,6 +33,48 @@ const (
 // getOpenAIModels returns the map of OpenAI model metadata
 func getOpenAIModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
+		ModelGPT56Sol: {
+			ModelID:                         ModelGPT56Sol,
+			ModelName:                       "GPT-5.6 Sol",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           30.00,
+			CachedInputCostPer1MTokens:      0.50,
+			CachedInputCostWritePer1MTokens: 6.25,
+			Provider:                        "openai",
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		ModelGPT56Terra: {
+			ModelID:                         ModelGPT56Terra,
+			ModelName:                       "GPT-5.6 Terra",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            2.50,
+			OutputCostPer1MTokens:           15.00,
+			CachedInputCostPer1MTokens:      0.25,
+			CachedInputCostWritePer1MTokens: 3.125,
+			Provider:                        "openai",
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		ModelGPT56Luna: {
+			ModelID:                         ModelGPT56Luna,
+			ModelName:                       "GPT-5.6 Luna",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            1.00,
+			OutputCostPer1MTokens:           6.00,
+			CachedInputCostPer1MTokens:      0.10,
+			CachedInputCostWritePer1MTokens: 1.25,
+			Provider:                        "openai",
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max"},
+		},
 		// GPT-5.2 base (same pricing as Instant/Thinking family; standard capabilities)
 		ModelGPT52: {
 			ModelID:                    ModelGPT52,

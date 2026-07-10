@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,30 @@ func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 	}
 	if meta.ContextWindow != 1050000 {
 		t.Fatalf("ContextWindow = %d, want 1050000", meta.ContextWindow)
+	}
+}
+
+func TestCodexCLIAdapterGPT56MetadataAndAliases(t *testing.T) {
+	for alias, wantModel := range map[string]string{
+		"high":   "gpt-5.6-sol",
+		"medium": "gpt-5.6-terra",
+		"low":    "gpt-5.6-luna",
+	} {
+		if got := resolveCodexCLIModelID(alias); got != wantModel {
+			t.Fatalf("resolveCodexCLIModelID(%q) = %q, want %q", alias, got, wantModel)
+		}
+	}
+
+	adapter := NewCodexCLIAdapter("", "gpt-5.6-sol", &MockLogger{})
+	meta, err := adapter.GetModelMetadata("gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("GetModelMetadata: %v", err)
+	}
+	if meta.ContextWindow != 372000 || meta.InputCostPer1MTokens != 5 || meta.OutputCostPer1MTokens != 30 {
+		t.Fatalf("GPT-5.6 Sol metadata = %+v", meta)
+	}
+	if !slices.Contains(meta.ReasoningEffortLevels, "max") || !slices.Contains(meta.ReasoningEffortLevels, "ultra") {
+		t.Fatalf("GPT-5.6 Sol reasoning levels = %v, want max and ultra", meta.ReasoningEffortLevels)
 	}
 }
 

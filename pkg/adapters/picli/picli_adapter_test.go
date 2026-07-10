@@ -211,6 +211,24 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	}
 }
 
+func TestPiLaunchArgsForwardsReasoningEffortAsThinking(t *testing.T) {
+	t.Setenv(EnvPiStatuslineExtension, "")
+	t.Setenv(EnvPiNodeOptions, "")
+	t.Setenv(EnvPiNodeMaxOldSpaceMB, "")
+	t.Setenv("NODE_OPTIONS", "")
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
+
+	opts := &llmtypes.CallOptions{ReasoningEffort: "high"}
+	adapter := NewPiCLIAdapter("", "zai/glm-5.2", &mockLogger{})
+	args, _, err := adapter.piLaunchArgs("zai", "glm-5.2", "/tmp/marker.ts", "", "/tmp/markers.jsonl", "", "mlp-pi-test-thinking", "", opts)
+	if err != nil {
+		t.Fatalf("piLaunchArgs() error = %v", err)
+	}
+	if got := strings.Join(args, "\x00"); !strings.Contains(got, "--thinking\x00high") {
+		t.Fatalf("args = %#v, want Pi --thinking high", args)
+	}
+}
+
 func TestPiMCPOutputGuardExtensionSourceCoversMCPResults(t *testing.T) {
 	source := piMCPOutputGuardExtensionSource()
 	for _, want := range []string{
