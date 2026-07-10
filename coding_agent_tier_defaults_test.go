@@ -21,10 +21,10 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 5.6 sol high",
+			name:          "codex uses gpt 5.6 sol xhigh",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-sol",
-			wantReasoning: "high",
+			wantReasoning: "xhigh",
 		},
 		{
 			name:          "claude code uses opus high",
@@ -70,10 +70,10 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 			wantProviderSet: true,
 		},
 		{
-			name:            "codex uses gpt 5.6 sol max",
+			name:            "codex uses gpt 5.6 sol xhigh",
 			provider:        ProviderCodexCLI,
 			wantModelID:     "gpt-5.6-sol",
-			wantReasoning:   "max",
+			wantReasoning:   "xhigh",
 			wantProviderSet: true,
 		},
 		{
@@ -131,10 +131,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:          "codex uses gpt 5.6 terra medium",
+			name:          "codex uses gpt 5.6 terra high",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-terra",
-			wantReasoning: "medium",
+			wantReasoning: "high",
 		},
 		{
 			name:          "cursor uses grok 4.5 high",
@@ -221,10 +221,10 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 			wantReasoning:  "high",
 		},
 		{
-			name:          "codex uses chief sol high",
+			name:          "codex uses chief sol xhigh",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-sol",
-			wantReasoning: "high",
+			wantReasoning: "xhigh",
 		},
 		{
 			name:           "cursor follows grok 4.5 high",
@@ -276,12 +276,12 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		effort string
 	}{
 		"builder":     {ref: defaults.Builder, model: "gpt-5.6-terra", effort: "high"},
-		"high":        {ref: defaults.High, model: "gpt-5.6-sol", effort: "high"},
+		"high":        {ref: defaults.High, model: "gpt-5.6-sol", effort: "xhigh"},
 		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
-		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "max"},
-		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "medium"},
-		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "high"},
+		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "xhigh"},
+		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "high"},
+		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "xhigh"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
 			t.Fatalf("%s = %+v, want model %s effort %s", name, check.ref, check.model, check.effort)
