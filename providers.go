@@ -2787,8 +2787,10 @@ func piProviderEnvNames(provider string) []string {
 		return []string{"FIREWORKS_API_KEY"}
 	case "together":
 		return []string{"TOGETHER_API_KEY"}
-	case "kimi-coding", "moonshotai", "moonshotai-cn":
+	case "kimi-coding":
 		return []string{"KIMI_API_KEY"}
+	case "moonshotai", "moonshotai-cn":
+		return []string{"MOONSHOT_API_KEY", "KIMI_API_KEY"}
 	case "minimax":
 		return []string{"MINIMAX_API_KEY"}
 	case "minimax-cn":

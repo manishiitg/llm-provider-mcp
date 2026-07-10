@@ -124,7 +124,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Builder:      high,
 			High:         high,
 			Medium:       codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash"),
-			Low:          codingAgentHighReasoningRef(providerID, "google/gemini-2.5-flash"),
+			Low:          codingAgentHighReasoningRef(providerID, DefaultPiCLIModel),
 			Maintenance:  high,
 			Pulse:        high,
 			ChiefOfStaff: high,

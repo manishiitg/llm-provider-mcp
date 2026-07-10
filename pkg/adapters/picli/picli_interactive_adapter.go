@@ -878,8 +878,10 @@ func piAPIKeyEnv(provider, apiKey string) []string {
 		return []string{"FIREWORKS_API_KEY=" + apiKey}
 	case "together":
 		return []string{"TOGETHER_API_KEY=" + apiKey}
-	case "kimi-coding", "moonshotai", "moonshotai-cn":
+	case "kimi-coding":
 		return []string{"KIMI_API_KEY=" + apiKey}
+	case "moonshotai", "moonshotai-cn":
+		return []string{"MOONSHOT_API_KEY=" + apiKey}
 	case "minimax":
 		return []string{"MINIMAX_API_KEY=" + apiKey}
 	case "minimax-cn":
@@ -1810,6 +1812,7 @@ func piRedactArgs(args []string) string {
 			"FIREWORKS_API_KEY=",
 			"TOGETHER_API_KEY=",
 			"KIMI_API_KEY=",
+			"MOONSHOT_API_KEY=",
 			"MINIMAX_API_KEY=",
 			"MINIMAX_CN_API_KEY=",
 			"AI_GATEWAY_API_KEY=",

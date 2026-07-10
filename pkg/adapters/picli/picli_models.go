@@ -2,16 +2,19 @@ package picli
 
 import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
-type visiblePiCLIModel struct {
-	id   string
-	name string
-}
+const (
+	ModelGemini31ProPreview = "google/gemini-3.1-pro-preview"
+	ModelMiniMaxM27         = "minimax/MiniMax-M2.7"
+	ModelGLM52              = "zai/glm-5.2"
+	ModelKimiK27Code        = "moonshotai/kimi-k2.7-code"
+)
 
-var knownPiCLIModels = []visiblePiCLIModel{
-	{id: DefaultModelID, name: "Gemini 3.5 Flash"},
-	{id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash"},
-	{id: "zai/glm-5.2", name: "GLM-5.2"},
-	{id: "kimi-coding/k2p7", name: "Kimi K2.7 Code"},
+var knownPiCLIModels = []string{
+	DefaultModelID,
+	ModelGemini31ProPreview,
+	ModelMiniMaxM27,
+	ModelGLM52,
+	ModelKimiK27Code,
 }
 
 // GetAllPiCLIModels returns the frontend-visible Pi CLI routed model selectors.
@@ -19,12 +22,27 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 	models := make([]*llmtypes.ModelMetadata, 0, len(knownPiCLIModels))
 	adapter := &PiCLIAdapter{}
 
-	for _, model := range knownPiCLIModels {
-		meta, err := adapter.GetModelMetadata(model.id)
+	for _, modelID := range knownPiCLIModels {
+		meta, err := adapter.GetModelMetadata(modelID)
 		if err != nil || meta == nil {
 			continue
 		}
-		meta.ModelName = model.name
+
+		switch modelID {
+		case DefaultModelID:
+			meta.ModelName = "Pi CLI (Gemini 3.5 Flash)"
+		case ModelGemini31ProPreview:
+			meta.ModelName = "Pi CLI (Gemini 3.1 Pro Preview)"
+		case ModelMiniMaxM27:
+			meta.ModelName = "Pi CLI (MiniMax M2.7)"
+			meta.ContextWindow = 204800
+		case ModelGLM52:
+			meta.ModelName = "Pi CLI (GLM 5.2)"
+		case ModelKimiK27Code:
+			meta.ModelName = "Pi CLI (Kimi K2.7 Code)"
+			meta.ContextWindow = 262144
+		}
+		meta.ModelSelectionMode = "dynamic"
 
 		models = append(models, meta)
 	}

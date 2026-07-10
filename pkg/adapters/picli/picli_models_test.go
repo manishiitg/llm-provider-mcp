@@ -13,8 +13,8 @@ func TestGetAllPiCLIModelsIncludesCuratedChineseModels(t *testing.T) {
 	}
 
 	for id, wantName := range map[string]string{
-		"zai/glm-5.2":      "GLM-5.2",
-		"kimi-coding/k2p7": "Kimi K2.7 Code",
+		ModelGLM52:       "Pi CLI (GLM 5.2)",
+		ModelKimiK27Code: "Pi CLI (Kimi K2.7 Code)",
 	} {
 		if got := byID[id]; got != wantName {
 			t.Fatalf("model %q name = %q, want %q; models = %#v", id, got, wantName, byID)
