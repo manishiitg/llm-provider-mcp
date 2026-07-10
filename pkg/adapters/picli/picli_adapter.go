@@ -84,11 +84,13 @@ func (p *PiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata
 	}
 	provider, model := resolvePiProviderModel(modelID, "")
 	return &llmtypes.ModelMetadata{
-		ModelID:           provider + "/" + model,
-		Provider:          "pi-cli",
-		ModelName:         "Pi CLI (" + provider + "/" + model + ")",
-		ContextWindow:     1048576,
-		SupportsToolCalls: true,
+		ModelID:                 provider + "/" + model,
+		Provider:                "pi-cli",
+		ModelName:               "Pi CLI (" + provider + "/" + model + ")",
+		ContextWindow:           1048576,
+		SupportsToolCalls:       true,
+		SupportsReasoningEffort: true,
+		ReasoningEffortLevels:   []string{"low", "medium", "high", "xhigh"},
 	}, nil
 }
 

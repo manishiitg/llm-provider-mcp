@@ -129,6 +129,54 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	// Known model metadata
 	switch {
+	case strings.Contains(modelID, "gpt-5.6-sol"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                         metadataModelID,
+			Provider:                        "codex-cli",
+			ModelName:                       "GPT-5.6 Sol",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            5.00,
+			OutputCostPer1MTokens:           30.00,
+			CachedInputCostPer1MTokens:      0.50,
+			CachedInputCostWritePer1MTokens: 6.25,
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		}, nil
+
+	case strings.Contains(modelID, "gpt-5.6-terra"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                         metadataModelID,
+			Provider:                        "codex-cli",
+			ModelName:                       "GPT-5.6 Terra",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            2.50,
+			OutputCostPer1MTokens:           15.00,
+			CachedInputCostPer1MTokens:      0.25,
+			CachedInputCostWritePer1MTokens: 3.125,
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		}, nil
+
+	case strings.Contains(modelID, "gpt-5.6-luna"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                         metadataModelID,
+			Provider:                        "codex-cli",
+			ModelName:                       "GPT-5.6 Luna",
+			ContextWindow:                   372000,
+			InputCostPer1MTokens:            1.00,
+			OutputCostPer1MTokens:           6.00,
+			CachedInputCostPer1MTokens:      0.10,
+			CachedInputCostWritePer1MTokens: 1.25,
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-5.5"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                    metadataModelID,
