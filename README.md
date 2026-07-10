@@ -1,116 +1,93 @@
-# llm-providers
+# Multi-LLM Provider
 
-A Go module providing a unified interface for multiple Large Language Model (LLM) providers, including AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI, Azure AI, **Z.AI**, **Claude Code CLI**, and **MiniMax**.
+Use one coding agent from another. `llm-provider-mcp` connects local coding CLIs
+through one MCP server, so a Codex or Claude Code session can delegate work to
+Cursor, Pi, Codex, or Claude Code without leaving the current project.
 
-## Overview
+Delegations run asynchronously in detached tmux sessions. The host receives a
+job ID immediately, continues its own work, and checks the job later for progress
+or a final result. Each target uses its existing local login, model access, and
+filesystem permissions.
 
-This module abstracts the differences between various LLM providers, providing a consistent API for:
-- Text generation
-- Tool calling (API-based and CLI-native)
-- Streaming responses (chunk-based and multi-turn)
-- Token usage tracking (input/output/cache/cost)
-- Structured output
-- **Agentic Capabilities** (via Claude Code CLI)
+## Why use it
 
-## Installation
+- Send a difficult task to a more capable model while the host keeps working.
+- Send a small or repetitive task to a faster or lower-cost model.
+- Use models available in Cursor, OpenRouter, Gemini, MiniMax, GLM, or Kimi from
+  a Codex or Claude Code session.
+- Run several independent delegations without blocking the host conversation.
+- Inspect a live terminal tail or attach directly to tmux when a job needs human
+  attention.
+
+## Supported coding CLIs
+
+| CLI | MCP host | Delegation target | Model selection |
+|---|---:|---:|---|
+| Codex CLI | Yes | Yes | Codex model IDs and reasoning levels |
+| Claude Code | Yes | Yes | Claude Code model selectors |
+| Cursor Agent | Manual MCP registration | Yes | Composer, Grok, and account-visible models |
+| Pi CLI | Manual MCP registration | Yes | Gemini, OpenRouter, MiniMax, GLM, and Kimi |
+
+The interactive setup currently registers Codex and Claude Code as hosts. Cursor
+and Pi can use the same stdio MCP server through manual project configuration.
+All four CLIs can run as local delegation targets.
+
+## Quick start
+
+Requirements:
+
+- macOS or Linux
+- tmux 3.x or newer
+- at least one host CLI: `codex` or `claude`
+- at least one authenticated target CLI: Cursor Agent, Pi, Codex, or Claude Code
+
+From the project where you want to use delegation, run:
 
 ```bash
-go get github.com/manishiitg/multi-llm-provider-go
+curl -fsSL https://raw.githubusercontent.com/manishiitg/multi-llm-provider-go/main/scripts/install-mcp.sh \
+  | sh
 ```
 
-Or with a specific version:
+The setup wizard detects installed CLIs and explains each choice. Select one or
+more hosts and one or more targets with Up/Down, toggle with Space, and confirm
+with Enter. Setup registers the MCP locally for the current project, verifies
+target authentication, and installs a small delegation skill for each selected
+host.
 
-```bash
-go get github.com/manishiitg/multi-llm-provider-go@v0.1.0
+Start a new Codex or Claude Code session in the same project, then ask naturally:
+
+```text
+Delegate the authentication test failure to Cursor using composer-2.5.
+Keep working here and check the delegated job when it is ready.
 ```
 
-## Supported Providers
+Or choose a different capability or cost profile:
 
-- **AWS Bedrock** - Claude models via Bedrock Runtime API
-- **OpenAI** - GPT models (GPT-4, GPT-3.5, etc.)
-- **Anthropic** - Claude models via direct API
-- **OpenRouter** - Multi-provider access via OpenRouter API
-- **Vertex AI** - Google Gemini models and Anthropic Claude via Vertex AI
-- **Azure AI** - OpenAI models via Azure AI Services/Foundry
-- **Z.AI** - GLM chat models via `api.z.ai` Coding Plan chat completions API
-- **Claude Code CLI** - Local agentic CLI integration (`claude`)
-- **MiniMax** - MiniMax-M2.7/M2.5/M2.1/M2 text models + image-01 image generation
-
-## Quick Start
-
-```go
-package main
-
-import (
-    "context"
-    "github.com/manishiitg/multi-llm-provider-go"
-    "github.com/manishiitg/multi-llm-provider-go/interfaces"
-)
-
-func main() {
-    // Initialize an LLM provider (e.g., Claude Code CLI)
-    config := llmproviders.Config{
-        Provider:    llmproviders.ProviderClaudeCode,
-        ModelID:     "claude-code", // Uses local CLI authentication
-        Temperature: 0.7,
-        Logger:      yourLogger,
-        EventEmitter: yourEventEmitter,
-    }
-    
-    llm, err := llmproviders.InitializeLLM(config)
-    if err != nil {
-        panic(err)
-    }
-    
-    // Generate content (Streaming)
-    ctx := context.Background()
-    streamChan := make(chan llmtypes.StreamChunk)
-    
-    go func() {
-        response, err := llm.GenerateContent(ctx, []llmtypes.MessageContent{
-            llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "Check the git status of this repo"),
-        }, llmtypes.WithStreamingChan(streamChan))
-        // Handle error/response...
-    }()
-
-    for chunk := range streamChan {
-        fmt.Print(chunk.Content)
-    }
-}
+```text
+Ask Codex to review this migration with its strongest reasoning model.
+Ask Pi to summarize these logs using Gemini 3.5 Flash.
+Ask Pi to implement the small cleanup using the OpenRouter free-model router.
 ```
 
-## Module Structure
+The host starts the background job, reports its `job_id`, and polls after the
+recommended delay. It can request a bounded terminal snapshot while the job is
+running or return the tmux attach command for direct human inspection.
 
-```
-llm-providers/
-├── cmd/
-│   └── llm-test/              # Test binary
-├── pkg/
-│   ├── adapters/              # Provider-specific adapters
-│   │   ├── bedrock/
-│   │   ├── openai/
-│   │   ├── anthropic/
-│   │   ├── vertex/
-│   │   ├── azure/
-│   │   ├── minimax/           # MiniMax text + image adapter
-│   │   └── claudecode/        # Claude Code CLI Adapter
-│   └── interfaces/            # Public interfaces
-├── internal/
-│   └── testing/               # Test utilities
-├── llmtypes/                  # Type definitions
-├── providers.go               # Main provider initialization
-├── events.go                  # Event definitions
-└── types.go                   # Type re-exports
-```
+## How delegation works
 
-## Cross-CLI Delegation MCP Server
+1. The host calls `delegate_coding_agent` with a provider, task, optional model,
+   and its current trusted project directory.
+2. The MCP server validates the provider and workspace, records the job in
+   SQLite, and launches a detached worker.
+3. The target CLI runs inside tmux with unattended project-scoped permissions.
+4. The host calls `get_coding_agent_job` until the job completes, fails, is
+   cancelled, or times out.
+5. The host reviews the returned result and verifies any changes in the project.
 
-`llm-provider-mcp` lets one coding-agent CLI delegate a one-shot background job
-to another coding-agent CLI through this module's existing tmux adapters. The
-MCP call returns immediately with a job ID; the caller polls that ID for progress
-and the final result.
+Polling is the current completion mechanism. Push notifications through MCP
+Tasks are planned after client behavior is consistent across the supported CLIs.
 
-### One-command install
+## Install and set up
 
 Run the interactive installer:
 
@@ -317,7 +294,27 @@ provider-independent sandbox is added.
 Push completion uses polling today. Native MCP Tasks notifications will be
 evaluated after Codex, Claude Code, Cursor, and Pi client behavior is certified.
 
-## Configuration
+## Go provider library
+
+The MCP server is built on this repository's Go provider module. Applications
+can also import that module directly for a common API across hosted LLMs and
+local coding-agent CLIs:
+
+```bash
+go get github.com/manishiitg/multi-llm-provider-go@latest
+```
+
+The library supports text generation, tool calling, streaming, token usage,
+structured output, image generation, and CLI-native agent execution. Provider
+adapters include AWS Bedrock, OpenAI, Anthropic, OpenRouter, Google Vertex AI,
+Azure AI, Z.AI, MiniMax, Codex CLI, Cursor Agent, Claude Code, Gemini CLI, and
+Pi CLI.
+
+The MCP implementation reuses these adapters instead of maintaining a separate
+execution layer. In particular, the shared tmux capture package is also used by
+MCP Agent BuilderGo's `query_step` behavior.
+
+## Go library configuration
 
 ### Environment Variables
 
@@ -342,7 +339,7 @@ Each provider can be configured with:
 - Fallback models (for rate limiting)
 - Custom options
 
-## Testing
+## Go library testing
 
 Build and run the test tool:
 
@@ -352,7 +349,7 @@ make build
 ./bin/llm-test --help
 ```
 
-## Test Coverage
+## Go library test coverage
 
 The `llm-test` tool provides comprehensive test coverage for all LLM providers.
 
