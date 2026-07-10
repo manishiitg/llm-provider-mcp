@@ -165,7 +165,8 @@ func WithAdditionalDirs(dirs string) llmtypes.CallOption {
 }
 
 // WithReasoningEffort sets the model_reasoning_effort config override.
-// Values: "none", "minimal", "low", "medium", "high", "xhigh"
+// Values depend on the selected model. Current Codex models may also support
+// "max" and "ultra" in addition to the legacy effort levels.
 func WithReasoningEffort(effort string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
