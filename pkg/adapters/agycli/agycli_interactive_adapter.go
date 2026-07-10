@@ -3176,6 +3176,7 @@ func isAgyTmuxSessionLostError(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "no such file or directory") ||
 		strings.Contains(lower, "can't find pane") ||
 		strings.Contains(lower, "can't find session") ||
 		strings.Contains(lower, "no current target")

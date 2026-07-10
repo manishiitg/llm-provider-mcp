@@ -80,7 +80,9 @@ jobs:
         cache-dependency-path: go.sum
     
     - name: Run tests
-      run: go test ./... -v
+      # Semantic final-extraction judges require a live Vertex/Gemini key and
+      # belong in the opt-in real E2E suite, not the deterministic PR suite.
+      run: go test ./... -v -skip 'FinalExtractionVertexJudgeE2E$'
 
   build:
     name: Build

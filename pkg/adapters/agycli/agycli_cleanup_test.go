@@ -3,6 +3,7 @@ package agycli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,13 @@ func TestCleanupAgyCLIInteractiveSessionsDoesNotBlockOnBusySession(t *testing.T)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("cleanup blocked on busy session mutex")
+	}
+}
+
+func TestAgyTmuxSessionLossRecognizesMissingServerSocket(t *testing.T) {
+	err := errors.New("tmux kill-session failed: error connecting to /tmp/tmux-1001/default (No such file or directory)")
+	if !isAgyTmuxSessionLostError(err) {
+		t.Fatalf("isAgyTmuxSessionLostError(%q) = false, want true", err)
 	}
 }
 
