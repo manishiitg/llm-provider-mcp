@@ -81,6 +81,10 @@ const (
 	// and then went byte-identical without ever reaching a ready prompt. Set to
 	// 0 to disable the backstop.
 	EnvClaudeInteractiveStalePaneBackstopSeconds = "CLAUDE_CODE_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
+	// EnvClaudeMCPToolIdleTimeout controls Claude Code's client-side watchdog
+	// for an MCP tool call that has not emitted progress. Keep it aligned with
+	// the bridge's 90-minute timeout for long-running delegation tools.
+	EnvClaudeMCPToolIdleTimeout = "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"
 
 	// Legacy env names kept for existing deployments and test runners.
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
@@ -952,6 +956,7 @@ func preTrustClaudeWorkingDir(workingDir string) {
 func claudePromptSuggestionEnvArgs() []string {
 	return []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
+		"-e", EnvClaudeMCPToolIdleTimeout + "=5400000",
 		// The tmux adapter relies on the user's Claude Code login. Inherited
 		// Anthropic API env vars make recent Claude Code builds stop at an
 		// interactive auth-choice prompt that this transport cannot answer.
