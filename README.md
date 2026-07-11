@@ -40,6 +40,9 @@ The interactive setup detects installed CLIs, lets you select multiple hosts
 and targets, verifies authentication, registers the MCP server only for the
 current project, and installs a small delegation skill.
 
+The server is also published in the [official MCP Registry](https://registry.modelcontextprotocol.io/docs)
+as `io.github.manishiitg/llm-provider-mcp`.
+
 Start a new Codex or Claude Code session in that project and ask naturally:
 
 ```text
