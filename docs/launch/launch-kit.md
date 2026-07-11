@@ -18,9 +18,16 @@ delegate background coding jobs to Cursor, Pi, Codex, or Claude Code.
 The host gets a job ID immediately, keeps working, then reviews the result.
 Jobs run locally in inspectable tmux sessions using existing CLI logins.
 
+The README includes real Claude-to-Cursor and Claude-to-Codex GPT-5.6 Sol runs,
+including host-side diff and test verification.
+
 [attach docs/assets/llm-provider-mcp-demo.mp4]
 https://github.com/manishiitg/llm-provider-mcp
 ```
+
+For a Codex-focused follow-up, attach
+`docs/assets/llm-provider-mcp-codex-sol-demo.mp4` and disclose that the Sol run
+used Codex CLI `0.145.0-alpha.4` while the model was still on the alpha channel.
 
 ## X Technical Follow-Up
 

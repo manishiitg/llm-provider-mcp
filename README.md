@@ -21,6 +21,13 @@ This is a real Claude Code to Cursor Composer 2.5 run: the job completed in 28
 seconds and Claude independently verified the diff and uncached test result.
 [See the reproducible demo and sanitized transcript.](docs/demo.md)
 
+![Claude Code delegating a background coding task to Codex GPT-5.6 Sol](docs/assets/llm-provider-mcp-codex-sol-demo.gif)
+
+This second real run delegates from Claude Code to Codex CLI with
+`gpt-5.6-sol`. Codex completed the bounded fix in 36 seconds, and Claude
+independently inspected the diff and reran the test. The run used Codex CLI
+`0.145.0-alpha.4`; stable `0.144.1` rejected Sol during its rollout.
+
 ## Quick Start
 
 Requirements:

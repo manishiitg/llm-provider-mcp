@@ -50,6 +50,20 @@ llm-provider-mcp models cursor-cli --live
 Account-visible catalogs can change independently of this repository. For Pi,
 verify that the selected sub-provider is authenticated in Pi.
 
+For GPT-5.6 Sol, Terra, or Luna, verify Codex 0.145 or newer. Stable Codex CLI
+0.144.1 rejects these selectors during the initial rollout:
+
+```bash
+command -v codex
+codex --version
+```
+
+Coding-agent targets launch through the user's login shell by default. If
+multiple Codex installations exist, run the same commands in a fresh login
+shell and remove or upgrade the older executable that appears first. For
+controlled environments that intentionally supply `PATH`, set
+`CODING_AGENT_SHELL_MODE=direct` on the MCP server process.
+
 ## Job Stays Queued
 
 - Confirm the installed binary is executable.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added a real Claude Code to Codex CLI GPT-5.6 Sol delegation demo, sanitized
+  transcript, GIF, and MP4.
+
+### Documentation
+
+- Documented the Codex 0.145 rollout requirement for GPT-5.6 Sol, Terra, and
+  Luna, including multiple-installation troubleshooting.
+
 ## 0.6.1 - 2026-07-11
 
 ### Security

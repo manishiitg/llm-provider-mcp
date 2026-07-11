@@ -57,6 +57,16 @@ Codex accepts model IDs and reasoning levels exposed by the installed CLI. Use
 the catalog instead of assuming that an account has access to every advertised
 model.
 
+GPT-5.6 Sol, Terra, and Luna require a Codex 0.145 build. In the July 11, 2026
+real demo, stable Codex CLI 0.144.1 rejected `gpt-5.6-sol` with an upgrade
+message, while `0.145.0-alpha.4` completed the job. Until 0.145 reaches the
+stable channel, install the alpha explicitly only when you intend to use these
+selectors:
+
+```bash
+npm install -g @openai/codex@alpha
+```
+
 Codex delegated jobs run with `approval_policy=never` and the `workspace-write`
 sandbox so a detached job cannot wait on an invisible approval prompt.
 
