@@ -8,12 +8,11 @@ Covered providers:
 - `claude-code` — `claude -p --output-format stream-json`
 - `codex-cli` — `codex exec --json`
 - `cursor-cli` — `cursor-agent --print --output-format stream-json`
-- `gemini-cli` — `gemini --output-format stream-json`
 
 The provider-level coding-agent contract in `coding_agent_contract.go` decides
 which transport host applications should use by default. Claude Code, Codex CLI,
-and Cursor CLI use the tmux interactive transport. Gemini CLI uses structured
-JSON only. The two transports are complementary:
+and Cursor CLI use the tmux interactive transport. The two transports are
+complementary:
 
 - Tmux: persistent chat, live input, terminal streaming, interrupt, multi-turn.
 - Structured: per-turn, native token/cost, clean tool events, no tmux dependency.
@@ -29,7 +28,6 @@ the provider-level contract.
 | Claude Code | `claude -p --output-format stream-json` | `--system-prompt-file`, `--mcp-config`, `--tools ""` |
 | Codex CLI | `codex exec --json` | `--model`, `--config` |
 | Cursor CLI | `cursor-agent --print --output-format stream-json --stream-partial-output` | `--trust`, `--force`, `--workspace`, `--model`, `--mode` |
-| Gemini CLI | `gemini --output-format stream-json` | `--prompt`, `--model` |
 
 ## Event Formats by Provider
 
@@ -66,13 +64,6 @@ the provider-level contract.
 {"type":"result","subtype":"success","result":"...","session_id":"...","usage":{"inputTokens":3705,"outputTokens":45,"cacheReadTokens":7040}}
 ```
 
-### Gemini CLI (stream-json)
-
-```jsonl
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}
-{"type":"result","subtype":"success","result":"...","session_id":"...","usage":{...}}
-```
-
 ## Normative Structured Agent Contract
 
 ### 1. Launch
@@ -96,8 +87,7 @@ The adapter must:
 
 - extract system messages from the message list
 - route system instructions through the provider-native mechanism when
-  available (Claude Code `--system-prompt-file`, Cursor `.cursor/rules`,
-  Gemini `GEMINI_SYSTEM_MD`)
+  available (Claude Code `--system-prompt-file`, Cursor `.cursor/rules`)
 - fall back to prepending system instructions to the prompt when no native
   mechanism exists
 - build user conversation from all non-system messages
@@ -372,64 +362,31 @@ RUN_CURSOR_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/cursorcli \
 
 **Gaps:** none.
 
-### Gemini CLI (`gemini --output-format stream-json`)
-
-```sh
-RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli \
-  -run 'TestGeminiCLIRealStreamJSON|TestGeminiCLIStructured' -v -timeout 10m
-```
-
-| Area | Test |
-|---|---|
-| Fresh launch | `TestGeminiCLIRealStreamJSONContract` |
-| Working directory | `TestGeminiCLIStructuredWorkingDir` |
-| System prompt | `TestGeminiCLIStructuredSystemPrompt` |
-| Token usage | `TestGeminiCLIUsageAndCost` |
-| Streaming text | `TestGeminiCLIStructuredStreaming` |
-| Streaming tool calls | `TestGeminiCLIStructuredToolUse` |
-| Multi-step tool use | `TestGeminiCLIStructuredMultiStepToolUse` |
-| Model override | `TestGeminiCLIStructuredModelOverride` |
-| Session resume | `TestGeminiCLIRealStreamJSONContract` (multi-turn with resume) |
-| Session metadata | `TestGeminiCLIRealStreamJSONContract` (session_id + project_dir_id) |
-| MCP bridge | `TestGeminiCLIRealStreamJSONMCPBridgeContract` |
-| Image path | `TestGeminiCLIStructuredImagePath` |
-| Web search | `TestGeminiCLIStructuredSearchWeb` |
-| Live web search | `TestGeminiCLIStructuredSearchWebLiveData` |
-| Error handling | `TestGeminiCLIStructuredErrorHandling` |
-| Tool disable | `TestGeminiCLIStructuredToolDisable` |
-| Multi-turn resume | `TestGeminiCLIStructuredMultiTurnResume` |
-| No injected strings | `TestGeminiCLIStructuredNoInjectedStrings` |
-| No internal memory | `TestGeminiCLIStructuredNoInternalMemory` |
-| Graceful cancel | `TestGeminiCLIStructuredGracefulCancel` |
-| Sandboxed MCP | `TestGeminiCLIRealStreamJSONMCPBridgeContract` (uses admin policy deny + MCP settings) |
-
-**Gaps:** none.
-
 ## Full Provider Coverage Matrix
 
-| Area | Claude | Codex | Cursor | Gemini |
-|---|:---:|:---:|:---:|:---:|
-| 1. Fresh launch | yes | yes | yes | yes |
-| 2. Working directory | yes | yes | yes | yes |
-| 3. System prompt | yes | yes | yes | yes |
-| 4. Token usage | yes | yes | yes | yes |
-| 5. Streaming text | yes | yes | yes | yes |
-| 6. Streaming tool calls | yes | yes | yes | yes |
-| 7. Session metadata | yes | yes | yes | yes |
-| 8. Multi-step tool use | yes | yes | yes | yes |
-| 9. Model override | yes | yes | yes | yes |
-| 10. Image path | yes | yes | yes | yes |
-| 11. Web search | yes | yes | yes | yes |
-| 12. Live web search | yes | yes | yes | yes |
-| 13. Cancellation | yes | yes | yes | yes |
-| 14. Error handling | yes | yes | yes | yes |
-| 15. MCP bridge | yes | yes | yes | yes |
-| 16. Tool disable | yes | yes | yes | yes |
-| 17. Multi-turn resume | yes | yes | yes | yes |
-| 18. No injected strings | yes | yes | yes | yes |
-| 19. No internal memory | yes | yes | yes | yes |
-| 20. Graceful cancel | yes | yes | yes | yes |
-| 21. Sandboxed MCP | yes | yes | yes | yes |
+| Area | Claude | Codex | Cursor |
+|---|:---:|:---:|:---:|
+| 1. Fresh launch | yes | yes | yes |
+| 2. Working directory | yes | yes | yes |
+| 3. System prompt | yes | yes | yes |
+| 4. Token usage | yes | yes | yes |
+| 5. Streaming text | yes | yes | yes |
+| 6. Streaming tool calls | yes | yes | yes |
+| 7. Session metadata | yes | yes | yes |
+| 8. Multi-step tool use | yes | yes | yes |
+| 9. Model override | yes | yes | yes |
+| 10. Image path | yes | yes | yes |
+| 11. Web search | yes | yes | yes |
+| 12. Live web search | yes | yes | yes |
+| 13. Cancellation | yes | yes | yes |
+| 14. Error handling | yes | yes | yes |
+| 15. MCP bridge | yes | yes | yes |
+| 16. Tool disable | yes | yes | yes |
+| 17. Multi-turn resume | yes | yes | yes |
+| 18. No injected strings | yes | yes | yes |
+| 19. No internal memory | yes | yes | yes |
+| 20. Graceful cancel | yes | yes | yes |
+| 21. Sandboxed MCP | yes | yes | yes |
 
 ## Related Docs
 

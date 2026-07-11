@@ -21,7 +21,6 @@ not duplicate:
 | `docs/coding_sdk_structured_contract.md` | Per-provider structured-mode (`--print` / `--exec` / `stream-json`) transport contract |
 | `docs/coding_sdk_tmux_contract.md` | Per-provider tmux interactive transport contract |
 | `docs/CODEX_CLI_CODING_AGENT_CONTRACT.md` | Codex CLI-specific behavior (exec mode, session storage, etc.) |
-| `docs/GEMINI_CLI_CODING_AGENT_CONTRACT.md` | Gemini CLI-specific behavior |
 
 ## Where to look for cross-repo concerns
 

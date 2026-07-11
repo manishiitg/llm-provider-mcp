@@ -12,7 +12,6 @@ package llmtypes
 //   - claude-code      → <workdir>/.claude/skills/<name>/
 //   - cursor-cli       → <workdir>/.cursor/skills/<name>/
 //   - agy-cli          → <workdir>/.agents/skills/<name>/
-//   - gemini-cli       → <workdir>/.agents/skills/<name>/
 //   - codex-cli        → <workdir>/.agents/skills/<name>/
 //   - pi-cli           → <workdir>/.pi/skills/<name>/
 //   - API transports   → not projected; surfaced through the system prompt listing

@@ -190,8 +190,6 @@ func closeProviderSession(provider llmproviders.Provider, ownerSessionID, reason
 		llmproviders.CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason)
 	case llmproviders.ProviderCursorCLI:
 		llmproviders.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
-	case llmproviders.ProviderGeminiCLI:
-		llmproviders.CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason)
 	case llmproviders.ProviderAgyCLI:
 		llmproviders.CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason)
 	case llmproviders.ProviderPiCLI:

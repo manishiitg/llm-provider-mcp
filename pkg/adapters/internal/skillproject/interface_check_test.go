@@ -20,7 +20,6 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -32,7 +31,6 @@ var (
 	_ skillProjector = (*claudecode.ClaudeCodeAdapter)(nil)
 	_ skillProjector = (*cursorcli.CursorCLIAdapter)(nil)
 	_ skillProjector = (*agycli.AgyCLIAdapter)(nil)
-	_ skillProjector = (*geminicli.GeminiCLIAdapter)(nil)
 	_ skillProjector = (*codexcli.CodexCLIAdapter)(nil)
 	_ skillProjector = (*picli.PiCLIAdapter)(nil)
 )
@@ -56,7 +54,6 @@ func TestCLIAdaptersProjectSkillsToNativeDirectories(t *testing.T) {
 		{name: "claude-code", projector: &claudecode.ClaudeCodeAdapter{}, skillsSubdir: ".claude/skills"},
 		{name: "cursor-cli", projector: &cursorcli.CursorCLIAdapter{}, skillsSubdir: ".cursor/skills"},
 		{name: "agy-cli", projector: &agycli.AgyCLIAdapter{}, skillsSubdir: ".agents/skills"},
-		{name: "gemini-cli", projector: &geminicli.GeminiCLIAdapter{}, skillsSubdir: ".agents/skills"},
 		{name: "codex-cli", projector: &codexcli.CodexCLIAdapter{}, skillsSubdir: ".agents/skills"},
 		{name: "pi-cli", projector: &picli.PiCLIAdapter{}, skillsSubdir: ".pi/skills"},
 	}

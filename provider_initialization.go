@@ -15,7 +15,6 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
@@ -1187,80 +1186,6 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
-// initializeGeminiCLI creates and configures a Gemini CLI adapter instance
-func initializeGeminiCLI(config Config) (llmtypes.Model, error) {
-	// LLM Initialization event data
-	llmMetadata := LLMMetadata{
-		ModelVersion: config.ModelID,
-		MaxTokens:    0,
-		TopP:         config.Temperature,
-		User:         "gemini_cli_user",
-		CustomFields: map[string]string{
-			"provider":  "gemini-cli",
-			"operation": OperationLLMInitialization,
-		},
-	}
-
-	// Emit LLM initialization start event
-	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
-
-	// Set default model if not specified
-	// Gemini CLI supports aliases: "auto" (default), "pro", "flash", "flash-lite"
-	modelID := config.ModelID
-	if modelID == "" {
-		modelID = "auto"
-	}
-
-	logger := config.Logger
-	if logger == nil {
-		logger = &noopLoggerImpl{}
-	}
-	logger.Infof("Initializing Gemini CLI adapter - model_id: %s", modelID)
-
-	apiKey, apiKeySource := resolveGeminiCLIAPIKey(config)
-	if apiKey != "" {
-		logger.Infof("Gemini CLI: using API key from %s (length=%d)", apiKeySource, len(apiKey))
-	} else {
-		logger.Infof("Gemini CLI: no API key found in config or environment")
-	}
-
-	// Create Gemini CLI adapter — pass API key so it can set GEMINI_API_KEY on the subprocess
-	llm := geminicli.NewGeminiCLIAdapter(apiKey, modelID, logger)
-
-	// Emit LLM initialization success event
-	successMetadata := LLMMetadata{
-		ModelVersion: modelID,
-		User:         "gemini_cli_user",
-		CustomFields: map[string]string{
-			"provider":     "gemini-cli",
-			"status":       StatusLLMInitialized,
-			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-		},
-	}
-	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-	logger.Infof("Initialized Gemini CLI adapter - model_id: %s", modelID)
-	return llm, nil
-}
-
-func resolveGeminiCLIAPIKey(config Config) (string, string) {
-	if config.APIKeys != nil {
-		if config.APIKeys.GeminiCLI != nil && strings.TrimSpace(*config.APIKeys.GeminiCLI) != "" {
-			return strings.TrimSpace(*config.APIKeys.GeminiCLI), "gemini-cli config"
-		}
-		if config.APIKeys.Vertex != nil && strings.TrimSpace(*config.APIKeys.Vertex) != "" {
-			return strings.TrimSpace(*config.APIKeys.Vertex), "vertex config"
-		}
-	}
-	if envKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); envKey != "" {
-		return envKey, "GEMINI_API_KEY env var"
-	}
-	if envKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")); envKey != "" {
-		return envKey, "GOOGLE_API_KEY env var"
-	}
-	return "", ""
-}
-
 // initializeCodexCLI creates and configures an OpenAI Codex CLI adapter instance
 func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 	// LLM Initialization event data
@@ -1515,9 +1440,6 @@ func piCLIAPIKeyForProvider(keys *ProviderAPIKeys, provider string) (string, str
 			}
 			if key := derefTrim(keys.Vertex); key != "" {
 				return key, "Gemini/Vertex workspace auth"
-			}
-			if key := derefTrim(keys.GeminiCLI); key != "" {
-				return key, "Gemini CLI workspace auth"
 			}
 		case "openai":
 			if key := derefTrim(keys.OpenAI); key != "" {

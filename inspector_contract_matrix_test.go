@@ -43,7 +43,7 @@ var inspectorContractFactories = map[string]adapterFactory{
 	"vertex":    newRealVertexForInspectorMatrix,
 	"z-ai":      newRealZAIForInspectorMatrix,
 	// TODO: claudecode (structured), codex (structured),
-	// gemini-cli (structured), cursor-cli (structured). Each registers
+	// cursor-cli (structured). Each registers
 	// here as it's wired.
 }
 
@@ -276,6 +276,6 @@ func newRealZAIForInspectorMatrix(t *testing.T) (llmtypes.Model, string, bool) {
 // matrixMockLogger is a silent logger for the matrix test.
 type matrixMockLogger struct{}
 
-func (l *matrixMockLogger) Infof(format string, args ...any)         {}
-func (l *matrixMockLogger) Errorf(format string, args ...any)        {}
-func (l *matrixMockLogger) Debugf(format string, args ...any)        {}
+func (l *matrixMockLogger) Infof(format string, args ...any)  {}
+func (l *matrixMockLogger) Errorf(format string, args ...any) {}
+func (l *matrixMockLogger) Debugf(format string, args ...any) {}

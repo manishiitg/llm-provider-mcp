@@ -97,8 +97,9 @@ The setup wizard currently registers Codex and Claude Code as hosts. Cursor and
 Pi can use the same stdio MCP server through manual project configuration. All
 four CLIs can run as local delegation targets.
 
-Gemini CLI and Antigravity CLI remain available only as deprecated Go-library
-compatibility integrations and are not offered during new MCP setup.
+Antigravity CLI remains available only as a deprecated Go-library compatibility
+integration and is not offered during new MCP setup. Gemini CLI has been
+removed; use Pi CLI for Gemini models or Vertex for direct Gemini API access.
 
 See [Providers and models](docs/providers.md) for selectors, authentication
 commands, and provider-specific behavior.

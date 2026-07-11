@@ -10,7 +10,6 @@ import (
 	bedrockcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/bedrock"
 	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
 	codexclicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/codexcli"
-	geminiclichmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/geminicli"
 	minimaxcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/minimax"
 	openaicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openai"
 	openroutercmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/openrouter"
@@ -130,10 +129,6 @@ func main() {
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodePermissionTestCmd)
 	rootCmd.AddCommand(claudecodecmd.ClaudeCodeSearchWebTestCmd)
-	rootCmd.AddCommand(geminiclichmd.GeminiCLICmd)
-	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingContentTestCmd)
-	rootCmd.AddCommand(geminiclichmd.GeminiCLIStreamingMultiTurnTestCmd)
-	rootCmd.AddCommand(geminiclichmd.GeminiCLISearchWebTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLICmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingContentTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingMultiTurnTestCmd)

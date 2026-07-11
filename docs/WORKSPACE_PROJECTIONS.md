@@ -233,10 +233,6 @@ their live CLIs and ship enabled-by-default under the flag:
 - **Cursor's `.cursor/hooks.json`** — cursor reads silently.
 - **Agy's `.agents/mcp_config.json`** + `.agents/hooks.json` — antigravity
   reads silently.
-- **Gemini's merged `.gemini/settings.json`** — gemini accepts the
-  hooks block without a review screen, even with `hooks.BeforeTool`
-  entries. (Notable: gemini behaves better here than codex despite
-  using the same hook event family.)
 - **Claude's `CLAUDE.md`** — Claude Code's memory layer auto-loads the
   root-level project-instructions file at startup with no discovery
   prompt.
@@ -248,9 +244,9 @@ their live CLIs and ship enabled-by-default under the flag:
 - Lifecycle tests for each helper: fresh-workspace write+remove,
   pre-existing-operator-content write+byte-restore, empty-workingDir
   no-op.
-- Format invariants: codex TOML emitter (key ordering, bare vs quoted
-  keys, env subtable), gemini hooks matcher covers documented tool
-  names, and cursor/antigravity hook projections preserve their schema.
+- Format invariants: codex TOML emitter (key ordering, bare vs quoted keys and
+  env subtable), plus cursor/antigravity hook projections preserving their
+  schema.
 
 ### Real-CLI E2E (gated per CLI)
 
@@ -258,7 +254,6 @@ their live CLIs and ship enabled-by-default under the flag:
 | :---------- | :------------------------------------------------- | :----- |
 | Claude Code | `RUN_CLAUDE_CODE_TMUX_INTEGRATION=1`       | PASS   |
 | Codex       | `RUN_CODEX_CLI_REAL_E2E=1`                          | PASS   |
-| Gemini      | `RUN_GEMINI_CLI_REAL_E2E=1` + `GEMINI_API_KEY`     | PASS   |
 | Cursor      | `RUN_CURSOR_CLI_REAL_E2E=1`                         | covered by older `cursorcli_deny_builtin_hooks_test.go` |
 | Antigravity | `RUN_AGY_CLI_REAL_E2E=1`                            | PASS (`TestAgyCLIRealSystemPromptRulesContract`) |
 

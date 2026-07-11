@@ -108,7 +108,7 @@ func TestManagerRejectsNestedDelegationAndOutsideWorkspace(t *testing.T) {
 		t.Fatalf("Mkdir() error = %v", err)
 	}
 	_, err = manager.Start(context.Background(), StartRequest{
-		Provider:   "gemini-cli",
+		Provider:   "agy-cli",
 		Task:       "test",
 		WorkingDir: inside,
 	})

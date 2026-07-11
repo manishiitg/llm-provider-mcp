@@ -30,7 +30,10 @@ Coding-agent adapters:
 - Codex CLI
 - Cursor Agent
 - Pi CLI
-- Gemini CLI and Antigravity CLI for deprecated compatibility
+- Antigravity CLI for deprecated compatibility
+
+Gemini CLI was removed. Use Pi CLI for Gemini models or Vertex for direct
+Gemini API access.
 
 Media providers:
 

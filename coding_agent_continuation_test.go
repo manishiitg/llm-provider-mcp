@@ -75,20 +75,6 @@ func TestContinueCodingAgentSessionSendsOnlyLatestMessageAndResumeOptions(t *tes
 			workdirKey: "codex_project_dir_id",
 		},
 		{
-			name: "gemini cli",
-			handle: llmtypes.CodingProviderSessionHandle{
-				Provider:        string(ProviderGeminiCLI),
-				Transport:       llmtypes.CodingProviderTransportStructured,
-				NativeSessionID: "gemini-native",
-				WorkingDir:      "/tmp/work",
-				ProjectDirID:    "gemini-project",
-				Model:           "auto",
-			},
-			resumeKey:     "gemini_resume_session_id",
-			workdirKey:    "gemini_working_dir",
-			projectDirKey: "gemini_project_dir_id",
-		},
-		{
 			name: "cursor cli",
 			handle: llmtypes.CodingProviderSessionHandle{
 				Provider:        string(ProviderCursorCLI),
@@ -255,10 +241,10 @@ func TestStartCodingAgentTransportSessionSetsLaunchOnlyWithoutPrompt(t *testing.
 func TestStartCodingAgentTransportSessionRejectsStructuredTransport(t *testing.T) {
 	model := &continuationTestModel{}
 	_, err := StartCodingAgentTransportSession(context.Background(), model, llmtypes.CodingProviderSessionHandle{
-		Provider:        string(ProviderGeminiCLI),
+		Provider:        string(ProviderOpenAI),
 		Transport:       llmtypes.CodingProviderTransportStructured,
-		NativeSessionID: "gemini-native",
-		Model:           "auto",
+		NativeSessionID: "api-session",
+		Model:           "gpt-5",
 	})
 	if !IsCodingAgentContinuationError(err, CodingAgentContinuationErrorNonApplicable) {
 		t.Fatalf("err = %v, want non-applicable continuation error", err)

@@ -92,17 +92,6 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:        pulse,
 			ChiefOfStaff: high,
 		}, true
-	case ProviderGeminiCLI:
-		high := codingAgentHighReasoningRef(providerID, "high")
-		return &CodingAgentDefaultTierModels{
-			Builder:      high,
-			High:         high,
-			Medium:       codingAgentHighReasoningRef(providerID, "medium"),
-			Low:          codingAgentHighReasoningRef(providerID, "low"),
-			Maintenance:  high,
-			Pulse:        high,
-			ChiefOfStaff: high,
-		}, true
 	case ProviderCursorCLI:
 		high := codingAgentHighReasoningRef(providerID, "grok-4.5")
 		medium := codingAgentHighReasoningRef(providerID, DefaultCursorCLIModel)

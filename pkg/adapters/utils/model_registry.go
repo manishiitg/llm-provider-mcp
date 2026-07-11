@@ -9,7 +9,6 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
@@ -51,9 +50,6 @@ func GetAllModelMetadata() []*llmtypes.ModelMetadata {
 
 	// Claude Code CLI
 	allModels = append(allModels, claudecode.GetAllClaudeCodeModels()...)
-
-	// Gemini CLI
-	allModels = append(allModels, geminicli.GetAllGeminiCLIModels()...)
 
 	// Codex CLI
 	allModels = append(allModels, codexcli.GetAllCodexCLIModels()...)

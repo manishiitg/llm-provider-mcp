@@ -19,7 +19,6 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
 		{name: "agy cli", provider: ProviderAgyCLI, wantTmux: true, wantFound: true},
-		{name: "gemini cli", provider: ProviderGeminiCLI, wantTmux: true, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
 		{name: "openai", provider: ProviderOpenAI},
@@ -75,7 +74,6 @@ func TestDeprecatedCodingAgentContractsKeepRuntimeButPointToReplacement(t *testi
 		provider Provider
 		want     Provider
 	}{
-		{provider: ProviderGeminiCLI, want: ProviderPiCLI},
 		{provider: ProviderAgyCLI, want: ProviderPiCLI},
 	}
 
@@ -216,7 +214,6 @@ func TestProjectInstructionOnlyRegistryIsIntentional(t *testing.T) {
 	expected := map[Provider]bool{
 		ProviderClaudeCode: true,
 		ProviderCodexCLI:   true,
-		ProviderGeminiCLI:  true,
 	}
 	for provider := range expected {
 		if opt := CodingAgentProjectInstructionOnlyOption(provider, true); opt == nil {
@@ -375,17 +372,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertStaleDraftCleanup,
 		CertTrustAuthPrompts,
 	},
-	// Gemini CLI is deprecated for new setup, so it is no longer held to the
-	// full active-provider tmux promotion bar. These are the remaining legacy
-	// runtime claims that stay true so restored Gemini sessions keep working,
-	// but they are not a reason to invest in new Gemini certification work;
-	// promote new Google/Gemini-backed flows through Pi CLI instead.
-	ProviderGeminiCLI: {
-		CertCancellation, CertCleanup, CertFreshLaunch,
-		CertLiveInput, CertMultiTurn, CertNativeSystemPrompt,
-		CertSessionLoss, CertSessionLossRecovery, CertStaleDraftCleanup,
-		CertWorkingDirectory,
-	},
 }
 
 // TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification iterates every
@@ -543,41 +529,5 @@ func TestClaudeAndCodexSessionLossRecoveryCertificationUsesRealE2E(t *testing.T)
 		if !hasEnv {
 			t.Fatalf("%s %s missing env guard %q: %#v", provider, CertSessionLossRecovery, wantEnv, found.Env)
 		}
-	}
-}
-
-func TestStructuredCLIAdaptersMirrorAssistantTextToTerminal(t *testing.T) {
-	tests := []struct {
-		name        string
-		adapterFile string
-		testFile    string
-		testName    string
-	}{
-		{
-			name:        "gemini cli",
-			adapterFile: "pkg/adapters/geminicli/geminicli_adapter.go",
-			testFile:    "pkg/adapters/geminicli/geminicli_adapter_test.go",
-			testName:    "TestGeminiCLIStructuredStreamMirrorsAssistantTextToTerminal",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			adapterRaw, err := os.ReadFile(filepath.Clean(tt.adapterFile))
-			if err != nil {
-				t.Fatalf("read adapter file: %v", err)
-			}
-			if strings.Contains(string(adapterRaw), "_ = sink") {
-				t.Fatalf("%s discards StreamSink; structured adapters must emit through sink.Emit so terminal panes mirror assistant/tool output", tt.adapterFile)
-			}
-
-			testRaw, err := os.ReadFile(filepath.Clean(tt.testFile))
-			if err != nil {
-				t.Fatalf("read test file: %v", err)
-			}
-			if !strings.Contains(string(testRaw), "func "+tt.testName+"(") {
-				t.Fatalf("%s missing terminal mirror regression test %s", tt.testFile, tt.testName)
-			}
-		})
 	}
 }
