@@ -541,7 +541,17 @@ func TestStreamPiTerminalSnapshotUsesVisibleCleanDisplay(t *testing.T) {
 	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "80", "-y", "8", "bash", "-lc", script).CombinedOutput(); err != nil {
 		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
 	}
-	time.Sleep(500 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snapshot, err := capturePiPaneForDisplay(context.Background(), sessionName)
+		if err == nil && strings.Contains(snapshot, "FINAL_CONTENT") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tmux pane did not show final content before deadline: snapshot=%q err=%v", snapshot, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	stream := make(chan llmtypes.StreamChunk, 1)
 	var last string

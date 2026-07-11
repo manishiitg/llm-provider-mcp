@@ -14,12 +14,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '1.25.8'
+        go-version: '1.25.12'
         cache-dependency-path: go.sum
     
     - name: Run golangci-lint
@@ -36,7 +36,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         # Fetch full history for comprehensive scanning
         fetch-depth: 0
@@ -65,18 +65,35 @@ jobs:
       with:
         sarif_file: gitleaks-report.sarif
 
+  vulnerability-scan:
+    name: Scan reachable Go vulnerabilities
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.25.12'
+        cache-dependency-path: go.sum
+
+    - name: Run govulncheck
+      run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
   test:
     name: Run Tests
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '1.25.8'
+        go-version: '1.25.12'
         cache-dependency-path: go.sum
     
     - name: Run tests
@@ -91,12 +108,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '1.25.8'
+        go-version: '1.25.12'
         cache-dependency-path: go.sum
     
     - name: Verify checkout and list directories
@@ -137,26 +154,26 @@ jobs:
 
     steps:
     - name: Checkout provider repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: multi-llm-provider-go
 
     - name: Checkout MCP Agent
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: manishiitg/mcpagent
         path: mcpagent
 
     - name: Checkout MCP Agent Builder
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: manishiitg/mcp-agent-builder-go
         path: mcp-agent-builder-go
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '1.25.8'
+        go-version: '1.25.12'
         cache-dependency-path: |
           multi-llm-provider-go/go.sum
           mcpagent/go.sum
@@ -176,12 +193,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '1.25.8'
+        go-version: '1.25.12'
         cache-dependency-path: go.sum
     
     - name: Verify checkout and list directories

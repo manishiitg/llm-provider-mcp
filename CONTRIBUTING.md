@@ -14,7 +14,7 @@ workflow and the public Go APIs consumed by downstream repositories.
 
 Requirements:
 
-- Go 1.25.8 or newer
+- Go 1.25.12 or newer
 - tmux 3.x or newer
 - `golangci-lint`
 - Native coding CLIs required by the tests you intend to run
