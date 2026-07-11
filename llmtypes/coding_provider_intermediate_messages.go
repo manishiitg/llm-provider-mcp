@@ -19,7 +19,7 @@ const (
 // the model and its tooling exchanged before returning the final
 // assistant text on ContentResponse.
 //
-// For tmux transports (claude-code, codex, gemini CLIs) the messages
+// For tmux transports (Claude Code, Codex CLI, Cursor CLI, Agy CLI, and Pi CLI), the messages
 // are reconstructed from the CLI's local sidecar transcript by the
 // adapter. For structured/API transports the loop is driven by the
 // agent layer, not the adapter, so this field is typically empty —
