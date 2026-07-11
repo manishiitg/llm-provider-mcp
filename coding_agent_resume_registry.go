@@ -23,7 +23,6 @@ import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 var nativeResumeRegistry = map[Provider]func(sessionID string) llmtypes.CallOption{
 	ProviderClaudeCode: WithResumeSessionID,
 	ProviderCodexCLI:   WithCodexResumeSessionID,
-	ProviderGeminiCLI:  WithGeminiResumeSessionID,
 	ProviderCursorCLI:  WithCursorResumeSessionID,
 	ProviderAgyCLI:     WithAgyResumeSessionID,
 	ProviderPiCLI:      WithPiResumeSessionID,

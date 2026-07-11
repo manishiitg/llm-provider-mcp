@@ -12,6 +12,12 @@
 - Documented the Codex 0.145 rollout requirement for GPT-5.6 Sol, Terra, and
   Luna, including multiple-installation troubleshooting.
 
+### Breaking changes
+
+- Removed the deprecated Gemini CLI provider, adapter package, public options,
+  test commands, and compatibility contract. Use Pi CLI for Gemini models or
+  Vertex for direct Gemini API access.
+
 ## 0.6.1 - 2026-07-11
 
 ### Security

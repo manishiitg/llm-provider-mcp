@@ -242,8 +242,6 @@ provider has finished. Provider-specific extraction examples:
   only after the pane is idle.
 - Codex CLI: final framed answer between provider separator lines, with a
   segment fallback that rejects tool/status/error segments.
-- Gemini CLI: assistant text after provider assistant markers, with TUI and tool
-  blocks filtered.
 
 If provider-specific extraction returns no answer after completion detection has
 already proven the pane idle, the adapter may use a bounded terminal-tail
@@ -395,13 +393,6 @@ Antigravity CLI:
 - MCP bridge behavior is certified by `TestAgyCLIRealMCPBridgeContract`, which
   proves the workspace config is loaded and a real bridge tool is callable.
 
-Gemini CLI:
-
-- Legacy structured transport: `gemini --output-format stream-json --prompt ...`.
-- Gemini is currently pinned to the structured coding-agent contract, not the
-  tmux contract, because the CLI is being deprecated and the project is not
-  carrying new tmux-specific surface for it.
-
 ## Image Input Contract
 
 `llmtypes.ImageContent` must never be silently dropped.
@@ -417,8 +408,6 @@ Gemini CLI:
   implemented for the TUI session.
 - Cursor CLI tmux: rejects image input until live image attachment is
   implemented for the TUI session.
-- Gemini CLI: rejects image input in the current adapter because the supported
-  headless/tmux transport has no image attachment flag.
 
 ## Launch Contract
 
@@ -482,25 +471,6 @@ Provider-specific launch requirements:
     message
   - pass MCP bridge servers through a temporary/restored
     `.agents/mcp_config.json`
-- Gemini CLI:
-  - pass system instructions with `GEMINI_SYSTEM_MD`
-  - pass MCP bridge and policy through scoped `.gemini/settings.json` and
-    `.gemini/policies`
-  - keep the project dir id stable for a resumed Gemini session
-  - run the Gemini process from the isolated project/settings directory when
-    scoped settings are present, because Gemini CLI 0.42 discovers
-    `.gemini/settings.json` from process cwd
-  - pass the caller workspace with `--include-directories <working-dir>` in
-    that mode; the MCP bridge shell cwd must still be the caller workspace
-  - force `ui.escapePastedAtSymbols=true` in scoped `.gemini/settings.json` so
-    literal handles or email-like text such as `@fixyo.urflow` are not treated
-    as Gemini `@path` file references during tmux paste submission
-  - deny built-in filesystem/shell tools by policy when bridge-only behavior is
-    required
-  - keep the TUI session alive when app-level system prompt text varies between
-    turns; Gemini receives a bounded prior-turn transcript with the current
-    message so the final answer remains correct even when native TUI context is
-    not sufficient
 ## Input Contract
 
 User input must be pasted into the TUI. It must not be typed key-by-key.
@@ -513,9 +483,8 @@ tmux paste-buffer -p -r
 tmux send-keys <provider-submit-key>
 ```
 
-`<provider-submit-key>` is provider/version specific. For example, Claude Code
-and Codex commonly accept `C-m`; Gemini CLI 0.42 requires tmux's `Enter` key
-name because `C-m` can leave a multiline draft unsubmitted.
+`<provider-submit-key>` is provider/version specific. Claude Code and Codex
+commonly accept `C-m`.
 
 The adapter must wait for the TUI to visibly receive the pasted draft before
 sending the submit key. Large prompts may collapse to provider-specific draft
@@ -637,7 +606,7 @@ $SHELL -ilc 'cd "$1" || exit; shift; exec "$@"' coding-agent "$WORKING_DIR" <pro
 
 This is required for desktop/DMG launches, where the backend process does not
 inherit a Terminal tab's initialized environment. The login-shell launch gives
-Claude Code, Codex CLI, and Gemini CLI the same `PATH`, shims, and exported
+Claude Code, Codex CLI, Cursor CLI, and Pi CLI the same `PATH`, shims, and exported
 values the user normally gets from shell startup files.
 
 Shell resolution order:
@@ -678,8 +647,6 @@ Provider hints:
   running status is visible.
 - Cursor CLI: idle means the Cursor Agent input prompt/footer is ready and no
   active thinking/running/editing/tool status is visible.
-- Gemini CLI: idle means the TUI is ready for input, commonly including
-  `Type your message`, with no active running state.
 
 Never inject a final-answer marker into the prompt just to detect completion.
 
@@ -692,8 +659,6 @@ Final text extraction must use provider-native TUI structure when available:
   lines when present; otherwise fall back to the latest clean assistant segment.
 - Cursor CLI: prefer the latest clean assistant segment after removing Cursor
   TUI chrome, tool/status lines, echoed user input, and old assistant replay.
-- Gemini CLI: prefer the latest marked assistant block beginning with `✦`, `→`,
-  or `->`; otherwise fall back to filtered visible assistant text.
 
 The extracted final text must not include tool panels, shell output, footer
 chrome, ready prompts, old assistant replay, or echoed user input.
@@ -714,10 +679,6 @@ Required behavior:
 Provider-specific behavior:
 
 - Claude Code and Codex CLI may accept live input directly in the TUI.
-- Gemini CLI 0.42 does not reliably process pasted follow-up input while a
-  response is active. Its adapter must queue live input in-process, then submit
-  queued messages with `Enter` when the Gemini ready prompt returns. Tests must
-  fail if the message is only visible in the pane but never processed.
 
 ## Cancellation Contract
 
@@ -776,9 +737,6 @@ Native resume metadata:
 - Antigravity CLI: `agy_session_id`, resumed with
   `agy --conversation <conversationId> --prompt-interactive` from the same
   workspace.
-- Gemini CLI: `gemini_session_id` plus `gemini_project_dir_id`, resumed with
-  `--resume <session_id>` from the same project/settings dir and the same
-  caller workspace supplied via `--include-directories`.
 On native resume, prefer sending only the latest user message when the provider
 session/thread is proven to retain context. If a provider does not reliably
 retain context in the current CLI build, the adapter must replay a bounded
@@ -1077,8 +1035,6 @@ and transport-change validation should run them alongside deterministic tests:
 - Claude Code: use Haiku unless explicitly testing another model.
 - Codex CLI: use the cheaper contract model, currently
   `gpt-5.3-codex-spark`, unless explicitly testing another model.
-- Gemini CLI: use the low tier, currently `gemini-3.1-flash-lite`, for the
-  default smoke unless explicitly testing another tier.
 - Cursor CLI: use the account/default selector (`cursor-cli`) for the default
   smoke unless explicitly testing a model available in that Cursor account.
 
@@ -1087,13 +1043,7 @@ The app-level test must drive the real `mcp-agent-builder-go` HTTP API because
 that is where runtime capture, provider selection, session restoration, event
 polling, and live `/steer` routing are wired together:
 
-```sh
-go run . test coding-agent-chat-e2e \
-  --server-url http://localhost:<agent-port> \
-  --provider gemini-cli \
-  --model gemini-3.1-flash-lite \
-  --selected-folder _users/default/Chats
-```
+Run the application-level test with the provider and model being certified.
 
 The app-level E2E must fail if:
 
@@ -1158,16 +1108,6 @@ Claude Code tmux:
 - `TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape`
 - `TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn`
 
-Gemini CLI tmux:
-
-- `TestGeminiCLIRealInteractiveTmuxFullContract`
-- `TestGeminiCLIRealInteractiveLargePastedPromptSubmits`
-- `TestGeminiCLIRealInteractiveMarkdownBulletCompletionDoesNotLookUnsubmitted`
-- `TestGeminiCLIRealInteractiveMCPBridgeContract`
-- `TestGeminiCLIRealInteractiveSharedWorkingDirMCPIsolation`
-- `TestGeminiCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool`
-- `TestGeminiCLIRealInteractiveLiveInputContract`
-
 Codex CLI tmux:
 
 - `TestCodexCLIRealInteractiveTmuxFullContract`
@@ -1226,9 +1166,6 @@ The full Cursor CLI tmux test set after these additions:
 - `TestCursorCLIRealInteractiveParallelIsolation`
 - `TestCursorCLIRealInteractiveCleanup`
 
-Gemini CLI real contract coverage is structured-only; see
-`docs/coding_sdk_structured_contract.md`.
-
 Current Antigravity CLI real contract command:
 
 ```sh
@@ -1259,14 +1196,12 @@ Current legacy structured transport real contract commands:
 
 ```sh
 RUN_CODEX_CLI_STREAM_JSON_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealExecJSON' -v -timeout 6m
-RUN_GEMINI_CLI_STREAM_JSON_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLIRealStreamJSON' -v -timeout 6m
 ```
 
 Current native web-search real contract commands:
 
 ```sh
 RUN_CODEX_CLI_SEARCH_WEB_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealSearchWeb' -v -timeout 4m
-RUN_GEMINI_CLI_SEARCH_WEB_E2E=1 GEMINI_API_KEY=<key> go test ./pkg/adapters/geminicli -run 'TestGeminiCLISearchWebSmoke' -v -timeout 4m
 CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_SEARCH_WEB_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeRealSearchWeb' -v -timeout 4m
 RUN_CLAUDE_CODE_PRINT_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeStreaming|TestRawClaude' -v -timeout 4m
 ```
@@ -1299,7 +1234,7 @@ CLAUDE_CODE_ALLOW_LEGACY_PRINT=1 CLAUDE_CODE_TRANSPORT=print RUN_CLAUDE_CODE_IMA
 RUN_CODEX_CLI_IMAGE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealImageInput' -v -timeout 4m
 ```
 
-Cursor CLI and Gemini CLI currently have negative image-input contract tests so
+Cursor CLI currently has negative image-input contract tests so
 unsupported image parts fail clearly instead of being removed from the prompt.
 
 Builder/workspace read-image virtual-tool contract command:
@@ -1321,8 +1256,6 @@ Read-image provider/model semantics:
 - Codex CLI image input must use an image-capable model, currently
   `gpt-5.4-mini` for the contract test. `gpt-5.3-codex-spark` is not a valid
   image-read contract model.
-- Gemini CLI must reject `llmtypes.ImageContent` explicitly until its adapter
-  supports a real image attachment path.
 
 Current image-generation real contract commands:
 
@@ -1370,4 +1303,3 @@ Image-generation provider/model semantics:
 
 - `docs/CODING_AGENT_TRANSPORT_PATTERNS.md`
 - `docs/CODEX_CLI_CODING_AGENT_CONTRACT.md`
-- `docs/GEMINI_CLI_CODING_AGENT_CONTRACT.md`

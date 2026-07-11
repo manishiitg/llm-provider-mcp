@@ -34,8 +34,8 @@ MCP client behavior can change independently of this project.
 
 ## Compatibility Cleanup
 
-- Coordinate removal of deprecated Gemini CLI and Antigravity CLI integrations
-  across all three dependent repositories.
+- Coordinate removal of the deprecated Antigravity CLI integration across all
+  three dependent repositories.
 - Deprecate unused exported event compatibility declarations before removal.
 - Continue splitting the historical provider implementation into smaller files
   without changing the public Go package.

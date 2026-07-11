@@ -22,7 +22,7 @@ graph TD
 
 ### 1. Stateful TMUX Transport (Default Path)
 *   **Behavior:** Spawns a persistent, stateful `tmux` terminal session running the interactive Codex CLI TUI. The orchestrator interacts with Codex programmatically by pasting prompts directly into the terminal, observing state updates, and reading completed assistant turns.
-*   **Status:** Default execution path for interactive chat. Fully matches the shape and contract of Claude Code, Gemini CLI, Cursor, and Antigravity.
+*   **Status:** Default execution path for interactive chat. Fully matches the shape and contract of Claude Code, Cursor, Pi, and Antigravity.
 *   **Active Contract configuration:** Specified in [coding_agent_contract.go](../coding_agent_contract.go) with `Transport: CodingAgentTransportTmux` and `StructuredFallback: true`.
 
 ### 2. Stateless Structured Transport (Structured Fallback)

@@ -76,7 +76,7 @@ func startSleepingChild(t *testing.T, seconds string) *exec.Cmd {
 }
 
 // startTrapScript starts a process that ignores SIGTERM, simulating
-// gemini-cli ignoring SIGTERM while blocked in a synchronous HTTP call. It
+// a CLI ignoring SIGTERM while blocked in a synchronous HTTP call. It
 // exits only on SIGKILL. The script prints "READY" once the signal handler
 // is installed so the test can avoid the startup race.
 func startTrapScript(t *testing.T) (*exec.Cmd, *bufio.Reader) {
@@ -157,7 +157,7 @@ func TestGracefulExitsAfterFirstSIGTERM(t *testing.T) {
 	}
 }
 
-// TestGracefulSendsAllThreeSIGTERMsThenSIGKILL simulates the gemini-cli
+// TestGracefulSendsAllThreeSIGTERMsThenSIGKILL simulates a CLI
 // orphan bug: the process ignores SIGTERM completely. The helper must send
 // all 3 SIGTERMs, then SIGKILL, and the process must be dead afterwards.
 func TestGracefulSendsAllThreeSIGTERMsThenSIGKILL(t *testing.T) {

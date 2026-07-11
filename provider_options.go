@@ -6,7 +6,6 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -115,103 +114,6 @@ func WithClaudeCodeProjectInstructionOnly(enabled bool) llmtypes.CallOption {
 // Values: "low", "medium", "high", "max"
 func WithClaudeCodeEffort(level string) llmtypes.CallOption {
 	return claudecodeadapter.WithEffort(level)
-}
-
-// --- Gemini CLI Wrapper Functions ---
-
-// WithGeminiModel sets the --model flag for the Gemini CLI.
-func WithGeminiModel(model string) llmtypes.CallOption {
-	return geminicli.WithGeminiModel(model)
-}
-
-// WithGeminiResumeSessionID sets the --resume flag so the Gemini CLI resumes
-// an existing session instead of starting a new one.
-func WithGeminiResumeSessionID(id string) llmtypes.CallOption {
-	return geminicli.WithResumeSessionID(id)
-}
-
-// WithGeminiApprovalMode sets the --approval-mode flag for the Gemini CLI.
-func WithGeminiApprovalMode(mode string) llmtypes.CallOption {
-	return geminicli.WithApprovalMode(mode)
-}
-
-// WithGeminiSystemPromptFile sets the GEMINI_SYSTEM_MD environment variable path.
-func WithGeminiSystemPromptFile(path string) llmtypes.CallOption {
-	return geminicli.WithSystemPromptFile(path)
-}
-
-// WithGeminiProjectSettings writes a .gemini/settings.json in a temp directory
-// and runs the Gemini CLI from there. This controls tool restrictions (tools.core),
-// MCP server configuration (mcpServers), and other project-level settings.
-func WithGeminiProjectSettings(settingsJSON string) llmtypes.CallOption {
-	return geminicli.WithProjectSettings(settingsJSON)
-}
-
-// WithGeminiPolicyPath passes --policy to the Gemini CLI.
-func WithGeminiPolicyPath(path string) llmtypes.CallOption {
-	return geminicli.WithPolicyPath(path)
-}
-
-// WithGeminiAdminPolicyPath passes --admin-policy to the Gemini CLI.
-func WithGeminiAdminPolicyPath(path string) llmtypes.CallOption {
-	return geminicli.WithAdminPolicyPath(path)
-}
-
-// WithGeminiWorkingDir sets the Gemini CLI process working directory.
-func WithGeminiWorkingDir(dir string) llmtypes.CallOption {
-	return geminicli.WithWorkingDir(dir)
-}
-
-// WithGeminiWriteProjectInstructionFile controls whether the gemini
-// adapter ALSO drops the per-session system prompt at <workingDir>/GEMINI.md
-// (gemini-cli's project-context convention), in addition to the
-// GEMINI_SYSTEM_MD env-var injection. ON by default; pass false to opt
-// out. Cleanup byte-restores any pre-existing operator GEMINI.md; a
-// process crash between write and cleanup destroys the operator's prior
-// content.
-func WithGeminiWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
-	return geminicli.WithWriteProjectInstructionFile(enabled)
-}
-
-// WithGeminiProjectInstructionOnly carries the per-session system prompt solely
-// via the projected GEMINI.md (auto-loaded as project context) and skips the
-// GEMINI_SYSTEM_MD env injection, so the prompt is applied once instead of
-// doubled. OFF by default. Falls back to GEMINI_SYSTEM_MD if the projection is
-// disabled or its write fails.
-func WithGeminiProjectInstructionOnly(enabled bool) llmtypes.CallOption {
-	return geminicli.WithProjectInstructionOnly(enabled)
-}
-
-// WithGeminiAllowedTools sets the deprecated --allowed-tools flag for the Gemini CLI.
-// Prefer WithGeminiProjectSettings plus Policy Engine rules instead.
-func WithGeminiAllowedTools(tools string) llmtypes.CallOption {
-	return geminicli.WithAllowedTools(tools)
-}
-
-// WithGeminiProjectDirID sets an explicit project directory ID for the Gemini CLI.
-// This ensures resume calls use the same isolated project directory as the original invocation.
-func WithGeminiProjectDirID(id string) llmtypes.CallOption {
-	return geminicli.WithProjectDirID(id)
-}
-
-// WithGeminiProjectDirAbsolute overrides the default /tmp project directory with
-// an absolute path. Used for workflow main_agent so GEMINI_PROJECT_DIR points at
-// a workflow-rooted location (e.g. <workflow>/.gemini-main) instead of /tmp.
-// Sub-step agents should leave this unset to keep /tmp isolation.
-func WithGeminiProjectDirAbsolute(absPath string) llmtypes.CallOption {
-	return geminicli.WithProjectDirAbsolute(absPath)
-}
-
-// WithGeminiInteractiveSessionID links a Gemini CLI interactive run to the
-// owning application session so live follow-up input can be sent to it.
-func WithGeminiInteractiveSessionID(id string) llmtypes.CallOption {
-	return geminicli.WithInteractiveSessionID(id)
-}
-
-// WithGeminiPersistentInteractiveSession keeps a Gemini CLI tmux TUI alive
-// across completed interactive chat turns.
-func WithGeminiPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
-	return geminicli.WithPersistentInteractiveSession(enabled)
 }
 
 // --- Codex CLI Wrapper Functions ---

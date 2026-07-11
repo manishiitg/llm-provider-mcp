@@ -300,49 +300,6 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		WorkingDirMCPConfigFile:   ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
 		UserMCPConfigFile:         "~/.cursor/mcp.json",
 	},
-	ProviderGeminiCLI: {
-		Provider:            ProviderGeminiCLI,
-		DisplayName:         "Gemini CLI",
-		CLIName:             "gemini",
-		Deprecated:          true,
-		DeprecationReason:   "Gemini CLI is retained for existing sessions only; prefer Pi CLI for new Google-backed coding-agent setup.",
-		ReplacementProvider: ProviderPiCLI,
-		// Gemini CLI runs in the tmux interactive transport by default — same
-		// shape as Claude Code / Codex / Cursor / Agy. The structured
-		// (--output-format stream-json) path is kept available as the
-		// StructuredFallback for callers that opt in (workflow steps that want
-		// non-tmux execution, batch / cron contexts, headless servers without
-		// tmux). The interactive adapter's session registry, live-input dispatch,
-		// control-key (interrupt) injection, and cleanup helpers are all wired
-		// — see geminicli_interactive_adapter.go.
-		Transport:                 CodingAgentTransportTmux,
-		RequiresWorkingDir:        true,
-		RequiresOwnerSessionID:    true,
-		UsesPersistentSession:     true,
-		SupportsLiveInput:         true,
-		SupportsInterrupt:         true,
-		SupportsTerminalStream:    true,
-		SupportsFinalExtraction:   true,
-		SupportsNativeResume:      true,
-		UsesMCPBridge:             true,
-		RequiresMCPBridgeConfig:   true,
-		SupportsBridgeOnlyTools:   true,
-		UsesNativeSystemPrompt:    true,
-		LaunchesViaLoginShell:     true,
-		ProcessScopedCleanup:      true,
-		HandlesTmuxSessionLoss:    true,
-		StructuredFallback:        true,
-		ImageInputInteractive:     false, // gemini-cli has no image attachment flag in either tmux or structured mode (see generateContent guard)
-		SurfacesTokenUsage:        true,
-		TokenUsageSource:          "transcript-file",
-		AdapterReadsTranscript:    true,
-		TranscriptPathTemplate:    "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
-		APIKeyEnvVars:             []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
-		WorkingDirInstructionFile: "GEMINI.md",
-		UserInstructionFile:       "~/.gemini/GEMINI.md",
-		WorkingDirMCPConfigFile:   ".gemini/settings.json", // adapter writes scoped settings here per the Gemini contract doc
-		UserMCPConfigFile:         "~/.gemini/settings.json",
-	},
 	ProviderAgyCLI: {
 		Provider:                ProviderAgyCLI,
 		DisplayName:             "Antigravity CLI",

@@ -64,14 +64,6 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return "claude-code"
-	case ProviderGeminiCLI:
-		// Get primary model from environment variable
-		// Supports aliases: "auto" (default), "pro", "flash", "flash-lite"
-		// or full names: "gemini-3.5-flash", "gemini-3-pro-preview", etc.
-		if primaryModel := os.Getenv("GEMINI_CLI_PRIMARY_MODEL"); primaryModel != "" {
-			return primaryModel
-		}
-		return "auto"
 	case ProviderCodexCLI:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("CODEX_CLI_PRIMARY_MODEL"); primaryModel != "" {
@@ -226,18 +218,6 @@ func GetDefaultFallbackModels(provider Provider) []string {
 		}
 		// No fallback models if environment variable is not set
 		return []string{}
-	case ProviderGeminiCLI:
-		// Get fallback models from environment variable
-		fallbackModelsEnv := os.Getenv("GEMINI_CLI_FALLBACK_MODELS")
-		if fallbackModelsEnv == "" {
-			fallbackModelsEnv = os.Getenv("GEMINICLI_FALLBACK_MODELS") // Legacy naming
-		}
-		models := parseFallbackModelsEnv(fallbackModelsEnv)
-		if len(models) > 0 {
-			return models
-		}
-		// No fallback models if environment variable is not set
-		return []string{}
 	case ProviderCodexCLI:
 		// Get fallback models from environment variable
 		fallbackModelsEnv := os.Getenv("CODEX_CLI_FALLBACK_MODELS")
@@ -359,21 +339,6 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 		}
 		crossProvider := os.Getenv("KIMI_CROSS_FALLBACK_PROVIDER")
 		return prefixModelsWithProvider(models, crossProvider)
-	case ProviderGeminiCLI:
-		// Get cross-provider fallback models for Gemini CLI
-		crossFallbackEnv := os.Getenv("GEMINI_CLI_CROSS_FALLBACK_MODELS")
-		if crossFallbackEnv == "" {
-			crossFallbackEnv = os.Getenv("GEMINICLI_CROSS_FALLBACK_MODELS") // Legacy naming
-		}
-		models := parseFallbackModelsEnv(crossFallbackEnv)
-		if len(models) == 0 {
-			return []string{}
-		}
-		crossProvider := os.Getenv("GEMINI_CLI_CROSS_FALLBACK_PROVIDER")
-		if crossProvider == "" {
-			crossProvider = os.Getenv("GEMINICLI_CROSS_FALLBACK_PROVIDER") // Legacy naming
-		}
-		return prefixModelsWithProvider(models, crossProvider)
 	case ProviderCodexCLI:
 		// Get cross-provider fallback models for Codex CLI
 		crossFallbackEnv := os.Getenv("CODEX_CLI_CROSS_FALLBACK_MODELS")
@@ -425,10 +390,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderGeminiCLI, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderPiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderPiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, gemini-cli, codex-cli, cursor-cli, agy-cli, pi-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, codex-cli, cursor-cli, agy-cli, pi-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 

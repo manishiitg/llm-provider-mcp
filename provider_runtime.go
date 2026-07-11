@@ -435,7 +435,7 @@ func (p *ProviderAwareLLM) GenerateContent(ctx context.Context, messages []llmty
 			}
 			emitLLMGenerationError(p.eventEmitter, string(p.provider), p.modelID, OperationLLMGeneration, len(messages), getTemperatureFromOptions(options), extractMessageContentAsString(messages), fmt.Errorf("choice.Content is empty"), p.traceID, errorMetadata)
 
-			// Include provider-specific API error if available (e.g. gemini_api_error from gemini-cli)
+			// Include a provider-specific API error when available.
 			emptyContentErr := "choice.Content is empty"
 			if firstChoice.GenerationInfo != nil && firstChoice.GenerationInfo.Additional != nil {
 				if apiErr, ok := firstChoice.GenerationInfo.Additional["gemini_api_error"].(string); ok && apiErr != "" {

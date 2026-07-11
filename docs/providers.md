@@ -78,6 +78,6 @@ status and can open the native login flow when needed.
 
 ## Deprecated Compatibility Providers
 
-Gemini CLI and Antigravity CLI remain in the Go module for existing downstream
-sessions. New MCP setup does not offer them. Use Pi for new Gemini-backed model
-routing.
+Antigravity CLI remains in the Go module for existing downstream sessions. New
+MCP setup does not offer it. Gemini CLI has been removed; use Pi for Gemini
+model routing or Vertex for direct Gemini API access.

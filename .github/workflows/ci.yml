@@ -187,11 +187,16 @@ jobs:
 
     - name: Compile MCP Agent against this checkout
       working-directory: mcpagent
-      run: go test -mod=mod -run '^$' ./...
+      run: |
+        go mod edit -replace github.com/manishiitg/multi-llm-provider-go=../multi-llm-provider-go
+        go test -mod=mod -run '^$' ./...
 
     - name: Compile MCP Agent Builder against this checkout
       working-directory: mcp-agent-builder-go/agent_go
-      run: go test -mod=mod -run '^$' ./...
+      run: |
+        go mod edit -replace github.com/manishiitg/multi-llm-provider-go=../../multi-llm-provider-go
+        go mod edit -replace github.com/manishiitg/mcpagent=../../mcpagent
+        go test -mod=mod -run '^$' ./...
 
   test-suite:
     name: Run Test Suite

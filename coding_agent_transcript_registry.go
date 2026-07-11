@@ -13,8 +13,7 @@ package llmproviders
 // To add transcript-reader support for a new CLI:
 //  1. Implement the reader function in the adapter package (e.g.
 //     claudecode/claudecode_transcript_usage.go, codexcli/
-//     codexcli_transcript_usage.go, cursorcli/cursorcli_transcript_messages.go,
-//     geminicli/geminicli_transcript_usage.go).
+//     codexcli_transcript_usage.go, cursorcli/cursorcli_transcript_messages.go).
 //  2. Register the provider here with the path template.
 //  3. Flip contract.AdapterReadsTranscript to true and populate
 //     contract.TranscriptPathTemplate with the same string.
@@ -33,9 +32,6 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	},
 	ProviderCursorCLI: {
 		PathTemplate: "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
-	},
-	ProviderGeminiCLI: {
-		PathTemplate: "~/.gemini/tmp/gemini-cli-project-<projectDirID>/chats/session-*.jsonl",
 	},
 	ProviderPiCLI: {
 		PathTemplate: "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",

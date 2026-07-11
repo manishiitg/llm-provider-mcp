@@ -7,9 +7,9 @@ import (
 
 func TestSyntheticTerminalEmitsRoleAwareRows(t *testing.T) {
 	ch := make(chan StreamChunk, 16)
-	term := NewSyntheticTerminalWithTransport(ch, "gemini-cli", "auto", "structured_cli")
+	term := NewSyntheticTerminalWithTransport(ch, "test-cli", "auto", "structured_cli")
 
-	term.Header("gemini --output-format stream-json model=auto msgs=1")
+	term.Header("test-cli --output-format stream-json model=auto msgs=1")
 	term.UserText("[AUTO-NOTIFICATION] Background agent started.\nAck briefly; do not call tools.")
 	term.AssistantText("Acknowledged.")
 	term.AssistantText(" I will wait for completion.")

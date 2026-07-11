@@ -66,7 +66,6 @@ adapter.GenerateContent
 | Direct-API (Anthropic, OpenAI, …) | provider response usage    | Adapter reads native usage on the response. |
 | Claude Code (tmux)    | `~/.claude/projects/<dir>/<sid>.jsonl` | Sidecar JSONL parsed by `readClaudeTranscriptUsage`. |
 | Codex CLI (tmux)      | `~/.codex/sessions/.../rollout-*.jsonl` | Sidecar JSONL parsed by `readCodexTranscriptUsage`. Selected by `mtime ≥ turnStart−30s` AND cwd match. |
-| Gemini CLI (tmux)     | per-project transcript file            | Parsed by `readGeminiTranscriptUsage`. |
 | Cursor CLI (tmux)     | **char-based estimate**                 | Cursor is subscription-priced and does NOT expose per-turn token data anywhere we can read. The adapter falls back to `(chars + 3) / 4` for both prompt and completion. Expect ±20–30% off true tokenizer counts. |
 
 For tmux providers, the adapter populates `GenerationInfo.PromptTokens /
@@ -151,8 +150,6 @@ Cache-key audit (status at the time of writing):
 | Claude Code | tmux | ✅ | ✅ |
 | Codex CLI | structured (`exec --json`) | ✅ | N/A |
 | Codex CLI | tmux | ✅ | N/A |
-| Gemini CLI | structured | ✅ | N/A |
-| Gemini CLI | tmux | ✅ | N/A |
 | Cursor CLI | structured | ✅ | N/A |
 | Cursor CLI | tmux | char-estimated, no cache data exposed | N/A |
 
@@ -174,20 +171,8 @@ Parallel to the cache contract above, but with a key asymmetry:
   inspector debug, observability traces) consume it under this
   canonical name.
 - **Provider-specific diagnostics** (optional): mirror under a
-  prefixed key like `gemini_thoughts_tokens` or
-  `claude_extended_thinking_tokens` for per-provider analysis
+  prefixed key like `claude_extended_thinking_tokens` for per-provider analysis
   without conflicting with the canonical pair.
-
-Naming note: Gemini emits both `stats.thoughts_tokens` (the older
-name) and `stats.reasoning_tokens` (the newer name) at the
-result-event level. Adapters should accept both with `thoughts`
-winning when present (it's the typed field on the Gemini schema);
-the typed `gi.ReasoningTokens` and `Additional["reasoning_tokens"]`
-the adapter writes don't expose this internal naming variant.
-
-Reference: `pkg/adapters/geminicli/geminicli_adapter.go` — the
-`thoughts_tokens` / `reasoning_tokens` capture block plus the
-`genInfo.ReasoningTokens` assignment is the canonical pattern.
 
 ### mcpagent's accumulateTokenUsage field-name check
 
@@ -275,7 +260,7 @@ roundtrip format.
 
 ### How the loop is captured for tmux providers
 
-For tmux coding agents (Claude Code / Codex / Cursor / Gemini CLIs),
+For tmux coding agents (Claude Code / Codex / Cursor / Pi CLIs),
 the CLI runs its **internal** tool-use loop hidden behind the adapter
 boundary: only the final assistant text crosses back via
 `ContentResponse.Choices[0].Content`. Without help, the persisted
@@ -371,13 +356,6 @@ gets written to disk already includes the intermediate trail.
   messages re-spliced on turn 2. Fix when needed: cache the prior
   turn's root-ref-set in the adapter and return only the diff. Not
   shipped because workflow phases are typically one-shot.
-
-#### Gemini CLI
-
-The cost path is wired (`readGeminiTranscriptUsage`). A sidecar message
-parser is not implemented; pattern is the same as Codex if/when needed.
-
----
 
 ## Adding a new tmux provider
 

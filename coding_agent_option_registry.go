@@ -15,7 +15,6 @@ func normalizeCodingAgentProvider(provider Provider) Provider {
 var codingAgentInteractiveSessionRegistry = map[Provider]func(string) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodeInteractiveSessionID,
 	ProviderCodexCLI:   WithCodexInteractiveSessionID,
-	ProviderGeminiCLI:  WithGeminiInteractiveSessionID,
 	ProviderCursorCLI:  WithCursorInteractiveSessionID,
 	ProviderAgyCLI:     WithAgyInteractiveSessionID,
 	ProviderPiCLI:      WithPiInteractiveSessionID,
@@ -37,7 +36,6 @@ func CodingAgentInteractiveSessionOption(provider Provider, ownerSessionID strin
 var codingAgentPersistentInteractiveRegistry = map[Provider]func(bool) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodePersistentInteractiveSession,
 	ProviderCodexCLI:   WithCodexPersistentInteractiveSession,
-	ProviderGeminiCLI:  WithGeminiPersistentInteractiveSession,
 	ProviderCursorCLI:  WithCursorPersistentInteractiveSession,
 	ProviderAgyCLI:     WithAgyPersistentInteractiveSession,
 	ProviderPiCLI:      WithPiPersistentInteractiveSession,
@@ -55,7 +53,6 @@ func CodingAgentPersistentInteractiveOption(provider Provider, enabled bool) llm
 var codingAgentWorkingDirRegistry = map[Provider]func(string) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodeWorkingDir,
 	ProviderCodexCLI:   WithCodexProjectDirID,
-	ProviderGeminiCLI:  WithGeminiWorkingDir,
 	ProviderCursorCLI:  WithCursorWorkingDir,
 	ProviderAgyCLI:     WithAgyWorkingDir,
 	ProviderPiCLI:      WithPiWorkingDir,
@@ -75,14 +72,12 @@ func CodingAgentWorkingDirOption(provider Provider, workingDir string) llmtypes.
 }
 
 var codingAgentProjectDirIDRegistry = map[Provider]func(string) llmtypes.CallOption{
-	ProviderCodexCLI:  WithCodexProjectDirID,
-	ProviderGeminiCLI: WithGeminiProjectDirID,
+	ProviderCodexCLI: WithCodexProjectDirID,
 }
 
 // CodingAgentProjectDirIDOption returns an option for provider-native project
 // directory/session identifiers. This is distinct from the working directory:
-// Gemini uses it to find its project settings/transcript root, while Codex's
-// historical option name doubles as cwd.
+// Codex's historical option name doubles as cwd.
 func CodingAgentProjectDirIDOption(provider Provider, projectDirID string) llmtypes.CallOption {
 	projectDirID = strings.TrimSpace(projectDirID)
 	if projectDirID == "" {
@@ -97,7 +92,6 @@ func CodingAgentProjectDirIDOption(provider Provider, projectDirID string) llmty
 var codingAgentProjectInstructionOnlyRegistry = map[Provider]func(bool) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodeProjectInstructionOnly,
 	ProviderCodexCLI:   WithCodexProjectInstructionOnly,
-	ProviderGeminiCLI:  WithGeminiProjectInstructionOnly,
 }
 
 // CodingAgentProjectInstructionOnlyOption returns the provider option that

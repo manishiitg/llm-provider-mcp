@@ -12,7 +12,6 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	geminicli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/geminicli"
 	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -36,7 +35,6 @@ const (
 	ProviderZAI               Provider = "z-ai"
 	ProviderKimi              Provider = "kimi"
 	ProviderClaudeCode        Provider = "claude-code"
-	ProviderGeminiCLI         Provider = "gemini-cli"
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderCursorCLI         Provider = "cursor-cli"
 	ProviderAgyCLI            Provider = "agy-cli"
@@ -70,7 +68,7 @@ const (
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
 // (cols × rows) for any newly-launched coding-agent tmux session (Claude
-// Code, Codex CLI, Cursor CLI, Gemini CLI, Agy CLI, Pi CLI). Pass <=0 for either
+// Code, Codex CLI, Cursor CLI, Agy CLI, Pi CLI). Pass <=0 for either
 // axis to clear that axis's override and fall back to the env/default value.
 // Sizes outside the package's safe band are clamped, not rejected.
 func SetCodingAgentTmuxSize(columns, rows int) {
@@ -109,17 +107,10 @@ func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
 	return picli.CleanupPiCLIInteractiveSessions(ctx)
 }
 
-// CleanupGeminiCLIInteractiveSessions removes Gemini CLI tmux sessions
-// registered by this process.
-func CleanupGeminiCLIInteractiveSessions(ctx context.Context) error {
-	return geminicli.CleanupGeminiCLIInteractiveSessions(ctx)
-}
-
 // interactiveSessionPrefixes are the tmux session-name prefixes used by every
 // coding-agent CLI transport. Kept in sync with each adapter's
 // <provider>InteractiveSessionPrefix() default.
 var interactiveSessionPrefixes = []string{
-	"mlp-gemini-cli-int",
 	"mlp-agy-cli-int",
 	"mlp-pi-cli-int",
 	"mlp-codex-cli-int",
@@ -164,10 +155,6 @@ func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	cursorcli.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
-func CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
-	geminicli.CloseGeminiCLIInteractiveSessionForOwner(ownerSessionID, reason)
-}
-
 func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	codexcli.CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
@@ -193,10 +180,6 @@ func ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 
 func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	cursorcli.CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason)
-}
-
-func CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
-	geminicli.CloseGeminiCLIInteractiveSessionByTmux(tmuxSessionName, reason)
 }
 
 func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
@@ -237,12 +220,6 @@ func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) e
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
 }
 
-// SendGeminiCLIInteractiveInput sends user input to a live Gemini CLI
-// interactive tmux session registered for the owning application session.
-func SendGeminiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return geminicli.SendGeminiInteractiveInput(ctx, sessionID, message)
-}
-
 // SendClaudeCodeControlKey injects a tmux control key (e.g. "Escape", "C-c")
 // into a registered Claude Code tmux session.
 func SendClaudeCodeControlKey(ctx context.Context, sessionID, key string) error {
@@ -271,12 +248,6 @@ func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string)
 // Pi CLI interactive session.
 func SendPiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
 	return picli.SendPiInteractiveControlKey(ctx, sessionID, key)
-}
-
-// SendGeminiCLIInteractiveControlKey injects a tmux control key into a
-// registered Gemini CLI interactive session.
-func SendGeminiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
-	return geminicli.SendGeminiInteractiveControlKey(ctx, sessionID, key)
 }
 
 // Config holds configuration for LLM initialization
@@ -309,7 +280,6 @@ type ProviderAPIKeys struct {
 	OpenAI            *string
 	Anthropic         *string
 	Vertex            *string
-	GeminiCLI         *string
 	CodexCLI          *string
 	CursorCLI         *string
 	AgyCLI            *string
@@ -352,8 +322,6 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.Anthropic = key
 	case ProviderVertex:
 		k.Vertex = key
-	case ProviderGeminiCLI:
-		k.GeminiCLI = key
 	case ProviderCodexCLI:
 		k.CodexCLI = key
 	case ProviderCursorCLI:
@@ -425,8 +393,6 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeKimi(config)
 	case ProviderClaudeCode:
 		llm, err = initializeClaudeCode(config)
-	case ProviderGeminiCLI:
-		llm, err = initializeGeminiCLI(config)
 	case ProviderCodexCLI:
 		llm, err = initializeCodexCLI(config)
 	case ProviderCursorCLI:

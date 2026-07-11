@@ -1116,32 +1116,6 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 	},
-	ProviderGeminiCLI: {
-		{
-			ID:          CertMCPBridge,
-			TestFile:    "pkg/adapters/geminicli/geminicli_stream_integration_test.go",
-			TestName:    "TestGeminiCLIRealStreamJSONMCPBridgeContract",
-			Env:         []string{"RUN_GEMINI_CLI_STREAM_JSON_E2E=1"},
-			Description: "Gemini CLI calls a real MCP bridge tool through its stream-json path",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBridgeOnlyTools,
-			TestFile:    "pkg/adapters/geminicli/geminicli_deny_behavioral_e2e_test.go",
-			TestName:    "TestGeminiCLIRealDenyBuiltinHookActuallyFires",
-			Env:         []string{"RUN_GEMINI_CLI_REAL_E2E=1", "GEMINI_API_KEY"},
-			Description: "Gemini CLI live tmux run logs a built-in read_file hook denial and prevents sentinel leakage",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertFinalExtraction,
-			TestFile:    "pkg/adapters/geminicli/geminicli_adapter_test.go",
-			TestName:    "TestGeminiFinalExtractionVertexJudgeE2E",
-			Env:         []string{"GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
-			Description: "Vertex judge validates Gemini final extraction quality, formatting, and MCP/tool panel noise removal",
-			RealE2E:     true,
-		},
-	},
 }
 
 // RequiredCodingAgentCertificationIDs returns the proof IDs implied by the

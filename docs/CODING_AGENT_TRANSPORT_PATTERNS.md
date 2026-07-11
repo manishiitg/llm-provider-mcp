@@ -1,7 +1,7 @@
 # Coding Agent Transport Patterns
 
 This is the shared pattern set for terminal-native coding agents such as Claude
-Code, Codex CLI, Cursor CLI, and Gemini CLI.
+Code, Codex CLI, Cursor CLI, and Pi CLI.
 
 The runtime capability registry is `coding_agent_contract.go`. Do not add a new
 coding provider by copying string switches only; add the provider contract first,
@@ -18,8 +18,8 @@ transport.
 - Workflow: the same tmux TUI transport, with the orchestrator deciding when to
   send intermediate input, wait for idle, extract the final response, and close
   or retain the owner session.
-- Legacy structured transports (`claude -p`, `codex exec --json`,
-  `gemini --output-format stream-json`) are fallback/test-only paths unless a
+- Legacy structured transports (`claude -p`, `codex exec --json`) are
+  fallback/test-only paths unless a
   provider still lacks a tmux implementation.
 
 Do not add product behavior that depends on structured CLI output unless the
@@ -56,7 +56,7 @@ input must be pasted into the TUI.
   user message.
 - Cursor CLI: temporary/restored `.cursor/rules/*.mdc` project rule plus tmux
   paste for the user message.
-- Gemini CLI: `GEMINI_SYSTEM_MD` plus tmux paste for the user message.
+- Pi CLI: append-system-prompt plus tmux paste for the user message.
 
 Never concatenate system text into the pasted user prompt. This prevents bugs
 where the agent sees empty or malformed user input.
@@ -71,8 +71,7 @@ the runtime wants policy-controlled workflow tools.
 - Codex CLI: pass MCP config overrides and disable `shell_tool` when required.
 - Cursor CLI: pass MCP bridge config through temporary/restored
   `.cursor/mcp.json` and project permissions through `.cursor/cli.json`.
-- Gemini CLI: pass project settings/policies and deny built-in filesystem/shell
-  tools when required.
+- Pi CLI: pass the MCP configuration and restrict built-in tools when required.
 
 This keeps provider-native terminal UX while preserving our bridge and policy
 boundaries.
@@ -155,7 +154,7 @@ environment-gated so normal CI does not spend credits accidentally:
 
 - Claude Code with Haiku
 - Codex CLI with the cheaper contract model, currently `gpt-5.3-codex-spark`
-- Gemini CLI low tier, currently `gemini-3.1-flash-lite`
+- Pi CLI with the selected low-cost model
 - multi-turn memory in the same persistent tmux session
 
 This gives fast CI coverage for the contract and occasional real validation for
