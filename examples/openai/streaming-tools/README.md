@@ -147,6 +147,5 @@ This pattern is essential for building agents that can:
 
 ## Related Examples
 
-- [`openai_simple.go`](./openai_simple.go) - Basic text generation example
-- See the main [README.md](../../README.md) and [TESTING.md](../../docs/TESTING.md) for more comprehensive usage examples
-
+- [`openai_streaming_tool_calls.go`](./openai_streaming_tool_calls.go) - Streaming tool-call example
+- See the main [README.md](../../../README.md) and [TESTING.md](../../../docs/TESTING.md) for more comprehensive usage examples

@@ -104,6 +104,6 @@ go test -v ./pkg/adapters/claudecode -run TestClaudeCodeStreaming -timeout 60s
 ---
 
 ## 📁 File Structure Map
-*   [claudecode_interactive_adapter.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_interactive_adapter.go) — Stateful TMUX-backed TUI implementation (default path).
-*   [claudecode_adapter.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_adapter.go) — Stateless Stream-JSON implementation (legacy path).
-*   [claudecode_structured_contract_test.go](file:///Users/mipl/ai-work/multi-llm-provider-go/pkg/adapters/claudecode/claudecode_structured_contract_test.go) — Contract test suites validating capabilities and transitions.
+*   [claudecode_interactive_adapter.go](../pkg/adapters/claudecode/claudecode_interactive_adapter.go) — Stateful TMUX-backed TUI implementation (default path).
+*   [claudecode_adapter.go](../pkg/adapters/claudecode/claudecode_adapter.go) — Stateless Stream-JSON implementation (legacy path).
+*   [claudecode_adapter_test.go](../pkg/adapters/claudecode/claudecode_adapter_test.go) and [claudecode_interactive_adapter_test.go](../pkg/adapters/claudecode/claudecode_interactive_adapter_test.go) — Contract coverage for structured and interactive behavior.

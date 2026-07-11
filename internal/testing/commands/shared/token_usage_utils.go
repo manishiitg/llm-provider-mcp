@@ -540,24 +540,6 @@ func ExtractMessageText(messages []llmtypes.MessageContent) string {
 	return ""
 }
 
-// ExtractIntValue safely extracts an integer value from interface{}
-func ExtractIntValue(v interface{}) int {
-	switch val := v.(type) {
-	case int:
-		return val
-	case int32:
-		return int(val)
-	case int64:
-		return int(val)
-	case float32:
-		return int(val)
-	case float64:
-		return int(val)
-	default:
-		return 0
-	}
-}
-
 // GetLargeContextForCache returns a large context string for cache testing
 func GetLargeContextForCache() string {
 	return `The following is a comprehensive guide to software engineering best practices and methodologies:

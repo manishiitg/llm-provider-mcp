@@ -131,6 +131,45 @@ jobs:
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" doctor --help >/dev/null
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" uninstall --help >/dev/null
 
+  downstream-compatibility:
+    name: Build downstream repositories
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout provider repository
+      uses: actions/checkout@v4
+      with:
+        path: multi-llm-provider-go
+
+    - name: Checkout MCP Agent
+      uses: actions/checkout@v4
+      with:
+        repository: manishiitg/mcpagent
+        path: mcpagent
+
+    - name: Checkout MCP Agent Builder
+      uses: actions/checkout@v4
+      with:
+        repository: manishiitg/mcp-agent-builder-go
+        path: mcp-agent-builder-go
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.8'
+        cache-dependency-path: |
+          multi-llm-provider-go/go.sum
+          mcpagent/go.sum
+          mcp-agent-builder-go/agent_go/go.sum
+
+    - name: Compile MCP Agent against this checkout
+      working-directory: mcpagent
+      run: go test -mod=mod -run '^$' ./...
+
+    - name: Compile MCP Agent Builder against this checkout
+      working-directory: mcp-agent-builder-go/agent_go
+      run: go test -mod=mod -run '^$' ./...
+
   test-suite:
     name: Run Test Suite
     runs-on: ubuntu-latest

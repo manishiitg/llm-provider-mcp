@@ -38,7 +38,7 @@ go run openai_simple.go
 
 ## More OpenAI Examples
 
-For an advanced example demonstrating parallel tool calls with streaming enabled, see the [`openai_streaming_tool_calls/`](../openai_streaming_tool_calls/) directory.
+For an advanced example demonstrating parallel tool calls with streaming enabled, see the [`streaming-tools/`](../streaming-tools/) directory.
 
 ## More Examples
 
@@ -46,5 +46,4 @@ For more advanced examples including:
 - Structured outputs
 - Multiple providers (Bedrock, Anthropic, etc.)
 
-See the main [README.md](../../README.md) and [TESTING.md](../../docs/TESTING.md) for comprehensive usage examples.
-
+See the main [README.md](../../../README.md) and [TESTING.md](../../../docs/TESTING.md) for comprehensive usage examples.

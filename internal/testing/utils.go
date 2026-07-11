@@ -1,10 +1,6 @@
 package testing
 
-import (
-	"os"
-
-	"github.com/manishiitg/multi-llm-provider-go/interfaces"
-)
+import "github.com/manishiitg/multi-llm-provider-go/interfaces"
 
 // NoopTracer is a no-op tracer implementation for testing
 type NoopTracer struct{}
@@ -31,23 +27,4 @@ func InitializeTracer(logger interfaces.Logger) interfaces.Tracer {
 	// For standalone testing, always use no-op tracer
 	// The main module can override this if needed
 	return &NoopTracer{}
-}
-
-// GetTracingInfo returns information about the current tracing configuration
-func GetTracingInfo() map[string]interface{} {
-	tracingProvider := os.Getenv("TRACING_PROVIDER")
-	publicKey := os.Getenv("LANGFUSE_PUBLIC_KEY")
-	secretKey := os.Getenv("LANGFUSE_SECRET_KEY")
-	host := os.Getenv("LANGFUSE_BASE_URL")
-
-	if host == "" {
-		host = "https://cloud.langfuse.com"
-	}
-
-	return map[string]interface{}{
-		"tracing_provider":  tracingProvider,
-		"langfuse_enabled":  tracingProvider == "langfuse" && publicKey != "" && secretKey != "",
-		"langfuse_base_url": host,
-		"has_credentials":   publicKey != "" && secretKey != "",
-	}
 }

@@ -42,11 +42,6 @@ func GetTestLogger() interfaces.Logger {
 	return testLogger
 }
 
-// SetTestLogger allows tests to override the shared logger
-func SetTestLogger(logger interfaces.Logger) {
-	testLogger = logger
-}
-
 // SimpleLogger implementation
 func (l *SimpleLogger) Infof(format string, v ...any) {
 	_, _ = fmt.Fprintf(l.output, "[INFO] "+format+"\n", v...) //nolint:errcheck // Logging to stdout/stderr, safe to ignore

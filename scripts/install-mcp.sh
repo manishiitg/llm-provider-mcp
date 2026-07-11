@@ -2,7 +2,7 @@
 
 set -eu
 
-REPOSITORY="manishiitg/multi-llm-provider-go"
+REPOSITORY="manishiitg/llm-provider-mcp"
 MODULE="github.com/${REPOSITORY}"
 DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
 INSTALL_DIR="${LLM_PROVIDER_MCP_INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
