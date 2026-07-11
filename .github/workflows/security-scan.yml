@@ -6,6 +6,10 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch: # Allow manual triggering
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   secret-scan:
     name: Secret Scanning with Gitleaks
