@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.8'
           cache-dependency-path: go.sum
@@ -47,16 +47,16 @@ jobs:
             goarch: arm64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.8'
           cache-dependency-path: go.sum
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
 
@@ -86,7 +86,7 @@ jobs:
           (cd "$mcpb_dir" && zip -qr "../${asset}.mcpb" .)
 
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: llm-provider-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -100,12 +100,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: llm-provider-mcp-*
           path: dist
@@ -135,10 +135,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: llm-provider-mcp-*
           path: dist
