@@ -34,6 +34,8 @@ const (
 	defaultCodexInteractiveTimeout     = 0
 	defaultCodexInteractiveIdleTimeout = 3 * time.Hour
 	defaultCodexInteractiveRetention   = 30 * time.Minute
+	defaultCodexPromptInactivityWait   = 10 * time.Minute
+	defaultCodexPromptMaxWait          = 90 * time.Minute
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexActivityScanNonEmptyLines     = 160
 
@@ -49,6 +51,7 @@ const (
 	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
 	EnvCodexInteractiveIdleTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
 	EnvCodexInteractivePromptWaitSeconds        = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCodexInteractivePromptMaxWaitSeconds     = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
 	EnvCodexInteractiveStreamTmuxScreen         = "CODEX_CLI_STREAM_TMUX_SCREEN"
 	EnvCodexInteractiveStalePaneBackstopSeconds = "CODEX_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
@@ -1199,8 +1202,10 @@ func codexInteractiveShellCommand(args []string, workingDir string) string {
 }
 
 func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
-	deadline, cancel := context.WithTimeout(ctx, codexInteractivePromptWait())
-	defer cancel()
+	promptWait := codexInteractivePromptWait()
+	maxWait := codexInteractivePromptMaxWait()
+	maxTimer := time.NewTimer(maxWait)
+	defer maxTimer.Stop()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -1219,18 +1224,26 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
+	lastActivityAt := time.Now()
+	lastCaptured := ""
 	for {
 		select {
-		case <-deadline.Done():
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-maxTimer.C:
 			captured, _ := captureCodexPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Codex CLI prompt; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				return fmt.Errorf("timed out after %s waiting for Codex CLI prompt; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return fmt.Errorf("timed out waiting for Codex CLI prompt")
+			return fmt.Errorf("timed out after %s waiting for Codex CLI prompt", maxWait)
 		case <-ticker.C:
-			captured, err := captureCodexPane(deadline, sessionName)
+			captured, err := captureCodexPane(ctx, sessionName)
 			if err != nil {
 				continue
+			}
+			if captured != lastCaptured {
+				lastCaptured = captured
+				lastActivityAt = time.Now()
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -1239,8 +1252,9 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 			}
 			if hasCodexTrustPrompt(captured) {
 				if !dismissedTrustPrompt {
-					_ = dismissCodexTrustPrompt(deadline, sessionName, captured)
+					_ = dismissCodexTrustPrompt(ctx, sessionName, captured)
 					dismissedTrustPrompt = true
+					lastActivityAt = time.Now()
 				}
 				continue
 			}
@@ -1253,19 +1267,32 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 			// Sending "t" trusts all hooks for this invocation, which
 			// is the same trust state the flag already implies.
 			if hasCodexHookTrustReviewPrompt(captured) && hookTrustDismissAttempts < maxHookTrustDismissAttempts {
-				_ = dismissCodexHookTrustReviewPrompt(deadline, sessionName)
+				_ = dismissCodexHookTrustReviewPrompt(ctx, sessionName)
 				hookTrustDismissAttempts++
+				lastActivityAt = time.Now()
 				continue
 			}
 			if hasCodexRateLimitReminderModal(captured) {
 				if !dismissedRateReminder {
-					_ = dismissCodexRateLimitReminder(deadline, sessionName, captured)
+					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
 					dismissedRateReminder = true
+					lastActivityAt = time.Now()
 				}
 				continue
 			}
 			if hasCodexReadyPrompt(captured) {
 				return nil
+			}
+			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) {
+				lastActivityAt = time.Now()
+				continue
+			}
+			if time.Since(lastActivityAt) >= promptWait {
+				captured, _ := captureCodexPane(context.Background(), sessionName)
+				if strings.TrimSpace(captured) != "" {
+					return fmt.Errorf("timed out after %s of inactivity waiting for Codex CLI prompt; %s", promptWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				}
+				return fmt.Errorf("timed out after %s of inactivity waiting for Codex CLI prompt", promptWait)
 			}
 		}
 	}
@@ -3397,7 +3424,17 @@ func codexInteractiveRetention() time.Duration {
 }
 
 func codexInteractivePromptWait() time.Duration {
-	return tmuxlaunch.PromptWait(EnvCodexInteractivePromptWaitSeconds)
+	if strings.TrimSpace(os.Getenv(EnvCodexInteractivePromptWaitSeconds)) != "" {
+		return codexDurationFromEnv(EnvCodexInteractivePromptWaitSeconds, defaultCodexPromptInactivityWait)
+	}
+	if strings.TrimSpace(os.Getenv(tmuxlaunch.EnvPromptWaitSeconds)) != "" {
+		return tmuxlaunch.PromptWait(EnvCodexInteractivePromptWaitSeconds)
+	}
+	return defaultCodexPromptInactivityWait
+}
+
+func codexInteractivePromptMaxWait() time.Duration {
+	return codexDurationFromEnv(EnvCodexInteractivePromptMaxWaitSeconds, defaultCodexPromptMaxWait)
 }
 
 func codexInteractiveStreamTmuxScreenEnabled() bool {

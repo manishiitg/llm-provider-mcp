@@ -191,8 +191,8 @@ func TestCodexInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 func TestCodexInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
 	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "")
-	if got := codexInteractivePromptWait(); got != 300*time.Second {
-		t.Fatalf("codexInteractivePromptWait default = %v, want 300s", got)
+	if got := codexInteractivePromptWait(); got != 10*time.Minute {
+		t.Fatalf("codexInteractivePromptWait default = %v, want 10m", got)
 	}
 
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
@@ -204,6 +204,51 @@ func TestCodexInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
 	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "2")
 	if got := codexInteractivePromptWait(); got != 2*time.Second {
 		t.Fatalf("codexInteractivePromptWait provider env = %v, want 2s", got)
+	}
+
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "")
+	if got := codexInteractivePromptMaxWait(); got != 90*time.Minute {
+		t.Fatalf("codexInteractivePromptMaxWait default = %v, want 90m", got)
+	}
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "7")
+	if got := codexInteractivePromptMaxWait(); got != 7*time.Second {
+		t.Fatalf("codexInteractivePromptMaxWait env = %v, want 7s", got)
+	}
+}
+
+func TestWaitForCodexPromptResetsInactivityWhilePaneIsWorking(t *testing.T) {
+	fakeBin := t.TempDir()
+	countPath := fakeBin + "/capture-count"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  count=0
+  if [ -f "$TMUX_CAPTURE_COUNT" ]; then count=$(cat "$TMUX_CAPTURE_COUNT"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$TMUX_CAPTURE_COUNT"
+  if [ "$count" -lt 7 ]; then
+    printf '• Working (%ss • esc to interrupt)\n' "$count"
+  else
+    printf '› Implement {feature}\n\n  gpt-5.6-terra high · /tmp/workspace\n'
+  fi
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX_CAPTURE_COUNT", countPath)
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "1")
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "5")
+
+	started := time.Now()
+	if err := waitForCodexPrompt(context.Background(), "working-session", nil); err != nil {
+		t.Fatalf("waitForCodexPrompt returned error while pane remained active: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < time.Second {
+		t.Fatalf("test did not cross inactivity window: elapsed=%v", elapsed)
 	}
 }
 
