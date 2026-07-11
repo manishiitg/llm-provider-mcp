@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1 - 2026-07-11
+
+### Security
+
+- Updated the Go release toolchain floor to 1.25.12.
+- Patched advisories in `golang.org/x/crypto`, `golang.org/x/net`,
+  OpenTelemetry, and gRPC.
+- Added reachable-code vulnerability scanning to CI.
+- Replaced the Gitleaks action wrapper with a pinned CLI invocation that uses
+  the repository configuration and produces SARIF output.
+
+### Changed
+
+- Updated GitHub Actions to current Node 24-based major versions.
+
+### Fixed
+
+- Replaced a fixed Pi/tmux test startup delay with a bounded readiness check.
+
 ## 0.6.0 - 2026-07-11
 
 ### Added
