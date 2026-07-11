@@ -184,7 +184,7 @@ install_release() {
 
 install_with_go() {
     command -v go >/dev/null 2>&1 || \
-        die "no compatible release archive was found and Go 1.25.8+ is not installed"
+        die "no compatible release archive was found and Go 1.25.12+ is not installed"
     go_version=$(go version | awk '{print $3}' | sed 's/^go//')
     go_major=$(printf '%s' "$go_version" | cut -d. -f1 | sed 's/[^0-9].*//')
     go_minor=$(printf '%s' "$go_version" | cut -d. -f2 | sed 's/[^0-9].*//')
@@ -193,8 +193,8 @@ install_with_go() {
     [ -n "$go_patch" ] || go_patch=0
     if [ "$go_major" -lt 1 ] || \
        { [ "$go_major" -eq 1 ] && [ "$go_minor" -lt 25 ]; } || \
-       { [ "$go_major" -eq 1 ] && [ "$go_minor" -eq 25 ] && [ "$go_patch" -lt 8 ]; }; then
-        die "Go 1.25.8+ is required for source installation; found $go_version"
+       { [ "$go_major" -eq 1 ] && [ "$go_minor" -eq 25 ] && [ "$go_patch" -lt 12 ]; }; then
+        die "Go 1.25.12+ is required for source installation; found $go_version"
     fi
     go_ref=$VERSION
     if [ "$go_ref" = "latest" ]; then

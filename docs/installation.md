@@ -58,7 +58,7 @@ go install github.com/manishiitg/multi-llm-provider-go/cmd/llm-provider-mcp@late
 llm-provider-mcp setup
 ```
 
-Go 1.25.8 or newer is required only for source installation. Installing a
+Go 1.25.12 or newer is required only for source installation. Installing a
 release archive does not require Go.
 
 ## Project Scope
