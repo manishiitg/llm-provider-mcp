@@ -40,15 +40,3 @@ func ComputeRequestHash(request RequestInfo) (string, error) {
 	hash := sha256.Sum256(jsonData)
 	return hex.EncodeToString(hash[:]), nil
 }
-
-// MatchRequest finds a recorded response that matches the given request
-func MatchRequest(recorded *RecordedResponse, request RequestInfo) (bool, error) {
-	// Compute hash of current request
-	currentHash, err := ComputeRequestHash(request)
-	if err != nil {
-		return false, err
-	}
-
-	// Compare hashes
-	return recorded.RequestHash == currentHash, nil
-}

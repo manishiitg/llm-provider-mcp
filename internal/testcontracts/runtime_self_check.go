@@ -95,10 +95,6 @@ func RuntimeSelfCheckSlashSkillPrompt(c RuntimeSelfCheckCase) string {
 	return fmt.Sprintf("/%s\n\n%s", c.SkillName, RuntimeSelfCheckSkillPrompt(c))
 }
 
-func RuntimeSelfCheckPromptAndSkillPrompt(c RuntimeSelfCheckCase) string {
-	return RuntimeSelfCheckSystemPromptPrompt(c) + "\n" + RuntimeSelfCheckSkillPrompt(c)
-}
-
 func FirstChoiceContent(t testing.TB, resp *llmtypes.ContentResponse) string {
 	t.Helper()
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
@@ -182,10 +178,4 @@ func AssertRuntimeSelfCheckSkillResponse(t testing.TB, c RuntimeSelfCheckCase, c
 			t.Fatalf("%s runtime self-check skill included failure phrase %q:\n%s", c.Provider, bad, trimmed)
 		}
 	}
-}
-
-func AssertRuntimeSelfCheckPromptAndSkillResponse(t testing.TB, c RuntimeSelfCheckCase, content string) {
-	t.Helper()
-	AssertRuntimeSelfCheckSystemPromptResponse(t, c, content)
-	AssertRuntimeSelfCheckSkillResponse(t, c, content)
 }
