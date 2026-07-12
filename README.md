@@ -15,6 +15,12 @@ Delegated agents run locally in detached tmux sessions using their existing
 logins, model access, filesystem permissions, and the host's current trusted
 project directory.
 
+![Codex delegating a verified task to Grok 4.5 through Cursor Agent](docs/assets/codex-to-cursor-proof.png)
+
+In this live smoke test, Codex used `llm-provider-mcp` to delegate work to
+Grok 4.5 through Cursor Agent, waited for the asynchronous result, and confirmed
+that the task completed without modifying files.
+
 ![Claude Code delegating a background coding task to Cursor](docs/assets/llm-provider-mcp-demo.gif)
 
 This is a real Claude Code to Cursor Composer 2.5 run: the job completed in 28
