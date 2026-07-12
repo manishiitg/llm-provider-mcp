@@ -32,19 +32,23 @@ jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - goos: darwin
             goarch: amd64
+            runner: macos-latest
           - goos: darwin
             goarch: arm64
+            runner: macos-latest
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
           - goos: linux
             goarch: arm64
+            runner: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -71,6 +75,10 @@ jobs:
           mkdir -p "dist/${asset}"
           go build -trimpath -ldflags "-s -w -X main.version=${version}" \
             -o "dist/${asset}/llm-provider-mcp" ./cmd/llm-provider-mcp
+          if [ "$GOOS" = "darwin" ]; then
+            codesign --force --sign - "dist/${asset}/llm-provider-mcp"
+            codesign --verify --strict --verbose=2 "dist/${asset}/llm-provider-mcp"
+          fi
           tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" llm-provider-mcp
 
           mcpb_dir="dist/${asset}-mcpb"
