@@ -3,6 +3,8 @@ package codexcli
 import (
 	"context"
 	"fmt"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 // SendCodexInteractiveControlKey injects a tmux control key (e.g. "Escape",
@@ -13,5 +15,12 @@ func SendCodexInteractiveControlKey(ctx context.Context, ownerSessionID, key str
 	if !ok {
 		return fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)
 	}
-	return runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-cli-control",
+		Priority:  tmuxinput.PriorityForKey(key),
+	}, func(ctx context.Context) error {
+		return runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	})
+	return err
 }

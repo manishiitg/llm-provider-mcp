@@ -3,6 +3,8 @@ package agycli
 import (
 	"context"
 	"fmt"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 // SendAgyInteractiveControlKey injects a tmux control key (e.g. "Escape",
@@ -13,5 +15,12 @@ func SendAgyInteractiveControlKey(ctx context.Context, ownerSessionID, key strin
 	if !ok {
 		return fmt.Errorf("no active Agy interactive session registered for owner session %s", ownerSessionID)
 	}
-	return runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "agy-cli-control",
+		Priority:  tmuxinput.PriorityForKey(key),
+	}, func(ctx context.Context) error {
+		return runAgyCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	})
+	return err
 }

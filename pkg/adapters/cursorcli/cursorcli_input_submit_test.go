@@ -31,7 +31,7 @@ func TestEnsureCursorInputSubmittedSendsSecondEnter(t *testing.T) {
 	sessionName := "mlp-cursor-test-submit-" + cursorRandomHex(6)
 	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
 
-	loop := fmt.Sprintf(`while IFS= read -r line; do printf '%%s\n' "$line" >> %s; done`, logFile)
+	loop := fmt.Sprintf(`while IFS= read -r -p '→ ' line; do printf '%%s\n' "$line" >> %s; done`, logFile)
 	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", loop).CombinedOutput(); err != nil {
 		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
 	}
@@ -87,7 +87,7 @@ func TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer(t *testing.T) {
 	sessionName := "mlp-cursor-test-typed-" + cursorRandomHex(6)
 	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
 
-	loop := fmt.Sprintf(`while IFS= read -r line; do printf '%%s\n' "$line" >> %s; done`, logFile)
+	loop := fmt.Sprintf(`while IFS= read -r -p '→ ' line; do printf '%%s\n' "$line" >> %s; done`, logFile)
 	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", loop).CombinedOutput(); err != nil {
 		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
 	}
@@ -138,7 +138,7 @@ func TestSendCursorInputToTmuxPasteBufferPathForMultilineInput(t *testing.T) {
 	sessionName := "mlp-cursor-test-paste-" + cursorRandomHex(6)
 	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
 
-	loop := fmt.Sprintf(`while IFS= read -r line; do printf '%%s\n' "$line" >> %s; done`, logFile)
+	loop := fmt.Sprintf(`while IFS= read -r -p '→ ' line; do printf '%%s\n' "$line" >> %s; done`, logFile)
 	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", loop).CombinedOutput(); err != nil {
 		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
 	}
@@ -180,7 +180,7 @@ func TestEnsureCursorInputSubmittedSkipsWhenDraftAbsent(t *testing.T) {
 	sessionName := "mlp-cursor-test-skip-" + cursorRandomHex(6)
 	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
 
-	loop := fmt.Sprintf(`while IFS= read -r line; do printf '%%s\n' "$line" >> %s; done`, logFile)
+	loop := fmt.Sprintf(`while IFS= read -r -p '→ ' line; do printf '%%s\n' "$line" >> %s; done`, logFile)
 	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", loop).CombinedOutput(); err != nil {
 		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
 	}

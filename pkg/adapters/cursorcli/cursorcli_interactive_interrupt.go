@@ -3,6 +3,8 @@ package cursorcli
 import (
 	"context"
 	"fmt"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 // SendCursorInteractiveControlKey injects a tmux control key (e.g. "Escape",
@@ -13,5 +15,12 @@ func SendCursorInteractiveControlKey(ctx context.Context, ownerSessionID, key st
 	if !ok {
 		return fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
 	}
-	return runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "cursor-cli-control",
+		Priority:  tmuxinput.PriorityForKey(key),
+	}, func(ctx context.Context) error {
+		return runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+	})
+	return err
 }

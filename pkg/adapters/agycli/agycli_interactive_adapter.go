@@ -29,6 +29,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 const (
@@ -1694,6 +1695,16 @@ func waitForAgyPromptWithTrustSignal(ctx context.Context, sessionName string, st
 }
 
 func sendAgyInputToTmux(ctx context.Context, sessionName, message string) error {
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "agy-cli",
+	}, func(ctx context.Context) error {
+		return sendAgyInputToTmuxUnserialized(ctx, sessionName, message)
+	})
+	return err
+}
+
+func sendAgyInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Agy interactive input is empty")

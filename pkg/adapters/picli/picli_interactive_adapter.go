@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 const (
@@ -1038,6 +1039,16 @@ func isTmuxUnknownExtendedKeysOption(err error) bool {
 }
 
 func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "pi-cli",
+	}, func(ctx context.Context) error {
+		return sendPiInputToTmuxUnserialized(ctx, sessionName, message)
+	})
+	return err
+}
+
+func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Pi interactive input is empty")
@@ -1064,21 +1075,22 @@ func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
 	if err := runPiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Pi interactive session: %w", err)
 	}
-	waitForPiInputDraftVisible(ctx, sessionName, message, beforePaste, piPromptPasteVisibleWait)
+	if !waitForPiInputDraftVisible(ctx, sessionName, message, beforePaste, piPromptPasteVisibleWait) {
+		return fmt.Errorf("Pi input did not appear in the prompt before submit")
+	}
 	if err := submitPiInputInTmux(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Pi interactive session: %w", err)
 	}
-	ensurePiInputSubmitted(ctx, sessionName, message)
-	return nil
+	return ensurePiInputSubmitted(ctx, sessionName, message)
 }
 
 func submitPiInputInTmux(ctx context.Context, sessionName string) error {
 	return runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter")
 }
 
-func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, beforePaste string, timeout time.Duration) {
+func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, beforePaste string, timeout time.Duration) bool {
 	if strings.TrimSpace(message) == "" || timeout <= 0 {
-		return
+		return false
 	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1088,15 +1100,15 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 		captured, err := capturePiPaneANSI(deadline, sessionName)
 		if err == nil {
 			if piPaneShowsPromptDraft(captured, message) {
-				return
+				return true
 			}
 			if beforePaste != "" && stripPiANSI(captured) != beforePaste && !piPaneLooksIdle(captured) {
-				return
+				return true
 			}
 		}
 		select {
 		case <-deadline.Done():
-			return
+			return false
 		case <-ticker.C:
 		}
 	}
@@ -1106,7 +1118,7 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 // editor. A tmux paste can race the submit key, or Pi can consume the first
 // key while leaving the draft visible; if the same draft is still active in
 // the bottom editor region, send one more Enter.
-func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) {
+func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) error {
 	deadline, cancel := context.WithTimeout(ctx, piPromptSubmitSettleWait)
 	defer cancel()
 	// Verify-then-recover: return as soon as the draft leaves the editor
@@ -1123,19 +1135,21 @@ func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) {
 		captured, err := capturePiPaneANSI(deadline, sessionName)
 		if err == nil {
 			if !piPaneShowsPromptDraft(captured, message) {
-				return
+				return nil
 			}
 			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
-				return
+				return nil
 			}
 			if !recovered && time.Since(started) >= recoveryGrace {
 				recovered = true
-				_ = submitPiInputInTmux(deadline, sessionName)
+				if err := submitPiInputInTmux(deadline, sessionName); err != nil {
+					return fmt.Errorf("failed to retry Pi input submission: %w", err)
+				}
 			}
 		}
 		select {
 		case <-deadline.Done():
-			return
+			return fmt.Errorf("Pi input remained in the prompt after submit retry")
 		case <-ticker.C:
 		}
 	}

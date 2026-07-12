@@ -28,6 +28,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 const (
@@ -1386,6 +1387,16 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 const cursorTypedInputMaxLen = 240
 
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "cursor-cli",
+	}, func(ctx context.Context) error {
+		return sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+	})
+	return err
+}
+
+func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
@@ -1417,7 +1428,9 @@ func sendCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runCursorCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Cursor interactive session: %w", err)
 	}
-	waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second)
+	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second) {
+		return fmt.Errorf("Cursor input did not appear in the prompt before submit")
+	}
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit input to Cursor interactive session: %w", err)
 	}
@@ -1426,8 +1439,7 @@ func sendCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	// stays in the input draft). One extra Enter is needed to actually send.
 	// We don't know up front whether the menu was shown, so probe: if after
 	// the first Enter the draft is still in the input field, send another.
-	ensureCursorInputSubmitted(ctx, sessionName, message)
-	return nil
+	return ensureCursorInputSubmitted(ctx, sessionName, message)
 }
 
 // typeCursorInputToTmux delivers a short single-line message to Cursor's TUI
@@ -1440,20 +1452,21 @@ func typeCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
-	waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second)
+	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second) {
+		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit")
+	}
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
-	ensureCursorInputSubmitted(ctx, sessionName, message)
-	return nil
+	return ensureCursorInputSubmitted(ctx, sessionName, message)
 }
 
 // ensureCursorInputSubmitted polls briefly after the initial C-m and sends a
 // second C-m if the pasted text is still sitting in the input draft (which
 // happens when the follow-ups menu, or any other modal overlay, swallows the
-// first Enter). Best-effort: errors are ignored because the first submit may
-// have succeeded and the pane just hasn't repainted yet.
-func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) {
+// first Enter). It returns an error when the draft remains visible, so callers
+// never report a tmux command acknowledgement as a successful CLI submission.
+func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) error {
 	deadline, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	// Verify-then-recover: return as soon as the draft leaves the input field
@@ -1470,24 +1483,26 @@ func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string
 		captured, err := captureCursorPane(deadline, sessionName)
 		if err == nil {
 			if !cursorPaneShowsPromptDraft(captured, message) {
-				return
+				return nil
 			}
 			if !recovered && time.Since(started) >= recoveryGrace {
 				recovered = true
-				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+				if err := runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+					return fmt.Errorf("failed to retry Cursor input submission: %w", err)
+				}
 			}
 		}
 		select {
 		case <-deadline.Done():
-			return
+			return fmt.Errorf("Cursor input remained in the prompt after submit retry")
 		case <-ticker.C:
 		}
 	}
 }
 
-func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) {
+func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) bool {
 	if strings.TrimSpace(message) == "" {
-		return
+		return false
 	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1496,11 +1511,11 @@ func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message st
 	for {
 		captured, err := captureCursorPane(deadline, sessionName)
 		if err == nil && cursorPaneShowsPromptDraft(captured, message) {
-			return
+			return true
 		}
 		select {
 		case <-deadline.Done():
-			return
+			return false
 		case <-ticker.C:
 		}
 	}
@@ -2081,19 +2096,36 @@ func nonEmptyCursorLines(text string) []string {
 }
 
 func cursorPaneShowsPromptDraft(captured, prompt string) bool {
-	captured = strings.ToLower(stripCursorANSI(captured))
+	visibleLines := strings.Split(strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured))), "\n")
+	lastPromptMarker := -1
+	for i := len(visibleLines) - 1; i >= 0; i-- {
+		if strings.Contains(visibleLines[i], "→") {
+			lastPromptMarker = i
+			break
+		}
+	}
+	if lastPromptMarker < 0 {
+		return false
+	}
+	// Only inspect the active editor near the final structural prompt marker.
+	// Searching the whole pane mistakes an already-submitted user message in
+	// scrollback for a draft that is still waiting in the composer.
+	regionEnd := lastPromptMarker + 10
+	if regionEnd > len(visibleLines) {
+		regionEnd = len(visibleLines)
+	}
+	activeEditor := strings.Join(visibleLines[lastPromptMarker:regionEnd], "\n")
 	for _, line := range nonEmptyCursorLines(prompt) {
-		line = strings.TrimSpace(stripCursorANSI(line))
+		line = strings.ToLower(strings.TrimSpace(stripCursorANSI(line)))
 		if len([]rune(line)) < 8 {
 			continue
 		}
 		if len([]rune(line)) > 120 {
 			line = string([]rune(line)[:120])
 		}
-		if strings.Contains(captured, strings.ToLower(line)) {
+		if strings.Contains(activeEditor, line) {
 			return true
 		}
-		return false
 	}
 	return false
 }

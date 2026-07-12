@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 const (
@@ -1472,13 +1473,23 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 }
 
 func sendInputToActiveTmux(ctx context.Context, sessionName, message string) error {
+	if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
+		return err
+	}
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "claude-code",
+	}, func(ctx context.Context) error {
+		return sendInputToActiveTmuxUnserialized(ctx, sessionName, message)
+	})
+	return err
+}
+
+func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message string) error {
 	bufferName := "mlp-claude-steer-" + randomHex(6)
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Claude Code tmux input is empty")
-	}
-	if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
-		return err
 	}
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err

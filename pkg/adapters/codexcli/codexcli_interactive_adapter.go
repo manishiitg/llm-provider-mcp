@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 const (
@@ -1303,10 +1304,21 @@ func sendCodexPromptToTmux(ctx context.Context, sessionName, prompt string) erro
 }
 
 func sendCodexInputToTmux(ctx context.Context, sessionName, message string) error {
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-cli",
+	}, func(ctx context.Context) error {
+		return sendCodexInputToTmuxUnserialized(ctx, sessionName, message)
+	})
+	return err
+}
+
+func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Codex interactive input is empty")
 	}
+	baseline, _ := captureCodexPane(ctx, sessionName)
 	bufferName := "mlp-codex-input-" + codexRandomHex(6)
 	tmp, err := os.CreateTemp("", "codex-tmux-input-*.txt")
 	if err != nil {
@@ -1332,7 +1344,63 @@ func sendCodexInputToTmux(ctx context.Context, sessionName, message string) erro
 	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
 		return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
 	}
-	return nil
+	return waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 3*time.Second)
+}
+
+func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, baseline string, timeout time.Duration) error {
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastCapture string
+	var lastErr error
+	for {
+		captured, err := captureCodexPane(deadline, sessionName)
+		if err == nil {
+			lastCapture = captured
+			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) {
+				return nil
+			}
+			if captured != baseline && hasCodexReadyPrompt(captured) && !codexPaneShowsPromptDraft(captured, message) {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-deadline.Done():
+			if lastErr != nil && strings.TrimSpace(lastCapture) == "" {
+				return fmt.Errorf("could not confirm Codex input submission: %w", lastErr)
+			}
+			return fmt.Errorf("Codex input remained unconfirmed after %s; %s", timeout, llmtypes.CompactTerminalPaneForError(sessionName, lastCapture))
+		case <-ticker.C:
+		}
+	}
+}
+
+func codexPaneShowsPromptDraft(captured, message string) bool {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	needle := strings.TrimSpace(strings.Split(strings.TrimSpace(message), "\n")[0])
+	if len(needle) > 80 {
+		needle = needle[:80]
+	}
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < 12; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seen++
+		lower := strings.ToLower(line)
+		if isCodexPromptWithInputLine(line) && (needle == "" || strings.Contains(line, needle)) {
+			return true
+		}
+		if (strings.Contains(lower, "pasted text #") || strings.Contains(lower, "pasted text ")) &&
+			(strings.HasPrefix(line, "›") || strings.HasPrefix(line, ">") || strings.HasPrefix(line, "❯")) {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
