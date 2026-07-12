@@ -1257,7 +1257,7 @@ exit 0
 	t.Setenv("TMUX_TEST_SEND_KEYS", sendKeysPath)
 
 	stream := make(chan llmtypes.StreamChunk, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := waitForTmuxPrompt(ctx, "test-session", stream); err != nil {
 		t.Fatalf("waitForTmuxPrompt returned error for normal ready prompt: %v", err)

@@ -38,6 +38,7 @@ const (
 	defaultCodexPromptInactivityWait   = 10 * time.Minute
 	defaultCodexPromptMaxWait          = 90 * time.Minute
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
+	codexPromptCandidateStableWindow   = 2 * time.Second
 	codexActivityScanNonEmptyLines     = 160
 
 	// defaultCodexInteractiveStalePaneBackstop is a detection-independent backstop
@@ -138,7 +139,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	inspector.EmitEvent("tmux_session_acquiring", map[string]interface{}{
 		"owner_session_id": ownerSessionID,
 	})
-	session, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
+	session, created, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
 	if err != nil {
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_session_acquire",
@@ -162,30 +163,24 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 	}()
 
-	c.logger.Debugf("codex interactive acquired owner=%s tmux=%s; waiting for first prompt", ownerSessionID, session.tmuxSessionName)
-	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
-		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
-		releaseSession = false
-		failedSession := session
-		session.mu.Unlock()
-		session = nil
-		cleanupFailedCodexInteractiveSession(failedSession)
-		return nil, err
+	if created {
+		c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s; waiting for startup prompt", ownerSessionID, session.tmuxSessionName)
+		if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
+			releaseSession = false
+			failedSession := session
+			session.mu.Unlock()
+			session = nil
+			cleanupFailedCodexInteractiveSession(failedSession)
+			return nil, err
+		}
+		c.logger.Debugf("codex interactive startup prompt ready owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
+	} else {
+		c.logger.Debugf("codex interactive reused initialized session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	}
-	c.logger.Debugf("codex interactive first prompt ready owner=%s tmux=%s; resetting pane", ownerSessionID, session.tmuxSessionName)
-	resetCodexPaneForTurn(callCtx, session.tmuxSessionName)
-	if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
-		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
-		releaseSession = false
-		failedSession := session
-		session.mu.Unlock()
-		session = nil
-		cleanupFailedCodexInteractiveSession(failedSession)
-		return nil, err
-	}
-	c.logger.Debugf("codex interactive ready for prompt owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+		tmuxinput.MarkReady(session.tmuxSessionName)
 		var lastSnapshot string
 		streamCodexTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
 		additional := map[string]interface{}{
@@ -223,8 +218,15 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	promptSentAt := time.Now()
 	if err := sendCodexPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
 		inspector.EmitError(err, map[string]interface{}{"phase": "tmux_prompt_send"})
+		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedCodexInteractiveSession(failedSession)
 		return nil, err
 	}
+	tmuxinput.MarkReady(session.tmuxSessionName)
 	inspector.EmitEvent("tmux_prompt_sent", map[string]interface{}{
 		"prompt_length": len(prompt),
 	})
@@ -399,7 +401,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 // acquireCodexInteractiveSession returns with session.mu held. The caller must
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
-func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*codexInteractiveSession, error) {
+func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*codexInteractiveSession, bool, error) {
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
@@ -415,7 +417,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return session
 	})
 	if !ok {
-		return nil, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
+		return nil, false, fmt.Errorf("codex-cli interactive mode requires an owner session ID")
 	}
 	if !created {
 		// Release the GLOBAL registry lock BEFORE taking the per-session lock.
@@ -431,7 +433,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()
-			return nil, err
+			return nil, false, err
 		}
 		if session.idleTimer != nil {
 			session.idleTimer.Stop()
@@ -439,7 +441,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		}
 		session.lastUsed = time.Now()
 		c.logger.Debugf("codex interactive reusing session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
-		return session, nil
+		return session, false, nil
 	}
 
 	// buildCodexInteractiveArgs also performs the opt-in workspace
@@ -459,7 +461,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		session.initErr = err
 		session.mu.Unlock()
 		removeCodexPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	c.logger.Debugf("codex interactive built args owner=%s args=%d", ownerSessionID, len(args))
 	session.systemPromptTempFile = systemPromptTempFile
@@ -487,11 +489,11 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		}
 		session.mu.Unlock()
 		removeCodexPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
 	c.logger.Debugf("codex interactive started owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
-	return session, nil
+	return session, true, nil
 }
 
 // buildCodexInteractiveArgs builds the codex TUI launch args. It also
@@ -740,10 +742,17 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 		logger.Debugf("Closing Codex interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
 	}
 	removeCodexPersistentSession(session.ownerSessionID, session)
+	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = runCodexCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
-	_ = killCodexTmuxSession(closeCtx, session.tmuxSessionName)
+	_, _ = tmuxinput.Default.Do(closeCtx, tmuxinput.Request{
+		SessionID: session.tmuxSessionName,
+		Source:    "codex-cli-close",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		_ = runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
+		return killCodexTmuxSession(ctx, session.tmuxSessionName)
+	})
 	if session.systemPromptTempFile != "" {
 		_ = os.Remove(session.systemPromptTempFile)
 		session.systemPromptTempFile = ""
@@ -752,7 +761,6 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 		session.projectInstructionCleanup()
 		session.projectInstructionCleanup = nil
 	}
-	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
 // writeProjectInstructionFromOptions reads the feature flag for writing
@@ -925,11 +933,13 @@ func registerCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	if tmuxSessionName == "" {
 		return
 	}
+	tmuxinput.MarkStartingForOwner(tmuxSessionName, ownerSessionID)
 	codexInteractiveRegistry.Set(ownerSessionID, tmuxSessionName)
 }
 
 func unregisterCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	codexInteractiveRegistry.DeleteIf(ownerSessionID, tmuxSessionName)
+	tmuxinput.RemoveReadiness(tmuxSessionName)
 }
 
 func activeCodexInteractiveSession(ownerSessionID string) (string, bool) {
@@ -1227,6 +1237,8 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	lastActivityAt := time.Now()
 	lastCaptured := ""
+	var promptCandidateSnapshot string
+	var promptCandidateSince time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -1284,8 +1296,24 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 			if hasCodexReadyPrompt(captured) {
 				return nil
 			}
+			// A resumed pane can contain an old "Working ... esc to interrupt"
+			// line above a new empty composer. The broad activity scan must keep
+			// supporting genuinely long tool output, so use screen stability to
+			// disambiguate here: active Codex updates its status/timer, whereas an
+			// idle pane with historical activity remains byte-identical.
+			if hasCodexPromptCandidate(captured) {
+				stableSnapshot := codexPromptCandidateStabilitySnapshot(captured)
+				if stableSnapshot != promptCandidateSnapshot {
+					promptCandidateSnapshot = stableSnapshot
+					promptCandidateSince = time.Now()
+				} else if !promptCandidateSince.IsZero() && time.Since(promptCandidateSince) >= codexPromptCandidateStableWindow {
+					return nil
+				}
+			} else {
+				promptCandidateSnapshot = ""
+				promptCandidateSince = time.Time{}
+			}
 			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) {
-				lastActivityAt = time.Now()
 				continue
 			}
 			if time.Since(lastActivityAt) >= promptWait {
@@ -1300,13 +1328,18 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 }
 
 func sendCodexPromptToTmux(ctx context.Context, sessionName, prompt string) error {
-	return sendCodexInputToTmux(ctx, sessionName, prompt)
+	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, prompt, true)
 }
 
 func sendCodexInputToTmux(ctx context.Context, sessionName, message string) error {
+	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, message, false)
+}
+
+func sendCodexInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "codex-cli",
+		SessionID:       sessionName,
+		Source:          "codex-cli",
+		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
 		return sendCodexInputToTmuxUnserialized(ctx, sessionName, message)
 	})
@@ -1318,6 +1351,10 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Codex interactive input is empty")
 	}
+	// Clear any stale unsent draft inside the same broker transaction as paste +
+	// submit. The previous implementation cleared outside the transaction and
+	// then performed a second multi-second readiness wait on every turn.
+	resetCodexPaneForTurn(ctx, sessionName)
 	baseline, _ := captureCodexPane(ctx, sessionName)
 	bufferName := "mlp-codex-input-" + codexRandomHex(6)
 	tmp, err := os.CreateTemp("", "codex-tmux-input-*.txt")
@@ -1358,7 +1395,10 @@ func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, basel
 		captured, err := captureCodexPane(deadline, sessionName)
 		if err == nil {
 			lastCapture = captured
-			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) {
+			// Historical Working/tool lines may already exist in baseline. They
+			// prove the CLI is active, not that this input moved. Require a pane
+			// transition after Enter before accepting activity as confirmation.
+			if captured != baseline && (hasCodexActivity(captured) || hasCodexQueuedInput(captured)) {
 				return nil
 			}
 			if captured != baseline && hasCodexReadyPrompt(captured) && !codexPaneShowsPromptDraft(captured, message) {
@@ -1463,8 +1503,8 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			}
 			if hasCodexRateLimitReminderModal(captured) {
 				if !dismissedRateReminder {
-					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
-					dismissedRateReminder = true
+					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
+					dismissedRateReminder = handled
 				}
 				sawActivity = true
 				idleSince = time.Time{}
@@ -2691,6 +2731,13 @@ func hasCodexActivity(captured string) bool {
 }
 
 func hasCodexReadyPrompt(captured string) bool {
+	if !hasCodexPromptCandidate(captured) {
+		return false
+	}
+	return !hasCodexActivity(captured)
+}
+
+func hasCodexPromptCandidate(captured string) bool {
 	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
@@ -2703,7 +2750,7 @@ func hasCodexReadyPrompt(captured string) bool {
 		}
 		seenNonEmpty++
 		if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") || strings.HasSuffix(line, "›") {
-			return !hasCodexActivity(captured)
+			return true
 		}
 	}
 	return false
@@ -2800,6 +2847,20 @@ func isCodexGhostPlaceholderPromptLine(line string) bool {
 		}
 	}
 	return false
+}
+
+// codexPromptCandidateStabilitySnapshot removes the rotating empty-composer
+// hint from readiness stability checks. Codex changes this ghost text while
+// idle; comparing the raw pane made a ready session wait an arbitrary extra
+// rotation before it happened to remain byte-identical long enough.
+func codexPromptCandidateStabilitySnapshot(captured string) string {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	for i, line := range lines {
+		if isCodexGhostPlaceholderPromptLine(line) {
+			lines[i] = "› <empty-composer>"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func hasCodexTrustPrompt(captured string) bool {
@@ -3035,6 +3096,32 @@ func dismissCodexRateLimitReminder(ctx context.Context, sessionName, captured st
 	args := []string{"send-keys", "-t", sessionName}
 	args = append(args, keys...)
 	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+// dismissCodexRateLimitReminderSerialized coordinates the runtime modal with
+// all other writers to this tmux pane. It re-checks the modal after acquiring
+// the broker so stale Down/Enter keys cannot be injected into a newer prompt.
+func dismissCodexRateLimitReminderSerialized(ctx context.Context, sessionName string) (bool, error) {
+	handled := false
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-rate-limit-reminder",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		captured, err := captureCodexPane(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+		if !hasCodexRateLimitReminderModal(captured) {
+			return nil
+		}
+		if err := dismissCodexRateLimitReminder(ctx, sessionName, captured); err != nil {
+			return err
+		}
+		handled = true
+		return nil
+	})
+	return handled, err
 }
 
 func selectedCodexRateLimitReminderOption(captured string) int {
@@ -3394,7 +3481,14 @@ func isCodexBoxDrawingLine(line string) bool {
 func interruptCodexInteractiveSession(sessionName string, logger interfaces.Logger) {
 	interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := runCodexCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil && logger != nil {
+	_, err := tmuxinput.Default.Do(interruptCtx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-cli-internal-interrupt",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		return runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape")
+	})
+	if err != nil && logger != nil {
 		logger.Debugf("Failed to send Escape to Codex interactive session %s: %v", sessionName, err)
 	}
 }

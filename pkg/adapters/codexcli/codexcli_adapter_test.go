@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -39,6 +40,55 @@ func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("CodexCLIAdapter should implement llmtypes.WebSearchModel")
+	}
+}
+
+func TestDismissCodexRateLimitReminderRechecksPaneInsideBroker(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$FAKE_TMUX_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+
+	t.Setenv("FAKE_TMUX_CAPTURE", "normal codex composer")
+	handled, err := dismissCodexRateLimitReminderSerialized(context.Background(), "codex-reminder-stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("stale rate-limit reminder was handled after the modal disappeared")
+	}
+	if data, err := os.ReadFile(logPath); err == nil && strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("stale reminder injected keys: %q", data)
+	}
+
+	t.Setenv("FAKE_TMUX_CAPTURE", "Approaching rate limits\n› 1. Switch to gpt\n2. Keep current model\n3. Keep current model\nPress enter to confirm")
+	handled, err = dismissCodexRateLimitReminderSerialized(context.Background(), "codex-reminder-visible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("visible rate-limit reminder was not handled")
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "send-keys -t codex-reminder-visible Down Down C-m") {
+		t.Fatalf("send-keys log = %q", data)
 	}
 }
 
@@ -241,7 +291,7 @@ exit 0
 	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
 	t.Setenv("TMUX_CAPTURE_COUNT", countPath)
 	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "1")
-	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "5")
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "10")
 
 	started := time.Now()
 	if err := waitForCodexPrompt(context.Background(), "working-session", nil); err != nil {
@@ -249,6 +299,120 @@ exit 0
 	}
 	if elapsed := time.Since(started); elapsed < time.Second {
 		t.Fatalf("test did not cross inactivity window: elapsed=%v", elapsed)
+	}
+}
+
+func TestWaitForCodexPromptAcceptsStableComposerWithHistoricalActivity(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' \
+    '• Working (5m 24s • esc to interrupt)' \
+    '• Called api-bridge.execute_shell_command({"command":"echo done"})' \
+    '  command completed successfully' \
+    '────────────────────────────────────────────────────────────────' \
+    '› Write tests for @filename' \
+    '  gpt-5.6-sol xhigh · /tmp/workspace'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "1")
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "5")
+
+	pane := `
+• Working (5m 24s • esc to interrupt)
+• Called api-bridge.execute_shell_command({"command":"echo done"})
+  command completed successfully
+────────────────────────────────────────────────────────────────
+› Write tests for @filename
+  gpt-5.6-sol xhigh · /tmp/workspace
+`
+	if !hasCodexActivity(pane) {
+		t.Fatal("fixture must retain historical activity for the regression")
+	}
+	if !hasCodexPromptCandidate(pane) {
+		t.Fatal("bottom empty composer should be a prompt candidate")
+	}
+	if hasCodexReadyPrompt(pane) {
+		t.Fatal("ordinary readiness detection should remain conservative")
+	}
+
+	started := time.Now()
+	if err := waitForCodexPrompt(context.Background(), "stale-scrollback-session", nil); err != nil {
+		t.Fatalf("stable empty composer was not accepted: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < codexPromptCandidateStableWindow {
+		t.Fatalf("stable composer accepted too early: elapsed=%v", elapsed)
+	} else if elapsed >= 8*time.Second {
+		t.Fatalf("stable composer took too long to accept: elapsed=%v", elapsed)
+	}
+}
+
+func TestWaitForCodexPromptIgnoresRotatingEmptyComposerHint(t *testing.T) {
+	fakeBin := t.TempDir()
+	countPath := filepath.Join(fakeBin, "capture-count")
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  count=0
+  if [ -f "$TMUX_CAPTURE_COUNT" ]; then count=$(cat "$TMUX_CAPTURE_COUNT"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$TMUX_CAPTURE_COUNT"
+  printf '%s\n' '• Working (5m 24s • esc to interrupt)' '• Prior completed response'
+  if [ $((count % 2)) -eq 0 ]; then
+    printf '%s\n' '› Write tests for @filename'
+  else
+    printf '%s\n' '› Improve documentation in @filename'
+  fi
+  printf '%s\n' '  gpt-5.6-sol xhigh · /tmp/workspace'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX_CAPTURE_COUNT", countPath)
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "1")
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "5")
+
+	started := time.Now()
+	if err := waitForCodexPrompt(context.Background(), "rotating-ghost-session", nil); err != nil {
+		t.Fatalf("rotating empty composer was not accepted: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < codexPromptCandidateStableWindow {
+		t.Fatalf("rotating composer accepted too early: elapsed=%v", elapsed)
+	} else if elapsed >= 4*time.Second {
+		t.Fatalf("rotating composer delayed readiness: elapsed=%v", elapsed)
+	}
+}
+
+func TestWaitForCodexInputSubmittedRejectsUnchangedHistoricalActivity(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' '• Working (5m 24s • esc to interrupt)' '• Called api-bridge.execute_shell_command' '› Find and fix a bug in @filename'
+fi
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	baseline, err := captureCodexPane(context.Background(), "unchanged-activity")
+	if err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
+	err = waitForCodexInputSubmitted(context.Background(), "unchanged-activity", "new message", baseline, 150*time.Millisecond)
+	if err == nil {
+		t.Fatal("unchanged historical Working lines falsely confirmed a new submission")
 	}
 }
 

@@ -22,6 +22,10 @@ type Request struct {
 	MessageID string
 	Source    string
 	Priority  Priority
+	// BypassReadiness is reserved for the provider's initial prompt transaction.
+	// All other normal input waits until that transaction has been confirmed so
+	// a follow-up cannot overtake the first user message during CLI startup.
+	BypassReadiness bool
 }
 
 type Result struct {
@@ -46,7 +50,9 @@ type queuedRequest struct {
 }
 
 type sessionWorker struct {
-	incoming chan *queuedRequest
+	broker    *Broker
+	sessionID string
+	incoming  chan *queuedRequest
 }
 
 // Broker serializes complete tmux input transactions by tmux session. A
@@ -54,12 +60,20 @@ type sessionWorker struct {
 // paste-buffer, then Enter); no other source can interleave commands while it
 // is running.
 type Broker struct {
-	mu      sync.Mutex
-	workers map[string]*sessionWorker
+	mu                sync.Mutex
+	workers           map[string]*sessionWorker
+	workerIdleTimeout time.Duration
 }
 
 func NewBroker() *Broker {
-	return &Broker{workers: make(map[string]*sessionWorker)}
+	return newBrokerWithIdleTimeout(time.Minute)
+}
+
+func newBrokerWithIdleTimeout(timeout time.Duration) *Broker {
+	return &Broker{
+		workers:           make(map[string]*sessionWorker),
+		workerIdleTimeout: timeout,
+	}
 }
 
 var Default = NewBroker()
@@ -83,6 +97,11 @@ func (b *Broker) Do(ctx context.Context, request Request, operation Operation) (
 	if operation == nil {
 		return Result{}, errors.New("tmux input operation is required")
 	}
+	if request.Priority != PriorityInterrupt && !request.BypassReadiness {
+		if err := WaitUntilReady(ctx, request.SessionID); err != nil {
+			return Result{}, err
+		}
+	}
 
 	queued := &queuedRequest{
 		ctx:       ctx,
@@ -91,11 +110,7 @@ func (b *Broker) Do(ctx context.Context, request Request, operation Operation) (
 		response:  make(chan response, 1),
 		result:    Result{EnqueuedAt: time.Now()},
 	}
-	worker := b.worker(request.SessionID)
-
-	select {
-	case worker.incoming <- queued:
-	case <-ctx.Done():
+	if err := b.enqueue(ctx, request.SessionID, queued); err != nil {
 		return queued.result, ctx.Err()
 	}
 
@@ -110,15 +125,47 @@ func (b *Broker) Do(ctx context.Context, request Request, operation Operation) (
 func (b *Broker) worker(sessionID string) *sessionWorker {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.workerLocked(sessionID)
+}
 
+func (b *Broker) workerLocked(sessionID string) *sessionWorker {
 	if worker := b.workers[sessionID]; worker != nil {
 		return worker
 	}
 
-	worker := &sessionWorker{incoming: make(chan *queuedRequest, 256)}
+	worker := &sessionWorker{
+		broker:    b,
+		sessionID: sessionID,
+		incoming:  make(chan *queuedRequest, 256),
+	}
 	b.workers[sessionID] = worker
 	go worker.run()
 	return worker
+}
+
+// enqueue publishes the request while holding the same broker lock used by
+// idle retirement. A sender can therefore never retain a pointer to a worker
+// that exits before the request reaches its channel.
+func (b *Broker) enqueue(ctx context.Context, sessionID string, request *queuedRequest) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	worker := b.workerLocked(sessionID)
+	select {
+	case worker.incoming <- request:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *sessionWorker) retireIfIdle() bool {
+	w.broker.mu.Lock()
+	defer w.broker.mu.Unlock()
+	if w.broker.workers[w.sessionID] != w || len(w.incoming) != 0 {
+		return false
+	}
+	delete(w.broker.workers, w.sessionID)
+	return true
 }
 
 func (w *sessionWorker) run() {
@@ -135,7 +182,27 @@ func (w *sessionWorker) run() {
 
 	for {
 		if len(interrupts) == 0 && len(normal) == 0 {
-			appendRequest(<-w.incoming)
+			idleTimeout := w.broker.workerIdleTimeout
+			if idleTimeout <= 0 {
+				appendRequest(<-w.incoming)
+			} else {
+				timer := time.NewTimer(idleTimeout)
+				select {
+				case request := <-w.incoming:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					appendRequest(request)
+				case <-timer.C:
+					if w.retireIfIdle() {
+						return
+					}
+					continue
+				}
+			}
 		}
 
 		// Collect everything that arrived while the previous transaction was

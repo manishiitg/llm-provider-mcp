@@ -194,3 +194,30 @@ func TestPriorityForKeyOnlyElevatesInterrupts(t *testing.T) {
 		}
 	}
 }
+
+func TestBrokerRetiresIdleSessionWorkerWithoutDroppingNextRequest(t *testing.T) {
+	broker := newBrokerWithIdleTimeout(20 * time.Millisecond)
+	run := func(id string) {
+		t.Helper()
+		called := false
+		if _, err := broker.Do(context.Background(), Request{SessionID: "ephemeral", MessageID: id}, func(context.Context) error {
+			called = true
+			return nil
+		}); err != nil {
+			t.Fatalf("Do(%s): %v", id, err)
+		}
+		if !called {
+			t.Fatalf("operation %s was dropped", id)
+		}
+	}
+
+	run("first")
+	time.Sleep(60 * time.Millisecond)
+	broker.mu.Lock()
+	workersAfterIdle := len(broker.workers)
+	broker.mu.Unlock()
+	if workersAfterIdle != 0 {
+		t.Fatalf("workers after idle = %d, want 0", workersAfterIdle)
+	}
+	run("second")
+}

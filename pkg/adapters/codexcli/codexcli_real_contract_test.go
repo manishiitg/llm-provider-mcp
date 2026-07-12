@@ -12,6 +12,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 func TestCodexCLIRealInteractiveTmuxFullContract(t *testing.T) {
@@ -422,7 +423,7 @@ func TestCodexCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 // Codex CLI ITSELF and processed once the current turn completes. It sends the
 // follow-up via raw SendCodexInteractiveInput (bypassing the server steer/queue),
 // so a processed follow-up proves the CLI's own native queue did the work.
-func TestCodexCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing.T) {
+func TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
@@ -479,12 +480,16 @@ func TestCodexCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *test
 		resultCh <- out
 	}()
 
-	waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	tmuxSession := waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, startupErrCh)
+	ownerOutput, err := exec.CommandContext(parentCtx, "tmux", "show-options", "-v", "-t", tmuxSession, tmuxinput.OwnerSessionOption).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(ownerOutput)) != ownerSessionID {
+		t.Fatalf("tmux owner metadata = %q err=%v, want %q", strings.TrimSpace(string(ownerOutput)), err, ownerSessionID)
+	}
 	waitForCodexRealFile(t, slowToolMarker, "slow MCP tool call start", 90*time.Second, resultCh)
 
 	// Deliver the follow-up WHILE Codex is busy in the slow tool, via the raw
 	// adapter path (no server queue in between).
-	liveMessage := fmt.Sprintf("Follow-up task: after the current answer completes, also reply exactly %s and nothing else.", liveAck)
+	liveMessage := fmt.Sprintf("New highest-priority instruction: after the current tool returns, reply exactly %s.", liveAck)
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := SendCodexInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
 		sendCancel()
@@ -499,11 +504,15 @@ func TestCodexCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *test
 			t.Fatalf("GenerateContent error = %v (content=%q)", got.err, got.content)
 		}
 		if !strings.Contains(got.content, liveAck) {
-			t.Fatalf("queued follow-up was NOT processed by the CLI; final content=%q\npane:\n%s", got.content, paneDiag())
+			t.Fatalf("live steer did not affect the busy Codex turn; final content=%q\npane:\n%s", got.content, paneDiag())
 		}
-		t.Logf("OK: Codex CLI natively queued + processed the mid-turn follow-up (found %s in final content)", liveAck)
+		pane := paneDiag()
+		if !strings.Contains(stripCodexANSI(pane), liveMessage) {
+			t.Fatalf("live follow-up was not durably submitted to the CLI conversation; pane:\n%s", pane)
+		}
+		t.Log("OK: Codex CLI durably submitted and applied the live steer while the initial turn was busy")
 	case <-time.After(3 * time.Minute):
-		t.Fatalf("timed out waiting for Codex to process the queued live input; pane:\n%s", paneDiag())
+		t.Fatalf("timed out waiting for Codex to complete after live input submission; pane:\n%s", paneDiag())
 	}
 	_ = drainCodexStream(streamChan)
 }

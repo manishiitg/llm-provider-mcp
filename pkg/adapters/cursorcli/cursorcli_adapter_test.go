@@ -30,6 +30,55 @@ func TestCursorCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	}
 }
 
+func TestSendCursorControlIfVisibleRechecksPaneInsideBroker(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$FAKE_TMUX_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+
+	t.Setenv("FAKE_TMUX_CAPTURE", "normal cursor composer")
+	handled, err := sendCursorControlIfVisible(context.Background(), "cursor-control-stale", "test", hasCursorMCPToolApprovalPrompt, "Tab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("stale approval was handled after the modal disappeared")
+	}
+	if data, err := os.ReadFile(logPath); err == nil && strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("stale approval injected keys: %q", data)
+	}
+
+	t.Setenv("FAKE_TMUX_CAPTURE", "Run this MCP tool?\nAllowlist MCP Tool (tab)")
+	handled, err = sendCursorControlIfVisible(context.Background(), "cursor-control-visible", "test", hasCursorMCPToolApprovalPrompt, "Tab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("visible approval modal was not handled")
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "send-keys -t cursor-control-visible Tab") {
+		t.Fatalf("send-keys log = %q", data)
+	}
+}
+
 func TestCursorInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "")
 	if got := cursorInteractiveTimeout(); got != 0 {

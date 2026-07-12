@@ -171,7 +171,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, fmt.Errorf("cursor-cli prompt is empty")
 	}
 
-	session, err := c.acquireCursorInteractiveSession(callCtx, ownerSessionID, persistent, opts, systemPrompt)
+	session, created, err := c.acquireCursorInteractiveSession(callCtx, ownerSessionID, persistent, opts, systemPrompt)
 	if err != nil {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
@@ -191,30 +191,19 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 	}()
 
-	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
-		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
-		releaseSession = false
-		failedSession := session
-		session.mu.Unlock()
-		session = nil
-		cleanupFailedCursorInteractiveSession(failedSession)
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
+	if created {
+		if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+			markCursorInteractiveSessionFailedLocked(session, err, c.logger)
+			releaseSession = false
+			failedSession := session
+			session.mu.Unlock()
+			session = nil
+			cleanupFailedCursorInteractiveSession(failedSession)
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	resetCursorPaneForTurn(callCtx, session.tmuxSessionName)
-	if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
-		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
-		releaseSession = false
-		failedSession := session
-		session.mu.Unlock()
-		session = nil
-		cleanupFailedCursorInteractiveSession(failedSession)
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-		return nil, err
 	}
 
 	baseline, _ := captureCursorPane(callCtx, session.tmuxSessionName)
@@ -224,6 +213,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// can rebind to this tmux session on subsequent turns instead of
 	// spawning yet another one.
 	if launchOnly {
+		tmuxinput.MarkReady(session.tmuxSessionName)
 		var lastSnapshot string
 		streamCursorTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
 		if opts.StreamChan != nil {
@@ -261,12 +251,19 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}, nil
 	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
-	if err := sendCursorInputToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+	if err := sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
+		releaseSession = false
+		failedSession := session
+		session.mu.Unlock()
+		session = nil
+		cleanupFailedCursorInteractiveSession(failedSession)
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
 		return nil, err
 	}
+	tmuxinput.MarkReady(session.tmuxSessionName)
 
 	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts))
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
@@ -436,7 +433,7 @@ func estimateCursorTmuxTokens(prompt, content string) (int, int) {
 }
 
 // acquireCursorInteractiveSession returns with session.mu held.
-func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*cursorInteractiveSession, error) {
+func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*cursorInteractiveSession, bool, error) {
 	now := time.Now()
 	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
 		session := &cursorInteractiveSession{
@@ -450,7 +447,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		return session
 	})
 	if !ok {
-		return nil, fmt.Errorf("cursor-cli tmux mode requires an owner session ID")
+		return nil, false, fmt.Errorf("cursor-cli tmux mode requires an owner session ID")
 	}
 	if !created {
 		// The registry lock protects only the owner map. Take the per-session
@@ -460,14 +457,14 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()
-			return nil, err
+			return nil, false, err
 		}
 		if session.idleTimer != nil {
 			session.idleTimer.Stop()
 			session.idleTimer = nil
 		}
 		session.lastUsed = time.Now()
-		return session, nil
+		return session, false, nil
 	}
 
 	args, env, workingDir, cleanupFiles, err := c.buildCursorInteractiveLaunch(opts, systemPrompt, ownerSessionID)
@@ -475,7 +472,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		session.initErr = err
 		session.mu.Unlock()
 		removeCursorPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	session.workingDir = workingDir
 	session.cleanupFiles = cleanupFiles
@@ -487,10 +484,10 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		}
 		session.mu.Unlock()
 		removeCursorPersistentSession(ownerSessionID, session)
-		return nil, err
+		return nil, false, err
 	}
 	registerCursorInteractiveSession(ownerSessionID, session.tmuxSessionName)
-	return session, nil
+	return session, true, nil
 }
 
 func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptions, systemPrompt string, ownerSessionID string) ([]string, []string, string, func(), error) {
@@ -1106,15 +1103,21 @@ func closeCursorSessionLocked(session *cursorInteractiveSession, reason string, 
 		logger.Debugf("Closing Cursor interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
 	}
 	removeCursorPersistentSession(session.ownerSessionID, session)
+	unregisterCursorInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = runCursorCommand(closeCtx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
-	_ = killCursorTmuxSession(closeCtx, session.tmuxSessionName)
+	_, _ = tmuxinput.Default.Do(closeCtx, tmuxinput.Request{
+		SessionID: session.tmuxSessionName,
+		Source:    "cursor-cli-close",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		_ = runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", session.tmuxSessionName, "C-c")
+		return killCursorTmuxSession(ctx, session.tmuxSessionName)
+	})
 	if session.cleanupFiles != nil {
 		session.cleanupFiles()
 		session.cleanupFiles = nil
 	}
-	unregisterCursorInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 }
 
 func markCursorInteractiveSessionFailedLocked(session *cursorInteractiveSession, err error, logger interfaces.Logger) {
@@ -1194,11 +1197,13 @@ func registerCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	if ownerSessionID == "" || tmuxSessionName == "" {
 		return
 	}
+	tmuxinput.MarkStartingForOwner(tmuxSessionName, ownerSessionID)
 	cursorInteractiveRegistry.Set(ownerSessionID, tmuxSessionName)
 }
 
 func unregisterCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
 	cursorInteractiveRegistry.DeleteIf(ownerSessionID, tmuxSessionName)
+	tmuxinput.RemoveReadiness(tmuxSessionName)
 }
 
 func activeCursorInteractiveSession(ownerSessionID string) (string, bool) {
@@ -1387,9 +1392,18 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 const cursorTypedInputMaxLen = 240
 
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
+	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false)
+}
+
+func sendCursorInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
+	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, true)
+}
+
+func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "cursor-cli",
+		SessionID:       sessionName,
+		Source:          "cursor-cli",
+		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
 		return sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
 	})
@@ -1500,6 +1514,39 @@ func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string
 	}
 }
 
+// sendCursorControlIfVisible serializes runtime TUI control keys with normal
+// user input. The pane is re-read after the broker grants the transaction so a
+// delayed approval key can never land in the normal composer after its modal
+// has already disappeared.
+func sendCursorControlIfVisible(
+	ctx context.Context,
+	sessionName string,
+	source string,
+	promptVisible func(string) bool,
+	keys ...string,
+) (bool, error) {
+	handled := false
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    source,
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		captured, err := captureCursorPane(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+		if !promptVisible(captured) {
+			return nil
+		}
+		if err := runCursorCommand(ctx, nil, "tmux", append([]string{"send-keys", "-t", sessionName}, keys...)...); err != nil {
+			return err
+		}
+		handled = true
+		return nil
+	})
+	return handled, err
+}
+
 func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) bool {
 	if strings.TrimSpace(message) == "" {
 		return false
@@ -1594,7 +1641,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			// through the normal denied-tool path instead of hanging.
 			if hasCursorModeSwitchPrompt(captured) {
 				if lastModeSwitchRejectAt.IsZero() || time.Since(lastModeSwitchRejectAt) >= time.Second {
-					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "n"); err == nil {
+					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-mode-switch-reject", hasCursorModeSwitchPrompt, "n"); err == nil && handled {
 						lastModeSwitchRejectAt = time.Now()
 					}
 				}
@@ -1614,7 +1661,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			// like a ready prompt, so the loop could even report a bogus completion.
 			if hasCursorMCPToolApprovalPrompt(captured) {
 				if lastMCPToolApprovalAt.IsZero() || time.Since(lastMCPToolApprovalAt) >= time.Second {
-					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Tab"); err == nil {
+					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-mcp-approval", hasCursorMCPToolApprovalPrompt, "Tab"); err == nil && handled {
 						lastMCPToolApprovalAt = time.Now()
 					}
 				}
@@ -1625,7 +1672,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			}
 			if autoApproveWebSearch && hasCursorWebAccessApprovalPrompt(captured) {
 				if lastWebSearchApprovalAt.IsZero() || time.Since(lastWebSearchApprovalAt) >= 2*time.Second {
-					if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "y"); err == nil {
+					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-web-approval", hasCursorWebAccessApprovalPrompt, "y"); err == nil && handled {
 						lastWebSearchApprovalAt = time.Now()
 					}
 				}
@@ -1686,11 +1733,15 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 						readyWithoutContentSince = time.Now()
 					}
 					if cursorPaneShowsPromptDraft(captured, prompt) && submitRetryCount < 3 && time.Since(lastSubmitRetryAt) >= time.Second {
-						_ = runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
-						submitRetryCount++
-						lastSubmitRetryAt = time.Now()
-						idleSince = time.Time{}
-						continue
+						draftVisible := func(current string) bool {
+							return cursorPaneShowsPromptDraft(current, prompt)
+						}
+						if handled, _ := sendCursorControlIfVisible(ctx, sessionName, "cursor-submit-retry", draftVisible, "C-m"); handled {
+							submitRetryCount++
+							lastSubmitRetryAt = time.Now()
+							idleSince = time.Time{}
+							continue
+						}
 					}
 					if time.Since(readyWithoutContentSince) >= 15*time.Second {
 						return captured, fmt.Errorf("Cursor Agent CLI returned to the prompt without visible assistant output; latest pane:\n%s", captured)
@@ -2408,7 +2459,14 @@ func streamCursorTerminalSnapshot(ctx context.Context, sessionName string, strea
 func interruptCursorInteractiveSession(sessionName string, logger interfaces.Logger) {
 	interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := runCursorCommand(interruptCtx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil && logger != nil {
+	_, err := tmuxinput.Default.Do(interruptCtx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "cursor-cli-internal-interrupt",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		return runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape")
+	})
+	if err != nil && logger != nil {
 		logger.Debugf("Failed to send Escape to Cursor interactive session %s: %v", sessionName, err)
 	}
 }

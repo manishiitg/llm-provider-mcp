@@ -190,6 +190,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	}
 
 	if launchOnly {
+		tmuxinput.MarkReady(session.tmuxSessionName)
 		streamPiTerminalSnapshot(ctx, session.tmuxSessionName, opts.StreamChan)
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
@@ -207,12 +208,17 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	startOffset, _ := piMarkerFileSize(session.markerPath)
 	p.logInfof("Executing Pi CLI tmux session: %s", session.tmuxSessionName)
 	turnStart := time.Now().Add(-1 * time.Second)
-	if err := sendPiInputToTmux(ctx, session.tmuxSessionName, prompt); err != nil {
+	if err := sendPiInitialPromptToTmux(ctx, session.tmuxSessionName, prompt); err != nil {
+		releaseSession = false
+		session.mu.Unlock()
+		cleanupPiInteractiveSession(session)
+		session = nil
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
 		return nil, err
 	}
+	tmuxinput.MarkReady(session.tmuxSessionName)
 
 	content, err := waitForPiInteractiveResponse(ctx, session, startOffset, opts.StreamChan)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
@@ -478,6 +484,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, workingDir); err != nil {
 		return nil, err
 	}
+	tmuxinput.MarkStartingForOwner(sessionName, ownerSessionID)
 
 	cleanupOnError = false
 	return session, nil
@@ -1039,9 +1046,18 @@ func isTmuxUnknownExtendedKeysOption(err error) bool {
 }
 
 func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, message, false)
+}
+
+func sendPiInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, message, true)
+}
+
+func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "pi-cli",
+		SessionID:       sessionName,
+		Source:          "pi-cli",
+		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
 		return sendPiInputToTmuxUnserialized(ctx, sessionName, message)
 	})
@@ -1650,6 +1666,7 @@ func cleanupPiInteractiveSession(session *piInteractiveSession) {
 	if session.idleTimer != nil {
 		session.idleTimer.Stop()
 	}
+	tmuxinput.RemoveReadiness(session.tmuxSessionName)
 	_ = tmuxexec.RunCommand(context.Background(), nil, piRedactArgs, "tmux", "kill-session", "-t", session.tmuxSessionName)
 	if session.tempDir != "" {
 		_ = os.RemoveAll(session.tempDir)
@@ -1677,6 +1694,7 @@ func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
 
 	var errs []error
 	for _, session := range sessions {
+		tmuxinput.RemoveReadiness(session.tmuxSessionName)
 		if session.idleTimer != nil {
 			session.idleTimer.Stop()
 		}
@@ -1730,6 +1748,7 @@ func ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 		cleanupPiInteractiveSession(session)
 		return
 	}
+	tmuxinput.RemoveReadiness(tmuxSessionName)
 	_ = tmuxexec.RunCommand(context.Background(), nil, piRedactArgs, "tmux", "kill-session", "-t", tmuxSessionName)
 }
 
