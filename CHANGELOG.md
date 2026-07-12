@@ -12,6 +12,11 @@
 - Documented the Codex 0.145 rollout requirement for GPT-5.6 Sol, Terra, and
   Luna, including multiple-installation troubleshooting.
 
+### Fixed
+
+- Fixed macOS release installs being terminated at launch because Darwin
+  binaries produced on Linux had invalid ad-hoc code signatures.
+
 ### Breaking changes
 
 - Removed the deprecated Gemini CLI provider, adapter package, public options,

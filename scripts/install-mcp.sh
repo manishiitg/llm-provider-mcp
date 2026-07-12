@@ -220,11 +220,34 @@ install_existing_binary() {
     log "Installed local binary: $BINARY_PATH"
 }
 
+prepare_macos_binary() {
+    [ "$(uname -s)" = "Darwin" ] || return 0
+    command -v codesign >/dev/null 2>&1 || \
+        die "codesign is required to prepare the macOS binary"
+
+    signature_info=$(codesign -dv --verbose=2 "$BINARY_PATH" 2>&1 || true)
+    case "$signature_info" in
+        *"Signature=adhoc"*|*"code object is not signed at all"*|"")
+            codesign --force --sign - "$BINARY_PATH" >/dev/null 2>&1 || \
+                die "failed to create a local macOS code signature for $BINARY_PATH"
+            codesign --verify --strict "$BINARY_PATH" >/dev/null 2>&1 || \
+                die "macOS code-signature verification failed for $BINARY_PATH"
+            log "Prepared macOS code signature: $BINARY_PATH"
+            ;;
+        *)
+            codesign --verify --strict "$BINARY_PATH" >/dev/null 2>&1 || \
+                die "the installed macOS binary has an invalid code signature"
+            ;;
+    esac
+}
+
 if [ -n "$SOURCE_BINARY" ]; then
     install_existing_binary
 elif ! install_release; then
     install_with_go
 fi
+
+prepare_macos_binary
 
 set -- setup --binary "$BINARY_PATH"
 [ -z "$CLIENT" ] || set -- "$@" --client "$CLIENT"
