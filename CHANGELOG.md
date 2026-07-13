@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-07-13
+
+### Changed
+
+- Made the initial host checklist explicitly explain how to move, select one or
+  both hosts with Space, and confirm with Enter.
+
 ## 0.7.1 - 2026-07-13
 
 ### Fixed

@@ -57,6 +57,7 @@ func TestInteractiveSetupChoosesHostsThenTargetsWithoutWorkspacePrompt(t *testin
 	}
 	if !strings.Contains(out.String(), "Step 1 - Choose host CLIs") ||
 		!strings.Contains(out.String(), "Hosts are where you will ask one coding agent") ||
+		!strings.Contains(out.String(), "Select one or both hosts with commas, such as 1,2") ||
 		!strings.Contains(out.String(), "Step 2 - Choose delegation targets") ||
 		!strings.Contains(out.String(), "such as 1,3") ||
 		!strings.Contains(out.String(), "Step 3 - Confirm project installation") ||
