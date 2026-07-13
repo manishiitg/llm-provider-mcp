@@ -215,6 +215,11 @@ func (e *Environment) resolveHosts(client string, interactive bool) ([]string, e
 	fmt.Fprintln(e.out, e.heading("Step 1 - Choose host CLIs"))
 	fmt.Fprintln(e.out, "Hosts are where you will ask one coding agent to delegate work to another.")
 	fmt.Fprintln(e.out, e.muted("Codex and Claude Code are shown because they are the currently supported MCP hosts; selecting both installs the same tools in both."))
+	if e.terminalUI {
+		fmt.Fprintln(e.out, e.style("93", "Nothing is preselected. Use Up/Down to move, Space to select one or both hosts, and Enter to confirm."))
+	} else {
+		fmt.Fprintln(e.out, e.style("93", "Select one or both hosts with commas, such as 1,2."))
+	}
 	selected, err := e.chooseMany("Select host CLIs", choices)
 	if err != nil {
 		return nil, err
