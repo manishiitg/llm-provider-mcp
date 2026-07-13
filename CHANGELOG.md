@@ -2,10 +2,21 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-13
+
 ### Added
 
 - Added a real Claude Code to Codex CLI GPT-5.6 Sol delegation demo, sanitized
   transcript, GIF, and MP4.
+- Added a real Codex to Cursor Agent end-to-end verification graphic.
+
+### Changed
+
+- Serialized tmux prompt and interrupt delivery across coding-agent adapters,
+  added readiness tracking, and made persistent sessions faster and more
+  resilient.
+- Updated the compatibility library's default workflow builders to use Claude
+  Opus 4.8 and GPT-5.6 Sol with high reasoning.
 
 ### Documentation
 
