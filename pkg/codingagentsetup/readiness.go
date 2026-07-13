@@ -53,12 +53,12 @@ func (e *Environment) checkTargetReadiness(ctx context.Context, providers []stri
 		if item.Ready || !item.Installed || !interactive {
 			continue
 		}
-		answer, err := e.prompt(fmt.Sprintf("Open %s authentication now? [y/N]: ", item.DisplayName))
+		confirmed, err := e.confirm(fmt.Sprintf("Open %s authentication now?", item.DisplayName), false)
 		if err != nil {
 			e.warn("could not read %s authentication choice: %v", item.DisplayName, err)
 			continue
 		}
-		if !yes(answer) {
+		if !confirmed {
 			fmt.Fprintf(e.out, "Skipped %s authentication. Later, run %s.\n", item.DisplayName, item.LoginCommand)
 			continue
 		}
@@ -81,12 +81,12 @@ func (e *Environment) checkTargetReadiness(ctx context.Context, providers []stri
 	fmt.Fprintln(e.out, e.heading("Optional live verification"))
 	fmt.Fprintf(e.out, "%d selected targets are ready. A live test sends one small read-only prompt to each ready target.\n", readyCount(readiness))
 	fmt.Fprintln(e.out, e.muted("Live tests may consume provider credits and are never run without confirmation."))
-	answer, err := e.prompt("Run live connectivity tests now? [y/N]: ")
+	confirmed, err := e.confirm("Run live connectivity tests now?", false)
 	if err != nil {
 		e.warn("could not read live-test choice: %v", err)
 		return
 	}
-	if !yes(answer) {
+	if !confirmed {
 		fmt.Fprintln(e.out, "Skipped live tests. Authentication checks completed.")
 		return
 	}
@@ -334,4 +334,8 @@ func readyCount(readiness []ProviderReadiness) int {
 
 func yes(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), "y") || strings.EqualFold(strings.TrimSpace(value), "yes")
+}
+
+func no(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "n") || strings.EqualFold(strings.TrimSpace(value), "no")
 }
