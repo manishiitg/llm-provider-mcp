@@ -180,28 +180,28 @@ func TestCodingAgentDefaultTierModelsClaudeBuilderAndMaintenanceDefaults(t *test
 	}
 
 	for name, got := range map[string]CodingAgentTierModelRef{
-		"builder": defaults.Builder,
-		"pulse":   defaults.Pulse,
+		"builder":     defaults.Builder,
+		"maintenance": defaults.Maintenance,
 	} {
 		if got.Provider != string(ProviderClaudeCode) {
 			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderClaudeCode)
 		}
-		if got.ModelID != "claude-sonnet-5" {
-			t.Fatalf("%s model_id = %q, want claude-sonnet-5", name, got.ModelID)
+		if got.ModelID != "claude-opus-4-8" {
+			t.Fatalf("%s model_id = %q, want claude-opus-4-8", name, got.ModelID)
 		}
 		if got.Options["reasoning_effort"] != "high" {
 			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
 		}
 	}
 
-	if defaults.Maintenance.Provider != string(ProviderClaudeCode) {
-		t.Fatalf("maintenance provider = %q, want %q", defaults.Maintenance.Provider, ProviderClaudeCode)
+	if defaults.Pulse.Provider != string(ProviderClaudeCode) {
+		t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, ProviderClaudeCode)
 	}
-	if defaults.Maintenance.ModelID != "claude-opus-4-8" {
-		t.Fatalf("maintenance model_id = %q, want claude-opus-4-8", defaults.Maintenance.ModelID)
+	if defaults.Pulse.ModelID != "claude-sonnet-5" {
+		t.Fatalf("pulse model_id = %q, want claude-sonnet-5", defaults.Pulse.ModelID)
 	}
-	if defaults.Maintenance.Options["reasoning_effort"] != "high" {
-		t.Fatalf("maintenance reasoning_effort = %#v, want high", defaults.Maintenance.Options["reasoning_effort"])
+	if defaults.Pulse.Options["reasoning_effort"] != "high" {
+		t.Fatalf("pulse reasoning_effort = %#v, want high", defaults.Pulse.Options["reasoning_effort"])
 	}
 }
 
@@ -274,7 +274,7 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		model  string
 		effort string
 	}{
-		"builder":     {ref: defaults.Builder, model: "gpt-5.6-terra", effort: "high"},
+		"builder":     {ref: defaults.Builder, model: "gpt-5.6-sol", effort: "high"},
 		"high":        {ref: defaults.High, model: "gpt-5.6-sol", effort: "xhigh"},
 		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
