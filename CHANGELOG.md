@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-07-13
+
+### Fixed
+
+- Kept interactive confirmations inside the terminal UI so setup no longer
+  requires an extra Enter on terminals affected by the mixed input readers.
+
 ## 0.7.0 - 2026-07-13
 
 ### Added

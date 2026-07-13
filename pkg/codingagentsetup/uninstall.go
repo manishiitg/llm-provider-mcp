@@ -3,7 +3,6 @@ package codingagentsetup
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 type UninstallOptions struct {
@@ -65,11 +64,11 @@ func (e *Environment) Uninstall(ctx context.Context, options UninstallOptions) e
 
 	removeBinary := options.RemoveBinary
 	if options.Interactive && !removeBinary {
-		answer, promptErr := e.prompt("Also remove the llm-provider-mcp binary? [y/N]: ")
+		confirmed, promptErr := e.confirm("Also remove the llm-provider-mcp binary?", false)
 		if promptErr != nil {
 			return promptErr
 		}
-		removeBinary = strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
+		removeBinary = confirmed
 	}
 	if removeBinary {
 		binary, resolveErr := e.resolveBinary(options.Binary)

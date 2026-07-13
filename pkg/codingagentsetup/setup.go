@@ -436,6 +436,45 @@ func (e *Environment) chooseManyTerminal(title string, choices []selectionChoice
 	return selected, nil
 }
 
+func (e *Environment) confirm(title string, defaultValue bool) (bool, error) {
+	if !e.terminalUI {
+		options := "[y/N]"
+		if defaultValue {
+			options = "[Y/n]"
+		}
+		answer, err := e.prompt(fmt.Sprintf("%s %s: ", title, options))
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(answer) == "" {
+			return defaultValue, nil
+		}
+		if yes(answer) {
+			return true, nil
+		}
+		if no(answer) {
+			return false, nil
+		}
+		return false, fmt.Errorf("answer yes or no")
+	}
+
+	confirmed := defaultValue
+	field := huh.NewConfirm().
+		Title(title).
+		Affirmative("Yes").
+		Negative("No").
+		Value(&confirmed)
+	form := huh.NewForm(huh.NewGroup(field)).
+		WithInput(e.input).
+		WithOutput(e.out).
+		WithTheme(huh.ThemeFunc(huh.ThemeCharm)).
+		WithShowHelp(true)
+	if err := form.Run(); err != nil {
+		return false, fmt.Errorf("confirm %s: %w", strings.ToLower(title), err)
+	}
+	return confirmed, nil
+}
+
 func (e *Environment) confirmProjectInstallation(project string, hosts []string) error {
 	fmt.Fprintln(e.out)
 	fmt.Fprintln(e.out, e.heading("Step 3 - Confirm project installation"))
@@ -452,11 +491,11 @@ func (e *Environment) confirmProjectInstallation(project string, hosts []string)
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && filepath.Clean(home) == filepath.Clean(project) {
 		e.warn("the current directory is your home directory, not a specific project; cancel and run setup from the intended project if that was not deliberate")
 	}
-	answer, err := e.prompt("Install the host configuration and project-local delegation skill? [Y/n]: ")
+	confirmed, err := e.confirm("Install the host configuration and project-local delegation skill?", true)
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(answer, "n") || strings.EqualFold(answer, "no") {
+	if !confirmed {
 		return fmt.Errorf("project installation cancelled; change to the intended project directory and run setup again")
 	}
 	return nil

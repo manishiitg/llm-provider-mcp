@@ -124,6 +124,20 @@ func TestChecklistDoesNotImplicitlySelectInstalledOptions(t *testing.T) {
 	}
 }
 
+func TestTerminalConfirmationAcceptsDefaultWithOneEnter(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	var out bytes.Buffer
+	environment := NewEnvironment(strings.NewReader("\n"), &out, &out)
+	environment.terminalUI = true
+	confirmed, err := environment.confirm("Install project configuration?", true)
+	if err != nil {
+		t.Fatalf("confirm() error = %v; output = %q", err, out.String())
+	}
+	if !confirmed {
+		t.Fatalf("confirm() = false; output = %q", out.String())
+	}
+}
+
 func TestSingleHostProviderChoicesOmitMatchingTarget(t *testing.T) {
 	tests := []struct {
 		name           string
