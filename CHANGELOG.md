@@ -16,6 +16,8 @@
 
 - Fixed macOS release installs being terminated at launch because Darwin
   binaries produced on Linux had invalid ad-hoc code signatures.
+- Fixed interactive setup preselecting every installed host and target, and
+  prevented a host from being registered as its own delegation target.
 
 ### Breaking changes
 

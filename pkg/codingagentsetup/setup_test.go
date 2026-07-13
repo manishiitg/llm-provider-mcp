@@ -58,7 +58,7 @@ func TestInteractiveSetupChoosesHostsThenTargetsWithoutWorkspacePrompt(t *testin
 	if !strings.Contains(out.String(), "Step 1 - Choose host CLIs") ||
 		!strings.Contains(out.String(), "Hosts are where you will ask one coding agent") ||
 		!strings.Contains(out.String(), "Step 2 - Choose delegation targets") ||
-		!strings.Contains(out.String(), "Example: 1,3 enables Cursor Agent and Codex CLI") ||
+		!strings.Contains(out.String(), "such as 1,3") ||
 		!strings.Contains(out.String(), "Step 3 - Confirm project installation") ||
 		!strings.Contains(out.String(), "delegation skill is installed only in the current project") ||
 		!strings.Contains(out.String(), "Claude Code's MCP registration is also local") ||
@@ -105,6 +105,86 @@ func TestInteractiveSetupChoosesHostsThenTargetsWithoutWorkspacePrompt(t *testin
 		t.Fatalf("Codex add args = %q", got)
 	}
 	if got := strings.Join(runner.commands[5].args, " "); !strings.Contains(got, "mcp add --scope local") {
+		t.Fatalf("Claude add args = %q", got)
+	}
+}
+
+func TestChecklistDoesNotImplicitlySelectInstalledOptions(t *testing.T) {
+	var out bytes.Buffer
+	environment := NewEnvironment(strings.NewReader("1\n"), &out, &out)
+	selected, err := environment.chooseMany("Select host CLIs", []selectionChoice{
+		{ID: "codex", Label: "Codex CLI", Installed: true},
+		{ID: "claude", Label: "Claude Code", Installed: true},
+	})
+	if err != nil {
+		t.Fatalf("chooseMany() error = %v; output = %q", err, out.String())
+	}
+	if strings.Join(selected, ",") != "codex" {
+		t.Fatalf("chooseMany() selected = %v; installed options were implicitly selected", selected)
+	}
+}
+
+func TestSingleHostProviderChoicesOmitMatchingTarget(t *testing.T) {
+	tests := []struct {
+		name           string
+		host           string
+		selectedIndex  string
+		wantProvider   string
+		hiddenProvider string
+	}{
+		{name: "codex", host: "codex", selectedIndex: "3\n", wantProvider: "claude-code", hiddenProvider: "codex-cli"},
+		{name: "claude", host: "claude", selectedIndex: "3\n", wantProvider: "codex-cli", hiddenProvider: "claude-code"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			environment := NewEnvironment(strings.NewReader(test.selectedIndex), &out, &out)
+			environment.SetLookPath(installedLookPath("cursor-agent", "pi", "codex", "claude"))
+			providers, err := environment.resolveProviders(nil, []string{test.host}, true)
+			if err != nil {
+				t.Fatalf("resolveProviders() error = %v", err)
+			}
+			if strings.Join(providers, ",") != test.wantProvider {
+				t.Fatalf("resolveProviders() = %v, want %s", providers, test.wantProvider)
+			}
+			if strings.Contains(out.String(), test.hiddenProvider) {
+				t.Fatalf("provider choices contain selected host target %q: %s", test.hiddenProvider, out.String())
+			}
+		})
+	}
+}
+
+func TestExplicitSelfTargetNeedsAnotherProvider(t *testing.T) {
+	environment := NewEnvironment(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	_, err := environment.resolveProviders([]string{"codex-cli"}, []string{"codex"}, false)
+	if err == nil || !strings.Contains(err.Error(), "other than itself") {
+		t.Fatalf("resolveProviders() error = %v", err)
+	}
+}
+
+func TestDualHostRegistrationsExcludeEachHostsOwnTarget(t *testing.T) {
+	binary := testBinary(t)
+	project := t.TempDir()
+	var out bytes.Buffer
+	environment := NewEnvironment(strings.NewReader(""), &out, &out)
+	environment.SetLookPath(installedLookPath("codex", "claude", "tmux"))
+	runner := &recordingRunner{}
+	environment.SetRunner(runner)
+	environment.SetWorkingDirectory(func() (string, error) { return project, nil })
+
+	err := environment.Setup(context.Background(), SetupOptions{
+		Binary:        binary,
+		Client:        "both",
+		Providers:     []string{"codex-cli", "claude-code"},
+		SkipSmokeTest: true,
+	})
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	if got := strings.Join(runner.commands[1].args, " "); !strings.Contains(got, "LLM_PROVIDER_MCP_ALLOWED_PROVIDERS=claude-code") || strings.Contains(got, "codex-cli") {
+		t.Fatalf("Codex add args = %q", got)
+	}
+	if got := strings.Join(runner.commands[5].args, " "); !strings.Contains(got, "LLM_PROVIDER_MCP_ALLOWED_PROVIDERS=codex-cli") || strings.Contains(got, "claude-code") {
 		t.Fatalf("Claude add args = %q", got)
 	}
 }

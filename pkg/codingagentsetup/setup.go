@@ -32,7 +32,7 @@ func (e *Environment) Setup(ctx context.Context, options SetupOptions) error {
 	if err != nil {
 		return err
 	}
-	providers, err := e.resolveProviders(options.Providers, options.Interactive)
+	providers, err := e.resolveProviders(options.Providers, hosts, options.Interactive)
 	if err != nil {
 		return err
 	}
@@ -215,9 +215,12 @@ func (e *Environment) resolveHosts(client string, interactive bool) ([]string, e
 	fmt.Fprintln(e.out, e.heading("Step 1 - Choose host CLIs"))
 	fmt.Fprintln(e.out, "Hosts are where you will ask one coding agent to delegate work to another.")
 	fmt.Fprintln(e.out, e.muted("Codex and Claude Code are shown because they are the currently supported MCP hosts; selecting both installs the same tools in both."))
-	selected, err := e.chooseMany("Select host CLIs", choices, installedIDs(choices))
+	selected, err := e.chooseMany("Select host CLIs", choices)
 	if err != nil {
 		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("select at least one host CLI")
 	}
 	return e.requireHosts(selected)
 }
@@ -235,13 +238,20 @@ func (e *Environment) requireHosts(hosts []string) ([]string, error) {
 	return hosts, nil
 }
 
-func (e *Environment) resolveProviders(configured []string, interactive bool) ([]string, error) {
+func (e *Environment) resolveProviders(configured, hosts []string, interactive bool) ([]string, error) {
 	configured = splitList(configured)
 	if len(configured) > 0 {
-		return validateProviders(configured)
+		providers, err := validateProviders(configured)
+		if err != nil {
+			return nil, err
+		}
+		return providers, validateHostTargets(hosts, providers)
 	}
 	choices := make([]selectionChoice, 0, len(supportedAgents))
 	for _, agent := range supportedAgents {
+		if !targetAvailableToHosts(agent.Provider, hosts) {
+			continue
+		}
 		detail := "Receive delegated background coding jobs."
 		switch agent.Provider {
 		case "cursor-cli":
@@ -267,26 +277,67 @@ func (e *Environment) resolveProviders(configured []string, interactive bool) ([
 				defaults = append(defaults, choice.ID)
 			}
 		}
-		return validateProviders(defaults)
+		providers, err := validateProviders(defaults)
+		if err != nil {
+			return nil, err
+		}
+		return providers, validateHostTargets(hosts, providers)
 	}
 	fmt.Fprintln(e.out)
 	fmt.Fprintln(e.out, e.heading("Step 2 - Choose delegation targets"))
 	fmt.Fprintln(e.out, "Targets are the local CLIs that can receive asynchronous coding jobs from your selected hosts.")
 	fmt.Fprintln(e.out, e.muted("Installed targets can run immediately. Missing targets may be enabled later after their CLI is installed and authenticated."))
 	if e.terminalUI {
-		fmt.Fprintln(e.out, e.style("93", "Use Up/Down to move, Space to select multiple targets, and Enter to confirm."))
+		fmt.Fprintln(e.out, e.style("93", "Nothing is preselected. Use Up/Down to move, Space to select multiple targets, and Enter to confirm."))
 	} else {
-		fmt.Fprintln(e.out, e.style("93", "Select one or more targets with commas. Example: 1,3 enables Cursor Agent and Codex CLI."))
-		fmt.Fprintln(e.out, e.muted("Press Enter without typing anything to enable every installed target."))
+		fmt.Fprintln(e.out, e.style("93", "Select one or more targets with commas, such as 1,3."))
 	}
-	selected, err := e.chooseMany("Select delegation targets", choices, defaults)
+	selected, err := e.chooseMany("Select delegation targets", choices)
 	if err != nil {
 		return nil, err
 	}
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("select at least one delegation target")
 	}
-	return validateProviders(selected)
+	providers, err := validateProviders(selected)
+	if err != nil {
+		return nil, err
+	}
+	return providers, validateHostTargets(hosts, providers)
+}
+
+func targetAvailableToHosts(provider string, hosts []string) bool {
+	return len(hosts) != 1 || !providerMatchesHost(provider, hosts[0])
+}
+
+func providerMatchesHost(provider, host string) bool {
+	switch host {
+	case "codex":
+		return provider == "codex-cli"
+	case "claude":
+		return provider == "claude-code"
+	default:
+		return false
+	}
+}
+
+func providersForHost(providers []string, host string) []string {
+	filtered := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if !providerMatchesHost(provider, host) {
+			filtered = append(filtered, provider)
+		}
+	}
+	return filtered
+}
+
+func validateHostTargets(hosts, providers []string) error {
+	for _, host := range hosts {
+		if len(providersForHost(providers, host)) == 0 {
+			return fmt.Errorf("%s needs at least one delegation target other than itself", humanHostNames([]string{host}))
+		}
+	}
+	return nil
 }
 
 type selectionChoice struct {
@@ -296,9 +347,9 @@ type selectionChoice struct {
 	Installed bool
 }
 
-func (e *Environment) chooseMany(title string, choices []selectionChoice, defaults []string) ([]string, error) {
+func (e *Environment) chooseMany(title string, choices []selectionChoice) ([]string, error) {
 	if e.terminalUI {
-		return e.chooseManyTerminal(title, choices, defaults)
+		return e.chooseManyTerminal(title, choices)
 	}
 	if strings.TrimSpace(title) != "" {
 		fmt.Fprintln(e.out, e.heading(title+":"))
@@ -316,22 +367,12 @@ func (e *Environment) chooseMany(title string, choices []selectionChoice, defaul
 			fmt.Fprintf(e.out, "     %s\n", e.muted(choice.Detail))
 		}
 	}
-	defaultIndexes := make([]string, 0, len(defaults))
-	for i, choice := range choices {
-		if contains(defaults, choice.ID) {
-			defaultIndexes = append(defaultIndexes, strconv.Itoa(i+1))
-		}
-	}
-	defaultLabel := strings.Join(defaultIndexes, ",")
-	if defaultLabel == "" {
-		defaultLabel = "none"
-	}
-	answer, err := e.prompt(fmt.Sprintf("Choose comma-separated entries [%s] (Enter accepts default): ", defaultLabel))
+	answer, err := e.prompt("Choose comma-separated entries: ")
 	if err != nil {
 		return nil, err
 	}
 	if answer == "" {
-		return defaults, nil
+		return nil, nil
 	}
 	if strings.EqualFold(answer, "none") {
 		return nil, nil
@@ -359,8 +400,8 @@ func (e *Environment) chooseMany(title string, choices []selectionChoice, defaul
 	return selected, nil
 }
 
-func (e *Environment) chooseManyTerminal(title string, choices []selectionChoice, defaults []string) ([]string, error) {
-	selected := append([]string(nil), defaults...)
+func (e *Environment) chooseManyTerminal(title string, choices []selectionChoice) ([]string, error) {
+	selected := make([]string, 0, len(choices))
 	options := make([]huh.Option[string], 0, len(choices))
 	for _, choice := range choices {
 		status := "not installed"
@@ -368,15 +409,21 @@ func (e *Environment) chooseManyTerminal(title string, choices []selectionChoice
 			status = "installed"
 		}
 		label := fmt.Sprintf("%s (%s) - %s", choice.Label, choice.ID, status)
-		options = append(options, huh.NewOption(label, choice.ID).Selected(contains(defaults, choice.ID)))
+		options = append(options, huh.NewOption(label, choice.ID))
 	}
 	field := huh.NewMultiSelect[string]().
 		Title(title).
-		Description("Use Up/Down to move, Space to toggle, and Enter to confirm.").
+		Description("Nothing is preselected. Use Up/Down to move, Space to toggle, and Enter to confirm.").
 		Options(options...).
 		Filterable(false).
 		Width(88).
 		Height(len(choices) + 4).
+		Validate(func(values []string) error {
+			if len(values) == 0 {
+				return fmt.Errorf("select at least one option")
+			}
+			return nil
+		}).
 		Value(&selected)
 	form := huh.NewForm(huh.NewGroup(field)).
 		WithInput(e.input).
@@ -452,6 +499,7 @@ func delegationSkillHostLabel(host string) string {
 }
 
 func (e *Environment) registerCodex(ctx context.Context, binary string, providers, workspaces []string) error {
+	providers = providersForHost(providers, "codex")
 	_, _ = e.runner.Run(ctx, "codex", "mcp", "remove", ServerName)
 	args := []string{"mcp", "add"}
 	args = append(args, registrationEnvArgs("codex", providers, workspaces)...)
@@ -464,6 +512,7 @@ func (e *Environment) registerCodex(ctx context.Context, binary string, provider
 }
 
 func (e *Environment) registerClaude(ctx context.Context, binary string, providers, workspaces []string) error {
+	providers = providersForHost(providers, "claude")
 	for _, scope := range []string{"local", "user", "project"} {
 		_, _ = e.runner.Run(ctx, "claude", "mcp", "remove", "--scope", scope, ServerName)
 	}
