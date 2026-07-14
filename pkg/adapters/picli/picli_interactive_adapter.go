@@ -27,6 +27,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
 
 const (
@@ -166,7 +167,10 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	// Publish the live tmux handle as soon as it exists. The host app can attach
 	// to the pane while Pi finishes startup instead of waiting for the first
 	// terminal/status snapshot after prompt submission.
-	streamPiStatusLine(ctx, session, opts.StreamChan)
+	tmuxstartup.Publish(ctx, opts.StreamChan, "pi-cli", session.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
+		"pi_interactive_session": session.tmuxSessionName,
+		"pi_session_id":          session.nativeSessionID,
+	})
 	releaseSession := true
 	defer func() {
 		if !releaseSession || session == nil {

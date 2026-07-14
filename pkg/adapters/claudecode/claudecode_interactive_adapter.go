@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
 
 const (
@@ -305,6 +306,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 			defer unregisterClaudeInteractiveOwner(interactiveSessionID, sessionName)
 		}
 	}
+	tmuxstartup.Publish(callCtx, opts.StreamChan, "claude-code", c.modelID, sessionName, workingDir, map[string]interface{}{
+		"claude_code_interactive_session": sessionName,
+	})
 
 	if createdSession {
 		if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan); err != nil {

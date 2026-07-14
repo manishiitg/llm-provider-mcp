@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
 
 const (
@@ -148,6 +149,9 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, err
 	}
 	tmuxSessionName = session.tmuxSessionName
+	tmuxstartup.Publish(callCtx, opts.StreamChan, "codex-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
+		"codex_interactive_session": session.tmuxSessionName,
+	})
 	inspector.EmitEvent("tmux_session_ready", map[string]interface{}{
 		"tmux_session_name": session.tmuxSessionName,
 		"elapsed_ms":        time.Since(acquireStart).Milliseconds(),

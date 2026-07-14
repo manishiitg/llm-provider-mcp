@@ -29,6 +29,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
 
 const (
@@ -179,6 +180,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, err
 	}
 	tmuxSessionName = session.tmuxSessionName
+	tmuxstartup.Publish(callCtx, opts.StreamChan, "cursor-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
+		"cursor_interactive_session": session.tmuxSessionName,
+	})
 	releaseSession := true
 	defer func() {
 		if !releaseSession || session == nil {
