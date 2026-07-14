@@ -1601,6 +1601,7 @@ func startAgyTmuxSession(ctx context.Context, sessionName string, args []string,
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
+	tmuxArgs = tmuxlaunch.WithHistoryLimit(tmuxArgs, tmuxexec.DefaultHistoryLimit)
 	if err := runAgyCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
 		cleanupLaunchScript()
 		return fmt.Errorf("failed to start Agy interactive session %q: %w", sessionName, err)

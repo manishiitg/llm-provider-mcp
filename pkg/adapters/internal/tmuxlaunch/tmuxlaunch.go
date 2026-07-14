@@ -73,6 +73,19 @@ func Retention(fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// WithHistoryLimit configures tmux's global default immediately before the
+// new-session command in the same tmux invocation. tmux copies history-limit
+// into a pane when that pane is created; setting the session option after
+// new-session is too late for the session's first pane.
+func WithHistoryLimit(newSessionArgs []string, historyLimit string) []string {
+	historyLimit = strings.TrimSpace(historyLimit)
+	if historyLimit == "" {
+		return append([]string(nil), newSessionArgs...)
+	}
+	args := []string{"set-option", "-g", "history-limit", historyLimit, ";"}
+	return append(args, newSessionArgs...)
+}
+
 func durationFromEnv(key string) (time.Duration, bool) {
 	key = strings.TrimSpace(key)
 	if key == "" {

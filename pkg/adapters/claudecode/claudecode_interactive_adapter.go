@@ -872,6 +872,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
+	tmuxArgs = tmuxlaunch.WithHistoryLimit(tmuxArgs, defaultTmuxHistoryLimit)
 	if err := runCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
 		return fmt.Errorf("failed to start Claude Code tmux session %q: %w", sessionName, err)
 	}

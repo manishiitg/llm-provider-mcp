@@ -14,6 +14,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 )
 
 type mockLogger struct{}
@@ -455,6 +456,7 @@ func TestPiTmuxLaunchEnablesExtendedKeysBeforeNewSession(t *testing.T) {
 
 	got := piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs)
 	wantPrefix := []string{
+		"set-option", "-g", "history-limit", tmuxexec.DefaultHistoryLimit, ";",
 		"set-option", "-g", "extended-keys", "on", ";",
 		"set-option", "-g", "extended-keys-format", "csi-u", ";",
 		"new-session", "-d", "-s", "mlp-pi-test",

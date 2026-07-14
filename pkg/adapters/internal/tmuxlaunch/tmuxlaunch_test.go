@@ -2,6 +2,7 @@ package tmuxlaunch
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -90,5 +91,20 @@ func TestPromptWaitIgnoresInvalidProviderOverride(t *testing.T) {
 
 	if got := PromptWait("TEST_PROVIDER_PROMPT_WAIT_SECONDS"); got != 3*time.Second {
 		t.Fatalf("PromptWait invalid provider override = %v, want global 3s", got)
+	}
+}
+
+func TestWithHistoryLimitRunsBeforeNewSession(t *testing.T) {
+	newSession := []string{"new-session", "-d", "-s", "test-session", "agent"}
+	got := WithHistoryLimit(newSession, "20000")
+	want := []string{
+		"set-option", "-g", "history-limit", "20000", ";",
+		"new-session", "-d", "-s", "test-session", "agent",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("WithHistoryLimit() = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(newSession, []string{"new-session", "-d", "-s", "test-session", "agent"}) {
+		t.Fatalf("WithHistoryLimit mutated input: %#v", newSession)
 	}
 }

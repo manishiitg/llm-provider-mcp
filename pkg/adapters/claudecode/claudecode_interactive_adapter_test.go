@@ -118,6 +118,10 @@ exit 0
 	if !strings.Contains(string(args), want) {
 		t.Fatalf("tmux args missing history limit %q:\n%s", want, string(args))
 	}
+	wantBeforeCreate := "set-option -g history-limit " + defaultTmuxHistoryLimit + " ; new-session"
+	if !strings.Contains(string(args), wantBeforeCreate) {
+		t.Fatalf("tmux args did not set history limit before pane creation %q:\n%s", wantBeforeCreate, string(args))
+	}
 }
 
 func TestClaudeSubmitPromptKeysMoveToEndBeforeEnter(t *testing.T) {

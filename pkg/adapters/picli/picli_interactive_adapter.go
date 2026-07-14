@@ -1003,7 +1003,8 @@ func startPiTmuxSession(ctx context.Context, sessionName string, args []string, 
 			cleanupLaunchScript()
 			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
 		}
-		if err := runPiCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		fallbackArgs := tmuxlaunch.WithHistoryLimit(tmuxArgs, tmuxexec.DefaultHistoryLimit)
+		if err := runPiCommand(ctx, nil, "tmux", fallbackArgs...); err != nil {
 			cleanupLaunchScript()
 			return fmt.Errorf("failed to start Pi interactive session %q: %w", sessionName, err)
 		}
@@ -1034,7 +1035,7 @@ func piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs []string) []string {
 		"set-option", "-g", "extended-keys", "on", ";",
 		"set-option", "-g", "extended-keys-format", "csi-u", ";",
 	}
-	return append(startArgs, newSessionArgs...)
+	return tmuxlaunch.WithHistoryLimit(append(startArgs, newSessionArgs...), tmuxexec.DefaultHistoryLimit)
 }
 
 func isTmuxUnknownExtendedKeysOption(err error) bool {
