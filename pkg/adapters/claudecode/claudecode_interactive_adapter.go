@@ -42,12 +42,11 @@ const (
 	minTmuxMajorVersion          = 3
 	claudeIdleStableWindow       = 1200 * time.Millisecond
 	claudeTailFallbackMaxLines   = 120
-	// defaultClaudeInteractiveStalePaneBackstop is a detection-independent
-	// backstop for the assistant-response wait loop: if the pane has produced
-	// activity and then frozen (byte-identical) for this long, the turn is over
-	// but ready-prompt detection failed to recognize it. Generous so it never
-	// trips a real turn. Set the env var to 0 to disable.
-	defaultClaudeInteractiveStalePaneBackstop = 120 * time.Second
+	// A byte-stable pane is not proof that Claude finished: long reasoning and
+	// MCP calls can legitimately leave the TUI unchanged for several minutes.
+	// Keep the legacy backstop opt-in via the environment, but never infer
+	// completion from pane inactivity by default.
+	defaultClaudeInteractiveStalePaneBackstop = 0
 	promptPasteVisibleStableWindow            = 900 * time.Millisecond
 	promptPasteInvisibleGrace                 = 1500 * time.Millisecond
 	// Compaction handling. While Claude Code is compacting/summarizing the
@@ -2331,15 +2330,9 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
 			}
-			// Stale-pane backstop. Independent of hasReadyEmptyInputPrompt and
-			// every branch below: if the pane has produced activity and then
-			// frozen (byte-identical) for longer than the backstop, the turn is
-			// over but completion detection failed to recognize it (e.g. a
-			// leftover spinner frame or status line holding the pane "not
-			// ready"). Extract whatever response is present and return it rather
-			// than spin forever (the call context has no turn deadline by
-			// default). sawActivity guards the no-input case where the pane never
-			// changed from baseline.
+			// Legacy opt-in stale-pane backstop. This is disabled by default
+			// because an unchanged pane is not a delivery acknowledgement. When
+			// explicitly enabled it remains an operator-selected recovery policy.
 			if captured != backstopPrevCapture {
 				backstopPrevCapture = captured
 				paneUnchangedSince = time.Now()

@@ -48,12 +48,10 @@ const (
 	// response loop spins forever because every completion branch is gated
 	// behind sawActivity and the call context has no deadline by default.
 	defaultCursorInteractiveFirstActivityTimeout = 90 * time.Second
-	// Detection-independent backstop: if the pane produced activity and then
-	// froze (byte-identical) for longer than this after the turn finished, the
-	// turn is over but completion detection (hasCursorReadyPrompt) failed to
-	// recognize it. Rather than spin forever, extract whatever response is
-	// present and return it (or fail cleanly if there is none).
-	defaultCursorInteractiveStalePaneBackstop = 120 * time.Second
+	// A byte-stable pane is not proof that Cursor finished: long reasoning and
+	// tool calls can legitimately leave the TUI unchanged. Keep this recovery
+	// policy opt-in instead of returning a partial response after a fixed delay.
+	defaultCursorInteractiveStalePaneBackstop = 0
 
 	EnvCursorInteractiveSessionPrefix               = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCursorInteractiveTimeoutSeconds              = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"

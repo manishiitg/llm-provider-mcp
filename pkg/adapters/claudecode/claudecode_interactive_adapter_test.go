@@ -1079,6 +1079,18 @@ func TestTmuxPromptWaitEnv(t *testing.T) {
 	}
 }
 
+func TestClaudeInteractiveStalePaneBackstopIsOptIn(t *testing.T) {
+	t.Setenv(EnvClaudeInteractiveStalePaneBackstopSeconds, "")
+	if got := claudeInteractiveStalePaneBackstop(); got != 0 {
+		t.Fatalf("default stale-pane backstop = %v, want disabled", got)
+	}
+
+	t.Setenv(EnvClaudeInteractiveStalePaneBackstopSeconds, "180")
+	if got := claudeInteractiveStalePaneBackstop(); got != 3*time.Minute {
+		t.Fatalf("configured stale-pane backstop = %v, want 3m", got)
+	}
+}
+
 func TestClaudeCallContextIgnoresParentDeadline(t *testing.T) {
 	parent, cancelParent := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancelParent()
