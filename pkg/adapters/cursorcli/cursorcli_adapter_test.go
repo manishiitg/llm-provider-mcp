@@ -1684,6 +1684,18 @@ func cursorArgsContain(args []string, value string) bool {
 	return false
 }
 
+func TestCursorInteractiveStalePaneBackstopIsOptIn(t *testing.T) {
+	t.Setenv(EnvCursorInteractiveStalePaneBackstopSeconds, "")
+	if got := cursorInteractiveStalePaneBackstop(); got != 0 {
+		t.Fatalf("default stale-pane backstop = %v, want disabled", got)
+	}
+
+	t.Setenv(EnvCursorInteractiveStalePaneBackstopSeconds, "180")
+	if got := cursorInteractiveStalePaneBackstop(); got != 3*time.Minute {
+		t.Fatalf("configured stale-pane backstop = %v, want 3m", got)
+	}
+}
+
 func cursorArgsContainPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {

@@ -42,13 +42,10 @@ const (
 	codexPromptCandidateStableWindow   = 2 * time.Second
 	codexActivityScanNonEmptyLines     = 160
 
-	// defaultCodexInteractiveStalePaneBackstop is a detection-independent backstop
-	// for the response-wait loop: codexcli has no turn timeout, so if prompt
-	// detection (hasCodexReadyPrompt) never recognizes completion AND the tmux
-	// pane is byte-frozen after the turn produced activity, the loop would spin
-	// forever. This bounds that case. Only ever consulted once sawActivity is set,
-	// so it never trips a never-delivered prompt (that is the no-input case).
-	defaultCodexInteractiveStalePaneBackstop = 120 * time.Second
+	// A byte-stable pane is not proof that Codex finished: long reasoning and MCP
+	// calls can legitimately leave the TUI unchanged. Keep this recovery policy
+	// opt-in instead of returning a partial response after an arbitrary delay.
+	defaultCodexInteractiveStalePaneBackstop = 0
 
 	EnvCodexInteractiveSessionPrefix            = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -167,9 +164,17 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 	}()
 
+	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	if created {
 		c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s; waiting for startup prompt", ownerSessionID, session.tmuxSessionName)
-		if err := waitForCodexPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+		waitForStartup := waitForCodexPrompt
+		if !launchOnly {
+			// Codex exposes its composer before MCP startup has gone quiet. The
+			// composer already accepts input at that point, so do not hold the
+			// first user message behind the slower full-idle readiness check.
+			waitForStartup = waitForCodexInputPrompt
+		}
+		if err := waitForStartup(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
 			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 			releaseSession = false
 			failedSession := session
@@ -183,7 +188,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		c.logger.Debugf("codex interactive reused initialized session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	}
 
-	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+	if launchOnly {
 		tmuxinput.MarkReady(session.tmuxSessionName)
 		var lastSnapshot string
 		streamCodexTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
@@ -1218,6 +1223,14 @@ func codexInteractiveShellCommand(args []string, workingDir string) string {
 }
 
 func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	return waitForCodexPromptMode(ctx, sessionName, streamChan, false)
+}
+
+func waitForCodexInputPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+	return waitForCodexPromptMode(ctx, sessionName, streamChan, true)
+}
+
+func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, acceptActiveComposer bool) error {
 	promptWait := codexInteractivePromptWait()
 	maxWait := codexInteractivePromptMaxWait()
 	maxTimer := time.NewTimer(maxWait)
@@ -1297,6 +1310,9 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 					lastActivityAt = time.Now()
 				}
 				continue
+			}
+			if acceptActiveComposer && hasCodexPromptCandidate(captured) {
+				return nil
 			}
 			if hasCodexReadyPrompt(captured) {
 				return nil

@@ -306,6 +306,45 @@ exit 0
 	}
 }
 
+func TestWaitForCodexInputPromptAcceptsComposerDuringMCPStartup(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' \
+    'OpenAI Codex' \
+    '• Booting MCP server: api-bridge' \
+    '• Working (1s • esc to interrupt)' \
+    '› Find and fix a bug in @filename' \
+    '  gpt-5.6-sol xhigh · /tmp/workspace'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvCodexInteractivePromptWaitSeconds, "1")
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "5")
+
+	pane := "OpenAI Codex\n• Booting MCP server: api-bridge\n• Working (1s • esc to interrupt)\n› Find and fix a bug in @filename\n  gpt-5.6-sol xhigh · /tmp/workspace\n"
+	if !hasCodexPromptCandidate(pane) {
+		t.Fatal("startup composer should be an input prompt candidate")
+	}
+	if hasCodexReadyPrompt(pane) {
+		t.Fatal("full-idle readiness should remain false during MCP startup")
+	}
+
+	started := time.Now()
+	if err := waitForCodexInputPrompt(context.Background(), "mcp-startup-session", nil); err != nil {
+		t.Fatalf("input composer was not accepted during MCP startup: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("input composer acceptance was unnecessarily delayed: %v", elapsed)
+	}
+}
+
 func TestWaitForCodexPromptAcceptsStableComposerWithHistoricalActivity(t *testing.T) {
 	fakeBin := t.TempDir()
 	tmuxPath := fakeBin + "/tmux"
@@ -1586,5 +1625,17 @@ func assertCodexNoInternalStatus(t *testing.T, streamed string) {
 		if strings.Contains(streamed, noisy) {
 			t.Fatalf("streamed content = %q, should not contain TUI noise %q", streamed, noisy)
 		}
+	}
+}
+
+func TestCodexInteractiveStalePaneBackstopIsOptIn(t *testing.T) {
+	t.Setenv(EnvCodexInteractiveStalePaneBackstopSeconds, "")
+	if got := codexInteractiveStalePaneBackstop(); got != 0 {
+		t.Fatalf("default stale-pane backstop = %v, want disabled", got)
+	}
+
+	t.Setenv(EnvCodexInteractiveStalePaneBackstopSeconds, "180")
+	if got := codexInteractiveStalePaneBackstop(); got != 3*time.Minute {
+		t.Fatalf("configured stale-pane backstop = %v, want 3m", got)
 	}
 }
