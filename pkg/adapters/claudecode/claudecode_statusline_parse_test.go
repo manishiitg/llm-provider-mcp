@@ -146,3 +146,32 @@ func TestParseClaudeStatusLineJSON_ContextAndEffortExtras(t *testing.T) {
 		}
 	}
 }
+
+func TestParseClaudeStatusLineJSON_NativeContextUsage(t *testing.T) {
+	raw := []byte(`{
+		"context_window": {
+			"total_input_tokens": 73002,
+			"total_output_tokens": 843,
+			"current_usage": {
+				"input_tokens": 2,
+				"output_tokens": 843,
+				"cache_creation_input_tokens": 2430,
+				"cache_read_input_tokens": 70570
+			},
+			"used_percentage": 7
+		}
+	}`)
+	status, err := parseClaudeStatusLineJSON(raw, "")
+	if err != nil {
+		t.Fatalf("parseClaudeStatusLineJSON: %v", err)
+	}
+	if status.TotalInputTokens != 73002 || status.TotalOutputTokens != 843 {
+		t.Fatalf("total tokens = %d/%d, want 73002/843", status.TotalInputTokens, status.TotalOutputTokens)
+	}
+	if status.InputTokens != 2 || status.OutputTokens != 843 {
+		t.Fatalf("current tokens = %d/%d, want 2/843", status.InputTokens, status.OutputTokens)
+	}
+	if status.CacheCreationInputTokens != 2430 || status.CacheReadInputTokens != 70570 {
+		t.Fatalf("cache tokens = %d/%d, want 2430/70570", status.CacheCreationInputTokens, status.CacheReadInputTokens)
+	}
+}

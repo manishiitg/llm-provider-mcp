@@ -3772,6 +3772,30 @@ func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.Statu
 				status.Model = m
 			}
 		}
+		// Native Claude Code statusLine payloads keep usage under
+		// context_window rather than the legacy top-level token fields.
+		if contextWindow, ok := rawMap["context_window"].(map[string]interface{}); ok {
+			if n := claudeIntFromAny(contextWindow["total_input_tokens"]); n > 0 {
+				status.TotalInputTokens = n
+			}
+			if n := claudeIntFromAny(contextWindow["total_output_tokens"]); n > 0 {
+				status.TotalOutputTokens = n
+			}
+			if current, ok := contextWindow["current_usage"].(map[string]interface{}); ok {
+				if n := claudeIntFromAny(current["input_tokens"]); n > 0 {
+					status.InputTokens = n
+				}
+				if n := claudeIntFromAny(current["output_tokens"]); n > 0 {
+					status.OutputTokens = n
+				}
+				if n := claudeIntFromAny(current["cache_creation_input_tokens"]); n > 0 {
+					status.CacheCreationInputTokens = n
+				}
+				if n := claudeIntFromAny(current["cache_read_input_tokens"]); n > 0 {
+					status.CacheReadInputTokens = n
+				}
+			}
+		}
 		switch cost := rawMap["cost"].(type) {
 		case map[string]interface{}:
 			if c := claudeFloatFromAny(cost["total_cost_usd"]); c > 0 {
@@ -3813,6 +3837,10 @@ func claudeFloatFromAny(v interface{}) float64 {
 		return f
 	}
 	return 0
+}
+
+func claudeIntFromAny(v interface{}) int {
+	return int(claudeFloatFromAny(v))
 }
 
 // claudeStatusExtras turns Claude Code's native statusLine fields into
