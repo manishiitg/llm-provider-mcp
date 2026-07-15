@@ -290,6 +290,10 @@ type ProviderAPIKeys struct {
 	Deepgram          *string
 	ZAI               *string
 	Kimi              *string
+	// ClaudeCodeOAuthToken is an optional workflow-scoped Claude Code OAuth
+	// token. It is passed only to the initialized Claude Code tmux adapter and
+	// never installed in the process-wide environment.
+	ClaudeCodeOAuthToken *string
 	// PiProviderKeys stores Pi sub-provider API keys keyed by Pi provider id
 	// (for example "google", "zai", "zai-coding-cn", "deepseek").
 	PiProviderKeys map[string]string

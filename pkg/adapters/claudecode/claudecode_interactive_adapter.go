@@ -159,8 +159,15 @@ func newClaudeCallContext(parent context.Context, timeout time.Duration) (contex
 // ClaudeCodeInteractiveAdapter runs Claude Code through its interactive tmux transport.
 // It intentionally does not invoke `claude -p`.
 type ClaudeCodeInteractiveAdapter struct {
-	modelID string
-	logger  interfaces.Logger
+	modelID    string
+	logger     interfaces.Logger
+	oauthToken string
+}
+
+// SetOAuthToken configures a token for this adapter instance only. It must be
+// called before GenerateContent; retained sessions inherit the token at launch.
+func (c *ClaudeCodeInteractiveAdapter) SetOAuthToken(token string) {
+	c.oauthToken = strings.TrimSpace(token)
 }
 
 func NewClaudeCodeInteractiveAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
@@ -868,7 +875,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	}
 	shellCommand := claudeInteractiveShellCommand(args, workingDir)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
-	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
+	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs(c.oauthToken)...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	tmuxArgs = tmuxlaunch.WithHistoryLimit(tmuxArgs, defaultTmuxHistoryLimit)
@@ -964,8 +971,8 @@ func preTrustClaudeWorkingDir(workingDir string) {
 	_ = os.WriteFile(configPath, out, 0o600)
 }
 
-func claudePromptSuggestionEnvArgs() []string {
-	return []string{
+func claudePromptSuggestionEnvArgs(oauthToken ...string) []string {
+	args := []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
 		"-e", EnvClaudeMCPToolIdleTimeout + "=5400000",
 		// The tmux adapter relies on the user's Claude Code login. Inherited
@@ -974,6 +981,10 @@ func claudePromptSuggestionEnvArgs() []string {
 		"-e", "ANTHROPIC_API_KEY=",
 		"-e", "ANTHROPIC_BASE_URL=",
 	}
+	if len(oauthToken) > 0 && strings.TrimSpace(oauthToken[0]) != "" {
+		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+strings.TrimSpace(oauthToken[0]))
+	}
+	return args
 }
 
 func claudeInteractiveShellCommand(args []string, workingDir string) string {
