@@ -69,10 +69,10 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 			wantProviderSet: true,
 		},
 		{
-			name:            "codex uses gpt 5.6 sol xhigh",
+			name:            "codex uses gpt 5.6 sol high",
 			provider:        ProviderCodexCLI,
 			wantModelID:     "gpt-5.6-sol",
-			wantReasoning:   "xhigh",
+			wantReasoning:   "high",
 			wantProviderSet: true,
 		},
 		{
@@ -234,10 +234,10 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:          "codex uses chief sol xhigh",
+			name:          "codex uses chief sol high",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-sol",
-			wantReasoning: "xhigh",
+			wantReasoning: "high",
 		},
 		{
 			name:           "cursor follows grok 4.5 high",
@@ -292,9 +292,9 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		"high":        {ref: defaults.High, model: "gpt-5.6-terra", effort: "xhigh"},
 		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
-		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "xhigh"},
+		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "high"},
 		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "xhigh"},
-		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "xhigh"},
+		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "high"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
 			t.Fatalf("%s = %+v, want model %s effort %s", name, check.ref, check.model, check.effort)
