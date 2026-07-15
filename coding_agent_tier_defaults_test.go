@@ -26,9 +26,9 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 			wantReasoning: "xhigh",
 		},
 		{
-			name:          "claude code uses opus high",
+			name:          "claude code uses sonnet 5 high",
 			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-opus-4-8",
+			wantModelID:   "claude-sonnet-5",
 			wantReasoning: "high",
 		},
 	}
@@ -62,9 +62,9 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 		wantProviderSet bool
 	}{
 		{
-			name:            "claude code follows high",
+			name:            "claude code uses opus for maintenance",
 			provider:        ProviderClaudeCode,
-			wantSameAsHigh:  true,
+			wantModelID:     "claude-opus-4-8",
 			wantReasoning:   "high",
 			wantProviderSet: true,
 		},
@@ -112,6 +112,20 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 				t.Fatalf("maintenance reasoning_effort = %#v, want %q", got, tt.wantReasoning)
 			}
 		})
+	}
+}
+
+func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
+	defaults, ok := GetCodingAgentDefaultTierModels(ProviderClaudeCode)
+	if !ok {
+		t.Fatal("GetCodingAgentDefaultTierModels(claude-code) ok = false")
+	}
+
+	if defaults.High.ModelID != "claude-sonnet-5" || defaults.High.Options["reasoning_effort"] != "high" {
+		t.Fatalf("high = %+v, want claude-sonnet-5/high", defaults.High)
+	}
+	if defaults.Medium.ModelID != "claude-sonnet-5" || defaults.Medium.Options["reasoning_effort"] != "medium" {
+		t.Fatalf("medium = %+v, want claude-sonnet-5/medium", defaults.Medium)
 	}
 }
 
@@ -214,10 +228,10 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:           "claude code uses opus high",
-			provider:       ProviderClaudeCode,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
+			name:          "claude code uses opus for chief of staff",
+			provider:      ProviderClaudeCode,
+			wantModelID:   "claude-opus-4-8",
+			wantReasoning: "high",
 		},
 		{
 			name:          "codex uses chief sol xhigh",
