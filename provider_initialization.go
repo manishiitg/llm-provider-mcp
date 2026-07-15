@@ -1042,8 +1042,9 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 
 	logger.Infof("Initializing Claude Code %s adapter - model_id: %s", transport, modelID)
 
-	// claude-code provider always uses the claude CLI's OAuth session (via `claude login`).
-	// We intentionally ignore any Anthropic API key from config or env: forwarding one would
+	// Claude Code normally uses the CLI's saved OAuth session (via `claude login`).
+	// A caller may instead provide an isolated workflow OAuth token. We intentionally
+	// ignore any Anthropic API key from config or env: forwarding one would
 	// make the CLI prefer that key over its OAuth credentials, silently switching billing to
 	// a key that often has low/no credits. Users who want API-key billing should select the
 	// `anthropic` provider instead, which is a separate direct-API adapter.
@@ -1051,6 +1052,9 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 
 	// Create Claude Code tmux adapter.
 	llm := claudecodeadapter.NewClaudeCodeInteractiveAdapter(modelID, logger)
+	if config.APIKeys != nil && config.APIKeys.ClaudeCodeOAuthToken != nil {
+		llm.SetOAuthToken(*config.APIKeys.ClaudeCodeOAuthToken)
+	}
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{

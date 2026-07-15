@@ -92,6 +92,24 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	}
 }
 
+func TestClaudeStartSessionUsesScopedOAuthToken(t *testing.T) {
+	const token = "workflow-oauth-token"
+	got := claudePromptSuggestionEnvArgs(token)
+	found := false
+	for _, arg := range got {
+		found = found || arg == "CLAUDE_CODE_OAUTH_TOKEN="+token
+	}
+	if !found {
+		t.Fatalf("Claude OAuth token missing from tmux environment: %v", got)
+	}
+	withoutToken := claudePromptSuggestionEnvArgs()
+	for _, arg := range withoutToken {
+		if strings.HasPrefix(arg, "CLAUDE_CODE_OAUTH_TOKEN=") {
+			t.Fatalf("default Claude session unexpectedly received OAuth token: %v", withoutToken)
+		}
+	}
+}
+
 func TestClaudeStartSessionSetsHistoryLimit(t *testing.T) {
 	fakeBin := t.TempDir()
 	argsPath := fakeBin + "/tmux-args.log"
