@@ -663,6 +663,68 @@ Composer 2 Fast
 	}
 }
 
+func TestCursorPaneShowsHardWrappedSingleLinePromptDraft(t *testing.T) {
+	prompt := "we have a task in which I think we are doing some investment analysis. Can you also check what is the portfolio for actively managed mutual funds, not index funds or arbitrage funds, and keep track of how it changes over time so that we know the portfolio today, the portfolio after the next disclosure, and every change made by the fund manager"
+	wrapped := hardWrapCursorDraftForTest(prompt, 74)
+	captured := "Cursor Agent\nv2026.07.09-a3815c0\n\n→ " + wrapped + "\n\nCursor Grok 4.5 High High · ctx 0%\n"
+
+	probe := string([]rune(strings.ToLower(prompt))[:120])
+	if strings.Contains(strings.ToLower(captured), probe) {
+		t.Fatalf("test fixture did not hard-wrap the production probe")
+	}
+	if !cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatalf("expected hard-wrapped single-line prompt to be detected; pane:\n%s", captured)
+	}
+}
+
+func TestCursorPaneShowsScrolledTailOfLongPromptDraft(t *testing.T) {
+	prompt := strings.Repeat("long cursor composer input keeps scrolling while preserving the complete logical message ", 12)
+	normalized := normalizeCursorDraftProbe(prompt)
+	tail := string([]rune(normalized)[len([]rune(normalized))-240:])
+	captured := "Cursor Agent\n→ " + hardWrapCursorDraftForTest(tail, 74) + "\n\nCursor Grok 4.5 High High · ctx 0%\n"
+
+	if !cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatalf("expected visible tail of a scrolled long prompt to be detected; pane:\n%s", captured)
+	}
+}
+
+func TestCursorPaneShowsOpaquePastedPromptDraft(t *testing.T) {
+	prompt := strings.Repeat("large pasted Cursor input ", 40)
+	captured := "Cursor Agent\n→ [Pasted text #1 +1 lines]\n\nCursor Grok 4.5 High High · ctx 0%\n"
+
+	if !cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatalf("expected Cursor's opaque pasted-text marker to acknowledge the active draft")
+	}
+}
+
+func TestCursorPaneDoesNotFindSubmittedPromptBeforeActiveEditor(t *testing.T) {
+	prompt := "this previously submitted prompt must not be mistaken for an active draft"
+	captured := "Cursor Agent\n→ " + prompt + "\nAssistant: completed\n\n→ \nAsk (shift+tab to cycle)\n"
+
+	if cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatalf("submitted prompt in scrollback was mistaken for the active empty editor")
+	}
+}
+
+func hardWrapCursorDraftForTest(text string, width int) string {
+	words := strings.Fields(text)
+	if len(words) == 0 || width <= 0 {
+		return text
+	}
+	lines := make([]string, 0, len(text)/width+1)
+	current := words[0]
+	for _, word := range words[1:] {
+		if len([]rune(current))+1+len([]rune(word)) > width {
+			lines = append(lines, current)
+			current = word
+			continue
+		}
+		current += " " + word
+	}
+	lines = append(lines, current)
+	return strings.Join(lines, "\n  ")
+}
+
 func TestParseCursorInteractiveResponseFiltersGreetingAndSlashHints(t *testing.T) {
 	tests := []struct {
 		name     string

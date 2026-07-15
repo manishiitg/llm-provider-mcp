@@ -2163,27 +2163,64 @@ func cursorPaneShowsPromptDraft(captured, prompt string) bool {
 	if lastPromptMarker < 0 {
 		return false
 	}
-	// Only inspect the active editor near the final structural prompt marker.
+	// Only inspect the active editor after the final structural prompt marker.
 	// Searching the whole pane mistakes an already-submitted user message in
-	// scrollback for a draft that is still waiting in the composer.
-	regionEnd := lastPromptMarker + 10
-	if regionEnd > len(visibleLines) {
-		regionEnd = len(visibleLines)
+	// scrollback for a draft that is still waiting in the composer. Do not cap
+	// this region to a fixed row count: Cursor hard-wraps long drafts itself, so
+	// a valid composer can occupy more than ten terminal rows.
+	activeEditor := normalizeCursorDraftProbe(strings.Join(visibleLines[lastPromptMarker:], "\n"))
+	// Cursor intentionally collapses sufficiently large or multiline paste-buffer
+	// input to an opaque marker. The marker appears only after tmux has delivered
+	// the buffer to the active composer, so it is the acknowledgement available
+	// for this transport path when no literal draft text is exposed.
+	usesPasteBuffer := strings.ContainsAny(prompt, "\r\n") || len(prompt) > cursorTypedInputMaxLen
+	if usesPasteBuffer && strings.Contains(activeEditor, "[pasted text #") {
+		return true
 	}
-	activeEditor := strings.Join(visibleLines[lastPromptMarker:regionEnd], "\n")
 	for _, line := range nonEmptyCursorLines(prompt) {
-		line = strings.ToLower(strings.TrimSpace(stripCursorANSI(line)))
+		line = normalizeCursorDraftProbe(line)
 		if len([]rune(line)) < 8 {
 			continue
 		}
-		if len([]rune(line)) > 120 {
-			line = string([]rune(line)[:120])
-		}
-		if strings.Contains(activeEditor, line) {
-			return true
+		for _, probe := range cursorDraftProbeWindows(line, 120) {
+			if strings.Contains(activeEditor, probe) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func cursorDraftProbeWindows(text string, windowSize int) []string {
+	runes := []rune(text)
+	if len(runes) == 0 || windowSize <= 0 {
+		return nil
+	}
+	if len(runes) <= windowSize {
+		return []string{text}
+	}
+	starts := []int{0, (len(runes) - windowSize) / 2, len(runes) - windowSize}
+	probes := make([]string, 0, len(starts))
+	lastStart := -1
+	for _, start := range starts {
+		if start == lastStart {
+			continue
+		}
+		probes = append(probes, string(runes[start:start+windowSize]))
+		lastStart = start
+	}
+	return probes
+}
+
+// normalizeCursorDraftProbe makes prompt verification independent of how the
+// Cursor TUI lays out its composer. Cursor renders long input as hard terminal
+// rows, so tmux capture-pane -J cannot rejoin those rows the way it rejoins
+// ordinary terminal soft wraps. Collapsing whitespace on both sides preserves
+// the typed content while tolerating Cursor's row breaks and continuation
+// indentation.
+func normalizeCursorDraftProbe(text string) string {
+	text = strings.ReplaceAll(stripCursorANSI(text), "\u00a0", " ")
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
 func hasCursorReadyPrompt(captured string) bool {
