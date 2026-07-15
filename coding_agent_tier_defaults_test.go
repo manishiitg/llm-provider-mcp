@@ -20,9 +20,9 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 5.6 sol xhigh",
+			name:          "codex uses gpt 5.6 terra xhigh",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-5.6-sol",
+			wantModelID:   "gpt-5.6-terra",
 			wantReasoning: "xhigh",
 		},
 		{
@@ -289,7 +289,7 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		effort string
 	}{
 		"builder":     {ref: defaults.Builder, model: "gpt-5.6-sol", effort: "high"},
-		"high":        {ref: defaults.High, model: "gpt-5.6-sol", effort: "xhigh"},
+		"high":        {ref: defaults.High, model: "gpt-5.6-terra", effort: "xhigh"},
 		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
 		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "xhigh"},
