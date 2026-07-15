@@ -646,6 +646,51 @@ Called api-bridge
 	}
 }
 
+func TestExtractLatestUnmarkedAssistantResponsePreservesBoxDrawingTable(t *testing.T) {
+	pane := `
+⏺ Execution Route — STATUS: COMPLETED
+
+  ┌───────────────┬───────────┐
+  │ Step          │ Status    │
+  ├───────────────┼───────────┤
+  │ Collect price │ completed │
+  └───────────────┴───────────┘
+
+✻ Worked for 2s
+❯
+`
+	got, ok := extractLatestUnmarkedAssistantResponse(pane)
+	if !ok {
+		t.Fatal("extractLatestUnmarkedAssistantResponse ok = false, want true")
+	}
+	want := "Execution Route — STATUS: COMPLETED\n\n" +
+		"┌───────────────┬───────────┐\n" +
+		"│ Step          │ Status    │\n" +
+		"├───────────────┼───────────┤\n" +
+		"│ Collect price │ completed │\n" +
+		"└───────────────┴───────────┘"
+	if got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestExtractLatestUnmarkedAssistantResponseStopsAtRoundedTUIFrame(t *testing.T) {
+	pane := `
+⏺ Final answer
+
+╭──────────────────────────────────────────╮
+│ Claude input chrome, not assistant text  │
+╰──────────────────────────────────────────╯
+`
+	got, ok := extractLatestUnmarkedAssistantResponse(pane)
+	if !ok {
+		t.Fatal("extractLatestUnmarkedAssistantResponse ok = false, want true")
+	}
+	if got != "Final answer" {
+		t.Fatalf("content = %q, want Final answer", got)
+	}
+}
+
 func TestExtractLatestUnmarkedAssistantResponseSkipsTrailingToolBlock(t *testing.T) {
 	pane := `
 ⏺ Here's the full summary:

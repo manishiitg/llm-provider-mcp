@@ -2880,7 +2880,6 @@ func isClaudeTUIBoundaryLine(trimmed string) bool {
 		strings.HasPrefix(trimmed, "✢ ") ||
 		strings.HasPrefix(trimmed, "╭") ||
 		strings.HasPrefix(trimmed, "╰") ||
-		strings.HasPrefix(trimmed, "│") ||
 		strings.HasPrefix(trimmed, "────────────────") ||
 		isClaudeTUIStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "❯") ||
