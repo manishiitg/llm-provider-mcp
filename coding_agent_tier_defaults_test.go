@@ -144,10 +144,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:          "codex uses gpt 5.6 terra high",
+			name:          "codex uses gpt 5.6 terra xhigh",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-terra",
-			wantReasoning: "high",
+			wantReasoning: "xhigh",
 		},
 		{
 			name:          "cursor uses grok 4.5 high",
@@ -293,7 +293,7 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
 		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "xhigh"},
-		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "high"},
+		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "xhigh"},
 		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "xhigh"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {

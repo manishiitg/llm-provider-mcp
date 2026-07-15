@@ -67,7 +67,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "xhigh")
 		maintenance := codingAgentReasoningRef(providerID, "gpt-5.6-sol", "xhigh")
 		builder := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
-		pulse := codingAgentHighReasoningRef(providerID, "gpt-5.6-terra")
+		pulse := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "xhigh")
 		medium := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
 		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "low")
 		return &CodingAgentDefaultTierModels{
