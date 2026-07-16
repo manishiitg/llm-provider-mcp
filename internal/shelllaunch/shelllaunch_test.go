@@ -221,7 +221,11 @@ printf '%s|%s|%s|%s' "$ANTHROPIC_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_BA
 		t.Fatalf("CommandWithFinalEnv error = %v", err)
 	}
 	defer cleanup()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// This test validates final environment sanitization, not launch latency.
+	// Parallel adapter packages can briefly starve the fake login shell on small
+	// CI runners, so keep the guard bounded without making scheduler load a
+	// functional failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if output, err := exec.CommandContext(ctx, "/bin/sh", "-c", got).CombinedOutput(); err != nil {
 		t.Fatalf("run final-env command: %v\n%s", err, output)

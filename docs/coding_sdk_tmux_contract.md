@@ -811,11 +811,15 @@ The current P0 set is intentionally limited to product survival requirements:
 - cancellation
 - parallel isolation
 
-The application-level P0 adds two required proofs: live-input acknowledgement
-must not wait behind the active turn's session lane, and after the real CLI
+The application-level P0 also proves that live input reaches an active coding
+agent exactly once without starting a second query, rapid duplicate UI submits
+coalesce into one request, and the turn-completion boundary chooses either live
+delivery or a queued next turn but never both. Live-input acknowledgement must
+not wait behind the active turn's session lane. Finally, after the real CLI
 becomes idle AgentWorks must persist the first step and start a second dependent
-step. These catch regressions where chat remains stuck on `Sending`, or the
-terminal visibly says the work is complete but the workflow remains `running`.
+step. These catch regressions where chat remains stuck on `Sending`, duplicates
+a turn, or the terminal visibly says complete while the workflow remains
+`running`.
 
 Run the fast and real gates from the `coding-agent-loop` checkout:
 
@@ -828,8 +832,10 @@ CODING_CLI_P0_PROVIDERS=codex-cli \
 ```
 
 The `Coding CLI P0` GitHub workflow runs the fast gate on changes. Its real job
-can be dispatched manually and can run nightly on an authenticated self-hosted
-macOS runner when `CODING_CLI_P0_NIGHTLY_ENABLED=true` is configured.
+can be dispatched manually and runs nightly on the authenticated self-hosted
+macOS runner. The runner derives its test selector from the certification
+registry, fails when a required test skips, and therefore cannot silently omit
+a newly added P0 proof.
 
 Every tmux coding provider must have opt-in real E2E tests for:
 
