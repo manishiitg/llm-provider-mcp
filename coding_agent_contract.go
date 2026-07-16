@@ -212,11 +212,13 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TranscriptPathTemplate:        "~/.claude/projects/*/<session-id>.jsonl",
 		RequiresWorkspaceTrust:        true,
 		RestoreAsksInteractivePrompts: true,
-		APIKeyEnvVars:                 []string{"ANTHROPIC_API_KEY"},
-		WorkingDirInstructionFile:     "CLAUDE.md",
-		UserInstructionFile:           "~/.claude/CLAUDE.md",
-		WorkingDirMCPConfigFile:       ".mcp.json",
-		UserMCPConfigFile:             "~/.claude/settings.json",
+		// Claude Code authentication is its saved login or a process-scoped
+		// workflow OAuth token. Ambient API-key variables are explicitly ignored.
+		APIKeyEnvVars:             []string{},
+		WorkingDirInstructionFile: "CLAUDE.md",
+		UserInstructionFile:       "~/.claude/CLAUDE.md",
+		WorkingDirMCPConfigFile:   ".mcp.json",
+		UserMCPConfigFile:         "~/.claude/settings.json",
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,

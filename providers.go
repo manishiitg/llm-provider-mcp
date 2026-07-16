@@ -276,20 +276,26 @@ type Config struct {
 
 // ProviderAPIKeys holds API keys for different providers
 type ProviderAPIKeys struct {
-	OpenRouter        *string
-	OpenAI            *string
-	Anthropic         *string
-	Vertex            *string
-	CodexCLI          *string
-	CursorCLI         *string
-	AgyCLI            *string
-	PiCLI             *string
-	MiniMax           *string
-	MiniMaxCodingPlan *string
-	ElevenLabs        *string
-	Deepgram          *string
-	ZAI               *string
-	Kimi              *string
+	OpenRouter *string
+	OpenAI     *string
+	Anthropic  *string
+	// ClaudeCodeOAuthToken is a process-scoped Claude Code subscription token.
+	// It is deliberately separate from Anthropic: the claude-code provider must
+	// never fall back to API-key billing. Callers should populate this only from
+	// an explicitly scoped credential; provider initialization never reads it
+	// from the ambient environment.
+	ClaudeCodeOAuthToken *string `json:"-"`
+	Vertex               *string
+	CodexCLI             *string
+	CursorCLI            *string
+	AgyCLI               *string
+	PiCLI                *string
+	MiniMax              *string
+	MiniMaxCodingPlan    *string
+	ElevenLabs           *string
+	Deepgram             *string
+	ZAI                  *string
+	Kimi                 *string
 	// PiProviderKeys stores Pi sub-provider API keys keyed by Pi provider id
 	// (for example "google", "zai", "zai-coding-cn", "deepseek").
 	PiProviderKeys map[string]string
