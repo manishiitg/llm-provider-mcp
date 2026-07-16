@@ -204,15 +204,30 @@ type codexMCPServerSpec struct {
 }
 
 // renderCodexProjectConfigTOML emits AgentWorks' project-scoped Codex defaults
-// followed by optional [mcp_servers.NAME] blocks. The project service tier
-// overrides a user's global /fast selection while still allowing an explicit
-// per-invocation -c service_tier=... override to win.
+// followed by optional [mcp_servers.NAME] blocks. These defaults keep personal
+// CLI UI, connector, plugin-discovery, and /fast choices out of automated
+// AgentWorks sessions while still allowing explicit per-invocation -c
+// overrides to win.
 func renderCodexProjectConfigTOML(servers map[string]codexMCPServerSpec) string {
 	var b strings.Builder
 	b.WriteString("# mlp-session: orchestrator-generated Codex project config.\n")
 	b.WriteString("# Auto-removed at session cleanup. Pre-existing content is byte-restored.\n\n")
 	b.WriteString("# Do not inherit a user-level /fast choice into AgentWorks workflows.\n")
-	b.WriteString("service_tier = \"default\"\n\n")
+	b.WriteString("service_tier = \"default\"\n")
+	b.WriteString("# Avoid update checks and make automated tmux input deterministic.\n")
+	b.WriteString("check_for_update_on_startup = false\n")
+	b.WriteString("disable_paste_burst = true\n\n")
+	b.WriteString("[tui]\n")
+	b.WriteString("notifications = false\n")
+	b.WriteString("animations = false\n")
+	b.WriteString("show_tooltips = false\n\n")
+	b.WriteString("# Personal ChatGPT connectors are outside the AgentWorks tool boundary.\n")
+	b.WriteString("[apps._default]\n")
+	b.WriteString("enabled = false\n\n")
+	b.WriteString("# Do not discover remote plugins or auto-install skill MCP dependencies.\n")
+	b.WriteString("[features]\n")
+	b.WriteString("remote_plugin = false\n")
+	b.WriteString("skill_mcp_dependency_install = false\n\n")
 
 	names := make([]string, 0, len(servers))
 	for name := range servers {
