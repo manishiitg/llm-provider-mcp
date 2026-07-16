@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
@@ -34,7 +35,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultCodexInteractiveTimeout     = 0
-	defaultCodexInteractiveIdleTimeout = 3 * time.Hour
+	defaultCodexInteractiveIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultCodexInteractiveRetention   = 30 * time.Minute
 	defaultCodexPromptInactivityWait   = 10 * time.Minute
 	defaultCodexPromptMaxWait          = 90 * time.Minute
@@ -455,7 +456,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 
 	// buildCodexInteractiveArgs also performs the opt-in workspace
 	// artifact projection (AGENTS.md system prompt, .codex/config.toml
-	// MCP tables) up front so it can skip the CLI-side
+	// session defaults and optional MCP tables) up front so it can skip the CLI-side
 	// -c model_instructions_file injection when project-instruction-only
 	// mode is on AND the AGENTS.md projection succeeded. The returned
 	// cleanup (nil when nothing was projected) is stored on the session
@@ -507,7 +508,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 
 // buildCodexInteractiveArgs builds the codex TUI launch args. It also
 // performs the opt-in workspace artifact projection (AGENTS.md, .codex/
-// config.toml) up front so that the CLI-side -c model_instructions_file
+// config.toml session defaults and optional MCP tables) up front so that the CLI-side -c model_instructions_file
 // injection can be skipped when project-instruction-only mode is on AND the
 // AGENTS.md projection succeeded. It returns the args, the temp
 // system-prompt file path (empty when none was written), a cleanup for the
@@ -521,7 +522,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	}
 
 	// Project the opt-in workspace artifacts (AGENTS.md system prompt,
-	// .codex/config.toml MCP tables) FIRST so projection success is known
+	// .codex/config.toml session defaults and optional MCP tables) FIRST so projection success is known
 	// before deciding whether to skip the CLI-side -c model_instructions_file
 	// injection below. ON by default via WithWriteProjectInstructionFile;
 	// best-effort, a failure here is not a session-killer.

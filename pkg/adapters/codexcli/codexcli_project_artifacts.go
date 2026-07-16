@@ -15,9 +15,8 @@ import (
 // teardown:
 //
 //   - <workingDir>/AGENTS.md           — per-session system prompt
-//   - <workingDir>/.codex/config.toml  — [mcp_servers.NAME] tables
-//     (only when mcpServersJSON is
-//     provided via WithMCPServers)
+//   - <workingDir>/.codex/config.toml  — AgentWorks session defaults plus
+//     optional [mcp_servers.NAME] tables
 //   - <workingDir>/.codex/hooks.json   — PreToolUse deny entry
 //     pointing at the deny script
 //   - <workingDir>/.codex/hooks/deny-builtin.sh — POSIX deny script
@@ -62,15 +61,13 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 		}
 	}
 
-	if strings.TrimSpace(mcpServersJSON) != "" {
-		cu, err := writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON, restorePrior)
-		if err != nil {
-			rollback()
-			return noop, fmt.Errorf("codex .codex/config.toml: %w", err)
-		}
-		if cu != nil {
-			cleanups = append(cleanups, cu)
-		}
+	cu, err := writeCodexProjectConfigTOML(workingDir, mcpServersJSON, restorePrior)
+	if err != nil {
+		rollback()
+		return noop, fmt.Errorf("codex .codex/config.toml: %w", err)
+	}
+	if cu != nil {
+		cleanups = append(cleanups, cu)
 	}
 
 	// denyBuiltins is intentionally unused for codex. The hooks-file
@@ -107,10 +104,10 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	return rollback, nil
 }
 
-// writeCodexProjectMCPConfigTOML projects the operator-supplied MCP
-// servers JSON into <workingDir>/.codex/config.toml using codex's
-// [mcp_servers.NAME] table format. Pre-existing operator content is
-// captured and restored on cleanup.
+// writeCodexProjectConfigTOML writes the AgentWorks-scoped Codex defaults and
+// optionally projects operator-supplied MCP server JSON into
+// <workingDir>/.codex/config.toml. Pre-existing operator content is captured
+// and restored on cleanup.
 //
 // JSON shape expected (matches WithMCPServers): a map of server name
 // → {command: string, args?: []string, env?: map[string]string,
@@ -122,19 +119,18 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 // definitions have a known small shape (per
 // developers.openai.com/codex/mcp), so we avoid pulling in a TOML
 // dependency.
-func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string, restorePrior bool) (func(), error) {
+func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string, restorePrior bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" || strings.TrimSpace(mcpServersJSON) == "" {
+	if workingDir == "" {
 		return noop, nil
 	}
 
 	var servers map[string]codexMCPServerSpec
-	if err := json.Unmarshal([]byte(mcpServersJSON), &servers); err != nil {
-		return noop, fmt.Errorf("parse MCP servers JSON: %w", err)
-	}
-	if len(servers) == 0 {
-		return noop, nil
+	if strings.TrimSpace(mcpServersJSON) != "" {
+		if err := json.Unmarshal([]byte(mcpServersJSON), &servers); err != nil {
+			return noop, fmt.Errorf("parse MCP servers JSON: %w", err)
+		}
 	}
 
 	codexDir := filepath.Join(workingDir, ".codex")
@@ -155,7 +151,7 @@ func writeCodexProjectMCPConfigTOML(workingDir, mcpServersJSON string, restorePr
 		}
 	}
 
-	toml := renderCodexMCPServersTOML(servers)
+	toml := renderCodexProjectConfigTOML(servers)
 	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
 		return noop, fmt.Errorf("write .codex/config.toml: %w", err)
 	}
@@ -207,13 +203,16 @@ type codexMCPServerSpec struct {
 	Enabled           *bool             `json:"enabled,omitempty"`
 }
 
-// renderCodexMCPServersTOML emits codex's expected [mcp_servers.NAME]
-// TOML block format from the parsed server map. Names are sorted to
-// keep output deterministic so byte-compare tests are stable.
-func renderCodexMCPServersTOML(servers map[string]codexMCPServerSpec) string {
+// renderCodexProjectConfigTOML emits AgentWorks' project-scoped Codex defaults
+// followed by optional [mcp_servers.NAME] blocks. The project service tier
+// overrides a user's global /fast selection while still allowing an explicit
+// per-invocation -c service_tier=... override to win.
+func renderCodexProjectConfigTOML(servers map[string]codexMCPServerSpec) string {
 	var b strings.Builder
-	b.WriteString("# mlp-session: orchestrator-generated codex MCP server config.\n")
+	b.WriteString("# mlp-session: orchestrator-generated Codex project config.\n")
 	b.WriteString("# Auto-removed at session cleanup. Pre-existing content is byte-restored.\n\n")
+	b.WriteString("# Do not inherit a user-level /fast choice into AgentWorks workflows.\n")
+	b.WriteString("service_tier = \"default\"\n\n")
 
 	names := make([]string, 0, len(servers))
 	for name := range servers {

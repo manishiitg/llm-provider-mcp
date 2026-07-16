@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
@@ -34,7 +35,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultTmuxTimeout           = 0
-	defaultPersistentIdleTimeout = 3 * time.Hour
+	defaultPersistentIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultBoundedRetention      = 30 * time.Minute
 	defaultTmuxPollInterval      = 750 * time.Millisecond
 	defaultTmuxCaptureLines      = "10000"
@@ -972,9 +973,10 @@ func preTrustClaudeWorkingDir(workingDir string) {
 }
 
 func claudePromptSuggestionEnvArgs(oauthToken ...string) []string {
+	mcpToolIdleTimeoutMS := codingtimeout.LongRunningMCPToolTimeout().Milliseconds()
 	args := []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
-		"-e", EnvClaudeMCPToolIdleTimeout + "=5400000",
+		"-e", EnvClaudeMCPToolIdleTimeout + "=" + strconv.FormatInt(mcpToolIdleTimeoutMS, 10),
 		// The tmux adapter relies on the user's Claude Code login. Inherited
 		// Anthropic API env vars make recent Claude Code builds stop at an
 		// interactive auth-choice prompt that this transport cannot answer.

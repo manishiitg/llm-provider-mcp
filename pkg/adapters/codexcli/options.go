@@ -265,10 +265,10 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 //     model_instructions_file already injects.
 //
 //   - <workingDir>/.codex/config.toml
-//     [mcp_servers.NAME] tables synthesized from WithMCPServers JSON.
-//     Only landed when an MCP config was actually provided; redundant
-//     with -c mcp_servers.* overrides but visible to downstream tools
-//     that read codex's on-disk convention.
+//     AgentWorks session defaults, including service_tier="default" so a
+//     user-level /fast choice does not leak into workflow sessions, plus
+//     optional [mcp_servers.NAME] tables synthesized from WithMCPServers JSON.
+//     Explicit per-invocation -c overrides still take precedence.
 //
 //   - <workingDir>/.codex/hooks.json
 //

@@ -92,6 +92,14 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	}
 }
 
+func TestClaudeStartSessionUsesSharedMCPTimeoutOverride(t *testing.T) {
+	t.Setenv("CODING_AGENT_MCP_TOOL_TIMEOUT", "17m")
+	got := claudePromptSuggestionEnvArgs()
+	if !containsArg(got, "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=1020000") {
+		t.Fatalf("Claude env args = %v, want 17-minute MCP timeout in milliseconds", got)
+	}
+}
+
 func TestClaudeStartSessionUsesScopedOAuthToken(t *testing.T) {
 	const token = "workflow-oauth-token"
 	got := claudePromptSuggestionEnvArgs(token)

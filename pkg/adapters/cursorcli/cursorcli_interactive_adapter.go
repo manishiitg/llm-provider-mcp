@@ -28,6 +28,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
@@ -37,7 +38,7 @@ const (
 	// their execution deadline; the adapter should not cancel a still-running tmux
 	// coding agent before the outer workflow timeout.
 	defaultCursorInteractiveTimeout     = 0
-	defaultCursorInteractiveIdleTimeout = 3 * time.Hour
+	defaultCursorInteractiveIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 	cursorBootBannerPromptGrace         = 2 * time.Second

@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestRenderCodexMCPServersTOMLBasicShape locks in the exact TOML
+// TestRenderCodexProjectConfigTOMLBasicShape locks in the exact TOML
 // emitted for a typical MCP server map. Output must be deterministic
 // (keys sorted) so byte-compare assertions in cleanup tests are stable.
-func TestRenderCodexMCPServersTOMLBasicShape(t *testing.T) {
+func TestRenderCodexProjectConfigTOMLBasicShape(t *testing.T) {
 	startup := 12
 	enabled := true
 	servers := map[string]codexMCPServerSpec{
@@ -23,8 +23,9 @@ func TestRenderCodexMCPServersTOMLBasicShape(t *testing.T) {
 			Enabled:           &enabled,
 		},
 	}
-	got := renderCodexMCPServersTOML(servers)
+	got := renderCodexProjectConfigTOML(servers)
 	expected := []string{
+		`service_tier = "default"`,
 		"[mcp_servers.api-bridge]",
 		`command = "/usr/local/bin/mcpbridge"`,
 		`args = ["--port", "9000"]`,
@@ -75,10 +76,10 @@ func TestTomlQuoteKeyBareVsQuoted(t *testing.T) {
 	}
 }
 
-// TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent guards the
+// TestWriteCodexProjectConfigTOMLRestoresOperatorContent guards the
 // promise that pre-existing operator-owned .codex/config.toml is
 // restored byte-for-byte at cleanup.
-func TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent(t *testing.T) {
+func TestWriteCodexProjectConfigTOMLRestoresOperatorContent(t *testing.T) {
 	tmp := t.TempDir()
 	codexDir := filepath.Join(tmp, ".codex")
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
@@ -91,9 +92,9 @@ func TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent(t *testing.T) {
 	}
 
 	mcpJSON := `{"api-bridge":{"command":"/usr/local/bin/mcpbridge"}}`
-	cleanup, err := writeCodexProjectMCPConfigTOML(tmp, mcpJSON, true)
+	cleanup, err := writeCodexProjectConfigTOML(tmp, mcpJSON, true)
 	if err != nil {
-		t.Fatalf("writeCodexProjectMCPConfigTOML: %v", err)
+		t.Fatalf("writeCodexProjectConfigTOML: %v", err)
 	}
 
 	mid, _ := os.ReadFile(configPath)
@@ -111,6 +112,31 @@ func TestWriteCodexProjectMCPConfigTOMLRestoresOperatorContent(t *testing.T) {
 	}
 	if string(restored) != string(operatorContent) {
 		t.Errorf("cleanup must restore pre-existing config.toml byte-for-byte\n  want: %q\n  got:  %q", operatorContent, restored)
+	}
+}
+
+func TestWriteCodexProjectConfigTOMLWithoutMCPUsesStandardTier(t *testing.T) {
+	tmp := t.TempDir()
+	cleanup, err := writeCodexProjectConfigTOML(tmp, "", false)
+	if err != nil {
+		t.Fatalf("writeCodexProjectConfigTOML: %v", err)
+	}
+
+	configPath := filepath.Join(tmp, ".codex", "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config.toml: %v", err)
+	}
+	if !strings.Contains(string(data), `service_tier = "default"`) {
+		t.Fatalf("generated config must override a user-level fast tier; got:\n%s", data)
+	}
+	if strings.Contains(string(data), "[mcp_servers.") {
+		t.Fatalf("empty MCP input must not create MCP server blocks; got:\n%s", data)
+	}
+
+	cleanup()
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove generated config.toml; stat err=%v", err)
 	}
 }
 

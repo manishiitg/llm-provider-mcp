@@ -26,12 +26,13 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
 
 const (
-	defaultPiInteractiveIdleTimeout = 3 * time.Hour
+	defaultPiInteractiveIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultPiInteractiveRetention   = 30 * time.Minute
 
 	EnvPiBinary                         = "PI_BIN"
