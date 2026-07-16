@@ -3479,6 +3479,19 @@ func isCodexCompletedStatusLine(line string) bool {
 	if !strings.Contains(lower, " for ") {
 		return false
 	}
+	// Codex 0.144.1 renders the terminal turn footer with box-drawing
+	// characters instead of the older star glyphs, for example:
+	//
+	//   ─ Worked for 4m 23s ────────
+	//
+	// Keep this deliberately narrower than accepting any box-drawing line that
+	// contains " for ": a separator containing prose such as "waiting for
+	// approval" must not make a live turn look complete.
+	if strings.HasPrefix(trimmed, "─ ") || strings.HasPrefix(trimmed, "━ ") {
+		footer := strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "─━═—- ")))
+		return strings.HasPrefix(footer, "worked for ") ||
+			strings.HasPrefix(footer, "cogitated for ")
+	}
 	return strings.HasPrefix(trimmed, "✻ ") ||
 		strings.HasPrefix(trimmed, "✽ ") ||
 		strings.HasPrefix(trimmed, "✳ ") ||
