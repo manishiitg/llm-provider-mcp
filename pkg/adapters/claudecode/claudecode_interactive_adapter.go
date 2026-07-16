@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -117,6 +118,7 @@ type claudeInteractivePersistentSession struct {
 	ownerSessionID  string
 	tmuxSessionName string
 	nativeSessionID string
+	authFingerprint string
 	workingDir      string
 	tempFiles       []string
 	idleTimer       *time.Timer
@@ -160,29 +162,54 @@ func newClaudeCallContext(parent context.Context, timeout time.Duration) (contex
 // ClaudeCodeInteractiveAdapter runs Claude Code through its interactive tmux transport.
 // It intentionally does not invoke `claude -p`.
 type ClaudeCodeInteractiveAdapter struct {
-	modelID    string
-	logger     interfaces.Logger
-	oauthToken string
+	modelID         string
+	oauthToken      string
+	authFingerprint string
+	logger          interfaces.Logger
 }
 
 // SetOAuthToken configures a token for this adapter instance only. It must be
 // called before GenerateContent; retained sessions inherit the token at launch.
 func (c *ClaudeCodeInteractiveAdapter) SetOAuthToken(token string) {
 	c.oauthToken = strings.TrimSpace(token)
+	c.authFingerprint = claudeCredentialFingerprint(c.oauthToken)
 }
 
 func NewClaudeCodeInteractiveAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
 	return newClaudeCodeInteractiveAdapter(modelID, logger)
 }
 
+// NewClaudeCodeInteractiveAdapterWithOAuthToken creates a Claude Code adapter
+// with an explicitly scoped subscription token. The token is never discovered
+// from the process environment and is applied only to the spawned Claude
+// process after login-shell initialization.
+func NewClaudeCodeInteractiveAdapterWithOAuthToken(modelID, oauthToken string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
+	return newClaudeCodeInteractiveAdapterWithOAuthToken(modelID, oauthToken, logger)
+}
+
 func newClaudeCodeInteractiveAdapter(modelID string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
+	return newClaudeCodeInteractiveAdapterWithOAuthToken(modelID, "", logger)
+}
+
+func newClaudeCodeInteractiveAdapterWithOAuthToken(modelID, oauthToken string, logger interfaces.Logger) *ClaudeCodeInteractiveAdapter {
 	if modelID == "" {
 		modelID = "claude-code"
 	}
+	oauthToken = strings.TrimSpace(oauthToken)
 	return &ClaudeCodeInteractiveAdapter{
-		modelID: modelID,
-		logger:  logger,
+		modelID:         modelID,
+		oauthToken:      oauthToken,
+		authFingerprint: claudeCredentialFingerprint(oauthToken),
+		logger:          logger,
 	}
+}
+
+func claudeCredentialFingerprint(oauthToken string) string {
+	if strings.TrimSpace(oauthToken) == "" {
+		return "saved-login"
+	}
+	sum := sha256.Sum256([]byte(oauthToken))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
@@ -874,15 +901,32 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
 		preTrustClaudeWorkingDir(workingDir)
 	}
-	shellCommand := claudeInteractiveShellCommand(args, workingDir)
+	finalEnv := []string(nil)
+	if c.oauthToken != "" {
+		finalEnv = append(finalEnv, "CLAUDE_CODE_OAUTH_TOKEN="+c.oauthToken)
+	}
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, []string{
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+	})
+	if err != nil {
+		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
+	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
-	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs(c.oauthToken)...)
+	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	tmuxArgs = tmuxlaunch.WithHistoryLimit(tmuxArgs, defaultTmuxHistoryLimit)
 	if err := runCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
+		cleanupLaunchScript()
 		return fmt.Errorf("failed to start Claude Code tmux session %q: %w", sessionName, err)
 	}
+	// The wrapper deletes itself before starting the login shell. This delayed
+	// cleanup is a backstop for an abnormal tmux child launch that never opened
+	// the wrapper after new-session returned successfully.
+	time.AfterFunc(30*time.Second, cleanupLaunchScript)
 	if err := runCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("failed to configure Claude Code tmux session %q: %w", sessionName, err)
 	}
@@ -972,7 +1016,7 @@ func preTrustClaudeWorkingDir(workingDir string) {
 	_ = os.WriteFile(configPath, out, 0o600)
 }
 
-func claudePromptSuggestionEnvArgs(oauthToken ...string) []string {
+func claudePromptSuggestionEnvArgs() []string {
 	mcpToolIdleTimeoutMS := codingtimeout.LongRunningMCPToolTimeout().Milliseconds()
 	args := []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
@@ -981,10 +1025,11 @@ func claudePromptSuggestionEnvArgs(oauthToken ...string) []string {
 		// Anthropic API env vars make recent Claude Code builds stop at an
 		// interactive auth-choice prompt that this transport cannot answer.
 		"-e", "ANTHROPIC_API_KEY=",
+		"-e", "ANTHROPIC_AUTH_TOKEN=",
 		"-e", "ANTHROPIC_BASE_URL=",
-	}
-	if len(oauthToken) > 0 && strings.TrimSpace(oauthToken[0]) != "" {
-		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+strings.TrimSpace(oauthToken[0]))
+		// Never inherit a machine-wide OAuth token. A workflow token is applied
+		// privately by the final launch wrapper; otherwise Claude uses /login.
+		"-e", "CLAUDE_CODE_OAUTH_TOKEN=",
 	}
 	return args
 }
@@ -3185,6 +3230,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			ownerSessionID:  ownerSessionID,
 			tmuxSessionName: sessionName,
 			nativeSessionID: nativeSessionID,
+			authFingerprint: c.authFingerprint,
 			workingDir:      strings.TrimSpace(workingDir),
 			createdAt:       now,
 			lastUsed:        now,
@@ -3201,6 +3247,11 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		// across it stalls every other acquire behind a busy session
 		// (lock-held-across-blocking-call deadlock).
 		session.mu.Lock()
+		if session.authFingerprint != c.authFingerprint {
+			session.mu.Unlock()
+			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential changed", c.logger)
+			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
+		}
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()

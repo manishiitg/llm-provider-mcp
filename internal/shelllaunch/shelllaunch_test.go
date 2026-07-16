@@ -1,10 +1,13 @@
 package shelllaunch
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCommandUsesLoginShellByDefault(t *testing.T) {
@@ -120,6 +123,115 @@ func TestCommandWithEnvRejectsInvalidKey(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("CommandWithEnv error = nil, want invalid key error")
+	}
+}
+
+func TestCommandWithFinalEnvAppliesSanitizationAfterLoginShell(t *testing.T) {
+	shell := writeExecutableShell(t, "zsh")
+	t.Setenv(EnvShellPath, shell)
+	t.Setenv(EnvShellMode, "")
+
+	got, cleanup, err := CommandWithFinalEnv(
+		[]string{"claude", "--model", "sonnet"},
+		"/tmp/work",
+		[]string{"CLAUDE_CODE_OAUTH_TOKEN=workflow-secret"},
+		[]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
+	)
+	if err != nil {
+		t.Fatalf("CommandWithFinalEnv error = %v", err)
+	}
+	defer cleanup()
+	if strings.Contains(got, "workflow-secret") || strings.Contains(got, "CLAUDE_CODE_OAUTH_TOKEN") {
+		t.Fatalf("command string leaked final environment: %q", got)
+	}
+
+	parts := strings.Split(got, "'")
+	var scriptPath string
+	for _, part := range parts {
+		if strings.Contains(part, "mlp-coding-agent-launch-") {
+			scriptPath = part
+			break
+		}
+	}
+	body, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read launch script: %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "workflow-secret") {
+		t.Fatalf("launch script missing final credential: %s", text)
+	}
+	innerUnset := "unset ANTHROPIC_API_KEY; unset ANTHROPIC_AUTH_TOKEN; unset CLAUDE_CODE_OAUTH_TOKEN;"
+	if !strings.Contains(text, innerUnset) {
+		t.Fatalf("launch script does not sanitize after shell initialization: %s", text)
+	}
+	if !strings.Contains(text, `export CLAUDE_CODE_OAUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
+		t.Fatalf("launch script does not apply workflow token after sanitization: %s", text)
+	}
+}
+
+func TestCommandWithFinalEnvRejectsInvalidUnsetKey(t *testing.T) {
+	_, cleanup, err := CommandWithFinalEnv([]string{"cmd"}, "/tmp/work", nil, []string{"BAD-KEY"})
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("CommandWithFinalEnv error = nil, want invalid unset key error")
+	}
+}
+
+func TestCommandWithFinalEnvSanitizesCredentialsRestoredByLoginShell(t *testing.T) {
+	shellDir := t.TempDir()
+	shell := filepath.Join(shellDir, "zsh")
+	shellBody := `#!/bin/sh
+export ANTHROPIC_API_KEY=startup-api-key
+export ANTHROPIC_AUTH_TOKEN=startup-auth-token
+export ANTHROPIC_BASE_URL=https://startup.example
+export CLAUDE_CODE_OAUTH_TOKEN=startup-oauth-token
+if [ "$1" = "-ilc" ]; then
+  command=$2
+  shift 2
+  exec /bin/sh -c "$command" "$@"
+fi
+exit 2
+`
+	if err := os.WriteFile(shell, []byte(shellBody), 0o755); err != nil {
+		t.Fatalf("write fake login shell: %v", err)
+	}
+	t.Setenv(EnvShellPath, shell)
+	t.Setenv(EnvShellMode, "")
+
+	workDir := t.TempDir()
+	capturePath := filepath.Join(workDir, "captured-env.txt")
+	captureCommand := filepath.Join(workDir, "capture-env")
+	captureBody := `#!/bin/sh
+printf '%s|%s|%s|%s' "$ANTHROPIC_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_BASE_URL" "$CLAUDE_CODE_OAUTH_TOKEN" > "$1"
+`
+	if err := os.WriteFile(captureCommand, []byte(captureBody), 0o755); err != nil {
+		t.Fatalf("write capture command: %v", err)
+	}
+
+	got, cleanup, err := CommandWithFinalEnv(
+		[]string{captureCommand, capturePath},
+		workDir,
+		[]string{"CLAUDE_CODE_OAUTH_TOKEN=workflow-secret"},
+		[]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"},
+	)
+	if err != nil {
+		t.Fatalf("CommandWithFinalEnv error = %v", err)
+	}
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(ctx, "/bin/sh", "-c", got).CombinedOutput(); err != nil {
+		t.Fatalf("run final-env command: %v\n%s", err, output)
+	}
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured environment: %v", err)
+	}
+	if string(captured) != "|||workflow-secret" {
+		t.Fatalf("final environment = %q, want only workflow OAuth token", string(captured))
 	}
 }
 

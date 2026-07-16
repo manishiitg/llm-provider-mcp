@@ -105,6 +105,58 @@ func CommandWithEnv(args []string, workingDir string, env []string) (string, fun
 	return Join([]string{"/bin/sh", path}), cleanup, nil
 }
 
+// CommandWithFinalEnv returns a self-deleting launch wrapper like
+// CommandWithEnv, but applies the requested environment after the login shell
+// has initialized and immediately before the coding CLI is exec'd. This is for
+// authentication boundaries where shell startup files must not be able to
+// restore an ambient credential that the caller explicitly removed.
+//
+// Values are kept out of the tmux/parent command line. In login-shell mode the
+// wrapper carries them under private temporary names, then the inner shell
+// unsets ambient variables, installs the final values, removes the private
+// names, and execs the requested command.
+func CommandWithFinalEnv(args []string, workingDir string, env, unset []string) (string, func(), error) {
+	entries, err := parseEnvEntries(env)
+	if err != nil {
+		return "", nil, err
+	}
+	unsetKeys, err := parseUnsetKeys(unset)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(entries) == 0 && len(unsetKeys) == 0 {
+		return Command(args, workingDir), func() {}, nil
+	}
+
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		workingDir = mustGetwd()
+	}
+
+	script := launchScriptWithFinalEnv(args, workingDir, entries, unsetKeys)
+	file, err := os.CreateTemp("", "mlp-coding-agent-launch-*.sh")
+	if err != nil {
+		return "", nil, fmt.Errorf("create launch script: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("chmod launch script: %w", err)
+	}
+	if _, err := file.WriteString(script); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("write launch script: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("close launch script: %w", err)
+	}
+	return Join([]string{"/bin/sh", path}), cleanup, nil
+}
+
 func Join(args []string) string {
 	quoted := make([]string, len(args))
 	for i, arg := range args {
@@ -163,6 +215,26 @@ func validEnvKey(key string) bool {
 	return true
 }
 
+func parseUnsetKeys(keys []string) ([]string, error) {
+	seen := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if !validEnvKey(key) {
+			return nil, fmt.Errorf("invalid env key %q", key)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out, nil
+}
+
 func launchScript(args []string, workingDir string, entries []envEntry) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
@@ -203,6 +275,97 @@ func launchScript(args []string, workingDir string, entries []envEntry) string {
 		}
 	}
 
+	b.WriteString("cd ")
+	b.WriteString(Quote(workingDir))
+	b.WriteString(" || exit\n")
+	b.WriteString("exec ")
+	b.WriteString(Join(args))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEntry, unsetKeys []string) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("rm -f \"$0\"\n")
+
+	privateNames := make([]string, len(entries))
+	for i, entry := range entries {
+		privateName := fmt.Sprintf("__MLP_CODING_AGENT_ENV_%d", i)
+		privateNames[i] = privateName
+		b.WriteString("export ")
+		b.WriteString(privateName)
+		b.WriteString("=")
+		b.WriteString(Quote(entry.value))
+		b.WriteString("\n")
+	}
+
+	if !directModeEnabled() {
+		if shellPath, kind, ok := resolveLoginShell(); ok {
+			var inner strings.Builder
+			switch kind {
+			case "fish":
+				for _, key := range unsetKeys {
+					inner.WriteString("set -e ")
+					inner.WriteString(key)
+					inner.WriteString("; ")
+				}
+				for i, entry := range entries {
+					inner.WriteString("set -gx ")
+					inner.WriteString(entry.key)
+					inner.WriteString(" \"")
+					inner.WriteString("$")
+					inner.WriteString(privateNames[i])
+					inner.WriteString("\"; set -e ")
+					inner.WriteString(privateNames[i])
+					inner.WriteString("; ")
+				}
+				inner.WriteString("cd $argv[1]; or exit; exec $argv[2..-1]")
+				b.WriteString("exec ")
+				b.WriteString(Join(append([]string{shellPath, "-lic", inner.String(), workingDir}, args...)))
+				b.WriteString("\n")
+				return b.String()
+			default:
+				for _, key := range unsetKeys {
+					inner.WriteString("unset ")
+					inner.WriteString(key)
+					inner.WriteString("; ")
+				}
+				for i, entry := range entries {
+					inner.WriteString("export ")
+					inner.WriteString(entry.key)
+					inner.WriteString("=\"$")
+					inner.WriteString(privateNames[i])
+					inner.WriteString("\"; unset ")
+					inner.WriteString(privateNames[i])
+					inner.WriteString("; ")
+				}
+				inner.WriteString(`cd "$1" || exit; shift; exec "$@"`)
+				b.WriteString("exec ")
+				b.WriteString(Join(append([]string{shellPath, "-ilc", inner.String(), "coding-agent", workingDir}, args...)))
+				b.WriteString("\n")
+				return b.String()
+			}
+		}
+	}
+
+	for _, key := range unsetKeys {
+		b.WriteString("unset ")
+		b.WriteString(key)
+		b.WriteString("\n")
+	}
+	for _, entry := range entries {
+		b.WriteString("export ")
+		b.WriteString(entry.key)
+		b.WriteString("=")
+		b.WriteString(Quote(entry.value))
+		b.WriteString("\n")
+	}
+	for _, privateName := range privateNames {
+		b.WriteString("unset ")
+		b.WriteString(privateName)
+		b.WriteString("\n")
+	}
 	b.WriteString("cd ")
 	b.WriteString(Quote(workingDir))
 	b.WriteString(" || exit\n")

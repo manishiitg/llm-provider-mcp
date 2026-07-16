@@ -103,6 +103,41 @@ saved %s`, token, token)
 	}
 }
 
+// TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract exercises the
+// production failure mode where Cursor hard-wraps one long logical input line
+// across several TUI rows. The adapter must recognize the visible draft, submit
+// it, and receive a model response rather than failing its pre-submit guard.
+func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-wrapped-input-" + cursorRandomHex(4)
+	token := "WRAPPED_CURSOR_INPUT_" + cursorRandomHex(5)
+	prompt := strings.Repeat("This sentence only makes the single Cursor input line long enough to wrap inside the terminal composer and does not change the requested response. ", 3) + "Reply exactly: " + token
+	if strings.ContainsAny(prompt, "\r\n") || len(prompt) <= cursorTypedInputMaxLen {
+		t.Fatalf("wrapped-input fixture must be one logical line longer than %d bytes", cursorTypedInputMaxLen)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	response, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Follow the final exact-reply instruction in the user message."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithDenyBuiltinTools(true),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with hard-wrapped single-line prompt error = %v", err)
+	}
+	content := strings.TrimSpace(response.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("wrapped prompt response = %q, want token %s", content, token)
+	}
+}
+
 func TestCursorCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })

@@ -85,7 +85,9 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 		"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
 		"-e", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=5400000",
 		"-e", "ANTHROPIC_API_KEY=",
+		"-e", "ANTHROPIC_AUTH_TOKEN=",
 		"-e", "ANTHROPIC_BASE_URL=",
+		"-e", "CLAUDE_CODE_OAUTH_TOKEN=",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
@@ -100,21 +102,61 @@ func TestClaudeStartSessionUsesSharedMCPTimeoutOverride(t *testing.T) {
 	}
 }
 
-func TestClaudeStartSessionUsesScopedOAuthToken(t *testing.T) {
-	const token = "workflow-oauth-token"
-	got := claudePromptSuggestionEnvArgs(token)
-	found := false
-	for _, arg := range got {
-		found = found || arg == "CLAUDE_CODE_OAUTH_TOKEN="+token
+func TestClaudeStartSessionKeepsOAuthTokenOutOfTmuxArgs(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := fakeBin + "/tmux-args.log"
+	tmuxPath := fakeBin + "/tmux"
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TEST_ARGS"
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
 	}
-	if !found {
-		t.Fatalf("Claude OAuth token missing from tmux environment: %v", got)
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", argsPath)
+
+	const token = "workflow-oauth-secret"
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken("claude-code", token, nil)
+	if err := adapter.startSession(context.Background(), "oauth-session", []string{"claude"}, ""); err != nil {
+		t.Fatalf("startSession returned error: %v", err)
 	}
-	withoutToken := claudePromptSuggestionEnvArgs()
-	for _, arg := range withoutToken {
-		if strings.HasPrefix(arg, "CLAUDE_CODE_OAUTH_TOKEN=") {
-			t.Fatalf("default Claude session unexpectedly received OAuth token: %v", withoutToken)
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read tmux args: %v", err)
+	}
+	// The fake tmux reports success without launching the self-deleting wrapper.
+	// Remove that private test artifact rather than relying on the production
+	// delayed-cleanup timer, which may not fire before this test process exits.
+	for _, part := range strings.Split(string(args), "'") {
+		if strings.Contains(part, "mlp-coding-agent-launch-") {
+			defer os.Remove(part)
 		}
+	}
+	if strings.Contains(string(args), token) {
+		t.Fatalf("tmux argv leaked OAuth token: %s", string(args))
+	}
+	for _, want := range []string{"ANTHROPIC_API_KEY=", "ANTHROPIC_AUTH_TOKEN=", "CLAUDE_CODE_OAUTH_TOKEN="} {
+		if !strings.Contains(string(args), want) {
+			t.Fatalf("tmux args missing ambient credential reset %q: %s", want, string(args))
+		}
+	}
+}
+
+func TestClaudeCredentialFingerprintDoesNotExposeToken(t *testing.T) {
+	const token = "workflow-oauth-secret"
+	fingerprint := claudeCredentialFingerprint(token)
+	if fingerprint == token || strings.Contains(fingerprint, token) {
+		t.Fatalf("fingerprint exposed token: %q", fingerprint)
+	}
+	if fingerprint != claudeCredentialFingerprint(token) {
+		t.Fatal("fingerprint is not deterministic")
+	}
+	if fingerprint == claudeCredentialFingerprint("another-token") {
+		t.Fatal("different tokens produced the same fingerprint")
+	}
+	if got := claudeCredentialFingerprint(""); got != "saved-login" {
+		t.Fatalf("empty token fingerprint = %q, want saved-login", got)
 	}
 }
 
