@@ -39,6 +39,7 @@ const (
 	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
 	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
 	CertLiveInput                 CodingAgentCertificationID = "live_input"
+	CertBusyLiveInput             CodingAgentCertificationID = "busy_live_input"
 	CertCancellation              CodingAgentCertificationID = "cancellation"
 	CertPersistentCancelReuse     CodingAgentCertificationID = "persistent_cancel_reuse"
 	CertLifecyclePolicy           CodingAgentCertificationID = "lifecycle_policy"
@@ -81,6 +82,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertMultiTurn,
 	CertStaleDraftCleanup,
 	CertLiveInput,
+	CertBusyLiveInput,
 	CertCancellation,
 	CertPersistentCancelReuse,
 	CertLifecyclePolicy,
@@ -96,8 +98,8 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 // requiredP0CertificationIDs is deliberately short. These are the contracts
 // without which AgentWorks cannot safely run a coding CLI: launch in the right
 // workspace, receive the system prompt/skills/MCP runtime, avoid false idle,
-// detect completion, accept live follow-up input, return the final answer,
-// cancel, and isolate concurrency.
+// detect completion, accept and process live follow-up input while busy, return
+// the final answer, cancel, and isolate concurrency.
 var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertRuntimeContext,
@@ -107,6 +109,7 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertDoneDetection,
 	CertFinalExtraction,
 	CertLiveInput,
+	CertBusyLiveInput,
 	CertCancellation,
 	CertParallelIsolation,
 }
@@ -139,7 +142,7 @@ var codingAgentCapabilityCertifications = []struct {
 	{"statusline", func(c CodingAgentProviderContract) bool { return c.SupportsStatusLine }, []CodingAgentCertificationID{CertStatusLine}},
 	{"final extraction", func(c CodingAgentProviderContract) bool { return c.SupportsFinalExtraction }, []CodingAgentCertificationID{CertFinalExtraction}},
 	{"persistent session", func(c CodingAgentProviderContract) bool { return c.UsesPersistentSession }, []CodingAgentCertificationID{CertMultiTurn, CertStaleDraftCleanup}},
-	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput}},
+	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput, CertBusyLiveInput}},
 	{"interrupt", func(c CodingAgentProviderContract) bool { return c.SupportsInterrupt }, []CodingAgentCertificationID{CertCancellation}},
 	{"ctrl-c state preserved", func(c CodingAgentProviderContract) bool { return c.HandlesCtrlCCleanExit }, []CodingAgentCertificationID{CertCtrlCStatePreserved}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
@@ -284,6 +287,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape",
 			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
 			Description: "live input routes into the active Claude Code tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
+			TestName:    "TestClaudeCodeTmuxIntegrationLiveInputProcessesQueuedFollowup",
+			Env:         []string{"RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1"},
+			Description: "a follow-up submitted during a slow Claude Code tool call is processed by the same live session",
 			RealE2E:     true,
 		},
 		{
@@ -497,6 +508,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "a follow-up submitted during a slow Codex tool call is durably applied by the same live session",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertCancellation,
 			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
 			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
@@ -692,6 +711,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
 			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
 			Description: "live input routes into Cursor's active tmux session and is processed after the in-flight tool call",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "a follow-up submitted during a slow Cursor tool call is processed by the same live session",
 			RealE2E:     true,
 		},
 		{
@@ -892,6 +919,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestAgyCLIRealInteractiveLiveInputAndEscapeContract",
 			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
 			Description: "live input routes into the active Antigravity CLI tmux session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/agycli/agycli_real_contract_test.go",
+			TestName:    "TestAgyCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
+			Env:         []string{"RUN_AGY_CLI_REAL_E2E=1", "RUN_AGY_CLI_INTERACTIVE_E2E=1"},
+			Description: "a follow-up submitted during a slow Antigravity tool call is processed by the same live session",
 			RealE2E:     true,
 		},
 		{
@@ -1096,6 +1131,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestPiCLIRealSlowToolLiveInputAndCancellationContract",
 			Env:         []string{"RUN_PI_CLI_REAL_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
 			Description: "live input routes into a registered real Pi tmux session while it is active",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/picli/picli_real_contract_test.go",
+			TestName:    "TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
+			Env:         []string{"RUN_PI_CLI_REAL_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
+			Description: "a follow-up submitted during a slow Pi tool call is processed by the same live session",
 			RealE2E:     true,
 		},
 		{

@@ -806,6 +806,8 @@ The current P0 set is intentionally limited to product survival requirements:
 - done detection
 - final response extraction
 - confirmed live follow-up input
+- follow-up input submitted while the agent is processing is handled by that
+  same live session after its in-flight work
 - cancellation
 - parallel isolation
 
