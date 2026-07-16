@@ -133,12 +133,14 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 
 	systemPrompt, conversationMessages := splitCodexSystemPrompt(messages)
 	historicalAssistantTexts := codexAssistantHistory(conversationMessages)
+	prompt := buildCodexInteractivePrompt(conversationMessages)
+	initialPromptAtLaunch := codexCanSubmitInitialPromptAtLaunch(opts, prompt)
 
 	acquireStart := time.Now()
 	inspector.EmitEvent("tmux_session_acquiring", map[string]interface{}{
 		"owner_session_id": ownerSessionID,
 	})
-	session, created, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt)
+	session, created, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt, prompt)
 	if err != nil {
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_session_acquire",
@@ -166,25 +168,30 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}()
 
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
+	initialPromptAtLaunch = created && initialPromptAtLaunch
 	if created {
-		c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s; waiting for startup prompt", ownerSessionID, session.tmuxSessionName)
-		waitForStartup := waitForCodexPrompt
-		if !launchOnly {
-			// Codex exposes its composer before MCP startup has gone quiet. The
-			// composer already accepts input at that point, so do not hold the
-			// first user message behind the slower full-idle readiness check.
-			waitForStartup = waitForCodexInputPrompt
+		if initialPromptAtLaunch {
+			c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s with launch prompt", ownerSessionID, session.tmuxSessionName)
+		} else {
+			c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s; waiting for startup prompt", ownerSessionID, session.tmuxSessionName)
+			waitForStartup := waitForCodexPrompt
+			if !launchOnly {
+				// Codex exposes its composer before MCP startup has gone quiet. The
+				// composer already accepts input at that point, so do not hold the
+				// first user message behind the slower full-idle readiness check.
+				waitForStartup = waitForCodexInputPrompt
+			}
+			if err := waitForStartup(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+				markCodexInteractiveSessionFailedLocked(session, err, c.logger)
+				releaseSession = false
+				failedSession := session
+				session.mu.Unlock()
+				session = nil
+				cleanupFailedCodexInteractiveSession(failedSession)
+				return nil, err
+			}
+			c.logger.Debugf("codex interactive startup prompt ready owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 		}
-		if err := waitForStartup(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
-			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
-			releaseSession = false
-			failedSession := session
-			session.mu.Unlock()
-			session = nil
-			cleanupFailedCodexInteractiveSession(failedSession)
-			return nil, err
-		}
-		c.logger.Debugf("codex interactive startup prompt ready owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	} else {
 		c.logger.Debugf("codex interactive reused initialized session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	}
@@ -222,11 +229,27 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}, nil
 	}
 
-	prompt := buildCodexInteractivePrompt(conversationMessages)
-	baseline, _ := captureCodexPane(callCtx, session.tmuxSessionName)
+	baseline := ""
+	if !initialPromptAtLaunch {
+		baseline, _ = captureCodexPane(callCtx, session.tmuxSessionName)
+	}
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
 	promptSentAt := time.Now()
-	if err := sendCodexPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+	if initialPromptAtLaunch {
+		var err error
+		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan)
+		if err != nil {
+			inspector.EmitError(err, map[string]interface{}{"phase": "tmux_initial_prompt_start"})
+			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
+			releaseSession = false
+			failedSession := session
+			session.mu.Unlock()
+			session = nil
+			cleanupFailedCodexInteractiveSession(failedSession)
+			return nil, err
+		}
+		c.logger.Debugf("codex interactive launch prompt accepted owner=%s tmux=%s elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond))
+	} else if err := sendCodexPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
 		inspector.EmitError(err, map[string]interface{}{"phase": "tmux_prompt_send"})
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
@@ -238,7 +261,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 	tmuxinput.MarkReady(session.tmuxSessionName)
 	inspector.EmitEvent("tmux_prompt_sent", map[string]interface{}{
-		"prompt_length": len(prompt),
+		"prompt_length":       len(prompt),
+		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan)
@@ -270,6 +294,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"response_chars": len(captured),
 		"elapsed_ms":     time.Since(promptSentAt).Milliseconds(),
 	})
+	c.logger.Debugf("codex interactive response captured owner=%s tmux=%s elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond))
 
 	content := parseCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	if forcedComplete && strings.TrimSpace(content) == "" {
@@ -411,7 +436,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 // acquireCodexInteractiveSession returns with session.mu held. The caller must
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
-func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt string) (*codexInteractiveSession, bool, error) {
+func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt, initialPrompt string) (*codexInteractiveSession, bool, error) {
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
@@ -474,6 +499,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, false, err
 	}
 	c.logger.Debugf("codex interactive built args owner=%s args=%d", ownerSessionID, len(args))
+	args = appendCodexInitialPromptArgs(args, opts, initialPrompt)
 	session.systemPromptTempFile = systemPromptTempFile
 	session.projectInstructionCleanup = projectCleanup
 
@@ -1033,6 +1059,27 @@ func buildCodexInteractivePrompt(messages []llmtypes.MessageContent) string {
 	return ""
 }
 
+func codexCanSubmitInitialPromptAtLaunch(opts *llmtypes.CallOptions, prompt string) bool {
+	if strings.TrimSpace(prompt) == "" || llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+		return false
+	}
+	// `codex [PROMPT]` accepts a positional first prompt. `codex resume`,
+	// however, has a different positional shape and is intentionally left on
+	// the established ready-then-paste path.
+	return strings.TrimSpace(codexResumeSessionIDFromOptions(opts)) == ""
+}
+
+func appendCodexInitialPromptArgs(args []string, opts *llmtypes.CallOptions, prompt string) []string {
+	if !codexCanSubmitInitialPromptAtLaunch(opts, prompt) {
+		return args
+	}
+	// Codex supports an optional positional prompt. Supplying the first user
+	// message here lets the CLI start the turn as soon as its own startup and
+	// MCP initialization finish instead of launching an empty composer and
+	// making the caller wait before pasting the same message through tmux.
+	return append(args, "--", prompt)
+}
+
 func codexMCPServerNameFromConfigOverride(override string) string {
 	override = strings.TrimSpace(override)
 	if !strings.HasPrefix(override, "mcp_servers.") {
@@ -1229,6 +1276,78 @@ func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan
 
 func waitForCodexInputPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
 	return waitForCodexPromptMode(ctx, sessionName, streamChan, true)
+}
+
+func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+	maxWait := codexInteractivePromptMaxWait()
+	maxTimer := time.NewTimer(maxWait)
+	defer maxTimer.Stop()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	dismissedTrustPrompt := false
+	dismissedRateReminder := false
+	hookTrustDismissAttempts := 0
+	const maxHookTrustDismissAttempts = 6
+	var lastTerminalSnapshot string
+	var lastTerminalStreamedAt time.Time
+	var lastStartupCapture string
+	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return lastStartupCapture, ctx.Err()
+		case <-maxTimer.C:
+			captured, _ := captureCodexPane(context.Background(), sessionName)
+			if strings.TrimSpace(captured) != "" {
+				return lastStartupCapture, fmt.Errorf("timed out after %s waiting for Codex CLI launch prompt to start; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+			}
+			return lastStartupCapture, fmt.Errorf("timed out after %s waiting for Codex CLI launch prompt to start", maxWait)
+		case <-ticker.C:
+			captured, err := captureCodexPane(ctx, sessionName)
+			if err != nil {
+				continue
+			}
+			if streamChan != nil && streamTerminalScreen && time.Since(lastTerminalStreamedAt) >= time.Second {
+				if streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
+					lastTerminalStreamedAt = time.Now()
+				}
+			}
+			if hasCodexTrustPrompt(captured) {
+				if !dismissedTrustPrompt {
+					_ = dismissCodexTrustPrompt(ctx, sessionName, captured)
+					dismissedTrustPrompt = true
+				}
+				continue
+			}
+			if hasCodexHookTrustReviewPrompt(captured) && hookTrustDismissAttempts < maxHookTrustDismissAttempts {
+				_ = dismissCodexHookTrustReviewPrompt(ctx, sessionName)
+				hookTrustDismissAttempts++
+				continue
+			}
+			if hasCodexRateLimitReminderModal(captured) {
+				if !dismissedRateReminder {
+					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
+					dismissedRateReminder = true
+				}
+				continue
+			}
+			// A launch-time positional prompt is accepted once Codex shows active
+			// work, queued input, the echoed user prompt, or a completed answer.
+			// The last case covers very short turns that finish between captures.
+			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) ||
+				codexPaneShowsPromptDraft(captured, prompt) ||
+				(hasCodexReadyPrompt(captured) && strings.TrimSpace(parseCodexInteractiveResponse(captured, "", prompt, nil)) != "") ||
+				hasCodexPolicyInvalidPrompt(captured) {
+				return lastStartupCapture, nil
+			}
+			// Retain only screens observed before the launch prompt starts. The
+			// response watcher subtracts this baseline so Codex's startup animation
+			// and old "model: loading" frames cannot look like perpetual activity.
+			lastStartupCapture = captured
+		}
+	}
 }
 
 func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, acceptActiveComposer bool) error {
@@ -1493,6 +1612,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				return "", err
 			}
 			delta := codexCapturedAfterBaseline(captured, baseline)
+			stableCapture := codexPromptCandidateStabilitySnapshot(captured)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
 			}
@@ -1505,8 +1625,8 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			// and history which the success path also defers to the caller. Only
 			// armed once sawActivity is set, so a never-delivered prompt (pane never
 			// changed from baseline) never trips it.
-			if captured != backstopPrevCapture {
-				backstopPrevCapture = captured
+			if stableCapture != backstopPrevCapture {
+				backstopPrevCapture = stableCapture
 				paneUnchangedSince = time.Now()
 			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
 				time.Since(paneUnchangedSince) >= stalePaneBackstop {
@@ -1517,10 +1637,10 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
-			if hasCodexQueuedInput(captured) {
+			if hasCodexQueuedInput(delta) {
 				sawActivity = true
 				idleSince = time.Time{}
-				lastCaptured = captured
+				lastCaptured = stableCapture
 				continue
 			}
 			if hasCodexRateLimitReminderModal(captured) {
@@ -1530,13 +1650,13 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				}
 				sawActivity = true
 				idleSince = time.Time{}
-				lastCaptured = captured
+				lastCaptured = stableCapture
 				continue
 			}
-			if hasCodexActivity(captured) {
+			if hasCodexActivity(delta) {
 				sawActivity = true
 				idleSince = time.Time{}
-				lastCaptured = captured
+				lastCaptured = stableCapture
 				continue
 			}
 			if strings.TrimSpace(delta) != "" {
@@ -1544,11 +1664,11 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			}
 			if !sawActivity || !hasCodexReadyPrompt(captured) {
 				idleSince = time.Time{}
-				lastCaptured = captured
+				lastCaptured = stableCapture
 				continue
 			}
-			if captured != lastCaptured {
-				lastCaptured = captured
+			if stableCapture != lastCaptured {
+				lastCaptured = stableCapture
 				idleSince = time.Now()
 				continue
 			}
