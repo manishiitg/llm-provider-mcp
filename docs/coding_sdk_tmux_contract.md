@@ -8,7 +8,7 @@ Covered providers:
 - `claude-code`
 - `codex-cli`
 - `cursor-cli`
-- `agy-cli`
+- `pi-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -789,12 +789,45 @@ functions. Normal unit tests fail if `claude-code` or `codex-cli` claims a
 capability in `coding_agent_contract.go` without a registered certification, or
 if the registered certification points at a missing test function.
 
-For `claude-code` and `codex-cli`, this registry is a hard P0 gate for every row
-in the table below. A row may be certified by a deterministic unit test only when
-the behavior is provider-independent or not safely reproducible against the live
-CLI on every run; otherwise the registry must point at an opt-in real E2E test.
-Future tmux providers must be added to the same registry before being marked
-production-ready.
+Every active tmux provider has an explicit certification priority. P0 is a hard,
+non-waivable release gate for `claude-code`, `codex-cli`, `cursor-cli`, and
+`pi-cli`. `knownCertificationGaps` may track P1 work, but it cannot suppress a
+missing P0 proof. The fast CI lane verifies the registry on every change; the
+authenticated lane runs the actual provider CLIs and the AgentWorks workflow
+advance test.
+
+The current P0 set is intentionally limited to product survival requirements:
+
+- fresh launch
+- runtime context (system prompt, attached skill, and MCP bridge in one real run)
+- exact working directory
+- MCP bridge availability
+- slow-tool false-idle protection
+- done detection
+- final response extraction
+- confirmed live follow-up input
+- cancellation
+- parallel isolation
+
+The application-level P0 adds two required proofs: live-input acknowledgement
+must not wait behind the active turn's session lane, and after the real CLI
+becomes idle AgentWorks must persist the first step and start a second dependent
+step. These catch regressions where chat remains stuck on `Sending`, or the
+terminal visibly says the work is complete but the workflow remains `running`.
+
+Run the fast and real gates from the `coding-agent-loop` checkout:
+
+```bash
+./scripts/run-coding-cli-p0.sh
+
+RUN_CODING_CLI_P0_REAL=1 \
+CODING_CLI_P0_PROVIDERS=codex-cli \
+./scripts/run-coding-cli-p0.sh
+```
+
+The `Coding CLI P0` GitHub workflow runs the fast gate on changes. Its real job
+can be dispatched manually and can run nightly on an authenticated self-hosted
+macOS runner when `CODING_CLI_P0_NIGHTLY_ENABLED=true` is configured.
 
 Every tmux coding provider must have opt-in real E2E tests for:
 

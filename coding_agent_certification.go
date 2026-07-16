@@ -10,8 +10,19 @@ import (
 // map to these IDs instead of being treated as comments.
 type CodingAgentCertificationID string
 
+// CodingAgentCertificationPriority separates the absolute runtime contract
+// from broader compatibility coverage. P0 is release-blocking: an active CLI
+// provider is not usable when any P0 proof is missing.
+type CodingAgentCertificationPriority string
+
+const (
+	CodingAgentCertificationPriorityP0 CodingAgentCertificationPriority = "P0"
+	CodingAgentCertificationPriorityP1 CodingAgentCertificationPriority = "P1"
+)
+
 const (
 	CertFreshLaunch               CodingAgentCertificationID = "fresh_launch"
+	CertRuntimeContext            CodingAgentCertificationID = "runtime_context"
 	CertResumeCompactionStartup   CodingAgentCertificationID = "resume_compaction_startup"
 	CertStartupTerminalVisibility CodingAgentCertificationID = "startup_terminal_visibility"
 	CertWorkingDirectory          CodingAgentCertificationID = "working_directory"
@@ -54,6 +65,7 @@ const (
 // capability flags below instead.
 var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
+	CertRuntimeContext,
 	CertResumeCompactionStartup,
 	CertStartupTerminalVisibility,
 	CertWorkingDirectory,
@@ -81,11 +93,30 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertSessionLossRecovery,
 }
 
+// requiredP0CertificationIDs is deliberately short. These are the contracts
+// without which AgentWorks cannot safely run a coding CLI: launch in the right
+// workspace, receive the system prompt/skills/MCP runtime, avoid false idle,
+// detect completion, accept live follow-up input, return the final answer,
+// cancel, and isolate concurrency.
+var requiredP0CertificationIDs = []CodingAgentCertificationID{
+	CertFreshLaunch,
+	CertRuntimeContext,
+	CertWorkingDirectory,
+	CertMCPBridge,
+	CertSlowToolFalseIdle,
+	CertDoneDetection,
+	CertFinalExtraction,
+	CertLiveInput,
+	CertCancellation,
+	CertParallelIsolation,
+}
+
 // CodingAgentCertification records the real or deterministic test that proves a
 // certification ID. TestFile is repository-relative so normal unit tests can
 // verify that the referenced proof still exists.
 type CodingAgentCertification struct {
 	ID          CodingAgentCertificationID
+	Priority    CodingAgentCertificationPriority
 	TestFile    string
 	TestName    string
 	Env         []string
@@ -117,6 +148,14 @@ var codingAgentCapabilityCertifications = []struct {
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
+		{
+			ID:          CertRuntimeContext,
+			TestFile:    "pkg/adapters/claudecode/claudecode_runtime_self_check_e2e_test.go",
+			TestName:    "TestClaudeCodeTmuxRuntimeSelfCheckContract",
+			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
+			Description: "proves the real Claude Code session receives its system prompt, attached skill, and MCP bridge",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertFreshLaunch,
 			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
@@ -321,6 +360,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{
+			ID:          CertRuntimeContext,
+			TestFile:    "pkg/adapters/codexcli/codexcli_runtime_self_check_e2e_test.go",
+			TestName:    "TestCodexCLIRealRuntimeSelfCheckContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1"},
+			Description: "proves the real Codex CLI session receives its system prompt, attached skill, and MCP bridge",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertFreshLaunch,
 			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
@@ -527,6 +574,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCursorCLI: {
+		{
+			ID:          CertRuntimeContext,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go",
+			TestName:    "TestCursorCLIRealRuntimeSelfCheckContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "proves the real Cursor CLI session receives its system prompt, attached skill, and MCP bridge",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertFreshLaunch,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
@@ -900,6 +955,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderPiCLI: {
 		{
+			ID:          CertRuntimeContext,
+			TestFile:    "pkg/adapters/picli/picli_runtime_self_check_e2e_test.go",
+			TestName:    "TestPiCLIRealRuntimeSelfCheckContract",
+			Env:         []string{"RUN_PI_CLI_REAL_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
+			Description: "proves the real Pi CLI session receives its system prompt, attached skill, and MCP bridge",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertMCPBridge,
 			TestFile:    "pkg/adapters/picli/picli_mcp_bridge_real_test.go",
 			TestName:    "TestPiCLIRealMCPBridgeOnlyToolsContract",
@@ -1152,6 +1215,11 @@ func RequiredCodingAgentCertificationIDs(contract CodingAgentProviderContract) [
 func CodingAgentProviderCertifications(provider Provider) []CodingAgentCertification {
 	provider = Provider(strings.ToLower(strings.TrimSpace(string(provider))))
 	certs := append([]CodingAgentCertification(nil), codingAgentProviderCertifications[provider]...)
+	for i := range certs {
+		if certs[i].Priority == "" {
+			certs[i].Priority = CodingAgentCertificationPriorityForID(certs[i].ID)
+		}
+	}
 	sort.Slice(certs, func(i, j int) bool {
 		if certs[i].ID == certs[j].ID {
 			return certs[i].TestName < certs[j].TestName
@@ -1159,6 +1227,42 @@ func CodingAgentProviderCertifications(provider Provider) []CodingAgentCertifica
 		return certs[i].ID < certs[j].ID
 	})
 	return certs
+}
+
+// CodingAgentCertificationPriorityForID returns the release priority for a
+// proof ID. New certifications default to P1 until deliberately promoted.
+func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) CodingAgentCertificationPriority {
+	for _, required := range requiredP0CertificationIDs {
+		if id == required {
+			return CodingAgentCertificationPriorityP0
+		}
+	}
+	return CodingAgentCertificationPriorityP1
+}
+
+// RequiredP0CodingAgentCertificationIDs returns the non-negotiable runtime
+// proofs for active tmux coding-agent providers.
+func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
+	if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+		return nil
+	}
+	return append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
+}
+
+// MissingP0CodingAgentCertifications is intentionally independent from the
+// broader known-gap mechanism: P0 gaps can never be waived as TODOs.
+func MissingP0CodingAgentCertifications(contract CodingAgentProviderContract) []CodingAgentCertificationID {
+	have := make(map[CodingAgentCertificationID]struct{})
+	for _, cert := range CodingAgentProviderCertifications(contract.Provider) {
+		have[cert.ID] = struct{}{}
+	}
+	var missing []CodingAgentCertificationID
+	for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+		if _, ok := have[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }
 
 func MissingCodingAgentCertifications(contract CodingAgentProviderContract) []CodingAgentCertificationID {

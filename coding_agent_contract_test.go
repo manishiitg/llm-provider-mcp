@@ -455,6 +455,34 @@ func TestCodingAgentCertificationReferencesExistingTests(t *testing.T) {
 	}
 }
 
+func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+			continue
+		}
+		if missing := MissingP0CodingAgentCertifications(contract); len(missing) > 0 {
+			t.Fatalf("%s is missing release-blocking P0 certifications: %v", contract.Provider, missing)
+		}
+
+		byID := make(map[CodingAgentCertificationID]CodingAgentCertification)
+		for _, cert := range CodingAgentProviderCertifications(contract.Provider) {
+			byID[cert.ID] = cert
+		}
+		for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+			cert := byID[id]
+			if cert.Priority != CodingAgentCertificationPriorityP0 {
+				t.Fatalf("%s certification %s priority = %q, want P0", contract.Provider, id, cert.Priority)
+			}
+			if !cert.RealE2E {
+				t.Fatalf("%s P0 certification %s must be backed by a real CLI E2E: %#v", contract.Provider, id, cert)
+			}
+			if len(cert.Env) == 0 {
+				t.Fatalf("%s P0 certification %s must document its real E2E gate", contract.Provider, id)
+			}
+		}
+	}
+}
+
 func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 	certs := CodingAgentProviderCertifications(ProviderPiCLI)
 	if len(certs) == 0 {

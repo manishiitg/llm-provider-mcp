@@ -12,6 +12,32 @@ permissions:
   security-events: write
 
 jobs:
+  coding-cli-p0-fast:
+    name: Coding CLI P0 contract (fast)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.25.12'
+        cache-dependency-path: go.sum
+
+    - name: Enforce release-blocking CLI certifications
+      run: >-
+        go test .
+        -run 'TestActiveCodingAgentProvidersSatisfyP0Contract|TestCodingAgentCertificationReferencesExistingTests'
+        -count=1
+
+    - name: Run deterministic Codex completion regressions
+      run: >-
+        go test ./pkg/adapters/codexcli
+        -run 'TestCodexV0144WorkedFooterAllowsReadyPromptDespiteOldWorkingLine|TestWaitForCodexInteractiveResponseCompletesOnV0144WorkedFooter'
+        -count=1
+
   lint:
     name: Lint with golangci-lint
     runs-on: ubuntu-latest
