@@ -1474,6 +1474,78 @@ func TestCodexCompletedStatusAllowsReadyPromptDespiteOldWorkingLine(t *testing.T
 	}
 }
 
+func TestCodexV0144WorkedFooterAllowsReadyPromptDespiteOldWorkingLine(t *testing.T) {
+	pane := `
+› analyze the staging commits
+
+• Working (4m 17s • esc to interrupt)
+
+• Analyzed 107 new staging commits and updated the change queue.
+
+  STATUS: COMPLETED
+
+─ Worked for 4m 23s ────────────────────────────────────────────────────────────────────────────
+
+› Write tests for @filename
+
+  gpt-5.6-terra medium · /tmp/workspace
+`
+	if !isCodexCompletedStatusLine("─ Worked for 4m 23s ──────") {
+		t.Fatalf("Codex 0.144.1 worked footer should be classified as completed")
+	}
+	if hasCodexActivity(pane) {
+		t.Fatalf("completed Codex 0.144.1 turn should not be kept active by its old working line")
+	}
+	if !hasCodexReadyPrompt(pane) {
+		t.Fatalf("completed Codex 0.144.1 turn with an empty composer should be ready")
+	}
+}
+
+func TestCodexBoxDrawingWaitingFooterDoesNotLookCompleted(t *testing.T) {
+	if isCodexCompletedStatusLine("─ Waiting for approval ──────") {
+		t.Fatalf("non-terminal box-drawing status must not be classified as completed")
+	}
+}
+
+func TestWaitForCodexInteractiveResponseCompletesOnV0144WorkedFooter(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' \
+    '› analyze the staging commits' \
+    '• Working (4m 17s • esc to interrupt)' \
+    '• Analyzed 107 new staging commits.' \
+    '  STATUS: COMPLETED' \
+    '─ Worked for 4m 23s ────────────────' \
+    '› Write tests for @filename' \
+    '  gpt-5.6-terra medium · /tmp/workspace'
+fi
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil)
+	if err != nil {
+		t.Fatalf("completed Codex 0.144.1 pane did not satisfy the response contract: %v", err)
+	}
+	if !strings.Contains(captured, "STATUS: COMPLETED") {
+		t.Fatalf("completed response capture was lost: %q", captured)
+	}
+	response := parseCodexInteractiveResponse(captured, "Codex ready\n›", "analyze the staging commits", nil)
+	if !strings.Contains(response, "Analyzed 107 new staging commits") {
+		t.Fatalf("completed assistant response was not extracted: %q", response)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("completed pane was only released by the context deadline/backstop: elapsed=%v", elapsed)
+	}
+}
+
 func TestParseCodexInteractiveResponseRejectsQueuedValidationEcho(t *testing.T) {
 	baseline := "Codex ready\n›"
 	captured := baseline + `
