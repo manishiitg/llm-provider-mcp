@@ -26,6 +26,16 @@ func TestRenderCodexProjectConfigTOMLBasicShape(t *testing.T) {
 	got := renderCodexProjectConfigTOML(servers)
 	expected := []string{
 		`service_tier = "default"`,
+		`check_for_update_on_startup = false`,
+		`disable_paste_burst = true`,
+		"[tui]",
+		`notifications = false`,
+		`animations = false`,
+		`show_tooltips = false`,
+		"[apps._default]",
+		"[features]",
+		`remote_plugin = false`,
+		`skill_mcp_dependency_install = false`,
 		"[mcp_servers.api-bridge]",
 		`command = "/usr/local/bin/mcpbridge"`,
 		`args = ["--port", "9000"]`,
@@ -115,7 +125,7 @@ func TestWriteCodexProjectConfigTOMLRestoresOperatorContent(t *testing.T) {
 	}
 }
 
-func TestWriteCodexProjectConfigTOMLWithoutMCPUsesStandardTier(t *testing.T) {
+func TestWriteCodexProjectConfigTOMLWithoutMCPUsesAgentWorksDefaults(t *testing.T) {
 	tmp := t.TempDir()
 	cleanup, err := writeCodexProjectConfigTOML(tmp, "", false)
 	if err != nil {
@@ -127,8 +137,22 @@ func TestWriteCodexProjectConfigTOMLWithoutMCPUsesStandardTier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated config.toml: %v", err)
 	}
-	if !strings.Contains(string(data), `service_tier = "default"`) {
-		t.Fatalf("generated config must override a user-level fast tier; got:\n%s", data)
+	for _, want := range []string{
+		`service_tier = "default"`,
+		`check_for_update_on_startup = false`,
+		`disable_paste_burst = true`,
+		"[tui]",
+		`notifications = false`,
+		`animations = false`,
+		`show_tooltips = false`,
+		"[apps._default]",
+		"[features]",
+		`remote_plugin = false`,
+		`skill_mcp_dependency_install = false`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("generated config missing %q; got:\n%s", want, data)
+		}
 	}
 	if strings.Contains(string(data), "[mcp_servers.") {
 		t.Fatalf("empty MCP input must not create MCP server blocks; got:\n%s", data)

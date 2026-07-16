@@ -265,10 +265,11 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 //     model_instructions_file already injects.
 //
 //   - <workingDir>/.codex/config.toml
-//     AgentWorks session defaults, including service_tier="default" so a
-//     user-level /fast choice does not leak into workflow sessions, plus
-//     optional [mcp_servers.NAME] tables synthesized from WithMCPServers JSON.
-//     Explicit per-invocation -c overrides still take precedence.
+//     AgentWorks session defaults that neutralize user-level /fast, update,
+//     TUI-notification, connector, remote-plugin, and automatic skill-MCP
+//     choices, plus optional [mcp_servers.NAME] tables synthesized from
+//     WithMCPServers JSON. Explicit per-invocation -c overrides still take
+//     precedence.
 //
 //   - <workingDir>/.codex/hooks.json
 //
