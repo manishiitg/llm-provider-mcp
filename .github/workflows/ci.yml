@@ -35,7 +35,7 @@ jobs:
     - name: Run deterministic Codex completion regressions
       run: >-
         go test ./pkg/adapters/codexcli
-        -run 'TestCodexV0144WorkedFooterAllowsReadyPromptDespiteOldWorkingLine|TestWaitForCodexInteractiveResponseCompletesOnV0144WorkedFooter'
+        -run 'TestCodexV0144WorkedFooterAllowsReadyPromptDespiteOldWorkingLine|TestWaitForCodexInteractiveResponseCompletesOnV0144WorkedFooter|TestWaitForCodexInteractiveResponseUsesTaskCompleteWhenFooterIsMissing|TestCodexTurnCompletionTracker|TestWaitForCodexInteractiveResponseFiveMinuteFallback|TestWaitForCodexInteractiveResponseFallbackRejectsIdleComposerWithoutCompletedMarker'
         -count=1
 
   lint:

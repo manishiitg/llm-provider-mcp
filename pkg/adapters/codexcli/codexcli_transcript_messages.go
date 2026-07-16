@@ -41,11 +41,10 @@ import (
 //
 // Best-effort: returns nil on any error or when no rollout is found.
 func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string) []llmtypes.MessageContent {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	root := codexSessionsRoot()
+	if root == "" {
 		return nil
 	}
-	root := filepath.Join(home, ".codex", "sessions")
 
 	cutoff := turnStart.Add(-30 * time.Second)
 	type cand struct {

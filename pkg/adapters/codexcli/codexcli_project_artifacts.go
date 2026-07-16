@@ -194,13 +194,67 @@ func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string, restorePrior
 // codexMCPServerSpec mirrors codex's MCP server schema from
 // developers.openai.com/codex/mcp. Fields are optional except command.
 type codexMCPServerSpec struct {
-	Command           string            `json:"command"`
-	Args              []string          `json:"args,omitempty"`
-	Env               map[string]string `json:"env,omitempty"`
-	EnvVars           []string          `json:"env_vars,omitempty"`
-	StartupTimeoutSec *int              `json:"startup_timeout_sec,omitempty"`
-	ToolTimeoutSec    *int              `json:"tool_timeout_sec,omitempty"`
-	Enabled           *bool             `json:"enabled,omitempty"`
+	Command                  string            `json:"command"`
+	Args                     []string          `json:"args,omitempty"`
+	Env                      map[string]string `json:"env,omitempty"`
+	EnvVars                  []string          `json:"env_vars,omitempty"`
+	StartupTimeoutSec        *int              `json:"startup_timeout_sec,omitempty"`
+	ToolTimeoutSec           *int              `json:"tool_timeout_sec,omitempty"`
+	Enabled                  *bool             `json:"enabled,omitempty"`
+	DefaultToolsApprovalMode string            `json:"default_tools_approval_mode,omitempty"`
+}
+
+// writeCodexSessionMCPProfile materializes per-invocation MCP configuration in
+// a unique profile under CODEX_HOME. Codex has no --config-file flag, while
+// -c mcp_servers.* overrides put every environment value (including schemas
+// and secrets) on the tmux command line. A profile keeps argv bounded, remains
+// isolated across concurrent agents, and preserves the user's normal
+// CODEX_HOME authentication/session state.
+func writeCodexSessionMCPProfile(mcpServersJSON string) (string, func(), error) {
+	noop := func() {}
+	if strings.TrimSpace(mcpServersJSON) == "" {
+		return "", noop, nil
+	}
+
+	var servers map[string]codexMCPServerSpec
+	if err := json.Unmarshal([]byte(mcpServersJSON), &servers); err != nil {
+		return "", noop, fmt.Errorf("parse session MCP servers JSON: %w", err)
+	}
+	if len(servers) == 0 {
+		return "", noop, fmt.Errorf("session MCP servers JSON is empty")
+	}
+
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", noop, fmt.Errorf("resolve Codex home: %w", err)
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return "", noop, fmt.Errorf("create Codex home: %w", err)
+	}
+
+	profileFile, err := os.CreateTemp(codexHome, "agentworks-*.config.toml")
+	if err != nil {
+		return "", noop, fmt.Errorf("create Codex session MCP profile: %w", err)
+	}
+	path := profileFile.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if _, err := profileFile.WriteString(renderCodexProjectConfigTOML(servers)); err != nil {
+		_ = profileFile.Close()
+		cleanup()
+		return "", noop, fmt.Errorf("write Codex session MCP profile: %w", err)
+	}
+	if err := profileFile.Close(); err != nil {
+		cleanup()
+		return "", noop, fmt.Errorf("close Codex session MCP profile: %w", err)
+	}
+
+	base := filepath.Base(path)
+	profileName := strings.TrimSuffix(base, ".config.toml")
+	return profileName, cleanup, nil
 }
 
 // renderCodexProjectConfigTOML emits AgentWorks' project-scoped Codex defaults
@@ -253,6 +307,9 @@ func renderCodexProjectConfigTOML(servers map[string]codexMCPServerSpec) string 
 		}
 		if spec.Enabled != nil {
 			fmt.Fprintf(&b, "enabled = %t\n", *spec.Enabled)
+		}
+		if spec.DefaultToolsApprovalMode != "" {
+			fmt.Fprintf(&b, "default_tools_approval_mode = %s\n", tomlQuoteString(spec.DefaultToolsApprovalMode))
 		}
 		if len(spec.Env) > 0 {
 			fmt.Fprintf(&b, "\n[mcp_servers.%s.env]\n", tomlQuoteKey(name))

@@ -43,11 +43,10 @@ import (
 // thread ID is the Codex session UUID from session_meta or the rollout
 // filename.
 func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string) (*llmtypes.GenerationInfo, string, string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	root := codexSessionsRoot()
+	if root == "" {
 		return nil, "", ""
 	}
-	root := filepath.Join(home, ".codex", "sessions")
 
 	// Find the freshest rollout-*.jsonl whose mtime is at-or-after turnStart-30s.
 	cutoff := turnStart.Add(-30 * time.Second)

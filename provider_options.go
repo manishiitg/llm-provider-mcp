@@ -201,6 +201,12 @@ func WithCodexConfigOverrides(overrides []string) llmtypes.CallOption {
 	return codexcli.WithConfigOverrides(overrides)
 }
 
+// WithCodexMCPServers materializes per-session MCP server configuration in a
+// temporary Codex profile TOML instead of passing it through -c arguments.
+func WithCodexMCPServers(mcpJSON string) llmtypes.CallOption {
+	return codexcli.WithMCPServers(mcpJSON)
+}
+
 // WithCodexProjectDirID sets the --cd flag for the Codex CLI working directory.
 func WithCodexProjectDirID(dir string) llmtypes.CallOption {
 	return codexcli.WithProjectDirID(dir)

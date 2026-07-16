@@ -43,10 +43,12 @@ const (
 	codexPromptCandidateStableWindow   = 2 * time.Second
 	codexActivityScanNonEmptyLines     = 160
 
-	// A byte-stable pane is not proof that Codex finished: long reasoning and MCP
-	// calls can legitimately leave the TUI unchanged. Keep this recovery policy
-	// opt-in instead of returning a partial response after an arbitrary delay.
-	defaultCodexInteractiveStalePaneBackstop = 0
+	// Last-resort completion recovery for unattended workflows. Stability alone
+	// is not sufficient: the response loop also requires an exact
+	// "STATUS: COMPLETED" marker, a returned empty composer, prior turn activity,
+	// and no queued input/modal before applying this backstop. Native rollout
+	// task_complete events remain the primary path.
+	defaultCodexInteractiveStalePaneBackstop = 5 * time.Minute
 
 	EnvCodexInteractiveSessionPrefix            = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
@@ -265,7 +267,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan)
+	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		inspector.EmitError(err, map[string]interface{}{
@@ -547,6 +549,27 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 		}
 	}
 
+	// Materialize session-scoped MCP configuration before projecting workspace
+	// artifacts. Large tool schemas and bridge credentials must live in TOML,
+	// never in -c command-line overrides.
+	var mcpServersJSON string
+	var configuredProfile string
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
+			mcpServersJSON = v
+		}
+		if v, ok := opts.Metadata.Custom[MetadataKeyConfigProfile].(string); ok {
+			configuredProfile = strings.TrimSpace(v)
+		}
+	}
+	if strings.TrimSpace(mcpServersJSON) != "" && configuredProfile != "" {
+		return nil, "", nil, fmt.Errorf("codex CLI cannot combine an explicit profile %q with the AgentWorks session MCP profile", configuredProfile)
+	}
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
 	// Project the opt-in workspace artifacts (AGENTS.md system prompt,
 	// .codex/config.toml session defaults and optional MCP tables) FIRST so projection success is known
 	// before deciding whether to skip the CLI-side -c model_instructions_file
@@ -562,17 +585,22 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	projectedToInstructionFile := false
 	workingDir := codexWorkingDirFromOptions(opts)
 	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(workingDir) != "" && strings.TrimSpace(systemPrompt) != "" {
-		mcpServersJSON := ""
-		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-			if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
-				mcpServersJSON = v
-			}
-		}
-		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON, true, restoreProjectFilesFromOptions(opts)); perr != nil {
+		// MCP lives in the unique CODEX_HOME profile above. Keeping it out of
+		// the project file avoids shared-workspace races and secret persistence.
+		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, "", true, restoreProjectFilesFromOptions(opts)); perr != nil {
 			c.logger.Errorf("codex cli: project artifacts write failed (best-effort): %v", perr)
 		} else if cleanup != nil {
 			projectCleanup = cleanup
 			projectedToInstructionFile = true
+		}
+	}
+	if sessionProfileCleanup != nil {
+		priorCleanup := projectCleanup
+		projectCleanup = func() {
+			if priorCleanup != nil {
+				priorCleanup()
+			}
+			sessionProfileCleanup()
 		}
 	}
 
@@ -599,6 +627,9 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	// we never have hooks codex needs to trust-bypass for.)
 	if resumeSessionID != "" {
 		args = append(args, "resume")
+	}
+	if sessionProfile != "" {
+		args = append(args, "--profile", sessionProfile)
 	}
 	args = appendCodexDisableUpdateArgs(args)
 	args = append(args, "--no-alt-screen")
@@ -1584,7 +1615,7 @@ func codexPaneShowsPromptDraft(captured, message string) bool {
 	return false
 }
 
-func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
@@ -1601,6 +1632,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
+	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1616,6 +1648,12 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
 			}
+			// Prefer Codex's native per-turn completion event. Terminal status
+			// lines are retained in tmux scrollback and are therefore only a
+			// compatibility fallback, not the source of truth for liveness.
+			if completionTracker.completed() {
+				return captured, nil
+			}
 			// Stale-pane backstop. Independent of hasCodexReadyPrompt and every
 			// branch below: if the pane has produced activity and then frozen
 			// (byte-identical) for longer than the backstop, the turn is over but
@@ -1629,7 +1667,8 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				backstopPrevCapture = stableCapture
 				paneUnchangedSince = time.Now()
 			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
-				time.Since(paneUnchangedSince) >= stalePaneBackstop {
+				time.Since(paneUnchangedSince) >= stalePaneBackstop &&
+				hasCodexPromptCandidate(captured) && hasCodexExplicitCompletedMarker(captured) {
 				return captured, nil
 			}
 			if streamChan != nil && streamTerminalScreen {
@@ -2877,6 +2916,15 @@ func hasCodexReadyPrompt(captured string) bool {
 		return false
 	}
 	return !hasCodexActivity(captured)
+}
+
+func hasCodexExplicitCompletedMarker(captured string) bool {
+	for _, line := range strings.Split(stripCodexANSI(captured), "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "STATUS: COMPLETED") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasCodexPromptCandidate(captured string) bool {

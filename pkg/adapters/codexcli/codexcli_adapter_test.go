@@ -2,6 +2,7 @@ package codexcli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -524,6 +525,113 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	want := []string{"codex", "resume", "-c", "check_for_update_on_startup=false", "--no-alt-screen", "--model", "gpt-5.5", "019e2584-a35a-7100-877e-209c4518f957"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %v, want %v", args, want)
+	}
+}
+
+func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T) {
+	const secret = "bridge-token-must-not-appear-in-argv"
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	largeToolSchema := strings.Repeat("agent-browser production schema and instructions ", 12000)
+	mcpJSONBytes, err := json.Marshal(map[string]interface{}{
+		"api-bridge": map[string]interface{}{
+			"command": "/usr/local/bin/mcpbridge",
+			"env": map[string]string{
+				"MCP_API_TOKEN": secret,
+				"MCP_API_URL":   "http://127.0.0.1:45678",
+				"MCP_TOOLS":     largeToolSchema,
+			},
+			"tool_timeout_sec":            5400,
+			"default_tools_approval_mode": "approve",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal MCP config: %v", err)
+	}
+
+	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithMCPServers(string(mcpJSONBytes))(opts)
+	WithWriteProjectInstructionFile(false)(opts)
+
+	args, systemPromptFile, cleanup, err := adapter.buildCodexInteractiveArgs(opts, "")
+	if err != nil {
+		t.Fatalf("buildCodexInteractiveArgs error = %v", err)
+	}
+	if systemPromptFile != "" {
+		t.Fatalf("systemPromptFile = %q, want empty", systemPromptFile)
+	}
+	if cleanup == nil {
+		t.Fatal("session MCP profile cleanup is nil")
+	}
+
+	joined := strings.Join(args, "\x00")
+	if strings.Contains(joined, secret) || strings.Contains(joined, "MCP_TOOLS") || strings.Contains(joined, largeToolSchema[:128]) {
+		t.Fatalf("Codex argv leaked session MCP configuration; argv bytes=%d", len(joined))
+	}
+	if len(joined) > 4096 {
+		t.Fatalf("Codex argv unexpectedly large: %d bytes", len(joined))
+	}
+
+	profileName := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--profile" {
+			profileName = args[i+1]
+			break
+		}
+	}
+	if profileName == "" {
+		t.Fatalf("args missing generated --profile: %v", args)
+	}
+	profilePath := filepath.Join(codexHome, profileName+".config.toml")
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read generated MCP profile: %v", err)
+	}
+	profileText := string(profile)
+	for _, want := range []string{"[mcp_servers.api-bridge]", secret, "MCP_TOOLS", "tool_timeout_sec = 5400", `default_tools_approval_mode = "approve"`} {
+		if !strings.Contains(profileText, want) {
+			t.Fatalf("generated MCP profile missing %q", want)
+		}
+	}
+	info, err := os.Stat(profilePath)
+	if err != nil {
+		t.Fatalf("stat generated MCP profile: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("generated MCP profile mode = %o, want 600", got)
+	}
+
+	// Exercise the actual tmux launch assembly with the production-sized
+	// configuration. The fake tmux records argv exactly as the adapter supplies
+	// it, catching regressions where profile contents get expanded back onto the
+	// command line after buildCodexInteractiveArgs.
+	fakeBin := t.TempDir()
+	tmuxArgsPath := filepath.Join(fakeBin, "tmux-args.log")
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$TMUX_TEST_ARGS\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_ARGS", tmuxArgsPath)
+	if err := startCodexTmuxSession(context.Background(), "large-mcp-profile", args, ""); err != nil {
+		t.Fatalf("startCodexTmuxSession with production-sized MCP profile: %v", err)
+	}
+	launched, err := os.ReadFile(tmuxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake tmux argv: %v", err)
+	}
+	if strings.Contains(string(launched), secret) || strings.Contains(string(launched), "MCP_TOOLS") {
+		t.Fatalf("tmux launch argv leaked session MCP configuration")
+	}
+	if len(launched) > 8192 {
+		t.Fatalf("tmux launch argv unexpectedly large: %d bytes", len(launched))
+	}
+
+	cleanup()
+	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
+		t.Fatalf("generated MCP profile still exists after cleanup: %v", err)
 	}
 }
 
@@ -1550,7 +1658,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil)
+	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "")
 	if err != nil {
 		t.Fatalf("completed Codex 0.144.1 pane did not satisfy the response contract: %v", err)
 	}
@@ -1720,10 +1828,10 @@ func assertCodexNoInternalStatus(t *testing.T, streamed string) {
 	}
 }
 
-func TestCodexInteractiveStalePaneBackstopIsOptIn(t *testing.T) {
+func TestCodexInteractiveStalePaneBackstopDefaultsToFiveMinutes(t *testing.T) {
 	t.Setenv(EnvCodexInteractiveStalePaneBackstopSeconds, "")
-	if got := codexInteractiveStalePaneBackstop(); got != 0 {
-		t.Fatalf("default stale-pane backstop = %v, want disabled", got)
+	if got := codexInteractiveStalePaneBackstop(); got != 5*time.Minute {
+		t.Fatalf("default stale-pane backstop = %v, want 5m", got)
 	}
 
 	t.Setenv(EnvCodexInteractiveStalePaneBackstopSeconds, "180")
