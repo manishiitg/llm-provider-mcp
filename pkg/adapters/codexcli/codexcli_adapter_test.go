@@ -532,6 +532,31 @@ func TestCodexInteractiveArgsUseResumeCommandWhenThreadIDPresent(t *testing.T) {
 	}
 }
 
+func TestAppendCodexInitialPromptArgsOnlyForFreshInteractiveTurn(t *testing.T) {
+	base := []string{"codex", "--no-alt-screen"}
+	prompt := "inspect the workflow"
+
+	fresh := appendCodexInitialPromptArgs(append([]string(nil), base...), &llmtypes.CallOptions{}, prompt)
+	wantFresh := []string{"codex", "--no-alt-screen", "--", prompt}
+	if strings.Join(fresh, "\x00") != strings.Join(wantFresh, "\x00") {
+		t.Fatalf("fresh args = %v, want %v", fresh, wantFresh)
+	}
+
+	resumeOpts := &llmtypes.CallOptions{}
+	WithResumeSessionID("019e2584-a35a-7100-877e-209c4518f957")(resumeOpts)
+	resumed := appendCodexInitialPromptArgs(append([]string(nil), base...), resumeOpts, prompt)
+	if strings.Join(resumed, "\x00") != strings.Join(base, "\x00") {
+		t.Fatalf("resume args = %v, want no positional prompt", resumed)
+	}
+
+	launchOnlyOpts := &llmtypes.CallOptions{}
+	llmtypes.WithCodingProviderLaunchOnly()(launchOnlyOpts)
+	launchOnly := appendCodexInitialPromptArgs(append([]string(nil), base...), launchOnlyOpts, prompt)
+	if strings.Join(launchOnly, "\x00") != strings.Join(base, "\x00") {
+		t.Fatalf("launch-only args = %v, want no positional prompt", launchOnly)
+	}
+}
+
 func TestCodexInteractiveArgsRejectInvalidResumeSessionID(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
 	opts := &llmtypes.CallOptions{}
