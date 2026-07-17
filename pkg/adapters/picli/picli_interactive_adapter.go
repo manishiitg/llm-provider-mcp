@@ -1744,9 +1744,16 @@ func releasePiInteractiveSession(session *piInteractiveSession) {
 
 func releasePiBoundedInteractiveSession(session *piInteractiveSession) {
 	session.mu.Unlock()
-	time.AfterFunc(piInteractiveRetention(), func() {
+	time.AfterFunc(piBoundedCleanupDelay(), func() {
 		cleanupPiInteractiveSession(session)
 	})
+}
+
+// piBoundedCleanupDelay is the process-lifecycle deadline for a bounded Pi
+// turn. It intentionally differs from piInteractiveRetention, which describes
+// how long the completed terminal snapshot remains available for display.
+func piBoundedCleanupDelay() time.Duration {
+	return llmtypes.TmuxKillDelay
 }
 
 func cleanupPiInteractiveSession(session *piInteractiveSession) {

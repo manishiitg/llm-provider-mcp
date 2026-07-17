@@ -24,6 +24,17 @@ func (m *mockLogger) Infof(format string, args ...interface{})  {}
 func (m *mockLogger) Warnf(format string, args ...interface{})  {}
 func (m *mockLogger) Errorf(format string, args ...interface{}) {}
 
+func TestPiBoundedCleanupUsesSharedTmuxKillDelay(t *testing.T) {
+	t.Setenv(EnvPiInteractiveRetentionSeconds, "1800")
+
+	if got := piBoundedCleanupDelay(); got != llmtypes.TmuxKillDelay {
+		t.Fatalf("bounded cleanup delay = %s, want shared tmux kill delay %s", got, llmtypes.TmuxKillDelay)
+	}
+	if got := piInteractiveRetention(); got == piBoundedCleanupDelay() {
+		t.Fatalf("display retention %s must remain separate from bounded process cleanup %s", got, piBoundedCleanupDelay())
+	}
+}
+
 func TestResolvePiProviderModel(t *testing.T) {
 	tests := []struct {
 		name             string
