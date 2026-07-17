@@ -93,6 +93,97 @@ exit 0
 	}
 }
 
+func TestDismissCodexAdditionalSafetyChecksAlwaysKeepsWaiting(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$FAKE_TMUX_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+
+	modal := `Additional safety checks
+This request requires additional safety checks, which can take extra time.
+› 1. Retry with a faster model
+  2. Keep waiting
+  3. Learn more`
+	t.Setenv("FAKE_TMUX_CAPTURE", modal)
+	if !hasCodexAdditionalSafetyChecksModal(modal) {
+		t.Fatal("additional-safety-checks modal was not detected")
+	}
+	if hasCodexReadyPrompt(modal) {
+		t.Fatal("additional-safety-checks modal must not be treated as ready")
+	}
+	handled, err := dismissCodexAdditionalSafetyChecksSerialized(context.Background(), "codex-safety-checks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("visible additional-safety-checks modal was not handled")
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "send-keys -t codex-safety-checks Down C-m" {
+		t.Fatalf("send-keys log = %q, want option 2 (Down then Enter)", got)
+	}
+}
+
+func TestDismissCodexAdditionalSafetyChecksNavigatesToOptionTwo(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+
+	for _, tc := range []struct {
+		name string
+		pane string
+		want string
+	}{
+		{name: "already selected", pane: "1. Retry with a faster model\n› 2. Keep waiting\n3. Learn more", want: "C-m"},
+		{name: "learn more selected", pane: "1. Retry with a faster model\n2. Keep waiting\n› 3. Learn more", want: "Up C-m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := dismissCodexAdditionalSafetyChecks(context.Background(), "codex-safety-nav", tc.pane); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "send-keys -t codex-safety-nav " + tc.want
+			if got := strings.TrimSpace(string(data)); got != want {
+				t.Fatalf("send-keys log = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
 	meta, err := adapter.GetModelMetadata("gpt-5.5")
@@ -534,6 +625,15 @@ fi
 		"› Run /review on my current changes",
 		"  gpt-5.6-sol high · /tmp/workspace",
 	}, "\n")
+	rotatedCapture := strings.Join([]string{
+		"• Prior completed response",
+		"› Explain this codebase",
+		"  gpt-5.6-sol high · /tmp/workspace",
+		"",
+	}, "\n")
+	if got, want := codexPromptCandidateStabilitySnapshot(rotatedCapture), codexPromptCandidateStabilitySnapshot(baseline); got != want {
+		t.Fatalf("rotating ghost snapshots differ:\n got %q\nwant %q", got, want)
+	}
 	err := waitForCodexInputSubmitted(context.Background(), "rotating-ghost", "new message", baseline, 150*time.Millisecond)
 	if err == nil {
 		t.Fatal("rotating empty-composer hint falsely confirmed an input submission")
@@ -1513,6 +1613,38 @@ func TestParseCodexInteractiveResponseIgnoresRateLimitReminderModal(t *testing.T
 
 	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
 	want := "ACK_E2E_NOTE_deadbeef"
+	if got != want {
+		t.Fatalf("parsed response = %q, want %q", got, want)
+	}
+	assertCodexNoInternalStatus(t, got)
+}
+
+func TestParseCodexInteractiveResponseIgnoresAdditionalSafetyChecksModal(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+› Perform the requested workflow action.
+
+• ACK_BEFORE_SAFETY_MODAL
+
+  Additional safety checks
+  This request requires additional safety checks, which can take extra time.
+
+› 1. Retry with a faster model
+  2. Keep waiting
+  3. Learn more
+`
+
+	if !hasCodexAdditionalSafetyChecksModal(captured) {
+		t.Fatal("additional-safety-checks modal was not detected")
+	}
+	if hasCodexReadyPrompt(captured) {
+		t.Fatal("additional-safety-checks modal must not be treated as ready")
+	}
+	if got := selectedCodexAdditionalSafetyChecksOption(captured); got != 1 {
+		t.Fatalf("selected safety-checks option = %d, want 1", got)
+	}
+	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
+	want := "ACK_BEFORE_SAFETY_MODAL"
 	if got != want {
 		t.Fatalf("parsed response = %q, want %q", got, want)
 	}

@@ -1336,6 +1336,7 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 
 	dismissedTrustPrompt := false
 	dismissedRateReminder := false
+	dismissedSafetyChecks := false
 	hookTrustDismissAttempts := 0
 	const maxHookTrustDismissAttempts = 6
 	var lastTerminalSnapshot string
@@ -1382,6 +1383,12 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 				}
 				continue
 			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedSafetyChecks {
+					dismissedSafetyChecks = dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured) == nil
+				}
+				continue
+			}
 			// A launch-time positional prompt is accepted once Codex shows active
 			// work, queued input, the echoed user prompt, or a completed answer.
 			// The last case covers very short turns that finish between captures.
@@ -1409,6 +1416,7 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 	defer ticker.Stop()
 	dismissedRateReminder := false
 	dismissedTrustPrompt := false
+	dismissedSafetyChecks := false
 	// hookTrustDismissAttempts counts re-dismissal attempts rather
 	// than using a binary flag because codex's hook trust UI is a
 	// MULTI-STEP wizard: an initial 3-option menu, then an expanded
@@ -1476,6 +1484,13 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 				if !dismissedRateReminder {
 					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
 					dismissedRateReminder = true
+					lastActivityAt = time.Now()
+				}
+				continue
+			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedSafetyChecks {
+					dismissedSafetyChecks = dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured) == nil
 					lastActivityAt = time.Now()
 				}
 				continue
@@ -1648,7 +1663,7 @@ func codexPaneShowsPromptDraft(captured, message string) bool {
 }
 
 func codexPaneHasEmptyComposer(captured string) bool {
-	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
+	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexAdditionalSafetyChecksModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -1679,6 +1694,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var dismissedRateReminder bool
+	var dismissedSafetyChecks bool
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. Tracked at the top of every tick, independent of
 	// all the branch logic below, so a prompt-detection bug that keeps the loop
@@ -1751,6 +1767,16 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				if !dismissedRateReminder {
 					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
 					dismissedRateReminder = handled
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = stableCapture
+				continue
+			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedSafetyChecks {
+					handled, _ := dismissCodexAdditionalSafetyChecksSerialized(ctx, sessionName)
+					dismissedSafetyChecks = handled
 				}
 				sawActivity = true
 				idleSince = time.Time{}
@@ -2400,6 +2426,9 @@ func isCodexTUILine(line string) bool {
 	if isCodexRateLimitReminderLine(trimmed) {
 		return true
 	}
+	if isCodexAdditionalSafetyChecksLine(trimmed) {
+		return true
+	}
 	if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") ||
 		strings.EqualFold(trimmed, "Codex") ||
 		(strings.Contains(lower, "codex") && strings.ContainsAny(line, "▐▛▜▝▘▌█")) {
@@ -3007,7 +3036,7 @@ func hasCodexExplicitCompletedMarker(captured string) bool {
 }
 
 func hasCodexPromptCandidate(captured string) bool {
-	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
+	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexAdditionalSafetyChecksModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -3129,7 +3158,10 @@ func codexPromptCandidateStabilitySnapshot(captured string) string {
 			lines[i] = "› <empty-composer>"
 		}
 	}
-	return strings.Join(lines, "\n")
+	// capture-pane normally appends a newline (and can append blank terminal
+	// rows), while synthetic baselines and archived snapshots may not. Those
+	// transport-only suffixes are not a real pane transition.
+	return strings.TrimRight(strings.Join(lines, "\n"), " \t\r\n")
 }
 
 func hasCodexTrustPrompt(captured string) bool {
@@ -3178,6 +3210,18 @@ func hasCodexRateLimitReminderModal(captured string) bool {
 		strings.Contains(lower, "press enter to confirm")
 }
 
+// hasCodexAdditionalSafetyChecksModal detects Codex's runtime safety-review
+// choice. Automated turns must preserve the configured model, so this modal is
+// always answered with option 2 ("Keep waiting") rather than retrying with a
+// faster model.
+func hasCodexAdditionalSafetyChecksModal(captured string) bool {
+	lower := strings.ToLower(lastNCodexLines(stripCodexANSI(captured), 40))
+	return strings.Contains(lower, "additional safety checks") &&
+		strings.Contains(lower, "retry with a faster model") &&
+		strings.Contains(lower, "keep waiting") &&
+		strings.Contains(lower, "learn more")
+}
+
 func isCodexRateLimitReminderLine(line string) bool {
 	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "› "))
 	lower := strings.ToLower(trimmed)
@@ -3189,6 +3233,16 @@ func isCodexRateLimitReminderLine(line string) bool {
 		strings.HasPrefix(lower, "3. keep current model") ||
 		strings.Contains(lower, "hide future rate limit reminders") ||
 		strings.Contains(lower, "press enter to confirm or esc to go back")
+}
+
+func isCodexAdditionalSafetyChecksLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "› "))
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "additional safety checks") ||
+		strings.Contains(lower, "request requires additional safety checks") ||
+		strings.HasPrefix(lower, "1. retry with a faster model") ||
+		strings.HasPrefix(lower, "2. keep waiting") ||
+		strings.HasPrefix(lower, "3. learn more")
 }
 
 func dismissCodexTrustPrompt(ctx context.Context, sessionName, captured string) error {
@@ -3394,6 +3448,72 @@ func dismissCodexRateLimitReminderSerialized(ctx context.Context, sessionName st
 }
 
 func selectedCodexRateLimitReminderOption(captured string) int {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "› ") {
+			continue
+		}
+		option := strings.TrimSpace(strings.TrimPrefix(trimmed, "› "))
+		switch {
+		case strings.HasPrefix(option, "1."):
+			return 1
+		case strings.HasPrefix(option, "2."):
+			return 2
+		case strings.HasPrefix(option, "3."):
+			return 3
+		}
+	}
+	return 0
+}
+
+func dismissCodexAdditionalSafetyChecks(ctx context.Context, sessionName, captured string) error {
+	selected := selectedCodexAdditionalSafetyChecksOption(captured)
+	if selected < 1 || selected > 3 {
+		selected = 1
+	}
+	keys := make([]string, 0, 2)
+	switch selected {
+	case 1:
+		keys = append(keys, "Down")
+	case 3:
+		keys = append(keys, "Up")
+	}
+	// Option 2 is an invariant: keep waiting on the configured model. Never
+	// accept Codex's default option 1, which silently changes the model.
+	keys = append(keys, "C-m")
+	args := []string{"send-keys", "-t", sessionName}
+	args = append(args, keys...)
+	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+// dismissCodexAdditionalSafetyChecksSerialized re-checks the modal while
+// holding the per-pane input broker, preventing stale navigation keys from
+// landing in Codex after the modal has already disappeared.
+func dismissCodexAdditionalSafetyChecksSerialized(ctx context.Context, sessionName string) (bool, error) {
+	handled := false
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-additional-safety-checks",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		captured, err := captureCodexPane(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+		if !hasCodexAdditionalSafetyChecksModal(captured) {
+			return nil
+		}
+		if err := dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured); err != nil {
+			return err
+		}
+		handled = true
+		return nil
+	})
+	return handled, err
+}
+
+func selectedCodexAdditionalSafetyChecksOption(captured string) int {
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
