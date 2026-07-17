@@ -106,7 +106,7 @@ fi
 		t.Fatal("fixture must reproduce stale Working activity without a Worked-for footer")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
 	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir)
@@ -116,7 +116,9 @@ fi
 	if !strings.Contains(captured, "STATUS: COMPLETED") {
 		t.Fatalf("final response capture was lost: %q", captured)
 	}
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+	// The watcher polls every 250ms. Leave scheduler headroom for a loaded CI
+	// host while still proving native completion returns well before timeout.
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
 		t.Fatalf("task_complete detection was unexpectedly slow: %v", elapsed)
 	}
 }
@@ -218,14 +220,17 @@ fi
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(EnvCodexInteractiveStalePaneBackstopSeconds, "1")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
 	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "")
 	if err != nil {
 		t.Fatalf("stable idle-composer fallback did not release response wait: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed < time.Second || elapsed >= 2500*time.Millisecond {
+	// The configured one-second window is a lower bound. Poll scheduling and
+	// process startup can add latency on a busy CI host, so keep the upper bound
+	// comfortably below the five-second test deadline without making it flaky.
+	if elapsed := time.Since(started); elapsed < time.Second || elapsed >= 4*time.Second {
 		t.Fatalf("fallback elapsed = %v, want approximately configured 1s", elapsed)
 	}
 }

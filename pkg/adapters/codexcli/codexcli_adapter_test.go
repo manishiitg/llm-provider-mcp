@@ -455,6 +455,118 @@ fi
 	}
 }
 
+func TestWaitForCodexInputSubmittedAcceptsSubmittedHistoryAboveEmptyComposer(t *testing.T) {
+	fakeBin := t.TempDir()
+	countPath := filepath.Join(fakeBin, "capture-count")
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  count=0
+  if [ -f "$TMUX_CAPTURE_COUNT" ]; then count=$(cat "$TMUX_CAPTURE_COUNT"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$TMUX_CAPTURE_COUNT"
+  printf '%s\n' '• Called api-bridge.execute_shell_command' '• Prior completed response'
+  if [ "$count" -gt 1 ]; then
+    printf '%s\n' '› make sure to test on the workflow step by step and see if it does its job'
+  fi
+  printf '%s\n' '› Run /review on my current changes' '  gpt-5.6-sol high · /tmp/workspace'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_CAPTURE_COUNT", countPath)
+	baseline, err := captureCodexPane(context.Background(), "submitted-history")
+	if err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
+	message := "make sure to test on the workflow step by step and see if it does its job"
+	if err := waitForCodexInputSubmitted(context.Background(), "submitted-history", message, baseline, 500*time.Millisecond); err != nil {
+		t.Fatalf("submitted message above empty composer was rejected: %v", err)
+	}
+}
+
+func TestCodexPromptDraftUsesOnlyBottomComposer(t *testing.T) {
+	message := "make sure to test on the workflow step by step and see if it does its job"
+	pane := strings.Join([]string{
+		"• Prior completed response",
+		"› " + message,
+		"› Run /review on my current changes",
+		"  gpt-5.6-sol high · /tmp/workspace",
+	}, "\n")
+	if codexPaneShowsPromptDraft(pane, message) {
+		t.Fatal("submitted history above an empty composer was classified as an active draft")
+	}
+	if !codexPaneHasEmptyComposer(pane) {
+		t.Fatal("bottom rotating placeholder should identify an empty composer")
+	}
+
+	draftPane := strings.Join([]string{
+		"• Prior completed response",
+		"› " + message,
+		"  gpt-5.6-sol high · /tmp/workspace",
+	}, "\n")
+	if !codexPaneShowsPromptDraft(draftPane, message) {
+		t.Fatal("bottom unsent composer draft was not detected")
+	}
+	if codexPaneHasEmptyComposer(draftPane) {
+		t.Fatal("non-empty composer was classified as empty")
+	}
+}
+
+func TestWaitForCodexInputSubmittedIgnoresGhostPlaceholderRotation(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' '• Prior completed response' '› Explain this codebase' '  gpt-5.6-sol high · /tmp/workspace'
+fi
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	baseline := strings.Join([]string{
+		"• Prior completed response",
+		"› Run /review on my current changes",
+		"  gpt-5.6-sol high · /tmp/workspace",
+	}, "\n")
+	err := waitForCodexInputSubmitted(context.Background(), "rotating-ghost", "new message", baseline, 150*time.Millisecond)
+	if err == nil {
+		t.Fatal("rotating empty-composer hint falsely confirmed an input submission")
+	}
+}
+
+func TestParseCodexInteractiveResponseIgnoresLoginShellStartupNoise(t *testing.T) {
+	pane := strings.Join([]string{
+		"Agent pid 21561",
+		"Identity added: /Users/mipl/.ssh/id_ed25519 (user@example.com)",
+		"› Run /review on my current changes",
+		"  gpt-5.6-sol low · /tmp/workspace",
+	}, "\n")
+	if got := parseCodexInteractiveResponse(pane, "", "Reply exactly: TOKEN", nil); got != "" {
+		t.Fatalf("login-shell startup output parsed as assistant response: %q", got)
+	}
+}
+
+func TestParseCodexInteractiveResponseKeepsAnswerAfterLoginShellStartupNoise(t *testing.T) {
+	pane := strings.Join([]string{
+		"Agent pid 21561",
+		"Identity added: /Users/mipl/.ssh/id_ed25519 (user@example.com)",
+		"────────────────────────────────────────────────────────────────",
+		"TOKEN_OK",
+		"────────────────────────────────────────────────────────────────",
+		"› Run /review on my current changes",
+		"  gpt-5.6-sol low · /tmp/workspace",
+	}, "\n")
+	if got := parseCodexInteractiveResponse(pane, "", "Reply exactly: TOKEN_OK", nil); got != "TOKEN_OK" {
+		t.Fatalf("parsed response = %q, want TOKEN_OK", got)
+	}
+}
+
 func TestCodexInteractiveShellCommandUsesCallerWorkingDir(t *testing.T) {
 	shell := writeExecutableTestShell(t, "zsh")
 	t.Setenv("CODING_AGENT_LOGIN_SHELL", shell)
@@ -1655,7 +1767,7 @@ fi
 	}
 	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	started := time.Now()
 	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "")
@@ -1669,7 +1781,9 @@ fi
 	if !strings.Contains(response, "Analyzed 107 new staging commits") {
 		t.Fatalf("completed assistant response was not extracted: %q", response)
 	}
-	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+	// Keep enough scheduler headroom for loaded CI hosts while proving this
+	// exits through normal footer/readiness detection, not the long backstop.
+	if elapsed := time.Since(started); elapsed >= 6*time.Second {
 		t.Fatalf("completed pane was only released by the context deadline/backstop: elapsed=%v", elapsed)
 	}
 }

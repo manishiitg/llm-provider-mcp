@@ -1571,7 +1571,7 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
 		return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
 	}
-	return waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 3*time.Second)
+	return waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 8*time.Second)
 }
 
 func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, baseline string, timeout time.Duration) error {
@@ -1579,19 +1579,28 @@ func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, basel
 	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	baselineSnapshot := codexPromptCandidateStabilitySnapshot(baseline)
 	var lastCapture string
 	var lastErr error
 	for {
 		captured, err := captureCodexPane(deadline, sessionName)
 		if err == nil {
 			lastCapture = captured
+			transitioned := codexPromptCandidateStabilitySnapshot(captured) != baselineSnapshot
 			// Historical Working/tool lines may already exist in baseline. They
 			// prove the CLI is active, not that this input moved. Require a pane
 			// transition after Enter before accepting activity as confirmation.
-			if captured != baseline && (hasCodexActivity(captured) || hasCodexQueuedInput(captured)) {
+			// Normalize rotating empty-composer hints so their animation alone
+			// cannot masquerade as a submitted turn.
+			if transitioned && (hasCodexActivity(captured) || hasCodexQueuedInput(captured)) {
 				return nil
 			}
-			if captured != baseline && hasCodexReadyPrompt(captured) && !codexPaneShowsPromptDraft(captured, message) {
+			// A very short turn can already be back at an empty composer before
+			// the first capture. Accept the bottom composer as authoritative even
+			// when older Working lines in scrollback make hasCodexReadyPrompt
+			// conservative. Do not scan submitted history as though it were the
+			// still-active editor draft.
+			if transitioned && codexPaneHasEmptyComposer(captured) && !codexPaneShowsPromptDraft(captured, message) {
 				return nil
 			}
 		} else {
@@ -1622,12 +1631,39 @@ func codexPaneShowsPromptDraft(captured, message string) bool {
 		}
 		seen++
 		lower := strings.ToLower(line)
-		if isCodexPromptWithInputLine(line) && (needle == "" || strings.Contains(line, needle)) {
-			return true
-		}
 		if (strings.Contains(lower, "pasted text #") || strings.Contains(lower, "pasted text ")) &&
 			(strings.HasPrefix(line, "›") || strings.HasPrefix(line, ">") || strings.HasPrefix(line, "❯")) {
 			return true
+		}
+		// Only the bottom-most composer is active. Older `› user message`
+		// lines above an empty composer are submitted conversation history.
+		if isCodexGhostPlaceholderPromptLine(line) || line == "›" || line == ">" || line == "❯" {
+			return false
+		}
+		if isCodexPromptWithInputLine(line) {
+			return needle == "" || strings.Contains(line, needle)
+		}
+	}
+	return false
+}
+
+func codexPaneHasEmptyComposer(captured string) bool {
+	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
+		return false
+	}
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < 12; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seen++
+		if isCodexGhostPlaceholderPromptLine(line) || line == "›" || line == ">" || line == "❯" {
+			return true
+		}
+		if isCodexPromptWithInputLine(line) {
+			return false
 		}
 	}
 	return false
@@ -2169,11 +2205,25 @@ func classifyCodexLine(line string) codexSegmentKind {
 		return codexSegmentPlanStatus
 	case isCodexErrorStatusLine(trimmed):
 		return codexSegmentErrorStatus
-	case isCodexTUILine(trimmed):
+	case isCodexTUILine(trimmed), isCodexShellStartupNoiseLine(trimmed):
 		return codexSegmentChrome
 	default:
 		return codexSegmentAssistant
 	}
+}
+
+var codexShellAgentPIDPattern = regexp.MustCompile(`^Agent pid [0-9]+$`)
+
+// isCodexShellStartupNoiseLine recognizes output emitted by a user's login
+// shell before the Codex TUI takes over the pane. In particular, common
+// ssh-agent setup snippets print these lines the first time a shell starts.
+// They are terminal bootstrap output, never a Codex assistant response. If
+// they are parsed as an answer, a newly launched session can appear to finish
+// before its positional prompt has even started.
+func isCodexShellStartupNoiseLine(line string) bool {
+	trimmed := strings.TrimSpace(stripCodexANSI(line))
+	return codexShellAgentPIDPattern.MatchString(trimmed) ||
+		strings.HasPrefix(trimmed, "Identity added: ")
 }
 
 func assistantTextFromCodexSegments(segments []codexSegment) string {

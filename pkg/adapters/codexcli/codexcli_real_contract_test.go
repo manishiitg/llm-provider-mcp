@@ -499,6 +499,9 @@ func TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract(t *testing.T) {
 		if !strings.Contains(stripCodexANSI(pane), liveMessage) {
 			t.Fatalf("live follow-up was not durably submitted to the CLI conversation; pane:\n%s", pane)
 		}
+		if strings.Contains(strings.ToLower(stripCodexANSI(pane)), "conversation interrupted") {
+			t.Fatalf("normal live input interrupted the active Codex conversation; pane:\n%s", pane)
+		}
 		t.Log("OK: Codex CLI durably submitted and applied the live steer while the initial turn was busy")
 	case <-time.After(3 * time.Minute):
 		t.Fatalf("timed out waiting for Codex to complete after live input submission; pane:\n%s", paneDiag())
