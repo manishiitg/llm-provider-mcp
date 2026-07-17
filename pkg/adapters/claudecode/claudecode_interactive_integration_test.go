@@ -15,13 +15,7 @@ import (
 )
 
 const (
-	runClaudeTmuxIntegrationEnv           = "RUN_CLAUDE_CODE_TMUX_INTEGRATION"
-	runClaudeTmuxLiveE2EEnv               = "RUN_CLAUDE_CODE_TMUX_LIVE_E2E"
-	runClaudeTmuxPersistentE2EEnv         = "RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E"
-	claudeTmuxIntegrationModelEnv         = "CLAUDE_CODE_TMUX_INTEGRATION_MODEL"
-	runClaudeInteractiveIntegrationEnv   = "RUN_CLAUDE_CODE_EXPERIMENTAL_INTEGRATION"
-	runClaudeInteractiveLiveE2EEnv       = "RUN_CLAUDE_CODE_EXPERIMENTAL_LIVE_E2E"
-	runClaudeInteractivePersistentE2EEnv = "RUN_CLAUDE_CODE_EXPERIMENTAL_PERSISTENT_E2E"
+	claudeTmuxIntegrationModelEnv        = "CLAUDE_CODE_TMUX_INTEGRATION_MODEL"
 	claudeInteractiveIntegrationModelEnv = "CLAUDE_CODE_EXPERIMENTAL_INTEGRATION_MODEL"
 	defaultClaudeInteractiveTestModel    = "claude-haiku-4-5-20251001"
 )
@@ -802,22 +796,22 @@ func waitForClaudeInteractiveFileOrResult(t *testing.T, path, label string, time
 
 func skipClaudeInteractiveIntegration(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxIntegrationEnv) == "" && os.Getenv(runClaudeInteractiveIntegrationEnv) == "" {
-		t.Skip("set " + runClaudeTmuxIntegrationEnv + "=1 to run real Claude Code tmux integration tests")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 }
 
 func skipClaudeInteractiveLiveE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxLiveE2EEnv) == "" && os.Getenv(runClaudeInteractiveLiveE2EEnv) == "" {
-		t.Skip("set " + runClaudeTmuxLiveE2EEnv + "=1 to run real Claude Code Haiku live-input/Escape E2E")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 }
 
 func skipClaudeInteractivePersistentE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv(runClaudeTmuxPersistentE2EEnv) == "" && os.Getenv(runClaudeInteractivePersistentE2EEnv) == "" {
-		t.Skip("set " + runClaudeTmuxPersistentE2EEnv + "=1 to run real Claude Code Haiku persistent multi-turn E2E")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 }
 
@@ -1114,6 +1108,9 @@ func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 		t.Fatalf("GenerateContent with working dir error = %v", err)
 	}
 	got := strings.TrimSpace(resp.Choices[0].Content)
+	// Claude's TUI can hard-wrap a long unbroken path at the pane width. This
+	// contract verifies the child process cwd, not terminal line wrapping.
+	compactGot := strings.NewReplacer("\r", "", "\n", "").Replace(got)
 
 	// The MCP server reports its process cwd; it should match the requested
 	// working dir (or its resolved real path on macOS).
@@ -1123,7 +1120,7 @@ func TestClaudeCodeTmuxIntegrationHaikuWorkingDirectory(t *testing.T) {
 	}
 	matched := false
 	for _, want := range wantPaths {
-		if strings.Contains(got, "CWD_REPORTED_"+want) {
+		if strings.Contains(compactGot, "CWD_REPORTED_"+want) {
 			matched = true
 			break
 		}

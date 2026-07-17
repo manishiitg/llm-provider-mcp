@@ -413,6 +413,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		// opts.StreamChan close is owned by WithObservability.
 		return nil, err
 	}
+	// Cancellation wins over a response detected in the same polling cycle.
+	// Without this check, a tool can finish just after the parent cancels and
+	// waitForMarkedResponse can return content while GenerateContent reports a
+	// false success. Discard the retained session as well: its prompt readiness
+	// is no longer trustworthy after an interrupted tool turn.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		discardPersistentSession(ctxErr)
+		return nil, ctxErr
+	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	// Skip for persistent interactive sessions: they live past the call
 	// and are scraped by other paths.
@@ -2937,7 +2946,11 @@ func normalizeCapturedAssistantText(content string) string {
 	lines := strings.Split(content, "\n")
 	cleaned := make([]string, 0, len(lines))
 	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
+		// Interactive TUIs paint rows to the terminal width. capture-pane can
+		// therefore preserve right-padding spaces even though they are not part
+		// of Claude's answer; never leak that display padding into API content or
+		// workflow completion notifications.
+		line = strings.TrimRight(line, " \t\r")
 		line = strings.TrimPrefix(line, "⏺ ")
 		line = strings.TrimPrefix(line, "  ")
 		cleaned = append(cleaned, line)

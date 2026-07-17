@@ -476,8 +476,8 @@ func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 			if !cert.RealE2E {
 				t.Fatalf("%s P0 certification %s must be backed by a real CLI E2E: %#v", contract.Provider, id, cert)
 			}
-			if len(cert.Env) == 0 {
-				t.Fatalf("%s P0 certification %s must document its real E2E gate", contract.Provider, id)
+			if len(cert.Env) != 1 || cert.Env[0] != "-coding-cli-p0-live" {
+				t.Fatalf("%s P0 certification %s must use only the live P0 gate, got %#v", contract.Provider, id, cert.Env)
 			}
 		}
 	}
@@ -494,7 +494,7 @@ func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 		}
 		hasPiEnvGuard := false
 		for _, env := range cert.Env {
-			if strings.HasPrefix(env, "RUN_PI_CLI_") || env == "RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1" {
+			if env == "-coding-cli-p0-live" || strings.HasPrefix(env, "RUN_PI_CLI_") || env == "RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1" {
 				hasPiEnvGuard = true
 				break
 			}
@@ -516,7 +516,7 @@ func TestCursorCLICertificationsUseRealE2EOnly(t *testing.T) {
 		}
 		hasCursorEnvGuard := false
 		for _, env := range cert.Env {
-			if strings.HasPrefix(env, "RUN_CURSOR_CLI_") {
+			if env == "-coding-cli-p0-live" || strings.HasPrefix(env, "RUN_CURSOR_CLI_") {
 				hasCursorEnvGuard = true
 				break
 			}

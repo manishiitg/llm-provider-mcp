@@ -1418,6 +1418,7 @@ func TestIsCursorToolStatusLine(t *testing.T) {
 		{`"stderr":"error"`, true},
 		{`"exit_code":0`, true},
 		{"mcp bridge tool call", true},
+		{"api-bridge execute_shell_command", true},
 		{"The answer is 42.", false},
 		{"Here are the results:", false},
 		{"Step 1: Read the file", false},
@@ -1430,6 +1431,89 @@ func TestIsCursorToolStatusLine(t *testing.T) {
 				t.Fatalf("isCursorToolStatusLine(%q) = %v, want %v", tt.line, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseCursorResponseDoesNotReusePreToolNarrationAsFinalAnswer(t *testing.T) {
+	captured := `  Cursor Agent
+
+  User: write the proof file
+
+  I'll run the specified command through the MCP api-bridge and create the required output file.
+
+  api-bridge execute_shell_command
+
+
+  → Add a follow-up
+
+  Ask (shift+tab to cycle)`
+
+	got := parseCursorInteractiveResponse(captured, "", "write the proof file", nil)
+	if got != "" {
+		t.Fatalf("pre-tool narration must not be returned as a final answer, got %q", got)
+	}
+	if !cursorPaneContainsToolActivity(captured) {
+		t.Fatal("expected MCP bridge activity to trigger final-answer recovery")
+	}
+}
+
+func TestParseCursorResponseKeepsOnlyPostToolFinalAnswer(t *testing.T) {
+	captured := `  Cursor Agent
+
+  User: write the proof file
+
+  I'll run the specified command.
+  api-bridge execute_shell_command
+
+  Assistant: WORKFLOW_AUTO_NOTIFICATION_STEP_OK
+  STATUS: COMPLETED
+
+  → Add a follow-up`
+
+	got := parseCursorInteractiveResponse(captured, "", "write the proof file", nil)
+	want := "WORKFLOW_AUTO_NOTIFICATION_STEP_OK\nSTATUS: COMPLETED"
+	if got != want {
+		t.Fatalf("post-tool final answer = %q, want %q", got, want)
+	}
+}
+
+func TestParseCursorResponseDropsInternalFinalAnswerRecoveryPrompt(t *testing.T) {
+	captured := `  Cursor Agent
+
+  api-bridge execute_shell_command
+
+  FINAL_ANSWER_RECOVERY: Reply only with the requested final answer. Do not use tools.
+
+  WORKFLOW_AUTO_NOTIFICATION_STEP_OK
+  STATUS: COMPLETED
+
+  → Add a follow-up`
+
+	got := parseCursorInteractiveResponse(captured, "", "write the proof file", nil)
+	want := "WORKFLOW_AUTO_NOTIFICATION_STEP_OK\nSTATUS: COMPLETED"
+	if got != want {
+		t.Fatalf("recovered final answer = %q, want %q", got, want)
+	}
+}
+
+func TestParseCursorResponseKeepsExactAnswerEmbeddedInOriginalPrompt(t *testing.T) {
+	prompt := `Use the MCP bridge to write a proof file.
+After it succeeds, return exactly these two lines:
+WORKFLOW_AUTO_NOTIFICATION_STEP_OK
+STATUS: COMPLETED`
+	captured := `  Cursor Agent
+
+  api-bridge execute_shell_command
+
+  WORKFLOW_AUTO_NOTIFICATION_STEP_OK
+  STATUS: COMPLETED
+
+  → Add a follow-up`
+
+	got := parseCursorInteractiveResponse(captured, "", prompt, nil)
+	want := "WORKFLOW_AUTO_NOTIFICATION_STEP_OK\nSTATUS: COMPLETED"
+	if got != want {
+		t.Fatalf("exact requested final answer = %q, want %q", got, want)
 	}
 }
 

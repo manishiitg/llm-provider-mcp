@@ -75,4 +75,17 @@ Run this MCP tool?
 	if hasCursorMCPServerApprovalPrompt(toolApproval) {
 		t.Fatal("startup MCP detector must not match per-tool approval prompts")
 	}
+
+	completedPane := `Cursor Agent
+Tip: Hit shift+tab to enable Plan Mode for large changes.
+Explored available MCP tools api-bridge · get_api_spec
+api-bridge execute_shell_command
+RUN_WORKFLOW_TOOL_STARTED
+→ Add a follow-up`
+	if hasCursorMCPServerApprovalPrompt(completedPane) {
+		t.Fatal("completed pane must not combine unrelated MCP/api-bridge and enable-tip text into a startup approval")
+	}
+	if !hasCursorReadyPrompt(completedPane) {
+		t.Fatal("completed pane with final answer and follow-up prompt must be ready")
+	}
 }

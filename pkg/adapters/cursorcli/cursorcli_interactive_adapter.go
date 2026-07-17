@@ -41,6 +41,8 @@ const (
 	defaultCursorInteractiveIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
+	cursorFinalAnswerRecoveryDelay      = 3 * time.Second
+	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: Reply only with the requested final answer. Do not use tools."
 	cursorBootBannerPromptGrace         = 2 * time.Second
 	// Hard cap on how long we wait for the CLI to show ANY activity after the
 	// prompt is submitted. A live turn shows "Thinking…"/streaming within
@@ -1589,6 +1591,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastWebSearchApprovalAt time.Time
 	var lastMCPToolApprovalAt time.Time
 	var lastModeSwitchRejectAt time.Time
+	var finalAnswerRecoveryCount int
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. This is tracked at the top of every tick,
 	// independent of all the branch logic below, so a prompt-detection bug that
@@ -1735,6 +1738,24 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				if strings.TrimSpace(content) == "" {
 					if readyWithoutContentSince.IsZero() {
 						readyWithoutContentSince = time.Now()
+						continue
+					}
+					// Cursor can finish the last MCP call and return directly to its
+					// composer without emitting a post-tool assistant message. Treating
+					// pre-tool narration ("I'll run ...") as the answer produces dirty
+					// workflow completion notifications. Once per GenerateContent call,
+					// recover by asking the same native session for the missing final
+					// answer. The original baseline remains valid: the new User: boundary
+					// causes extraction to retain only this recovery turn's response.
+					if finalAnswerRecoveryCount == 0 && cursorPaneContainsToolActivity(delta) &&
+						time.Since(readyWithoutContentSince) >= cursorFinalAnswerRecoveryDelay {
+						if err := sendCursorInitialPromptToTmux(ctx, sessionName, cursorFinalAnswerRecoveryPrompt); err == nil {
+							finalAnswerRecoveryCount++
+							readyWithoutContentSince = time.Time{}
+							idleSince = time.Time{}
+							lastCaptured = ""
+							continue
+						}
 					}
 					if cursorPaneShowsPromptDraft(captured, prompt) && submitRetryCount < 3 && time.Since(lastSubmitRetryAt) >= time.Second {
 						draftVisible := func(current string) bool {
@@ -1792,6 +1813,10 @@ func extractCursorVisibleAssistantText(delta string) string {
 			out = out[:0]
 			continue
 		}
+		if strings.HasPrefix(roleLine, "FINAL_ANSWER_RECOVERY:") {
+			out = out[:0]
+			continue
+		}
 		if assistantLine, ok := stripCursorAssistantTurnHeader(roleLine); ok {
 			out = out[:0]
 			trimmed = assistantLine
@@ -1813,7 +1838,16 @@ func extractCursorVisibleAssistantText(delta string) string {
 		if cursorLineStartsWithSpinner(strings.TrimSpace(trimmed)) {
 			continue
 		}
-		if isCursorTUILine(trimmed) || isCursorToolStatusLine(trimmed) || isCursorBoxDrawingLine(trimmed) {
+		if isCursorToolStatusLine(trimmed) {
+			// A tool call is a semantic boundary: narration collected before it
+			// is progress, never the final answer. Resetting here also makes an
+			// idle prompt with no post-tool prose extract as empty, allowing the
+			// response loop to request the missing final answer instead of
+			// returning the progress trail.
+			out = out[:0]
+			continue
+		}
+		if isCursorTUILine(trimmed) || isCursorBoxDrawingLine(trimmed) {
 			continue
 		}
 		out = append(out, trimmed)
@@ -1969,6 +2003,7 @@ func isCursorToolStatusLine(line string) bool {
 		strings.HasPrefix(lower, "globbed ") ||
 		strings.HasPrefix(lower, "listed ") ||
 		strings.HasPrefix(lower, "grepped ") ||
+		strings.HasPrefix(lower, "api-bridge ") ||
 		strings.Contains(lower, "mcp") && strings.Contains(lower, "tool") ||
 		strings.Contains(lower, "shell(") ||
 		strings.Contains(lower, `"stdout"`) ||
@@ -2000,6 +2035,16 @@ func isCursorToolStatusLine(line string) bool {
 	if strings.Contains(lower, "truncated") &&
 		(strings.Contains(lower, "more lines") || strings.Contains(lower, "more line")) {
 		return true
+	}
+	return false
+}
+
+func cursorPaneContainsToolActivity(delta string) bool {
+	for _, line := range strings.Split(stripCursorANSI(delta), "\n") {
+		line = normalizeCursorAssistantTurnLabel(normalizeCursorPaneLineWithoutAssistantLabel(line))
+		if isCursorToolStatusLine(line) {
+			return true
+		}
 	}
 	return false
 }
@@ -2038,21 +2083,17 @@ func stripCursorEchoedUserPrompt(text, prompt string) string {
 	if len(textNonEmpty) == 0 || len(promptLines) == 0 {
 		return text
 	}
-	bestStart := -1
+	// An echoed user prompt is structurally a leading block. Searching every
+	// text/prompt offset falsely deletes legitimate exact answers when the user
+	// instruction contains an example or required output near its end (for
+	// example, "return exactly TOKEN / STATUS: COMPLETED"). Match only the
+	// beginning of both sequences; Cursor uses [Pasted text] for long prompts,
+	// while short literal echoes appear in full at the start of the pane delta.
+	bestStart := 0
 	bestLen := 0
-	for start := 0; start < len(textNonEmpty) && start < 64; start++ {
-		for promptStart := 0; promptStart < len(promptLines); promptStart++ {
-			matchLen := 0
-			for start+matchLen < len(textNonEmpty) &&
-				promptStart+matchLen < len(promptLines) &&
-				cursorPromptLinesEqual(textNonEmpty[start+matchLen], promptLines[promptStart+matchLen]) {
-				matchLen++
-			}
-			if matchLen > bestLen {
-				bestStart = start
-				bestLen = matchLen
-			}
-		}
+	for bestLen < len(textNonEmpty) && bestLen < len(promptLines) &&
+		cursorPromptLinesEqual(textNonEmpty[bestLen], promptLines[bestLen]) {
+		bestLen++
 	}
 	if bestLen < 2 && !(len(promptLines) == 1 && bestLen == 1) {
 		return text
@@ -2395,21 +2436,23 @@ func hasCursorMCPServerApprovalPrompt(captured string) bool {
 		strings.Contains(cleaned, "allowlist mcp tool") {
 		return false
 	}
-	if strings.Contains(cleaned, "mcp server") &&
-		(strings.Contains(cleaned, "approve") ||
-			strings.Contains(cleaned, "allow") ||
-			strings.Contains(cleaned, "enable") ||
-			strings.Contains(cleaned, "trust")) {
-		return true
-	}
-	if strings.Contains(cleaned, "api-bridge") &&
-		strings.Contains(cleaned, "mcp") &&
-		(strings.Contains(cleaned, "approve") ||
-			strings.Contains(cleaned, "allow") ||
-			strings.Contains(cleaned, "enable") ||
-			strings.Contains(cleaned, "[y]") ||
-			strings.Contains(cleaned, "(y)")) {
-		return true
+	// Keep approval terms structurally tied to an MCP-server line. Whole-pane
+	// token co-occurrence is unsafe: a completed turn can contain "available MCP
+	// tools / api-bridge" while Cursor's static tip says "enable Plan Mode",
+	// which previously looked like an unresolved startup approval forever.
+	for _, line := range strings.Split(cleaned, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "mcp server") {
+			continue
+		}
+		if strings.Contains(line, "approval") ||
+			strings.Contains(line, "approve") ||
+			strings.Contains(line, "allow") ||
+			strings.Contains(line, "enable") ||
+			strings.Contains(line, "trust") ||
+			strings.Contains(line, "continue without") {
+			return true
+		}
 	}
 	return false
 }

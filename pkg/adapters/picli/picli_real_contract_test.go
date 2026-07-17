@@ -608,8 +608,8 @@ func TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing
 
 func requireRealPiCLIContractE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_PI_CLI_REAL_E2E") == "" {
-		t.Skip("set RUN_PI_CLI_REAL_E2E=1 to run real Pi CLI tmux contract tests")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 	for _, bin := range []string{"tmux", "node"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -617,10 +617,14 @@ func requireRealPiCLIContractE2E(t *testing.T) {
 		}
 	}
 	if _, _, err := piCommandPrefix(); err != nil {
-		t.Skip(err)
+		t.Fatalf("real Pi CLI tests require the Pi executable: %v", err)
 	}
 	if firstNonEmptyPiTestEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY") == "" {
-		t.Skip("GEMINI_API_KEY, GOOGLE_API_KEY, or PI_API_KEY is required for real Pi CLI contract tests")
+		cmd := exec.CommandContext(context.Background(), "pi", "--list-models")
+		output, err := cmd.CombinedOutput()
+		if err != nil || strings.Contains(strings.ToLower(string(output)), "no models available") || strings.TrimSpace(string(output)) == "" {
+			t.Fatalf("Pi CLI P0 requires live authentication; run `pi` and use /login, or configure a provider API key (pi --list-models output: %s)", strings.TrimSpace(string(output)))
+		}
 	}
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
 }

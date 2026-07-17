@@ -14,22 +14,8 @@ import (
 )
 
 func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
-	if os.Getenv("RUN_PI_CLI_MCP_BRIDGE_E2E") != "1" {
-		t.Skip("set RUN_PI_CLI_MCP_BRIDGE_E2E=1 to run real Pi CLI MCP bridge test")
-	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skipf("tmux not available: %v", err)
-	}
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skipf("node not available: %v", err)
-	}
-	if _, _, err := piCommandPrefix(); err != nil {
-		t.Skip(err)
-	}
+	requireRealPiCLIContractE2E(t)
 	apiKey := firstNonEmptyPiTestEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY")
-	if apiKey == "" {
-		t.Skip("GEMINI_API_KEY, GOOGLE_API_KEY, or PI_API_KEY is required for real Pi CLI MCP bridge test")
-	}
 
 	workDir := t.TempDir()
 	serverPath := filepath.Join(workDir, "pi-mcp-canary-server.js")
@@ -49,7 +35,7 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
   }
 }`, serverPath, logPath)
 
-	adapter := NewPiCLIAdapter(apiKey, "google/gemini-3.5-flash", &mockLogger{})
+	adapter := NewPiCLIAdapter(apiKey, DefaultModelID, &mockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	ownerSessionID := "pi-mcp-bridge-e2e-" + piRandomHex(6)

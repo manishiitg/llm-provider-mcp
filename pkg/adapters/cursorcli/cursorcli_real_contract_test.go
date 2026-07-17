@@ -262,8 +262,8 @@ func TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 
 func requireRealCursorCLIE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_CURSOR_CLI_REAL_E2E") == "" && os.Getenv("RUN_CURSOR_CLI_INTERACTIVE_E2E") == "" {
-		t.Skip("set RUN_CURSOR_CLI_REAL_E2E=1 to run real Cursor CLI tmux contract tests")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 	for _, bin := range []string{"cursor-agent", "tmux"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -1441,7 +1441,12 @@ func primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName string) error {
 	//    completes, the TUI launch can dispatch MCP tool calls without a
 	//    trust/tools-list race.
 	for _, dir := range candidateDirs {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// Cursor's first authenticated --print call may initialize/update the
+		// CLI and hydrate MCP metadata before answering. That exceeded one minute
+		// in a healthy live P0 run, so give this prerequisite the same realistic
+		// startup allowance as the interactive contract instead of killing it
+		// before the bridge itself can be tested.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		cmd := exec.CommandContext(ctx, "cursor-agent",
 			"--workspace", dir,
 			"--force", "--approve-mcps", "--trust",

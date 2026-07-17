@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
@@ -147,64 +146,54 @@ func TestCodexCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 	assertCodexInteractiveTerminalOnlyStream(t, streamChan)
 }
 
-func TestCodexCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+func TestCodexCLIRealMCPBridgeFileFinalExtractionContract(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
 	ownerSessionID := "codex-real-final-extract-" + codexRandomHex(4)
-	token := "LIVE_CODEX_FINAL_" + codexRandomHex(5)
+	sessionMarker := "LIVE_CODEX_FINAL_" + codexRandomHex(5)
+	token := "BRIDGE_FILE_" + codexRandomHex(5)
+	outputPath := filepath.Join(t.TempDir(), "bridge-file-proof.json")
+	mcpServerPath := writeCodexIsolationMCPServer(t, sessionMarker, outputPath)
+	mcpServersJSON := fmt.Sprintf(`{"api-bridge":{"command":%q}}`, mcpServerPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
 	streamChan := make(chan llmtypes.StreamChunk, 128)
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Preserve line breaks in the final answer."}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Return a final answer containing these three plain lines and no setup commentary:\nCodex final %s\nfirst %s\nsecond %s", token, token, token)}}},
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools for file operations. The final answer must contain only the requested result text, never tool calls, arguments, or outputs."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge write_contract MCP tool with token %s. This tool writes a proof file. After it returns, reply with exactly its result text and nothing else.", token)}}},
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
 		WithDisableShellTool(),
 		WithApprovalPolicy("never"),
 		WithReasoningEffort("low"),
+		WithMCPServers(mcpServersJSON),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {
 		t.Fatalf("GenerateContent error = %v", err)
 	}
 	content := strings.TrimSpace(resp.Choices[0].Content)
-	tmuxSession, ok := activeCodexInteractiveSession(ownerSessionID)
-	if !ok || tmuxSession == "" {
-		t.Fatalf("expected active Codex tmux session for %s", ownerSessionID)
+	want := "ISOLATED_OK_" + sessionMarker + "_" + token
+	if content != want {
+		t.Fatalf("clean final content = %q, want exactly %q", content, want)
 	}
-	pane, err := captureCodexPane(ctx, tmuxSession)
+	proof, err := os.ReadFile(outputPath)
 	if err != nil {
-		t.Fatalf("capture Codex pane: %v", err)
+		t.Fatalf("MCP bridge did not create file proof at %s: %v", outputPath, err)
 	}
-	_ = drainCodexStream(streamChan)
+	for _, required := range []string{sessionMarker, token} {
+		if !strings.Contains(string(proof), required) {
+			t.Fatalf("MCP file proof missing %q: %s", required, proof)
+		}
+	}
+	assertCodexDoesNotContainAny(t, "final completion result", content,
+		"api-bridge", "write_contract", "Called ", "Calling ", "tool", "arguments", "call_id", "ctrl+o", "❯", "›")
 
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
-		Provider:   "codex-cli",
-		TmuxScreen: pane,
-		Extracted:  content,
-		UserGoal:   "Return the live tmux final answer containing the token heading and the first/second lines.",
-		MustContain: []string{
-			"Codex final " + token,
-			"first " + token,
-			"second " + token,
-		},
-		Forbidden: []string{
-			"Return a final answer",
-			"Do not use tools",
-			"Calling ",
-			"Called ",
-			"codex.",
-			"execute_shell_command",
-			"❯",
-			"›",
-		},
-		ExpectedNote: "This is a live Codex CLI tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
-	})
+	_ = drainCodexStream(streamChan)
 }
 
 func TestCodexCLIRealInteractiveWorkspaceTrustPromptContract(t *testing.T) {
@@ -519,8 +508,8 @@ func TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract(t *testing.T) {
 
 func requireRealCodexCLIE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_CODEX_CLI_REAL_E2E") == "" && os.Getenv("RUN_CODEX_CLI_INTERACTIVE_E2E") == "" {
-		t.Skip("set RUN_CODEX_CLI_REAL_E2E=1 to run real Codex CLI tmux contract tests")
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
 	}
 	for _, bin := range []string{"codex", "tmux", "node"} {
 		if _, err := exec.LookPath(bin); err != nil {

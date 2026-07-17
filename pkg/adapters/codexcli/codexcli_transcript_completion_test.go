@@ -146,6 +146,58 @@ func TestCodexTurnCompletionTrackerIgnoresPriorTurn(t *testing.T) {
 	}
 }
 
+func TestCodexTurnCompletionTrackerBlocksIdleComposerWhileMCPCallPending(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	workingDir := filepath.Join(t.TempDir(), "pending-mcp-session")
+	dayDir := filepath.Join(home, ".codex", "sessions", "2026", "07", "17")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	turnStart := time.Now().UTC().Add(-time.Second)
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	rollout := filepath.Join(dayDir, "rollout-2026-07-17T12-00-00-55555555-5555-4555-8555-555555555555.jsonl")
+	initial := strings.Join([]string{
+		fmt.Sprintf(`{"type":"session_meta","payload":{"cwd":%q}}`, workingDir),
+		fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"I am calling the bridge now."}]}}`, ts),
+		fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"function_call","call_id":"call_pending","name":"write_contract"}}`, ts),
+	}, "\n") + "\n"
+	if err := os.WriteFile(rollout, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	tracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+	if tracker.completed() {
+		t.Fatal("pending MCP call was treated as task completion")
+	}
+	if !tracker.blocksTerminalFallback() {
+		t.Fatal("pending MCP call must block idle-composer terminal fallback")
+	}
+
+	f, err := os.OpenFile(rollout, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open rollout: %v", err)
+	}
+	completedRows := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"function_call_output","call_id":"call_pending","output":"ok"}}`, ts),
+		fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"BRIDGE_OK"}]}}`, ts),
+	}, "\n") + "\n"
+	if _, err := f.WriteString(completedRows); err != nil {
+		_ = f.Close()
+		t.Fatalf("append rollout: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close rollout: %v", err)
+	}
+	if tracker.completed() {
+		t.Fatal("final_answer without task_complete should not claim native completion")
+	}
+	if tracker.blocksTerminalFallback() {
+		t.Fatal("completed MCP call plus final_answer should allow stable terminal fallback")
+	}
+}
+
 func TestWaitForCodexInteractiveResponseFiveMinuteFallbackRequiresIdleComposer(t *testing.T) {
 	fakeBin := t.TempDir()
 	tmuxPath := filepath.Join(fakeBin, "tmux")

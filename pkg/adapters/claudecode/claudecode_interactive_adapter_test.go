@@ -1829,6 +1829,14 @@ func TestIsContextCanceledErrorHandlesNil(t *testing.T) {
 	}
 }
 
+func TestNormalizeCapturedAssistantTextStripsTerminalRightPadding(t *testing.T) {
+	got := normalizeCapturedAssistantText("⏺ FINAL_TOKEN                 \r\n  STATUS: COMPLETED\t   \r\n")
+	want := "FINAL_TOKEN\nSTATUS: COMPLETED"
+	if got != want {
+		t.Fatalf("normalizeCapturedAssistantText() = %q, want %q", got, want)
+	}
+}
+
 func textPartMessage(role llmtypes.ChatMessageType, text string) llmtypes.MessageContent {
 	return llmtypes.MessageContent{
 		Role:  role,

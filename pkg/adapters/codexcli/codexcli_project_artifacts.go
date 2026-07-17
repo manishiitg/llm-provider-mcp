@@ -209,8 +209,10 @@ type codexMCPServerSpec struct {
 // -c mcp_servers.* overrides put every environment value (including schemas
 // and secrets) on the tmux command line. A profile keeps argv bounded, remains
 // isolated across concurrent agents, and preserves the user's normal
-// CODEX_HOME authentication/session state.
-func writeCodexSessionMCPProfile(mcpServersJSON string) (string, func(), error) {
+// CODEX_HOME authentication/session state. autoApproveTools also writes the
+// MCP-specific approval mode because Codex's global approval policy alone does
+// not suppress its per-tool MCP confirmation dialog.
+func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool) (string, func(), error) {
 	noop := func() {}
 	if strings.TrimSpace(mcpServersJSON) == "" {
 		return "", noop, nil
@@ -222,6 +224,14 @@ func writeCodexSessionMCPProfile(mcpServersJSON string) (string, func(), error) 
 	}
 	if len(servers) == 0 {
 		return "", noop, fmt.Errorf("session MCP servers JSON is empty")
+	}
+	if autoApproveTools {
+		for name, spec := range servers {
+			if strings.TrimSpace(spec.DefaultToolsApprovalMode) == "" {
+				spec.DefaultToolsApprovalMode = "approve"
+				servers[name] = spec
+			}
+		}
 	}
 
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))

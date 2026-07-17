@@ -185,3 +185,77 @@ func TestReadCodexTranscriptMessagesScopesByCWD(t *testing.T) {
 		t.Fatalf("msgs[0] = %+v, want 'correct session text' (other-session row leaked through)", msgs[0])
 	}
 }
+
+func TestReadCodexTranscriptFinalAssistantTextExcludesMCPToolTrail(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+
+	const cwd = "/tmp/mlp-cli-session-final-result"
+	sessionsDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "07", "17")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rollout := filepath.Join(sessionsDir, "rollout-2026-07-17T09-00-00-deadbeef-0000-0000-0000-000000000777.jsonl")
+	turnStart := time.Now().UTC().Add(-time.Minute)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	final := "Finalized the catalogue entry and queued it for execution.\n\nSTATUS: COMPLETED"
+	lines := []string{
+		`{"timestamp":"` + ts + `","type":"session_meta","payload":{"cwd":"` + cwd + `"}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"The catalogue commit succeeded; I am validating it now."}]}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"function_call","name":"api-bridge.diff_patch_workspace_file","arguments":"{\"filepath\":\"writing_tests_summary.json\",\"diff\":\"very large patch\"}","call_id":"call_patch"}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"function_call_output","call_id":"call_patch","output":"{\"data\":{\"applied\":true}}"}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"function_call","name":"api-bridge.execute_shell_command","arguments":"{\"command\":\"jq -e . writing_tests_summary.json\"}","call_id":"call_validate"}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"function_call_output","call_id":"call_validate","output":"{\"stdout\":\"validation=passed\"}"}}`,
+		`{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"` + strings.ReplaceAll(final, "\n", `\n`) + `"}]}}`,
+		`{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"` + strings.ReplaceAll(final, "\n", `\n`) + `"}}`,
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	got, source := readCodexTranscriptFinalAssistantText(turnStart, cwd)
+	if got != final {
+		t.Fatalf("final assistant text = %q, want %q", got, final)
+	}
+	if source != "rollout_task_complete" {
+		t.Fatalf("source = %q, want rollout_task_complete", source)
+	}
+	for _, forbidden := range []string{"api-bridge", "diff_patch_workspace_file", "execute_shell_command", "validation=passed", "very large patch"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("final assistant text leaked MCP trail %q: %q", forbidden, got)
+		}
+	}
+
+	// Some Codex releases omit last_agent_message/task_complete from a
+	// recoverable terminal fallback. Only an explicitly final_answer response
+	// item may be used then; the earlier commentary must still be ignored.
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines[:len(lines)-1], "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("rewrite rollout without task_complete: %v", err)
+	}
+	got, source = readCodexTranscriptFinalAssistantText(turnStart, cwd)
+	if got != final || source != "rollout_assistant_message" {
+		t.Fatalf("final_answer fallback = (%q, %q), want (%q, rollout_assistant_message)", got, source, final)
+	}
+}
+
+func TestNormalizeCodexFinalAssistantTextContentBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain text", in: "  STATUS: COMPLETED  ", want: "STATUS: COMPLETED"},
+		{name: "text block", in: `[{"type":"text","text":"BRIDGE_OK"}]`, want: "BRIDGE_OK"},
+		{name: "output text blocks", in: `[{"type":"output_text","text":"first"},{"type":"output_text","text":"second"}]`, want: "first\nsecond"},
+		{name: "unknown block remains lossless", in: `[{"type":"image","text":"do-not-rewrite"}]`, want: `[{"type":"image","text":"do-not-rewrite"}]`},
+		{name: "invalid json remains lossless", in: `[not-json`, want: `[not-json`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCodexFinalAssistantText(tt.in); got != tt.want {
+				t.Fatalf("normalizeCodexFinalAssistantText(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

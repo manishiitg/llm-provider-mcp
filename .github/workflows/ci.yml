@@ -12,8 +12,8 @@ permissions:
   security-events: write
 
 jobs:
-  coding-cli-p0-fast:
-    name: Coding CLI P0 contract (fast)
+  coding-cli-static-contracts:
+    name: Coding CLI deterministic contracts
     runs-on: ubuntu-latest
 
     steps:

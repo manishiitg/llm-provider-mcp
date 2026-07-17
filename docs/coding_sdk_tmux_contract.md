@@ -821,21 +821,22 @@ step. These catch regressions where chat remains stuck on `Sending`, duplicates
 a turn, or the terminal visibly says complete while the workflow remains
 `running`.
 
-Run the fast and real gates from the `coding-agent-loop` checkout:
+Run P0 from the `coding-agent-loop` checkout. P0 is always authenticated and
+live: every selected provider launches its real CLI, uses the MCP agent bridge,
+and completes the workflow/auto-notification contract. Deterministic unit tests
+remain part of normal repository CI but are not called P0.
 
 ```bash
 ./scripts/run-coding-cli-p0.sh
 
-RUN_CODING_CLI_P0_REAL=1 \
-CODING_CLI_P0_PROVIDERS=codex-cli \
-./scripts/run-coding-cli-p0.sh
+./scripts/run-coding-cli-p0.sh --providers codex-cli
 ```
 
-The `Coding CLI P0` GitHub workflow runs the fast gate on changes. Its real job
-can be dispatched manually and runs nightly on the authenticated self-hosted
-macOS runner. The runner derives its test selector from the certification
-registry, fails when a required test skips, and therefore cannot silently omit
-a newly added P0 proof.
+The `Coding CLI P0` GitHub workflow keeps deterministic contracts in a separate
+ordinary CI job. Its P0 job has no fast/mock mode: it can be dispatched manually
+and runs nightly on the authenticated self-hosted macOS runner. The live runner
+derives its test selector from the certification registry, fails when a required
+test skips, and therefore cannot silently omit a newly added P0 proof.
 
 Every tmux coding provider must have opt-in real E2E tests for:
 
@@ -1216,21 +1217,21 @@ RUN_AGY_CLI_REAL_E2E=1 RUN_AGY_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/agyc
 Current Codex CLI real contract command:
 
 ```sh
-RUN_CODEX_CLI_REAL_E2E=1 RUN_CODEX_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealInteractive|TestCodexCLIInteractiveIntegrationSpark' -v -timeout 6m
+go test ./pkg/adapters/codexcli -run 'TestCodexCLIRealInteractive|TestCodexCLIInteractiveIntegrationSpark' -v -timeout 6m -args -coding-cli-p0-live
 ```
 
 Current Claude Code tmux real contract commands:
 
 ```sh
-RUN_CLAUDE_CODE_TMUX_INTEGRATION=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegration(LargePastedPromptSubmits|NoInternalTools|NativeSystemPrompt|FreshPromptCarriesUserText|NativeResume)' -v -timeout 6m
-RUN_CLAUDE_CODE_TMUX_LIVE_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape' -v -timeout 6m
-RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1 go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn' -v -timeout 6m
+go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegration(LargePastedPromptSubmits|NoInternalTools|NativeSystemPrompt|FreshPromptCarriesUserText|NativeResume)' -v -timeout 6m -args -coding-cli-p0-live
+go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuLiveInputAndEscape' -v -timeout 6m -args -coding-cli-p0-live
+go test ./pkg/adapters/claudecode -run 'TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn' -v -timeout 6m -args -coding-cli-p0-live
 ```
 
 Current Cursor CLI real contract command:
 
 ```sh
-RUN_CURSOR_CLI_REAL_E2E=1 RUN_CURSOR_CLI_INTERACTIVE_E2E=1 go test ./pkg/adapters/cursorcli -run 'TestCursorCLIRealInteractive' -v -timeout 6m
+go test ./pkg/adapters/cursorcli -run 'TestCursorCLIRealInteractive' -v -timeout 6m -args -coding-cli-p0-live
 ```
 
 Current legacy structured transport real contract commands:

@@ -248,3 +248,21 @@ func piTranscriptText(parts []piTranscriptContent) string {
 	}
 	return strings.Join(texts, "\n")
 }
+
+func lastPiAssistantText(messages []llmtypes.MessageContent) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llmtypes.ChatMessageTypeAI {
+			continue
+		}
+		texts := make([]string, 0, len(messages[i].Parts))
+		for _, part := range messages[i].Parts {
+			if text, ok := part.(llmtypes.TextContent); ok && strings.TrimSpace(text.Text) != "" {
+				texts = append(texts, text.Text)
+			}
+		}
+		if text := strings.TrimSpace(strings.Join(texts, "\n")); text != "" {
+			return text
+		}
+	}
+	return ""
+}

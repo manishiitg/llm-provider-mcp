@@ -88,3 +88,14 @@ func TestLatestPiTranscriptPathUsesConfiguredSessionDirAndNewestMatch(t *testing
 		t.Fatalf("latestPiTranscriptPath = %q, want %q", got, newPath)
 	}
 }
+
+func TestLastPiAssistantTextUsesFinalAssistantMessage(t *testing.T) {
+	messages := []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeAI, "tool preamble"),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "tool result"),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeAI, "FINAL ANSWER"),
+	}
+	if got := lastPiAssistantText(messages); got != "FINAL ANSWER" {
+		t.Fatalf("lastPiAssistantText() = %q, want FINAL ANSWER", got)
+	}
+}

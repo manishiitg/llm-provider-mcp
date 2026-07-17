@@ -302,6 +302,17 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	if forcedComplete && strings.TrimSpace(content) == "" {
 		content = forcedCodexInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	}
+	// The rollout is authoritative for the final answer. The tmux pane is still
+	// used for visibility and compatibility, but it can retain or reflow MCP
+	// calls beside the final response. Persisting that pane-derived mixture made
+	// plan-step results and AUTO-NOTIFICATION messages contain full tool calls.
+	// Codex's task_complete event carries exactly the committed final message, so
+	// prefer it whenever the current-turn rollout is available.
+	finalExtractionSource := "tmux_pane"
+	if transcriptFinal, source := readCodexTranscriptFinalAssistantText(promptSentAt.UTC(), session.workingDir); strings.TrimSpace(transcriptFinal) != "" {
+		content = transcriptFinal
+		finalExtractionSource = source
+	}
 	if err := codexPolicyInvalidPromptTextError(content); err != nil {
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_parse_response",
@@ -331,11 +342,12 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 
 	additional := map[string]interface{}{
-		"provider":                     "codex-cli",
-		"codex_mode":                   "interactive",
-		"codex_interactive_session":    session.tmuxSessionName,
-		"codex_persistent_interactive": persistent,
-		"codex_uses_exec_json":         false,
+		"provider":                      "codex-cli",
+		"codex_mode":                    "interactive",
+		"codex_interactive_session":     session.tmuxSessionName,
+		"codex_persistent_interactive":  persistent,
+		"codex_uses_exec_json":          false,
+		"codex_final_extraction_source": finalExtractionSource,
 	}
 	if !persistent {
 		// terminal_retention_seconds intentionally not set — see cursor.
@@ -565,7 +577,13 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	if strings.TrimSpace(mcpServersJSON) != "" && configuredProfile != "" {
 		return nil, "", nil, fmt.Errorf("codex CLI cannot combine an explicit profile %q with the AgentWorks session MCP profile", configuredProfile)
 	}
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON)
+	autoApproveMCPTools := false
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if policy, ok := opts.Metadata.Custom[MetadataKeyApprovalPolicy].(string); ok {
+			autoApproveMCPTools = strings.TrimSpace(policy) == "never"
+		}
+	}
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -1654,6 +1672,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			if completionTracker.completed() {
 				return captured, nil
 			}
+			rolloutBlocksTerminalFallback := completionTracker.blocksTerminalFallback()
 			// Stale-pane backstop. Independent of hasCodexReadyPrompt and every
 			// branch below: if the pane has produced activity and then frozen
 			// (byte-identical) for longer than the backstop, the turn is over but
@@ -1668,6 +1687,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				paneUnchangedSince = time.Now()
 			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
 				time.Since(paneUnchangedSince) >= stalePaneBackstop &&
+				!rolloutBlocksTerminalFallback &&
 				hasCodexPromptCandidate(captured) && hasCodexExplicitCompletedMarker(captured) {
 				return captured, nil
 			}
@@ -1675,6 +1695,15 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			if rolloutBlocksTerminalFallback {
+				// Codex 0.144 can redraw an idle composer while an MCP request is
+				// still outstanding. Treat the rollout's unmatched call (or
+				// commentary without final_answer) as authoritative liveness.
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = stableCapture
+				continue
 			}
 			if hasCodexQueuedInput(delta) {
 				sawActivity = true

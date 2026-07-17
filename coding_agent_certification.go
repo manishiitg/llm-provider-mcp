@@ -480,9 +480,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
-			Description: "real Codex CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and TUI noise removal",
+			TestName:    "TestCodexCLIRealMCPBridgeFileFinalExtractionContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "real Codex CLI performs an MCP bridge file write and returns only its final assistant message, excluding MCP/TUI trail from workflow completion notifications",
 			RealE2E:     true,
 		},
 		{
@@ -1261,6 +1261,12 @@ func CodingAgentProviderCertifications(provider Provider) []CodingAgentCertifica
 	for i := range certs {
 		if certs[i].Priority == "" {
 			certs[i].Priority = CodingAgentCertificationPriorityForID(certs[i].ID)
+		}
+		if certs[i].Priority == CodingAgentCertificationPriorityP0 {
+			// P0 has one supported gate: the authenticated live runner. Legacy
+			// per-provider RUN_* environment switches remain metadata for P1
+			// integration tests, but must not define or weaken P0 execution.
+			certs[i].Env = []string{"-coding-cli-p0-live"}
 		}
 	}
 	sort.Slice(certs, func(i, j int) bool {

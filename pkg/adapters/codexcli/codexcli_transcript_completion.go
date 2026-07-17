@@ -27,12 +27,16 @@ type codexTurnCompletionTracker struct {
 	expectedWorkingDir string
 	rolloutPath        string
 	offset             int64
+	pendingToolCalls   map[string]struct{}
+	sawTurnEvent       bool
+	sawFinalAnswer     bool
 }
 
 func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string) *codexTurnCompletionTracker {
 	return &codexTurnCompletionTracker{
 		turnStart:          turnStart,
 		expectedWorkingDir: strings.TrimSpace(expectedWorkingDir),
+		pendingToolCalls:   make(map[string]struct{}),
 	}
 }
 
@@ -68,13 +72,65 @@ func (t *codexTurnCompletionTracker) completed() bool {
 			return false
 		}
 		t.offset += int64(len(line))
-		if isCodexTaskCompleteEventAfter(line, t.turnStart) {
+		if t.observe(line) {
 			return true
 		}
 		if err == io.EOF {
 			return false
 		}
 	}
+}
+
+// blocksTerminalFallback reports whether the native rollout proves that Codex
+// is still inside the turn. The TUI may show an idle composer while an MCP call
+// is pending, so a ready-looking pane is not a completion signal once the
+// rollout has shown tool activity or commentary without a final_answer.
+func (t *codexTurnCompletionTracker) blocksTerminalFallback() bool {
+	if t == nil || !t.sawTurnEvent {
+		return false
+	}
+	return len(t.pendingToolCalls) > 0 || !t.sawFinalAnswer
+}
+
+func (t *codexTurnCompletionTracker) observe(line string) bool {
+	type rolloutEvent struct {
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Payload   struct {
+			Type   string `json:"type"`
+			Phase  string `json:"phase"`
+			CallID string `json:"call_id"`
+		} `json:"payload"`
+	}
+	var event rolloutEvent
+	if json.Unmarshal([]byte(line), &event) != nil {
+		return false
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+	if err != nil || timestamp.Before(t.turnStart) {
+		return false
+	}
+	t.sawTurnEvent = true
+
+	if event.Type == "event_msg" && event.Payload.Type == "task_complete" {
+		return true
+	}
+	if event.Type != "response_item" {
+		return false
+	}
+	switch event.Payload.Type {
+	case "function_call", "custom_tool_call", "tool_search_call":
+		if event.Payload.CallID != "" {
+			t.pendingToolCalls[event.Payload.CallID] = struct{}{}
+		}
+	case "function_call_output", "custom_tool_call_output", "tool_search_output":
+		delete(t.pendingToolCalls, event.Payload.CallID)
+	case "message":
+		if event.Payload.Phase == "final_answer" || event.Payload.Phase == "final" {
+			t.sawFinalAnswer = true
+		}
+	}
+	return false
 }
 
 func findCodexRolloutForTurn(turnStart time.Time, expectedWorkingDir string) string {
@@ -145,20 +201,4 @@ func readCodexRolloutWorkingDir(path string) string {
 		}
 	}
 	return ""
-}
-
-func isCodexTaskCompleteEventAfter(line string, turnStart time.Time) bool {
-	type rolloutEvent struct {
-		Type      string `json:"type"`
-		Timestamp string `json:"timestamp"`
-		Payload   struct {
-			Type string `json:"type"`
-		} `json:"payload"`
-	}
-	var event rolloutEvent
-	if json.Unmarshal([]byte(line), &event) != nil || event.Type != "event_msg" || event.Payload.Type != "task_complete" {
-		return false
-	}
-	timestamp, err := time.Parse(time.RFC3339Nano, event.Timestamp)
-	return err == nil && !timestamp.Before(turnStart)
 }

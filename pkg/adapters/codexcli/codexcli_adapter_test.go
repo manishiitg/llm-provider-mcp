@@ -542,8 +542,7 @@ func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T)
 				"MCP_API_URL":   "http://127.0.0.1:45678",
 				"MCP_TOOLS":     largeToolSchema,
 			},
-			"tool_timeout_sec":            5400,
-			"default_tools_approval_mode": "approve",
+			"tool_timeout_sec": 5400,
 		},
 	})
 	if err != nil {
@@ -553,6 +552,7 @@ func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T)
 	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
 	opts := &llmtypes.CallOptions{}
 	WithMCPServers(string(mcpJSONBytes))(opts)
+	WithApprovalPolicy("never")(opts)
 	WithWriteProjectInstructionFile(false)(opts)
 
 	args, systemPromptFile, cleanup, err := adapter.buildCodexInteractiveArgs(opts, "")

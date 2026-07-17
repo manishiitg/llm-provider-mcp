@@ -157,6 +157,35 @@ func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 	}
 }
 
+func TestPiMarkerParserUsesCompletedAssistantMessageWithoutDeltas(t *testing.T) {
+	dir := t.TempDir()
+	markerPath := dir + "/markers.jsonl"
+	body := strings.Join([]string{
+		`{"type":"tool_execution_start","toolCallId":"tool1","toolName":"api_bridge_execute_shell_command"}`,
+		`{"type":"tool_execution_end","toolCallId":"tool1","toolName":"api_bridge_execute_shell_command","isError":false}`,
+		`{"type":"message_end","role":"assistant","text":"P0_FINAL_AFTER_MCP\nSTATUS: COMPLETED"}`,
+		`{"type":"agent_end"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &piInteractiveSession{
+		tmuxSessionName: "missing-session",
+		markerPath:      markerPath,
+		modelID:         "google/gemini-3.5-flash",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got, err := waitForPiInteractiveResponse(ctx, session, 0, nil)
+	if err != nil {
+		t.Fatalf("waitForPiInteractiveResponse() error = %v", err)
+	}
+	if want := "P0_FINAL_AFTER_MCP\nSTATUS: COMPLETED"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	t.Setenv(EnvPiStatuslineExtension, "")
 	t.Setenv(EnvPiNodeOptions, "")
@@ -528,6 +557,35 @@ func TestPiPaneShowsPromptDraftRequiresCursorNearDraftWhenANSIIsPresent(t *testi
 
 	if piPaneShowsPromptDraft(captured, prompt) {
 		t.Fatalf("stale transcript text with a distant cursor must not be treated as active draft")
+	}
+}
+
+func TestPiPaneReadyForInputRequiresIdleStatusLine(t *testing.T) {
+	idle := "\x1b[1m\x1b[38;2;138;190;183mπ\x1b[0m • 🤖 gemini-3.5-flash • 💤 idle\n"
+	if !piPaneReadyForInput(idle) {
+		t.Fatal("idle Pi status line should be ready for input")
+	}
+	for _, pane := range []string{
+		"π • 🤖 gemini-3.5-flash • connecting MCP servers\n",
+		"MCP servers ready\n",
+		"",
+	} {
+		if piPaneReadyForInput(pane) {
+			t.Fatalf("pane %q must not be considered ready for input", pane)
+		}
+	}
+}
+
+func TestPiPaneEditorContainsPromptWithoutANSICursor(t *testing.T) {
+	prompt := "Use the MCP gateway only. Call bridge_canary, then reply exactly with the tool output text."
+	before := "────────────────────────\nπ • 🤖 gemini-3.5-flash • 💤 idle\n🔌 MCP: 1/1 servers\n"
+	after := "Use the MCP gateway only. Call bridge_canary, then reply exactly with the tool\n" +
+		"output text.\n────────────────────────\nπ • 🤖 gemini-3.5-flash • 💤 idle\n🔌 MCP: 1/1 servers\n"
+	if piPaneEditorContainsPrompt(before, prompt) {
+		t.Fatal("prompt signature must be absent before paste")
+	}
+	if !piPaneEditorContainsPrompt(after, prompt) {
+		t.Fatal("wrapped prompt without ANSI cursor should be detected in editor")
 	}
 }
 

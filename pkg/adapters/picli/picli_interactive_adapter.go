@@ -193,6 +193,20 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		}
 		return nil, fmt.Errorf("failed to start Pi CLI tmux session %q: %w", session.tmuxSessionName, err)
 	}
+	// session_start means Pi loaded the marker extension; it does not mean the
+	// terminal editor is ready. In particular, pi-mcp-adapter may still be
+	// connecting servers and redraw the TUI after session_start. Pasting during
+	// that window loses the draft, so wait for Pi's actual idle prompt before
+	// delivering either a launch-only handoff or the first user turn.
+	if err := waitForPiPromptReady(ctx, session.tmuxSessionName, piPromptWait()); err != nil {
+		releaseSession = false
+		session.mu.Unlock()
+		cleanupPiInteractiveSession(session)
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
+		return nil, fmt.Errorf("Pi CLI prompt did not become ready in tmux session %q: %w", session.tmuxSessionName, err)
+	}
 
 	if launchOnly {
 		tmuxinput.MarkReady(session.tmuxSessionName)
@@ -260,6 +274,9 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		session.transcriptPath = transcript.Path
 		if len(transcript.Messages) > 0 {
 			transcriptMessages = transcript.Messages
+			if strings.TrimSpace(content) == "" {
+				content = lastPiAssistantText(transcript.Messages)
+			}
 		}
 		if transcript.hasUsage() {
 			inputTokens = transcript.InputTokens
@@ -1124,6 +1141,12 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 			if piPaneShowsPromptDraft(captured, message) {
 				return true
 			}
+			// Some extension combinations render the editor draft without an
+			// ANSI reverse-video cursor. A substantial prompt signature that
+			// appeared only after this paste is still reliable delivery proof.
+			if piPaneEditorContainsPrompt(captured, message) && !piPaneEditorContainsPrompt(beforePaste, message) {
+				return true
+			}
 			if beforePaste != "" && stripPiANSI(captured) != beforePaste && !piPaneLooksIdle(captured) {
 				return true
 			}
@@ -1134,6 +1157,59 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 		case <-ticker.C:
 		}
 	}
+}
+
+func waitForPiPromptReady(ctx context.Context, sessionName string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("Pi prompt wait must be positive")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		captured, err := capturePiPaneANSI(waitCtx, sessionName)
+		if err == nil {
+			if piPaneReadyForInput(captured) {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-waitCtx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("%w (last pane capture error: %w)", waitCtx.Err(), lastErr)
+			}
+			return waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func piPaneReadyForInput(captured string) bool {
+	return piPaneHasStatusLine(captured) && piPaneLooksIdle(captured)
+}
+
+func piPaneEditorContainsPrompt(captured, prompt string) bool {
+	_, plainLines := piPromptEditorRegion(captured)
+	editor := piCompactDraftText(strings.Join(plainLines, ""))
+	target := piCompactDraftText(prompt)
+	if editor == "" || target == "" {
+		return false
+	}
+	if strings.Contains(editor, target) {
+		return true
+	}
+	// Long prompts can scroll their beginning outside the bounded editor
+	// region. Their suffix remains adjacent to the status bar and cursor.
+	targetRunes := []rune(target)
+	const signatureRunes = 64
+	if len(targetRunes) <= signatureRunes {
+		return false
+	}
+	return strings.Contains(editor, string(targetRunes[len(targetRunes)-signatureRunes:]))
 }
 
 // ensurePiInputSubmitted is a best-effort recovery for the Pi TUI prompt
@@ -1156,10 +1232,12 @@ func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) er
 	for {
 		captured, err := capturePiPaneANSI(deadline, sessionName)
 		if err == nil {
-			if !piPaneShowsPromptDraft(captured, message) {
+			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
 				return nil
 			}
-			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
+			draftVisible := piPaneShowsPromptDraft(captured, message) ||
+				(piPaneLooksIdle(captured) && piPaneEditorContainsPrompt(captured, message))
+			if !draftVisible {
 				return nil
 			}
 			if !recovered && time.Since(started) >= recoveryGrace {
@@ -1183,6 +1261,7 @@ type piMarker struct {
 	Reason     string `json:"reason,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 	Role       string `json:"role,omitempty"`
+	Text       string `json:"text,omitempty"`
 	UpdateType string `json:"updateType,omitempty"`
 	Delta      string `json:"delta,omitempty"`
 	ToolCallID string `json:"toolCallId,omitempty"`
@@ -1197,6 +1276,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	defer terminalTicker.Stop()
 
 	var content strings.Builder
+	var finalAssistantText string
 	currentOffset := offset
 	var lastTerminal string
 	toolStart := map[string]time.Time{}
@@ -1243,7 +1323,16 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					ToolDuration: duration,
 					Metadata:     piChunkMetadata(session),
 				})
+			case "message_end":
+				// Deltas are useful for streaming, but some Pi model/provider
+				// combinations only expose the complete assistant message here.
+				if strings.EqualFold(strings.TrimSpace(marker.Role), "assistant") && strings.TrimSpace(marker.Text) != "" {
+					finalAssistantText = strings.TrimSpace(marker.Text)
+				}
 			case "agent_end":
+				if finalAssistantText != "" {
+					return finalAssistantText, nil
+				}
 				return strings.TrimSpace(content.String()), nil
 			}
 		}
@@ -2187,6 +2276,16 @@ function role(message: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+function text(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return undefined;
+	const parts = content
+		.filter((part: any) => part?.type === "text" && typeof part?.text === "string")
+		.map((part: any) => part.text);
+	return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
 export default function mlpMarkerExtension(pi: any) {
 	emit("extension_loaded");
 	pi.on("session_start", async (event: any, ctx: any) => {
@@ -2202,7 +2301,10 @@ export default function mlpMarkerExtension(pi: any) {
 			delta: typeof streamEvent?.delta === "string" ? streamEvent.delta : undefined
 		});
 	});
-	pi.on("message_end", async (event: any) => emit("message_end", { role: role(event?.message) }));
+	pi.on("message_end", async (event: any) => emit("message_end", {
+		role: role(event?.message),
+		text: text(event?.message)
+	}));
 	pi.on("tool_execution_start", async (event: any) => {
 		emit("tool_execution_start", { toolCallId: event?.toolCallId, toolName: event?.toolName });
 	});

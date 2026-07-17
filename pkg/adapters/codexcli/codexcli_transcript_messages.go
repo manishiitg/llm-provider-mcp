@@ -84,6 +84,118 @@ func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string)
 	return nil
 }
 
+// readCodexTranscriptFinalAssistantText returns Codex's authoritative final
+// assistant message for the current turn. Prefer task_complete.last_agent_message
+// because it is the exact text Codex committed as the turn result; fall back to
+// the last assistant response_item explicitly marked final_answer for releases
+// that omit last_agent_message. Commentary is never a valid turn result.
+//
+// This must remain separate from readCodexTranscriptMessages: that function
+// intentionally returns the complete intermediate trail (assistant progress,
+// MCP calls, and tool outputs) for conversation forensics. Using that trail as
+// the workflow result is what caused MCP calls to leak into plan-step completion
+// summaries and automatic parent notifications.
+func readCodexTranscriptFinalAssistantText(turnStart time.Time, expectedWorkingDir string) (string, string) {
+	path := findCodexRolloutForTurn(turnStart, expectedWorkingDir)
+	if path == "" {
+		return "", ""
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", ""
+	}
+	defer f.Close()
+
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type event struct {
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Payload   struct {
+			Type             string         `json:"type"`
+			Role             string         `json:"role"`
+			Phase            string         `json:"phase"`
+			Content          []contentBlock `json:"content"`
+			LastAgentMessage string         `json:"last_agent_message"`
+		} `json:"payload"`
+	}
+
+	var lastAssistantMessage string
+	var lastCompletedMessage string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	for scanner.Scan() {
+		var e event
+		if json.Unmarshal(scanner.Bytes(), &e) != nil {
+			continue
+		}
+		if !turnStart.IsZero() {
+			timestamp, parseErr := time.Parse(time.RFC3339Nano, e.Timestamp)
+			if parseErr != nil || timestamp.Before(turnStart) {
+				continue
+			}
+		}
+		if e.Type == "response_item" && e.Payload.Type == "message" && e.Payload.Role == "assistant" &&
+			(e.Payload.Phase == "final_answer" || e.Payload.Phase == "final") {
+			var parts []string
+			for _, block := range e.Payload.Content {
+				if (block.Type == "output_text" || block.Type == "text") && strings.TrimSpace(block.Text) != "" {
+					parts = append(parts, block.Text)
+				}
+			}
+			if len(parts) > 0 {
+				lastAssistantMessage = strings.TrimSpace(strings.Join(parts, "\n"))
+			}
+		}
+		if e.Type == "event_msg" && e.Payload.Type == "task_complete" && strings.TrimSpace(e.Payload.LastAgentMessage) != "" {
+			lastCompletedMessage = normalizeCodexFinalAssistantText(e.Payload.LastAgentMessage)
+		}
+	}
+	if lastCompletedMessage != "" {
+		return lastCompletedMessage, "rollout_task_complete"
+	}
+	if lastAssistantMessage != "" {
+		return lastAssistantMessage, "rollout_assistant_message"
+	}
+	return "", ""
+}
+
+// normalizeCodexFinalAssistantText handles the two task_complete payload
+// shapes emitted by Codex releases: plain text and a JSON-serialized content
+// block array. The latter otherwise leaks transport JSON into workflow results
+// and automatic parent notifications.
+func normalizeCodexFinalAssistantText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "[") {
+		return trimmed
+	}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &blocks); err != nil || len(blocks) == 0 {
+		return trimmed
+	}
+
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "text" && block.Type != "output_text" {
+			return trimmed
+		}
+		if text := strings.TrimSpace(block.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 {
+		return trimmed
+	}
+	return strings.Join(parts, "\n")
+}
+
 func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtypes.MessageContent, string) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -257,7 +257,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		APIKeyEnvVars:             []string{"CODEX_API_KEY"},
 		WorkingDirInstructionFile: "AGENTS.md",
 		UserInstructionFile:       "~/.codex/AGENTS.md",
-		WorkingDirMCPConfigFile:   "", // Codex has no project-scoped MCP config file; per-invocation MCP comes via `-c` config overrides.
+		WorkingDirMCPConfigFile:   "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
 		UserMCPConfigFile:         "~/.codex/config.toml",
 	},
 	ProviderCursorCLI: {
