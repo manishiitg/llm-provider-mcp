@@ -130,7 +130,7 @@ func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	env = append(env, "HOME="+homeDir, "CURSOR_API_KEY=")
 
 	sessionName := newCursorTmuxSessionName()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
 		t.Fatalf("start auth prompt tmux session: %v", err)
@@ -171,8 +171,8 @@ func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
 	ownerSessionID := "cursor-real-wrapped-input-" + cursorRandomHex(4)
 	token := "WRAPPED_CURSOR_INPUT_" + cursorRandomHex(5)
 	prompt := strings.Repeat("This sentence only makes the single Cursor input line long enough to wrap inside the terminal composer and does not change the requested response. ", 3) + "Reply exactly: " + token
-	if strings.ContainsAny(prompt, "\r\n") || len(prompt) <= cursorTypedInputMaxLen {
-		t.Fatalf("wrapped-input fixture must be one logical line longer than %d bytes", cursorTypedInputMaxLen)
+	if strings.ContainsAny(prompt, "\r\n") || len([]rune(prompt)) <= cursorVisibleInputChunkRunes {
+		t.Fatalf("wrapped-input fixture must be one logical line longer than %d runes", cursorVisibleInputChunkRunes)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -191,6 +191,80 @@ func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
 	content := strings.TrimSpace(response.Choices[0].Content)
 	if !strings.Contains(content, token) {
 		t.Fatalf("wrapped prompt response = %q, want token %s", content, token)
+	}
+}
+
+func TestCursorCLIRealVisibleMultilineDraftContract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+
+	workDir := t.TempDir()
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	args, env, workingDir, cleanupFiles, err := adapter.buildCursorInteractiveLaunch(opts, "", "test-session-cursor-visible-draft")
+	if err != nil {
+		t.Fatalf("build visible draft launch: %v", err)
+	}
+	t.Cleanup(cleanupFiles)
+
+	sessionName := newCursorTmuxSessionName()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+		t.Fatalf("start visible draft tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = killCursorTmuxSession(closeCtx, sessionName)
+	})
+	if err := waitForCursorPrompt(ctx, sessionName, nil); err != nil {
+		t.Fatalf("wait for visible draft prompt: %v", err)
+	}
+	baseline, err := captureCursorPane(ctx, sessionName)
+	if err != nil {
+		t.Fatalf("capture visible draft baseline: %v", err)
+	}
+
+	lines := make([]string, 0, 19)
+	for i := 1; i <= 18; i++ {
+		lines = append(lines, fmt.Sprintf("VISIBLE_CURSOR_LINE_%02d", i))
+	}
+	token := "VISIBLE_CURSOR_FINAL_" + cursorRandomHex(5)
+	lines = append(lines, "Reply exactly: "+token)
+	prompt := strings.Join(lines, "\n")
+	if err := writeCursorVisibleDraftToTmux(ctx, sessionName, prompt); err != nil {
+		t.Fatalf("write visible multiline draft: %v", err)
+	}
+	if !waitForCursorInputDraftVisible(ctx, sessionName, prompt, 3*time.Second) {
+		pane, _ := captureCursorPane(context.Background(), sessionName)
+		t.Fatalf("multiline draft did not become visible; pane:\n%s", pane)
+	}
+	pane, err := captureCursorPane(context.Background(), sessionName)
+	if err != nil {
+		t.Fatalf("capture visible multiline draft: %v", err)
+	}
+	if strings.Contains(strings.ToLower(pane), "[pasted text #") {
+		t.Fatalf("Cursor collapsed adapter input instead of showing its text; pane:\n%s", pane)
+	}
+	for _, want := range []string{"VISIBLE_CURSOR_LINE_18", token} {
+		if !strings.Contains(pane, want) {
+			t.Fatalf("visible Cursor draft missing %q; pane:\n%s", want, pane)
+		}
+	}
+	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		t.Fatalf("submit visible multiline draft: %v", err)
+	}
+	if err := ensureCursorInputSubmitted(ctx, sessionName, prompt); err != nil {
+		t.Fatalf("confirm visible multiline submission: %v", err)
+	}
+	finalPane, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false)
+	if err != nil {
+		t.Fatalf("wait for visible multiline response: %v", err)
+	}
+	content := parseCursorInteractiveResponse(finalPane, baseline, prompt, nil)
+	if !strings.Contains(content, token) {
+		t.Fatalf("visible multiline response = %q, want token %s", content, token)
 	}
 }
 

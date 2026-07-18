@@ -687,6 +687,7 @@ func TestParseCursorInteractiveResponseDropsPromptOnlyTUI(t *testing.T) {
 	captured := `v2026.05.16-0338208
 Try Composer via /models, frontier intelligence at a fraction of the cost.
 → This is a real Cursor CLI tmux contract test.
+Reply exactly: saved REAL_CURSOR_TMUX_ok
 Ask (shift+tab to cycle)
 Composer 2 Fast
 ~/ai-work/multi-llm-provider-go/pkg/adapters/cursorcli · main`
@@ -731,6 +732,19 @@ func TestCursorPaneShowsOpaquePastedPromptDraft(t *testing.T) {
 
 	if !cursorPaneShowsPromptDraft(captured, prompt) {
 		t.Fatalf("expected Cursor's opaque pasted-text marker to acknowledge the active draft")
+	}
+}
+
+func TestCursorPaneDoesNotConfirmPartialMultilineDraft(t *testing.T) {
+	prompt := "first complete line with enough content\nsecond complete line with enough content\nFINAL_VISIBLE_TAIL_TOKEN"
+	captured := "Cursor Agent\n→ first complete line with enough content\nsecond complete line with enough content\n"
+
+	if cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatal("partial multiline draft was confirmed before its final visible tail arrived")
+	}
+	captured += "FINAL_VISIBLE_TAIL_TOKEN\n"
+	if !cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatal("complete multiline draft was not confirmed after its final visible tail arrived")
 	}
 }
 

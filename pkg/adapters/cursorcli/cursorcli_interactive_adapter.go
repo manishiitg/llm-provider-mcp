@@ -1395,13 +1395,11 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	}
 }
 
-// cursorTypedInputMaxLen is the upper bound under which a single-line message
-// is typed via `tmux send-keys -l` (keystroke injection) instead of
-// paste-buffer + bracketed paste. Keeping short, single-line input out of the
-// bracketed-paste path stops Cursor's TUI from rendering normal chat turns as
-// "[Pasted text #N]". Multi-line or longer payloads still go through
-// paste-buffer to preserve newlines and avoid premature submission.
-const cursorTypedInputMaxLen = 240
+// cursorVisibleInputChunkRunes bounds each literal tmux key injection. Cursor's
+// TUI collapses fast paste-buffer input into an opaque "[Pasted text #N]"
+// marker. Chunked literal input stays visible, while Ctrl+J inserts embedded
+// newlines into Cursor's editor without submitting the draft.
+const cursorVisibleInputChunkRunes = 160
 
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
 	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false)
@@ -1427,64 +1425,47 @@ func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
 	}
-	if !strings.ContainsAny(message, "\n\r") && len(message) <= cursorTypedInputMaxLen {
-		return typeCursorInputToTmux(ctx, sessionName, message)
-	}
-	bufferName := "mlp-cursor-input-" + cursorRandomHex(6)
-	tmp, err := os.CreateTemp("", "cursor-tmux-input-*.txt")
-	if err != nil {
-		return fmt.Errorf("failed to create Cursor tmux input temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.WriteString(message); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to write Cursor tmux input temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("failed to close Cursor tmux input temp file: %w", err)
-	}
-	if err := runCursorCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
-		return fmt.Errorf("failed to load Cursor input into tmux buffer: %w", err)
-	}
-	// Raw paste (no -p): -p enables bracketed paste, which Cursor collapses to an
-	// opaque "[Pasted text #N]" block in the pane. -r preserves embedded LFs as
-	// literal newlines (not CR), so multi-line input stays in the draft without
-	// submitting early, while the actual text stays readable in the terminal.
-	if err := runCursorCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste input into Cursor interactive session: %w", err)
-	}
-	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second) {
-		return fmt.Errorf("Cursor input did not appear in the prompt before submit")
-	}
-	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
-		return fmt.Errorf("failed to submit input to Cursor interactive session: %w", err)
-	}
-	// Cursor consumes the first Enter when the follow-ups suggestion box is
-	// showing (it dismisses the menu but does NOT submit the text — the text
-	// stays in the input draft). One extra Enter is needed to actually send.
-	// We don't know up front whether the menu was shown, so probe: if after
-	// the first Enter the draft is still in the input field, send another.
-	return ensureCursorInputSubmitted(ctx, sessionName, message)
+	return typeCursorInputToTmux(ctx, sessionName, message)
 }
 
-// typeCursorInputToTmux delivers a short single-line message to Cursor's TUI
-// as keystrokes via `tmux send-keys -l` instead of paste-buffer. The TUI then
-// treats it as normal typed input and does not show the "[Pasted text]"
-// marker. Used only for messages that have no embedded newlines and fit under
-// cursorTypedInputMaxLen — multi-line or longer payloads stay on the
-// paste-buffer/bracketed-paste path so Cursor doesn't submit on every \n.
+// typeCursorInputToTmux delivers every message as visible editor input. Literal
+// chunks avoid Cursor's opaque pasted-text marker; Ctrl+J represents embedded
+// newlines without triggering submission. Enter is sent only after the entire
+// draft is visible.
 func typeCursorInputToTmux(ctx context.Context, sessionName, message string) error {
-	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", message); err != nil {
+	if err := writeCursorVisibleDraftToTmux(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
-	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 2*time.Second) {
+	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 5*time.Second) {
 		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit")
 	}
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
 	return ensureCursorInputSubmitted(ctx, sessionName, message)
+}
+
+func writeCursorVisibleDraftToTmux(ctx context.Context, sessionName, message string) error {
+	message = strings.ReplaceAll(message, "\r\n", "\n")
+	message = strings.ReplaceAll(message, "\r", "\n")
+	lines := strings.Split(message, "\n")
+	for lineIndex, line := range lines {
+		runes := []rune(line)
+		for len(runes) > 0 {
+			chunkSize := min(len(runes), cursorVisibleInputChunkRunes)
+			chunk := string(runes[:chunkSize])
+			if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", "--", chunk); err != nil {
+				return err
+			}
+			runes = runes[chunkSize:]
+		}
+		if lineIndex < len(lines)-1 {
+			if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-j"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ensureCursorInputSubmitted polls briefly after the initial C-m and sends a
@@ -2215,47 +2196,37 @@ func cursorPaneShowsPromptDraft(captured, prompt string) bool {
 	// this region to a fixed row count: Cursor hard-wraps long drafts itself, so
 	// a valid composer can occupy more than ten terminal rows.
 	activeEditor := normalizeCursorDraftProbe(strings.Join(visibleLines[lastPromptMarker:], "\n"))
-	// Cursor intentionally collapses sufficiently large or multiline paste-buffer
-	// input to an opaque marker. The marker appears only after tmux has delivered
-	// the buffer to the active composer, so it is the acknowledgement available
-	// for this transport path when no literal draft text is exposed.
-	usesPasteBuffer := strings.ContainsAny(prompt, "\r\n") || len(prompt) > cursorTypedInputMaxLen
-	if usesPasteBuffer && strings.Contains(activeEditor, "[pasted text #") {
+	// Preserve compatibility with a retained pane created by an older adapter or
+	// a user-originated paste. New adapter input remains literal and visible.
+	if strings.Contains(activeEditor, "[pasted text #") {
 		return true
 	}
-	for _, line := range nonEmptyCursorLines(prompt) {
-		line = normalizeCursorDraftProbe(line)
-		if len([]rune(line)) < 8 {
-			continue
-		}
-		for _, probe := range cursorDraftProbeWindows(line, 120) {
-			if strings.Contains(activeEditor, probe) {
-				return true
-			}
-		}
-	}
-	return false
+	probe := cursorDraftTailProbe(prompt, 120)
+	return probe != "" && strings.Contains(activeEditor, probe)
 }
 
-func cursorDraftProbeWindows(text string, windowSize int) []string {
-	runes := []rune(text)
-	if len(runes) == 0 || windowSize <= 0 {
-		return nil
-	}
-	if len(runes) <= windowSize {
-		return []string{text}
-	}
-	starts := []int{0, (len(runes) - windowSize) / 2, len(runes) - windowSize}
-	probes := make([]string, 0, len(starts))
-	lastStart := -1
-	for _, start := range starts {
-		if start == lastStart {
+func cursorDraftTailProbe(prompt string, maxRunes int) string {
+	lines := nonEmptyCursorLines(prompt)
+	probe := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := normalizeCursorDraftProbe(lines[i])
+		if line == "" {
 			continue
 		}
-		probes = append(probes, string(runes[start:start+windowSize]))
-		lastStart = start
+		if probe == "" {
+			probe = line
+		} else {
+			probe = line + " " + probe
+		}
+		runes := []rune(probe)
+		if len(runes) >= 32 || i == 0 {
+			if maxRunes > 0 && len(runes) > maxRunes {
+				return string(runes[len(runes)-maxRunes:])
+			}
+			return probe
+		}
 	}
-	return probes
+	return ""
 }
 
 // normalizeCursorDraftProbe makes prompt verification independent of how the

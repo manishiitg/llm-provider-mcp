@@ -13,7 +13,7 @@ import (
 
 // TestEnsureCursorInputSubmittedSendsSecondEnter mirrors the production
 // scenario where Cursor's follow-ups menu swallows the first Enter after a
-// paste-buffer write — the draft text stays in the input field. The fix in
+// draft write — the draft text stays in the input field. The fix in
 // sendCursorInputToTmux delegates a recovery probe to ensureCursorInputSubmitted
 // which, on seeing the draft still present, fires one extra Enter.
 //
@@ -69,15 +69,9 @@ func TestEnsureCursorInputSubmittedSendsSecondEnter(t *testing.T) {
 	t.Fatalf("expected log to contain draft %q after recovery Enter; log contents=%q", draft, string(content))
 }
 
-// TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer covers the dispatcher
-// in sendCursorInputToTmux: short single-line messages must take the typed
-// path (tmux send-keys -l) instead of the paste-buffer/bracketed-paste path
-// — that's what stops Cursor's TUI from rendering normal chat turns as
-// "[Pasted text]". We verify behaviorally by checking that no tmux paste
-// buffer named "mlp-cursor-input-*" was left behind (paste-buffer -d would
-// delete it on use, but its even-momentary existence is detectable here:
-// we count buffers before+after and assert the count did not jump). We also
-// confirm the message reached the pane (so the typed path actually ran).
+// TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer covers normal visible
+// single-line delivery. Cursor must receive literal key input rather than a
+// paste buffer so the user can see the actual prompt.
 func TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available on this host")
@@ -125,11 +119,11 @@ func TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer(t *testing.T) {
 	}
 }
 
-// TestSendCursorInputToTmuxPasteBufferPathForMultilineInput covers the
-// other branch of the dispatcher: multi-line content must keep using
-// paste-buffer + bracketed paste so embedded newlines don't cause Cursor to
-// submit on every line.
-func TestSendCursorInputToTmuxPasteBufferPathForMultilineInput(t *testing.T) {
+// TestWriteCursorVisibleDraftUsesCtrlJForMultilineInput exercises the transport
+// used for multiline Cursor drafts. In Cursor's TUI, Ctrl+J inserts a newline
+// without submitting; a shell read loop treats it as a record delimiter, which
+// lets this test prove both lines were delivered without any tmux paste buffer.
+func TestWriteCursorVisibleDraftUsesCtrlJForMultilineInput(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available on this host")
 	}
@@ -144,27 +138,40 @@ func TestSendCursorInputToTmuxPasteBufferPathForMultilineInput(t *testing.T) {
 	}
 
 	token := "MLP_MULTI_" + cursorRandomHex(4)
-	// Two-line message forces the paste-buffer path.
 	multi := "first line " + token + "\nsecond line " + token
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := sendCursorInputToTmux(ctx, sessionName, multi); err != nil {
-		t.Fatalf("sendCursorInputToTmux: %v", err)
+	if err := writeCursorVisibleDraftToTmux(ctx, sessionName, multi); err != nil {
+		t.Fatalf("writeCursorVisibleDraftToTmux: %v", err)
+	}
+	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+		t.Fatalf("submit final test line: %v", err)
 	}
 
-	// `cat`-style loop will log each \n-terminated line. Both lines should
-	// arrive (paste-buffer delivers them, the trailing C-m submits, and bash
-	// reads both records).
+	// Ctrl+J terminates the first shell record and the explicit final Enter
+	// terminates the second. Cursor itself keeps Ctrl+J inside one visible draft.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		content, _ := os.ReadFile(logFile)
 		if strings.Count(string(content), token) >= 2 {
-			return
+			break
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
 	content, _ := os.ReadFile(logFile)
-	t.Fatalf("expected both lines of multi-line input in log; log=%q", string(content))
+	if strings.Count(string(content), token) < 2 {
+		t.Fatalf("expected both lines of multi-line input in log; log=%q", string(content))
+	}
+
+	out, err := exec.CommandContext(context.Background(), "tmux", "list-buffers", "-F", "#{buffer_name}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux list-buffers: %v; output=%s", err, string(out))
+	}
+	for _, name := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(name), "mlp-cursor-input-") {
+			t.Fatalf("visible multiline path leaked a paste buffer %q", name)
+		}
+	}
 }
 
 // TestEnsureCursorInputSubmittedSkipsWhenDraftAbsent guards against the

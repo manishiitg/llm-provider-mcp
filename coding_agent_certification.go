@@ -652,9 +652,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertPromptPaste,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			TestName:    "TestCursorCLIRealVisibleMultilineDraftContract",
 			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "large multiline prompts paste and submit correctly through Cursor tmux",
+			Description: "multiline prompts remain literal and visible in Cursor's editor instead of collapsing into an opaque pasted-text marker",
 			RealE2E:     true,
 		},
 		{
