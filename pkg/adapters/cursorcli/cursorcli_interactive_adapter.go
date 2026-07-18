@@ -1578,6 +1578,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastWebSearchApprovalAt time.Time
 	var lastMCPToolApprovalAt time.Time
 	var lastModeSwitchRejectAt time.Time
+	var lastQueuedFollowupSubmitAt time.Time
 	var finalAnswerRecoveryCount int
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. This is tracked at the top of every tick,
@@ -1626,6 +1627,24 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			// Newer Cursor builds hold messages typed during an active turn in a
+			// follow-ups overlay and require an explicit Enter ("send now"). The
+			// input transport has already accepted the draft at this point, so its
+			// normal post-submit verification cannot see that confirmation gate.
+			// Re-check under the shared tmux input broker before pressing Enter so
+			// a stale observation can never inject a blank message into the normal
+			// composer after the overlay disappears.
+			if hasCursorQueuedFollowupsSendPrompt(captured) {
+				if lastQueuedFollowupSubmitAt.IsZero() || time.Since(lastQueuedFollowupSubmitAt) >= time.Second {
+					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-followups-send-now", hasCursorQueuedFollowupsSendPrompt, "C-m"); err == nil && handled {
+						lastQueuedFollowupSubmitAt = time.Now()
+					}
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
 			}
 			// Cursor can ask to switch into another agent mode when it tries
 			// nested delegation and finds the child session's built-in tools
@@ -2242,6 +2261,9 @@ func normalizeCursorDraftProbe(text string) string {
 
 func hasCursorReadyPrompt(captured string) bool {
 	visible := cursorVisiblePaneText(captured)
+	if hasCursorQueuedFollowupsSendPrompt(visible) {
+		return false
+	}
 	if hasCursorAuthPrompt(visible) {
 		return false
 	}
@@ -2287,6 +2309,26 @@ func hasCursorReadyPrompt(captured string) bool {
 		return false
 	}
 	return true
+}
+
+// hasCursorQueuedFollowupsSendPrompt detects Cursor's queued-message
+// confirmation overlay. Both structural regions are required so ordinary
+// assistant prose mentioning "follow-ups" or "send now" cannot trigger an
+// unsolicited Enter.
+func hasCursorQueuedFollowupsSendPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
+	hasHeader := false
+	hasActionFooter := false
+	for _, rawLine := range strings.Split(cleaned, "\n") {
+		line := strings.Join(strings.Fields(rawLine), " ")
+		if strings.Contains(line, "follow-ups") {
+			hasHeader = true
+		}
+		if strings.Contains(line, "enter send now") && strings.Contains(line, "select/edit") {
+			hasActionFooter = true
+		}
+	}
+	return hasHeader && hasActionFooter
 }
 
 // hasCursorBootBanner detects the Composer 2.5 welcome screen that

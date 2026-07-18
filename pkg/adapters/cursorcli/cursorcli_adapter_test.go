@@ -116,6 +116,80 @@ exit 0
 	}
 }
 
+func TestCursorQueuedFollowupsSendPromptDetection(t *testing.T) {
+	exactOverlay := `
+api-bridge execute_shell_command
+┌─ follow-ups ───────────────────────────────────────────────┐
+○ [AUTO-NOTIFICATION] Agent 'full-run' completed
+○ A user follow-up that arrived while Cursor was working
++15 more lines · enter send now · ↑ select/edit · esc cancel
+└────────────────────────────────────────────────────────────┘`
+	if !hasCursorQueuedFollowupsSendPrompt(exactOverlay) {
+		t.Fatal("exact Cursor follow-ups send-now overlay was not detected")
+	}
+	if hasCursorReadyPrompt(exactOverlay) {
+		t.Fatal("queued follow-ups overlay must not be classified as a ready composer")
+	}
+
+	for _, pane := range []string{
+		"The documentation discusses follow-ups and when to send now.",
+		"follow-ups\n→ Add a follow-up",
+		"enter send now · ↑ select/edit · esc cancel",
+	} {
+		if hasCursorQueuedFollowupsSendPrompt(pane) {
+			t.Fatalf("ordinary/incomplete pane was misclassified as follow-ups overlay:\n%s", pane)
+		}
+	}
+}
+
+func TestCursorQueuedFollowupsSendControlRechecksOverlayInsideBroker(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$FAKE_TMUX_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+
+	// The overlay disappeared while this control waited for the broker. The
+	// re-check must suppress the stale Enter.
+	t.Setenv("FAKE_TMUX_CAPTURE", "→ Add a follow-up")
+	handled, err := sendCursorControlIfVisible(context.Background(), "cursor-followups-stale", "test", hasCursorQueuedFollowupsSendPrompt, "C-m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("stale follow-ups overlay injected Enter into the normal composer")
+	}
+
+	t.Setenv("FAKE_TMUX_CAPTURE", "follow-ups\n○ queued message\nenter send now · ↑ select/edit · esc cancel")
+	handled, err = sendCursorControlIfVisible(context.Background(), "cursor-followups-visible", "test", hasCursorQueuedFollowupsSendPrompt, "C-m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("visible follow-ups overlay was not submitted")
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "send-keys -t cursor-followups-visible C-m") {
+		t.Fatalf("send-keys log = %q", data)
+	}
+}
+
 func TestCursorInteractiveTimeoutDefaultsToNoDeadline(t *testing.T) {
 	t.Setenv(EnvCursorInteractiveTimeoutSeconds, "")
 	if got := cursorInteractiveTimeout(); got != 0 {
