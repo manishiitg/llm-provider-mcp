@@ -1547,6 +1547,18 @@ func TestParseCursorResponseDropsInternalFinalAnswerRecoveryPrompt(t *testing.T)
 	}
 }
 
+func TestCursorFinalAnswerRecoveryAllowsIncompleteWorkToContinue(t *testing.T) {
+	if !strings.Contains(cursorFinalAnswerRecoveryPrompt, "use tools as needed") {
+		t.Fatalf("recovery prompt must allow unfinished tool work to continue: %q", cursorFinalAnswerRecoveryPrompt)
+	}
+	if strings.Contains(cursorFinalAnswerRecoveryPrompt, "Do not use tools") {
+		t.Fatalf("recovery prompt still blocks the tools needed to finish the request: %q", cursorFinalAnswerRecoveryPrompt)
+	}
+	if !strings.Contains(cursorFinalAnswerRecoveryPrompt, "Do not repeat side effects") {
+		t.Fatalf("recovery prompt must guard already-completed side effects: %q", cursorFinalAnswerRecoveryPrompt)
+	}
+}
+
 func TestParseCursorResponseKeepsExactAnswerEmbeddedInOriginalPrompt(t *testing.T) {
 	prompt := `Use the MCP bridge to write a proof file.
 After it succeeds, return exactly these two lines:

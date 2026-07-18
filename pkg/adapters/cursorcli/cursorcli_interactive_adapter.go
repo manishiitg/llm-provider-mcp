@@ -42,7 +42,7 @@ const (
 	defaultCursorInteractiveRetention   = 30 * time.Minute
 	cursorInteractiveStableWindow       = 1200 * time.Millisecond
 	cursorFinalAnswerRecoveryDelay      = 3 * time.Second
-	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: Reply only with the requested final answer. Do not use tools."
+	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: The previous tool sequence returned without a final response. If the requested work is incomplete, continue it now and use tools as needed. Otherwise reply only with the requested final answer. Do not repeat side effects that already completed."
 	cursorBootBannerPromptGrace         = 2 * time.Second
 	// Hard cap on how long we wait for the CLI to show ANY activity after the
 	// prompt is submitted. A live turn shows "Thinking…"/streaming within
