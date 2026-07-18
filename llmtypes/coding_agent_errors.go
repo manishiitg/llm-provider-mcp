@@ -67,3 +67,36 @@ func IsCodingAgentTmuxSessionLostError(err error) bool {
 	var lostErr *CodingAgentTmuxSessionLostError
 	return errors.As(err, &lostErr)
 }
+
+// CodingAgentAuthRequiredError marks a coding CLI startup that reached an
+// explicit authentication/login screen. Runtime callers should surface the
+// login command and stop this turn; transient readiness/status probe failures
+// must not be converted into this error.
+type CodingAgentAuthRequiredError struct {
+	Provider     string
+	LoginCommand string
+	Detail       string
+}
+
+func (e *CodingAgentAuthRequiredError) Error() string {
+	if e == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(e.Provider)
+	if provider == "" {
+		provider = "coding agent"
+	}
+	message := provider + " authentication required"
+	if login := strings.TrimSpace(e.LoginCommand); login != "" {
+		message += "; run `" + login + "`"
+	}
+	if detail := strings.TrimSpace(e.Detail); detail != "" {
+		message += "; " + detail
+	}
+	return message
+}
+
+func IsCodingAgentAuthRequiredError(err error) bool {
+	var authErr *CodingAgentAuthRequiredError
+	return errors.As(err, &authErr)
+}

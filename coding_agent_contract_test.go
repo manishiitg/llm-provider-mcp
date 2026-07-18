@@ -370,7 +370,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertLifecyclePolicy,
 		CertPersistentCancelReuse,
 		CertStaleDraftCleanup,
-		CertTrustAuthPrompts,
 	},
 }
 

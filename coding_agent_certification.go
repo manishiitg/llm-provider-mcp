@@ -634,6 +634,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertTrustAuthPrompts,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealAuthPromptSurfacedBeforePromptContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "fresh Cursor startup detects an explicit login screen and returns a typed authentication-required error before submitting user input",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertNativeSystemPrompt,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
 			TestName:    "TestCursorTmuxSystemPromptSteersWritesThroughBridge",

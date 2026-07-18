@@ -1328,6 +1328,9 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 		select {
 		case <-deadline.Done():
 			captured, _ := captureCursorPane(context.Background(), sessionName)
+			if hasCursorAuthPrompt(captured) {
+				return cursorAuthPromptError(captured)
+			}
 			if strings.TrimSpace(captured) != "" {
 				return fmt.Errorf("timed out waiting for Cursor Agent CLI prompt; latest pane:\n%s", captured)
 			}
@@ -1347,6 +1350,9 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 				}
 			}
 			visible := cursorVisiblePaneText(captured)
+			if hasCursorAuthPrompt(visible) {
+				return cursorAuthPromptError(captured)
+			}
 			if hasCursorTrustPrompt(visible) && !trustSubmitted {
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(visible))
 				trustSubmitted = true
@@ -2265,6 +2271,9 @@ func normalizeCursorDraftProbe(text string) string {
 
 func hasCursorReadyPrompt(captured string) bool {
 	visible := cursorVisiblePaneText(captured)
+	if hasCursorAuthPrompt(visible) {
+		return false
+	}
 	if hasCursorTrustPrompt(visible) {
 		return false
 	}
@@ -2369,6 +2378,36 @@ func hasCursorTrustPrompt(captured string) bool {
 		strings.Contains(cleaned, "trust") && strings.Contains(cleaned, "workspace") &&
 			(strings.Contains(cleaned, "y/n") || strings.Contains(cleaned, "yes") ||
 				strings.Contains(cleaned, "[a]") || strings.Contains(cleaned, "[w]"))
+}
+
+func hasCursorAuthPrompt(captured string) bool {
+	cleaned := strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))
+	if strings.TrimSpace(cleaned) == "" {
+		return false
+	}
+	loginInstruction := strings.Contains(cleaned, "cursor-agent login") ||
+		strings.Contains(cleaned, "log in to cursor") ||
+		strings.Contains(cleaned, "sign in to cursor") ||
+		strings.Contains(cleaned, "login to cursor") ||
+		strings.Contains(cleaned, "press any key to log in")
+	explicitLoggedOut := strings.Contains(cleaned, "not logged in") ||
+		strings.Contains(cleaned, "not signed in") ||
+		strings.Contains(cleaned, "authentication required") ||
+		strings.Contains(cleaned, "please log in") ||
+		strings.Contains(cleaned, "please sign in")
+	return loginInstruction || explicitLoggedOut && strings.Contains(cleaned, "cursor")
+}
+
+func cursorAuthPromptError(captured string) error {
+	detail := ""
+	if pane := strings.TrimSpace(stripCursorANSI(cursorVisiblePaneText(captured))); pane != "" {
+		detail = "latest pane:\n" + pane
+	}
+	return &llmtypes.CodingAgentAuthRequiredError{
+		Provider:     "cursor-cli",
+		LoginCommand: "cursor-agent login",
+		Detail:       detail,
+	}
 }
 
 func hasCursorModeSwitchPrompt(captured string) bool {

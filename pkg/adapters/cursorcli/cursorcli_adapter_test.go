@@ -30,6 +30,43 @@ func TestCursorCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	}
 }
 
+func TestCursorAuthPromptDetectionReturnsTypedError(t *testing.T) {
+	panes := []string{
+		"Cursor Agent\n\nYou are not logged in to Cursor.\nRun cursor-agent login to continue.\n",
+		"Cursor Agent\nv2026.07.16-899851b\nPress any key to log in...\n",
+	}
+	for _, pane := range panes {
+		if !hasCursorAuthPrompt(pane) {
+			t.Fatalf("expected Cursor authentication prompt detection for pane:\n%s", pane)
+		}
+		if hasCursorReadyPrompt(pane) {
+			t.Fatalf("authentication prompt must not be classified as ready for pane:\n%s", pane)
+		}
+	}
+	pane := panes[1]
+	err := cursorAuthPromptError(pane)
+	if !llmtypes.IsCodingAgentAuthRequiredError(err) {
+		t.Fatalf("error = %T %v, want typed CodingAgentAuthRequiredError", err, err)
+	}
+	if !strings.Contains(err.Error(), "cursor-agent login") {
+		t.Fatalf("error = %q, want actionable Cursor login command", err)
+	}
+}
+
+func TestCursorAuthPromptDetectionDoesNotMatchOrdinaryConversation(t *testing.T) {
+	pane := `
+I checked the application and the test user is not logged in.
+
+→ Add a follow-up
+`
+	if hasCursorAuthPrompt(pane) {
+		t.Fatal("ordinary assistant text about an application user must not be treated as Cursor CLI authentication")
+	}
+	if !hasCursorReadyPrompt(pane) {
+		t.Fatal("ordinary completed Cursor conversation should remain prompt-ready")
+	}
+}
+
 func TestSendCursorControlIfVisibleRechecksPaneInsideBroker(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "send-keys.log")

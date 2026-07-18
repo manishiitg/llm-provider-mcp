@@ -103,6 +103,62 @@ saved %s`, token, token)
 	}
 }
 
+func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+
+	workDir, err := os.MkdirTemp("/private/tmp", "cursor-real-auth-prompt-work-*")
+	if err != nil {
+		t.Fatalf("create auth prompt workdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
+	homeDir, err := os.MkdirTemp("/private/tmp", "cursor-real-auth-prompt-home-*")
+	if err != nil {
+		t.Fatalf("create auth prompt home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("HOME", homeDir)
+	t.Setenv("CURSOR_API_KEY", "")
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	args, env, workingDir, cleanupFiles, err := adapter.buildCursorInteractiveLaunch(opts, "", "test-session-cursor-auth")
+	if err != nil {
+		t.Fatalf("build auth prompt launch: %v", err)
+	}
+	t.Cleanup(cleanupFiles)
+	env = append(env, "HOME="+homeDir, "CURSOR_API_KEY=")
+
+	sessionName := newCursorTmuxSessionName()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+		t.Fatalf("start auth prompt tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = killCursorTmuxSession(closeCtx, sessionName)
+	})
+
+	started := time.Now()
+	err = waitForCursorPrompt(ctx, sessionName, nil)
+	if !llmtypes.IsCodingAgentAuthRequiredError(err) {
+		pane, _ := captureCursorPane(context.Background(), sessionName)
+		t.Fatalf("waitForCursorPrompt error = %v, want typed authentication-required error; pane:\n%s", err, pane)
+	}
+	if elapsed := time.Since(started); elapsed > 20*time.Second {
+		t.Fatalf("authentication prompt took %s to surface; want deterministic failure within 20s", elapsed)
+	}
+	pane, _ := captureCursorPane(context.Background(), sessionName)
+	if !hasCursorAuthPrompt(pane) {
+		t.Fatalf("expected real Cursor authentication prompt in isolated HOME; pane:\n%s", pane)
+	}
+	if hasCursorReadyPrompt(pane) {
+		t.Fatalf("authentication prompt should not be parsed as ready; pane:\n%s", pane)
+	}
+}
+
 // TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract exercises the
 // production failure mode where Cursor hard-wraps one long logical input line
 // across several TUI rows. The adapter must recognize the visible draft, submit
