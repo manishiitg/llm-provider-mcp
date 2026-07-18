@@ -515,12 +515,6 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
-	if mcpJSON, ok := cursorMCPConfigForInteractiveHydration(opts); ok {
-		if err := hydrateCursorMCPForInteractiveLaunch(workingDir, mcpJSON, c.logger); err != nil {
-			cleanupFiles()
-			return nil, nil, "", nil, err
-		}
-	}
 
 	modelToUse := resolveCursorCLIModelID(c.modelID)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -771,47 +765,6 @@ func initCursorWorkspaceGitMarker(workingDir string) error {
 	return nil
 }
 
-func cursorMCPConfigForInteractiveHydration(opts *llmtypes.CallOptions) (string, bool) {
-	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return "", false
-	}
-	approve, _ := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool)
-	if !approve {
-		return "", false
-	}
-	mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
-	mcpJSON = strings.TrimSpace(mcpJSON)
-	return mcpJSON, mcpJSON != ""
-}
-
-func hydrateCursorMCPForInteractiveLaunch(workingDir, mcpJSON string, logger interfaces.Logger) error {
-	serverNames, err := cursorMCPServerNames(mcpJSON)
-	if err != nil {
-		return err
-	}
-	if len(serverNames) == 0 {
-		return nil
-	}
-	dirs := []string{workingDir}
-	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil && resolved != "" && resolved != workingDir {
-		dirs = append(dirs, resolved)
-	}
-	for _, dir := range dirs {
-		for _, serverName := range serverNames {
-			if err := runCursorMCPHydrationCommand(dir, "enable", serverName); err != nil {
-				return fmt.Errorf("hydrate cursor MCP server %q in %s: %w", serverName, dir, err)
-			}
-			if err := runCursorMCPHydrationCommand(dir, "list-tools", serverName); err != nil {
-				return fmt.Errorf("hydrate cursor MCP tools for %q in %s: %w", serverName, dir, err)
-			}
-		}
-	}
-	if logger != nil {
-		logger.Debugf("Hydrated Cursor MCP servers for interactive launch in %s: %s", workingDir, strings.Join(serverNames, ","))
-	}
-	return nil
-}
-
 func cursorMCPServerNames(mcpJSON string) ([]string, error) {
 	normalized, err := normalizeCursorMCPConfigForCLI(mcpJSON)
 	if err != nil {
@@ -880,19 +833,6 @@ func cursorMCPAllowlistCLIConfig(mcpJSON string) (string, bool, error) {
 		return "", false, fmt.Errorf("build cursor MCP allowlist config: %w", err)
 	}
 	return string(out), true, nil
-}
-
-func runCursorMCPHydrationCommand(workingDir, subcommand, serverName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	args := []string{"mcp", subcommand, serverName}
-	cmd := exec.CommandContext(ctx, "cursor-agent", args...)
-	cmd.Dir = workingDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("cursor-agent %s: %w\noutput: %s", strings.Join(args, " "), err, string(out))
-	}
-	return nil
 }
 
 // writeCursorDenyBuiltinHooks installs a .cursor/hooks.json + deny script

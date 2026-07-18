@@ -202,7 +202,7 @@ func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(
 	}
 }
 
-func TestBuildCursorInteractiveLaunchHydratesMCPBeforeTUILaunch(t *testing.T) {
+func TestBuildCursorInteractiveLaunchDoesNotRunMCPPreflight(t *testing.T) {
 	fakeBin := t.TempDir()
 	logPath := filepath.Join(fakeBin, "cursor-agent.log")
 	cursorPath := filepath.Join(fakeBin, "cursor-agent")
@@ -223,30 +223,26 @@ exit 0
 	WithMCPConfig(`{"mcpServers":{"zeta":{"command":"node","args":["z.js"]},"api-bridge":{"command":"node","args":["bridge.js"]}}}`)(opts)
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	_, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Original system prompt.", "test-session-hydrate")
+	args, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Original system prompt.", "test-session-no-preflight")
 	if err != nil {
 		t.Fatalf("buildCursorInteractiveLaunch: %v", err)
 	}
 	defer cleanup()
 
-	raw, err := os.ReadFile(logPath)
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("Cursor launch preparation must not execute cursor-agent MCP preflight; log stat err=%v", err)
+	}
+	if len(args) == 0 || args[0] != "cursor-agent" {
+		t.Fatalf("launch args = %#v, want cursor-agent TUI launch", args)
+	}
+	mcpPath := filepath.Join(workDir, ".cursor", "mcp.json")
+	raw, err := os.ReadFile(mcpPath)
 	if err != nil {
-		t.Fatalf("read fake cursor-agent log: %v", err)
+		t.Fatalf("read generated MCP config: %v", err)
 	}
-	got := strings.FieldsFunc(strings.TrimSpace(string(raw)), func(r rune) bool { return r == '\n' || r == '\r' })
-	want := []string{
-		"mcp enable api-bridge",
-		"mcp list-tools api-bridge",
-		"mcp enable zeta",
-		"mcp list-tools zeta",
-	}
-	if len(got)%len(want) != 0 {
-		t.Fatalf("cursor-agent calls = %#v, want one or more complete hydration passes %#v", got, want)
-	}
-	for offset := 0; offset < len(got); offset += len(want) {
-		chunk := got[offset : offset+len(want)]
-		if strings.Join(chunk, "\n") != strings.Join(want, "\n") {
-			t.Fatalf("cursor-agent calls = %#v, want repeated hydration pass %#v", got, want)
+	for _, serverName := range []string{"api-bridge", "zeta"} {
+		if !strings.Contains(string(raw), `"`+serverName+`"`) {
+			t.Fatalf("generated MCP config = %s, want server %q", string(raw), serverName)
 		}
 	}
 }
