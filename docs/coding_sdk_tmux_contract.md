@@ -801,6 +801,8 @@ The current P0 set is intentionally limited to product survival requirements:
 - fresh launch
 - runtime context (system prompt, attached skill, and MCP bridge in one real run)
 - exact working directory
+- workspace trust/auth startup (including the post-accept transition before the
+  first prompt)
 - MCP bridge availability
 - slow-tool false-idle protection
 - done detection

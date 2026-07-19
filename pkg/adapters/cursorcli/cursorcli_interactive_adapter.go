@@ -44,6 +44,13 @@ const (
 	cursorFinalAnswerRecoveryDelay      = 3 * time.Second
 	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: The previous tool sequence returned without a final response. If the requested work is incomplete, continue it now and use tools as needed. Otherwise reply only with the requested final answer. Do not repeat side effects that already completed."
 	cursorBootBannerPromptGrace         = 2 * time.Second
+	// Cursor keeps the normal composer painted underneath its workspace-trust
+	// overlay. Immediately after we choose "Trust this workspace", that composer
+	// can therefore look ready while Cursor is still applying trust. Typing the
+	// first workflow prompt in that window makes Cursor drop the turn and return
+	// to an empty prompt. Hold startup through the transition, then require the
+	// normal consecutive-ready debounce below before delivering user input.
+	cursorWorkspaceTrustReadyGrace = 3 * time.Second
 	// Hard cap on how long we wait for the CLI to show ANY activity after the
 	// prompt is submitted. A live turn shows "Thinking…"/streaming within
 	// seconds; if nothing appears within this window the input never reached the
@@ -1254,6 +1261,7 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	var trustSubmitted bool
+	var trustSubmittedAt time.Time
 	var lastMCPServerApprovalAt time.Time
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
@@ -1296,6 +1304,7 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 			if hasCursorTrustPrompt(visible) && !trustSubmitted {
 				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(visible))
 				trustSubmitted = true
+				trustSubmittedAt = time.Now()
 				consecutiveReadyTicks = 0
 				bootBannerReadySince = time.Time{}
 				continue
@@ -1306,6 +1315,15 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 						lastMCPServerApprovalAt = time.Now()
 					}
 				}
+				consecutiveReadyTicks = 0
+				bootBannerReadySince = time.Time{}
+				continue
+			}
+			// Do not trust Cursor's underlying composer while the trust action is
+			// still settling. The transition text can remain painted as stale TUI
+			// chrome even after completion, so disappearance alone is not a usable
+			// signal; the bounded grace plus the existing stable-ready debounce is.
+			if trustSubmitted && !cursorWorkspaceTrustReadyGraceElapsed(trustSubmittedAt, time.Now()) {
 				consecutiveReadyTicks = 0
 				bootBannerReadySince = time.Time{}
 				continue
@@ -1333,6 +1351,10 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 			consecutiveReadyTicks = 0
 		}
 	}
+}
+
+func cursorWorkspaceTrustReadyGraceElapsed(submittedAt, now time.Time) bool {
+	return !submittedAt.IsZero() && !now.Before(submittedAt.Add(cursorWorkspaceTrustReadyGrace))
 }
 
 // cursorVisibleInputChunkRunes bounds each literal tmux key injection. Cursor's

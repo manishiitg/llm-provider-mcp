@@ -97,13 +97,15 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 
 // requiredP0CertificationIDs is deliberately short. These are the contracts
 // without which AgentWorks cannot safely run a coding CLI: launch in the right
-// workspace, receive the system prompt/skills/MCP runtime, avoid false idle,
-// detect completion, accept and process live follow-up input while busy, return
-// the final answer, cancel, and isolate concurrency.
+// workspace, clear trust/auth startup gates before the first prompt, receive the
+// system prompt/skills/MCP runtime, avoid false idle, detect completion, accept
+// and process live follow-up input while busy, return the final answer, cancel,
+// and isolate concurrency.
 var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertRuntimeContext,
 	CertWorkingDirectory,
+	CertTrustAuthPrompts,
 	CertMCPBridge,
 	CertSlowToolFalseIdle,
 	CertDoneDetection,
@@ -636,9 +638,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertTrustAuthPrompts,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealAuthPromptSurfacedBeforePromptContract",
+			TestName:    "TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract",
 			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "fresh Cursor startup detects an explicit login screen and returns a typed authentication-required error before submitting user input",
+			Description: "fresh Cursor workspace trust is accepted, allowed to settle, and the first prompt produces a real answer instead of being dropped",
 			RealE2E:     true,
 		},
 		{

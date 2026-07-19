@@ -159,6 +159,91 @@ func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	}
 }
 
+// TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract reproduces the
+// release-blocking workflow failure where Cursor painted its normal composer
+// underneath "Trusting workspace..." and the adapter delivered the first turn
+// before trust had settled. The test deliberately launches in a brand-new
+// workspace, observes the real trust prompt, lets the production startup loop
+// accept it, and then requires the first turn to call the MCP bridge and return
+// its result. A prompt that is dropped during trust can never pass this test.
+func TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+
+	workDir, err := os.MkdirTemp("/private/tmp", "cursor-real-workspace-trust-*")
+	if err != nil {
+		t.Fatalf("create fresh trust workdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
+
+	bridgeToken := "CURSOR_TRUST_BRIDGE_" + cursorRandomHex(4)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"type":"stdio","command":"node","args":[%q]}}}`, writeCursorTmuxContractMCPServer(t))
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+	WithMCPConfig(mcpConfig)(opts)
+	WithApproveMCPs()(opts)
+
+	args, env, workingDir, cleanupFiles, err := adapter.buildCursorInteractiveLaunch(opts, "Use only declared MCP tools. Keep the final answer concise.", "test-session-cursor-trust")
+	if err != nil {
+		t.Fatalf("build fresh trust launch: %v", err)
+	}
+	t.Cleanup(cleanupFiles)
+
+	sessionName := newCursorTmuxSessionName()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+		t.Fatalf("start fresh trust tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = killCursorTmuxSession(closeCtx, sessionName)
+	})
+
+	trustDeadline := time.Now().Add(30 * time.Second)
+	var trustPane string
+	for time.Now().Before(trustDeadline) {
+		trustPane, _ = captureCursorPane(context.Background(), sessionName)
+		if hasCursorTrustPrompt(trustPane) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !hasCursorTrustPrompt(trustPane) {
+		t.Fatalf("fresh Cursor workspace did not expose its trust prompt; latest pane:\n%s", trustPane)
+	}
+
+	trustAcceptedAt := time.Now()
+	if err := waitForCursorPrompt(ctx, sessionName, nil); err != nil {
+		t.Fatalf("handle fresh workspace trust prompt: %v", err)
+	}
+	if elapsed := time.Since(trustAcceptedAt); elapsed < cursorWorkspaceTrustReadyGrace {
+		t.Fatalf("Cursor startup returned ready only %s after trust acceptance; want at least %s", elapsed, cursorWorkspaceTrustReadyGrace)
+	}
+
+	baseline, err := captureCursorPane(ctx, sessionName)
+	if err != nil {
+		t.Fatalf("capture post-trust Cursor baseline: %v", err)
+	}
+	prompt := fmt.Sprintf("Call the api-bridge MCP tool named contract_echo_token with token %s. Then reply with the exact text returned by the tool.", bridgeToken)
+	if err := sendCursorInitialPromptToTmux(ctx, sessionName, prompt); err != nil {
+		t.Fatalf("send first post-trust Cursor prompt: %v", err)
+	}
+	captured, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false)
+	if err != nil {
+		t.Fatalf("wait for first post-trust Cursor response: %v", err)
+	}
+	content := strings.TrimSpace(parseCursorInteractiveResponse(captured, baseline, prompt, nil))
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	if !strings.Contains(content, want) {
+		t.Fatalf("first post-trust content = %q, want MCP bridge result %q", content, want)
+	}
+	if strings.Contains(strings.ToLower(content), "workspace trust") || strings.Contains(strings.ToLower(content), "trusting workspace") {
+		t.Fatalf("workspace-trust TUI chrome leaked into final content: %q", content)
+	}
+}
+
 // TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract exercises the
 // production failure mode where Cursor hard-wraps one long logical input line
 // across several TUI rows. The adapter must recognize the visible draft, submit

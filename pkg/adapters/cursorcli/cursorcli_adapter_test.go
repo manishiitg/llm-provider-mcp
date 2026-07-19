@@ -462,7 +462,7 @@ Ask (shift+tab to cycle)`
 	}
 }
 
-func TestCursorTrustingWorkspaceStateIsNotLiveTrustPrompt(t *testing.T) {
+func TestCursorTrustingWorkspaceStateRequiresPostTrustStartupGrace(t *testing.T) {
 	pane := `⚠ Workspace Trust Required
 [a] Trust this workspace
 ⏳ Trusting workspace...
@@ -474,7 +474,21 @@ Ask (shift+tab to cycle)`
 		t.Fatal("post-accept trusting state must not be treated as a live trust prompt")
 	}
 	if !hasCursorReadyPrompt(pane) {
-		t.Fatal("post-accept trusting state should allow ready prompt detection")
+		t.Fatal("the stale trust screen may retain Cursor's underlying ready marker")
+	}
+
+	// waitForCursorPrompt must not act on that underlying marker until this
+	// grace has elapsed; otherwise the first workflow prompt can be submitted
+	// while Cursor is still applying workspace trust.
+	submittedAt := time.Unix(100, 0)
+	if cursorWorkspaceTrustReadyGrace < 2*time.Second {
+		t.Fatalf("workspace trust grace = %s, want at least 2s", cursorWorkspaceTrustReadyGrace)
+	}
+	if cursorWorkspaceTrustReadyGraceElapsed(submittedAt, submittedAt.Add(cursorWorkspaceTrustReadyGrace-time.Nanosecond)) {
+		t.Fatal("workspace trust transition became ready before its startup grace elapsed")
+	}
+	if !cursorWorkspaceTrustReadyGraceElapsed(submittedAt, submittedAt.Add(cursorWorkspaceTrustReadyGrace)) {
+		t.Fatal("workspace trust transition did not become eligible at the startup-grace boundary")
 	}
 }
 
