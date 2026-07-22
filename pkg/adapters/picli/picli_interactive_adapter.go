@@ -56,7 +56,7 @@ const (
 	defaultPiNodeMaxOldSpaceMB          = "4096"
 	defaultPiInteractiveNpxPackage      = "@earendil-works/pi-coding-agent"
 	defaultPiProvider                   = "google"
-	defaultPiModel                      = "gemini-3.5-flash"
+	defaultPiModel                      = "gemini-3.6-flash"
 	piInteractiveMarkerExtensionFile    = "mlp-marker.ts"
 	piInteractiveMCPOutputGuardFile     = "mlp-mcp-output-guard.ts"
 	piInteractiveMarkerJSONLFile        = "markers.jsonl"
@@ -1600,11 +1600,18 @@ func piComparablePromptLines(prompt string) []string {
 	var lines []string
 	for _, line := range strings.Split(stripPiANSI(prompt), "\n") {
 		compact := piCompactDraftText(line)
-		if len([]rune(compact)) < 8 {
+		runes := []rune(compact)
+		if len(runes) < 8 {
 			continue
 		}
-		if len([]rune(compact)) > 160 {
-			compact = string([]rune(compact)[:160])
+		if len(runes) > 64 {
+			// Pi wraps long logical prompt lines to the pane width. Match a
+			// prefix to establish the pasted text and a short suffix so the
+			// active editor cursor can still be correlated with the final
+			// wrapped row. A single 160-rune fragment can never appear in a
+			// typical 120-column pane.
+			lines = append(lines, string(runes[:64]), string(runes[len(runes)-32:]))
+			continue
 		}
 		lines = append(lines, compact)
 	}

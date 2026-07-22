@@ -152,9 +152,10 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 	// For Vertex, show a menu with model options
 	if provider == llmproviders.ProviderVertex {
 		fmt.Println("\nSelect Vertex AI Model:")
-		fmt.Println("1. gemini-3.5-flash (Gemini 3.5 Flash — GA default)")
-		fmt.Println("2. gemini-3-pro-preview (Gemini 3 Pro Preview)")
-		fmt.Print("\nEnter choice (1-2): ")
+		fmt.Println("1. gemini-3.6-flash (Gemini 3.6 Flash — GA default)")
+		fmt.Println("2. gemini-3.5-flash-lite (Gemini 3.5 Flash-Lite — GA)")
+		fmt.Println("3. gemini-3.1-pro-preview (Gemini 3.1 Pro Preview)")
+		fmt.Print("\nEnter choice (1-3): ")
 
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
@@ -165,11 +166,13 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 		input = strings.TrimSpace(input)
 		switch input {
 		case "1":
-			return vertexadapter.ModelGemini35Flash, nil
+			return vertexadapter.ModelGemini36Flash, nil
 		case "2":
-			return vertexadapter.ModelGemini3ProPreview, nil
+			return vertexadapter.ModelGemini35FlashLite, nil
+		case "3":
+			return vertexadapter.ModelGemini31ProPreview, nil
 		default:
-			return "", fmt.Errorf("invalid choice: %s (must be 1 or 2)", input)
+			return "", fmt.Errorf("invalid choice: %s (must be 1, 2, or 3)", input)
 		}
 	}
 

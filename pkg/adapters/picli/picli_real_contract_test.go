@@ -25,6 +25,7 @@ func TestPiCLIRealTmuxFullContract(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
+	expectedModelRoute := piRealContractModel()
 	ownerSessionID := "pi-real-full-" + piRandomHex(4)
 	workDir := t.TempDir()
 	systemToken := "PI_SYSTEM_" + piRandomHex(5)
@@ -58,7 +59,7 @@ func TestPiCLIRealTmuxFullContract(t *testing.T) {
 	if !strings.Contains(content, systemToken) || !strings.Contains(content, pasteToken) {
 		t.Fatalf("content = %q, want system token %s and paste token %s", content, systemToken, pasteToken)
 	}
-	assertPiResponseHasTranscriptUsage(t, resp)
+	assertPiResponseHasTranscriptUsage(t, resp, expectedModelRoute)
 	statusLine := assertPiStreamHasTerminalContentAndStatusLine(t, stream)
 	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
 	if !ok || handle.Provider != "pi-cli" || handle.TmuxSession == "" || handle.NativeSessionID == "" {
@@ -111,6 +112,7 @@ func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
+	expectedModelRoute := piRealContractModel()
 	ownerSessionID := "pi-real-cwd-" + piRandomHex(4)
 	workDir := t.TempDir()
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiReportCWDMCPServer(t))
@@ -137,6 +139,8 @@ func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	if got := strings.TrimSpace(resp.Choices[0].Content); !strings.Contains(got, want) {
 		t.Fatalf("content = %q, want MCP cwd result %q", got, want)
 	}
+	assertPiResponseHasTranscriptUsage(t, resp, expectedModelRoute)
+	t.Logf("verified Pi MCP tool result: %s", want)
 }
 
 func TestPiCLIRealPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
@@ -631,11 +635,14 @@ func requireRealPiCLIContractE2E(t *testing.T) {
 
 func newRealPiCLIAdapter(t *testing.T) *PiCLIAdapter {
 	t.Helper()
-	model := strings.TrimSpace(os.Getenv("PI_CLI_REAL_CONTRACT_MODEL"))
-	if model == "" {
-		model = DefaultModelID
+	return NewPiCLIAdapter(firstNonEmptyPiTestEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY"), piRealContractModel(), &mockLogger{})
+}
+
+func piRealContractModel() string {
+	if model := strings.TrimSpace(os.Getenv("PI_CLI_REAL_CONTRACT_MODEL")); model != "" {
+		return model
 	}
-	return NewPiCLIAdapter(firstNonEmptyPiTestEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY"), model, &mockLogger{})
+	return DefaultModelID
 }
 
 func assertPiStreamHasTerminalContentAndStatusLine(t *testing.T, streamChan <-chan llmtypes.StreamChunk) *llmtypes.StatusLine {
@@ -670,7 +677,7 @@ func assertPiStreamHasTerminalContentAndStatusLine(t *testing.T, streamChan <-ch
 	return statusLine
 }
 
-func assertPiResponseHasTranscriptUsage(t *testing.T, resp *llmtypes.ContentResponse) {
+func assertPiResponseHasTranscriptUsage(t *testing.T, resp *llmtypes.ContentResponse, expectedModelRoute string) {
 	t.Helper()
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil || resp.Choices[0].GenerationInfo == nil {
 		t.Fatalf("missing Pi GenerationInfo: %#v", resp)
@@ -683,9 +690,19 @@ func assertPiResponseHasTranscriptUsage(t *testing.T, resp *llmtypes.ContentResp
 	if got := additional["pi_token_usage_source"]; got != "transcript-file" {
 		t.Fatalf("pi_token_usage_source = %#v, want transcript-file; additional=%#v", got, additional)
 	}
-	if got, _ := additional["pi_transcript_file"].(string); strings.TrimSpace(got) == "" {
+	transcriptPath, _ := additional["pi_transcript_file"].(string)
+	if strings.TrimSpace(transcriptPath) == "" {
 		t.Fatalf("missing pi_transcript_file in additional=%#v", additional)
 	}
+	transcript := readPiTranscriptSummaryFile(transcriptPath, time.Time{})
+	if transcript == nil {
+		t.Fatalf("could not read Pi transcript %q", transcriptPath)
+	}
+	expectedProvider, expectedModel := resolvePiProviderModel(expectedModelRoute, "")
+	if transcript.Provider != expectedProvider || transcript.Model != expectedModel {
+		t.Fatalf("transcript route = %s/%s, want %s/%s", transcript.Provider, transcript.Model, expectedProvider, expectedModel)
+	}
+	t.Logf("verified Pi transcript route: %s/%s", transcript.Provider, transcript.Model)
 	if got, ok := additional["cost_usd"].(float64); !ok || got <= 0 {
 		t.Fatalf("cost_usd = %#v, want positive float64; additional=%#v", additional["cost_usd"], additional)
 	}

@@ -27,7 +27,7 @@ func main() {
 	// Note: Logger and EventEmitter can be nil - the library will use no-op implementations
 	config := llmproviders.Config{
 		Provider:     llmproviders.ProviderVertex,
-		ModelID:      "gemini-3.5-flash", // Use a cost-effective model for examples
+		ModelID:      "gemini-3.6-flash", // Use the current GA default
 		Temperature:  0.7,
 		Logger:       nil, // nil is allowed - uses no-op logger
 		EventEmitter: nil, // nil is allowed - uses no-op event emitter

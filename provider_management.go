@@ -1377,7 +1377,7 @@ func validateVertexCredentials(modelID string, options map[string]interface{}) (
 
 	// Use a default model if none provided
 	if modelID == "" {
-		modelID = vertexadapter.ModelGemini31FlashLitePreview
+		modelID = vertexadapter.ModelGemini35FlashLite
 		fmt.Printf("[VERTEX VALIDATION] Using default model: %s\n", modelID)
 	}
 
@@ -1484,7 +1484,7 @@ func validateVertexAPIKey(apiKey string, modelID string, options map[string]inte
 
 	// Use a default model if none provided
 	if modelID == "" {
-		modelID = vertexadapter.ModelGemini31FlashLitePreview
+		modelID = vertexadapter.ModelGemini35FlashLite
 		fmt.Printf("[VERTEX VALIDATION] Using default model: %s\n", modelID)
 	}
 

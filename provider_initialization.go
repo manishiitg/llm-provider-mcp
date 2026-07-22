@@ -870,7 +870,7 @@ func initializeVertex(config Config) (llmtypes.Model, error) {
 	// Set default model if not specified
 	modelID := config.ModelID
 	if modelID == "" {
-		modelID = vertexadapter.ModelGemini35Flash
+		modelID = vertexadapter.ModelGemini36Flash
 	}
 
 	logger := config.Logger

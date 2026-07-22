@@ -43,11 +43,11 @@ func TestResolvePiProviderModel(t *testing.T) {
 		wantProvider     string
 		wantModel        string
 	}{
-		{name: "default", wantProvider: "google", wantModel: "gemini-3.5-flash"},
+		{name: "default", wantProvider: "google", wantModel: "gemini-3.6-flash"},
 		{name: "provider model", modelID: "google/gemini-3.5-flash", wantProvider: "google", wantModel: "gemini-3.5-flash"},
 		{name: "openrouter nested model", modelID: "openrouter/minimax/minimax-m3-20260531", wantProvider: "openrouter", wantModel: "minimax/minimax-m3-20260531"},
 		{name: "override", modelID: "gemini-3.5-flash", providerOverride: "google-vertex", wantProvider: "google-vertex", wantModel: "gemini-3.5-flash"},
-		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.5-flash"},
+		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.6-flash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +106,7 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 	models := GetAllPiCLIModels()
 	want := []string{
 		DefaultModelID,
+		ModelGemini35FlashLite,
 		ModelGemini31ProPreview,
 		ModelMiniMaxM27,
 		ModelGLM52,
@@ -597,6 +598,20 @@ func TestPiPaneEditorContainsPromptWithoutANSICursor(t *testing.T) {
 	}
 	if !piPaneEditorContainsPrompt(after, prompt) {
 		t.Fatal("wrapped prompt without ANSI cursor should be detected in editor")
+	}
+}
+
+func TestPiPaneShowsPromptDraftDetectsWrappedSingleLinePrompt(t *testing.T) {
+	prompt := `Use the MCP gateway only. Call the api-bridge MCP tool bridge_canary, then reply exactly with the tool output text. If direct api_bridge_bridge_canary is unavailable, use mcp({ search: "bridge_canary" }) and mcp({ tool: "api_bridge_bridge_canary", args: "{}" }).`
+	captured := "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+		"Use the MCP gateway only. Call the api-bridge MCP tool bridge_canary, then reply exactly with the tool output text. If\n" +
+		"direct api_bridge_bridge_canary is unavailable, use mcp({ search: \"bridge_canary\" }) and mcp({ tool:\n" +
+		"\"api_bridge_bridge_canary\", args: \"{}\" }).\x1b[7m \x1b[0m\n" +
+		"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+		"\x1b[1mπ\x1b[0m • 🤖 gemini-3.6-flash • 💤 idle\n"
+
+	if !piPaneShowsPromptDraft(captured, prompt) {
+		t.Fatal("expected wrapped one-line Pi editor draft to be detected")
 	}
 }
 

@@ -11,13 +11,17 @@ import (
 // Gemini model name constants
 const (
 	// Gemini 3 Series
-	ModelGemini3ProPreview       = "gemini-3-pro-preview"
-	ModelGemini31ProPreview      = "gemini-3.1-pro-preview"
-	ModelGemini3FlashPreview     = "gemini-3-flash-preview"
+	ModelGemini3ProPreview        = "gemini-3-pro-preview"
+	ModelGemini31ProPreview       = "gemini-3.1-pro-preview"
+	ModelGemini3FlashPreview      = "gemini-3-flash-preview"
 	ModelGemini31FlashLitePreview = "gemini-3.1-flash-lite-preview"
 
 	// Gemini 3.5 Series (GA, launched 2026-05-19)
-	ModelGemini35Flash = "gemini-3.5-flash"
+	ModelGemini35Flash     = "gemini-3.5-flash"
+	ModelGemini35FlashLite = "gemini-3.5-flash-lite"
+
+	// Gemini 3.6 Series (GA, launched 2026-07-21)
+	ModelGemini36Flash = "gemini-3.6-flash"
 )
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
@@ -114,8 +118,8 @@ func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 			CachedInputCostPer1MTokens: 0.15,
 			Provider:                   "vertex",
 			// Capabilities
-			SupportsToolCalls:       true,
-			SupportsJSONMode:        true,
+			SupportsToolCalls: true,
+			SupportsJSONMode:  true,
 			// Dynamic thinking is enabled by default server-side; the
 			// Vertex API does not currently expose a thinkingLevel /
 			// thinkingBudget knob for this model. Flip to true here if
@@ -123,6 +127,38 @@ func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 			SupportsThinkingLevel:   false,
 			ThinkingLevels:          nil,
 			SupportsReasoningEffort: false,
+		},
+		// Gemini 3.6 Flash - GA, launched 2026-07-21. Default Vertex model.
+		ModelGemini36Flash: {
+			ModelID:                    ModelGemini36Flash,
+			ModelName:                  "Gemini 3.6 Flash",
+			ContextWindow:              1048576,
+			InputCostPer1MTokens:       1.50,
+			OutputCostPer1MTokens:      7.50,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.15,
+			Provider:                   "vertex",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsThinkingLevel:      true,
+			ThinkingLevels:             []string{"medium", "high"},
+			SupportsReasoningEffort:    false,
+		},
+		// Gemini 3.5 Flash-Lite - GA, launched 2026-07-21.
+		ModelGemini35FlashLite: {
+			ModelID:                    ModelGemini35FlashLite,
+			ModelName:                  "Gemini 3.5 Flash-Lite",
+			ContextWindow:              1048576,
+			InputCostPer1MTokens:       0.30,
+			OutputCostPer1MTokens:      2.50,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.03,
+			Provider:                   "vertex",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsThinkingLevel:      true,
+			ThinkingLevels:             []string{"minimal", "medium", "high"},
+			SupportsReasoningEffort:    false,
 		},
 		// Gemini 3 Flash Preview - 1M context window
 		ModelGemini3FlashPreview: {
