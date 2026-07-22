@@ -1292,10 +1292,16 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			case "message_update":
 				if marker.UpdateType == "text_delta" && marker.Delta != "" {
 					content.WriteString(marker.Delta)
+					// Mark as a token-level DELTA: pi's marker stream emits
+					// fragments that can split mid-word, so a reassembler
+					// (llmtypes.StreamAssistantText) must concatenate them
+					// verbatim, never "\n"-join them into token-split garble.
+					deltaMeta := piChunkMetadata(session)
+					deltaMeta[llmtypes.ContentDeltaMetadataKey] = true
 					emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
 						Type:     llmtypes.StreamChunkTypeContent,
 						Content:  marker.Delta,
-						Metadata: piChunkMetadata(session),
+						Metadata: deltaMeta,
 					})
 				}
 			case "tool_execution_start":

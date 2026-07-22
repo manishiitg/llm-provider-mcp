@@ -88,3 +88,80 @@ func TestUserMessageMode3_StreamingNoTools(t *testing.T) {
 		t.Fatalf("unexpected streamed message: %q", streamed)
 	}
 }
+
+// deltaChunk builds a Content chunk marked as a token-level delta, the way pi's
+// marker stream emits fragments that can split mid-word.
+func deltaChunk(text string) StreamChunk {
+	return StreamChunk{Type: StreamChunkTypeContent, Content: text, Metadata: map[string]interface{}{ContentDeltaMetadataKey: true}}
+}
+
+// TestStreamAssistantText_PiDeltasNotGarbled is the regression for the real bug
+// the agentic review caught: pi streams token-level deltas that split MID-TOKEN
+// ("PI_STREAM_A_4a0..." arrives as "...cea332" + "c7"). The old "\n"-join
+// inserted a newline INSIDE the token. Delta chunks must concatenate verbatim so
+// the token survives intact.
+func TestStreamAssistantText_PiDeltasNotGarbled(t *testing.T) {
+	chunks := []StreamChunk{
+		{Type: StreamChunkTypeTerminal, Content: "[pane]"},
+		deltaChunk("Calling echo_contract with the first token."),
+		{Type: StreamChunkTypeToolCallStart, ToolName: "mcp", ToolCallID: "t1"},
+		deltaChunk("The result is PI_STREAM_B_cea332"),
+		deltaChunk("c7"), // splits the token across two deltas
+	}
+	got := StreamAssistantText(chunks)
+	// The token must be intact — no newline injected mid-token.
+	if !strings.Contains(got, "PI_STREAM_B_cea332c7") {
+		t.Fatalf("delta token was garbled by reassembly: %q", got)
+	}
+	if strings.Contains(got, "cea332\nc7") {
+		t.Fatalf("reassembly inserted a newline mid-token: %q", got)
+	}
+	// Tool + terminal chunks are still stripped.
+	for _, banned := range []string{"mcp", "[pane]"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("non-text leaked: %q in %q", banned, got)
+		}
+	}
+}
+
+// TestStreamAssistantText_UnicodeAndMarkdownPreserved covers real assistant
+// output: emoji, accents, code fences, and tables must pass through byte-for-byte
+// (neither trimmed internally nor mangled).
+func TestStreamAssistantText_UnicodeAndMarkdownPreserved(t *testing.T) {
+	block := "Here's the fix ✅ (café update):\n```go\nfunc F() {}\n```\n| a | b |\n|---|---|"
+	got := StreamAssistantText([]StreamChunk{{Type: StreamChunkTypeContent, Content: block}})
+	if got != block {
+		t.Fatalf("unicode/markdown block not preserved:\n got=%q\nwant=%q", got, block)
+	}
+}
+
+// TestStreamAssistantText_MixedDeltaAndBlock proves a turn that mixes a live
+// delta run with a final block chunk reassembles cleanly: the deltas fold into
+// one block, and the trailing block is its own line.
+func TestStreamAssistantText_MixedDeltaAndBlock(t *testing.T) {
+	chunks := []StreamChunk{
+		deltaChunk("Saving "),
+		deltaChunk("the file now."),
+		{Type: StreamChunkTypeToolCallStart, ToolName: "write_file", ToolCallID: "t1"},
+		{Type: StreamChunkTypeContent, Content: "Done: ZEBRA_9"}, // block chunk (no delta flag)
+	}
+	got := StreamAssistantText(chunks)
+	want := "Saving the file now.\nDone: ZEBRA_9"
+	if got != want {
+		t.Fatalf("mixed delta+block reassembly:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// TestStreamAssistantText_BlockChunksUnchanged guards that the granularity-aware
+// path did not regress the block-level providers (claude/codex/cursor): unmarked
+// content chunks are still one-line-each, "\n"-joined.
+func TestStreamAssistantText_BlockChunksUnchanged(t *testing.T) {
+	chunks := []StreamChunk{
+		{Type: StreamChunkTypeContent, Content: "First sentence."},
+		{Type: StreamChunkTypeToolCallStart, ToolName: "x", ToolCallID: "t1"},
+		{Type: StreamChunkTypeContent, Content: "Second sentence."},
+	}
+	if got := StreamAssistantText(chunks); got != "First sentence.\nSecond sentence." {
+		t.Fatalf("block reassembly regressed: %q", got)
+	}
+}

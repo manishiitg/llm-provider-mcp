@@ -54,21 +54,67 @@ func assistantTextBlocks(msgs []MessageContent) []string {
 	return texts
 }
 
+// ContentDeltaMetadataKey marks a Content StreamChunk as a token-level DELTA
+// (a fragment of an assistant message that may split mid-word) rather than a
+// whole assistant text BLOCK. Providers that stream fine-grained deltas (pi's
+// marker stream) MUST set Metadata[ContentDeltaMetadataKey]=true on those chunks;
+// the transcript-tailing providers (claude/codex/cursor) emit block-level chunks
+// and leave it unset. Without this, StreamAssistantText cannot tell a mid-word
+// fragment ("B_cea33" | "2c7.") from a complete line and would "\n"-join it into
+// garbled, token-split text.
+const ContentDeltaMetadataKey = "content_delta"
+
+// contentChunkIsDelta reports whether a Content chunk is a token-level delta.
+func contentChunkIsDelta(c StreamChunk) bool {
+	if c.Metadata == nil {
+		return false
+	}
+	v, ok := c.Metadata[ContentDeltaMetadataKey].(bool)
+	return ok && v
+}
+
 // StreamAssistantText joins the TEXT of a streamed turn, DROPPING tool and
-// terminal chunks — the text-only view a streaming UI shows (mode 3). Each
-// Content chunk is one assistant text block (the transcript tailer emits one
-// chunk per block), so joining with newlines yields the same message as
-// FullAssistantText over that turn's transcript.
+// terminal chunks — the text-only view a streaming UI shows (mode 3). It is
+// granularity-aware so the result equals FullAssistantText over the same turn
+// regardless of how finely a provider chunks its output:
+//
+//   - BLOCK chunks (claude/codex/cursor: one chunk per assistant text block) are
+//     each a line and are joined with "\n".
+//   - DELTA chunks (pi's marker stream: token-level fragments that can split
+//     mid-word) are concatenated VERBATIM — never "\n"-joined, which would split
+//     tokens — and a contiguous run of deltas forms one block.
+//
+// A turn may mix both (deltas for live typing plus a block at message end); the
+// blocks win and deltas between blocks are folded into the preceding/following
+// block boundary. If a turn is deltas-only, they concatenate into a single block.
 func StreamAssistantText(chunks []StreamChunk) string {
-	var parts []string
+	var blocks []string
+	var deltaBuf strings.Builder
+	flushDeltas := func() {
+		if deltaBuf.Len() == 0 {
+			return
+		}
+		if s := strings.TrimSpace(deltaBuf.String()); s != "" {
+			blocks = append(blocks, s)
+		}
+		deltaBuf.Reset()
+	}
 	for _, c := range chunks {
-		if c.Type == StreamChunkTypeContent {
-			if s := strings.TrimSpace(c.Content); s != "" {
-				parts = append(parts, s)
-			}
+		if c.Type != StreamChunkTypeContent {
+			continue
+		}
+		if contentChunkIsDelta(c) {
+			deltaBuf.WriteString(c.Content) // verbatim — do NOT insert separators
+			continue
+		}
+		// A block chunk ends any accumulating delta run.
+		flushDeltas()
+		if s := strings.TrimSpace(c.Content); s != "" {
+			blocks = append(blocks, s)
 		}
 	}
-	return strings.Join(parts, "\n")
+	flushDeltas()
+	return strings.Join(blocks, "\n")
 }
 
 // StreamTerminalText concatenates the raw terminal-snapshot chunks — the "show
