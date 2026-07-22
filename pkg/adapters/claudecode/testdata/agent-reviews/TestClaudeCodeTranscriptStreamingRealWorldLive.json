@@ -1,0 +1,46 @@
+{
+  "test": "TestClaudeCodeTranscriptStreamingRealWorldLive",
+  "summary": "Claude bridge-only: web_search -> write_file (to disk) -> read_file, streamed live",
+  "review_criteria": [
+    "no duplicated lines or chunks",
+    "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
+    "human-readable — reads like an assistant working, coherent and natural",
+    "correct text <-> tool interleaving order (narration then the tool it describes)",
+    "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
+    "the final answer is coherent and matches the work performed",
+    "real work actually happened (e.g. the file was written to disk)"
+  ],
+  "output": {
+    "content_chunks": [
+      "I'll search for the code word.",
+      "Now I'll save the code word to result.txt.",
+      "Now I'll verify what was saved.",
+      "ZEBRA_0c87e84a"
+    ],
+    "file_on_disk": "ZEBRA_0c87e84a",
+    "final": "ZEBRA_0c87e84a",
+    "stream_order": [
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text"
+    ],
+    "streamed_content": "I'll search for the code word.Now I'll save the code word to result.txt.Now I'll verify what was saved.ZEBRA_0c87e84a",
+    "tool_names": [
+      "mcp__workbench__web_search",
+      "mcp__workbench__write_file",
+      "mcp__workbench__read_file"
+    ]
+  },
+  "fingerprint": "55b87deedd819814",
+  "agent_review": {
+    "verdict": "good",
+    "reviewed_fingerprint": "55b87deedd819814",
+    "reviewer": "claude-code-agent",
+    "issues": [],
+    "notes": "Reviewed discrete chunks: 4 clean lines (search/save/verify/answer), no duplication, proper formatting, correct interleaving across web_search->write_file->read_file, result.txt written to disk. Human-readable. GOOD."
+  }
+}

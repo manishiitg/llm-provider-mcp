@@ -79,6 +79,11 @@ const (
 	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
 	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
 	EnvClaudeTmuxStreamTmuxScreen     = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
+	// EnvClaudeTmuxStreamTranscript opts into streaming structured content
+	// (assistant text + tool-call starts) by tailing the CLI's JSONL transcript
+	// mid-turn, for design-first UIs that never render the terminal pane.
+	// Default OFF — additive to the existing pane-snapshot stream.
+	EnvClaudeTmuxStreamTranscript = "CLAUDE_CODE_STREAM_TRANSCRIPT"
 	// EnvClaudeInteractiveStalePaneBackstopSeconds bounds how long the
 	// assistant-response loop will keep waiting on a pane that produced activity
 	// and then went byte-identical without ever reaching a ready prompt. Set to
@@ -397,6 +402,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		return nil, err
 	}
 	tmuxinput.MarkReady(sessionName)
+
+	// Opt-in: stream structured content (assistant text + tool-call starts) by
+	// tailing the CLI's JSONL transcript mid-turn, so a design-first UI can
+	// render real content without the terminal pane. Additive — the turn's final
+	// response is still built from the pane parse below, and the goroutine stops
+	// when this function returns.
+	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled() {
+		streamCtx, stopTranscriptStream := context.WithCancel(callCtx)
+		defer stopTranscriptStream()
+		go streamClaudeTranscript(streamCtx, nativeSessionID, turnStart, opts.StreamChan)
+	}
 
 	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan)
 	if err != nil {

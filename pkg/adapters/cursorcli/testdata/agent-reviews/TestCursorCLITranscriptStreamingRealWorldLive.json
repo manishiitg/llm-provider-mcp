@@ -1,0 +1,56 @@
+{
+  "test": "TestCursorCLITranscriptStreamingRealWorldLive",
+  "summary": "Cursor MCP-only: web_search -> write_file (to disk) -> read_file, streamed from store.db",
+  "review_criteria": [
+    "no duplicated lines or chunks",
+    "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
+    "human-readable — reads like an assistant working, coherent and natural",
+    "correct text <-> tool interleaving order (narration then the tool it describes)",
+    "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
+    "the final answer is coherent and matches the work performed",
+    "real work actually happened (e.g. the file was written to disk)"
+  ],
+  "output": {
+    "content_chunks": [
+      "I'll look up the workbench MCP tool schemas first, then run your three steps in order.\n",
+      "I'll search the web for the project code word.\n",
+      "The first search didn't connect; I'll retry the web search.\n",
+      "Next I'll save the code word to `result.txt`.\n",
+      "I'll read `result.txt` to confirm what was saved.\n",
+      "ZEBRA_e30c4eef"
+    ],
+    "file_on_disk": "ZEBRA_e30c4eef",
+    "final": "I'll search the web for the project code word.\n\nThe first search didn't connect; I'll retry the web search.\n\nworkbench web_search\n\nNext I'll save the code word to result.txt.\n\nworkbench write_file\n\nI'll read result.txt to confirm what was saved.\n\nworkbench read_file\n\nZEBRA_e30c4eef",
+    "stream_order": [
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text"
+    ],
+    "streamed_content": "I'll look up the workbench MCP tool schemas first, then run your three steps in order.\nI'll search the web for the project code word.\nThe first search didn't connect; I'll retry the web search.\nNext I'll save the code word to `result.txt`.\nI'll read `result.txt` to confirm what was saved.\nZEBRA_e30c4eef",
+    "tool_names": [
+      "GetMcpTools",
+      "CallMcpTool",
+      "CallMcpTool",
+      "CallMcpTool",
+      "CallMcpTool"
+    ]
+  },
+  "fingerprint": "d717195065c112a2",
+  "agent_review": {
+    "verdict": "good",
+    "reviewed_fingerprint": "d717195065c112a2",
+    "reviewer": "claude-code-agent",
+    "issues": [
+      "Cursor exposes MCP tools via its meta-tools GetMcpTools/CallMcpTool, so streamed tool names are the wrappers, not the underlying web_search/write_file/read_file (the narration names the real action). Cosmetic, not a streaming defect."
+    ],
+    "notes": "After the store.db-selection fix (re-resolve freshest post-baseline store.db, skipping cursor's warmup 'OK' turns), cursor streams the real turn: 6 readable narration chunks + 5 tool starts, correctly interleaved (text->tool x5), no duplication, and result.txt written to disk with the code word. GOOD."
+  }
+}

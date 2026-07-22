@@ -68,6 +68,10 @@ const (
 	EnvCursorInteractiveIdleTimeoutSeconds          = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
 	EnvCursorInteractivePromptWaitSeconds           = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCursorInteractiveStreamTmuxScreen            = "CURSOR_CLI_STREAM_TMUX_SCREEN"
+	// EnvCursorInteractiveStreamTranscript opts into streaming structured content
+	// (assistant text + tool-call starts) by polling Cursor's store.db mid-turn,
+	// for design-first UIs that never render the terminal pane. Default OFF.
+	EnvCursorInteractiveStreamTranscript = "CURSOR_CLI_STREAM_TRANSCRIPT"
 	EnvCursorInteractiveFirstActivityTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
 	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
@@ -277,7 +281,25 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 	tmuxinput.MarkReady(session.tmuxSessionName)
 
+	// Opt-in structured streaming: poll cursor's store.db mid-turn so a
+	// design-first UI gets assistant text + tool-call starts without the pane.
+	// Runs as a goroutine (the wait function's signature is already large) and is
+	// stopped — with a final flush — before any close(opts.StreamChan) below.
+	var cursorStreamStop context.CancelFunc
+	var cursorStreamDone chan struct{}
+	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled() {
+		streamState := newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID)
+		var streamCtx context.Context
+		streamCtx, cursorStreamStop = context.WithCancel(callCtx)
+		cursorStreamDone = make(chan struct{})
+		go func() { defer close(cursorStreamDone); streamState.run(streamCtx, opts.StreamChan) }()
+	}
+
 	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts))
+	if cursorStreamStop != nil {
+		cursorStreamStop()
+		<-cursorStreamDone // goroutine (and its final flush) done before any close(opts.StreamChan)
+	}
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		if isCursorTmuxSessionLostError(err) {

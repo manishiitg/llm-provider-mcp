@@ -34,7 +34,10 @@ func codexCLIRealContractModelFromEnv() string {
 	if model := strings.TrimSpace(os.Getenv("CODEX_CLI_REAL_CONTRACT_MODEL")); model != "" {
 		return model
 	}
-	return "gpt-5.4-mini"
+	// gpt-5.4-mini is deprecated: Codex renders a "switch to GPT-5.6" modal
+	// instead of running the turn, so the live P0 tests never execute. Default
+	// to a current model; override with CODEX_CLI_REAL_CONTRACT_MODEL.
+	return "gpt-5.6-luna"
 }
 
 func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {

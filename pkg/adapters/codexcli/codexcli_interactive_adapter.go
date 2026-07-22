@@ -56,6 +56,11 @@ const (
 	EnvCodexInteractivePromptWaitSeconds        = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCodexInteractivePromptMaxWaitSeconds     = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
 	EnvCodexInteractiveStreamTmuxScreen         = "CODEX_CLI_STREAM_TMUX_SCREEN"
+	// EnvCodexInteractiveStreamTranscript opts into streaming structured content
+	// (assistant text + tool-call starts) by tailing Codex's rollout JSONL
+	// mid-turn, for design-first UIs that never render the terminal pane.
+	// Default OFF — additive to the existing pane-snapshot stream.
+	EnvCodexInteractiveStreamTranscript = "CODEX_CLI_STREAM_TRANSCRIPT"
 	EnvCodexInteractiveStalePaneBackstopSeconds = "CODEX_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
@@ -1703,6 +1708,14 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var paneUnchangedSince time.Time
 	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+	// Opt-in structured streaming: tail the rollout JSONL mid-turn so a
+	// design-first UI gets assistant text + tool-call starts without the pane.
+	// Additive; nil when disabled. Runs inside this loop (which returns before
+	// the adapter closes streamChan), so there is no send-on-closed-chan race.
+	var transcriptStream *codexTranscriptStreamState
+	if streamChan != nil && codexInteractiveStreamTranscriptEnabled() {
+		transcriptStream = newCodexTranscriptStreamState(turnStart, workingDir)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1717,6 +1730,12 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			stableCapture := codexPromptCandidateStabilitySnapshot(captured)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete
+			}
+			// Poll the rollout tail BEFORE the completion/return checks so the
+			// final tick (where the rollout gets its last rows and completion is
+			// detected) still streams that content before the loop returns.
+			if transcriptStream != nil {
+				transcriptStream.poll(ctx, streamChan)
 			}
 			// Prefer Codex's native per-turn completion event. Terminal status
 			// lines are retained in tmux scrollback and are therefore only a
