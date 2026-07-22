@@ -5,7 +5,7 @@
     "no duplicated lines or chunks",
     "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
     "human-readable — reads like an assistant working, coherent and natural",
-    "correct text <-> tool interleaving order (narration then the tool it describes)",
+    "correct text \u003c-\u003e tool interleaving order (narration then the tool it describes)",
     "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
     "the final answer is coherent and matches the work performed",
     "real work actually happened (e.g. the file was written to disk)"
@@ -14,9 +14,9 @@
     "content_chunks": [
       "Calling the echo_contract function with the first token.",
       "Calling the echo_contract function with the second token.",
-      "BRIDGE_TOOL_OK_A_fa239b1b BRIDGE_TOOL_OK_B_d8830048"
+      "BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b"
     ],
-    "final": "BRIDGE_TOOL_OK_A_fa239b1b BRIDGE_TOOL_OK_B_d8830048",
+    "final": "BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b",
     "stream_order": [
       "text",
       "tool",
@@ -24,7 +24,7 @@
       "tool",
       "text"
     ],
-    "streamed_content": "Calling the echo_contract function with the first token.Calling the echo_contract function with the second token.BRIDGE_TOOL_OK_A_fa239b1b BRIDGE_TOOL_OK_B_d8830048",
+    "streamed_content": "Calling the echo_contract function with the first token.Calling the echo_contract function with the second token.BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b",
     "tool_names": [
       "mcp__api-bridge__echo_contract",
       "mcp__api-bridge__echo_contract"
@@ -34,8 +34,8 @@
   "agent_review": {
     "verdict": "good",
     "reviewed_fingerprint": "1aaf789636dbcba5",
-    "reviewer": "claude-code-agent",
-    "issues": [],
-    "notes": "Reviewed discrete chunks: 3 clean complete sentences, no duplication, proper formatting (each chunk a readable sentence, no garbled/merged text), correct text->tool->text interleaving, both echo_contract MCP calls fired. Human-readable. GOOD."
+    "reviewer": "claude-opus-4-8 (agentic P0 review)",
+    "issues": null,
+    "notes": "Reviewed the real captured stream. 3 distinct content chunks, no duplication. Clean, human-readable narration ('Calling the echo_contract function with the first token.'). Interleaving is correct: narration precedes each of the two tool calls (text->tool->text->tool->text). Both tool starts are the intended MCP tool mcp__api-bridge__echo_contract (no leaked shell/internal tools). Final answer 'BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b' is coherent and matches the work — both tokens came back, proving the real MCP tools executed end to end."
   }
 }
