@@ -28,6 +28,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
@@ -63,15 +64,15 @@ const (
 	// policy opt-in instead of returning a partial response after a fixed delay.
 	defaultCursorInteractiveStalePaneBackstop = 0
 
-	EnvCursorInteractiveSessionPrefix               = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCursorInteractiveTimeoutSeconds              = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCursorInteractiveIdleTimeoutSeconds          = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCursorInteractivePromptWaitSeconds           = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCursorInteractiveStreamTmuxScreen            = "CURSOR_CLI_STREAM_TMUX_SCREEN"
+	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCursorInteractiveIdleTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCursorInteractivePromptWaitSeconds  = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCursorInteractiveStreamTmuxScreen   = "CURSOR_CLI_STREAM_TMUX_SCREEN"
 	// EnvCursorInteractiveStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) by polling Cursor's store.db mid-turn,
 	// for design-first UIs that never render the terminal pane. Default OFF.
-	EnvCursorInteractiveStreamTranscript = "CURSOR_CLI_STREAM_TRANSCRIPT"
+	EnvCursorInteractiveStreamTranscript            = "CURSOR_CLI_STREAM_TRANSCRIPT"
 	EnvCursorInteractiveFirstActivityTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
 	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
@@ -219,6 +220,16 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 				close(opts.StreamChan)
 			}
 			return nil, err
+		}
+	}
+
+	// Cold session: the input prompt being ready does not mean cursor's MCP
+	// servers (the bridge) have finished connecting. Hold the first prompt until
+	// the bridge reports tools/list answered (marker file). No-op on reused
+	// sessions / when unconfigured; bounded, best-effort. See pkg/codingready.
+	if created && opts.Metadata != nil {
+		if rf := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); rf != "" {
+			codingready.WaitForMCPReadyFile(callCtx, rf, codingready.MCPReadyWait())
 		}
 	}
 

@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
@@ -50,17 +51,17 @@ const (
 	// task_complete events remain the primary path.
 	defaultCodexInteractiveStalePaneBackstop = 5 * time.Minute
 
-	EnvCodexInteractiveSessionPrefix            = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCodexInteractiveIdleTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCodexInteractivePromptWaitSeconds        = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCodexInteractivePromptMaxWaitSeconds     = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
-	EnvCodexInteractiveStreamTmuxScreen         = "CODEX_CLI_STREAM_TMUX_SCREEN"
+	EnvCodexInteractiveSessionPrefix        = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCodexInteractiveTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCodexInteractiveIdleTimeoutSeconds   = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCodexInteractivePromptWaitSeconds    = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCodexInteractivePromptMaxWaitSeconds = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
+	EnvCodexInteractiveStreamTmuxScreen     = "CODEX_CLI_STREAM_TMUX_SCREEN"
 	// EnvCodexInteractiveStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) by tailing Codex's rollout JSONL
 	// mid-turn, for design-first UIs that never render the terminal pane.
 	// Default OFF — additive to the existing pane-snapshot stream.
-	EnvCodexInteractiveStreamTranscript = "CODEX_CLI_STREAM_TRANSCRIPT"
+	EnvCodexInteractiveStreamTranscript         = "CODEX_CLI_STREAM_TRANSCRIPT"
 	EnvCodexInteractiveStalePaneBackstopSeconds = "CODEX_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
@@ -234,6 +235,16 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 				GenerationInfo: gi,
 			}},
 		}, nil
+	}
+
+	// Cold session: the composer being ready does not mean the MCP bridge has
+	// finished connecting. Hold the first prompt until the bridge reports
+	// tools/list answered (marker file). No-op on reused sessions / when
+	// unconfigured; bounded, best-effort. See pkg/codingready.
+	if created && opts.Metadata != nil {
+		if rf := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); rf != "" {
+			codingready.WaitForMCPReadyFile(callCtx, rf, codingready.MCPReadyWait())
+		}
 	}
 
 	baseline := ""

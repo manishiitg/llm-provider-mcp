@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
@@ -157,7 +158,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("pi-cli prompt is empty")
 	}
 
-	session, err := p.acquirePiInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
+	session, createdSession, err := p.acquirePiInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
 	if err != nil {
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
@@ -206,6 +207,17 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 			close(opts.StreamChan)
 		}
 		return nil, fmt.Errorf("Pi CLI prompt did not become ready in tmux session %q: %w", session.tmuxSessionName, err)
+	}
+
+	// Cold session: pi's idle prompt being ready does not mean the MCP bridge
+	// (pi-mcp-adapter) has finished connecting — the comment above notes it may
+	// still be connecting servers after session_start. Hold the first prompt until
+	// the bridge reports tools/list answered (marker file). No-op on reused
+	// sessions / when unconfigured; bounded, best-effort. See pkg/codingready.
+	if createdSession && opts.Metadata != nil {
+		if rf := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); rf != "" {
+			codingready.WaitForMCPReadyFile(ctx, rf, codingready.MCPReadyWait())
+		}
 	}
 
 	if launchOnly {
@@ -352,17 +364,19 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	}, nil
 }
 
-func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*piInteractiveSession, error) {
+// acquirePiInteractiveSession returns the session and a `created` flag: true for a
+// freshly launched session, false when an existing persistent session is reused.
+func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSessionID string, persistent bool, opts *llmtypes.CallOptions, systemPrompt string) (*piInteractiveSession, bool, error) {
 	workingDir := piWorkingDirFromOptions(opts)
 	if workingDir == "" {
 		var err error
 		workingDir, err = os.Getwd()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create Pi working dir: %w", err)
+		return nil, false, fmt.Errorf("failed to create Pi working dir: %w", err)
 	}
 
 	providerOverride := piProviderFromOptions(opts)
@@ -392,7 +406,7 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 				piInteractiveRegistry.Unlock()
 				existing.mu.Lock()
 				existing.lastUsed = time.Now()
-				return existing, nil
+				return existing, false, nil
 			}
 			delete(piInteractiveRegistry.sessions, ownerSessionID)
 			piInteractiveRegistry.Unlock()
@@ -409,7 +423,7 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 
 	session, err := p.startPiInteractiveSession(ctx, ownerSessionID, nativeSessionID, workingDir, persistent, provider, model, systemPrompt, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	session.mu.Lock()
 	if persistent {
@@ -417,7 +431,7 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 		piInteractiveRegistry.sessions[ownerSessionID] = session
 		piInteractiveRegistry.Unlock()
 	}
-	return session, nil
+	return session, true, nil
 }
 
 func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessionID, nativeSessionID, workingDir string, persistent bool, provider, model, systemPrompt string, opts *llmtypes.CallOptions) (*piInteractiveSession, error) {
