@@ -26,8 +26,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/"
-LIVE='TestClaudeCodeTranscriptStreamingBridgeLive|TestClaudeCodeTranscriptStreamingRealWorldLive|TestCodexCLITranscriptStreamingBridgeLive|TestCodexCLITranscriptStreamingRealWorldLive'
+# Every coding-agent adapter whose contract sets SupportsTranscriptStreaming must
+# have its live streaming P0 tests captured + agent-approved here. Add a provider
+# to STREAM_PKGS the moment it grows a transcript tailer + streaming E2E (and its
+# contract flag flips on) — see coding_agent_certification.go CertTranscriptStreaming.
+# pi/agy are intentionally absent: they read the transcript for a summary only and
+# do not stream structured chunks yet.
+STREAM_PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/ ./pkg/adapters/cursorcli/"
+PKGS="$STREAM_PKGS"
+# Matches every provider's streaming test (BridgeLive + RealWorldLive, plus the
+# DisabledControl twins that prove the structured stream comes from the feature).
+LIVE='TranscriptStreaming'
 
 capture() {
   echo ">> capture: running live agentic P0 tests; resetting reviews to pending ..."
