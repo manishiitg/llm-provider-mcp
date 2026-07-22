@@ -51,6 +51,20 @@ const (
 	// projection is disabled or fails, the adapter falls back to
 	// --system-prompt-file so the prompt is never lost.
 	MetadataKeyProjectInstructionOnly = "claude_code_project_instruction_only"
+	// MetadataKeyMCPReadyFile names a filesystem path that the session's MCP
+	// server (e.g. the mcpagent bridge) creates once it has answered the CLI's
+	// tools/list handshake — i.e. the moment the MCP tools are actually
+	// connected and callable. On a FRESHLY created interactive session the
+	// adapter waits (bounded) for this file to appear before sending the first
+	// prompt, closing the cold-turn race where the model's first turn runs
+	// before its tools have connected (Claude then fabricates tool calls as
+	// text; Codex reports "tools unavailable"). The wait is skipped on reused
+	// persistent sessions (already connected) and when the path is empty, and it
+	// degrades to "proceed anyway" on timeout so it can never hang a turn. The
+	// path MUST be unique per session (the writer allocates a fresh one each
+	// launch) so a stale file from a prior session in the same workspace cannot
+	// falsely satisfy the gate.
+	MetadataKeyMCPReadyFile = "mcp_ready_file"
 )
 
 // ClaudeCodeAdapter implements the LLM interface for the Claude Code CLI.
@@ -82,6 +96,18 @@ func WithMCPConfig(config string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMCPConfig] = config
+	}
+}
+
+// WithMCPReadyFile sets the path the session's MCP server creates once it has
+// answered the CLI's tools/list handshake. On a freshly created interactive
+// session the adapter holds the first prompt until this file appears (bounded,
+// degrades to proceed-anyway on timeout), so the model never runs its opening
+// turn before its MCP tools have connected. See MetadataKeyMCPReadyFile.
+func WithMCPReadyFile(path string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMCPReadyFile] = path
 	}
 }
 

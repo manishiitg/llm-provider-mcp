@@ -94,6 +94,12 @@ const (
 	// the bridge's 90-minute timeout for long-running delegation tools.
 	EnvClaudeMCPToolIdleTimeout = "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"
 
+	// EnvClaudeMCPReadyWaitSeconds caps how long a freshly created session holds
+	// its first prompt waiting for the MCP readiness file (see
+	// MetadataKeyMCPReadyFile). On timeout the adapter proceeds anyway. Default
+	// 30s; only cold sessions with a readiness file configured ever wait.
+	EnvClaudeMCPReadyWaitSeconds = "CLAUDE_CODE_MCP_READY_WAIT_SECONDS"
+
 	// Legacy env names kept for existing deployments and test runners.
 	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
@@ -354,6 +360,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 			discardPersistentSession(err)
 			return nil, err
 		}
+		// The input box being ready does NOT mean the MCP servers have finished
+		// connecting — those load asynchronously, so a cold session can fire its
+		// first prompt before tools/list completes and the model runs its opening
+		// turn with no tools. When the caller wired a readiness file (the MCP
+		// server creates it on tools/list), hold the first prompt until it
+		// appears. Bounded + best-effort: on timeout we proceed anyway rather
+		// than block the turn. Only cold (createdSession) sessions pay this;
+		// reused persistent sessions are already connected.
+		waitForMCPReadyFile(callCtx, opts, sessionName, c.logger)
 	}
 
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
@@ -1251,6 +1266,60 @@ func claudeInteractiveStreamTmuxScreenEnabled() bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// waitForMCPReadyFile holds a freshly created session's first prompt until the
+// MCP readiness file (MetadataKeyMCPReadyFile) exists — the marker the session's
+// MCP server writes once it has answered the CLI's tools/list handshake. This
+// closes the cold-turn race in which the model runs its opening turn before its
+// tools have connected (Claude then fabricates tool calls as text; Codex reports
+// the tools unavailable). It is strictly best-effort: a no-op when no readiness
+// file is configured or the file already exists, bounded by
+// EnvClaudeMCPReadyWaitSeconds (default 30s), and it returns (never errors) on
+// timeout or context cancellation so it can neither hang nor fail a turn — on
+// timeout the session simply proceeds with today's behavior, minus the
+// readiness guarantee.
+func waitForMCPReadyFile(ctx context.Context, opts *llmtypes.CallOptions, sessionName string, logger interfaces.Logger) {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return
+	}
+	readyFile, _ := opts.Metadata.Custom[MetadataKeyMCPReadyFile].(string)
+	readyFile = strings.TrimSpace(readyFile)
+	if readyFile == "" {
+		return
+	}
+	// The handshake may already have completed between session launch and here.
+	if _, err := os.Stat(readyFile); err == nil {
+		return
+	}
+
+	maxWait := 30 * time.Second
+	if parsed, ok := claudePositiveDurationFromEnv(EnvClaudeMCPReadyWaitSeconds); ok {
+		maxWait = parsed
+	}
+	start := time.Now()
+	deadline := start.Add(maxWait)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			if logger != nil {
+				logger.Debugf("Claude Code MCP tools connected after %s (session %s)", time.Since(start).Round(time.Millisecond), sessionName)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			if logger != nil {
+				logger.Errorf("Claude Code MCP readiness file %q not present after %s; sending first prompt without the tools-connected guarantee (session %s)", readyFile, maxWait, sessionName)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

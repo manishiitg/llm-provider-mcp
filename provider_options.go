@@ -32,6 +32,15 @@ func WithMCPConfig(config string) llmtypes.CallOption {
 	return claudecodeadapter.WithMCPConfig(config)
 }
 
+// WithMCPReadyFile sets the path the session's MCP server (bridge) creates once
+// it answers the CLI's tools/list handshake. On a freshly created interactive
+// session the adapter holds the first prompt until this file appears, closing
+// the cold-turn race where the model runs its opening turn before its MCP tools
+// have connected. Bounded and best-effort (proceeds on timeout).
+func WithMCPReadyFile(path string) llmtypes.CallOption {
+	return claudecodeadapter.WithMCPReadyFile(path)
+}
+
 // WithDangerouslySkipPermissions enables the --dangerously-skip-permissions flag for the Claude Code CLI.
 // CAUTION: This allows the agent to execute any tool without user confirmation.
 func WithDangerouslySkipPermissions() llmtypes.CallOption {
