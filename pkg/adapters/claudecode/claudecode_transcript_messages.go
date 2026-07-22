@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -167,6 +168,45 @@ func readClaudeTranscriptMessages(sessionID string, turnStart time.Time) []llmty
 		}
 	}
 	return out
+}
+
+// fullAssistantProseFromTranscript reconstructs the COMPLETE assistant prose for
+// a turn from claude-code's JSONL transcript: every text block from every
+// assistant message emitted since turnStart, in order, joined with blank lines.
+// tool_use blocks are skipped.
+//
+// The tmux pane scrape keeps only the FINAL assistant text block, so any prose
+// the model writes BEFORE a tool call (e.g. a full answer followed by a trailing
+// suggest_actions / open_file tool call) is dropped from the captured response.
+// The transcript is the authoritative record and preserves all of it; callers
+// use this to repair that truncation. Returns "" if the transcript is missing,
+// unparsable, or has no assistant text.
+func fullAssistantProseFromTranscript(sessionID string, turnStart time.Time) string {
+	msgs := readClaudeTranscriptMessages(sessionID, turnStart)
+	if len(msgs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range msgs {
+		if m.Role != llmtypes.ChatMessageTypeAI {
+			continue
+		}
+		for _, p := range m.Parts {
+			tc, ok := p.(llmtypes.TextContent)
+			if !ok {
+				continue
+			}
+			t := strings.TrimSpace(tc.Text)
+			if t == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(t)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // claudeAssistantContentBlock is one block inside an assistant

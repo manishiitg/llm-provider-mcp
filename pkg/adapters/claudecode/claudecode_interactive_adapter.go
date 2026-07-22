@@ -572,6 +572,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		})
 	}
 
+	// Repair truncation: the tmux pane scrape keeps only the FINAL assistant
+	// text block, so prose written before a trailing tool call (e.g. an answer
+	// followed by a suggest_actions / open_file call) is lost. The JSONL
+	// transcript is authoritative and holds every text block for this turn, so
+	// prefer its full prose when it is strictly more complete than the scrape.
+	if full := fullAssistantProseFromTranscript(responseSessionID, turnStart); full != "" && len(full) > len(strings.TrimSpace(content)) {
+		content = full
+	}
+
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
 			{
