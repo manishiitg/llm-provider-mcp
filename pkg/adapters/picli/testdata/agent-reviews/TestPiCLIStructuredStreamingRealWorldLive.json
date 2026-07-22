@@ -1,0 +1,52 @@
+{
+  "test": "TestPiCLIStructuredStreamingRealWorldLive",
+  "summary": "Pi bridge-only: narrate + 2 interleaved MCP echo_contract calls, streamed live from pi markers",
+  "review_criteria": [
+    "no duplicated lines or chunks",
+    "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
+    "human-readable — reads like an assistant working, coherent and natural",
+    "correct text \u003c-\u003e tool interleaving order (narration then the tool it describes)",
+    "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
+    "the final answer is coherent and matches the work performed",
+    "real work actually happened (e.g. the file was written to disk)"
+  ],
+  "output": {
+    "content_chunks": [
+      "Calling echo_contract with the first token.",
+      "Calling api_bridge_echo_contract with token A_4a0dc7c4.",
+      "Calling api_bridge_echo_contract with token B_cea33",
+      "2c7.",
+      "PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332",
+      "c7"
+    ],
+    "final": "PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7",
+    "stream_order": [
+      "text",
+      "tool",
+      "text",
+      "tool",
+      "text",
+      "text",
+      "tool",
+      "text",
+      "text"
+    ],
+    "streamed_content": "Calling echo_contract with the first token.Calling api_bridge_echo_contract with token A_4a0dc7c4.Calling api_bridge_echo_contract with token B_cea332c7.PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7",
+    "tool_names": [
+      "mcp",
+      "mcp",
+      "mcp"
+    ]
+  },
+  "fingerprint": "4021cf6fe8615e9f",
+  "agent_review": {
+    "verdict": "good",
+    "reviewed_fingerprint": "4021cf6fe8615e9f",
+    "reviewer": "claude-opus-4-8 (agentic P0 review)",
+    "issues": [
+      "Delta granularity: pi's marker stream emits token-level deltas that split mid-token ('...B_cea33' + '2c7.'; final '...cea332' + 'c7'), unlike the block-level (whole-sentence) chunks the transcript adapters emit. The deltas concatenate cleanly (streamed_content is correct), but a consumer must CONCATENATE them — an mcpagent-layer reassembler that '\\n'-joins content chunks (StreamAssistantText) would garble pi output by inserting newlines mid-token. Track for the message-modes layer.",
+      "Tool name granularity: pi surfaces MCP calls under the generic marker name 'mcp' rather than the specific tool (echo_contract), so distinct_tools is coarse. The call is genuinely the MCP tool (not shell/internal noise), just labelled generically."
+    ],
+    "notes": "Streaming contract is met: pi's injected marker stream emitted structured Content + ToolCallStart chunks live (6 content, 3 tool), interleaved with narration, and the real MCP tool executed end to end — both tokens returned (final 'PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7'). Signed good because the P0 requirement (structured streaming from a real bridge turn) holds; the two issues above are non-blocking granularity characteristics to carry into the mcpagent message-modes reassembly work, not defects in the provider-layer stream."
+  }
+}
