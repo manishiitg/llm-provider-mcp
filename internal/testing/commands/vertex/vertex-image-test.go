@@ -29,7 +29,7 @@ type vertexImageTestFlags struct {
 var vertexImageFlags vertexImageTestFlags
 
 func init() {
-	VertexImageTestCmd.Flags().StringVar(&vertexImageFlags.model, "model", "", "Vertex AI model to test (default: gemini-3.5-flash)")
+	VertexImageTestCmd.Flags().StringVar(&vertexImageFlags.model, "model", "", "Vertex AI model to test (default: gemini-3.6-flash)")
 	VertexImageTestCmd.Flags().StringVar(&vertexImageFlags.imagePath, "image-path", "", "Path to image file (JPEG, PNG, GIF, WebP)")
 	VertexImageTestCmd.Flags().StringVar(&vertexImageFlags.imageURL, "image-url", "", "URL of image to test")
 }
@@ -40,7 +40,7 @@ func runVertexImageTest(cmd *cobra.Command, args []string) {
 	// Get model ID
 	modelID := vertexImageFlags.model
 	if modelID == "" {
-		modelID = "gemini-3.5-flash"
+		modelID = "gemini-3.6-flash"
 	}
 
 	log.Printf("🚀 Testing Vertex AI Image Understanding with %s", modelID)

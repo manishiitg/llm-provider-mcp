@@ -49,7 +49,7 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
   }
 }`, serverPath, logPath)
 
-	adapter := NewPiCLIAdapter(apiKey, "google/gemini-3.5-flash", &mockLogger{})
+	adapter := NewPiCLIAdapter(apiKey, piRealContractModel(), &mockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	ownerSessionID := "pi-mcp-bridge-e2e-" + piRandomHex(6)
@@ -116,7 +116,7 @@ func TestPiCLIRealMCPOutputGuardCompactsLongSingleLineResult(t *testing.T) {
   }
 }`, serverPath, logPath)
 
-	adapter := NewPiCLIAdapter(apiKey, "google/gemini-3.5-flash", &mockLogger{})
+	adapter := NewPiCLIAdapter(apiKey, piRealContractModel(), &mockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	ownerSessionID := "pi-mcp-guard-e2e-" + piRandomHex(6)

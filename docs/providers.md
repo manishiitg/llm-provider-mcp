@@ -37,7 +37,8 @@ command when an exact selector is rejected.
 The curated catalog keeps one current model per supported family, with separate
 Gemini Flash and Pro tracks:
 
-- `google/gemini-3.5-flash`
+- `google/gemini-3.6-flash`
+- `google/gemini-3.5-flash-lite`
 - `google/gemini-3.1-pro-preview`
 - `minimax/MiniMax-M2.7`
 - `zai/glm-5.2`

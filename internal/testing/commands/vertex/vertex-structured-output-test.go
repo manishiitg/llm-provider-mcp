@@ -27,7 +27,7 @@ type vertexStructuredOutputTestFlags struct {
 var vertexStructuredOutputFlags vertexStructuredOutputTestFlags
 
 func init() {
-	VertexStructuredOutputTestCmd.Flags().StringVar(&vertexStructuredOutputFlags.model, "model", "", "Vertex AI model to test (default: gemini-3.5-flash)")
+	VertexStructuredOutputTestCmd.Flags().StringVar(&vertexStructuredOutputFlags.model, "model", "", "Vertex AI model to test (default: gemini-3.6-flash)")
 }
 
 func runVertexStructuredOutputTest(cmd *cobra.Command, args []string) {
@@ -36,7 +36,7 @@ func runVertexStructuredOutputTest(cmd *cobra.Command, args []string) {
 	// Get model ID
 	modelID := vertexStructuredOutputFlags.model
 	if modelID == "" {
-		modelID = "gemini-3.5-flash"
+		modelID = "gemini-3.6-flash"
 	}
 
 	log.Printf("🚀 Testing Vertex AI Structured Output with %s", modelID)

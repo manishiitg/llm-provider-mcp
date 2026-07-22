@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	DefaultModelID = "google/gemini-3.5-flash"
+	DefaultModelID = "google/gemini-3.6-flash"
 )
 
 // PiCLIAdapter implements the LLM interface for Pi Coding Agent's tmux TUI.

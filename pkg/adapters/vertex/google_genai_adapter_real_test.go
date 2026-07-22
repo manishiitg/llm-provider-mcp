@@ -19,7 +19,7 @@ import (
 //
 // Gate: RUN_VERTEX_REAL_E2E=1 + GEMINI_API_KEY (or VERTEX_API_KEY or
 // GOOGLE_API_KEY — any of the three works). Model override via
-// VERTEX_REAL_E2E_MODEL (defaults to gemini-3.1-flash-lite-preview, the
+// VERTEX_REAL_E2E_MODEL (defaults to gemini-3.5-flash-lite, the
 // cheapest current-gen Gemini model that still supports tools + JSON
 // mode).
 //
@@ -41,7 +41,7 @@ func requireVertexRealE2E(t *testing.T) (apiKey, model string) {
 	}
 	model = strings.TrimSpace(os.Getenv("VERTEX_REAL_E2E_MODEL"))
 	if model == "" {
-		model = ModelGemini31FlashLitePreview
+		model = ModelGemini35FlashLite
 	}
 	return apiKey, model
 }
@@ -78,6 +78,27 @@ func TestVertexRealPlainText(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(resp.Choices[0].Content), "OK") {
 		t.Fatalf("response did not contain OK: %q", resp.Choices[0].Content)
+	}
+}
+
+// TestVertexRealThinkingLevel verifies the new Flash models accept the
+// string-based thinking control that replaces thinking_budget.
+func TestVertexRealThinkingLevel(t *testing.T) {
+	adapter, _ := newRealVertexAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx,
+		[]llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly the single word OK."}}},
+		},
+		llmtypes.WithThinkingLevel("medium"),
+		llmtypes.WithMaxTokens(256),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent with thinking_level=medium error = %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0] == nil || !strings.Contains(strings.ToUpper(resp.Choices[0].Content), "OK") {
+		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
 
@@ -223,8 +244,8 @@ func TestVertexRealStopSequences(t *testing.T) {
 	}
 }
 
-// TestVertexRealTopPDoesNotError (contract P1 #11) — regression for
-// the just-fixed "opts.TopP silently ignored" bug.
+// TestVertexRealTopPDoesNotError (contract P1 #11) verifies legacy top_p
+// options are omitted for models whose API no longer supports custom sampling.
 func TestVertexRealTopPDoesNotError(t *testing.T) {
 	adapter, _ := newRealVertexAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -244,8 +265,8 @@ func TestVertexRealTopPDoesNotError(t *testing.T) {
 	}
 }
 
-// TestVertexRealTopKDoesNotError (contract P1 #12). Unlike OpenAI,
-// Gemini accepts top_k. Regression for the just-fixed bug.
+// TestVertexRealTopKDoesNotError (contract P1 #12) verifies legacy top_k
+// options are omitted for models whose API no longer supports custom sampling.
 func TestVertexRealTopKDoesNotError(t *testing.T) {
 	adapter, _ := newRealVertexAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -409,7 +430,7 @@ func TestVertexRealAuthFailureClassified(t *testing.T) {
 		}
 		return
 	}
-	adapter := NewGoogleGenAIAdapter(client, ModelGemini31FlashLitePreview, &MockLogger{})
+	adapter := NewGoogleGenAIAdapter(client, ModelGemini35FlashLite, &MockLogger{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

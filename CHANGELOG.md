@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Updated the Vertex and Pi defaults to Gemini 3.6 Flash, added Gemini 3.5
+  Flash-Lite as the low-cost Pi tier and Vertex validation model, and omitted
+  sampling parameters deprecated by both new model APIs.
+
 ## 0.7.2 - 2026-07-13
 
 ### Changed

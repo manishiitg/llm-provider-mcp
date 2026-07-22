@@ -590,8 +590,13 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 		}
 	}
 
-	// Set temperature
-	if opts.Temperature > 0 {
+	baseModelID := normalizeToBaseModel(modelID)
+	usesLatestSamplingRules := baseModelID == ModelGemini36Flash || baseModelID == ModelGemini35FlashLite
+
+	// Gemini 3.6 Flash and 3.5 Flash-Lite deprecate temperature, top_p,
+	// and top_k. Do not send those fields even when callers configured
+	// legacy sampling options; the models use their server-side defaults.
+	if opts.Temperature > 0 && !usesLatestSamplingRules {
 		temp := float32(opts.Temperature)
 		config.Temperature = &temp
 	}
@@ -601,7 +606,6 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 
 	// Gemini 3 Pro Preview variants require max_output_tokens to be set (cannot be 0 or omitted)
 	if maxTokens == 0 {
-		baseModelID := normalizeToBaseModel(modelID)
 		if baseModelID == ModelGemini3ProPreview || baseModelID == ModelGemini31ProPreview {
 			// Set a safe default for Gemini 3 Pro Preview variants (8192 is within typical limits)
 			maxTokens = 8192
@@ -633,15 +637,14 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 		}
 	}
 
-	// Optional sampling controls — only forward when the caller
-	// explicitly populated the field so Gemini's own defaults stay in
-	// place otherwise. Gemini natively accepts all four; the previous
-	// adapter version silently ignored them.
-	if opts.TopP > 0 {
+	// Optional sampling controls — forward them for older Gemini models
+	// only. Gemini 3.6 Flash and 3.5 Flash-Lite require server-managed
+	// sampling, so their callers' legacy values are intentionally omitted.
+	if opts.TopP > 0 && !usesLatestSamplingRules {
 		v := float32(opts.TopP)
 		config.TopP = &v
 	}
-	if opts.TopK > 0 {
+	if opts.TopK > 0 && !usesLatestSamplingRules {
 		v := float32(opts.TopK)
 		config.TopK = &v
 	}
@@ -657,7 +660,7 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 	// Gemini 2.5 Flash). Both controls coexist; we forward whichever
 	// the caller set without trying to validate per-model — the SDK
 	// returns a clean error for unsupported combinations.
-	if opts.ThinkingBudget > 0 {
+	if opts.ThinkingBudget > 0 && !usesLatestSamplingRules {
 		// Clamp to int32 to avoid overflow; the Gemini API caps
 		// realistic budgets well below this anyway.
 		budget := int32(opts.ThinkingBudget)
@@ -673,13 +676,28 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 		}
 	}
 
-	// Handle thinking level for Gemini 3 Pro preview variants.
+	// Handle thinking level for supported Gemini 3 variants.
 	if opts.ThinkingLevel != "" {
-		// Normalize model ID so we can match preview/base model IDs reliably
-		baseModelID := normalizeToBaseModel(modelID)
-
-		// thinking_level is currently supported on Gemini 3 Pro Preview variants.
-		if baseModelID == ModelGemini3ProPreview || baseModelID == ModelGemini31ProPreview {
+		// Validate thinking_level against the selected model's documented values.
+		if baseModelID == ModelGemini36Flash {
+			switch opts.ThinkingLevel {
+			case "medium", "high":
+				config.ThinkingConfig = &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel)}
+			default:
+				if g.logger != nil {
+					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"medium\" and \"high\". Ignoring.", opts.ThinkingLevel, modelID)
+				}
+			}
+		} else if baseModelID == ModelGemini35FlashLite {
+			switch opts.ThinkingLevel {
+			case "minimal", "medium", "high":
+				config.ThinkingConfig = &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel)}
+			default:
+				if g.logger != nil {
+					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"minimal\", \"medium\", and \"high\". Ignoring.", opts.ThinkingLevel, modelID)
+				}
+			}
+		} else if baseModelID == ModelGemini3ProPreview || baseModelID == ModelGemini31ProPreview {
 			// Validate allowed values: "low", "high"; "medium" is supported on Gemini 3.1 Pro only.
 			switch opts.ThinkingLevel {
 			case "low", "high":

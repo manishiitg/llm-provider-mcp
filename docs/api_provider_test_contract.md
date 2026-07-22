@@ -391,7 +391,7 @@ is the fastest path for a new adapter author.
 |---|---|---|---|
 | Anthropic | `RUN_ANTHROPIC_REAL_E2E=1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_REAL_E2E_MODEL` (default `claude-haiku-4-5`) |
 | OpenAI | `RUN_OPENAI_REAL_E2E=1` | `OPENAI_API_KEY` | `OPENAI_REAL_E2E_MODEL` (default `gpt-5.1-nano`) |
-| Vertex | `RUN_VERTEX_REAL_E2E=1` | `GEMINI_API_KEY` or `VERTEX_API_KEY` or `GOOGLE_API_KEY` | `VERTEX_REAL_E2E_MODEL` (default `gemini-3.1-flash-lite-preview`) |
+| Vertex | `RUN_VERTEX_REAL_E2E=1` | `GEMINI_API_KEY` or `VERTEX_API_KEY` or `GOOGLE_API_KEY` | `VERTEX_REAL_E2E_MODEL` (default `gemini-3.5-flash-lite`) |
 | Bedrock | `RUN_BEDROCK_REAL_E2E=1` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` | `BEDROCK_REAL_E2E_MODEL` |
 | Azure | `RUN_AZURE_REAL_E2E=1` | `AZURE_AI_API_KEY` + `AZURE_AI_ENDPOINT` | `AZURE_REAL_E2E_MODEL` |
 | Z.AI | `RUN_ZAI_REAL_E2E=1` | `ZAI_API_KEY` | `ZAI_REAL_E2E_MODEL` (default `glm-4.6`) |
