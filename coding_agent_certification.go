@@ -50,6 +50,11 @@ const (
 	CertCleanup                   CodingAgentCertificationID = "cleanup"
 	CertSessionLoss               CodingAgentCertificationID = "session_loss"
 	CertSessionLossRecovery       CodingAgentCertificationID = "session_loss_recovery"
+	// CertTranscriptStreaming proves the adapter tails the CLI transcript live and
+	// streams STRUCTURED assistant-text + tool-call chunks (the no-terminal
+	// streaming path), verified by a real bridge/MCP turn. Required as P0 for any
+	// provider whose contract sets SupportsTranscriptStreaming.
+	CertTranscriptStreaming CodingAgentCertificationID = "transcript_streaming"
 	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
 	// in tmux mode, SIGINT for structured mode) interrupts the current turn
 	// WITHOUT corrupting the CLI's persisted chat state. The next launch
@@ -149,10 +154,18 @@ var codingAgentCapabilityCertifications = []struct {
 	{"ctrl-c state preserved", func(c CodingAgentProviderContract) bool { return c.HandlesCtrlCCleanExit }, []CodingAgentCertificationID{CertCtrlCStatePreserved}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
+	{"transcript streaming", func(c CodingAgentProviderContract) bool { return c.SupportsTranscriptStreaming }, []CodingAgentCertificationID{CertTranscriptStreaming}},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
+		{
+			ID:          CertTranscriptStreaming,
+			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_realworld_test.go",
+			TestName:    "TestClaudeCodeTranscriptStreamingRealWorldLive",
+			Description: "tails the live JSONL transcript and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertRuntimeContext,
 			TestFile:    "pkg/adapters/claudecode/claudecode_runtime_self_check_e2e_test.go",
@@ -373,6 +386,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{
+			ID:          CertTranscriptStreaming,
+			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go",
+			TestName:    "TestCodexCLITranscriptStreamingRealWorldLive",
+			Description: "tails the live rollout JSONL and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertRuntimeContext,
 			TestFile:    "pkg/adapters/codexcli/codexcli_runtime_self_check_e2e_test.go",
@@ -595,6 +615,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCursorCLI: {
+		{
+			ID:          CertTranscriptStreaming,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_realworld_test.go",
+			TestName:    "TestCursorCLITranscriptStreamingRealWorldLive",
+			Description: "tails the async store.db and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertRuntimeContext,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go",
@@ -1296,6 +1323,12 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 			return CodingAgentCertificationPriorityP0
 		}
 	}
+	// Streaming is P0 wherever it is required (capability-gated per provider via
+	// RequiredP0CodingAgentCertificationIDs), so its registered cert must carry P0
+	// priority + the live gate rather than defaulting to P1.
+	if id == CertTranscriptStreaming {
+		return CodingAgentCertificationPriorityP0
+	}
 	return CodingAgentCertificationPriorityP1
 }
 
@@ -1305,7 +1338,15 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
 		return nil
 	}
-	return append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
+	ids := append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
+	// Streaming is release-blocking only for providers that actually stream
+	// structured transcript chunks. A provider that merely reads a transcript for
+	// a final-answer summary (pi today) is not required to certify streaming —
+	// until its live tailer + streaming E2E land and it flips the flag on.
+	if contract.SupportsTranscriptStreaming {
+		ids = append(ids, CertTranscriptStreaming)
+	}
+	return ids
 }
 
 // MissingP0CodingAgentCertifications is intentionally independent from the

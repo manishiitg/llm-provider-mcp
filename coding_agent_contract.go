@@ -93,6 +93,18 @@ type CodingAgentProviderContract struct {
 	// string-formatting this value.
 	TranscriptPathTemplate string
 
+	// SupportsTranscriptStreaming reports whether the adapter tails the CLI's
+	// transcript live and emits STRUCTURED assistant-text (Content) and tool-call
+	// (ToolCallStart) stream chunks from it — the design-first, no-terminal
+	// streaming path — tagged with a "<provider>_stream_source":"transcript"
+	// metadata marker. This is STRONGER than AdapterReadsTranscript: reading the
+	// transcript once for a final-answer/token summary (as pi does) is not
+	// streaming. When true, the provider MUST register a CertTranscriptStreaming
+	// certification and is held to it as a P0 requirement (see
+	// RequiredP0CodingAgentCertificationIDs). Flip true only once a live tailer +
+	// its real streaming E2E exist.
+	SupportsTranscriptStreaming bool
+
 	// RequiresWorkspaceTrust reports whether the CLI can block startup on a
 	// trust/auth TUI prompt before any user prompt can be submitted. Some CLIs
 	// show a "do you trust the files in this folder?" dialog; Agy 1.0.2 creates
@@ -210,6 +222,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:              "transcript-file",
 		AdapterReadsTranscript:        true,
 		TranscriptPathTemplate:        "~/.claude/projects/*/<session-id>.jsonl",
+		SupportsTranscriptStreaming:   true,
 		RequiresWorkspaceTrust:        true,
 		RestoreAsksInteractivePrompts: true,
 		// Claude Code authentication is its saved login or a process-scoped
@@ -239,26 +252,27 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// it back via `case "codex-cli":` (server.go:6270). Contract used to
 		// say false; the drift test in coding_agent_contract_test.go now
 		// enforces this matches the actual wiring.
-		SupportsNativeResume:      true,
-		UsesMCPBridge:             true,
-		RequiresMCPBridgeConfig:   true,
-		SupportsBridgeOnlyTools:   true,
-		UsesNativeSystemPrompt:    true,
-		LaunchesViaLoginShell:     true,
-		ProcessScopedCleanup:      true,
-		HandlesTmuxSessionLoss:    true,
-		StructuredFallback:        false,
-		ImageInputInteractive:     true,
-		SurfacesTokenUsage:        true,
-		TokenUsageSource:          "transcript-file",
-		AdapterReadsTranscript:    true,
-		TranscriptPathTemplate:    "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
-		RequiresWorkspaceTrust:    true,
-		APIKeyEnvVars:             []string{"CODEX_API_KEY"},
-		WorkingDirInstructionFile: "AGENTS.md",
-		UserInstructionFile:       "~/.codex/AGENTS.md",
-		WorkingDirMCPConfigFile:   "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
-		UserMCPConfigFile:         "~/.codex/config.toml",
+		SupportsNativeResume:        true,
+		UsesMCPBridge:               true,
+		RequiresMCPBridgeConfig:     true,
+		SupportsBridgeOnlyTools:     true,
+		UsesNativeSystemPrompt:      true,
+		LaunchesViaLoginShell:       true,
+		ProcessScopedCleanup:        true,
+		HandlesTmuxSessionLoss:      true,
+		StructuredFallback:          false,
+		ImageInputInteractive:       true,
+		SurfacesTokenUsage:          true,
+		TokenUsageSource:            "transcript-file",
+		AdapterReadsTranscript:      true,
+		TranscriptPathTemplate:      "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
+		SupportsTranscriptStreaming: true,
+		RequiresWorkspaceTrust:      true,
+		APIKeyEnvVars:               []string{"CODEX_API_KEY"},
+		WorkingDirInstructionFile:   "AGENTS.md",
+		UserInstructionFile:         "~/.codex/AGENTS.md",
+		WorkingDirMCPConfigFile:     "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
+		UserMCPConfigFile:           "~/.codex/config.toml",
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -292,15 +306,16 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SurfacesTokenUsage:      true,
 		// Cursor's tmux interactive path falls back to a 4-chars-per-token
 		// heuristic in estimateCursorTmuxTokens.
-		TokenUsageSource:          "estimated",
-		AdapterReadsTranscript:    true,
-		TranscriptPathTemplate:    "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
-		RequiresWorkspaceTrust:    true,
-		APIKeyEnvVars:             []string{"CURSOR_API_KEY"},
-		WorkingDirInstructionFile: ".cursor/rules",    // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
-		UserInstructionFile:       "~/.cursor/rules",  // same directory layout at the user level
-		WorkingDirMCPConfigFile:   ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
-		UserMCPConfigFile:         "~/.cursor/mcp.json",
+		TokenUsageSource:            "estimated",
+		AdapterReadsTranscript:      true,
+		TranscriptPathTemplate:      "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
+		SupportsTranscriptStreaming: true,
+		RequiresWorkspaceTrust:      true,
+		APIKeyEnvVars:               []string{"CURSOR_API_KEY"},
+		WorkingDirInstructionFile:   ".cursor/rules",    // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
+		UserInstructionFile:         "~/.cursor/rules",  // same directory layout at the user level
+		WorkingDirMCPConfigFile:     ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
+		UserMCPConfigFile:           "~/.cursor/mcp.json",
 	},
 	ProviderAgyCLI: {
 		Provider:                ProviderAgyCLI,
