@@ -1280,6 +1280,11 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	currentOffset := offset
 	var lastTerminal string
 	toolStart := map[string]time.Time{}
+	// Tracks whether the CURRENT assistant message streamed any text_delta chunks,
+	// so at message_end we can insert a clean boundary between messages (deltas
+	// alone run consecutive messages together) or, for models that expose only the
+	// complete message at message_end, emit that whole block.
+	streamedDeltaThisMessage := false
 
 	for {
 		markers, nextOffset, err := readPiMarkersSince(session.markerPath, currentOffset)
@@ -1292,6 +1297,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			case "message_update":
 				if marker.UpdateType == "text_delta" && marker.Delta != "" {
 					content.WriteString(marker.Delta)
+					streamedDeltaThisMessage = true
 					// Mark as a token-level DELTA: pi's marker stream emits
 					// fragments that can split mid-word, so a reassembler
 					// (llmtypes.StreamAssistantText) must concatenate them
@@ -1332,9 +1338,37 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			case "message_end":
 				// Deltas are useful for streaming, but some Pi model/provider
 				// combinations only expose the complete assistant message here.
-				if strings.EqualFold(strings.TrimSpace(marker.Role), "assistant") && strings.TrimSpace(marker.Text) != "" {
+				isAssistant := strings.EqualFold(strings.TrimSpace(marker.Role), "assistant")
+				if isAssistant && strings.TrimSpace(marker.Text) != "" {
 					finalAssistantText = strings.TrimSpace(marker.Text)
 				}
+				if isAssistant {
+					switch {
+					case streamedDeltaThisMessage:
+						// The message already streamed as deltas; emit a newline
+						// boundary (as a delta so it concatenates verbatim) so
+						// consecutive assistant messages don't run together in the
+						// reassembled text.
+						boundaryMeta := piChunkMetadata(session)
+						boundaryMeta[llmtypes.ContentDeltaMetadataKey] = true
+						emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+							Type:     llmtypes.StreamChunkTypeContent,
+							Content:  "\n",
+							Metadata: boundaryMeta,
+						})
+					case strings.TrimSpace(marker.Text) != "":
+						// Model exposed only the complete message here (no deltas):
+						// emit it as one clean BLOCK content chunk so a no-terminal
+						// UI still receives the assistant text.
+						content.WriteString(marker.Text)
+						emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+							Type:     llmtypes.StreamChunkTypeContent,
+							Content:  strings.TrimSpace(marker.Text),
+							Metadata: piChunkMetadata(session),
+						})
+					}
+				}
+				streamedDeltaThisMessage = false
 			case "agent_end":
 				if finalAssistantText != "" {
 					return finalAssistantText, nil

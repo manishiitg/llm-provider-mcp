@@ -16,6 +16,7 @@ type piStreamCapture struct {
 	content       strings.Builder
 	contentTexts  []string
 	contentChunks int
+	contentRaw    []llmtypes.StreamChunk // raw Content chunks (w/ metadata) for reassembly checks
 	toolStarts    int
 	toolNames     []string
 	order         []string
@@ -34,6 +35,10 @@ func collectPiStructuredStream(streamChan <-chan llmtypes.StreamChunk) <-chan pi
 		for chunk := range streamChan {
 			switch chunk.Type {
 			case llmtypes.StreamChunkTypeContent:
+				// Keep EVERY content chunk (including whitespace-only message
+				// boundaries) for reassembly — StreamAssistantText needs them to
+				// separate messages. Only skip whitespace for the display counts.
+				cap.contentRaw = append(cap.contentRaw, chunk)
 				if strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}
@@ -141,14 +146,30 @@ func TestPiCLIStructuredStreamingRealWorldLive(t *testing.T) {
 		t.Fatalf("no structured chunks streamed at all (only terminal=%d); Pi's marker stream produced nothing renderable. order=%v", capture.terminalOnly, capture.order)
 	}
 
+	// Reassembly on REAL output: pi streams token-level deltas that split
+	// mid-token, so the message-modes reassembler (StreamAssistantText) must
+	// concatenate them without splitting tokens. Verify the user-facing message
+	// keeps both result tokens INTACT (this is the regression guard for the
+	// delta-garbling bug, exercised on live pi chunks rather than synthetic ones).
+	reassembled := llmtypes.StreamAssistantText(capture.contentRaw)
+	for _, want := range []string{wantA, wantB} {
+		if !strings.Contains(reassembled, want) {
+			t.Fatalf("reassembled message lost/garbled token %q (mid-token delta not concatenated cleanly): %q", want, reassembled)
+		}
+	}
+	if capture.contentChunks > len(capture.contentTexts) { // sanity
+		t.Fatalf("content accounting mismatch")
+	}
+
 	rec := agentreview.Write(t, "TestPiCLIStructuredStreamingRealWorldLive",
 		"Pi bridge-only: narrate + 2 interleaved MCP echo_contract calls, streamed live from pi markers",
 		map[string]any{
-			"content_chunks":   capture.contentTexts,
-			"streamed_content": strings.TrimSpace(capture.content.String()),
-			"stream_order":     capture.order,
-			"tool_names":       capture.toolNames,
-			"final":            final,
+			"content_chunks":      capture.contentTexts,
+			"streamed_content":    strings.TrimSpace(capture.content.String()),
+			"reassembled_message": reassembled, // what a streaming UI shows after granularity-aware reassembly
+			"stream_order":        capture.order,
+			"tool_names":          capture.toolNames,
+			"final":               final,
 		},
 		map[string]any{"distinct_tools": piSortedKeys(piDistinctToolNames(capture.toolNames))},
 	)

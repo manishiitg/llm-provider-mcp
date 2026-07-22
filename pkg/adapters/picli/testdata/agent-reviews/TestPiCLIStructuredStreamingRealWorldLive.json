@@ -12,15 +12,23 @@
   ],
   "output": {
     "content_chunks": [
-      "Calling echo_contract with the first token.",
-      "Calling api_bridge_echo_contract with token A_4a0dc7c4.",
-      "Calling api_bridge_echo_contract with token B_cea33",
-      "2c7.",
-      "PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332",
-      "c7"
+      "I will call the echo_contract tool with",
+      " token A_2fa62e69.",
+      "I will search for the echo_contract tool in the",
+      " MCP server.",
+      "I will call api_bridge_echo_contract with token A_2fa62e69.",
+      "I will call api_bridge_echo_contract with",
+      " token B_5d8cd0c2.",
+      "PI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd",
+      "0c2"
     ],
-    "final": "PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7",
+    "final": "PI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd0c2",
+    "reassembled_message": "I will call the echo_contract tool with token A_2fa62e69.\nI will search for the echo_contract tool in the MCP server.\nI will call api_bridge_echo_contract with token A_2fa62e69.\nI will call api_bridge_echo_contract with token B_5d8cd0c2.\nPI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd0c2",
     "stream_order": [
+      "text",
+      "text",
+      "tool",
+      "text",
       "text",
       "tool",
       "text",
@@ -31,8 +39,9 @@
       "text",
       "text"
     ],
-    "streamed_content": "Calling echo_contract with the first token.Calling api_bridge_echo_contract with token A_4a0dc7c4.Calling api_bridge_echo_contract with token B_cea332c7.PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7",
+    "streamed_content": "I will call the echo_contract tool with token A_2fa62e69.I will search for the echo_contract tool in the MCP server.I will call api_bridge_echo_contract with token A_2fa62e69.I will call api_bridge_echo_contract with token B_5d8cd0c2.PI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd0c2",
     "tool_names": [
+      "mcp",
       "mcp",
       "mcp",
       "mcp"
@@ -44,9 +53,8 @@
     "reviewed_fingerprint": "4021cf6fe8615e9f",
     "reviewer": "claude-opus-4-8 (agentic P0 review)",
     "issues": [
-      "Delta granularity: pi's marker stream emits token-level deltas that split mid-token ('...B_cea33' + '2c7.'; final '...cea332' + 'c7'), unlike the block-level (whole-sentence) chunks the transcript adapters emit. The deltas concatenate cleanly (streamed_content is correct), but a consumer must CONCATENATE them — an mcpagent-layer reassembler that '\\n'-joins content chunks (StreamAssistantText) would garble pi output by inserting newlines mid-token. Track for the message-modes layer.",
-      "Tool name granularity: pi surfaces MCP calls under the generic marker name 'mcp' rather than the specific tool (echo_contract), so distinct_tools is coarse. The call is genuinely the MCP tool (not shell/internal noise), just labelled generically."
+      "Tool name granularity: pi surfaces MCP calls under the generic marker name 'mcp' (4x here) rather than the specific tool (echo_contract). The call is genuinely the MCP tool, just labelled generically — the specific name lives in the tool arguments and is not yet surfaced by our marker extension. Tracked follow-up."
     ],
-    "notes": "Streaming contract is met: pi's injected marker stream emitted structured Content + ToolCallStart chunks live (6 content, 3 tool), interleaved with narration, and the real MCP tool executed end to end — both tokens returned (final 'PI_STREAM_A_4a0dc7c4 PI_STREAM_B_cea332c7'). Signed good because the P0 requirement (structured streaming from a real bridge turn) holds; the two issues above are non-blocking granularity characteristics to carry into the mcpagent message-modes reassembly work, not defects in the provider-layer stream."
+    "notes": "Reviewed the REASSEMBLED user-facing message (not just raw chunks). The earlier delta-garbling + run-on are FIXED: pi still streams token-level deltas that split mid-word ('...PI_STREAM_B_5d8cd' + '0c2'), but the granularity-aware reassembler concatenates them verbatim and the new message-end boundary marker separates messages, so the message a UI shows is clean:\n  'I will call the echo_contract tool with token A_2fa62e69.\\nI will search for the echo_contract tool in the MCP server.\\nI will call api_bridge_echo_contract with token A_2fa62e69.\\nI will call api_bridge_echo_contract with token B_5d8cd0c2.\\nPI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd0c2'\nProper line segmentation, tokens intact, coherent narration, correct interleaving, and the final matches the work (both tokens returned = tools executed). The only open item is the generic 'mcp' tool label above."
   }
 }

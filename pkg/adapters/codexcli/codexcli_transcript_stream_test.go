@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,5 +147,62 @@ func TestReadCodexTranscriptEventsResponseItemForm(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Text != "hi" || events[1].ToolName != "exec_command" {
 		t.Fatalf("response_item form parse wrong: %+v", events)
+	}
+}
+
+// TestReadCodexTranscriptEventsRobustToNoiseAndUnicode covers production-variety
+// input the happy-path tests miss: a garbage/non-JSON line and an unrelated event
+// type interleaved with real rows must be skipped without derailing parsing, and
+// multi-byte unicode (emoji, accents, CJK) in assistant text must survive
+// byte-for-byte.
+func TestReadCodexTranscriptEventsRobustToNoiseAndUnicode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	unicodeMsg := "Café ✅ 完了 — result is ZEBRA_✨"
+
+	appendLine(t, path,
+		"this is not json at all\n"+
+			`{"timestamp":"`+ts+`","type":"session_meta","payload":{"type":"whatever"}}`+"\n"+
+			codexAgentMsg(ts, unicodeMsg)+
+			`{"broken":`+"\n"+ // truncated/garbage JSON
+			codexMCPCallEnd(ts, "echo_contract", "c1"))
+
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("noise not skipped cleanly: got %d events, want 2 (unicode text + tool); %+v", len(events), events)
+	}
+	if events[0].Text != unicodeMsg {
+		t.Fatalf("unicode text mangled:\n got=%q\nwant=%q", events[0].Text, unicodeMsg)
+	}
+	if events[1].ToolName != "echo_contract" {
+		t.Fatalf("tool after noise not parsed: %+v", events[1])
+	}
+}
+
+// TestReadCodexTranscriptEventsLargeContentLine proves a large assistant message
+// (multi-KB, the kind a real coding turn emits) is read whole, not truncated at
+// the tailer's read boundary.
+func TestReadCodexTranscriptEventsLargeContentLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	big := strings.Repeat("A", 200*1024) // 200KB assistant message
+
+	appendLine(t, path, codexAgentMsg(ts, big))
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 1 || len(events[0].Text) != len(big) {
+		t.Fatalf("large content not read whole: got %d events, text len %d (want 1 event, len %d)", len(events), func() int {
+			if len(events) > 0 {
+				return len(events[0].Text)
+			}
+			return 0
+		}(), len(big))
 	}
 }
