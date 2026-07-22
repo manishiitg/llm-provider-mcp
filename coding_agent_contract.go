@@ -93,17 +93,18 @@ type CodingAgentProviderContract struct {
 	// string-formatting this value.
 	TranscriptPathTemplate string
 
-	// SupportsTranscriptStreaming reports whether the adapter tails the CLI's
-	// transcript live and emits STRUCTURED assistant-text (Content) and tool-call
-	// (ToolCallStart) stream chunks from it — the design-first, no-terminal
-	// streaming path — tagged with a "<provider>_stream_source":"transcript"
-	// metadata marker. This is STRONGER than AdapterReadsTranscript: reading the
-	// transcript once for a final-answer/token summary (as pi does) is not
-	// streaming. When true, the provider MUST register a CertTranscriptStreaming
-	// certification and is held to it as a P0 requirement (see
-	// RequiredP0CodingAgentCertificationIDs). Flip true only once a live tailer +
-	// its real streaming E2E exist.
-	SupportsTranscriptStreaming bool
+	// SupportsStructuredStreaming reports whether the adapter emits STRUCTURED
+	// assistant-text (Content) and tool-call (ToolCallStart) stream chunks live
+	// during a turn — the design-first, no-terminal streaming path a UI can render
+	// without the raw tmux pane. The SOURCE is provider-specific and does not
+	// matter to this flag: claude/codex/cursor tail the CLI's on-disk transcript
+	// (tagged "<provider>_stream_source":"transcript"), while pi consumes an
+	// injected marker stream. It is STRONGER than AdapterReadsTranscript: reading
+	// a transcript once for a final-answer/token summary is not streaming. When
+	// true, the provider MUST register a CertStructuredStreaming certification and
+	// is held to it as a P0 requirement (see RequiredP0CodingAgentCertificationIDs).
+	// Flip true only once the live structured stream + its real E2E exist.
+	SupportsStructuredStreaming bool
 
 	// RequiresWorkspaceTrust reports whether the CLI can block startup on a
 	// trust/auth TUI prompt before any user prompt can be submitted. Some CLIs
@@ -222,7 +223,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:              "transcript-file",
 		AdapterReadsTranscript:        true,
 		TranscriptPathTemplate:        "~/.claude/projects/*/<session-id>.jsonl",
-		SupportsTranscriptStreaming:   true,
+		SupportsStructuredStreaming:   true,
 		RequiresWorkspaceTrust:        true,
 		RestoreAsksInteractivePrompts: true,
 		// Claude Code authentication is its saved login or a process-scoped
@@ -266,7 +267,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:            "transcript-file",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
-		SupportsTranscriptStreaming: true,
+		SupportsStructuredStreaming: true,
 		RequiresWorkspaceTrust:      true,
 		APIKeyEnvVars:               []string{"CODEX_API_KEY"},
 		WorkingDirInstructionFile:   "AGENTS.md",
@@ -309,7 +310,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		TokenUsageSource:            "estimated",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
-		SupportsTranscriptStreaming: true,
+		SupportsStructuredStreaming: true,
 		RequiresWorkspaceTrust:      true,
 		APIKeyEnvVars:               []string{"CURSOR_API_KEY"},
 		WorkingDirInstructionFile:   ".cursor/rules",    // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
@@ -359,33 +360,34 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},
 	ProviderPiCLI: {
-		Provider:                ProviderPiCLI,
-		DisplayName:             "Pi CLI",
-		CLIName:                 "pi",
-		Transport:               CodingAgentTransportTmux,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  true,
-		UsesPersistentSession:   true,
-		SupportsLiveInput:       true,
-		SupportsInterrupt:       true,
-		SupportsTerminalStream:  true,
-		SupportsStatusLine:      true,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		RequiresMCPBridgeConfig: true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   true,
-		ProcessScopedCleanup:    true,
-		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      false,
-		ImageInputInteractive:   false,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "transcript-file",
-		AdapterReadsTranscript:  true,
-		TranscriptPathTemplate:  "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
-		APIKeyEnvVars:           []string{"PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"},
+		Provider:                    ProviderPiCLI,
+		DisplayName:                 "Pi CLI",
+		CLIName:                     "pi",
+		Transport:                   CodingAgentTransportTmux,
+		RequiresWorkingDir:          true,
+		RequiresOwnerSessionID:      true,
+		UsesPersistentSession:       true,
+		SupportsLiveInput:           true,
+		SupportsInterrupt:           true,
+		SupportsTerminalStream:      true,
+		SupportsStatusLine:          true,
+		SupportsFinalExtraction:     true,
+		SupportsNativeResume:        true,
+		UsesMCPBridge:               true,
+		RequiresMCPBridgeConfig:     true,
+		SupportsBridgeOnlyTools:     true,
+		UsesNativeSystemPrompt:      true,
+		LaunchesViaLoginShell:       true,
+		ProcessScopedCleanup:        true,
+		HandlesTmuxSessionLoss:      true,
+		StructuredFallback:          false,
+		ImageInputInteractive:       false,
+		SurfacesTokenUsage:          true,
+		TokenUsageSource:            "transcript-file",
+		AdapterReadsTranscript:      true,
+		TranscriptPathTemplate:      "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
+		SupportsStructuredStreaming: true,
+		APIKeyEnvVars:               []string{"PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"},
 		// Pi follows AGENTS.md-style project instructions, but this adapter
 		// injects per-session system guidance through --append-system-prompt
 		// rather than writing durable project files. MCP is provided through

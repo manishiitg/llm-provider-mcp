@@ -333,30 +333,28 @@ func TestAPIKeyEnvVarsContractIsWellFormed(t *testing.T) {
 	}
 }
 
-// TestTranscriptStreamingContractMatchesRegistry guards the SupportsTranscriptStreaming
-// dimension the same way the resume/transcript-reader drift tests do: the flag
-// must agree, in both directions, with the presence of a registered
-// CertTranscriptStreaming certification — so "this provider streams structured
-// transcript chunks" can never be a bare claim without a real E2E behind it, and
+// TestStructuredStreamingContractMatchesRegistry guards the
+// SupportsStructuredStreaming dimension the same way the resume/transcript-reader
+// drift tests do: the flag must agree, in both directions, with the presence of a
+// registered CertStructuredStreaming certification — so "this provider streams
+// structured chunks" can never be a bare claim without a real E2E behind it, and
 // a registered streaming cert can never sit under a provider that doesn't claim
-// the capability. Also enforces that streaming implies transcript reading.
-func TestTranscriptStreamingContractMatchesRegistry(t *testing.T) {
+// the capability. The streaming SOURCE is provider-specific (transcript tail vs
+// injected markers), so this does NOT require AdapterReadsTranscript.
+func TestStructuredStreamingContractMatchesRegistry(t *testing.T) {
 	for _, c := range CodingAgentProviderContracts() {
 		hasStreamingCert := false
 		for _, cert := range CodingAgentProviderCertifications(c.Provider) {
-			if cert.ID == CertTranscriptStreaming {
+			if cert.ID == CertStructuredStreaming {
 				hasStreamingCert = true
 				if !cert.RealE2E {
-					t.Errorf("%s CertTranscriptStreaming must be a real streaming E2E: %#v", c.Provider, cert)
+					t.Errorf("%s CertStructuredStreaming must be a real streaming E2E: %#v", c.Provider, cert)
 				}
 			}
 		}
-		if c.SupportsTranscriptStreaming != hasStreamingCert {
-			t.Errorf("transcript-streaming contract drift for %s: contract.SupportsTranscriptStreaming=%v but a registered CertTranscriptStreaming exists=%v. Register the streaming E2E in codingAgentProviderCertifications and flip the contract flag together.",
-				c.Provider, c.SupportsTranscriptStreaming, hasStreamingCert)
-		}
-		if c.SupportsTranscriptStreaming && !c.AdapterReadsTranscript {
-			t.Errorf("%s claims SupportsTranscriptStreaming but AdapterReadsTranscript=false — streaming structured chunks requires reading the transcript", c.Provider)
+		if c.SupportsStructuredStreaming != hasStreamingCert {
+			t.Errorf("structured-streaming contract drift for %s: contract.SupportsStructuredStreaming=%v but a registered CertStructuredStreaming exists=%v. Register the streaming E2E in codingAgentProviderCertifications and flip the contract flag together.",
+				c.Provider, c.SupportsStructuredStreaming, hasStreamingCert)
 		}
 	}
 }
