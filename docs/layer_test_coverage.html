@@ -341,12 +341,12 @@
       </table>
     </div>
 
-    <h3>Structured/JSON transport — real tests, no registry</h3>
-    <div class="callout warn">
-      <p class="mark">The gap in this layer</p>
-      <p>Real, passing tests for 3 of 4 providers — but only <b>one</b> (<code>TestPiCLIStructuredStreamingRealWorldLive</code>) is wired into <code>CodingAgentProviderCertifications</code>, and it proves the unrelated <code>structured_streaming</code> cert, not this transport. Nothing stops a structured-transport regression from shipping silently the way a tmux one can't.</p>
+    <h3>Structured/JSON transport — real tests, now 4 of 4 providers</h3>
+    <div class="callout" style="border-left-color:var(--pro);">
+      <p class="mark" style="color:var(--pro);">Closed since this section was first written</p>
+      <p>This originally said "3 of 4 providers, no registry" — stale on both counts. <b>Claude gained a structured lane this session</b> (<code>claudecode_structured_adapter.go</code>), so it's now real tests for all 4. And the registry gap is closed too, just at a different layer than this Layer-1 table implies: this file's own P0 bar below is the CONCEPTUAL 7-item list; the actual enforced registry is <code>mcpagent</code>'s <a href="#layer2">Layer-2 P0 registry</a> (<code>Layer2P0Certifications</code> + <code>TestLayer2P0AgentReviewedEvidence</code>), which does cover json/structured transport across all 4 providers end to end. This Layer-1 adapter table (below) is real per-adapter coverage underneath that, not a separate un-enforced thing.</p>
     </div>
-    <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">The 7-item conceptual bar — same P0 label as the tmux registry above, just not wired into it:</p>
+    <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">The 7-item conceptual bar — same P0 label as the tmux registry above, just not wired into <em>this repo's</em> Layer-1 registry (it's enforced one layer up, in mcpagent):</p>
     <ul class="p0list">
       <li><b>fresh_launch_structured</b> — real CLI launch in structured mode, real text response</li>
       <li><b>token_usage_structured</b> — result/finish events produce non-zero, correctly-attributed token counts</li>
@@ -378,8 +378,8 @@
           </tr>
           <tr>
             <th>Claude Code</th>
-            <td>none written</td>
-            <td class="center"><span class="pill todo">not started</span></td>
+            <td>Layer-1 argv shape: <code>TestBuildClaudeStructuredArgs</code> (deterministic). Behavior proven at Layer 2 (mcpagent): <code>TestStructuredTransportMultiTurn/Claude</code>, <code>TestStructuredTransportSystemPromptSurvivesNewAgent/Claude</code>, <code>TestStructuredTransportSkillsSurviveNewAgent/Claude</code>, <code>TestStructuredTransportDeliverQueuesMidTurn/Claude</code>, <code>TestStructuredTransportToolFailure{Recovery,GiveUp}/Claude</code> — all agent-reviewed</td>
+            <td class="center"><span class="pill proven">passing</span></td>
           </tr>
         </tbody>
       </table>
@@ -532,7 +532,7 @@
           <tr><th>Codex</th><td><code>codex exec resume &lt;id&gt; --json</code> — a distinct <em>subcommand</em>, not a flag</td><td>resume drops <code>--profile</code>/<code>--sandbox</code>/<code>-C</code>. Pass the MCP profile via the GLOBAL <code>-p/--profile</code> ("Layer <code>$CODEX_HOME/&lt;name&gt;.config.toml</code>") — keeps the bridge token in the file, off argv; sandbox via global <code>-c sandbox_mode=</code>; cwd via <code>cmd.Dir</code></td><td><code>codex_thread_id</code></td></tr>
           <tr><th>Cursor</th><td><code>cursor-agent --print … --resume &lt;id&gt;</code></td><td>already wired end to end (<code>NativeResumeOption</code>→<code>WithCursorResumeSessionID</code>→<code>MetadataKeyResumeSessionID</code>, consumed by the structured adapter). It just had no passing test</td><td><code>cursor_session_id</code></td></tr>
           <tr><th>Pi</th><td><code>pi --print --mode json --session-id &lt;id&gt;</code> ("creating it if missing")</td><td>was totally unwired — neither surfaced nor consumed. Mint+surface on turn 1, reuse on turn 2. Same project cwd both turns so the session resolves</td><td><code>pi_session_id</code></td></tr>
-          <tr><th>Claude</th><td colspan="3"><span class="pill none">n/a</span> — no structured/one-shot lane wired at this layer (<code>WithClaudeStructuredTransport</code> doesn't exist)</td></tr>
+          <tr><th>Claude</th><td><code>claude --resume &lt;id&gt;</code> on a resume turn, <code>--session-id &lt;id&gt;</code> to mint one on a fresh turn (same capture-and-resume symmetry as pi)</td><td>bridge-only needed a hard <code>--disallowedTools</code> denylist — <code>--allowedTools</code> alone is a whitelist that <code>--dangerously-skip-permissions</code> overrides (found live: claude fell back to native <code>Bash</code>)</td><td><code>claude_code_session_id</code></td></tr>
         </tbody>
       </table>
     </div>
