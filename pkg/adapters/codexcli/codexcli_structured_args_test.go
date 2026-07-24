@@ -21,7 +21,7 @@ func indexOf(args []string, want string) int {
 // breaks native resume, which this test catches without touching a CLI.
 func TestBuildCodexStructuredArgs(t *testing.T) {
 	t.Run("fresh turn: exec with subcommand-level flags after exec", func(t *testing.T) {
-		got := buildCodexStructuredArgs("", "prof", "workspace-write", "/work", "gpt-5-codex", []string{"a=b"}, "hello")
+		got := buildCodexStructuredArgs("", "prof", "workspace-write", "/work", "gpt-5-codex", nil, []string{"a=b"}, "hello")
 		want := []string{
 			"exec", "--json", "--skip-git-repo-check",
 			"-C", "/work",
@@ -36,8 +36,36 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("bridge-only: --disable feature flags are GLOBAL, before exec", func(t *testing.T) {
+		// resume + disabled features: every --disable must precede exec resume,
+		// since they are global (-c features.X=false) flags.
+		got := buildCodexStructuredArgs("sess-9", "prof", "read-only", "/work", "codex-cli",
+			[]string{"shell_tool", "unified_exec", "shell_tool"}, nil, "go")
+		execIdx := indexOf(got, "exec")
+		disableIdx := indexOf(got, "--disable")
+		if disableIdx == -1 || disableIdx > execIdx {
+			t.Fatalf("--disable must precede exec: --disable=%d exec=%d (%v)", disableIdx, execIdx, got)
+		}
+		// deduped: shell_tool appears once as a --disable value.
+		n := 0
+		for i := 0; i+1 < len(got); i++ {
+			if got[i] == "--disable" && got[i+1] == "shell_tool" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("shell_tool should be disabled exactly once (deduped), got %d (%v)", n, got)
+		}
+		if indexOf(got, "unified_exec") == -1 {
+			t.Errorf("expected unified_exec disabled, got %v", got)
+		}
+		if got[execIdx+1] != "resume" || got[execIdx+2] != "sess-9" {
+			t.Errorf("expected exec resume <id> after the global disables, got %v", got[execIdx:])
+		}
+	})
+
 	t.Run("resume turn: global --profile and -c sandbox precede exec resume", func(t *testing.T) {
-		got := buildCodexStructuredArgs("sess-123", "prof", "danger-full-access", "/work", "gpt-5-codex", []string{"a=b"}, "hello")
+		got := buildCodexStructuredArgs("sess-123", "prof", "danger-full-access", "/work", "gpt-5-codex", nil, []string{"a=b"}, "hello")
 		want := []string{
 			"--profile", "prof",
 			"-c", `sandbox_mode="danger-full-access"`,
@@ -61,7 +89,7 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("resume without a session profile: no --profile, still -c sandbox before exec", func(t *testing.T) {
-		got := buildCodexStructuredArgs("sess-123", "", "workspace-write", "/work", "codex-cli", nil, "hi")
+		got := buildCodexStructuredArgs("sess-123", "", "workspace-write", "/work", "codex-cli", nil, nil, "hi")
 		if indexOf(got, "--profile") != -1 {
 			t.Errorf("no profile => no --profile flag, got %v", got)
 		}

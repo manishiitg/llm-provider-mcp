@@ -21,8 +21,28 @@ import (
 // flags placed AFTER "exec". Getting that ordering wrong silently breaks resume
 // (the flags are rejected or ignored), which is exactly the regression this
 // builder + its test exist to catch.
-func buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse string, configOverrides []string, prompt string) []string {
+func buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse string, disabledFeatures, configOverrides []string, prompt string) []string {
 	var args []string
+	// Bridge-only containment. `--disable <feature>` are GLOBAL flags (each is
+	// exactly `-c features.<name>=false`) and MUST precede the exec subcommand.
+	// Disabling shell_tool (+ the other native code-exec / escape features in
+	// codexBridgeOnlyDisabledFeatures) removes codex's built-in shell, so that —
+	// when the session exposes only the MCP bridge — every shell action is forced
+	// through the bridge. The interactive/tmux adapter already does this via
+	// WithDisableShellTool; the structured path previously did NOT, which let
+	// codex read/run via its native exec and bypass the bridge entirely (observed
+	// as calls=0 in TestStructuredTransportToolFailureRecovery/Codex). Verified
+	// live: shell_tool off + no other code-exec tool => codex reports it has no
+	// shell (NO_SHELL_AVAILABLE) rather than shelling out natively.
+	seen := map[string]bool{}
+	for _, f := range disabledFeatures {
+		f = strings.TrimSpace(f)
+		if f == "" || seen[f] {
+			continue
+		}
+		args = append(args, "--disable", f)
+		seen[f] = true
+	}
 	if resumeSessionID != "" {
 		if sessionProfile != "" {
 			args = append(args, "--profile", sessionProfile) // GLOBAL: layers $CODEX_HOME/<name>.config.toml

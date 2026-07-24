@@ -21,10 +21,10 @@ import (
 // simpler: thread.started -> turn.started -> item.started/item.completed
 // (agent_message | command_execution) -> turn.completed).
 type codexExecEvent struct {
-	Type     string           `json:"type"`
-	ThreadID string           `json:"thread_id,omitempty"`
-	Item     *codexExecItem   `json:"item,omitempty"`
-	Usage    *codexExecUsage  `json:"usage,omitempty"`
+	Type     string          `json:"type"`
+	ThreadID string          `json:"thread_id,omitempty"`
+	Item     *codexExecItem  `json:"item,omitempty"`
+	Usage    *codexExecUsage `json:"usage,omitempty"`
 }
 
 type codexExecItem struct {
@@ -105,6 +105,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	var mcpServersJSON string
 	autoApproveMCPTools := false
 	var configOverrides []string
+	var disabledFeatures []string
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if dir, ok := opts.Metadata.Custom[MetadataKeyProjectDirID].(string); ok && strings.TrimSpace(dir) != "" {
 			workingDir = strings.TrimSpace(dir)
@@ -123,6 +124,21 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		}
 		if overrides, ok := opts.Metadata.Custom[MetadataKeyConfigOverrides].([]string); ok {
 			configOverrides = overrides
+		}
+		// Bridge-only containment (mirrors the interactive/tmux adapter): when the
+		// caller asks to deny codex's built-in shell, disable shell_tool + the
+		// other native code-exec/escape features so the only remaining shell-like
+		// tool is the MCP bridge. Without this the structured path let codex
+		// bypass the bridge via native exec.
+		if disable, ok := opts.Metadata.Custom[MetadataKeyDisableShellTool].(bool); ok && disable {
+			disabledFeatures = append(disabledFeatures, codexBridgeOnlyDisabledFeatures...)
+		}
+		if features, ok := opts.Metadata.Custom[MetadataKeyDisableFeatures].(string); ok && strings.TrimSpace(features) != "" {
+			for _, f := range strings.Split(features, ",") {
+				if f = strings.TrimSpace(f); f != "" {
+					disabledFeatures = append(disabledFeatures, f)
+				}
+			}
 		}
 	}
 
@@ -162,7 +178,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 
 	// argv SHAPE (the resume-vs-fresh ordering) is owned by the extracted,
 	// unit-tested builder — see buildCodexStructuredArgs / TestBuildCodexStructuredArgs.
-	args := buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, configOverrides, prompt)
+	args := buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, disabledFeatures, configOverrides, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -273,10 +289,10 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	}
 
 	additional := map[string]any{
-		"provider":         "codex-cli",
-		"codex_mode":       "structured",
-		"codex_thread_id":  threadID,
-		"codex_model":      modelToUse,
+		"provider":        "codex-cli",
+		"codex_mode":      "structured",
+		"codex_thread_id": threadID,
+		"codex_model":     modelToUse,
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZero(totalUsage.InputTokens),
