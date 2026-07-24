@@ -22,9 +22,22 @@ type Request struct {
 	MessageID string
 	Source    string
 	Priority  Priority
-	// BypassReadiness is reserved for the provider's initial prompt transaction.
-	// All other normal input waits until that transaction has been confirmed so
-	// a follow-up cannot overtake the first user message during CLI startup.
+	// BypassReadiness skips the WaitUntilReady gate, so this transaction may run
+	// before the provider's initial prompt has been confirmed. It is set by two
+	// classes of caller:
+	//
+	//  1. The provider's own initial prompt transaction — the one that MAKES the
+	//     session ready. Agent-driven follow-up input leaves this false and
+	//     therefore cannot overtake the first user message during CLI startup.
+	//
+	//  2. Operator-driven input from the terminal UI (POST /input, /key, and the
+	//     live-attach control frames). A human watching the pane must be able to
+	//     answer a trust prompt, login flow, or crash dialog that appears BEFORE
+	//     the CLI ever reaches the ready state — gating those keystrokes would
+	//     deadlock the very startup that readiness is waiting on.
+	//
+	// Serialization is unaffected either way: bypassing readiness never lets a
+	// transaction interleave with one already writing to tmux.
 	BypassReadiness bool
 }
 

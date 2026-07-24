@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
@@ -69,6 +70,7 @@ type codexInteractiveSession struct {
 	// flag wasn't enabled for this session.
 	projectInstructionCleanup func()
 	workingDir                string
+	cliSecurityFingerprint    string
 	idleTimer                 *time.Timer
 	initErr                   error
 	createdAt                 time.Time
@@ -454,13 +456,15 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
+	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity)
 	session, created, ok := codexPersistentRegistry.GetOrCreate(ownerSessionID, func() *codexInteractiveSession {
 		session := &codexInteractiveSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: newCodexTmuxSessionName(),
-			workingDir:      workingDir,
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:         ownerSessionID,
+			tmuxSessionName:        newCodexTmuxSessionName(),
+			workingDir:             workingDir,
+			cliSecurityFingerprint: securityFingerprint,
+			createdAt:              now,
+			lastUsed:               now,
 		}
 		session.mu.Lock()
 		return session
@@ -479,6 +483,10 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		// per-session lock. Holding a pointer keeps the session valid even if a
 		// concurrent teardown removes it from the map (initErr guards that).
 		session.mu.Lock()
+		if session.cliSecurityFingerprint != securityFingerprint {
+			session.mu.Unlock()
+			return nil, false, errors.New("Codex session security policy changed; close the existing session before continuing")
+		}
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()
@@ -527,7 +535,23 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		_ = c.ProjectSkills(workingDir, attachedSkills)
 	}
 	c.logger.Debugf("codex interactive starting tmux owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
-	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
+	runtimeReadPaths := []string{systemPromptTempFile}
+	mcpRuntimePaths, err := strictCodexMCPRuntimePaths(opts)
+	if err != nil {
+		session.initErr = err
+		if systemPromptTempFile != "" {
+			_ = os.Remove(systemPromptTempFile)
+		}
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
+		}
+		session.mu.Unlock()
+		removeCodexPersistentSession(ownerSessionID, session)
+		return nil, false, err
+	}
+	runtimeReadPaths = append(runtimeReadPaths, mcpRuntimePaths...)
+	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths); err != nil {
 		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
@@ -583,7 +607,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 			autoApproveMCPTools = strings.TrimSpace(policy) == "never"
 		}
 	}
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools)
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -1203,7 +1227,14 @@ func codexWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 	return wd
 }
 
-func startCodexTmuxSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+func startCodexTmuxSession(
+	ctx context.Context,
+	sessionName string,
+	args []string,
+	workingDir string,
+	policy *llmtypes.CLISecurityPolicy,
+	runtimeReadPaths []string,
+) error {
 	if workingDir != "" {
 		// Pre-trust workingDir in ~/.codex/config.toml so codex skips
 		// its interactive "Do you trust the contents of this
@@ -1217,9 +1248,17 @@ func startCodexTmuxSession(ctx context.Context, sessionName string, args []strin
 		// case is the prompt appears and the in-tmux dismissCodexTrustPrompt
 		// (already wired into waitForCodexPrompt) handles it
 		// reactively.
-		preTrustCodexWorkingDir(workingDir)
+		if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
+			preTrustCodexWorkingDirAtHome(workingDir, policy.PrivateHome)
+		} else {
+			preTrustCodexWorkingDir(workingDir)
+		}
 	}
-	shellCommand := codexInteractiveShellCommand(args, workingDir)
+	shellCommand, cleanupSandbox, err := clisandbox.PrepareCodexCommand(policy, args, workingDir, runtimeReadPaths)
+	if err != nil {
+		return fmt.Errorf("prepare Codex CLI security sandbox: %w", err)
+	}
+	defer cleanupSandbox()
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
@@ -1261,8 +1300,17 @@ var preTrustCodexMu sync.Mutex
 // prompt if pre-trust fails. This is belt-and-suspenders, not a
 // replacement.
 func preTrustCodexWorkingDir(workingDir string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	preTrustCodexWorkingDirAtHome(workingDir, home)
+}
+
+func preTrustCodexWorkingDirAtHome(workingDir, home string) {
 	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
+	home = strings.TrimSpace(home)
+	if workingDir == "" || home == "" {
 		return
 	}
 	paths := []string{workingDir}
@@ -1270,10 +1318,6 @@ func preTrustCodexWorkingDir(workingDir string) {
 		paths = append(paths, resolved)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
 	configDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return
