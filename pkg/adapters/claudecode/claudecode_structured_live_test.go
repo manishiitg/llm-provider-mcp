@@ -98,6 +98,15 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 		for _, e := range ends {
 			if s.ToolCallID != "" && s.ToolCallID == e.ToolCallID {
 				matched = true
+				// family-server reconstructs tool-call history exclusively
+				// from End chunks — a blank name/args here means a blank
+				// entry downstream even though the End correctly correlated.
+				if strings.TrimSpace(e.ToolName) == "" {
+					t.Errorf("ToolCallEnd %s missing ToolName (downstream history reconstruction reads only End chunks): %+v", e.ToolCallID, e)
+				}
+				if strings.TrimSpace(e.ToolArgs) == "" {
+					t.Errorf("ToolCallEnd %s missing ToolArgs: %+v", e.ToolCallID, e)
+				}
 			}
 		}
 	}

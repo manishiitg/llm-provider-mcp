@@ -201,6 +201,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var assistantUsageFallback llmtypes.Usage
 	sawResult := false
 	resultIsError := false
+	// pendingToolCalls correlates a ToolCallEnd back to its Start: the name
+	// and args are only present on the tool_use block (an "assistant" event),
+	// while the completion is a SEPARATE later "user" event carrying only the
+	// result, keyed by tool_use_id. Without this, ToolCallEnd streamed with
+	// no name/args at all — family-server's history reconstruction reads
+	// exclusively from End chunks, so every reconstructed tool call had a
+	// blank name and arguments.
+	pendingToolCalls := map[string]struct {
+		name string
+		args string
+	}{}
 	scannerDone := make(chan struct{})
 
 	go func() {
@@ -228,6 +239,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
 						}
 						if block.Type == "tool_use" && block.Name != "" {
+							if block.ID != "" {
+								pendingToolCalls[block.ID] = struct {
+									name string
+									args string
+								}{name: block.Name, args: string(block.Input)}
+							}
 							emitChunk(llmtypes.StreamChunk{
 								Type:       llmtypes.StreamChunkTypeToolCallStart,
 								ToolName:   block.Name,
@@ -254,9 +271,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 						if block.IsError {
 							result = "[ERROR] " + result
 						}
+						pending := pendingToolCalls[block.ToolUseID]
+						delete(pendingToolCalls, block.ToolUseID)
 						emitChunk(llmtypes.StreamChunk{
 							Type:       llmtypes.StreamChunkTypeToolCallEnd,
 							ToolCallID: block.ToolUseID,
+							ToolName:   pending.name,
+							ToolArgs:   pending.args,
 							ToolResult: result,
 						})
 					}
