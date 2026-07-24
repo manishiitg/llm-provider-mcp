@@ -431,7 +431,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// render real content without the terminal pane. Additive — the turn's final
 	// response is still built from the pane parse below, and the goroutine stops
 	// when this function returns.
-	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled() {
+	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
 		streamCtx, stopTranscriptStream := context.WithCancel(callCtx)
 		defer stopTranscriptStream()
 		go streamClaudeTranscript(streamCtx, nativeSessionID, turnStart, opts.StreamChan)

@@ -109,7 +109,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir)
+	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir, false)
 	if err != nil {
 		t.Fatalf("native task_complete event did not release response wait: %v", err)
 	}
@@ -223,7 +223,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "")
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "", false)
 	if err != nil {
 		t.Fatalf("stable idle-composer fallback did not release response wait: %v", err)
 	}
@@ -257,7 +257,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "")
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "", false)
 	if err == nil {
 		t.Fatal("stable idle composer without STATUS: COMPLETED was incorrectly accepted")
 	}

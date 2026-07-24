@@ -8,19 +8,24 @@ import (
 
 // Constants for custom metadata keys
 const (
-	MetadataKeyCodexModel            = "codex_model"
-	MetadataKeyResumeSessionID       = "codex_resume_session_id"
-	MetadataKeyApprovalMode          = "codex_approval_mode"
-	MetadataKeySandbox               = "codex_sandbox"
-	MetadataKeyFullAuto              = "codex_full_auto"
-	MetadataKeyProjectDirID          = "codex_project_dir_id"
-	MetadataKeyConfigProfile         = "codex_config_profile"
-	MetadataKeyAdditionalDirs        = "codex_additional_dirs"
-	MetadataKeyDisableFeatures       = "codex_disable_features"
-	MetadataKeyEnableFeatures        = "codex_enable_features"
-	MetadataKeyReasoningEffort       = "codex_reasoning_effort"
-	MetadataKeyReasoningSummary      = "codex_reasoning_summary"
-	MetadataKeyDisableShellTool      = "codex_disable_shell_tool"
+	MetadataKeyCodexModel       = "codex_model"
+	MetadataKeyResumeSessionID  = "codex_resume_session_id"
+	MetadataKeyApprovalMode     = "codex_approval_mode"
+	MetadataKeySandbox          = "codex_sandbox"
+	MetadataKeyFullAuto         = "codex_full_auto"
+	MetadataKeyProjectDirID     = "codex_project_dir_id"
+	MetadataKeyConfigProfile    = "codex_config_profile"
+	MetadataKeyAdditionalDirs   = "codex_additional_dirs"
+	MetadataKeyDisableFeatures  = "codex_disable_features"
+	MetadataKeyEnableFeatures   = "codex_enable_features"
+	MetadataKeyReasoningEffort  = "codex_reasoning_effort"
+	MetadataKeyReasoningSummary = "codex_reasoning_summary"
+	MetadataKeyDisableShellTool = "codex_disable_shell_tool"
+	// MetadataKeyStreamTranscript opts into streaming structured content
+	// (assistant text + tool-call starts) mid-turn by tailing Codex's own
+	// rollout JSONL. Set via WithStreamTranscript; when unset the
+	// CODEX_CLI_STREAM_TRANSCRIPT env var decides (default OFF).
+	MetadataKeyStreamTranscript      = "codex_stream_transcript"
 	MetadataKeyMCPServers            = "codex_mcp_servers"
 	MetadataKeyConfigOverrides       = "codex_config_overrides"
 	MetadataKeyApprovalPolicy        = "codex_approval_policy"
@@ -344,5 +349,24 @@ func ensureMetadata(opts *llmtypes.CallOptions) {
 	}
 	if opts.Metadata.Custom == nil {
 		opts.Metadata.Custom = make(map[string]interface{})
+	}
+}
+
+// WithStreamTranscript enables (or disables) mid-turn structured streaming —
+// assistant text and tool-call starts pushed to the caller's StreamChan as the
+// turn runs, recovered by tailing Codex's own rollout JSONL.
+//
+// This is the discoverable, per-call form of what was previously ONLY reachable
+// through the CODEX_CLI_STREAM_TRANSCRIPT environment variable. An env-only
+// switch is invisible to callers of this package, cannot differ between two
+// agents in one process, and is silently off on any machine that hasn't
+// exported it — with no error and no log to say so.
+//
+// Precedence: an explicit option always wins; the env var remains the
+// process-level default for callers that don't set it.
+func WithStreamTranscript(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
 	}
 }

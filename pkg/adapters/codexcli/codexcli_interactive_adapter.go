@@ -283,7 +283,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir)
+	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts))
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		inspector.EmitError(err, map[string]interface{}{
@@ -1700,7 +1700,7 @@ func codexPaneHasEmptyComposer(captured string) bool {
 	return false
 }
 
-func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string) (string, error) {
+func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
@@ -1724,7 +1724,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	// Additive; nil when disabled. Runs inside this loop (which returns before
 	// the adapter closes streamChan), so there is no send-on-closed-chan race.
 	var transcriptStream *codexTranscriptStreamState
-	if streamChan != nil && codexInteractiveStreamTranscriptEnabled() {
+	if streamChan != nil && streamTranscript {
 		transcriptStream = newCodexTranscriptStreamState(turnStart, workingDir)
 	}
 	for {

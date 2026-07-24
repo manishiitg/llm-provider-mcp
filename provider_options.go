@@ -389,3 +389,37 @@ func WithPiStatuslineExtension(source string) llmtypes.CallOption {
 // LLM Configuration Management Functions
 
 // LLMDefaultsResponse represents the response structure for LLM defaults
+
+// --- Mid-turn transcript streaming ---------------------------------------
+//
+// These enable structured streaming during a tmux/interactive turn: assistant
+// text and tool-call starts are pushed to the caller's StreamChan as the turn
+// runs, recovered from each CLI's own transcript (Claude/Codex JSONL, Cursor
+// store.db) rather than by scraping the pane.
+//
+// Each was previously reachable ONLY through a per-provider environment
+// variable (CLAUDE_CODE_STREAM_TRANSCRIPT / CODEX_CLI_STREAM_TRANSCRIPT /
+// CURSOR_CLI_STREAM_TRANSCRIPT), all defaulting OFF. That made the capability
+// invisible from Go — nothing in this package hinted it existed — impossible to
+// vary between two agents in one process, and silently disabled on any machine
+// where the var simply wasn't exported, with no error and no log. These options
+// are the discoverable form; the env vars remain as process-level defaults and
+// an explicit option always wins.
+
+// WithClaudeStreamTranscript enables mid-turn structured streaming for Claude
+// Code by tailing its own JSONL transcript.
+func WithClaudeStreamTranscript(enabled bool) llmtypes.CallOption {
+	return claudecodeadapter.WithStreamTranscript(enabled)
+}
+
+// WithCodexStreamTranscript enables mid-turn structured streaming for the Codex
+// CLI by tailing its own rollout JSONL.
+func WithCodexStreamTranscript(enabled bool) llmtypes.CallOption {
+	return codexcli.WithStreamTranscript(enabled)
+}
+
+// WithCursorStreamTranscript enables mid-turn structured streaming for the
+// Cursor CLI by polling its own store.db.
+func WithCursorStreamTranscript(enabled bool) llmtypes.CallOption {
+	return cursorcli.WithStreamTranscript(enabled)
+}

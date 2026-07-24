@@ -26,6 +26,11 @@ const (
 	// stream-json` (per-turn, one-shot, no tmux) instead of the tmux
 	// interactive transport (tmux stays the default).
 	MetadataKeyStructuredTransport = "claude_code_structured_transport"
+	// MetadataKeyStreamTranscript opts into streaming structured content
+	// (assistant text + tool-call starts) mid-turn by tailing Claude Code's
+	// own JSONL transcript. Set via WithStreamTranscript; when unset the
+	// env var decides (default OFF).
+	MetadataKeyStreamTranscript = "claude_code_stream_transcript"
 	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
 	// flag for writing the per-session system prompt to .claude/rules/
 	// as a markdown file the CLI auto-loads. Default off because the
@@ -415,5 +420,24 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			ModelName:     "Claude Code CLI",
 			ContextWindow: 200000, // Default for Claude Sonnet/Opus models
 		}, nil
+	}
+}
+
+// WithStreamTranscript enables (or disables) mid-turn structured streaming —
+// assistant text and tool-call starts pushed to the caller's StreamChan as the
+// turn runs, recovered by tailing Claude Code's own JSONL transcript.
+//
+// This is the discoverable, per-call form of what was previously ONLY reachable
+// through an environment variable. An env-only switch is invisible to callers
+// of this package, cannot differ between two agents in one process, and is
+// silently off on any machine that hasn't exported it — with no error and no
+// log to say so.
+//
+// Precedence: an explicit option always wins; the env var remains the
+// process-level default for callers that don't set it.
+func WithStreamTranscript(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
 	}
 }

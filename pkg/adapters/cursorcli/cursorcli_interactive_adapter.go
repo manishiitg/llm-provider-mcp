@@ -298,7 +298,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// stopped — with a final flush — before any close(opts.StreamChan) below.
 	var cursorStreamStop context.CancelFunc
 	var cursorStreamDone chan struct{}
-	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled() {
+	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled(opts) {
 		streamState := newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID)
 		var streamCtx context.Context
 		streamCtx, cursorStreamStop = context.WithCancel(callCtx)

@@ -19,8 +19,25 @@ const cursorTranscriptStreamPollInterval = 400 * time.Millisecond
 
 // cursorInteractiveStreamTranscriptEnabled reports whether to poll Cursor's
 // store.db for structured streaming. Opt-in (default OFF).
-func cursorInteractiveStreamTranscriptEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvCursorInteractiveStreamTranscript))) {
+//
+// Resolution order: an explicit per-call WithStreamTranscript wins, so one
+// agent in a process can stream while another doesn't; otherwise the
+// CURSOR_CLI_STREAM_TRANSCRIPT env var acts as the process-level default. The
+// env var used to be the ONLY way in, which made the feature invisible from Go
+// and silently off on any machine that hadn't exported it.
+func cursorInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyStreamTranscript].(bool); ok {
+			return v
+		}
+	}
+	return envFlagEnabled(EnvCursorInteractiveStreamTranscript)
+}
+
+// envFlagEnabled reports whether an env var is set to a truthy value. Shared by
+// the transcript-streaming switch so the accepted spellings stay identical.
+func envFlagEnabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
