@@ -248,6 +248,19 @@ func TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract(t *testing.T) {
 // production failure mode where Cursor hard-wraps one long logical input line
 // across several TUI rows. The adapter must recognize the visible draft, submit
 // it, and receive a model response rather than failing its pre-submit guard.
+// TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract is the real
+// e2e proof for a leak bug found live (2026-07-24): a single long prompt line
+// that word-wraps inside Cursor's terminal composer used to leak into the
+// returned answer IN FULL (not just a fragment) — stripCursorEchoedUserPrompt
+// required an exact whole-line match, which a wrapped line can never satisfy,
+// so it gave up and left the entire echoed prompt in the text. Reproduced live
+// against real cursor-agent (706-char response containing the whole prompt);
+// fixed via cursorWrappedPromptEchoSpan (word-boundary reconstruction, since
+// Cursor wraps at spaces, never mid-word); re-verified live (19-char clean
+// response). The original version of this test only asserted the token was
+// PRESENT, which a leak alongside the token would not have caught — it now
+// also asserts the leak fragment is ABSENT, which is the assertion that
+// actually catches this bug.
 func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
@@ -255,7 +268,8 @@ func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	ownerSessionID := "cursor-real-wrapped-input-" + cursorRandomHex(4)
 	token := "WRAPPED_CURSOR_INPUT_" + cursorRandomHex(5)
-	prompt := strings.Repeat("This sentence only makes the single Cursor input line long enough to wrap inside the terminal composer and does not change the requested response. ", 3) + "Reply exactly: " + token
+	leakFragment := "wrap-leak-marker-" + cursorRandomHex(4)
+	prompt := strings.Repeat("This sentence only makes the single Cursor input line long enough to wrap inside the terminal composer and includes "+leakFragment+" so a leak is detectable. ", 3) + "Reply exactly: " + token
 	if strings.ContainsAny(prompt, "\r\n") || len([]rune(prompt)) <= cursorVisibleInputChunkRunes {
 		t.Fatalf("wrapped-input fixture must be one logical line longer than %d runes", cursorVisibleInputChunkRunes)
 	}
@@ -274,6 +288,9 @@ func TestCursorCLIRealInteractiveWrappedSingleLineSubmitContract(t *testing.T) {
 		t.Fatalf("GenerateContent with hard-wrapped single-line prompt error = %v", err)
 	}
 	content := strings.TrimSpace(response.Choices[0].Content)
+	if strings.Contains(content, leakFragment) {
+		t.Fatalf("wrapped prompt echo LEAKED into the response: %q", content)
+	}
 	if !strings.Contains(content, token) {
 		t.Fatalf("wrapped prompt response = %q, want token %s", content, token)
 	}

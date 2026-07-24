@@ -2097,6 +2097,31 @@ func stripCursorEchoedUserPrompt(text, prompt string) string {
 		bestLen++
 	}
 	if bestLen < 2 && !(len(promptLines) == 1 && bestLen == 1) {
+		// The strict whole-LINE match failed. This also happens when the prompt
+		// is a single long logical line that Cursor's TUI word-wraps across
+		// several pane rows at whitespace boundaries — none of the wrapped
+		// fragments equals the full prompt line, so the loop above never
+		// advances past 0. Reproduced live (real cursor-agent 2026.07.23):
+		// a single long prompt line leaked into the returned answer IN FULL,
+		// not just a fragment, because this function gave up entirely rather
+		// than partially matching. Try reconstructing the wrapped fragments back
+		// into one logical line (Cursor wraps at spaces, not mid-word, so
+		// joining with a single space and collapsing whitespace is safe) and
+		// compare that against the same whitespace-collapsed prompt.
+		if reconLen, ok := cursorWrappedPromptEchoSpan(textNonEmpty, promptLines); ok {
+			bestStart, bestLen = 0, reconLen
+		} else {
+			return text
+		}
+	}
+	// If the matched run covers the ENTIRE extracted text, this is not a leaked
+	// prompt echo — it means the model's answer legitimately reproduces the
+	// prompt verbatim (e.g. "reply with exactly: TOKEN" tasks). Stripping it
+	// would yield an empty, failed extraction, so keep the answer intact. This
+	// mirrors stripCodexEchoedUserPrompt's identical guard, which cursor's
+	// version was missing (found while adding the wrap-reconstruction fallback
+	// above and testing it against exactly this case).
+	if bestStart == 0 && bestLen == len(textNonEmpty) {
 		return text
 	}
 	// Translate the non-empty match span back to raw-line indices and drop it
@@ -2169,6 +2194,53 @@ func cursorPromptLinesEqual(a, b string) bool {
 	a = normalizeCursorPromptLine(a)
 	b = normalizeCursorPromptLine(b)
 	return a != "" && a == b
+}
+
+// cursorWrapWhitespaceNormalize collapses all whitespace runs to a single
+// space, so a prompt that got word-wrapped into several pane lines can be
+// compared against its original single-line form regardless of exactly where
+// the TUI happened to break it (Cursor wraps at whitespace boundaries, never
+// mid-word — confirmed live, real cursor-agent 2026.07.23).
+func cursorWrapWhitespaceNormalize(s string) string {
+	return strings.Join(strings.Fields(normalizeCursorPromptLine(s)), " ")
+}
+
+// cursorWrappedPromptEchoSpan is the fallback for when cursorPromptLinesEqual's
+// strict whole-line match fails because the echoed prompt was word-wrapped
+// across pane rows. It reconstructs candidate captured lines back into one
+// logical line (joining with a single space) and compares that,
+// whitespace-collapsed, against the whitespace-collapsed prompt. Returns the
+// number of leading textNonEmpty lines that make up the echoed prompt block,
+// or false if no such reconstruction reaches an exact match within a bounded
+// search depth.
+func cursorWrappedPromptEchoSpan(textNonEmpty, promptLines []string) (int, bool) {
+	target := cursorWrapWhitespaceNormalize(strings.Join(promptLines, " "))
+	if target == "" {
+		return 0, false
+	}
+	joined := ""
+	maxLines := len(textNonEmpty)
+	if maxLines > 64 {
+		maxLines = 64
+	}
+	for i := 0; i < maxLines; i++ {
+		frag := cursorWrapWhitespaceNormalize(textNonEmpty[i])
+		if frag == "" {
+			continue
+		}
+		if joined == "" {
+			joined = frag
+		} else {
+			joined = joined + " " + frag
+		}
+		if joined == target {
+			return i + 1, true
+		}
+		if !strings.HasPrefix(target, joined) {
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 func normalizeCursorPromptLine(line string) string {
