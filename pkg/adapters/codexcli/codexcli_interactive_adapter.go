@@ -2117,16 +2117,30 @@ func normalizeCodexPaneLinesWithMeta(raw string) ([]string, []bool) {
 	return lines, wrapEligible
 }
 
-// isCodexWrapEligibleRawLine reports whether a raw pane line (ANSI stripped) is
-// indented and has no leading "•" bullet. Codex marks each new event/message
-// block with a "•" bullet; a genuine wrapped-prompt tail has neither a "›"
-// marker nor a bullet, only the wrap indentation.
+// isCodexWrapEligibleRawLine reports whether a raw pane line (ANSI stripped)
+// COULD be a wrapped continuation of the preceding line, rather than the start
+// of a new event/message. Codex marks each new event/message block with a "•"
+// bullet, so the one thing that reliably rules a line OUT is that bullet; a
+// blank line also can't be a continuation.
+//
+// This intentionally does NOT require leading indentation. Indentation is a
+// real signal for codex's OWN multi-line prompt box (it pads continuation rows
+// of a prompt the user typed as several lines), but it is NOT present when the
+// terminal itself hard-wraps ONE long line at the pane's column width — e.g. a
+// long file path in a prompt or tool-call narration — which continues flush at
+// column 0 with no indentation at all. Gating solely on indentation meant a
+// hard-wrapped continuation of a "›" prompt echo failed this check, was
+// classified as ordinary assistant text, and leaked into the extracted final
+// answer (reproduced live: a long activity path wrapping the pane leaked its
+// tail, e.g. "ons/answer_key.txt", straight into the reply). The real
+// containment against wrongly absorbing genuine answer content is downstream
+// in isCodexPromptWrapContinuationLine (requires an ACTIVE chrome segment that
+// already has a "›" prompt marker) and segmentCodexLines' Kind-change flush
+// (a bulleted answer line always flushes the chrome segment first) — this
+// function only needs to rule out "is structurally its own new block".
 func isCodexWrapEligibleRawLine(line string) bool {
 	stripped := stripCodexANSI(line)
 	if strings.TrimSpace(stripped) == "" {
-		return false
-	}
-	if stripped[0] != ' ' && stripped[0] != '\t' {
 		return false
 	}
 	return !strings.HasPrefix(strings.TrimSpace(stripped), "•")
