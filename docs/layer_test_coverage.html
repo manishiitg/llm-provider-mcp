@@ -239,13 +239,13 @@
         <p class="who">Layer 1 · structured</p>
         <h4>multi-llm-provider-go</h4>
         <p class="num">5 / 0</p>
-        <p>5 real e2e tests per provider (3 of 4 providers) — but zero are wired into the formal registry above.</p>
+        <p>5 real e2e tests per provider, now 4 of 4 providers — but zero are wired into <em>this repo's own</em> formal registry above (<code>CodingAgentProviderCertifications</code>). The actual enforced registry for this capability lives one layer up, in mcpagent's Layer-2 P0 registry (<code>Layer2P0Certifications</code>) — see §Layer 2 below.</p>
       </div>
       <div class="quad gap">
         <p class="who">Layer 2</p>
         <h4>mcpagent</h4>
         <p class="num">11 <span style="color:var(--ink-faint);font-size:15px;">/ 0</span></p>
-        <p>6 of the pre-existing files (steering, multi-turn, continuity, concurrency, tool-failure recovery/give-up, message-modes) went from Claude-only to table-driven across all 4 providers — 5 of them now pass fully 4/4 (concurrency, continuity, steering, tool-failure recovery, tool-failure give-up); multi-turn is now 4/4 too (Cursor's real store.db WAL bug found and fixed); message-modes is 3/4 (Pi fails on genuine model verbosity, documented as not-a-bug). Plus 3 new files: 2 targeting the <code>57b4dd9</code> bug class and 1 proving the new <code>convrecord</code> conversation/cost recorder end to end, including genuine resume. Four real bugs (2 Pi, 2 Cursor) found and fixed live along the way. Still no formal registry either way.</p>
+        <p>6 of the pre-existing files (steering, multi-turn, continuity, concurrency, tool-failure recovery/give-up, message-modes) went from Claude-only to table-driven across all 4 providers — 5 of them now pass fully 4/4 (concurrency, continuity, steering, tool-failure recovery, tool-failure give-up); multi-turn is now 4/4 too (Cursor's real store.db WAL bug found and fixed); message-modes is 3/4 (Pi fails on genuine model verbosity, documented as not-a-bug). Plus 3 new files: 2 targeting the <code>57b4dd9</code> bug class and 1 proving the new <code>convrecord</code> conversation recorder end to end, including genuine resume (convrecord carries token counts only, by design — no USD; a caller prices its own tokens). Four real bugs (2 Pi, 2 Cursor) found and fixed live along the way. A formal registry now exists (Layer2P0Certifications, enforced) — see §Layer 2 below.</p>
       </div>
       <div class="quad unknown">
         <p class="who">Layer 3</p>
@@ -391,11 +391,11 @@
     <p class="mark">Layer 2 · library · the thin layer</p>
     <h2>mcpagent</h2>
     <div class="prose">
-      <p>Its whole job is the mirror of Layer 1's: mask which provider and transport is underneath, one consistent interface on top — system prompt (with resume), MCP bridge, skills, conversation persistence, cost accounting, transport selection. Most of that is real and built (system prompt, bridge, skills, multi-turn, steering); transport selection and conversation/cost ownership are still design targets, not shipped code (see companion doc §Four layers, four owners).</p>
+      <p>Its whole job is the mirror of Layer 1's: mask which provider and transport is underneath, one consistent interface on top — system prompt (with resume), MCP bridge, skills, conversation persistence, transport selection. Most of that is real and built (system prompt, bridge, skills, multi-turn, steering, conversation persistence via <code>convrecord</code>); transport selection is still a design target, not shipped code (see companion doc §Four layers, four owners). USD cost accounting is deliberately NOT this layer's job — <code>convrecord</code> carries token counts only; pricing is each caller's own decision, made from those tokens with whatever rate table/policy it has.</p>
       <p>A machine-checkable registry now exists: <code>agent/layer2_certification.go</code> declares <code>Layer2P0Certifications</code> (transport-aware), and <code>TestLayer2P0AgentReviewedEvidence</code> gates on approved agentreview evidence for every required capability — the requiredP0CertificationIDs analogue this layer previously lacked.</p>
     </div>
 
-    <h3>What's actually tested here — real e2e, no registry</h3>
+    <h3>What's actually tested here — real e2e, now with a registry</h3>
     <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">50 test files, 156 test functions in the <code>agent</code> package alone. Of those, 8 files are real-CLI e2e (gated behind <code>RUN_*_E2E</code> env vars, not mocked) — proving exactly the things Layer 1 structurally can't see, since they're about <code>mcpagent</code>'s own orchestration, not a single adapter call:</p>
     <div class="table-wrap">
       <table>
