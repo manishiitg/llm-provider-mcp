@@ -32,8 +32,8 @@ func TestClaudeCodeNewModelMetadataIsExplicit(t *testing.T) {
 			wantContext: 1000000,
 		},
 		{
-			modelID:     "claude-opus-4-8",
-			wantName:    "Claude Opus 4.8",
+			modelID:     "claude-opus-5",
+			wantName:    "Claude Opus 5",
 			wantInput:   5,
 			wantOutput:  25,
 			wantContext: 200000,
