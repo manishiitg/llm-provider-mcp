@@ -37,7 +37,7 @@ flags or env vars:
 
 - system prompt → `--system-prompt-file` / `GEMINI_SYSTEM_MD` / `-c model_instructions_file` / in-prompt prefix
 - MCP servers → `--mcp-config` / `-c mcp_servers.*` / `--include-directories`
-- deny hooks → `WithDenyBuiltinTools` (cursor) / `WithBridgeOnlyTools` (agy) /
+- deny hooks → `WithDenyBuiltinTools` (cursor) /
   per-CLI hook config dropped by the adapter
 
 These primary paths work and are the load-bearing mechanism. The workspace
@@ -68,7 +68,6 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
 | Cursor      | `.cursor/rules/mlp-system.mdc`              | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
-| Antigravity | `.agents/rules/mlp-system.md`               | `.agents/mcp_config.json`                       | `.agents/hooks.json` (deny entries inline)                            |
 | Pi          | n/a (`--append-system-prompt`)              | `.pi/mcp.json`                                  | n/a — use Pi's `--no-builtin-tools` flag                              |
 
 ### Notes per CLI
@@ -81,7 +80,6 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 - **Cursor's `.cursor/rules/mlp-system.mdc`** is a fixed-filename file
   under the tool-specific rules dir, removed at session teardown. The
   one-chat-per-workdir assumption applies.
-- **Antigravity's `.agents/rules/mlp-system.md`** ditto.
 - **Pi's `.pi/mcp.json`** is a Pi-owned project override consumed by
   `pi-mcp-adapter`. The adapter restores any pre-existing bytes on
   cleanup and removes the file only when it created it from nothing.
@@ -231,8 +229,6 @@ their live CLIs and ship enabled-by-default under the flag:
 - **Cursor's `.cursor/mcp.json`** — cursor handles this via
   `--approve-mcps` which auto-accepts the in-TUI consent dialog.
 - **Cursor's `.cursor/hooks.json`** — cursor reads silently.
-- **Agy's `.agents/mcp_config.json`** + `.agents/hooks.json` — antigravity
-  reads silently.
 - **Claude's `CLAUDE.md`** — Claude Code's memory layer auto-loads the
   root-level project-instructions file at startup with no discovery
   prompt.
@@ -245,7 +241,7 @@ their live CLIs and ship enabled-by-default under the flag:
   pre-existing-operator-content write+byte-restore, empty-workingDir
   no-op.
 - Format invariants: codex TOML emitter (key ordering, bare vs quoted keys and
-  env subtable), plus cursor/antigravity hook projections preserving their
+  env subtable), plus cursor hook projections preserving their
   schema.
 
 ### Real-CLI E2E (gated per CLI)
@@ -255,7 +251,6 @@ their live CLIs and ship enabled-by-default under the flag:
 | Claude Code | `RUN_CLAUDE_CODE_TMUX_INTEGRATION=1`       | PASS   |
 | Codex       | `RUN_CODEX_CLI_REAL_E2E=1`                          | PASS   |
 | Cursor      | `RUN_CURSOR_CLI_REAL_E2E=1`                         | covered by older `cursorcli_deny_builtin_hooks_test.go` |
-| Antigravity | `RUN_AGY_CLI_REAL_E2E=1`                            | PASS (`TestAgyCLIRealSystemPromptRulesContract`) |
 
 Each lifecycle E2E pre-seeds an operator-owned file, runs a real
 adapter call with the flag on, force-cleans up if persistent-session

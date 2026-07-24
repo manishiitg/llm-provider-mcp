@@ -31,8 +31,7 @@ cd "$(dirname "$0")/.."
 # to STREAM_PKGS the moment it streams structured chunks + has a streaming E2E
 # (and its contract flag flips on) — see coding_agent_certification.go
 # CertStructuredStreaming. claude/codex/cursor stream by tailing the CLI
-# transcript; pi streams via its injected marker hook. Only agy (deprecated) is
-# absent.
+# transcript; pi streams via its injected marker hook.
 STREAM_PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/ ./pkg/adapters/cursorcli/ ./pkg/adapters/picli/"
 PKGS="$STREAM_PKGS"
 # Matches every provider's streaming test: the transcript adapters'

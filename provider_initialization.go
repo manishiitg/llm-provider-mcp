@@ -8,7 +8,6 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
@@ -1308,60 +1307,6 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
 	logger.Infof("Initialized Cursor CLI adapter - model_id: %s", modelID)
-	return llm, nil
-}
-
-// initializeAgyCLI creates and configures an Antigravity CLI adapter instance.
-func initializeAgyCLI(config Config) (llmtypes.Model, error) {
-	llmMetadata := LLMMetadata{
-		ModelVersion: config.ModelID,
-		MaxTokens:    0,
-		TopP:         config.Temperature,
-		User:         "agy_cli_user",
-		CustomFields: map[string]string{
-			"provider":  "agy-cli",
-			"operation": OperationLLMInitialization,
-		},
-	}
-
-	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
-
-	modelID := config.ModelID
-	if modelID == "" {
-		modelID = DefaultAgyCLIModel
-	}
-
-	logger := config.Logger
-	if logger == nil {
-		logger = &noopLoggerImpl{}
-	}
-	logger.Infof("Initializing Antigravity CLI adapter - model_id: %s", modelID)
-
-	apiKey := ""
-	if config.APIKeys != nil && config.APIKeys.AgyCLI != nil {
-		apiKey = *config.APIKeys.AgyCLI
-		logger.Infof("Antigravity CLI: using API key from config (length=%d)", len(apiKey))
-	} else if envKey := os.Getenv("AGY_API_KEY"); envKey != "" {
-		apiKey = envKey
-		logger.Infof("Antigravity CLI: using API key from AGY_API_KEY env var (length=%d)", len(apiKey))
-	} else {
-		logger.Infof("Antigravity CLI: no explicit API key — will use agy's own stored auth")
-	}
-
-	llm := agycli.NewAgyCLIAdapter(apiKey, modelID, logger)
-
-	successMetadata := LLMMetadata{
-		ModelVersion: modelID,
-		User:         "agy_cli_user",
-		CustomFields: map[string]string{
-			"provider":     "agy-cli",
-			"status":       StatusLLMInitialized,
-			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-		},
-	}
-	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
-
-	logger.Infof("Initialized Antigravity CLI adapter - model_id: %s", modelID)
 	return llm, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -368,7 +367,6 @@ func codingAgentPublishedModelMetadata() []*llmtypes.ModelMetadata {
 	out = append(out, claudecode.GetAllClaudeCodeModels()...)
 	out = append(out, codexcli.GetAllCodexCLIModels()...)
 	out = append(out, cursorcli.GetAllCursorCLIModels()...)
-	out = append(out, agycli.GetAllAgyCLIModels()...)
 	out = append(out, picli.GetAllPiCLIModels()...)
 	return out
 }

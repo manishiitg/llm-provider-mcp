@@ -838,7 +838,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// skill loader picks them up at startup. Independent of the
 	// writeProjectInstructionFromOptions gate (which controls CLAUDE.md);
 	// skills are useful even when the instruction-file projection is off.
-	// Best-effort; matches the codex/gemini/cursor/agy/pi pattern.
+	// Best-effort; matches the codex/gemini/cursor/pi pattern.
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); strings.TrimSpace(workingDir) != "" {
 			if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
@@ -3406,8 +3406,8 @@ func releaseClaudePersistentInteractiveSession(session *claudeInteractivePersist
 }
 
 // CloseClaudeCodeInteractiveSessionForOwner closes the persistent
-// Claude Code interactive session for the given owner. See agycli's
-// equivalent CloseAgyCLIInteractiveSessionForOwner for the
+// Claude Code interactive session for the given owner. See cursorcli's
+// equivalent CloseCursorCLIInteractiveSessionForOwner for the
 // mid-chat-prompt-change motivation.
 func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeClaudePersistentInteractiveSession(ownerSessionID, reason, nil)

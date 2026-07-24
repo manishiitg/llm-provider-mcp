@@ -12,7 +12,7 @@ import (
 // instead of re-deriving the checks, keeping the cross-provider contract in one
 // place.
 //
-//	wantProvider  the adapter's canonical display name (e.g. "agy-cli",
+//	wantProvider  the adapter's canonical display name (e.g. "cursor-cli",
 //	              "claudecode") — what consumers render verbatim.
 //	requireTokens demand real telemetry. Pass true for live runs; pass false for
 //	              synthetic fixtures that intentionally omit some fields.
@@ -25,7 +25,7 @@ func AssertStatusLineContract(t testing.TB, sl *llmtypes.StatusLine, wantProvide
 		t.Errorf("statusline contract: Provider = %q, want %q (adapter must emit its canonical display name)", sl.Provider, wantProvider)
 	}
 	// The model must never equal the provider name — that renders a duplicate
-	// "X · X" label (the agy-cli / claude-code placeholder-model regression).
+	// "X · X" label (the claude-code placeholder-model regression).
 	if sl.Model != "" && sl.Model == sl.Provider {
 		t.Errorf("statusline contract: Model == Provider (%q) — placeholder model must be stripped to avoid a duplicate label", sl.Model)
 	}

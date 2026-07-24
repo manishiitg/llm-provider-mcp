@@ -15,9 +15,9 @@ import (
 // always wins (we never override an already-set value), so an explicit
 // `GEMINI_API_KEY=... go test` still takes precedence.
 //
-// cursorcli and agycli were the only two interactive adapters missing this
-// seeding, so their semantic-judge e2e tests failed on a missing key rather
-// than a real contract violation.
+// cursorcli was one of the interactive adapters missing this seeding, so its
+// semantic-judge e2e tests failed on a missing key rather than a real
+// contract violation.
 func TestMain(m *testing.M) {
 	judgeKeys := []string{"GEMINI_API_KEY", "VERTEX_API_KEY", "GOOGLE_API_KEY"}
 	for _, p := range []string{".env", "../../../.env", "../../../../.env"} {

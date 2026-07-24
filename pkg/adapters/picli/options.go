@@ -18,6 +18,11 @@ const (
 	MetadataKeyBridgeOnlyTools       = "pi_bridge_only_tools"
 	MetadataKeyMCPExtension          = "pi_mcp_extension"
 	MetadataKeyStatuslineExtension   = "pi_statusline_extension"
+	// MetadataKeyStructuredTransport selects `pi --print --mode json`
+	// (per-turn, one-shot, no tmux dependency) instead of the tmux interactive
+	// transport. OFF by default — tmux is the normal product path. Pass
+	// WithPiStructuredTransport(true) to opt in.
+	MetadataKeyStructuredTransport = "pi_structured_transport"
 
 	defaultPiMCPExtension        = "npm:pi-mcp-adapter"
 	defaultPiStatuslineExtension = "npm:@narumitw/pi-statusline@0.8.0"
@@ -102,6 +107,15 @@ func WithStatuslineExtension(source string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyStatuslineExtension] = source
+	}
+}
+
+// WithPiStructuredTransport selects the structured `--print --mode json`
+// transport instead of tmux. See MetadataKeyStructuredTransport doc comment.
+func WithPiStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
 	}
 }
 

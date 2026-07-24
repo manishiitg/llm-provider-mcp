@@ -26,6 +26,11 @@ const (
 	MetadataKeyApprovalPolicy        = "codex_approval_policy"
 	MetadataKeyInteractiveSessionID  = "codex_interactive_session_id"
 	MetadataKeyPersistentInteractive = "codex_persistent_interactive"
+	// MetadataKeyStructuredTransport selects `codex exec --json` (per-turn,
+	// one-shot, no tmux dependency) instead of the tmux interactive transport.
+	// OFF by default — see docs/coding_sdk_tmux_contract.md: tmux is the normal
+	// product path. Pass WithCodexStructuredTransport(true) to opt in.
+	MetadataKeyStructuredTransport = "codex_structured_transport"
 	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
 	// flag for ALSO writing the per-session system prompt to
 	// <workingDir>/AGENTS.md (Codex's project-instructions convention,
@@ -320,6 +325,16 @@ func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyProjectInstructionOnly] = enabled
+	}
+}
+
+// WithCodexStructuredTransport selects the structured `exec --json` transport
+// instead of tmux. See MetadataKeyStructuredTransport doc comment for when to
+// use this.
+func WithCodexStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
 	}
 }
 

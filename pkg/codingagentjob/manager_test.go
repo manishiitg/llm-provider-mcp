@@ -108,12 +108,12 @@ func TestManagerRejectsNestedDelegationAndOutsideWorkspace(t *testing.T) {
 		t.Fatalf("Mkdir() error = %v", err)
 	}
 	_, err = manager.Start(context.Background(), StartRequest{
-		Provider:   "agy-cli",
+		Provider:   "not-a-real-provider",
 		Task:       "test",
 		WorkingDir: inside,
 	})
 	if err == nil {
-		t.Fatal("Start() error = nil, want deprecated provider error")
+		t.Fatal("Start() error = nil, want unsupported provider error")
 	}
 }
 

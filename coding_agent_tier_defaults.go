@@ -34,22 +34,6 @@ func codingAgentReasoningRef(provider, modelID, effort string) CodingAgentTierMo
 	}
 }
 
-func sameCodingAgentTierModels(provider, modelID string) *CodingAgentDefaultTierModels {
-	if strings.TrimSpace(modelID) == "" {
-		modelID = provider
-	}
-	ref := codingAgentHighReasoningRef(provider, modelID)
-	return &CodingAgentDefaultTierModels{
-		Builder:      ref,
-		High:         ref,
-		Medium:       ref,
-		Low:          ref,
-		Maintenance:  ref,
-		Pulse:        ref,
-		ChiefOfStaff: ref,
-	}
-}
-
 // GetCodingAgentDefaultTierModels returns the provider-owned workflow tier
 // defaults for coding-agent providers. Phase intentionally follows high.
 //
@@ -107,8 +91,6 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:        high,
 			ChiefOfStaff: high,
 		}, true
-	case ProviderAgyCLI:
-		return sameCodingAgentTierModels(providerID, DefaultAgyCLIModel), true
 	case ProviderPiCLI:
 		high := codingAgentHighReasoningRef(providerID, "google/gemini-3.6-flash")
 		return &CodingAgentDefaultTierModels{

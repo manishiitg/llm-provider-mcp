@@ -47,8 +47,6 @@ func SendCodingAgentLiveInput(ctx context.Context, provider Provider, modelID, o
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderCursorCLI:
 		return SendCursorCLIInteractiveInput(ctx, ownerSessionID, message)
-	case ProviderAgyCLI:
-		return SendAgyCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:
 		return SendPiCLIInteractiveInput(ctx, ownerSessionID, message)
 	default:

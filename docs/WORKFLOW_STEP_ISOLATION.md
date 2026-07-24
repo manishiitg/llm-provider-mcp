@@ -156,7 +156,6 @@ NOT in each adapter. The pattern:
 | Codex | `--sandbox workspace-write` | Confines apply_patch + shell to cwd (tmp dir). Outside writes blocked. |
 | Cursor | `--force` (already set) | Already permit-all |
 | Gemini | `--approval-mode yolo` (already set) | Already permit-all |
-| Agy | `--sandbox workspace-write` | Same as codex |
 
 For codex specifically: setting `--sandbox workspace-write` AND
 `cwd = /tmp/foo` means even if the model invokes `apply_patch`
@@ -212,7 +211,7 @@ What STAYS the same:
 
 ### 6.2 Updated existing tests
 
-- Project-artifacts E2Es (claude/codex/gemini/agy) currently
+- Project-artifacts E2Es (claude/codex/gemini) currently
   pre-seed operator content in `t.TempDir()` and verify
   byte-restore. With isolation on, byte-restore wouldn't trigger
   (no operator content in the fresh tmp dir). Add a parallel test

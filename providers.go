@@ -8,7 +8,6 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -37,7 +36,6 @@ const (
 	ProviderClaudeCode        Provider = "claude-code"
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderCursorCLI         Provider = "cursor-cli"
-	ProviderAgyCLI            Provider = "agy-cli"
 	ProviderPiCLI             Provider = "pi-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
@@ -46,7 +44,6 @@ const (
 
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "composer-2.5"
-	DefaultAgyCLIModel    = "agy-cli"
 	DefaultPiCLIModel     = picli.DefaultModelID
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
@@ -68,7 +65,7 @@ const (
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport
 // (cols × rows) for any newly-launched coding-agent tmux session (Claude
-// Code, Codex CLI, Cursor CLI, Agy CLI, Pi CLI). Pass <=0 for either
+// Code, Codex CLI, Cursor CLI, Pi CLI). Pass <=0 for either
 // axis to clear that axis's override and fall back to the env/default value.
 // Sizes outside the package's safe band are clamped, not rejected.
 func SetCodingAgentTmuxSize(columns, rows int) {
@@ -95,12 +92,6 @@ func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
 	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
 }
 
-// CleanupAgyCLIInteractiveSessions removes Antigravity CLI tmux sessions
-// registered by this process.
-func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
-	return agycli.CleanupAgyCLIInteractiveSessions(ctx)
-}
-
 // CleanupPiCLIInteractiveSessions removes Pi CLI tmux sessions registered by
 // this process.
 func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
@@ -111,7 +102,6 @@ func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
 // coding-agent CLI transport. Kept in sync with each adapter's
 // <provider>InteractiveSessionPrefix() default.
 var interactiveSessionPrefixes = []string{
-	"mlp-agy-cli-int",
 	"mlp-pi-cli-int",
 	"mlp-codex-cli-int",
 	"mlp-cursor-cli-int",
@@ -143,10 +133,6 @@ func SweepOrphanedInteractiveTmuxSessions(ctx context.Context) int {
 //
 // Calls are no-ops when no session is registered for the owner.
 
-func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
-	agycli.CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason)
-}
-
 func ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	picli.ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
@@ -169,10 +155,6 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 // and are used as a teardown backstop when the owning session ID is unknown or
 // has drifted (e.g. workflow sub-agents registered under a step-execution
 // owner). All are no-ops when no live session matches the tmux name.
-
-func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
-	agycli.CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason)
-}
 
 func ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	picli.ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason)
@@ -208,12 +190,6 @@ func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
 }
 
-// SendAgyCLIInteractiveInput sends user input to a live Antigravity CLI
-// interactive tmux session registered for the owning application session.
-func SendAgyCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return agycli.SendAgyInteractiveInput(ctx, sessionID, message)
-}
-
 // SendPiCLIInteractiveInput sends user input to a live Pi CLI interactive tmux
 // session registered for the owning application session.
 func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
@@ -236,12 +212,6 @@ func SendCodexCLIInteractiveControlKey(ctx context.Context, sessionID, key strin
 // registered Cursor CLI interactive session.
 func SendCursorCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
 	return cursorcli.SendCursorInteractiveControlKey(ctx, sessionID, key)
-}
-
-// SendAgyCLIInteractiveControlKey injects a tmux control key into a registered
-// Antigravity CLI interactive session.
-func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
-	return agycli.SendAgyInteractiveControlKey(ctx, sessionID, key)
 }
 
 // SendPiCLIInteractiveControlKey injects a tmux control key into a registered
@@ -288,7 +258,6 @@ type ProviderAPIKeys struct {
 	Vertex               *string
 	CodexCLI             *string
 	CursorCLI            *string
-	AgyCLI               *string
 	PiCLI                *string
 	MiniMax              *string
 	MiniMaxCodingPlan    *string
@@ -332,8 +301,6 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.CodexCLI = key
 	case ProviderCursorCLI:
 		k.CursorCLI = key
-	case ProviderAgyCLI:
-		k.AgyCLI = key
 	case ProviderPiCLI:
 		k.PiCLI = key
 	case ProviderMiniMax:
@@ -403,8 +370,6 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCodexCLI(config)
 	case ProviderCursorCLI:
 		llm, err = initializeCursorCLI(config)
-	case ProviderAgyCLI:
-		llm, err = initializeAgyCLI(config)
 	case ProviderPiCLI:
 		llm, err = initializePiCLI(config)
 	case ProviderMiniMax:

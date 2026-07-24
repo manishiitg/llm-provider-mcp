@@ -11,9 +11,8 @@ import (
 
 // CursorCLIAdapter implements the LLM interface for Cursor Agent CLI.
 // Transport is tmux-only — cursor-cli requires a persistent tmux session
-// for every turn (mirrors the agy-cli contract). The structured
-// stream-json path was removed; see git history for the prior
-// implementation if it ever needs reinstating.
+// for every turn. The structured stream-json path was removed; see git
+// history for the prior implementation if it ever needs reinstating.
 type CursorCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -55,6 +54,11 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
+			return c.generateContentStructured(ctx, messages, opts, nil)
+		}
+	}
 	return c.generateContentTmux(ctx, messages, opts)
 }
 

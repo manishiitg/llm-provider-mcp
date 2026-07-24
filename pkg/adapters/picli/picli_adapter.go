@@ -43,6 +43,12 @@ func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 		return nil, fmt.Errorf("pi-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
+			return p.generateContentStructured(ctx, messages, opts)
+		}
+	}
+
 	return p.generateContentTmux(ctx, messages, opts)
 }
 

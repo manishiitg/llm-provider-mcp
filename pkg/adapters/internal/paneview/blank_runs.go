@@ -1,6 +1,6 @@
 // Package paneview holds helpers for normalising tmux pane snapshots
 // before they reach the UI. Adapters that stream live capture-pane output
-// (claude-code, codex, gemini, cursor, agy, pi) all share the same
+// (claude-code, codex, gemini, cursor, pi) all share the same
 // hygiene needs, so the logic lives once here.
 package paneview
 
@@ -25,7 +25,7 @@ const maxConsecutiveBlankLines = 2
 // and screen-clear sequences are dropped because ansi_up does not emulate
 // VT100 movement.
 //
-// All five interactive tmux adapters (claude-code, codex, gemini, cursor, agy)
+// All interactive tmux adapters (claude-code, codex, gemini, cursor)
 // fed `capture-pane -e` output through a byte-identical copy of this before it
 // reached the UI; the logic now lives here once.
 //
@@ -295,7 +295,7 @@ func pruneSpinnerWordFragments(lines []string) []string {
 	return out
 }
 
-// pruneInputBoxTrailer removes the agy input-box region and everything below
+// pruneInputBoxTrailer removes the CLI's input-box region and everything below
 // it. The input box appears as a run of ─ box-drawing characters (the top
 // border), followed by the › prompt line, followed by another ─ run (bottom
 // border). Below the bottom border the pane contains empty space and animation

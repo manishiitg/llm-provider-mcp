@@ -18,7 +18,6 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
-		{name: "agy cli", provider: ProviderAgyCLI, wantTmux: true, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
 		{name: "openai", provider: ProviderOpenAI},
@@ -64,36 +63,6 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 						t.Fatalf("tmux coding-agent contract missing %s", name)
 					}
 				}
-			}
-		})
-	}
-}
-
-func TestDeprecatedCodingAgentContractsKeepRuntimeButPointToReplacement(t *testing.T) {
-	tests := []struct {
-		provider Provider
-		want     Provider
-	}{
-		{provider: ProviderAgyCLI, want: ProviderPiCLI},
-	}
-
-	for _, tt := range tests {
-		t.Run(string(tt.provider), func(t *testing.T) {
-			contract, ok := GetCodingAgentProviderContract(tt.provider, "")
-			if !ok {
-				t.Fatalf("missing coding-agent contract for %s", tt.provider)
-			}
-			if !contract.Deprecated {
-				t.Fatalf("%s should be marked deprecated for new setup", tt.provider)
-			}
-			if contract.ReplacementProvider != tt.want {
-				t.Fatalf("replacement = %q, want %q", contract.ReplacementProvider, tt.want)
-			}
-			if strings.TrimSpace(contract.DeprecationReason) == "" {
-				t.Fatal("deprecated provider must explain the replacement path")
-			}
-			if !contract.SupportsFinalExtraction {
-				t.Fatal("deprecated provider remains runnable and must keep its runtime contract")
 			}
 		})
 	}
@@ -379,7 +348,7 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // entry will fail TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification.
 //
 // History: every provider's coding-agent capability claims were originally
-// enforced only for Claude Code + Codex. Cursor, Agy, Gemini
+// enforced only for Claude Code + Codex. Cursor, Gemini
 // declared the same capabilities without proof, which let real bugs ship
 // (e.g. cursor's "claims UsesMCPBridge=true" while in --print mode it
 // returned zero tokens / zero tool calls on a real workflow run). The

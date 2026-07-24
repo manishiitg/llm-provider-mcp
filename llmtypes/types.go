@@ -95,7 +95,7 @@ const (
 
 // StatusLine represents a generic unified statusline payload from interactive CLIs
 type StatusLine struct {
-	Provider                  string                 `json:"provider"`                    // e.g. "agy", "claudecode"
+	Provider                  string                 `json:"provider"`                    // e.g. "cursor", "claudecode"
 	Model                     string                 `json:"model,omitempty"`             // e.g. "claude-3-5-sonnet"
 	InputTokens               int                    `json:"input_tokens,omitempty"`      // Session input tokens for the current turn/session
 	OutputTokens              int                    `json:"output_tokens,omitempty"`     // Session output tokens for the current turn/session

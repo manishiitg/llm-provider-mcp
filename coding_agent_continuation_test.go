@@ -86,18 +86,6 @@ func TestContinueCodingAgentSessionSendsOnlyLatestMessageAndResumeOptions(t *tes
 			resumeKey:  "cursor_resume_session_id",
 			workdirKey: "cursor_working_dir",
 		},
-		{
-			name: "agy cli",
-			handle: llmtypes.CodingProviderSessionHandle{
-				Provider:        string(ProviderAgyCLI),
-				Transport:       llmtypes.CodingProviderTransportTmux,
-				NativeSessionID: "agy-native",
-				WorkingDir:      "/tmp/work",
-				Model:           DefaultAgyCLIModel,
-			},
-			resumeKey:  "agy_resume_session_id",
-			workdirKey: "agy_working_dir",
-		},
 	}
 
 	for _, tt := range tests {

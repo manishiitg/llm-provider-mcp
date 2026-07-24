@@ -108,9 +108,8 @@ type CodingAgentProviderContract struct {
 
 	// RequiresWorkspaceTrust reports whether the CLI can block startup on a
 	// trust/auth TUI prompt before any user prompt can be submitted. Some CLIs
-	// show a "do you trust the files in this folder?" dialog; Agy 1.0.2 creates
-	// fresh projects without that dialog in our E2E environment, but still has a
-	// startup login picker that the adapter must detect and surface instead of
+	// show a "do you trust the files in this folder?" dialog, or a startup
+	// login picker, that the adapter must detect and surface instead of
 	// parsing as ready/output. Structured-only CLIs do not render these TUI
 	// prompts.
 	//
@@ -317,47 +316,6 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserInstructionFile:         "~/.cursor/rules",  // same directory layout at the user level
 		WorkingDirMCPConfigFile:     ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
 		UserMCPConfigFile:           "~/.cursor/mcp.json",
-	},
-	ProviderAgyCLI: {
-		Provider:                ProviderAgyCLI,
-		DisplayName:             "Antigravity CLI",
-		CLIName:                 "agy",
-		Deprecated:              true,
-		DeprecationReason:       "Antigravity CLI is retained for existing sessions only; prefer Pi CLI because Pi supports Gemini model routing through one integration.",
-		ReplacementProvider:     ProviderPiCLI,
-		Transport:               CodingAgentTransportTmux,
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  true,
-		UsesPersistentSession:   true,
-		SupportsLiveInput:       true,
-		SupportsInterrupt:       true,
-		SupportsTerminalStream:  true,
-		SupportsStatusLine:      true,
-		SupportsFinalExtraction: true,
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		RequiresMCPBridgeConfig: true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   true,
-		ProcessScopedCleanup:    true,
-		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      false,
-		ImageInputInteractive:   false,
-		SurfacesTokenUsage:      true,
-		TokenUsageSource:        "estimated",
-		AdapterReadsTranscript:  false,
-		RequiresWorkspaceTrust:  true,
-		APIKeyEnvVars:           []string{"AGY_API_KEY"},
-		// Antigravity CLI conventions confirmed by the agycli adapter
-		// implementation. Same layering as cursor: adapter writes
-		// session-scoped files under <workingDir>/.agents/, cleans
-		// them up on teardown. The directory pattern mirrors cursor's
-		// .cursor/{rules,mcp.json,hooks.json} but namespaced to .agents.
-		WorkingDirInstructionFile: ".agents/rules",   // directory of .md rule files (mlp-system-*.md per session)
-		UserInstructionFile:       "~/.agents/rules", // user-level mirror
-		WorkingDirMCPConfigFile:   ".agents/mcp_config.json",
-		UserMCPConfigFile:         "~/.agents/mcp_config.json",
 	},
 	ProviderPiCLI: {
 		Provider:                    ProviderPiCLI,

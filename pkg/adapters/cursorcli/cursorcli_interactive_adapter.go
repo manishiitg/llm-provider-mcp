@@ -175,7 +175,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	prompt := buildCursorPrompt(conversationMessages, resume)
 	// Launch-only: boot tmux with --resume so the user can see the prior
 	// cursor conversation in the pane without sending any prompt yet.
-	// Mirrors what agy + claude-code experimental do; the chat-history
+	// Mirrors what claude-code experimental does; the chat-history
 	// resumed-terminal path calls model.GenerateContent(ctx, nil, ...)
 	// with WithCodingProviderLaunchOnly() expecting this contract.
 	if !launchOnly && strings.TrimSpace(prompt) == "" {
@@ -1049,8 +1049,8 @@ func closeCursorPersistentSession(ownerSessionID, reason string, logger interfac
 }
 
 // CloseCursorCLIInteractiveSessionForOwner closes the persistent cursor
-// interactive session for the given owner. See agycli's equivalent
-// CloseAgyCLIInteractiveSessionForOwner for the mid-chat-prompt-change
+// interactive session for the given owner. See codexcli's equivalent
+// CloseCodexCLIInteractiveSessionForOwner for the mid-chat-prompt-change
 // motivation.
 func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeCursorPersistentSession(ownerSessionID, reason, nil)

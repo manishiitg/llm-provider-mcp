@@ -185,28 +185,40 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		}
 	}()
 
-	if err := waitForPiMarkerType(ctx, session.markerPath, "session_start", 0, piPromptWait()); err != nil {
-		releaseSession = false
-		session.mu.Unlock()
-		cleanupPiInteractiveSession(session)
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
+	// session_start only ever fires ONCE per actual Pi process launch — a
+	// reused session's process already emitted it during its original launch
+	// and will never emit it again. Waiting for it unconditionally here (the
+	// bug: this block ran on every turn, not just createdSession) hung
+	// forever on turn 2+ of any persistent/reused session — confirmed live via
+	// TestRealBridgeStreamingMultiTurn/Pi timing out with the process visibly
+	// blocked at exactly this wait. Mirrors the createdSession guard the
+	// MCP-ready-file wait below already uses for the identical reason.
+	if createdSession {
+		if err := waitForPiMarkerType(ctx, session.markerPath, "session_start", 0, piPromptWait()); err != nil {
+			releaseSession = false
+			session.mu.Unlock()
+			cleanupPiInteractiveSession(session)
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("failed to start Pi CLI tmux session %q: %w", session.tmuxSessionName, err)
 		}
-		return nil, fmt.Errorf("failed to start Pi CLI tmux session %q: %w", session.tmuxSessionName, err)
-	}
-	// session_start means Pi loaded the marker extension; it does not mean the
-	// terminal editor is ready. In particular, pi-mcp-adapter may still be
-	// connecting servers and redraw the TUI after session_start. Pasting during
-	// that window loses the draft, so wait for Pi's actual idle prompt before
-	// delivering either a launch-only handoff or the first user turn.
-	if err := waitForPiPromptReady(ctx, session.tmuxSessionName, piPromptWait()); err != nil {
-		releaseSession = false
-		session.mu.Unlock()
-		cleanupPiInteractiveSession(session)
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
+		// session_start means Pi loaded the marker extension; it does not mean the
+		// terminal editor is ready. In particular, pi-mcp-adapter may still be
+		// connecting servers and redraw the TUI after session_start. Pasting during
+		// that window loses the draft, so wait for Pi's actual idle prompt before
+		// delivering either a launch-only handoff or the first user turn. Same
+		// once-per-launch reasoning as session_start above — only meaningful
+		// right after a fresh launch, not on every reused-session turn.
+		if err := waitForPiPromptReady(ctx, session.tmuxSessionName, piPromptWait()); err != nil {
+			releaseSession = false
+			session.mu.Unlock()
+			cleanupPiInteractiveSession(session)
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("Pi CLI prompt did not become ready in tmux session %q: %w", session.tmuxSessionName, err)
 		}
-		return nil, fmt.Errorf("Pi CLI prompt did not become ready in tmux session %q: %w", session.tmuxSessionName, err)
 	}
 
 	// Cold session: pi's idle prompt being ready does not mean the MCP bridge
@@ -836,6 +848,18 @@ func piMCPConfigFingerprint(config string) string {
 					if env, ok := srvMap["env"].(map[string]interface{}); ok {
 						delete(env, "MCP_SESSION_ID")
 						delete(env, "MCP_VIRTUAL_SCOPE_ID")
+						// MCP_READY_FILE is a fresh, randomly-named marker path generated
+						// on EVERY call (it gates the cold-turn MCP-readiness wait — see
+						// the bridgeReadyFile doc in mcpagent's agent.go), not something
+						// that identifies "is this logically the same launch." Leaving it
+						// in the fingerprint made every persistent-session reuse check
+						// fail: turn 2 always computed a different hash than the
+						// registered turn-1 session, so a perfectly good, still-alive
+						// tmux session was discarded and relaunched from scratch on every
+						// single turn. Real bug, found live: TestRealBridgeStreamingMultiTurn/Pi
+						// failed with tmux1 != tmux2 despite every other launch parameter
+						// (workingDir/modelID/provider/bridgeOnlyTools/mcpExtension) matching.
+						delete(env, "MCP_READY_FILE")
 						if apiURL, ok := env["MCP_API_URL"].(string); ok {
 							if idx := strings.Index(apiURL, "/s/"); idx != -1 {
 								env["MCP_API_URL"] = apiURL[:idx]

@@ -76,16 +76,43 @@ func freshestCursorStoreDBSince(workingDir string, since time.Time) string {
 		if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
 			return nil
 		}
-		fi, err := d.Info()
-		if err != nil || fi.ModTime().Before(since) {
+		// store.db is opened in WAL mode: writes land in store.db-wal (and
+		// touch store.db-shm) without ever updating store.db's own mtime
+		// until a checkpoint happens. On a reused persistent session the
+		// checkpoint from turn 1 can leave store.db's mtime stale for the
+		// entire duration of turn 2+, so a store.db-only mtime check wrongly
+		// filters out the very file we need — found live: turn 2 produced
+		// zero streamed chunks because every store.db candidate read as
+		// "too old" while its -wal sibling kept advancing. Use the freshest
+		// mtime across the trio to judge staleness; still return the
+		// store.db path itself since the read-only connection below sees
+		// committed WAL contents transparently.
+		modTime := cursorStoreDBEffectiveModTime(p, d)
+		if modTime.Before(since) {
 			return nil
 		}
-		if best == "" || fi.ModTime().After(bestMod) {
-			best, bestMod = p, fi.ModTime()
+		if best == "" || modTime.After(bestMod) {
+			best, bestMod = p, modTime
 		}
 		return nil
 	})
 	return best
+}
+
+// cursorStoreDBEffectiveModTime returns the freshest mtime among store.db and
+// its -wal/-shm siblings (see freshestCursorStoreDBSince for why).
+func cursorStoreDBEffectiveModTime(p string, d fs.DirEntry) time.Time {
+	fi, err := d.Info()
+	if err != nil {
+		return time.Time{}
+	}
+	latest := fi.ModTime()
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if sfi, err := os.Stat(p + suffix); err == nil && sfi.ModTime().After(latest) {
+			latest = sfi.ModTime()
+		}
+	}
+	return latest
 }
 
 // run polls on a ticker until ctx is cancelled, doing one final flush on stop to

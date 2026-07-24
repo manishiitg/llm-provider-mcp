@@ -26,6 +26,15 @@ const (
 	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
 	// back into the legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "cursor_restore_project_files"
+	// MetadataKeyStructuredTransport selects `cursor-agent --print
+	// --output-format stream-json` (per-turn, one-shot, no tmux dependency)
+	// instead of the tmux interactive transport. OFF by default — see
+	// docs/coding_sdk_tmux_contract.md: tmux is the normal product path
+	// (persistent chat, live steering, terminal streaming); structured is for
+	// callers with neither need (e.g. unattended workflow steps) that want
+	// native per-turn token/cost and clean typed tool events instead. Pass
+	// WithCursorStructuredTransport(true) to opt in.
+	MetadataKeyStructuredTransport = "cursor_structured_transport"
 )
 
 // WithCursorModel sets the Cursor Agent CLI --model flag. Use "auto" to let
@@ -101,6 +110,16 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
+	}
+}
+
+// WithCursorStructuredTransport selects the structured `--print
+// --output-format stream-json` transport instead of tmux. See
+// MetadataKeyStructuredTransport doc comment for when to use this.
+func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
 	}
 }
 

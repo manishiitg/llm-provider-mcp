@@ -786,8 +786,8 @@ func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, log
 }
 
 // CloseCodexCLIInteractiveSessionForOwner closes the persistent codex
-// interactive session for the given owner. See agycli's equivalent
-// CloseAgyCLIInteractiveSessionForOwner for the mid-chat-prompt-change
+// interactive session for the given owner. See cursorcli's equivalent
+// CloseCursorCLIInteractiveSessionForOwner for the mid-chat-prompt-change
 // motivation.
 func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	closeCodexPersistentSession(ownerSessionID, reason, nil)
@@ -3589,7 +3589,7 @@ func codexIntFromRef(v *int) int {
 
 // streamCodexStatusLine emits a generic StatusLine chunk built from codex's local
 // rollout JSONL (~/.codex/sessions/.../rollout-*.jsonl). Codex in tmux mode has
-// no statusline command hook (unlike agy/claude) and no stdout JSON, so the
+// no statusline command hook (unlike claude) and no stdout JSON, so the
 // rollout's token_count snapshot is the structured source — see
 // readCodexTranscriptUsage. Token counts refresh per completed turn, not
 // sub-second; the dedup below suppresses no-op re-emits.

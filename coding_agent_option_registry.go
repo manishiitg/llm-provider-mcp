@@ -16,7 +16,6 @@ var codingAgentInteractiveSessionRegistry = map[Provider]func(string) llmtypes.C
 	ProviderClaudeCode: WithClaudeCodeInteractiveSessionID,
 	ProviderCodexCLI:   WithCodexInteractiveSessionID,
 	ProviderCursorCLI:  WithCursorInteractiveSessionID,
-	ProviderAgyCLI:     WithAgyInteractiveSessionID,
 	ProviderPiCLI:      WithPiInteractiveSessionID,
 }
 
@@ -37,7 +36,6 @@ var codingAgentPersistentInteractiveRegistry = map[Provider]func(bool) llmtypes.
 	ProviderClaudeCode: WithClaudeCodePersistentInteractiveSession,
 	ProviderCodexCLI:   WithCodexPersistentInteractiveSession,
 	ProviderCursorCLI:  WithCursorPersistentInteractiveSession,
-	ProviderAgyCLI:     WithAgyPersistentInteractiveSession,
 	ProviderPiCLI:      WithPiPersistentInteractiveSession,
 }
 
@@ -54,7 +52,6 @@ var codingAgentWorkingDirRegistry = map[Provider]func(string) llmtypes.CallOptio
 	ProviderClaudeCode: WithClaudeCodeWorkingDir,
 	ProviderCodexCLI:   WithCodexProjectDirID,
 	ProviderCursorCLI:  WithCursorWorkingDir,
-	ProviderAgyCLI:     WithAgyWorkingDir,
 	ProviderPiCLI:      WithPiWorkingDir,
 }
 
@@ -97,7 +94,7 @@ var codingAgentProjectInstructionOnlyRegistry = map[Provider]func(bool) llmtypes
 // CodingAgentProjectInstructionOnlyOption returns the provider option that
 // prevents duplicate prompt injection when the adapter projects the prompt into
 // a CLI-native project instruction file. Not every coding-agent provider needs
-// this: Cursor/Agy already use their rules file as the single prompt channel,
+// this: Cursor already uses its rules file as the single prompt channel,
 // and Pi uses an explicit append-system-prompt path.
 func CodingAgentProjectInstructionOnlyOption(provider Provider, enabled bool) llmtypes.CallOption {
 	if fn, ok := codingAgentProjectInstructionOnlyRegistry[normalizeCodingAgentProvider(provider)]; ok {

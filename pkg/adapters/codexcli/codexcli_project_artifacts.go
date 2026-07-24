@@ -84,7 +84,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS gating, no per-session
 	// auto-dismiss flakiness. The denyBuiltins parameter is retained on
 	// the function signature for API symmetry with the other adapters
-	// (gemini, cursor, agy) but is a no-op here. Operators who want
+	// (gemini, cursor) but is a no-op here. Operators who want
 	// deny-builtin behavior on codex should call WithDisableShellTool /
 	// WithDisableFeatures via the adapter options instead.
 	_ = denyBuiltins

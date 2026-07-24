@@ -72,6 +72,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("codex-cli tmux transport does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
+			return c.generateContentStructured(ctx, messages, opts)
+		}
+	}
+
 	if codexInteractiveSessionIDFromOptions(opts) == "" {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyInteractiveSessionID] = fmt.Sprintf("codex-bounded-%d-%s", time.Now().UnixNano(), codexRandomHex(4))

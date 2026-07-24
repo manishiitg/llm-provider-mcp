@@ -75,14 +75,6 @@ func GetDefaultModel(provider Provider) string {
 			return primaryModel
 		}
 		return DefaultCursorCLIModel
-	case ProviderAgyCLI:
-		if primaryModel := os.Getenv("AGY_CLI_PRIMARY_MODEL"); primaryModel != "" {
-			return primaryModel
-		}
-		if primaryModel := os.Getenv("AGY_PRIMARY_MODEL"); primaryModel != "" {
-			return primaryModel
-		}
-		return DefaultAgyCLIModel
 	default:
 		return ""
 	}
@@ -368,20 +360,6 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 			crossProvider = os.Getenv("CURSORCLI_CROSS_FALLBACK_PROVIDER")
 		}
 		return prefixModelsWithProvider(models, crossProvider)
-	case ProviderAgyCLI:
-		crossFallbackEnv := os.Getenv("AGY_CLI_CROSS_FALLBACK_MODELS")
-		if crossFallbackEnv == "" {
-			crossFallbackEnv = os.Getenv("AGY_CROSS_FALLBACK_MODELS")
-		}
-		models := parseFallbackModelsEnv(crossFallbackEnv)
-		if len(models) == 0 {
-			return []string{}
-		}
-		crossProvider := os.Getenv("AGY_CLI_CROSS_FALLBACK_PROVIDER")
-		if crossProvider == "" {
-			crossProvider = os.Getenv("AGY_CROSS_FALLBACK_PROVIDER")
-		}
-		return prefixModelsWithProvider(models, crossProvider)
 	default:
 		return []string{}
 	}
@@ -390,10 +368,10 @@ func GetCrossProviderFallbackModels(provider Provider) []string {
 // ValidateProvider checks if the provider is supported
 func ValidateProvider(provider string) (Provider, error) {
 	switch Provider(provider) {
-	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderCodexCLI, ProviderCursorCLI, ProviderAgyCLI, ProviderPiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
+	case ProviderBedrock, ProviderOpenAI, ProviderAnthropic, ProviderOpenRouter, ProviderVertex, ProviderAzure, ProviderZAI, ProviderKimi, ProviderClaudeCode, ProviderCodexCLI, ProviderCursorCLI, ProviderPiCLI, ProviderMiniMax, ProviderMiniMaxCodingPlan:
 		return Provider(provider), nil
 	default:
-		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, codex-cli, cursor-cli, agy-cli, pi-cli, minimax, minimax-coding-plan", provider)
+		return "", fmt.Errorf("unsupported provider: %s. Supported providers: bedrock, openai, anthropic, openrouter, vertex, azure, z-ai, kimi, claude-code, codex-cli, cursor-cli, pi-cli, minimax, minimax-coding-plan", provider)
 	}
 }
 

@@ -21,7 +21,7 @@ func TestCollapseBlankRuns(t *testing.T) {
 		{name: "whitespace-only lines treated as blank",
 			in:   "a\n   \n\t\n  \nb",
 			want: "a\n\n\nb"},
-		{name: "spinner-frame pattern from agy capture (stale pruned, active kept)",
+		{name: "spinner-frame pattern from tmux capture (stale pruned, active kept)",
 			in:   "⣟ Generating...\n\n\n\n\n\n\n\n\n\n\n⣽ Generating.\n",
 			want: "⣽ Generating.\n"},
 		{name: "stale spinner pattern (pruned when followed by non-blank lines)",
@@ -105,8 +105,8 @@ func TestStripANSIPreserveColors(t *testing.T) {
 	}
 }
 
-// Agy historically broke by surfacing the "Generating…" spinner frame as the
-// response. Spinner pruning runs inside CollapseBlankRuns (which
+// A tmux-backed CLI adapter historically broke by surfacing the "Generating…"
+// spinner frame as the response. Spinner pruning runs inside CollapseBlankRuns (which
 // StripANSIPreserveColors calls), so a scrolled-up spinner frame followed by
 // real content must not survive into the displayed snapshot. This locks that
 // the shared strip path keeps that behavior.

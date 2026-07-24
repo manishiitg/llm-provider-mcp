@@ -2,7 +2,6 @@ package llmproviders
 
 import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -140,11 +139,6 @@ func WithCursorResumeSessionID(id string) llmtypes.CallOption {
 	return cursorcli.WithResumeSessionID(id)
 }
 
-// WithAgyResumeSessionID resumes an Antigravity CLI conversation by id.
-func WithAgyResumeSessionID(id string) llmtypes.CallOption {
-	return agycli.WithResumeSessionID(id)
-}
-
 // WithCodexInteractiveSessionID links a Codex CLI interactive run to the
 // owning application session so live follow-up input can be sent to it.
 func WithCodexInteractiveSessionID(id string) llmtypes.CallOption {
@@ -181,6 +175,29 @@ func WithCodexProjectInstructionOnly(enabled bool) llmtypes.CallOption {
 // Values: "never" (auto-approve all), "on-request" (model decides), "untrusted" (most restrictive)
 func WithCodexApprovalPolicy(policy string) llmtypes.CallOption {
 	return codexcli.WithApprovalPolicy(policy)
+}
+
+// WithCodexStructuredTransport selects `codex exec --json` (per-turn, one-shot,
+// no tmux dependency) instead of the tmux interactive transport. OFF by
+// default — see docs/coding_sdk_tmux_contract.md: tmux is the normal product
+// path; structured is for callers with no live-steering/terminal-view need
+// (e.g. unattended workflow steps).
+func WithCodexStructuredTransport(enabled bool) llmtypes.CallOption {
+	return codexcli.WithCodexStructuredTransport(enabled)
+}
+
+// WithCursorStructuredTransport selects `cursor-agent --print --output-format
+// stream-json` instead of the tmux interactive transport. OFF by default —
+// see WithCodexStructuredTransport doc comment for the rationale.
+func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
+	return cursorcli.WithCursorStructuredTransport(enabled)
+}
+
+// WithPiStructuredTransport selects `pi --print --mode json` instead of the
+// tmux interactive transport. OFF by default — see
+// WithCodexStructuredTransport doc comment for the rationale.
+func WithPiStructuredTransport(enabled bool) llmtypes.CallOption {
+	return picli.WithPiStructuredTransport(enabled)
 }
 
 // WithCodexReasoningEffort sets the model_reasoning_effort for the Codex CLI.
@@ -306,46 +323,6 @@ func WithCursorMode(mode string) llmtypes.CallOption {
 // are "enabled" and "disabled".
 func WithCursorSandbox(mode string) llmtypes.CallOption {
 	return cursorcli.WithSandbox(mode)
-}
-
-// WithAgyWorkingDir sets the Antigravity CLI workspace/cwd for tmux launch.
-func WithAgyWorkingDir(dir string) llmtypes.CallOption {
-	return agycli.WithWorkingDir(dir)
-}
-
-// WithAgyInteractiveSessionID links an Antigravity CLI tmux run to the owning
-// application session for live follow-up input.
-func WithAgyInteractiveSessionID(sessionID string) llmtypes.CallOption {
-	return agycli.WithInteractiveSessionID(sessionID)
-}
-
-// WithAgyPersistentInteractiveSession keeps the Antigravity CLI tmux session
-// alive across turns.
-func WithAgyPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
-	return agycli.WithPersistentInteractiveSession(enabled)
-}
-
-// WithAgyMCPConfig writes an Antigravity workspace MCP config candidate into
-// .agents/mcp_config.json for the adapter-owned working directory.
-func WithAgyMCPConfig(config string) llmtypes.CallOption {
-	return agycli.WithMCPConfig(config)
-}
-
-// WithAgyBridgeOnlyTools writes an Antigravity workspace hook that denies
-// built-in tools while leaving configured MCP bridge tools available.
-func WithAgyBridgeOnlyTools(enabled bool) llmtypes.CallOption {
-	return agycli.WithBridgeOnlyTools(enabled)
-}
-
-// WithAgyDangerouslySkipPermissions controls agy's
-// --dangerously-skip-permissions launch flag.
-func WithAgyDangerouslySkipPermissions(enabled bool) llmtypes.CallOption {
-	return agycli.WithDangerouslySkipPermissions(enabled)
-}
-
-// WithAgySandbox sets Antigravity CLI's --sandbox flag.
-func WithAgySandbox(mode string) llmtypes.CallOption {
-	return agycli.WithSandbox(mode)
 }
 
 // WithPiWorkingDir sets the Pi CLI workspace/cwd for tmux launch.

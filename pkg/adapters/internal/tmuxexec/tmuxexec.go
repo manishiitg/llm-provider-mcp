@@ -1,5 +1,5 @@
 // Package tmuxexec holds the tmux subprocess primitives shared by the
-// interactive CLI adapters (codex, gemini, cursor, agy). Before this package
+// interactive CLI adapters (codex, gemini, cursor). Before this package
 // each adapter carried a byte-identical copy of the exec boilerplate and the
 // capture-pane call; the only real variation was gemini's need to redact API
 // keys from error messages, which RunCommandOutput supports via an optional
