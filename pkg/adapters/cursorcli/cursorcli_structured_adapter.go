@@ -59,6 +59,35 @@ type cursorEventUsage struct {
 	CacheWriteTokens int `json:"cacheWriteTokens"`
 }
 
+// cursorResultErrorMessage decides whether a completed structured run
+// represents a genuine error, mirroring claudecode's identical, live-verified
+// fix: a "result" event with is_error:true is a semantic failure the CLI can
+// report with exit code 0, and must not be returned as a successful
+// StopReason:"stop" response.
+//
+// Unlike the Claude fix (reproduced live with a bad --model id, which claude
+// reports as a real is_error:true stream-json result), three attempts to
+// force a genuine is_error:true out of real cursor-agent (bad --model, bad
+// --workspace, a broken MCP server config) each either got pre-flight
+// plain-text-rejected before any JSON streamed, or was silently tolerated —
+// none reached this code path live. cursorEvent.IsError was already parsed
+// (just never read) before this fix, presumably because someone observed it
+// in real output at some point; this fix is correct by the same contract
+// Claude's is, but is NOT live-proven against real cursor-agent the way
+// Claude's is — flagged honestly rather than claimed. See
+// TestCursorResultErrorMessage for the (deterministic, logic-only) coverage
+// that does exist.
+func cursorResultErrorMessage(isError bool, content, stderrText string) (msg string, isErr bool) {
+	if !isError {
+		return "", false
+	}
+	msg = strings.TrimSpace(content)
+	if msg == "" {
+		msg = strings.TrimSpace(stderrText)
+	}
+	return msg, true
+}
+
 func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions, sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
 	// Structured contract §7: "close the stream channel after process exit or
 	// error." Every return path below runs either before the event-parsing
@@ -192,6 +221,13 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	var totalUsage llmtypes.Usage
 	var sessionID string
 	var modelName string
+	// resultIsError mirrors claudecode's identical fix: a "result" event with
+	// is_error:true is a genuine semantic failure the CLI can report with
+	// exit code 0. The field was already parsed into cursorEvent.IsError but
+	// never read, so an is_error result with non-empty Result text (the error
+	// description) sailed through as a "successful" StopReason:"stop"
+	// response — the same bug class fixed live for Claude this session.
+	var resultIsError bool
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -271,6 +307,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
 				// grace for ~/.cursor state flush → SIGKILL.
 				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				resultIsError = event.IsError
 				if event.Result != "" {
 					finalContent = event.Result
 				}
@@ -294,6 +331,10 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	waitErr := cmd.Wait()
 
 	content := strings.TrimSpace(finalContent)
+
+	if errMsg, isErr := cursorResultErrorMessage(resultIsError, content, stderr.String()); isErr {
+		return nil, fmt.Errorf("cursor run reported an error result: %s", errMsg)
+	}
 
 	if waitErr != nil && content == "" {
 		stderrStr := strings.TrimSpace(stderr.String())
