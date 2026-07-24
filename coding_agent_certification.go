@@ -276,9 +276,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
-			TestName:    "TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E",
-			Env:         []string{"RUN_CLAUDE_CODE_TMUX_PERSISTENT_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
-			Description: "real Claude Code tmux turn is captured and Vertex judges final extraction quality, formatting, and TUI noise removal",
+			TestName:    "TestClaudeCodeTmuxRealFinalExtractionFromTmuxAgentJudgeE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "real Claude Code tmux turn is captured and an agent judges final extraction quality, formatting, and TUI noise removal (no API key — agentreview sign-off, not an external LLM judge)",
 			RealE2E:     true,
 		},
 		{
@@ -730,9 +730,9 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertFinalExtraction,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1", "RUN_CURSOR_CLI_INTERACTIVE_E2E=1", "GEMINI_API_KEY or VERTEX_API_KEY or GOOGLE_API_KEY"},
-			Description: "real Cursor CLI tmux turn is captured and Vertex judges final extraction quality, formatting, and shell/TUI transcript removal",
+			TestName:    "TestCursorCLIRealFinalExtractionFromTmuxAgentJudgeE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "real Cursor CLI tmux turn is captured and an agent judges final extraction quality, formatting, and shell/TUI transcript removal (no API key — agentreview sign-off, not an external LLM judge)",
 			RealE2E:     true,
 		},
 		{
