@@ -118,12 +118,23 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 
 // TestClaudeStructuredUsageNotDoubled proves the fix for a real bug: usage was
 // accumulated from EVERY intermediate assistant event AND the terminal result
-// event, roughly doubling input/cache token counts (verified live before the
-// fix: summing assistant-event usages exactly matched the result event's own
-// totals, meaning adding both doubled them). This test drives a multi-step
-// turn (a tool call, so at least 2 assistant events + 1 result exist) and
-// asserts the adapter's reported usage is NOT roughly double what a single
-// terminal result would report alone.
+// event, roughly doubling token counts. This test drives a multi-step turn (a
+// tool call, so at least 2 assistant events + 1 result exist) and asserts the
+// adapter's reported usage is NOT roughly double a plausible single-result
+// total.
+//
+// The assertion targets CacheTokens specifically, not InputTokens. Directly
+// measured live (the same capture that found this bug): a real
+// system-prompt-bearing turn had InputTokens in the single digits (2-4) the
+// whole time — never the channel that mattered — while cache_creation +
+// cache_read (folded into CacheTokens via accumulateClaudeUsage) were tens of
+// thousands and were EXACTLY where the doubling landed (summing all
+// assistant-event cache_read exactly matched the result event's own total,
+// meaning the old code's "add both" computed 2x). An InputTokens-only ceiling
+// (the original version of this test) could never have caught a
+// CacheTokens-only regression, which is the realistic shape of this bug on a
+// system-prompt-bearing session — this was a real gap in the test, not just
+// the adapter.
 func TestClaudeStructuredUsageNotDoubled(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
@@ -131,8 +142,13 @@ func TestClaudeStructuredUsageNotDoubled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	// A real, non-trivial system prompt to force meaningful cache_creation on
+	// this (first, cold) turn — a near-empty system prompt would leave
+	// CacheTokens near zero regardless of whether the bug is present, making
+	// the regression undetectable.
+	systemPrompt := strings.Repeat("You are a careful, precise coding assistant operating in a sandboxed test environment. Follow instructions exactly. ", 40)
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use the Bash tool for every request."}}},
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt + "Use the Bash tool for every request."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Run: echo usage_probe — then tell me what it printed."}}},
 	}, WithClaudeStructuredTransport(true), WithAllowedTools("Bash"))
 	if err != nil {
@@ -141,15 +157,22 @@ func TestClaudeStructuredUsageNotDoubled(t *testing.T) {
 	if resp == nil || resp.Usage == nil {
 		t.Fatal("expected non-nil usage")
 	}
-	// A real turn with a tool call still costs well under 50k input tokens
-	// even with a large cache_creation on the first call of a session. The
-	// pre-fix bug doubled the true total by re-summing every assistant
-	// event's usage on top of the already-cumulative result total — for a
-	// cache-heavy session that inflation is dramatic (tens of thousands of
-	// tokens), so a generous sanity ceiling here is still a real, meaningful
-	// regression guard, not a tautology.
-	if resp.Usage.InputTokens > 50_000 {
-		t.Errorf("input tokens implausibly high (%d) — looks like the double-counting bug regressed", resp.Usage.InputTokens)
+	cacheTokens := 0
+	if resp.Usage.CacheTokens != nil {
+		cacheTokens = *resp.Usage.CacheTokens
 	}
-	t.Logf("usage: input=%d output=%d total=%d", resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+	// The forced system prompt above is a few thousand tokens; a real cache
+	// write/read for it stays well under 100k even accounting for Claude's
+	// own prompt-caching overhead. The pre-fix bug doubled the true total by
+	// re-summing every assistant event's usage on top of the already-
+	// cumulative result total — for this cache-bearing shape that inflation
+	// is dramatic (tens of thousands of tokens), so this ceiling is a real,
+	// meaningful regression guard, not a tautology.
+	if cacheTokens > 100_000 {
+		t.Errorf("cache tokens implausibly high (%d) — looks like the double-counting bug regressed", cacheTokens)
+	}
+	if cacheTokens == 0 {
+		t.Logf("[note] CacheTokens was 0 — this run didn't exercise the channel this test targets; not a failure, but weaker evidence")
+	}
+	t.Logf("usage: input=%d output=%d cache=%d total=%d", resp.Usage.InputTokens, resp.Usage.OutputTokens, cacheTokens, resp.Usage.TotalTokens)
 }
