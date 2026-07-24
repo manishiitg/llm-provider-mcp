@@ -1323,6 +1323,16 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// alone run consecutive messages together) or, for models that expose only the
 	// complete message at message_end, emit that whole block.
 	streamedDeltaThisMessage := false
+	// toolCallSincePrevAssistantMsg tracks whether a real tool call happened
+	// since the last assistant message_end. Pi's own marker stream can split ONE
+	// continuous reply into several message_start/message_end pairs with NO tool
+	// call between them (confirmed live: a single markdown table's "| build_id |"
+	// row arrived split across two such pairs as "|\n build_id |" — the newline
+	// landed mid-content, not at any real boundary). The boundary "\n" below must
+	// only fire between GENUINELY separate messages (narration, a tool call, then
+	// more narration) — never between two chunks of what pi itself is streaming
+	// as one uninterrupted reply, or it corrupts the reassembled text.
+	toolCallSincePrevAssistantMsg := false
 
 	for {
 		markers, nextOffset, err := readPiMarkersSince(session.markerPath, currentOffset)
@@ -1350,6 +1360,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				}
 			case "tool_execution_start":
 				toolStart[marker.ToolCallID] = time.Now()
+				toolCallSincePrevAssistantMsg = true
 				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
 					Type:       llmtypes.StreamChunkTypeToolCallStart,
 					ToolName:   marker.ToolName,
@@ -1382,11 +1393,11 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				}
 				if isAssistant {
 					switch {
-					case streamedDeltaThisMessage:
-						// The message already streamed as deltas; emit a newline
-						// boundary (as a delta so it concatenates verbatim) so
-						// consecutive assistant messages don't run together in the
-						// reassembled text.
+					case streamedDeltaThisMessage && toolCallSincePrevAssistantMsg:
+						// A real tool call separated this message from the next one
+						// (narration -> tool -> narration); emit a newline boundary
+						// (as a delta so it concatenates verbatim) so the two don't
+						// run together in the reassembled text.
 						boundaryMeta := piChunkMetadata(session)
 						boundaryMeta[llmtypes.ContentDeltaMetadataKey] = true
 						emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
@@ -1394,6 +1405,12 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 							Content:  "\n",
 							Metadata: boundaryMeta,
 						})
+					case streamedDeltaThisMessage:
+						// Pi split ONE continuous reply into multiple message_end
+						// pairs with no tool call between them. The deltas already
+						// concatenated verbatim into `content`/the stream — inserting
+						// a boundary here would corrupt it (splitting a word or a
+						// markdown table row with a stray newline). Nothing to emit.
 					case strings.TrimSpace(marker.Text) != "":
 						// Model exposed only the complete message here (no deltas):
 						// emit it as one clean BLOCK content chunk so a no-terminal
@@ -1405,6 +1422,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 							Metadata: piChunkMetadata(session),
 						})
 					}
+					toolCallSincePrevAssistantMsg = false
 				}
 				streamedDeltaThisMessage = false
 			case "agent_end":
