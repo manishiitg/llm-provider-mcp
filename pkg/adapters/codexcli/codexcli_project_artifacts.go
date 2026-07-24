@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // writeCodexProjectArtifacts is the unified opt-in writer invoked by
@@ -204,6 +206,49 @@ type codexMCPServerSpec struct {
 	DefaultToolsApprovalMode string            `json:"default_tools_approval_mode,omitempty"`
 }
 
+// strictCodexMCPRuntimePaths returns the orchestrator-provided bridge
+// executable that must remain readable inside the macOS sandbox. Strict modes
+// intentionally accept only the single AgentWorks api-bridge server; allowing
+// arbitrary MCP commands here would turn MCP configuration into a path-grant
+// escape hatch.
+func strictCodexMCPRuntimePaths(opts *llmtypes.CallOptions) ([]string, error) {
+	if opts == nil || opts.CLISecurity == nil ||
+		llmtypes.NormalizeCLISecurityMode(opts.CLISecurity.Mode) == llmtypes.CLISecurityModeCompatibility {
+		return nil, nil
+	}
+	if opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return nil, fmt.Errorf("strict Codex CLI security requires the AgentWorks api-bridge")
+	}
+	raw, _ := opts.Metadata.Custom[MetadataKeyMCPServers].(string)
+	var servers map[string]codexMCPServerSpec
+	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+		return nil, fmt.Errorf("parse strict Codex MCP servers: %w", err)
+	}
+	if len(servers) != 1 {
+		return nil, fmt.Errorf("strict Codex CLI security permits only the AgentWorks api-bridge")
+	}
+	bridge, ok := servers["api-bridge"]
+	if !ok {
+		return nil, fmt.Errorf("strict Codex CLI security requires the AgentWorks api-bridge")
+	}
+	command := strings.TrimSpace(bridge.Command)
+	if !filepath.IsAbs(command) {
+		return nil, fmt.Errorf("strict Codex api-bridge command must be an absolute path")
+	}
+	resolved, err := filepath.EvalSymlinks(command)
+	if err != nil {
+		return nil, fmt.Errorf("resolve strict Codex api-bridge command: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("inspect strict Codex api-bridge command: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, fmt.Errorf("strict Codex api-bridge command is not executable")
+	}
+	return []string{resolved}, nil
+}
+
 // writeCodexSessionMCPProfile materializes per-invocation MCP configuration in
 // a unique profile under CODEX_HOME. Codex has no --config-file flag, while
 // -c mcp_servers.* overrides put every environment value (including schemas
@@ -212,7 +257,7 @@ type codexMCPServerSpec struct {
 // CODEX_HOME authentication/session state. autoApproveTools also writes the
 // MCP-specific approval mode because Codex's global approval policy alone does
 // not suppress its per-tool MCP confirmation dialog.
-func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool) (string, func(), error) {
+func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, policy *llmtypes.CLISecurityPolicy) (string, func(), error) {
 	noop := func() {}
 	if strings.TrimSpace(mcpServersJSON) == "" {
 		return "", noop, nil
@@ -234,7 +279,23 @@ func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool) (
 		}
 	}
 
-	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	codexHome := ""
+	if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) != llmtypes.CLISecurityModeCompatibility {
+		if llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
+			if strings.TrimSpace(policy.PrivateHome) == "" {
+				return "", noop, fmt.Errorf("isolated CLI security requires a private home")
+			}
+			codexHome = filepath.Join(policy.PrivateHome, ".codex")
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", noop, fmt.Errorf("resolve Codex home: %w", err)
+			}
+			codexHome = filepath.Join(home, ".codex")
+		}
+	} else {
+		codexHome = strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	}
 	if codexHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

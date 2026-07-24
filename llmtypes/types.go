@@ -89,22 +89,22 @@ const (
 	StreamChunkTypeToolCall      StreamChunkType = "tool_call" // Complete tool call
 	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
-	StreamChunkTypeTerminal      StreamChunkType = "terminal" // Live terminal/screen snapshot
+	StreamChunkTypeTerminal      StreamChunkType = "terminal"    // Live terminal/screen snapshot
 	StreamChunkTypeStatusLine    StreamChunkType = "status_line" // Generic real-time statusline snapshot
 )
 
 // StatusLine represents a generic unified statusline payload from interactive CLIs
 type StatusLine struct {
-	Provider                  string                 `json:"provider"`                    // e.g. "cursor", "claudecode"
-	Model                     string                 `json:"model,omitempty"`             // e.g. "claude-3-5-sonnet"
-	InputTokens               int                    `json:"input_tokens,omitempty"`      // Session input tokens for the current turn/session
-	OutputTokens              int                    `json:"output_tokens,omitempty"`     // Session output tokens for the current turn/session
+	Provider                 string                 `json:"provider"`                // e.g. "cursor", "claudecode"
+	Model                    string                 `json:"model,omitempty"`         // e.g. "claude-3-5-sonnet"
+	InputTokens              int                    `json:"input_tokens,omitempty"`  // Session input tokens for the current turn/session
+	OutputTokens             int                    `json:"output_tokens,omitempty"` // Session output tokens for the current turn/session
 	CacheCreationInputTokens int                    `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int                    `json:"cache_read_input_tokens,omitempty"`
-	TotalInputTokens          int                    `json:"total_input_tokens,omitempty"`
-	TotalOutputTokens         int                    `json:"total_output_tokens,omitempty"`
-	CostUSD                   float64                `json:"cost_usd,omitempty"`          // Cumulative estimated cost in USD
-	Metadata                  map[string]interface{} `json:"metadata,omitempty"`          // Generic/custom provider fields (e.g., git branch, effort, rate limits)
+	TotalInputTokens         int                    `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens        int                    `json:"total_output_tokens,omitempty"`
+	CostUSD                  float64                `json:"cost_usd,omitempty"` // Cumulative estimated cost in USD
+	Metadata                 map[string]interface{} `json:"metadata,omitempty"` // Generic/custom provider fields (e.g., git branch, effort, rate limits)
 }
 
 // StatusLineProvider is an interface that interactive adapters can implement
@@ -575,6 +575,7 @@ type CallOptions struct {
 	ThinkingLevel   string             // Thinking level: "low", "high" (for Gemini 3 Pro)
 	ThinkingBudget  int                // Thinking budget (token limit) for reasoning models (e.g., Gemini 2.5 Flash Thinking)
 	AllowedTools    []string           // Explicitly allowed tools for agentic models (e.g., gpt-5.2-codex)
+	CLISecurity     *CLISecurityPolicy // Resolved coding-CLI launch policy; nil means compatibility mode.
 
 	// Sampling controls supported by most modern providers. Zero values
 	// mean "do not set" — adapters should only forward these to the

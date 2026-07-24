@@ -61,10 +61,10 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 		wantProviderSet bool
 	}{
 		{
-			name:            "claude code uses opus for maintenance",
+			name:            "claude code uses opus 5 medium for maintenance",
 			provider:        ProviderClaudeCode,
-			wantModelID:     "claude-opus-4-8",
-			wantReasoning:   "high",
+			wantModelID:     "claude-opus-5",
+			wantReasoning:   "medium",
 			wantProviderSet: true,
 		},
 		{
@@ -199,11 +199,11 @@ func TestCodingAgentDefaultTierModelsClaudeBuilderAndMaintenanceDefaults(t *test
 		if got.Provider != string(ProviderClaudeCode) {
 			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderClaudeCode)
 		}
-		if got.ModelID != "claude-opus-4-8" {
-			t.Fatalf("%s model_id = %q, want claude-opus-4-8", name, got.ModelID)
+		if got.ModelID != "claude-opus-5" {
+			t.Fatalf("%s model_id = %q, want claude-opus-5", name, got.ModelID)
 		}
-		if got.Options["reasoning_effort"] != "high" {
-			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
+		if got.Options["reasoning_effort"] != "medium" {
+			t.Fatalf("%s reasoning_effort = %#v, want medium", name, got.Options["reasoning_effort"])
 		}
 	}
 
@@ -227,10 +227,10 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:          "claude code uses opus for chief of staff",
+			name:          "claude code uses opus 5 medium for chief of staff",
 			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-opus-4-8",
-			wantReasoning: "high",
+			wantModelID:   "claude-opus-5",
+			wantReasoning: "medium",
 		},
 		{
 			name:          "codex uses chief sol high",

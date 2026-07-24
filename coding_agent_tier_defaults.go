@@ -66,7 +66,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		maintenance := codingAgentHighReasoningRef(providerID, "claude-opus-4-8")
+		maintenance := codingAgentReasoningRef(providerID, "claude-opus-5", "medium")
 		pulse := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		builder := maintenance
 		return &CodingAgentDefaultTierModels{

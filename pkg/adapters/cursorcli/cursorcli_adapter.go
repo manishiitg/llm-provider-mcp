@@ -38,6 +38,9 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	for _, opt := range options {
 		opt(opts)
 	}
+	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+		return nil, err
+	}
 
 	// Defensive backstop for direct adapter callers that bypass the
 	// orchestrator's image-content pre-processing. In practice, callers

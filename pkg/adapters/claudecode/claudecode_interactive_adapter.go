@@ -228,6 +228,9 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	for _, opt := range options {
 		opt(opts)
 	}
+	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+		return nil, err
+	}
 
 	// Opt-in structured/JSON transport: `claude -p --output-format stream-json`,
 	// per-turn and one-shot (no tmux). tmux stays the default.
@@ -630,6 +633,15 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			ContextWindow:         1000000,
 			InputCostPer1MTokens:  10.00,
 			OutputCostPer1MTokens: 50.00,
+		}, nil
+	case "claude-opus-5":
+		return &llmtypes.ModelMetadata{
+			ModelID:               modelID,
+			Provider:              "claude-code",
+			ModelName:             "Claude Opus 5",
+			ContextWindow:         200000,
+			InputCostPer1MTokens:  5.00,
+			OutputCostPer1MTokens: 25.00,
 		}, nil
 	case "claude-opus-4-8":
 		return &llmtypes.ModelMetadata{

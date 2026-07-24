@@ -146,7 +146,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// tool schemas and bridge credentials belong in a profile file, never on
 	// the command line (see codexcli_interactive_adapter.go's identical
 	// rationale). The GLOBAL -p/--profile flag loads $CODEX_HOME/<name>.config.toml.
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools)
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity)
 	if err != nil {
 		return nil, fmt.Errorf("codex session MCP profile: %w", err)
 	}

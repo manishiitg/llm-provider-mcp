@@ -35,6 +35,9 @@ func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 	for _, opt := range options {
 		opt(opts)
 	}
+	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+		return nil, err
+	}
 
 	if containsPiImageContent(messages) {
 		if opts.StreamChan != nil {
