@@ -1426,7 +1426,7 @@ Here is the final answer:
 	assertCodexNoInternalStatus(t, got)
 }
 
-func TestCodexFinalExtractionVertexJudgeE2E(t *testing.T) {
+func TestCodexFinalExtractionAgentJudgeE2E(t *testing.T) {
 	baseline := "Codex ready\n›"
 	captured := baseline + `
 Calling codex.list_mcp_resources({"cursor":null})
@@ -1441,7 +1441,7 @@ Here is the final answer:
 ❯`
 
 	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+	testcontracts.AssertAgentJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
 		Provider:   "codex-cli",
 		TmuxScreen: captured,
 		Extracted:  got,

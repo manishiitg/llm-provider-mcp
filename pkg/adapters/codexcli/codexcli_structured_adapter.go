@@ -146,47 +146,23 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// the prior turn's context, and the global profile layers the bridge MCP.
 	resumeSessionID := strings.TrimSpace(codexResumeSessionIDFromOptions(opts))
 	logCmd := "codex exec --json"
-	var args []string
 	if resumeSessionID != "" {
-		if sessionProfile != "" {
-			args = append(args, "--profile", sessionProfile) // GLOBAL: layers $CODEX_HOME/<name>.config.toml
-		}
-		args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandboxMode)) // GLOBAL: resume has no --sandbox
-		args = append(args, "exec", "resume", resumeSessionID, "--json", "--skip-git-repo-check")
-		if modelToUse != "" && modelToUse != "codex-cli" {
-			args = append(args, "--model", modelToUse)
-		}
 		logCmd = "codex exec resume <id> --json"
-	} else {
-		args = append(args, "exec", "--json", "--skip-git-repo-check")
-		if workingDir != "" {
-			args = append(args, "-C", workingDir)
-		}
-		if modelToUse != "" && modelToUse != "codex-cli" {
-			args = append(args, "--model", modelToUse)
-		}
-		args = append(args, "--sandbox", sandboxMode)
-		if sessionProfile != "" {
-			args = append(args, "--profile", sessionProfile)
-		}
-	}
-	for _, override := range configOverrides {
-		if strings.TrimSpace(override) != "" {
-			args = append(args, "-c", override)
-		}
 	}
 	if workingDir != "" {
 		// Was completely unwired until now. No --skill flag for codex (unlike
 		// pi) — codex's own skill loader auto-discovers the projected directory
 		// at session start, same as the tmux path
 		// (codexcli_interactive_adapter.go), so projecting to disk before
-		// launch is the entire fix.
+		// launch is the entire fix. (Disk side-effect only; adds no argv.)
 		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 			_ = c.ProjectSkills(workingDir, skills)
 		}
 	}
 
-	args = append(args, prompt)
+	// argv SHAPE (the resume-vs-fresh ordering) is owned by the extracted,
+	// unit-tested builder — see buildCodexStructuredArgs / TestBuildCodexStructuredArgs.
+	args := buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, configOverrides, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

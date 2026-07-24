@@ -78,9 +78,32 @@ func fingerprint(shape any) string {
 // block, and stamps the fingerprint computed over `shape` (the stable,
 // token-independent shape of the output — typically the chunk order + distinct
 // tool names). `output` is the full real output for a human/agent to read.
+// FinalExtractionCriteria is the rubric for judging coding-CLI final-response
+// extraction — the semantic checks an external LLM judge (Gemini/Vertex) used to
+// score. Replacing that judge with an agent sign-off keeps the same judgment but
+// drops the API-key dependency and commits the verdict to the repo. For a
+// deterministic (fixture) extraction the fingerprint is stable, so one sign-off
+// persists; when the parser's output changes, the fingerprint changes and a
+// fresh review is forced — exactly the property the live judge could not give.
+var FinalExtractionCriteria = []string{
+	"EXTRACTED_FINAL answers the user goal using the final assistant response in RAW_PROVIDER_OUTPUT",
+	"meaningful formatting is preserved from the final answer (line breaks, bullets, code blocks, paths)",
+	"terminal chrome is omitted — prompts, thought/process headers, tool cards, MCP names, shell/curl/header fragments, JSON tool output, and earlier assistant drafts",
+	"every required fragment is present and no forbidden noise fragment leaked (see output.must_contain / output.forbidden)",
+	"semantic match is enough — exact wording is not required if meaning and formatting are preserved",
+}
+
 func Write(t testing.TB, test, summary string, output, shape any) Record {
 	t.Helper()
-	rec := Record{Test: test, Summary: summary, Criteria: StreamingCriteria, Output: output, Fingerprint: fingerprint(shape)}
+	return WriteWithCriteria(t, test, summary, StreamingCriteria, output, shape)
+}
+
+// WriteWithCriteria is Write with an explicit review rubric instead of the
+// default StreamingCriteria — used where the agent must judge something other
+// than streamed output (e.g. FinalExtractionCriteria).
+func WriteWithCriteria(t testing.TB, test, summary string, criteria []string, output, shape any) Record {
+	t.Helper()
+	rec := Record{Test: test, Summary: summary, Criteria: criteria, Output: output, Fingerprint: fingerprint(shape)}
 
 	// In capture mode every run RESETS the review to pending, so a fresh suite
 	// run always starts "unreviewed" and the agent running the tests must sign

@@ -91,57 +91,39 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 
-	// --output-format stream-json REQUIRES --verbose on current claude builds.
-	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
-	if strings.TrimSpace(c.modelID) != "" {
-		args = append(args, "--model", c.modelID)
-	}
-	if strings.TrimSpace(systemPrompt) != "" {
-		args = append(args, "--append-system-prompt", systemPrompt)
-	}
-	// Bridge-only enforcement. --allowedTools is only a permission WHITELIST, and
-	// --dangerously-skip-permissions overrides it (found live: claude fell back to
-	// its native Bash when the bridge tool kept failing). --disallowedTools is a
-	// hard DENYLIST that holds regardless, so explicitly deny claude's built-in
-	// shell/file tools — the print-mode analogue of the tmux deny hooks — forcing
-	// every tool call through the MCP bridge.
-	if allowedTools != "" {
-		args = append(args, "--allowedTools", allowedTools)
-		args = append(args, "--disallowedTools", "Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,WebFetch,Task")
-	}
-
 	var tempFiles []string
 	defer func() {
 		for _, f := range tempFiles {
 			_ = os.Remove(f)
 		}
 	}()
+	// MCP-config file write is a disk side-effect; the resolved path feeds the
+	// argv builder below.
+	mcpConfigPath := ""
 	if mcpConfigJSON != "" {
 		configPath, cfgErr := writeTempJSONConfig("claude-code-structured-mcp-*.json", mcpConfigJSON)
 		if cfgErr != nil {
 			return nil, fmt.Errorf("claude structured MCP config: %w", cfgErr)
 		}
 		tempFiles = append(tempFiles, configPath)
-		args = append(args, "--mcp-config", configPath, "--strict-mcp-config")
+		mcpConfigPath = configPath
 	}
 
-	// Multi-turn resume: on a resume turn use the prior session id; on a fresh
-	// turn mint one (--session-id) so it can be surfaced (claude_code_session_id
-	// below) and resumed next turn. Same capture-and-resume contract as pi.
+	// Mint a fresh session id only when NOT resuming (avoid burning an id on a
+	// resume turn). argv SHAPE + which id the turn runs under are owned by the
+	// unit-tested builder — see buildClaudeStructuredArgs / TestBuildClaudeStructuredArgs.
 	resumeSessionID := strings.TrimSpace(claudeResumeSessionIDFromStructuredOptions(opts))
-	sessionID := resumeSessionID
-	if resumeSessionID != "" {
-		args = append(args, "--resume", resumeSessionID)
-	} else {
-		sessionID = newClaudeNativeSessionID()
-		args = append(args, "--session-id", sessionID)
+	freshSessionID := ""
+	if resumeSessionID == "" {
+		freshSessionID = newClaudeNativeSessionID()
 	}
+	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, allowedTools, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
 
 	if workingDir != "" {
-		args = append(args, "--add-dir", workingDir)
 		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 			// Project skills to <workdir>/.claude/skills — claude discovers them
-			// natively from the working dir, same as the tmux path.
+			// natively from the working dir, same as the tmux path. (Disk
+			// side-effect; --add-dir is added by the builder.)
 			_ = c.ProjectSkills(workingDir, skills)
 		}
 	}

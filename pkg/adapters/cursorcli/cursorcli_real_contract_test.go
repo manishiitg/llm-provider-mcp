@@ -412,7 +412,7 @@ func TestCursorCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 	_ = drainCursorStream(streamChan)
 }
 
-func TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+func TestCursorCLIRealFinalExtractionFromTmuxAgentJudgeE2E(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
@@ -446,7 +446,7 @@ func TestCursorCLIRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 	}
 	_ = drainCursorStream(streamChan)
 
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+	testcontracts.AssertAgentJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
 		Provider:   "cursor-cli",
 		TmuxScreen: pane,
 		Extracted:  content,

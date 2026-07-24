@@ -776,7 +776,7 @@ func TestExtractLatestUnmarkedAssistantResponseSkipsTrailingToolBlock(t *testing
 	)
 }
 
-func TestClaudeFinalExtractionVertexJudgeE2E(t *testing.T) {
+func TestClaudeFinalExtractionAgentJudgeE2E(t *testing.T) {
 	pane := `
 ⏺ Here's the full summary:
   - done
@@ -794,7 +794,7 @@ func TestClaudeFinalExtractionVertexJudgeE2E(t *testing.T) {
 	if !ok {
 		t.Fatal("extractLatestUnmarkedAssistantResponse ok = false, want true")
 	}
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+	testcontracts.AssertAgentJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
 		Provider:   "claude-code",
 		TmuxScreen: pane,
 		Extracted:  got,

@@ -107,48 +107,18 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	}
 
 	mcpConfigSet := strings.TrimSpace(piMCPConfigFromOptions(opts)) != ""
-	args := []string{"--print", "--mode", "json"}
 
-	// Multi-turn session continuity: pi persists a session under --session-id
-	// ("creating it if missing"), the same mechanism the tmux path uses. On a
-	// resume turn the caller supplies the prior turn's id (via
+	// Session id: on a resume turn the caller supplies the prior turn's id (via
 	// MetadataKeyResumeSessionID); on a fresh turn we mint one so it can be
-	// surfaced (pi_session_id below) and resumed next turn. Without this,
-	// structured pi started a brand-new session every turn and lost all prior
-	// context — found live: turn 2 hallucinated instead of recalling turn 1.
+	// surfaced (pi_session_id below) and resumed next turn. The full session-
+	// continuity / containment rationale now lives on buildPiStructuredArgs.
 	sessionID := strings.TrimSpace(piResumeSessionIDFromOptions(opts))
 	if sessionID == "" {
 		sessionID = generatePiNativeSessionID()
 	}
-	args = append(args, "--session-id", sessionID)
-	if piBridgeOnlyToolsFromOptions(opts) {
-		// --no-builtin-tools disables pi's built-in bash/edit/write tools
-		// SPECIFICALLY while leaving extension/custom tools (the MCP adapter)
-		// enabled — the correct semantic flag, and what the tmux path actually
-		// uses (picli_interactive_adapter.go). Verified live it is NOT
-		// sufficient alone, though: --no-builtin-tools also suppresses default
-		// MCP extension auto-discovery (undocumented interaction) — a manual
-		// repro with --no-builtin-tools alone showed the model's own tool
-		// list as "(none)", MCP included. Adding an explicit -e
-		// <mcp-extension> alongside it restores exactly the MCP tool (and
-		// nothing native) — reproduced directly against the real CLI before
-		// changing this code. (An earlier, wrong attempt used --no-extensions
-		// instead of --no-builtin-tools: that broke the bridge outright by
-		// stripping ALL extensions; a later attempt without re-adding -e broke
-		// containment the other way, since builtins alone don't need -e to
-		// come back but the MCP path apparently does.)
-		args = append(args, "--no-builtin-tools")
-		if mcpConfigSet {
-			args = append(args, "-e", piMCPExtensionFromOptions(opts))
-		}
-	}
-	if workingDir != "" {
-		// Pi treats a dynamic temp workspace as untrusted by default and
-		// silently ignores project-local .pi resources (including the
-		// .pi/mcp.json just written above) without this — same rationale as
-		// the tmux path's --approve.
-		args = append(args, "--approve")
-	}
+	// Skill projection is a disk side-effect; do it first, then hand the
+	// resolved dir to the (unit-tested) argv builder.
+	skillDir := ""
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 && workingDir != "" {
 		// Was completely unwired until now — the tmux path projects skills to
 		// disk and passes --skill <dir>; structured mode silently dropped them
@@ -156,8 +126,9 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		if err := p.ProjectSkills(workingDir, skills); err != nil {
 			return nil, fmt.Errorf("pi project skills: %w", err)
 		}
-		args = append(args, "--skill", piProjectedSkillsPath(workingDir))
+		skillDir = piProjectedSkillsPath(workingDir)
 	}
+	args := buildPiStructuredArgs(sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

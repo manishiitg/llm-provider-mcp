@@ -571,7 +571,7 @@ func TestClaudeCodeTmuxIntegrationHaikuPersistentInteractiveMultiTurn(t *testing
 	}
 }
 
-func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
+func TestClaudeCodeTmuxRealFinalExtractionFromTmuxAgentJudgeE2E(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
 	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
@@ -612,7 +612,7 @@ func TestClaudeCodeTmuxRealFinalExtractionFromTmuxVertexJudgeE2E(t *testing.T) {
 		t.Fatalf("capture Claude Code pane: %v", err)
 	}
 
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+	testcontracts.AssertAgentJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
 		Provider:   "claude-code",
 		TmuxScreen: pane,
 		Extracted:  content,

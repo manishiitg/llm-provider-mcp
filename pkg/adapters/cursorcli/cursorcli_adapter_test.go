@@ -1737,7 +1737,7 @@ func TestParseCursorResponseDropsToolTranscriptAndUserHeader(t *testing.T) {
 	)
 }
 
-func TestCursorFinalExtractionVertexJudgeE2E(t *testing.T) {
+func TestCursorFinalExtractionAgentJudgeE2E(t *testing.T) {
 	baseline := `  Cursor Agent
   v2026.05.20-2b5dd59
 
@@ -1767,7 +1767,7 @@ func TestCursorFinalExtractionVertexJudgeE2E(t *testing.T) {
   → Add a follow-up`
 
 	got := parseCursorInteractiveResponse(captured, baseline, "which workflows are there", nil)
-	testcontracts.AssertVertexJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
+	testcontracts.AssertAgentJudgesFinalExtraction(t, testcontracts.FinalExtractionJudgeCase{
 		Provider:   "cursor-cli",
 		TmuxScreen: captured,
 		Extracted:  got,

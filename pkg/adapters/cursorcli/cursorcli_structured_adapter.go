@@ -102,31 +102,19 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
 	}
 
-	args := []string{
-		"--print",
-		"--output-format", "stream-json",
-		"--stream-partial-output",
-		"--trust",
-		"--force",
-	}
-
+	// Decide the argv-affecting values here; the SHAPE is assembled by the
+	// unit-tested builder below (buildCursorStructuredArgs). Disk side-effects
+	// (.cursor/mcp.json, skill projection) stay in this function.
 	workingDir := cursorWorkingDirFromOptions(opts)
-	if workingDir != "" {
-		args = append(args, "--workspace", workingDir)
-	}
-
 	modelToUse := resolveCursorCLIModelID(c.modelID)
+	mode := ""
+	sandbox := ""
+	approveMCPs := false
+	resumeID := ""
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCursorModel].(string); ok && strings.TrimSpace(model) != "" {
 			modelToUse = resolveCursorCLIModelID(model)
 		}
-	}
-	if modelToUse != "" {
-		args = append(args, "--model", modelToUse)
-	}
-
-	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		mode := ""
 		if m, ok := opts.Metadata.Custom[MetadataKeyMode].(string); ok {
 			mode = strings.TrimSpace(m)
 		}
@@ -135,25 +123,21 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		// WithCursorDenyBuiltinTools), structured mode has no hook mechanism to
 		// install before a one-shot process launch. "--mode ask" is cursor's own
 		// containment for this case: it refuses natural-language write requests
-		// outright rather than executing them, so a native write attempt fails
-		// instead of silently succeeding. Only applied when the caller hasn't
-		// already picked an explicit --mode.
+		// outright rather than executing them. Only applied when the caller
+		// hasn't already picked an explicit --mode.
 		if mode == "" {
 			if deny, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && deny {
 				mode = "ask"
 			}
 		}
-		if mode != "" {
-			args = append(args, "--mode", mode)
-		}
-		if sandbox, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(sandbox) != "" {
-			args = append(args, "--sandbox", strings.TrimSpace(sandbox))
+		if s, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(s) != "" {
+			sandbox = strings.TrimSpace(s)
 		}
 		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
-			args = append(args, "--approve-mcps")
+			approveMCPs = true
 		}
-		if resumeID, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(resumeID) != "" {
-			args = append(args, "--resume", strings.TrimSpace(resumeID))
+		if rid, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(rid) != "" {
+			resumeID = strings.TrimSpace(rid)
 		}
 	}
 
@@ -183,7 +167,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 	}
 
-	args = append(args, prompt)
+	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, resumeID, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

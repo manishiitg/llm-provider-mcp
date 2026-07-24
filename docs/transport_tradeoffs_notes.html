@@ -764,7 +764,7 @@
           <tr>
             <th>What's actually built today</th>
             <td>All five providers, extensively — keep-alive, resume, steer, message modes</td>
-            <td>Reserved in the contract layer, unused as a live transport</td>
+            <td>Built + real-CLI e2e on all four providers (launch, token usage, tool streaming, MCP bridge, bridge-only, native <code>--resume</code>); not yet the production default</td>
             <td>Not integrated into the coding-agent path at all</td>
           </tr>
         </tbody>
@@ -1051,6 +1051,7 @@
     <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">Scoped to what a one-shot transport needs to be safe for its intended surface (unattended workflow steps) — a different shape, not a smaller tmux:</p>
     <ul class="p0list">
       <li><b>fresh_launch_structured</b> — real CLI launch in structured mode, real text response</li>
+      <li><b>multi_turn_resume_structured</b> — turn 2 recalls turn 1 via the CLI's own native session store, NOT a full-transcript resend: <code>codex exec resume &lt;id&gt;</code>, <code>cursor --resume &lt;id&gt;</code>, <code>pi --session-id &lt;id&gt;</code>, <code>claude --resume &lt;id&gt;</code>. Capture-on-fresh, resume-on-next; argv shape is unit-pinned per adapter (see §Test layer policy)</li>
       <li><b>token_usage_structured</b> — result/finish events produce non-zero, correctly-attributed token counts</li>
       <li><b>tool_call_streaming_structured</b> — tool calls stream as distinct start/end chunks, not buried in text</li>
       <li><b>mcp_bridge_structured</b> — a real MCP bridge tool is callable under this transport too</li>
@@ -1097,18 +1098,18 @@
           </tr>
           <tr>
             <td>Claude Code</td>
-            <td class="center"><span class="pill-status todo">not started</span></td>
-            <td class="center"><span class="pill-status todo">—</span></td>
-            <td class="center"><span class="pill-status todo">—</span></td>
-            <td class="center"><span class="pill-status todo">—</span></td>
-            <td class="center"><span class="pill-status todo">—</span></td>
-            <td class="center"><span class="pill-status todo">—</span></td>
+            <td class="center"><span class="pill-status proven">proven</span></td>
+            <td class="center"><span class="pill-status proven">proven</span></td>
+            <td class="center"><span class="pill-status proven">proven</span></td>
+            <td class="center"><span class="pill-status proven">proven</span></td>
+            <td class="center"><span class="pill-status proven">proven</span></td>
+            <td class="center"><span class="pill-status partial">shutdown wired; error path untested</span></td>
           </tr>
         </tbody>
       </table>
     </div>
     <p style="margin-top:14px;">Cursor's revival recovered a previously-deleted implementation from git history, rebuilt against current code, re-proven live. One real gap found and fixed: <code>WithDenyBuiltinTools</code> wasn't wired to anything in the structured path — mapped to <code>--mode ask</code>, proven with a real bridge-call-succeeds-while-native-write-blocked test.</p>
-    <p>Codex, Pi, Claude Code are next in that order. Claude Code needs the most new code — entire prior structured adapter was deleted — but its <code>--input-format=stream-json</code> flag may support genuinely persistent bidirectional streaming, the strongest possible answer to the resume-cost question in §Pricing.</p>
+    <p><strong>All four providers now have a working structured lane</strong> — Codex, Pi, then Claude Code (built fresh; its entire prior structured adapter had been deleted). Cross-cutting additions since: <strong>native multi-turn resume on every provider</strong> (<code>codex exec resume</code> / <code>cursor --resume</code> / <code>pi --session-id</code> / <code>claude --resume</code>), each argv shape pinned by a fast per-adapter unit test (see §Test layer policy); skills projected to disk on all four; and Claude's bridge-only containment via <code>--disallowedTools</code> (a hard denylist, since <code>--dangerously-skip-permissions</code> overrides the <code>--allowedTools</code> whitelist). Claude's <code>--input-format=stream-json</code> may additionally support genuinely persistent bidirectional streaming — the strongest possible answer to the resume-cost question in §Pricing — still unexplored.</p>
 
     <h3>Codex: what building it live found</h3>
     <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">The design doc's event examples were wrong, not just stale — real shape (verified live): <code>thread.started</code> → <code>turn.started</code> → <code>item.started</code>/<code>item.completed</code> → <code>turn.completed</code>. Two real bugs found by running it:</p>
@@ -1146,8 +1147,8 @@
         <tbody>
           <tr>
             <th><code>multi-llm-provider-go</code><br><small>adapter layer</small></th>
-            <td>Does the adapter correctly drive the <em>real CLI process</em></td>
-            <td>Every bug found here: Cursor's stream-channel-never-closed, Codex's MCP JSON-shape mismatch, Pi's <code>--no-builtin-tools</code>/<code>-e</code> interaction. All "does this Go code correctly talk to this binary."</td>
+            <td>Does the adapter correctly drive the <em>real CLI process</em> — including the exact argv it builds</td>
+            <td>Every bug found here: Cursor's stream-channel-never-closed, Codex's MCP JSON-shape mismatch, Pi's <code>--no-builtin-tools</code>/<code>-e</code> interaction. All "does this Go code correctly talk to this binary." The native-<code>--resume</code> argv is additionally guarded by fast deterministic <em>arg-shape</em> tests (<code>buildCodexStructuredArgs</code> et al.) that pin the resume-vs-fresh ordering — e.g. Codex's global <code>--profile</code>/<code>-c sandbox</code> must precede <code>exec resume</code> — so a refactor breaks in ~1s, not 90 minutes into the gated e2e.</td>
           </tr>
           <tr>
             <th><code>mcpagent</code><br><small>library / orchestration layer</small></th>
@@ -1163,6 +1164,11 @@
       </table>
     </div>
     <p style="margin-top:14px;">Concretely: <code>mcpagent</code> didn't expose structured transport to its own callers at all until closed — thin re-exports plus one real e2e (<code>TestStructuredTransportSystemPromptSurvivesNewAgent</code>) is what actually regression-guards <code>57b4dd9</code> going forward, not anything at the adapter layer.</p>
+
+    <div class="callout" style="margin-top:18px;">
+      <p class="mark">Judging output quality: agent sign-off, not an external LLM judge</p>
+      <p>Final-response <em>extraction</em> quality ("is this the clean answer, or did tool chrome leak in?") is a semantic call a string assertion can't make. It used to be scored by a Gemini/Vertex judge — which meant a real test needed <code>GEMINI_API_KEY</code> to run at all, and failed hard without it. Now it routes through <code>agentreview</code>: the real extraction is recorded to a committed JSON, and the agent running the tests reads it against the extraction rubric and signs off on the current fingerprint. Same semantic judgment, <strong>no API key, no network, verdict committed to the repo</strong> — and because a fixture extraction is deterministic, one sign-off persists until the parser's output actually changes.</p>
+    </div>
 
     <div class="callout" style="margin-top:18px;">
       <p class="mark">A fourth thing this exposed: checkouts drift</p>
