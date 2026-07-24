@@ -333,7 +333,17 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	t.Setenv(EnvPiInteractiveRetentionSeconds, "1")
+	// A bounded (non-persistent) session's tmux teardown is scheduled on the
+	// SHARED llmtypes.TmuxKillDelay, deliberately INDEPENDENT of the display
+	// retention window — see piBoundedCleanupDelay and its dedicated guard
+	// TestPiBoundedCleanupUsesSharedTmuxKillDelay, which asserts exactly that
+	// separation. Setting the retention env therefore does NOT speed this up,
+	// so the wait below must exceed TmuxKillDelay rather than assume retention
+	// controls it. (This test previously set retention=1s and waited only 15s
+	// against a 30s kill delay, so it could never pass — a stale assertion left
+	// behind when bounded cleanup moved onto the shared delay, not a product
+	// bug.) Derived from the constant so the two can't drift apart again.
+	boundedCleanupWait := llmtypes.TmuxKillDelay + 15*time.Second
 	bounded, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply exactly: pi bounded ok"),
 	}, WithWorkingDir(t.TempDir()))
@@ -347,8 +357,8 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 	if !piTmuxSessionExists(ctx, boundedHandle.TmuxSession) {
 		t.Fatalf("bounded tmux session %s should be retained immediately after response", boundedHandle.TmuxSession)
 	}
-	if !waitForPiTmuxSessionGone(ctx, boundedHandle.TmuxSession, 15*time.Second) {
-		t.Fatalf("bounded tmux session %s was not cleaned up after retention", boundedHandle.TmuxSession)
+	if !waitForPiTmuxSessionGone(ctx, boundedHandle.TmuxSession, boundedCleanupWait) {
+		t.Fatalf("bounded tmux session %s was not cleaned up within %s (shared TmuxKillDelay %s)", boundedHandle.TmuxSession, boundedCleanupWait, llmtypes.TmuxKillDelay)
 	}
 
 	ownerSessionID := "pi-real-cleanup-" + piRandomHex(4)
