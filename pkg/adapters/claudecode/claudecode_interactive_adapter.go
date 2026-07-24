@@ -228,6 +228,14 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	for _, opt := range options {
 		opt(opts)
 	}
+
+	// Opt-in structured/JSON transport: `claude -p --output-format stream-json`,
+	// per-turn and one-shot (no tmux). tmux stays the default.
+	if opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
+			return c.generateContentStructured(ctx, messages, opts)
+		}
+	}
 	// Defensive backstop for direct adapter callers that bypass the
 	// orchestrator's image-content pre-processing. In practice, callers
 	// running through mcp-agent-builder-go funnel CLI image input as a

@@ -22,6 +22,10 @@ const (
 	MetadataKeyInteractiveSessionID       = "claude_code_interactive_session_id"
 	MetadataKeyPersistentInteractive      = "claude_code_persistent_interactive"
 	MetadataKeyWorkingDir                 = "claude_code_working_dir"
+	// MetadataKeyStructuredTransport selects `claude -p --output-format
+	// stream-json` (per-turn, one-shot, no tmux) instead of the tmux
+	// interactive transport (tmux stays the default).
+	MetadataKeyStructuredTransport = "claude_code_structured_transport"
 	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
 	// flag for writing the per-session system prompt to .claude/rules/
 	// as a markdown file the CLI auto-loads. Default off because the
@@ -172,6 +176,16 @@ func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyResumeSessionID] = sessionID
+	}
+}
+
+// WithClaudeStructuredTransport selects `claude -p --output-format stream-json`
+// (per-turn, one-shot, no tmux) instead of the tmux interactive transport. See
+// MetadataKeyStructuredTransport for when to use this.
+func WithClaudeStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
 	}
 }
 
