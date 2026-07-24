@@ -1468,8 +1468,27 @@ func writeCursorVisibleDraftToTmux(ctx context.Context, sessionName, message str
 // happens when the follow-ups menu, or any other modal overlay, swallows the
 // first Enter). It returns an error when the draft remains visible, so callers
 // never report a tmux command acknowledgement as a successful CLI submission.
+//
+// One specific overlay gets its own handling: the "switch to agent mode?"
+// prompt (hasCursorModeSwitchPrompt) that Cursor can offer when its native
+// tools are blocked (WithDenyBuiltinTools / bridge-only mode). It renders its
+// own approve/reject choice in place of the composer, so plain Enter can
+// never resolve it — worse, approving it would defeat this session's
+// bridge-only containment. The response-WAITING loop already rejects it with
+// "n" (sendCursorControlIfVisible(..., hasCursorModeSwitchPrompt, "n")) if it
+// appears after a turn is underway; this loop runs BEFORE that one, so a copy
+// of the same rejection is needed here too, or a mode-switch prompt appearing
+// during submission itself blind-retries Enter against it forever and times
+// out with exactly this function's error — reproduced in production
+// ("Cursor input remained in the prompt after submit retry" on cursor-cli/
+// grok-4.5, 2026-07-24, in a bridge-only family-server session). Not
+// live-reproduced from a clean isolated test (three attempts to force a real
+// tool-denial into offering this prompt did not trigger it — the denial hook
+// worked, but no escalation UI appeared), but the gap itself is objective:
+// this exact overlay is demonstrably unhandled on this specific path while
+// already handled on the sibling path, for the same reason it fails here.
 func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) error {
-	deadline, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	deadline, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	// Verify-then-recover: return as soon as the draft leaves the input field
 	// (checked immediately, then every 50ms — the old single 150ms-delayed probe
@@ -1481,13 +1500,31 @@ func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string
 	defer ticker.Stop()
 	started := time.Now()
 	recovered := false
+	var lastModeSwitchRejectAt time.Time
 	for {
 		captured, err := captureCursorPane(deadline, sessionName)
 		if err == nil {
 			if !cursorPaneShowsPromptDraft(captured, message) {
 				return nil
 			}
-			if !recovered && time.Since(started) >= recoveryGrace {
+			if hasCursorModeSwitchPrompt(captured) {
+				// Reject at most once a second (matches the sibling
+				// response-waiting loop's own re-check cadence) rather than on
+				// every 50ms tick, since the reject keystroke itself needs a
+				// moment to land and the prompt to clear.
+				if lastModeSwitchRejectAt.IsZero() || time.Since(lastModeSwitchRejectAt) >= time.Second {
+					lastModeSwitchRejectAt = time.Now()
+					if _, err := sendCursorControlIfVisible(deadline, sessionName, "cursor-mode-switch-reject-submit", hasCursorModeSwitchPrompt, "n"); err != nil {
+						return fmt.Errorf("failed to reject Cursor mode-switch prompt during submit: %w", err)
+					}
+					// The original message is still pending, not yet submitted
+					// as a real chat turn — give the post-reject recovery-Enter
+					// a full fresh grace window instead of racing whatever was
+					// left of the original one.
+					started = time.Now()
+					recovered = false
+				}
+			} else if !recovered && time.Since(started) >= recoveryGrace {
 				recovered = true
 				if err := runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 					return fmt.Errorf("failed to retry Cursor input submission: %w", err)
