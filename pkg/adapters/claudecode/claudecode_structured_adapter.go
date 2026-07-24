@@ -36,14 +36,45 @@ type claudeStreamMessage struct {
 }
 
 type claudeStreamContentBlock struct {
-	Type string `json:"type"` // "text" | "tool_use" | ...
+	Type string `json:"type"` // "text" | "tool_use" | "tool_result"
 	Text string `json:"text,omitempty"`
-	Name string `json:"name,omitempty"` // tool_use name
+	// tool_use fields (assistant events).
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+	// tool_result fields (user events) — Claude's structured stream reports a
+	// completed tool call as a subsequent "user"-role event carrying one of
+	// these per tool_use_id (verified live against claude-code 2026.07.23).
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// claudeToolResultText renders a tool_result block's content as plain text.
+// Claude's structured stream reports it as a plain JSON string in every case
+// observed live; a content-block array is handled defensively since that is
+// the general Anthropic Messages API shape for a tool_result.
+func claudeToolResultText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		var b strings.Builder
+		for _, blk := range blocks {
+			b.WriteString(blk.Text)
+		}
+		return b.String()
+	}
+	return string(raw)
 }
 
 type claudeStreamUsage struct {
-	InputTokens         int `json:"input_tokens"`
-	OutputTokens        int `json:"output_tokens"`
+	InputTokens          int `json:"input_tokens"`
+	OutputTokens         int `json:"output_tokens"`
 	CacheReadInputTokens int `json:"cache_read_input_tokens"`
 }
 
@@ -156,8 +187,20 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	var finalText strings.Builder
 	var resultText string
+	// totalUsage is fed ONLY from the terminal result event's usage, which
+	// Anthropic documents as the per-run cumulative total — NOT summed with
+	// each intermediate assistant event's own usage. Verified live: summing
+	// both roughly doubled input/cache token counts (which dominate real
+	// cost) — e.g. a real capture showed assistant-event usages of
+	// input=2+2=4 and cache_read=23591+37449=61040, each EXACTLY matching the
+	// terminal result's own input=4/cache_read=61040 — proving the result
+	// event already IS the total, not a delta to add on top.
+	// assistantUsageFallback is a safety net for the rare case a result event
+	// carries no usage at all.
 	var totalUsage llmtypes.Usage
+	var assistantUsageFallback llmtypes.Usage
 	sawResult := false
+	resultIsError := false
 	scannerDone := make(chan struct{})
 
 	go func() {
@@ -185,15 +228,42 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
 						}
 						if block.Type == "tool_use" && block.Name != "" {
-							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: block.Name})
+							emitChunk(llmtypes.StreamChunk{
+								Type:       llmtypes.StreamChunkTypeToolCallStart,
+								ToolName:   block.Name,
+								ToolCallID: block.ID,
+							})
 						}
 					}
 					if ev.Message.Usage != nil {
-						accumulateClaudeUsage(&totalUsage, ev.Message.Usage)
+						accumulateClaudeUsage(&assistantUsageFallback, ev.Message.Usage)
+					}
+				}
+			case "user":
+				// The completion side of a tool call's lifecycle: Claude's
+				// structured stream reports a finished tool call as a
+				// subsequent "user"-role event carrying a tool_result block
+				// keyed by tool_use_id — verified live. Without this, every
+				// structured tool call streamed a Start with no matching End.
+				if ev.Message != nil {
+					for _, block := range ev.Message.Content {
+						if block.Type != "tool_result" || block.ToolUseID == "" {
+							continue
+						}
+						result := claudeToolResultText(block.Content)
+						if block.IsError {
+							result = "[ERROR] " + result
+						}
+						emitChunk(llmtypes.StreamChunk{
+							Type:       llmtypes.StreamChunkTypeToolCallEnd,
+							ToolCallID: block.ToolUseID,
+							ToolResult: result,
+						})
 					}
 				}
 			case "result":
 				sawResult = true
+				resultIsError = ev.IsError
 				if strings.TrimSpace(ev.Result) != "" {
 					resultText = ev.Result
 				}
@@ -215,6 +285,20 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			return nil, fmt.Errorf("claude run failed: %w: %s", waitErr, stderrStr)
 		}
 		return nil, fmt.Errorf("claude run failed: %w", waitErr)
+	}
+	// A "result" event with is_error=true is a genuine semantic failure (e.g.
+	// an API error surfaced as the final message) — it must not be reported
+	// as a successful StopReason:"stop" response. Checked regardless of
+	// waitErr/sawResult: the CLI can exit 0 while still reporting is_error.
+	if resultIsError {
+		msg := strings.TrimSpace(resultText)
+		if msg == "" {
+			msg = strings.TrimSpace(stderr.String())
+		}
+		return nil, fmt.Errorf("claude run reported an error result: %s", msg)
+	}
+	if totalUsage.TotalTokens == 0 {
+		totalUsage = assistantUsageFallback
 	}
 
 	content := strings.TrimSpace(resultText)
