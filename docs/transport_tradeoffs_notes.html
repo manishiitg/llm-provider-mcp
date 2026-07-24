@@ -643,7 +643,7 @@
       <div class="maprow">
         <div class="who">Generic shell execution</div>
         <span class="use bridge">MCP bridge</span>
-        <p class="why">The highest-value action to have a real audit trail on, and native extraction is unreliable everywhere (see §Debugging). <b>Non-negotiable for Codex</b> — its native exec can't be disabled, so bridge-routing is the only containment that exists at all.</p>
+        <p class="why">The highest-value action to have a real audit trail on, and native extraction is unreliable everywhere (see §Debugging). <b>For Codex</b>, bridge-routing is now genuinely enforceable: <code>--disable shell_tool</code> (+ the other native code-exec features) removes codex's built-in shell so, with only the bridge in the session, every shell action is forced through it (see §Codex containment — corrected).</p>
       </div>
     </div>
   </section>
@@ -969,8 +969,8 @@
           </tr>
           <tr>
             <th>Codex specifically</th>
-            <td>Its <code>functions.exec</code> tool cannot be disabled by any flag — going native here doesn't weaken the "no native writes" guarantee, it <strong>deletes</strong> it entirely</td>
-            <td>The only containment that exists for Codex at all — not a preference, a requirement</td>
+            <td><s>Its <code>functions.exec</code> cannot be disabled by any flag</s> — <strong>corrected (codex v0.145.0):</strong> <code>--disable shell_tool</code> DOES remove codex's native shell; with only the bridge in the session, codex is forced through it. The old claim held for an earlier codex, not the current one.</td>
+            <td>Enforceable containment: shell_tool disabled + a bridge-only MCP set. (Caveat: codex will use ANY other code-exec tool as an escape hatch, so the MCP set must be the bridge alone.)</td>
           </tr>
           <tr>
             <th>Latency / complexity</th>
@@ -1109,7 +1109,7 @@
       </table>
     </div>
     <p style="margin-top:14px;">Cursor's revival recovered a previously-deleted implementation from git history, rebuilt against current code, re-proven live. One real gap found and fixed: <code>WithDenyBuiltinTools</code> wasn't wired to anything in the structured path — mapped to <code>--mode ask</code>, proven with a real bridge-call-succeeds-while-native-write-blocked test.</p>
-    <p><strong>All four providers now have a working structured lane</strong> — Codex, Pi, then Claude Code (built fresh; its entire prior structured adapter had been deleted). Cross-cutting additions since: <strong>native multi-turn resume on every provider</strong> (<code>codex exec resume</code> / <code>cursor --resume</code> / <code>pi --session-id</code> / <code>claude --resume</code>), each argv shape pinned by a fast per-adapter unit test (see §Test layer policy); skills projected to disk on all four; and Claude's bridge-only containment via <code>--disallowedTools</code> (a hard denylist, since <code>--dangerously-skip-permissions</code> overrides the <code>--allowedTools</code> whitelist). Claude's <code>--input-format=stream-json</code> may additionally support genuinely persistent bidirectional streaming — the strongest possible answer to the resume-cost question in §Pricing — still unexplored.</p>
+    <p><strong>All four providers now have a working structured lane</strong> — Codex, Pi, then Claude Code (built fresh; its entire prior structured adapter had been deleted). Cross-cutting additions since: <strong>native multi-turn resume on every provider</strong> (<code>codex exec resume</code> / <code>cursor --resume</code> / <code>pi --session-id</code> / <code>claude --resume</code>), each argv shape pinned by a fast per-adapter unit test (see §Test layer policy); skills projected to disk on all four; Claude's bridge-only containment via <code>--disallowedTools</code> (a hard denylist, since <code>--dangerously-skip-permissions</code> overrides the <code>--allowedTools</code> whitelist); and <strong>Codex bridge-only containment via <code>--disable shell_tool</code></strong> in the structured path (it previously bypassed the bridge via native exec — this overturned the long-standing "codex's exec is unremovable" belief; verified against codex v0.145.0, and Codex now passes structured tool-failure recovery + give-up through the bridge). Claude's <code>--input-format=stream-json</code> may additionally support genuinely persistent bidirectional streaming — the strongest possible answer to the resume-cost question in §Pricing — still unexplored.</p>
 
     <h3>Codex: what building it live found</h3>
     <p class="wide" style="max-width:none;font-size:14.5px;color:var(--ink-dim);">The design doc's event examples were wrong, not just stale — real shape (verified live): <code>thread.started</code> → <code>turn.started</code> → <code>item.started</code>/<code>item.completed</code> → <code>turn.completed</code>. Two real bugs found by running it:</p>
