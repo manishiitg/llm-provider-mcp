@@ -36,6 +36,38 @@ type piAssistantEvent struct {
 	Content string `json:"content,omitempty"`
 }
 
+// piApplyAssistantEvent updates the accumulated turn-text buffer for one
+// assistantMessageEvent and returns any delta text to stream immediately.
+//
+// pi delimits each logical assistant text segment with its own
+// text_start/text_end pair, verified live against pi 0.80.10 — including a
+// captured turn with TWO separate text_start/text_end blocks (narration
+// before a tool call, then narration after it, both inside one
+// turn_start/turn_end pair). Before this, only text_delta was handled and the
+// buffer was reset solely at turn_end, so two genuinely separate assistant
+// messages within one turn would be concatenated with no separator at all —
+// e.g. "...about to read b.txt.The file b.txt contained...". A fresh
+// text_start now inserts a paragraph break when the buffer already holds a
+// prior segment; the very first segment of a turn (empty buffer) gets no
+// spurious separator.
+func piApplyAssistantEvent(buf *strings.Builder, evt *piAssistantEvent) (streamDelta string) {
+	if evt == nil {
+		return ""
+	}
+	switch evt.Type {
+	case "text_start":
+		if buf.Len() > 0 {
+			buf.WriteString("\n\n")
+		}
+	case "text_delta":
+		if evt.Delta != "" {
+			buf.WriteString(evt.Delta) // verbatim — never split/rejoin a token
+			return evt.Delta
+		}
+	}
+	return ""
+}
+
 type piJSONMessage struct {
 	Role  string       `json:"role,omitempty"`
 	Usage *piJSONUsage `json:"usage,omitempty"`
@@ -181,12 +213,8 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				if event.AssistantMessageEvt == nil {
 					continue
 				}
-				switch event.AssistantMessageEvt.Type {
-				case "text_delta":
-					if d := event.AssistantMessageEvt.Delta; d != "" {
-						turnTextBuf.WriteString(d) // verbatim — never split/rejoin a token
-						emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: d})
-					}
+				if d := piApplyAssistantEvent(&turnTextBuf, event.AssistantMessageEvt); d != "" {
+					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: d})
 				}
 				if event.Message != nil && event.Message.Usage != nil {
 					// pi reports a running total per response step, not a delta —
