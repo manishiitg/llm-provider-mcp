@@ -60,6 +60,13 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 	for _, opt := range options {
 		opt(opts)
 	}
+	if err := llmtypes.ValidateCLISecurityLaunch(
+		opts,
+		llmtypes.CLISecurityModeVerified,
+		llmtypes.CLISecurityModeIsolated,
+	); err != nil {
+		return nil, err
+	}
 
 	// Defensive backstop for direct adapter callers that bypass the
 	// orchestrator's image-content pre-processing. The app funnels CLI image

@@ -93,6 +93,49 @@ exit 0
 	}
 }
 
+func TestDismissCodexAdditionalSafetyChecksSelectsKeepWaiting(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "send-keys.log")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' "$FAKE_TMUX_CAPTURE"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	t.Setenv("FAKE_TMUX_CAPTURE", `Additional safety checks
+This request requires additional safety checks, which can take extra time. Hang tight or retry with a faster
+model for a quicker response, though it may be less capable of handling complex requests.
+
+› 1. Retry with a faster model
+  2. Keep waiting
+  3. Learn more`)
+
+	handled, err := dismissCodexAdditionalSafetyChecksSerialized(context.Background(), "codex-safety-checks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("visible additional-safety-checks modal was not handled")
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "send-keys -t codex-safety-checks Down C-m") {
+		t.Fatalf("send-keys log = %q", data)
+	}
+}
+
 func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 	adapter := NewCodexCLIAdapter("", "gpt-5.5", &MockLogger{})
 	meta, err := adapter.GetModelMetadata("gpt-5.5")
@@ -209,7 +252,7 @@ exit 0
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMUX_TEST_ARGS", argsPath)
 
-	if err := startCodexTmuxSession(context.Background(), "history-session", []string{"codex"}, ""); err != nil {
+	if err := startCodexTmuxSession(context.Background(), "history-session", []string{"codex"}, "", nil, nil); err != nil {
 		t.Fatalf("startCodexTmuxSession returned error: %v", err)
 	}
 	args, err := os.ReadFile(argsPath)
@@ -615,7 +658,7 @@ func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMUX_TEST_ARGS", tmuxArgsPath)
-	if err := startCodexTmuxSession(context.Background(), "large-mcp-profile", args, ""); err != nil {
+	if err := startCodexTmuxSession(context.Background(), "large-mcp-profile", args, "", nil, nil); err != nil {
 		t.Fatalf("startCodexTmuxSession with production-sized MCP profile: %v", err)
 	}
 	launched, err := os.ReadFile(tmuxArgsPath)
@@ -632,6 +675,60 @@ func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T)
 	cleanup()
 	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
 		t.Fatalf("generated MCP profile still exists after cleanup: %v", err)
+	}
+}
+
+func TestWriteCodexSessionMCPProfileUsesIsolatedHome(t *testing.T) {
+	privateHome := t.TempDir()
+	mcpJSON := `{"api-bridge":{"command":"/usr/bin/true"}}`
+	policy := &llmtypes.CLISecurityPolicy{
+		Mode:        llmtypes.CLISecurityModeIsolated,
+		Provider:    "codex-cli",
+		PrivateHome: privateHome,
+	}
+	profileName, cleanup, err := writeCodexSessionMCPProfile(mcpJSON, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	profilePath := filepath.Join(privateHome, ".codex", profileName+".config.toml")
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatalf("isolated MCP profile was not written under private home: %v", err)
+	}
+}
+
+func TestStrictCodexMCPRuntimePathsAllowsOnlyExecutableAPIBridge(t *testing.T) {
+	bridge := filepath.Join(t.TempDir(), "mcpbridge")
+	if err := os.WriteFile(bridge, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	opts := &llmtypes.CallOptions{
+		CLISecurity: &llmtypes.CLISecurityPolicy{
+			Mode:     llmtypes.CLISecurityModeVerified,
+			Provider: "codex-cli",
+		},
+		Metadata: &llmtypes.Metadata{Custom: map[string]interface{}{
+			MetadataKeyMCPServers: fmt.Sprintf(`{"api-bridge":{"command":%q}}`, bridge),
+		}},
+	}
+	paths, err := strictCodexMCPRuntimePaths(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedBridge, err := filepath.EvalSymlinks(bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != resolvedBridge {
+		t.Fatalf("runtime paths = %v, want [%s]", paths, resolvedBridge)
+	}
+
+	opts.Metadata.Custom[MetadataKeyMCPServers] = fmt.Sprintf(
+		`{"api-bridge":{"command":%q},"untrusted":{"command":"/usr/bin/true"}}`,
+		bridge,
+	)
+	if _, err := strictCodexMCPRuntimePaths(opts); err == nil {
+		t.Fatal("strict MCP runtime accepted an additional MCP command")
 	}
 }
 
@@ -1401,6 +1498,40 @@ func TestParseCodexInteractiveResponseIgnoresRateLimitReminderModal(t *testing.T
 
 	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
 	want := "ACK_E2E_NOTE_deadbeef"
+	if got != want {
+		t.Fatalf("parsed response = %q, want %q", got, want)
+	}
+	assertCodexNoInternalStatus(t, got)
+}
+
+func TestParseCodexInteractiveResponseIgnoresAdditionalSafetyChecksModal(t *testing.T) {
+	baseline := "Codex ready\n›"
+	captured := baseline + `
+› Reply exactly READY_TO_CONTINUE.
+
+• READY_TO_CONTINUE
+
+Additional safety checks
+This request requires additional safety checks, which can take extra time. Hang tight or retry with a faster
+model for a quicker response, though it may be less capable of handling complex requests.
+
+› 1. Retry with a faster model
+  2. Keep waiting
+  3. Learn more
+`
+
+	if !hasCodexAdditionalSafetyChecksModal(captured) {
+		t.Fatal("additional-safety-checks modal was not detected")
+	}
+	if hasCodexReadyPrompt(captured) {
+		t.Fatal("additional-safety-checks selection must not be treated as a ready prompt")
+	}
+	if got := selectedCodexAdditionalSafetyChecksOption(captured); got != 1 {
+		t.Fatalf("selected safety-check option = %d, want 1", got)
+	}
+
+	got := parseCodexInteractiveResponse(captured, baseline, "", nil)
+	want := "READY_TO_CONTINUE"
 	if got != want {
 		t.Fatalf("parsed response = %q, want %q", got, want)
 	}

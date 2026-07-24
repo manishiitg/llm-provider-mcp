@@ -217,6 +217,9 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	for _, opt := range options {
 		opt(opts)
 	}
+	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+		return nil, err
+	}
 	// Defensive backstop for direct adapter callers that bypass the
 	// orchestrator's image-content pre-processing. In practice, callers
 	// running through mcp-agent-builder-go funnel CLI image input as a

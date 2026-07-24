@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
@@ -69,6 +70,7 @@ type codexInteractiveSession struct {
 	// flag wasn't enabled for this session.
 	projectInstructionCleanup func()
 	workingDir                string
+	cliSecurityFingerprint    string
 	idleTimer                 *time.Timer
 	initErr                   error
 	createdAt                 time.Time
@@ -442,13 +444,15 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
+	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity)
 	session, created, ok := codexPersistentRegistry.GetOrCreate(ownerSessionID, func() *codexInteractiveSession {
 		session := &codexInteractiveSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: newCodexTmuxSessionName(),
-			workingDir:      workingDir,
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:         ownerSessionID,
+			tmuxSessionName:        newCodexTmuxSessionName(),
+			workingDir:             workingDir,
+			cliSecurityFingerprint: securityFingerprint,
+			createdAt:              now,
+			lastUsed:               now,
 		}
 		session.mu.Lock()
 		return session
@@ -467,6 +471,10 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		// per-session lock. Holding a pointer keeps the session valid even if a
 		// concurrent teardown removes it from the map (initErr guards that).
 		session.mu.Lock()
+		if session.cliSecurityFingerprint != securityFingerprint {
+			session.mu.Unlock()
+			return nil, false, errors.New("Codex session security policy changed; close the existing session before continuing")
+		}
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()
@@ -515,7 +523,23 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		_ = c.ProjectSkills(workingDir, attachedSkills)
 	}
 	c.logger.Debugf("codex interactive starting tmux owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
-	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
+	runtimeReadPaths := []string{systemPromptTempFile}
+	mcpRuntimePaths, err := strictCodexMCPRuntimePaths(opts)
+	if err != nil {
+		session.initErr = err
+		if systemPromptTempFile != "" {
+			_ = os.Remove(systemPromptTempFile)
+		}
+		if session.projectInstructionCleanup != nil {
+			session.projectInstructionCleanup()
+			session.projectInstructionCleanup = nil
+		}
+		session.mu.Unlock()
+		removeCodexPersistentSession(ownerSessionID, session)
+		return nil, false, err
+	}
+	runtimeReadPaths = append(runtimeReadPaths, mcpRuntimePaths...)
+	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths); err != nil {
 		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
@@ -565,7 +589,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	if strings.TrimSpace(mcpServersJSON) != "" && configuredProfile != "" {
 		return nil, "", nil, fmt.Errorf("codex CLI cannot combine an explicit profile %q with the AgentWorks session MCP profile", configuredProfile)
 	}
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON)
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, opts.CLISecurity)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -1185,7 +1209,14 @@ func codexWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 	return wd
 }
 
-func startCodexTmuxSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+func startCodexTmuxSession(
+	ctx context.Context,
+	sessionName string,
+	args []string,
+	workingDir string,
+	policy *llmtypes.CLISecurityPolicy,
+	runtimeReadPaths []string,
+) error {
 	if workingDir != "" {
 		// Pre-trust workingDir in ~/.codex/config.toml so codex skips
 		// its interactive "Do you trust the contents of this
@@ -1199,9 +1230,17 @@ func startCodexTmuxSession(ctx context.Context, sessionName string, args []strin
 		// case is the prompt appears and the in-tmux dismissCodexTrustPrompt
 		// (already wired into waitForCodexPrompt) handles it
 		// reactively.
-		preTrustCodexWorkingDir(workingDir)
+		if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
+			preTrustCodexWorkingDirAtHome(workingDir, policy.PrivateHome)
+		} else {
+			preTrustCodexWorkingDir(workingDir)
+		}
 	}
-	shellCommand := codexInteractiveShellCommand(args, workingDir)
+	shellCommand, cleanupSandbox, err := clisandbox.PrepareCodexCommand(policy, args, workingDir, runtimeReadPaths)
+	if err != nil {
+		return fmt.Errorf("prepare Codex CLI security sandbox: %w", err)
+	}
+	defer cleanupSandbox()
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
@@ -1243,18 +1282,22 @@ var preTrustCodexMu sync.Mutex
 // prompt if pre-trust fails. This is belt-and-suspenders, not a
 // replacement.
 func preTrustCodexWorkingDir(workingDir string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	preTrustCodexWorkingDirAtHome(workingDir, home)
+}
+
+func preTrustCodexWorkingDirAtHome(workingDir, home string) {
 	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
+	home = strings.TrimSpace(home)
+	if workingDir == "" || home == "" {
 		return
 	}
 	paths := []string{workingDir}
 	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil && resolved != workingDir {
 		paths = append(paths, resolved)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
 	}
 	configDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -1318,6 +1361,7 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 
 	dismissedTrustPrompt := false
 	dismissedRateReminder := false
+	dismissedAdditionalSafetyChecks := false
 	hookTrustDismissAttempts := 0
 	const maxHookTrustDismissAttempts = 6
 	var lastTerminalSnapshot string
@@ -1364,6 +1408,13 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 				}
 				continue
 			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedAdditionalSafetyChecks {
+					_ = dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured)
+					dismissedAdditionalSafetyChecks = true
+				}
+				continue
+			}
 			// A launch-time positional prompt is accepted once Codex shows active
 			// work, queued input, the echoed user prompt, or a completed answer.
 			// The last case covers very short turns that finish between captures.
@@ -1391,6 +1442,7 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 	defer ticker.Stop()
 	dismissedRateReminder := false
 	dismissedTrustPrompt := false
+	dismissedAdditionalSafetyChecks := false
 	// hookTrustDismissAttempts counts re-dismissal attempts rather
 	// than using a binary flag because codex's hook trust UI is a
 	// MULTI-STEP wizard: an initial 3-option menu, then an expanded
@@ -1458,6 +1510,14 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 				if !dismissedRateReminder {
 					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
 					dismissedRateReminder = true
+					lastActivityAt = time.Now()
+				}
+				continue
+			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedAdditionalSafetyChecks {
+					_ = dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured)
+					dismissedAdditionalSafetyChecks = true
 					lastActivityAt = time.Now()
 				}
 				continue
@@ -1567,6 +1627,12 @@ func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, basel
 		captured, err := captureCodexPane(deadline, sessionName)
 		if err == nil {
 			lastCapture = captured
+			// This modal is only shown after Codex has accepted the submitted
+			// request. Let the response watcher dismiss it after this broker
+			// transaction releases the session input lane.
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				return nil
+			}
 			// Historical Working/tool lines may already exist in baseline. They
 			// prove the CLI is active, not that this input moved. Require a pane
 			// transition after Enter before accepting activity as confirmation.
@@ -1625,6 +1691,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var dismissedRateReminder bool
+	var dismissedAdditionalSafetyChecks bool
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. Tracked at the top of every tick, independent of
 	// all the branch logic below, so a prompt-detection bug that keeps the loop
@@ -1686,6 +1753,16 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				if !dismissedRateReminder {
 					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
 					dismissedRateReminder = handled
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = stableCapture
+				continue
+			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedAdditionalSafetyChecks {
+					handled, _ := dismissCodexAdditionalSafetyChecksSerialized(ctx, sessionName)
+					dismissedAdditionalSafetyChecks = handled
 				}
 				sawActivity = true
 				idleSince = time.Time{}
@@ -2321,6 +2398,9 @@ func isCodexTUILine(line string) bool {
 	if isCodexRateLimitReminderLine(trimmed) {
 		return true
 	}
+	if isCodexAdditionalSafetyChecksLine(trimmed) {
+		return true
+	}
 	if line == "›" || line == ">" || line == "❯" || strings.HasPrefix(line, "› ") ||
 		strings.EqualFold(trimmed, "Codex") ||
 		(strings.Contains(lower, "codex") && strings.ContainsAny(line, "▐▛▜▝▘▌█")) {
@@ -2928,7 +3008,7 @@ func hasCodexExplicitCompletedMarker(captured string) bool {
 }
 
 func hasCodexPromptCandidate(captured string) bool {
-	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexQueuedInput(captured) {
+	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexAdditionalSafetyChecksModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -3110,6 +3190,27 @@ func isCodexRateLimitReminderLine(line string) bool {
 		strings.HasPrefix(lower, "3. keep current model") ||
 		strings.Contains(lower, "hide future rate limit reminders") ||
 		strings.Contains(lower, "press enter to confirm or esc to go back")
+}
+
+func hasCodexAdditionalSafetyChecksModal(captured string) bool {
+	tail := lastNCodexLines(stripCodexANSI(captured), 40)
+	lower := strings.ToLower(tail)
+	return strings.Contains(lower, "additional safety checks") &&
+		strings.Contains(lower, "retry with a faster model") &&
+		strings.Contains(lower, "keep waiting") &&
+		selectedCodexAdditionalSafetyChecksOption(tail) != 0
+}
+
+func isCodexAdditionalSafetyChecksLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "› "))
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "additional safety checks") ||
+		strings.Contains(lower, "retry with a faster model") ||
+		strings.HasPrefix(lower, "1. retry with a faster model") ||
+		strings.HasPrefix(lower, "2. keep waiting") ||
+		strings.HasPrefix(lower, "3. learn more") ||
+		strings.Contains(lower, "hang tight or retry with a faster") ||
+		strings.Contains(lower, "less capable of handling complex requests")
 }
 
 func dismissCodexTrustPrompt(ctx context.Context, sessionName, captured string) error {
@@ -3329,6 +3430,69 @@ func selectedCodexRateLimitReminderOption(captured string) int {
 			return 2
 		case strings.HasPrefix(option, "3."):
 			return 3
+		}
+	}
+	return 0
+}
+
+func dismissCodexAdditionalSafetyChecks(ctx context.Context, sessionName, captured string) error {
+	selected := selectedCodexAdditionalSafetyChecksOption(captured)
+	if selected < 1 || selected > 3 {
+		selected = 1
+	}
+	keys := make([]string, 0, 2)
+	switch selected {
+	case 1:
+		keys = append(keys, "Down")
+	case 3:
+		keys = append(keys, "Up")
+	}
+	keys = append(keys, "C-m")
+	args := []string{"send-keys", "-t", sessionName}
+	args = append(args, keys...)
+	return runCodexCommand(ctx, nil, "tmux", args...)
+}
+
+func dismissCodexAdditionalSafetyChecksSerialized(ctx context.Context, sessionName string) (bool, error) {
+	handled := false
+	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
+		SessionID: sessionName,
+		Source:    "codex-additional-safety-checks",
+		Priority:  tmuxinput.PriorityInterrupt,
+	}, func(ctx context.Context) error {
+		captured, err := captureCodexPane(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+		if !hasCodexAdditionalSafetyChecksModal(captured) {
+			return nil
+		}
+		if err := dismissCodexAdditionalSafetyChecks(ctx, sessionName, captured); err != nil {
+			return err
+		}
+		handled = true
+		return nil
+	})
+	return handled, err
+}
+
+func selectedCodexAdditionalSafetyChecksOption(captured string) int {
+	lines := strings.Split(stripCodexANSI(captured), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "› ") {
+			continue
+		}
+		option := strings.TrimSpace(strings.TrimPrefix(trimmed, "› "))
+		switch {
+		case strings.HasPrefix(option, "1."):
+			return 1
+		case strings.HasPrefix(option, "2."):
+			return 2
+		case strings.HasPrefix(option, "3."):
+			return 3
+		default:
+			return 0
 		}
 	}
 	return 0
