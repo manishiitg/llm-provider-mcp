@@ -56,6 +56,26 @@ const (
 	// (transcript tail for claude/codex/cursor, injected markers for pi). Required
 	// as P0 for any provider whose contract sets SupportsStructuredStreaming.
 	CertStructuredStreaming CodingAgentCertificationID = "structured_streaming"
+	// CertStreamNoHistoryReplay proves the structured stream emits only the
+	// CURRENT turn's output on the first turn of a FRESH process — never the
+	// conversation's accumulated history.
+	//
+	// Added after a real user-visible bug in the cursor adapter: its only defence
+	// against re-emitting old messages was an in-process map of already-returned
+	// blob IDs, checked against a store.db root that is CUMULATIVE across every
+	// turn of a chat. A server restart emptied that map while the transcript on
+	// disk still held every prior turn, so the first poll classified all of it as
+	// new and streamed the whole backlog — which a UI appending deltas rendered as
+	// the entire history of "thinking" text duplicated into the current reply.
+	//
+	// This is P0 because it is invisible to every other streaming test: those
+	// build the stream state and the transcript in the SAME process, in that
+	// order, which is precisely the one arrangement where an in-process map is
+	// correct. Only a transcript that PRE-DATES the process exposes it, so each
+	// provider must prove its turn boundary is derived from durable state (a
+	// wall-clock filter, an on-disk offset snapshot, or a primed dedup set)
+	// rather than from memory that a restart discards.
+	CertStreamNoHistoryReplay CodingAgentCertificationID = "stream_no_history_replay"
 	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
 	// in tmux mode, SIGINT for structured mode) interrupts the current turn
 	// WITHOUT corrupting the CLI's persisted chat state. The next launch
@@ -155,7 +175,7 @@ var codingAgentCapabilityCertifications = []struct {
 	{"ctrl-c state preserved", func(c CodingAgentProviderContract) bool { return c.HandlesCtrlCCleanExit }, []CodingAgentCertificationID{CertCtrlCStatePreserved}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
-	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, []CodingAgentCertificationID{CertStructuredStreaming}},
+	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{

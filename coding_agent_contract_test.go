@@ -365,7 +365,70 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertLifecyclePolicy,
 		CertPersistentCancelReuse,
 		CertStaleDraftCleanup,
+		// The no-history-replay behaviour IS proven for cursor, by
+		// TestCursorTranscriptStreamDoesNotReplayHistoryOnFreshProcess (plus a
+		// paired test that new text still streams) — cursor is the provider whose
+		// live bug prompted the certification, and that test fails if
+		// primeSeenBlobs() is removed. It cannot be REGISTERED here because
+		// TestCursorCLICertificationsUseRealE2EOnly requires every cursor cert to
+		// be a real cursor-agent run, and this proof is deterministic (synthetic
+		// store.db + an empty dedup map is the only way to simulate the restart
+		// that triggers the bug — a live run in a fresh workspace has no history
+		// to replay, which is exactly why the live streaming E2Es never caught
+		// it). Closing this gap means a real E2E that spans a process restart.
+		CertStreamNoHistoryReplay,
 	},
+	// Same shape as cursor: proven deterministically by
+	// TestPiMarkerOffsetDoesNotReplayHistoryOnFreshProcess (pi is structurally
+	// immune — its turn boundary is an on-disk marker-file size snapshot taken
+	// before the prompt is sent), but TestPiCLICertificationsUseRealE2EOnly
+	// requires a real Pi run for registration.
+	ProviderPiCLI: {
+		CertStreamNoHistoryReplay,
+	},
+	// Claude tails its JSONL with the same turnStart row filter as codex (see
+	// readClaudeTranscriptEventsSince, whose own doc notes it drops rows older
+	// than turnStart to avoid replay), so it is expected to be immune for the
+	// same reason — but nothing pins that down yet.
+	ProviderClaudeCode: {
+		CertStreamNoHistoryReplay,
+	},
+	// Codex IS proven deterministically by
+	// TestCodexTranscriptStreamDoesNotReplayHistoryOnFreshProcess (wall-clock
+	// row filter, so the boundary survives a restart). Listed as a gap rather
+	// than registered because this certification is real-E2E-only for every
+	// provider — see TestStreamNoHistoryReplayIsRealE2EOnly.
+	ProviderCodexCLI: {
+		CertStreamNoHistoryReplay,
+	},
+}
+
+// TestStreamNoHistoryReplayIsRealE2EOnly enforces that stream_no_history_replay
+// can only ever be REGISTERED on real-CLI evidence, for every provider —
+// including Claude Code and Codex, whose other certifications may still be
+// deterministic.
+//
+// The reason is specific to this contract: the bug it guards only manifests when
+// the transcript PRE-DATES the process, so a deterministic test has to synthesize
+// that state (a hand-built transcript plus an empty dedup map). That proves the
+// mechanism, and those tests exist and are kept — but a synthetic fixture cannot
+// prove the REAL CLI writes its transcript in the shape the fixture assumes.
+// Only a live run spanning a process restart does, which is exactly the coverage
+// the four live streaming E2Es lacked when this bug shipped.
+func TestStreamNoHistoryReplayIsRealE2EOnly(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		for _, cert := range CodingAgentProviderCertifications(contract.Provider) {
+			if cert.ID != CertStreamNoHistoryReplay {
+				continue
+			}
+			if !cert.RealE2E {
+				t.Errorf("%s: %s must be backed by a real CLI E2E spanning a process restart, "+
+					"not a deterministic fixture (got %#v). Keep the deterministic test as a "+
+					"regression guard and list the ID in knownCertificationGaps until the real "+
+					"E2E exists.", contract.Provider, cert.ID, cert)
+			}
+		}
+	}
 }
 
 // TestAllCodingAgentCapabilityClaimsHaveRegisteredCertification iterates every

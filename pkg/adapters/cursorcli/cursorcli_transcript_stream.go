@@ -65,12 +65,71 @@ type cursorTranscriptStreamState struct {
 
 func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID string) *cursorTranscriptStreamState {
 	_ = turnStart // baseline is "now" (real-turn start), tighter than turnStart which predates warmups
-	return &cursorTranscriptStreamState{
+	s := &cursorTranscriptStreamState{
 		workingDir: workingDir,
 		streamKey:  ownerSessionID + "\x00transcript-stream",
 		baseline:   time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
 		seenTool:   map[string]bool{},
 	}
+	s.primeSeenBlobs()
+	return s
+}
+
+// primeSeenBlobs records every message blob ALREADY on disk for this working dir
+// as "already returned", before the first poll can emit anything.
+//
+// Without this, the only thing standing between a caller and the entire chat
+// history is cursorReturnedBlobs — an in-process map. Cursor's store.db root is
+// cumulative across every turn of a chat, so on a fresh process (a server
+// restart, a new CLI invocation) that map starts empty while the transcript
+// still holds every prior turn's assistant text. The first poll then classifies
+// all of it as new and streams the whole backlog, which a UI appending deltas
+// renders as the entire history of "thinking" text duplicated into the current
+// reply. Found live in SparkQuill: 22 historical narration blobs replayed on the
+// first message after each restart.
+//
+// Priming is keyed on blob IDs, which are content-addressed (SHA256), so it is
+// safe to prime from EVERY store.db under this working dir rather than only the
+// freshest: any blob that already exists anywhere is by definition history, not
+// output from a turn that hasn't been submitted yet. That also makes this
+// correct by construction regardless of process lifetime, instead of depending
+// on a map surviving one.
+//
+// Deliberately NOT filtered by s.baseline: a brand-new turn's store.db may not
+// exist yet at this point, and an existing one's mtime can be stale under WAL,
+// so a baseline filter here would skip exactly the file whose history needs
+// suppressing. The pane-extraction path has always had the equivalent guard
+// (historicalAssistantTexts); this brings the store.db stream path in line.
+func (s *cursorTranscriptStreamState) primeSeenBlobs() {
+	for _, path := range allCursorStoreDBs(s.workingDir) {
+		// Discards the messages: the point is the side effect of recording their
+		// blob IDs against s.streamKey inside cursorReturnedBlobs.
+		_ = readCursorStoreDBMessages(path, s.streamKey)
+	}
+}
+
+// allCursorStoreDBs returns every store.db under this working dir's cursor chats
+// dir, unfiltered by mtime. Used only for dedup priming, where completeness
+// matters and freshness does not.
+func allCursorStoreDBs(workingDir string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	hash := workingDirHashForCursor(workingDir)
+	if hash == "" {
+		return nil
+	}
+	var out []string
+	_ = filepath.WalkDir(filepath.Join(home, ".cursor", "chats", hash),
+		func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
+				return nil
+			}
+			out = append(out, p)
+			return nil
+		})
+	return out
 }
 
 // freshestCursorStoreDBSince returns the newest store.db under this workingDir's
