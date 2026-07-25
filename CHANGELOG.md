@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Removed
+
+- **BREAKING:** Removed the Agy provider and adapter (`ProviderAgyCLI`,
+  `pkg/adapters/agycli`) entirely. Any caller constructing a model with this
+  provider will fail; there is no compatibility shim. If you depend on Agy,
+  pin to a commit before this change rather than upgrading.
+
 ### Changed
 
 - Updated the Vertex and Pi defaults to Gemini 3.6 Flash, added Gemini 3.5
