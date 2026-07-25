@@ -333,6 +333,20 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	if forcedComplete && strings.TrimSpace(content) == "" {
 		content = forcedCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	}
+	// The pane told us the turn ended, which it is reliable at. It is NOT
+	// reliable for the reply TEXT: a terminal hard-wraps, and a soft wrap is
+	// indistinguishable from a newline the model typed, so markdown structure
+	// arrives broken. cursor has already written the same reply unwrapped to its
+	// own store.db, so prefer that when it demonstrably holds this same message.
+	// See llmtypes.ReconcileFinalAnswer for why the pane is used as a checksum
+	// rather than simply replaced (store.db commits asynchronously, so it can
+	// still hold the PREVIOUS turn).
+	// Read cursor's own store.db transcript ONCE for this turn. It is needed
+	// twice — to recover the unwrapped reply text here, and for the native
+	// session ID / intermediate messages further down — and the read polls for up
+	// to 4s on cursor's async commit, so it must not happen twice per turn.
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID)
+	content = llmtypes.ReconcileFinalAnswer(content, latestCursorAssistantText(sidecarMsgs))
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
 		func(ctx context.Context) (string, error) {
@@ -411,7 +425,8 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// can be resumed in a fresh tmux session. Without this, resume is
 	// silently broken in tmux mode even though the rest of the
 	// orchestrator wiring works end-to-end.
-	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID)
+	// sidecarMsgs/storeDBPath were read once, up where the final answer is
+	// reconciled — see the comment there.
 	if len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(genInfo, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "cursor-cli",

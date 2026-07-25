@@ -8,6 +8,15 @@ import (
 // CodingAgentTransport describes the process transport used by a coding-agent
 // provider. New coding providers should prefer tmux unless the CLI cannot
 // support same-session chat, live input, interrupt, and terminal snapshots yet.
+//
+// The four possible shapes and the tradeoff behind this default are documented
+// in docs/CODING_AGENT_TRANSPORT_PATTERNS.md §0. In short: tmux is the default
+// because it is the only transport with a real stdin, so it is the only one that
+// can steer a turn that is already running (structured mode can only QUEUE — see
+// the steering_queue.json certification) and the only one that reuses a warm
+// process instead of paying CLI startup on every turn. What tmux is bad at is
+// producing the final reply text: a pane hard-wraps, so read it from the
+// provider's own on-disk session file and keep the pane for idle detection.
 type CodingAgentTransport string
 
 const (

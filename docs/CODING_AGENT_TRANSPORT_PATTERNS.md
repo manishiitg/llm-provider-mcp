@@ -8,6 +8,76 @@ coding provider by copying string switches only; add the provider contract first
 then wire the provider-specific launch/input/extraction functions that the
 contract requires.
 
+## 0. The four ways to drive a coding agent, and which we support
+
+There are exactly four viable shapes here. Two are supported, one is supported
+but not recommended for interactive use, and one is deliberately out of scope.
+The differences are not stylistic — each forfeits something specific.
+
+| | live mid-turn steer | per-turn process cost | final-reply fidelity | tool calls visible | tokens / cost |
+|---|---|---|---|---|---|
+| **1. tmux, pane-only** | yes | one warm process | **wrapped** (broken) | pane scraping only | not available |
+| **2. tmux + sidecar transcript** ← **default** | yes | one warm process | clean | structured | from sidecar¹ |
+| **3. structured / JSON** | **no — queues** | **new process every turn** | clean | structured | structured |
+| **4. direct provider API** | n/a | n/a | clean | native | native |
+
+¹ except Cursor — see the caveat below.
+
+**1. tmux, pane-only.** Drive the CLI's TUI in tmux and read everything off the
+pane. Live steering works (there is a real stdin), and one warm process serves
+every turn. But a terminal hard-wraps at its width, and a soft wrap is
+indistinguishable from a newline the model typed — so markdown structure in the
+final reply cannot be recovered. Do not heuristically "dewrap"; it corrupts
+intentional structure (lists worst of all). This is the historical shape and the
+source of `CertReplyFormattingFidelity`.
+
+**2. tmux + sidecar transcript — the default, and what to build on.** Same tmux
+session, but split the two jobs the pane was doing badly at once: the pane
+answers *"has the turn finished?"* (it is genuinely good at idle detection — see
+pattern 6), and the CLI's own on-disk session file answers *"what did it say?"*.
+Every supported provider writes such a file, three natively (it is what powers
+their own `--resume`) and Pi via a hook this repo injects:
+
+| provider | sidecar | notes |
+|---|---|---|
+| claude-code | `~/.claude/projects/<cwd-slug>/<sessionID>.jsonl` | prunes at 30 days; no system prompt; reasoning text emptied |
+| codex-cli | `~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl` | never prunes; richest metadata (rate limits, plan, credits) |
+| cursor-cli | `~/.cursor/chats/<md5(cwd)>/<agentId>/store.db` | sqlite; **no token usage, no per-message timestamps** |
+| pi-cli | `~/.pi/agent/sessions/<cwd>/<ts>_<id>.jsonl` | only provider storing plaintext reasoning + dollar cost |
+
+None of them are delta-based — all record complete messages, so there is no
+reassembly step to get wrong. Reconciliation must still be defensive: these files
+are written asynchronously (Cursor commits `store.db` seconds after the pane
+settles), so read the sidecar, verify it against the pane by comparing
+whitespace-normalized text, and fall back to the pane when it does not match or
+has not appeared yet. Trusting the sidecar blindly risks returning a *different
+turn's* reply, which is worse than bad wrapping.
+
+**3. structured / JSON.** The CLI's own non-interactive JSON mode
+(`codex exec resume <id> --json` and friends). Everything is clean and
+structured, but it spawns a **new process per turn** — full CLI startup plus
+context reload on every message — and there is no stdin to write into, so
+`Deliver` can only QUEUE (`steering_queue.json` certifies exactly this). Correct
+for batch/one-shot work; wrong for an interactive session where a user may
+interject mid-turn.
+
+**4. direct provider API.** Out of scope for this package. It gives the best
+fidelity and control, but forfeits the reason these adapters exist: the user's
+own CLI subscription auth, the CLI's native tools, and its session management.
+Choosing it means rebuilding the agent loop rather than driving one.
+
+**Cursor caveat.** Cursor's sidecar carries neither token usage nor per-message
+timestamps, unlike the other three. Anything depending on per-turn cost or
+timing must therefore come from the caller's own recording
+(`convrecord.tmux` certifies real token usage) rather than the sidecar, or be
+accepted as a gap on that provider.
+
+**Retention is the caller's problem.** codex-cli never prunes (observed: 2.27 GB
+over 129 days, plus a `history.jsonl` holding every prompt verbatim);
+claude-code prunes at 30 days. All four store **plaintext**, and every shell
+command an agent runs is recorded verbatim — so any command that interpolates a
+secret rather than passing it via the environment persists that value to disk.
+
 ## 1. One Normal Transport
 
 Interactive chat and workflow execution use the same tmux-backed coding-CLI

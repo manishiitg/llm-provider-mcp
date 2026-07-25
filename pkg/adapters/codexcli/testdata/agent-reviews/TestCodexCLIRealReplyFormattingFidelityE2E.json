@@ -1,0 +1,28 @@
+{
+  "test": "TestCodexCLIRealReplyFormattingFidelityE2E",
+  "summary": "Reply-formatting fidelity for codex-cli: does EXTRACTED_FINAL keep the markdown structure the model authored, given RAW_PROVIDER_OUTPUT is hard-wrapped by the terminal?",
+  "review_criteria": [
+    "EXTRACTED_FINAL preserves the paragraph breaks the model authored — a blank line between paragraphs is still a blank line, not collapsed into a single wrapped block",
+    "list items each begin their own line and are not folded into surrounding prose",
+    "no line break appears INSIDE a sentence, word, or inline markdown span (`**bold**`, backticks) where the terminal wrapped it",
+    "the reply reads as markdown a UI could render directly, not as fixed-width terminal output",
+    "content is unchanged — this is about structure only; wording, numbers and punctuation must match what the model wrote"
+  ],
+  "output": {
+    "expected_note": "Live codex turn. The pane capture is expected to be hard-wrapped; the extracted answer must NOT be, because it should have come from the rollout JSONL (readCodexTranscriptFinalAssistantText) rather than from the screen.",
+    "extracted_final": "First paragraph for FMT_0ddf7be3de, written as one single long line of at least one hundred and forty characters so that it is certain to be wrapped by a narrow terminal window, with sufficient additional wording included here.\n\nSecond paragraph for FMT_0ddf7be3de, also one single long line of at least one hundred and forty characters, again long enough that the terminal will certainly wrap it onto several rows, with extra text added.\n\n- first bullet for FMT_0ddf7be3de\n- second bullet for FMT_0ddf7be3de\n- third bullet for FMT_0ddf7be3de",
+    "provider": "codex-cli",
+    "raw_provider_output": "Agent pid 87445\nIdentity added: /Users/mipl/.ssh/id_ed25519 (manish.prakash@citymall.live)\n╭────────────────────────────────────────────────╮\n│ \u003e_ OpenAI Codex (v0.145.0)                     │\n│                                                │\n│ model:     gpt-5.6-luna low   /model to change │\n│ directory: ~/ai-work/…/pkg/adapters/codexcli   │\n╰────────────────────────────────────────────────╯\n\n\n› Reply with EXACTLY this markdown structure and nothing else — no preamble, no closing remark:\n\n  First paragraph for FMT_0ddf7be3de, written as one single long line of at least one hundred and forty characters so\n  that it is certain to be wrapped by a narrow terminal window.\n\n  Second paragraph for FMT_0ddf7be3de, also one single long line of at least one hundred and forty characters, again\n  long enough that the terminal will certainly wrap it onto several rows.\n\n  - first bullet for FMT_0ddf7be3de\n  - second bullet for FMT_0ddf7be3de\n  - third bullet for FMT_0ddf7be3de\n\n\n• You have 3 usage limit resets available. Run /usage to use one.\n\n• First paragraph for FMT_0ddf7be3de, written as one single long line of at least one hundred and forty characters so\n  that it is certain to be wrapped by a narrow terminal window, with sufficient additional wording included here.\n\n  Second paragraph for FMT_0ddf7be3de, also one single long line of at least one hundred and forty characters, again\n  long enough that the terminal will certainly wrap it onto several rows, with extra text added.\n\n  - first bullet for FMT_0ddf7be3de\n  - second bullet for FMT_0ddf7be3de\n  - third bullet for FMT_0ddf7be3de\n\n\n› Explain this codebase\n\n  gpt-5.6-luna low · ~/ai-work/multi-llm-provider-go/pkg/adapters/codexcli\n",
+    "user_goal": "Return the two long paragraphs and the three-item list with their markdown structure intact.",
+    "want_bullets": 3,
+    "want_paragraphs": 2
+  },
+  "fingerprint": "ef468e4bce64d3ef",
+  "agent_review": {
+    "verdict": "good",
+    "reviewed_fingerprint": "ef468e4bce64d3ef",
+    "reviewer": "claude-opus-5",
+    "issues": null,
+    "notes": "All five criteria met on a live codex turn. The pane's longest line is 119 chars (its wrap width) while the extracted reply's longest line is 241 — the authored line, unbroken — so the answer demonstrably came from the rollout JSONL rather than the screen. (1) Both paragraph breaks survive as blank lines. (2) Three list items, each on its own line with its '- ' marker. (3) No break inside any sentence. (4) Directly renderable markdown. (5) Wording, the FMT_ token and punctuation unchanged. Note this is a REGRESSION guard rather than proof of a new fix: codex already preferred its rollout before this certification existed (readCodexTranscriptFinalAssistantText, scoped to promptSentAt). It needs no reconciliation checksum because rollout rows carry wall-clock timestamps, which scope the read to this turn unambiguously — the certainty cursor lacks. This test fails if anyone reverts to pane-derived text or the rollout stops being found."
+  }
+}

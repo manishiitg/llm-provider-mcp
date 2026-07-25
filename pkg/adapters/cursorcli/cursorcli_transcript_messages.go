@@ -115,11 +115,18 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 		if filepath.Base(p) != "store.db" {
 			return nil
 		}
-		fi, err := d.Info()
-		if err != nil || fi.ModTime().Before(cutoff) {
+		// Use the WAL-aware mtime, NOT store.db's own. Cursor opens the db in WAL
+		// mode, so writes land in store.db-wal and store.db's mtime stays frozen
+		// until a checkpoint — observed live at a 24-minute gap (store.db 19:30,
+		// -wal 19:54). A store.db-only check therefore rejects the very file that
+		// holds the current turn, the transcript reads as "missing", and callers
+		// silently fall back to the wrapped tmux pane. The streaming tailer already
+		// learned this (see cursorStoreDBEffectiveModTime); this path had not.
+		modTime := cursorStoreDBEffectiveModTime(p, d)
+		if modTime.IsZero() || modTime.Before(cutoff) {
 			return nil
 		}
-		cands = append(cands, cand{path: p, mod: fi.ModTime()})
+		cands = append(cands, cand{path: p, mod: modTime})
 		return nil
 	})
 	if len(cands) == 0 {
@@ -144,6 +151,35 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+// latestCursorAssistantText returns the text of the LAST assistant message in a
+// store.db read — the UNWRAPPED form of the reply the pane shows hard-wrapped.
+// Empty when the slice holds no assistant prose; callers must treat empty as "no
+// better source available", not an error (see llmtypes.ReconcileFinalAnswer).
+//
+// Pure on purpose: it takes the messages the caller already read rather than
+// reading store.db itself. readCursorTranscriptMessagesAndStoreDB polls for up
+// to 4s waiting on cursor's async commit, and the adapter already pays that once
+// per turn for the session handle — doing its own read here would pay it twice.
+func latestCursorAssistantText(msgs []llmtypes.MessageContent) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != llmtypes.ChatMessageTypeAI {
+			continue
+		}
+		var b strings.Builder
+		for _, part := range msgs[i].Parts {
+			if txt, ok := part.(llmtypes.TextContent); ok {
+				b.WriteString(txt.Text)
+			}
+		}
+		// An assistant turn can be tool-calls only, with no prose; keep walking
+		// back rather than returning "" and losing the reply that precedes it.
+		if strings.TrimSpace(b.String()) != "" {
+			return b.String()
+		}
+	}
+	return ""
 }
 
 // cursorNativeSessionIDFromStoreDBPath extracts cursor's agentId —

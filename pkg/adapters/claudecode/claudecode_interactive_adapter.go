@@ -583,14 +583,22 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		})
 	}
 
-	// Repair truncation: the tmux pane scrape keeps only the FINAL assistant
-	// text block, so prose written before a trailing tool call (e.g. an answer
-	// followed by a suggest_actions / open_file call) is lost. The JSONL
-	// transcript is authoritative and holds every text block for this turn, so
-	// prefer its full prose when it is strictly more complete than the scrape.
-	if full := fullAssistantProseFromTranscript(responseSessionID, turnStart); full != "" && len(full) > len(strings.TrimSpace(content)) {
-		content = full
-	}
+	// Prefer the JSONL transcript's prose over the pane scrape. It repairs two
+	// distinct defects at once:
+	//
+	//  1. Truncation — the pane scrape keeps only the FINAL assistant text block,
+	//     so prose written before a trailing tool call (an answer followed by a
+	//     suggest_actions / open_file call) is lost.
+	//  2. Wrapping — the pane hard-wraps at its width, destroying paragraph and
+	//     list structure in a reply that callers render as markdown.
+	//
+	// This used to be gated on `len(full) > len(content)`, which caught (1) but
+	// silently missed (2): re-wrapping substitutes newlines for spaces, so the
+	// wrapped and authored forms are the SAME length and the longer-is-better
+	// test never fired. ReconcileFinalAnswer compares the two by WORDS instead,
+	// so it accepts the transcript for both cases while still refusing a
+	// transcript that is genuinely a different message — see its doc comment.
+	content = llmtypes.ReconcileFinalAnswer(content, fullAssistantProseFromTranscript(responseSessionID, turnStart))
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

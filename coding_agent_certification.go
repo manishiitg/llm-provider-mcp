@@ -76,6 +76,30 @@ const (
 	// wall-clock filter, an on-disk offset snapshot, or a primed dedup set)
 	// rather than from memory that a restart discards.
 	CertStreamNoHistoryReplay CodingAgentCertificationID = "stream_no_history_replay"
+	// CertReplyFormattingFidelity proves the FINAL reply text preserves the
+	// markdown structure the model actually wrote — paragraph boundaries, blank
+	// lines, list items — end to end, not just the inline markers.
+	//
+	// This exists because three of the four providers (claude-code, codex-cli,
+	// cursor-cli) parse the final answer out of a tmux PANE capture, and a
+	// terminal hard-wraps at its width. Nothing in those adapters reverses it:
+	// there is no dewrap or reflow step anywhere. So one authored paragraph comes
+	// back as several lines, and any consumer rendering the reply as markdown
+	// shows broken output the model never produced. Demonstrated for cursor in
+	// TestCursorPaneExtractionLosesMarkdownStructure (3 lines from 1 paragraph).
+	// Only pi is clean, because it reads a structured marker stream instead.
+	//
+	// Distinct from the existing markdown_fidelity certification, which asserts a
+	// file the agent WRITES is byte-exact — that exercises the shell tool, not
+	// reply extraction, which is why it never caught this.
+	//
+	// The intended fix is uniform: prefer each provider's own structured
+	// transcript for the final answer (claude/codex JSONL, cursor store.db, pi
+	// markers — all four already have one and all four already tail it for
+	// streaming), keeping the pane as fallback for when it isn't available yet.
+	// Heuristic dewrapping of pane text is NOT the fix: a soft wrap is genuinely
+	// indistinguishable from an authored newline, so it cannot be undone reliably.
+	CertReplyFormattingFidelity CodingAgentCertificationID = "reply_formatting_fidelity"
 	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
 	// in tmux mode, SIGINT for structured mode) interrupts the current turn
 	// WITHOUT corrupting the CLI's persisted chat state. The next launch
@@ -140,6 +164,15 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertBusyLiveInput,
 	CertCancellation,
 	CertParallelIsolation,
+	// The final answer is the whole point of a turn, and callers render it as
+	// markdown — structure lost in extraction is as bad as no reply, so this is
+	// release-blocking rather than P1. Each provider is backed by a live,
+	// `-coding-cli-p0-live`-gated E2E that asks for known markdown structure over
+	// lines long enough to force pane wrapping, then asserts the returned answer
+	// is NOT wrapped (see internal/testcontracts/reply_formatting.go, which also
+	// fails when a run didn't actually exercise wrapping — a green test that
+	// proved nothing is how this defect shipped in the first place).
+	CertReplyFormattingFidelity,
 }
 
 // CodingAgentCertification records the real or deterministic test that proves a
@@ -168,7 +201,11 @@ var codingAgentCapabilityCertifications = []struct {
 	{"bridge only tools", func(c CodingAgentProviderContract) bool { return c.SupportsBridgeOnlyTools }, []CodingAgentCertificationID{CertBridgeOnlyTools}},
 	{"terminal stream", func(c CodingAgentProviderContract) bool { return c.SupportsTerminalStream }, []CodingAgentCertificationID{CertFreshLaunch}},
 	{"statusline", func(c CodingAgentProviderContract) bool { return c.SupportsStatusLine }, []CodingAgentCertificationID{CertStatusLine}},
-	{"final extraction", func(c CodingAgentProviderContract) bool { return c.SupportsFinalExtraction }, []CodingAgentCertificationID{CertFinalExtraction}},
+	// Extracting a final answer implies extracting it FAITHFULLY: a reply whose
+	// paragraph and list structure was destroyed in transit is not a successful
+	// extraction, it just looks like one. Hence both IDs hang off the same
+	// capability rather than fidelity being optional.
+	{"final extraction", func(c CodingAgentProviderContract) bool { return c.SupportsFinalExtraction }, []CodingAgentCertificationID{CertFinalExtraction, CertReplyFormattingFidelity}},
 	{"persistent session", func(c CodingAgentProviderContract) bool { return c.UsesPersistentSession }, []CodingAgentCertificationID{CertMultiTurn, CertStaleDraftCleanup}},
 	{"live input", func(c CodingAgentProviderContract) bool { return c.SupportsLiveInput }, []CodingAgentCertificationID{CertLiveInput, CertBusyLiveInput}},
 	{"interrupt", func(c CodingAgentProviderContract) bool { return c.SupportsInterrupt }, []CodingAgentCertificationID{CertCancellation}},
@@ -185,6 +222,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_realworld_test.go",
 			TestName:    "TestClaudeCodeTranscriptStreamingRealWorldLive",
 			Description: "tails the live JSONL transcript and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertReplyFormattingFidelity,
+			TestFile:    "pkg/adapters/claudecode/claudecode_reply_formatting_live_test.go",
+			TestName:    "TestClaudeCodeTmuxRealReplyFormattingFidelityE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "live turn proving markdown structure survives; the transcript preference used to be gated on length, which repaired truncation but was blind to equal-length re-wrapping",
 			RealE2E:     true,
 		},
 		{
@@ -412,6 +457,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go",
 			TestName:    "TestCodexCLITranscriptStreamingRealWorldLive",
 			Description: "tails the live rollout JSONL and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertReplyFormattingFidelity,
+			TestFile:    "pkg/adapters/codexcli/codexcli_reply_formatting_live_test.go",
+			TestName:    "TestCodexCLIRealReplyFormattingFidelityE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "live turn proving the final answer comes from the rollout JSONL rather than the wrapped pane; codex needs no reconciliation guard because rollout rows carry timestamps that scope the read to this turn",
 			RealE2E:     true,
 		},
 		{
@@ -644,6 +697,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertReplyFormattingFidelity,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_reply_formatting_live_test.go",
+			TestName:    "TestCursorCLIRealReplyFormattingFidelityE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "live turn asking for two long paragraphs + a 3-item list: the pane capture is wrapped, the returned answer is not, because the final answer comes from store.db via llmtypes.ReconcileFinalAnswer",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertRuntimeContext,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go",
 			TestName:    "TestCursorCLIRealRuntimeSelfCheckContract",
@@ -842,6 +903,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/picli/picli_structured_stream_realworld_test.go",
 			TestName:    "TestPiCLIStructuredStreamingRealWorldLive",
 			Description: "streams structured assistant-text + tool-call chunks from pi's injected marker stream across a real bridge task",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertReplyFormattingFidelity,
+			TestFile:    "pkg/adapters/picli/picli_reply_formatting_live_test.go",
+			TestName:    "TestPiCLIRealReplyFormattingFidelityE2E",
+			Env:         []string{"-coding-cli-p0-live"},
+			Description: "live turn confirming pi stays structurally exempt: it returns marker-stream text and never parses the pane, so this is the control case for the certification",
 			RealE2E:     true,
 		},
 		{
