@@ -123,11 +123,62 @@ func TestCursorSidecarFoundWhenOnlyWALIsFresh(t *testing.T) {
 		t.Fatalf("write -wal: %v", err)
 	}
 
-	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, "")
+	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, "", "")
 	if path == "" || len(msgs) == 0 {
 		t.Fatalf("sidecar not found while only the -wal was fresh — callers would fall back to the wrapped pane")
 	}
 	if got := latestCursorAssistantText(msgs); got != authored {
 		t.Errorf("recovered text mismatch\n got:  %q\n want: %q", got, authored)
+	}
+}
+
+// TestReadCursorTranscriptPrefersKnownSessionOverNewerDecoy pins the bug found
+// live: a real parent conversation's turn also made several read_image calls,
+// each a bounded, one-shot cursor-agent invocation sharing the SAME workingDir
+// (image_tool.go's runReadImage always uses workspaceRoot()) and so landing
+// under the SAME chatsDir. Without a known session id to go on, the old code
+// picked whichever store.db anywhere in chatsDir had the freshest mtime —
+// and a read_image sub-call's async commit landing even a moment later than
+// the real conversation's own was enough to silently pick ITS unrelated
+// content instead. That both destroyed that turn's markdown (the wrapped pane
+// got used) and, worse, persisted the decoy's native_session_id for every
+// future turn to resume, permanently gluing the conversation onto the wrong
+// session.
+//
+// Reverting the knownNativeSessionID fast path in
+// readCursorTranscriptMessagesAndStoreDB makes this fail (it picks the decoy).
+func TestReadCursorTranscriptPrefersKnownSessionOverNewerDecoy(t *testing.T) {
+	const realReply = "**Short answer: yes.**\n\n- point one\n- point two"
+	const decoyReply = "a photo transcription, nothing to do with the real conversation"
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	workingDir := filepath.Join(tmpHome, "ws", "family")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workingDir: %v", err)
+	}
+
+	// The real conversation's own session, written FIRST (older mtime).
+	writeCursorStoreDBAt(t, workingDir, "real-parent-session", realReply)
+	realDBPath := filepath.Join(tmpHome, ".cursor", "chats", workingDirHashForCursor(workingDir), "real-parent-session", "store.db")
+	older := time.Now().Add(-10 * time.Second)
+	if err := os.Chtimes(realDBPath, older, older); err != nil {
+		t.Fatalf("age real session store.db: %v", err)
+	}
+
+	// A read_image-style bounded decoy session sharing the same workingDir,
+	// written SECOND so its commit is strictly newer — exactly the race that
+	// broke this live.
+	writeCursorStoreDBAt(t, workingDir, "cursor-bounded-decoy1234", decoyReply)
+
+	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, "", "real-parent-session")
+	if path == "" {
+		t.Fatal("expected to find the known session's store.db")
+	}
+	if !strings.Contains(path, "real-parent-session") {
+		t.Fatalf("picked the wrong session's store.db: %s", path)
+	}
+	if got := latestCursorAssistantText(msgs); got != realReply {
+		t.Errorf("got the decoy's content instead of the known session's own\n got:  %q\n want: %q", got, realReply)
 	}
 }

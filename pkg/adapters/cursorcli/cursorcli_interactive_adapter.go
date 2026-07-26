@@ -248,7 +248,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		nativeSessionID := resumeID
 		if nativeSessionID == "" {
-			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID); storeDBPath != "" {
+			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID); storeDBPath != "" {
 				nativeSessionID = cursorNativeSessionIDFromStoreDBPath(storeDBPath)
 			}
 		}
@@ -345,7 +345,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// twice — to recover the unwrapped reply text here, and for the native
 	// session ID / intermediate messages further down — and the read polls for up
 	// to 4s on cursor's async commit, so it must not happen twice per turn.
-	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID)
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID)
 	content = llmtypes.ReconcileFinalAnswer(content, latestCursorAssistantText(sidecarMsgs))
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,

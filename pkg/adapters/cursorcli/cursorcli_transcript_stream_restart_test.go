@@ -149,6 +149,17 @@ func appendCursorHistory(t *testing.T, workingDir string, assistantTexts ...stri
 // ids, which is what makes dedup meaningful.
 func writeCursorStoreDB(t *testing.T, workingDir string, assistantTexts ...string) {
 	t.Helper()
+	writeCursorStoreDBAt(t, workingDir, "agent-restart-test", assistantTexts...)
+}
+
+// writeCursorStoreDBAt is writeCursorStoreDB with the agent-session folder
+// name (cursor's own native_session_id equivalent) as a parameter, so a test
+// can create MULTIPLE distinct sessions under the same workingDir's chatsDir
+// — e.g. one standing in for the real conversation and another for an
+// unrelated bounded call (read_image) that happens to share the same
+// workingDir. See TestReadCursorTranscriptPrefersKnownSessionOverNewerDecoy.
+func writeCursorStoreDBAt(t *testing.T, workingDir string, agentSessionID string, assistantTexts ...string) {
+	t.Helper()
 	hash := workingDirHashForCursor(workingDir)
 	if hash == "" {
 		t.Fatal("workingDirHashForCursor returned empty")
@@ -157,7 +168,7 @@ func writeCursorStoreDB(t *testing.T, workingDir string, assistantTexts ...strin
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	agentDir := filepath.Join(home, ".cursor", "chats", hash, "agent-restart-test")
+	agentDir := filepath.Join(home, ".cursor", "chats", hash, agentSessionID)
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll agentDir: %v", err)
 	}

@@ -72,7 +72,7 @@ var (
 // Returns nil on any error or when no store.db is found for the
 // given workingDir. Best-effort.
 func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerSessionID string) []llmtypes.MessageContent {
-	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, ownerSessionID)
+	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, ownerSessionID, "")
 	return msgs
 }
 
@@ -82,7 +82,24 @@ func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerS
 // parent dir, used for --resume) want both at once because picking
 // the freshest store.db twice would race when cursor writes another
 // commit in between.
-func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string) ([]llmtypes.MessageContent, string) {
+//
+// knownNativeSessionID, when non-empty (any RESUMED turn — cursor already
+// told us its own session id via a prior --resume), is used DIRECTLY:
+// chatsDir/<knownNativeSessionID>/store.db, no guessing. This matters because
+// chatsDir holds one subfolder per cursor-agent session EVER created for this
+// workingDir — including every throwaway bounded session other callers spin
+// up against the SAME workingDir (e.g. read_image's own nested transcription
+// calls, see image_tool.go). Confirmed live: a turn with several read_image
+// calls had its final-answer reconciliation silently pick one of THEIR
+// store.db files instead of this conversation's own, because theirs happened
+// to commit its async write more recently — not just corrupting that turn's
+// formatting (the wrapped pane got used instead of the clean transcript) but
+// permanently gluing the conversation's persisted native_session_id onto an
+// unrelated one-shot session, so every LATER turn kept resuming the wrong one
+// too. Only fall back to the freshest-in-directory guess below when
+// knownNativeSessionID is empty — a genuinely first-ever turn, where cursor
+// hasn't reported an id yet and there is no better signal available.
+func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string, knownNativeSessionID string) ([]llmtypes.MessageContent, string) {
 	if strings.TrimSpace(workingDir) == "" {
 		return nil, ""
 	}
@@ -100,40 +117,51 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 		return nil, ""
 	}
 
-	// Cursor may keep multiple agent dirs per workspace; pick the
-	// store.db whose mtime is freshest at-or-after turnStart-30s.
-	cutoff := turnStart.Add(-30 * time.Second)
-	type cand struct {
-		path string
-		mod  time.Time
+	var pickedPath string
+	if id := strings.TrimSpace(knownNativeSessionID); id != "" {
+		candidate := filepath.Join(chatsDir, id, "store.db")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			pickedPath = candidate
+		}
 	}
-	var cands []cand
-	_ = filepath.WalkDir(chatsDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+	if pickedPath == "" {
+		// Cursor may keep multiple agent dirs per workspace; pick the
+		// store.db whose mtime is freshest at-or-after turnStart-30s. Only
+		// reached with no known session id — see this function's own
+		// doc comment for why that's a narrower case than it used to be.
+		cutoff := turnStart.Add(-30 * time.Second)
+		type cand struct {
+			path string
+			mod  time.Time
 		}
-		if filepath.Base(p) != "store.db" {
+		var cands []cand
+		_ = filepath.WalkDir(chatsDir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if filepath.Base(p) != "store.db" {
+				return nil
+			}
+			// Use the WAL-aware mtime, NOT store.db's own. Cursor opens the db in WAL
+			// mode, so writes land in store.db-wal and store.db's mtime stays frozen
+			// until a checkpoint — observed live at a 24-minute gap (store.db 19:30,
+			// -wal 19:54). A store.db-only check therefore rejects the very file that
+			// holds the current turn, the transcript reads as "missing", and callers
+			// silently fall back to the wrapped tmux pane. The streaming tailer already
+			// learned this (see cursorStoreDBEffectiveModTime); this path had not.
+			modTime := cursorStoreDBEffectiveModTime(p, d)
+			if modTime.IsZero() || modTime.Before(cutoff) {
+				return nil
+			}
+			cands = append(cands, cand{path: p, mod: modTime})
 			return nil
+		})
+		if len(cands) == 0 {
+			return nil, ""
 		}
-		// Use the WAL-aware mtime, NOT store.db's own. Cursor opens the db in WAL
-		// mode, so writes land in store.db-wal and store.db's mtime stays frozen
-		// until a checkpoint — observed live at a 24-minute gap (store.db 19:30,
-		// -wal 19:54). A store.db-only check therefore rejects the very file that
-		// holds the current turn, the transcript reads as "missing", and callers
-		// silently fall back to the wrapped tmux pane. The streaming tailer already
-		// learned this (see cursorStoreDBEffectiveModTime); this path had not.
-		modTime := cursorStoreDBEffectiveModTime(p, d)
-		if modTime.IsZero() || modTime.Before(cutoff) {
-			return nil
-		}
-		cands = append(cands, cand{path: p, mod: modTime})
-		return nil
-	})
-	if len(cands) == 0 {
-		return nil, ""
+		sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
+		pickedPath = cands[0].path
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
-	pickedPath := cands[0].path
 
 	// Cursor commits its sqlite root blob asynchronously, sometimes
 	// many seconds AFTER the tmux pane settles (observed 19s on a
