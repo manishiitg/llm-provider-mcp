@@ -56,6 +56,11 @@ const (
 	// (transcript tail for claude/codex/cursor, injected markers for pi). Required
 	// as P0 for any provider whose contract sets SupportsStructuredStreaming.
 	CertStructuredStreaming CodingAgentCertificationID = "structured_streaming"
+	// CertStructuredMultiTurn proves that the non-interactive structured transport
+	// persists the native CLI session after turn one and can resume it for turn
+	// two. This is intentionally separate from CertMultiTurn, which certifies the
+	// long-lived tmux transport and cannot catch structured-process shutdown races.
+	CertStructuredMultiTurn CodingAgentCertificationID = "structured_multi_turn"
 	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
 	// in tmux mode, SIGINT for structured mode) interrupts the current turn
 	// WITHOUT corrupting the CLI's persisted chat state. The next launch
@@ -160,6 +165,13 @@ var codingAgentCapabilityCertifications = []struct {
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/claudecode/claudecode_structured_live_test.go",
+			TestName:    "TestClaudeStructuredTwoTurnResume",
+			Description: "runs two real Claude structured turns and proves the first turn exits naturally after persisting a resumable native session",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_realworld_test.go",
@@ -1124,7 +1136,7 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 	// Streaming is P0 wherever it is required (capability-gated per provider via
 	// RequiredP0CodingAgentCertificationIDs), so its registered cert must carry P0
 	// priority + the live gate rather than defaulting to P1.
-	if id == CertStructuredStreaming {
+	if id == CertStructuredStreaming || id == CertStructuredMultiTurn {
 		return CodingAgentCertificationPriorityP0
 	}
 	return CodingAgentCertificationPriorityP1
@@ -1143,6 +1155,12 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// until its live tailer + streaming E2E land and it flips the flag on.
 	if contract.SupportsStructuredStreaming {
 		ids = append(ids, CertStructuredStreaming)
+	}
+	// Claude structured execution is the transport used by message-sequence
+	// items. Its process emits a result before the transcript is necessarily
+	// durable, so tmux multi-turn certification is not sufficient.
+	if contract.Provider == ProviderClaudeCode {
+		ids = append(ids, CertStructuredMultiTurn)
 	}
 	return ids
 }

@@ -36,7 +36,7 @@ STREAM_PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/ ./pkg/adapters/
 PKGS="$STREAM_PKGS"
 # Matches every provider's streaming test: the transcript adapters'
 # Transcript…BridgeLive/RealWorldLive/DisabledControl, and pi's Structured…RealWorldLive.
-LIVE='(Transcript|Structured)Streaming'
+LIVE='(Transcript|Structured)Streaming|ClaudeStructuredTwoTurnResume'
 
 capture() {
   echo ">> capture: running live agentic P0 tests; resetting reviews to pending ..."

@@ -477,6 +477,19 @@ func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 	}
 }
 
+func TestClaudeP0RequiresStructuredMultiTurn(t *testing.T) {
+	contract, ok := GetCodingAgentProviderContract(ProviderClaudeCode, "")
+	if !ok {
+		t.Fatal("claude-code contract is missing")
+	}
+	for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+		if id == CertStructuredMultiTurn {
+			return
+		}
+	}
+	t.Fatal("claude-code P0 must require structured_multi_turn; tmux multi_turn does not cover message-sequence resume")
+}
+
 func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 	certs := CodingAgentProviderCertifications(ProviderPiCLI)
 	if len(certs) == 0 {
