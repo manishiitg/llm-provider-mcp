@@ -36,6 +36,7 @@ const (
 	CertDoneDetection             CodingAgentCertificationID = "done_detection"
 	CertFinalExtraction           CodingAgentCertificationID = "final_extraction"
 	CertStatusLine                CodingAgentCertificationID = "statusline"
+	// CertMultiTurn proves continuity in the persistent tmux transport.
 	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
 	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
 	CertLiveInput                 CodingAgentCertificationID = "live_input"
@@ -111,7 +112,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 // workspace, clear trust/auth startup gates before the first prompt, receive the
 // system prompt/skills/MCP runtime, avoid false idle, detect completion, accept
 // and process live follow-up input while busy, return the final answer, cancel,
-// and isolate concurrency.
+// preserve multi-turn continuity in tmux, and isolate concurrency.
 var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertRuntimeContext,
@@ -121,6 +122,7 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertSlowToolFalseIdle,
 	CertDoneDetection,
 	CertFinalExtraction,
+	CertMultiTurn,
 	CertLiveInput,
 	CertBusyLiveInput,
 	CertCancellation,
@@ -400,6 +402,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderCodexCLI: {
 		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/codexcli/codexcli_structured_integration_test.go",
+			TestName:    "TestCodexCLIStructuredTwoTurnResume",
+			Description: "runs two real Codex structured turns and proves the native thread from turn one resumes in turn two",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go",
 			TestName:    "TestCodexCLITranscriptStreamingRealWorldLive",
@@ -629,6 +638,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderCursorCLI: {
 		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
+			TestName:    "TestCursorCLIStructuredTwoTurnResume",
+			Description: "runs two real Cursor structured turns and proves the native session from turn one resumes in turn two",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_realworld_test.go",
 			TestName:    "TestCursorCLITranscriptStreamingRealWorldLive",
@@ -829,6 +845,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderPiCLI: {
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/picli/picli_structured_integration_test.go",
+			TestName:    "TestPiCLIStructuredTwoTurnResume",
+			Description: "runs two real Pi structured turns and proves the native session from turn one resumes in turn two",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/picli/picli_structured_stream_realworld_test.go",
@@ -1156,10 +1179,11 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	if contract.SupportsStructuredStreaming {
 		ids = append(ids, CertStructuredStreaming)
 	}
-	// Claude structured execution is the transport used by message-sequence
-	// items. Its process emits a result before the transcript is necessarily
-	// durable, so tmux multi-turn certification is not sufficient.
-	if contract.Provider == ProviderClaudeCode {
+	// Workflow steps and background agents use structured execution. Every
+	// persistent provider must independently prove that the native session
+	// survives process exit and resumes on the next message; tmux multi-turn
+	// certification exercises a different lifecycle and is not a substitute.
+	if contract.UsesPersistentSession && contract.SupportsNativeResume {
 		ids = append(ids, CertStructuredMultiTurn)
 	}
 	return ids

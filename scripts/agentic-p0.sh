@@ -34,9 +34,8 @@ cd "$(dirname "$0")/.."
 # transcript; pi streams via its injected marker hook.
 STREAM_PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/ ./pkg/adapters/cursorcli/ ./pkg/adapters/picli/"
 PKGS="$STREAM_PKGS"
-# Matches every provider's streaming test: the transcript adapters'
-# Transcript…BridgeLive/RealWorldLive/DisabledControl, and pi's Structured…RealWorldLive.
-LIVE='(Transcript|Structured)Streaming|ClaudeStructuredTwoTurnResume'
+# Matches every provider's streaming tests and structured two-turn resume proof.
+LIVE='(Transcript|Structured)Streaming|StructuredTwoTurnResume'
 
 capture() {
   echo ">> capture: running live agentic P0 tests; resetting reviews to pending ..."

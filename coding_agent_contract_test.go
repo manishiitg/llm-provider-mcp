@@ -477,17 +477,21 @@ func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 	}
 }
 
-func TestClaudeP0RequiresStructuredMultiTurn(t *testing.T) {
-	contract, ok := GetCodingAgentProviderContract(ProviderClaudeCode, "")
-	if !ok {
-		t.Fatal("claude-code contract is missing")
-	}
-	for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
-		if id == CertStructuredMultiTurn {
-			return
+func TestPersistentProviderP0RequiresBothTransportMultiTurnProofs(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Deprecated || !contract.UsesPersistentSession || !contract.SupportsNativeResume {
+			continue
+		}
+		required := make(map[CodingAgentCertificationID]bool)
+		for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+			required[id] = true
+		}
+		for _, id := range []CodingAgentCertificationID{CertMultiTurn, CertStructuredMultiTurn} {
+			if !required[id] {
+				t.Errorf("%s P0 must require %s", contract.Provider, id)
+			}
 		}
 	}
-	t.Fatal("claude-code P0 must require structured_multi_turn; tmux multi_turn does not cover message-sequence resume")
 }
 
 func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
