@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
+
+const claudeStructuredNaturalExitGrace = 3 * time.Second
 
 // claudeStreamEvent is one NDJSON line from
 // `claude -p --output-format stream-json`. The event stream is: a
@@ -291,9 +294,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				if ev.Usage != nil {
 					accumulateClaudeUsage(&totalUsage, ev.Usage)
 				}
-				// Terminal event: we have the final answer, so tear the process
-				// down rather than wait for it to exit on its own.
-				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				// Claude emits the result before its resumable transcript is
+				// guaranteed to be flushed. Let it exit naturally first; the
+				// signal sequence remains a backstop for a stuck CLI.
+				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, claudeStructuredNaturalExitGrace, c.logger)
 			}
 		}
 	}()
