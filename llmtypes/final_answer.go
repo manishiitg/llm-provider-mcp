@@ -63,6 +63,35 @@ func ReconcileFinalAnswer(paneText, transcriptText string) string {
 // ordered-list numbering, and inline emphasis/code characters.
 var markdownMarkers = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+|[*_` + "`" + `]`)
 
+// A TUI draws a markdown TABLE with box-drawing glyphs instead of echoing the
+// pipes and dashes the model wrote, which is the same substitution the bullet
+// handling above already accounts for -- just for tables rather than lists.
+// Left alone it is by far the biggest source of false mismatches, because a
+// table contributes one separator per column per row: a real cursor-agent reply
+// listing 31 schedules put 42 box-drawing bars in the pane, dragging an
+// otherwise-identical message to a 0.826 word ratio against a 0.90 threshold,
+// so the clean markdown table was discarded in favour of the rendered one.
+// Normalising them back scores that same pair at 0.972.
+//
+// Comparison only -- neither candidate's text is modified by this, so the
+// answer that gets returned is always verbatim.
+var tableGlyphs = strings.NewReplacer(
+	"│", "|", "┃", "|", "┆", "|", "┊", "|", "╎", "|", "║", "|",
+)
+
+// The separator row under a table header renders as a run of horizontal
+// box-drawing, where the model wrote "---". Collapse both to nothing rather
+// than trying to match them up.
+var horizontalRule = regexp.MustCompile(`[─━┄┅┈┉╌╍╴╶┼┿╋├┤┌┐└┘╭╮╯╰]+|-{3,}`)
+
+// normalizeForWordCompare removes the syntax a terminal re-renders rather than
+// echoing, so two spellings of the same message compare equal.
+func normalizeForWordCompare(s string) string {
+	s = markdownMarkers.ReplaceAllString(s, "")
+	s = tableGlyphs.Replace(s)
+	return horizontalRule.ReplaceAllString(s, " ")
+}
+
 // sameWords reports whether two texts carry the same visible words in the same
 // order, ignoring whitespace AND markdown syntax.
 //
@@ -88,8 +117,8 @@ var markdownMarkers = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+|
 const sameMessageWordRatio = 0.9
 
 func sameWords(pane, transcript string) bool {
-	p := strings.Fields(markdownMarkers.ReplaceAllString(pane, ""))
-	t := strings.Fields(markdownMarkers.ReplaceAllString(transcript, ""))
+	p := strings.Fields(normalizeForWordCompare(pane))
+	t := strings.Fields(normalizeForWordCompare(transcript))
 	if len(p) == 0 || len(t) == 0 {
 		return false
 	}
