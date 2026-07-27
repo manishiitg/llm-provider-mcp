@@ -380,11 +380,22 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}, nil
 }
 
+// accumulateClaudeUsage folds one stream usage event into the running total.
+//
+// Anthropic reports input_tokens EXCLUSIVE of cache_read_input_tokens, but the
+// consumer's contract is the opposite (mcpagent agent.go: "PromptTokens: total
+// input tokens (includes cached portion)" / "CacheTokens: subset of
+// PromptTokens that were cached"). It prices fresh input as
+// PromptTokens - CacheTokens, so reporting Anthropic's raw split makes that
+// subtraction go negative; the clamp there then silently drops the entire
+// fresh-input charge rather than reporting it. Fold cache reads into the input
+// total here so CacheTokens really is a subset, and every consumer that
+// subtracts gets the fresh remainder it expects.
 func accumulateClaudeUsage(dst *llmtypes.Usage, src *claudeStreamUsage) {
 	if src == nil {
 		return
 	}
-	dst.InputTokens += src.InputTokens
+	dst.InputTokens += src.InputTokens + src.CacheReadInputTokens
 	dst.OutputTokens += src.OutputTokens
 	dst.TotalTokens = dst.InputTokens + dst.OutputTokens
 	if src.CacheReadInputTokens > 0 {
