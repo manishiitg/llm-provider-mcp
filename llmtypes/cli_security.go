@@ -19,29 +19,37 @@ const (
 	//     ValidateCLISecurityLaunch with zero enforced modes, so requesting
 	//     Isolated for them fails closed (safe) but breaks the product outright —
 	//     there is no fallback/degrade path, just a raw error.
-	//  2. Even where enforcement exists, this mode only isolates FILE-based
-	//     credentials by redirecting $HOME to a private directory (this works
-	//     for codex-cli: ~/.codex/auth.json is a plain file). It does NOT isolate
-	//     macOS-Keychain-based credentials, because Keychain lookups are scoped
-	//     to the OS login session, not $HOME. Confirmed live: Claude Code's
-	//     session is 100% Keychain-only (service "Claude Code-credentials", no
-	//     token file anywhere under ~/.claude/) — a sandboxed process with a
-	//     fake $HOME still authenticates via the SAME real Keychain entry.
-	//     Cursor CLI is a hybrid: the real access/refresh tokens are Keychain
-	//     entries ("cursor-access-token"/"cursor-refresh-token"), but
-	//     ~/.cursor/cli-config.json also carries file-based account-identity
-	//     metadata (authInfo, authCacheKey) — untested whether a fresh private
-	//     $HOME makes it re-prompt for login or silently falls through to the
-	//     same real Keychain token.
+	//  2. Credentials held in the macOS login keychain cannot be granted
+	//     selectively. Denying the home directory also denies
+	//     ~/Library/Keychains/login.keychain-db, so keychain lookups fail
+	//     outright — measured, not assumed: `security find-generic-password -s
+	//     "Claude Code-credentials"` succeeds unsandboxed and returns "could not
+	//     be found" under a profile that denies home. Claude Code stores its
+	//     session ONLY there (no token file anywhere under ~/.claude/), so it
+	//     simply cannot authenticate under either strict mode. Granting it back
+	//     is all-or-nothing: that one file also holds every other secret the
+	//     user owns (Wi-Fi, Safari passwords, ...), and filesystem ACLs cannot
+	//     expose a single keychain item. This is unlike ~/.codex/auth.json,
+	//     which is a scoped, single-purpose file safe to grant via
+	//     HostReadPaths. Cursor CLI is a hybrid — tokens in the keychain
+	//     ("cursor-access-token"/"cursor-refresh-token") but file-based account
+	//     identity in ~/.cursor/cli-config.json — and is untested.
 	//
-	// A product cannot honestly offer this mode until per-provider sandbox
-	// enforcement exists for all four CLIs AND the Keychain-credential gap is
-	// resolved (likely requires a genuinely separate OS user account, since
-	// Keychain ACLs don't respect a private HOME directory the way file-based
-	// auth does) — or the UI explicitly restricts which provider can be
-	// selected while this mode is on. Tracked at a product level in GitHub
-	// issue coding-agent-loop#142 ("certify Claude Code, Cursor CLI, and Pi
-	// independently" is listed there as separate, not-yet-done follow-up work).
+	// NOTE ON MODE CHOICE: this reason does NOT argue for Isolated over
+	// Verified. Isolated (private $HOME + a fresh login inside it) buys ACCOUNT
+	// separation, which is rarely the goal — a user normally WANTS the CLI on
+	// their own subscription. The usual goal is FILESYSTEM isolation, and
+	// Verified serves it directly: keep the real $HOME, deny it wholesale, then
+	// grant back only the CLI's own credential directory. Reach for Verified
+	// first; Isolated only when a genuinely separate account is required.
+	//
+	// A product cannot honestly offer either strict mode until per-provider
+	// sandbox enforcement exists for all four CLIs (reason 1), and Claude Code
+	// additionally needs a credential path that is not the shared login
+	// keychain — otherwise a separate OS user account, whose keychain is its
+	// own. Tracked at a product level in GitHub issue coding-agent-loop#142
+	// ("certify Claude Code, Cursor CLI, and Pi independently" is listed there
+	// as separate, not-yet-done follow-up work).
 	CLISecurityModeIsolated CLISecurityMode = "isolated"
 	CLISecurityModeVerified CLISecurityMode = "verified"
 )
