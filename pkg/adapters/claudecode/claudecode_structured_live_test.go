@@ -2,12 +2,55 @@ package claudecode
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+// TestClaudeStructuredTwoTurnResume proves that a successful structured turn
+// leaves a real, resumable Claude transcript. This specifically guards the
+// result-event shutdown race: surfacing a session ID is insufficient if the
+// CLI was terminated before persisting that session.
+func TestClaudeStructuredTwoTurnResume(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+
+	workingDir := t.TempDir()
+	sentinel := "CLAUDE_STRUCTURED_RESUME_" + randomHex(6)
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel1()
+	first, err := adapter.GenerateContent(ctx1, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Remember this exact token: %s. Reply ACK.", sentinel)}}},
+	}, WithClaudeStructuredTransport(true), WithWorkingDir(workingDir))
+	if err != nil {
+		t.Fatalf("turn 1 GenerateContent error = %v", err)
+	}
+	if first == nil || len(first.Choices) == 0 || first.Choices[0].GenerationInfo == nil {
+		t.Fatalf("turn 1 response missing generation info: %#v", first)
+	}
+	sessionID, _ := first.Choices[0].GenerationInfo.Additional["claude_code_session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("turn 1 response missing claude_code_session_id: %#v", first.Choices[0].GenerationInfo.Additional)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel2()
+	second, err := adapter.GenerateContent(ctx2, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only that token."}}},
+	}, WithClaudeStructuredTransport(true), WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
+	if err != nil {
+		t.Fatalf("turn 2 resume error for session %s = %v", sessionID, err)
+	}
+	if second == nil || len(second.Choices) == 0 || !strings.Contains(second.Choices[0].Content, sentinel) {
+		t.Fatalf("turn 2 did not resume turn 1; want token %q, response=%#v", sentinel, second)
+	}
+}
 
 // TestClaudeStructuredErrorResultSurfacesAsError proves the fix for a real
 // bug: a "result" event with is_error:true (Claude's structured stream

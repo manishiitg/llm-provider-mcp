@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -251,7 +252,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				turnTextBuf.Reset()
 			case "agent_settled":
 				sawTerminal = true
-				go procshutdown.Graceful(cmd, scannerDone, p.logger)
+				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
 			}
 		}
 	}()

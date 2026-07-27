@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -306,7 +307,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				// End-of-turn teardown per the structured-CLI shutdown contract
 				// (docs/coding_sdk_structured_contract.md §9): SIGTERM → 5s
 				// grace for ~/.cursor state flush → SIGKILL.
-				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, c.logger)
 				resultIsError = event.IsError
 				if event.Result != "" {
 					finalContent = event.Result

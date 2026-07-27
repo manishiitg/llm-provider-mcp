@@ -122,6 +122,45 @@ func TestGracefulCmdWithNilProcessIsNoOp(t *testing.T) {
 	}
 }
 
+func TestGracefulAfterNaturalExitDoesNotSignalCompletedProcess(t *testing.T) {
+	cmd := startSleepingChild(t, "0.05")
+	terminated := make(chan struct{})
+	log := &testLogger{}
+	go func() {
+		_ = cmd.Wait()
+		close(terminated)
+	}()
+
+	GracefulAfterNaturalExit(cmd, terminated, time.Second, log)
+
+	if log.contains("SIGTERM attempt") {
+		t.Fatalf("natural exit must not receive SIGTERM; lines=%v", log.lines)
+	}
+	if !log.contains("exited naturally") {
+		t.Fatalf("expected natural-exit log; lines=%v", log.lines)
+	}
+}
+
+func TestGracefulAfterNaturalExitFallsBackForHungProcess(t *testing.T) {
+	shrinkGraces(t, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
+	cmd := startSleepingChild(t, "30")
+	terminated := make(chan struct{})
+	log := &testLogger{}
+	go func() {
+		_ = cmd.Wait()
+		close(terminated)
+	}()
+
+	GracefulAfterNaturalExit(cmd, terminated, 20*time.Millisecond, log)
+
+	if !log.contains("natural-exit grace") {
+		t.Fatalf("expected natural-exit timeout; lines=%v", log.lines)
+	}
+	if log.countContains("SIGTERM attempt") != 1 {
+		t.Fatalf("expected one SIGTERM fallback; lines=%v", log.lines)
+	}
+}
+
 // TestGracefulExitsAfterFirstSIGTERM simulates a well-behaved CLI: SIGTERM
 // lands and the process exits within the first grace. Helper must NOT send
 // a second/third SIGTERM and must NOT send SIGKILL.

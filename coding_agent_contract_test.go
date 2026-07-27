@@ -540,6 +540,23 @@ func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 	}
 }
 
+func TestPersistentProviderP0RequiresBothTransportMultiTurnProofs(t *testing.T) {
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Deprecated || !contract.UsesPersistentSession || !contract.SupportsNativeResume {
+			continue
+		}
+		required := make(map[CodingAgentCertificationID]bool)
+		for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+			required[id] = true
+		}
+		for _, id := range []CodingAgentCertificationID{CertMultiTurn, CertStructuredMultiTurn} {
+			if !required[id] {
+				t.Errorf("%s P0 must require %s", contract.Provider, id)
+			}
+		}
+	}
+}
+
 func TestPiCLICertificationsUseRealE2EOnly(t *testing.T) {
 	certs := CodingAgentProviderCertifications(ProviderPiCLI)
 	if len(certs) == 0 {

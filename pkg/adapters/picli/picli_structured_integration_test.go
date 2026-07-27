@@ -15,11 +15,50 @@ import (
 
 func requirePiCLIStructuredE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_PI_CLI_STREAM_JSON_E2E") == "" {
+	if !*codingCLIP0Live && os.Getenv("RUN_PI_CLI_STREAM_JSON_E2E") == "" {
 		t.Skip("set RUN_PI_CLI_STREAM_JSON_E2E=1 to run Pi CLI structured JSON e2e tests")
 	}
 	if _, err := exec.LookPath("pi"); err != nil {
 		t.Fatalf("pi not found in PATH: %v", err)
+	}
+}
+
+func TestPiCLIStructuredTwoTurnResume(t *testing.T) {
+	requirePiCLIStructuredE2E(t)
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
+
+	workingDir := t.TempDir()
+	sentinel := "PI_STRUCTURED_RESUME_" + piRandomHex(6)
+	adapter := newRealPiCLIAdapter(t)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel1()
+	first, err := adapter.GenerateContent(ctx1, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Remember this exact token for the next turn: %s. Reply ACK.", sentinel)}}},
+	}, WithPiStructuredTransport(true), WithWorkingDir(workingDir))
+	if err != nil {
+		t.Fatalf("turn 1 GenerateContent error = %v", err)
+	}
+	if first == nil || len(first.Choices) == 0 || first.Choices[0].GenerationInfo == nil {
+		t.Fatalf("turn 1 response missing generation info: %#v", first)
+	}
+	sessionID, _ := first.Choices[0].GenerationInfo.Additional["pi_session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("turn 1 response missing pi_session_id: %#v", first.Choices[0].GenerationInfo.Additional)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel2()
+	second, err := adapter.GenerateContent(ctx2, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only that token."}}},
+	}, WithPiStructuredTransport(true), WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
+	if err != nil {
+		t.Fatalf("turn 2 resume error for session %s = %v", sessionID, err)
+	}
+	if second == nil || len(second.Choices) == 0 || !strings.Contains(second.Choices[0].Content, sentinel) {
+		t.Fatalf("turn 2 did not resume turn 1; want token %q, response=%#v", sentinel, second)
 	}
 }
 

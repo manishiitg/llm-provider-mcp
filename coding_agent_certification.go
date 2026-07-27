@@ -36,6 +36,7 @@ const (
 	CertDoneDetection             CodingAgentCertificationID = "done_detection"
 	CertFinalExtraction           CodingAgentCertificationID = "final_extraction"
 	CertStatusLine                CodingAgentCertificationID = "statusline"
+	// CertMultiTurn proves continuity in the persistent tmux transport.
 	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
 	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
 	CertLiveInput                 CodingAgentCertificationID = "live_input"
@@ -100,6 +101,11 @@ const (
 	// Heuristic dewrapping of pane text is NOT the fix: a soft wrap is genuinely
 	// indistinguishable from an authored newline, so it cannot be undone reliably.
 	CertReplyFormattingFidelity CodingAgentCertificationID = "reply_formatting_fidelity"
+	// CertStructuredMultiTurn proves that the non-interactive structured transport
+	// persists the native CLI session after turn one and can resume it for turn
+	// two. This is intentionally separate from CertMultiTurn, which certifies the
+	// long-lived tmux transport and cannot catch structured-process shutdown races.
+	CertStructuredMultiTurn CodingAgentCertificationID = "structured_multi_turn"
 	// CertCtrlCStatePreserved proves that sending Ctrl+C (the 0x03 keystroke
 	// in tmux mode, SIGINT for structured mode) interrupts the current turn
 	// WITHOUT corrupting the CLI's persisted chat state. The next launch
@@ -150,7 +156,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 // workspace, clear trust/auth startup gates before the first prompt, receive the
 // system prompt/skills/MCP runtime, avoid false idle, detect completion, accept
 // and process live follow-up input while busy, return the final answer, cancel,
-// and isolate concurrency.
+// preserve multi-turn continuity in tmux, and isolate concurrency.
 var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertRuntimeContext,
@@ -160,6 +166,7 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertSlowToolFalseIdle,
 	CertDoneDetection,
 	CertFinalExtraction,
+	CertMultiTurn,
 	CertLiveInput,
 	CertBusyLiveInput,
 	CertCancellation,
@@ -217,6 +224,13 @@ var codingAgentCapabilityCertifications = []struct {
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/claudecode/claudecode_structured_live_test.go",
+			TestName:    "TestClaudeStructuredTwoTurnResume",
+			Description: "runs two real Claude structured turns and proves the first turn exits naturally after persisting a resumable native session",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_realworld_test.go",
@@ -452,6 +466,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/codexcli/codexcli_structured_integration_test.go",
+			TestName:    "TestCodexCLIStructuredTwoTurnResume",
+			Description: "runs two real Codex structured turns and proves the native thread from turn one resumes in turn two",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go",
@@ -690,6 +711,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderCursorCLI: {
 		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
+			TestName:    "TestCursorCLIStructuredTwoTurnResume",
+			Description: "runs two real Cursor structured turns and proves the native session from turn one resumes in turn two",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_realworld_test.go",
 			TestName:    "TestCursorCLITranscriptStreamingRealWorldLive",
@@ -898,6 +926,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderPiCLI: {
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/picli/picli_structured_integration_test.go",
+			TestName:    "TestPiCLIStructuredTwoTurnResume",
+			Description: "runs two real Pi structured turns and proves the native session from turn one resumes in turn two",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredStreaming,
 			TestFile:    "pkg/adapters/picli/picli_structured_stream_realworld_test.go",
@@ -1213,7 +1248,7 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 	// Streaming is P0 wherever it is required (capability-gated per provider via
 	// RequiredP0CodingAgentCertificationIDs), so its registered cert must carry P0
 	// priority + the live gate rather than defaulting to P1.
-	if id == CertStructuredStreaming {
+	if id == CertStructuredStreaming || id == CertStructuredMultiTurn {
 		return CodingAgentCertificationPriorityP0
 	}
 	return CodingAgentCertificationPriorityP1
@@ -1232,6 +1267,13 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// until its live tailer + streaming E2E land and it flips the flag on.
 	if contract.SupportsStructuredStreaming {
 		ids = append(ids, CertStructuredStreaming)
+	}
+	// Workflow steps and background agents use structured execution. Every
+	// persistent provider must independently prove that the native session
+	// survives process exit and resumes on the next message; tmux multi-turn
+	// certification exercises a different lifecycle and is not a substitute.
+	if contract.UsesPersistentSession && contract.SupportsNativeResume {
+		ids = append(ids, CertStructuredMultiTurn)
 	}
 	return ids
 }

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -259,7 +260,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			case "turn.completed":
 				// End-of-turn teardown per the structured-CLI shutdown contract
 				// (docs/coding_sdk_structured_contract.md §9).
-				go procshutdown.Graceful(cmd, scannerDone, c.logger)
+				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, c.logger)
 				if event.Usage != nil {
 					totalUsage.InputTokens += event.Usage.InputTokens
 					totalUsage.OutputTokens += event.Usage.OutputTokens

@@ -17,11 +17,49 @@ import (
 // an opt-in env var plus a real cursor-agent binary in PATH.
 func requireCursorCLIStructuredE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_CURSOR_CLI_STREAM_JSON_E2E") == "" {
+	if !*codingCLIP0Live && os.Getenv("RUN_CURSOR_CLI_STREAM_JSON_E2E") == "" {
 		t.Skip("set RUN_CURSOR_CLI_STREAM_JSON_E2E=1 to run Cursor CLI structured JSON e2e tests")
 	}
 	if _, err := exec.LookPath("cursor-agent"); err != nil {
 		t.Fatalf("cursor-agent not found in PATH: %v", err)
+	}
+}
+
+func TestCursorCLIStructuredTwoTurnResume(t *testing.T) {
+	requireCursorCLIStructuredE2E(t)
+
+	workingDir := t.TempDir()
+	sentinel := "CURSOR_STRUCTURED_RESUME_" + cursorRandomHex(6)
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel1()
+	first, err := adapter.GenerateContent(ctx1, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Remember this exact token for the next turn: %s. Reply ACK.", sentinel)}}},
+	}, WithCursorStructuredTransport(true), WithWorkingDir(workingDir))
+	if err != nil {
+		t.Fatalf("turn 1 GenerateContent error = %v", err)
+	}
+	if first == nil || len(first.Choices) == 0 || first.Choices[0].GenerationInfo == nil {
+		t.Fatalf("turn 1 response missing generation info: %#v", first)
+	}
+	sessionID, _ := first.Choices[0].GenerationInfo.Additional["cursor_session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("turn 1 response missing cursor_session_id: %#v", first.Choices[0].GenerationInfo.Additional)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel2()
+	second, err := adapter.GenerateContent(ctx2, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only that token."}}},
+	}, WithCursorStructuredTransport(true), WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
+	if err != nil {
+		t.Fatalf("turn 2 resume error for session %s = %v", sessionID, err)
+	}
+	if second == nil || len(second.Choices) == 0 || !strings.Contains(second.Choices[0].Content, sentinel) {
+		t.Fatalf("turn 2 did not resume turn 1; want token %q, response=%#v", sentinel, second)
 	}
 }
 

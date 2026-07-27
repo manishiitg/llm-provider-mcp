@@ -99,6 +99,31 @@ func Graceful(cmd *exec.Cmd, terminated <-chan struct{}, logger interfaces.Logge
 	}
 }
 
+// GracefulAfterNaturalExit gives a CLI a bounded opportunity to finish its
+// normal post-result cleanup before sending SIGTERM. Some CLIs emit their
+// terminal event before flushing resumable session state to disk; signaling
+// immediately can therefore make a successful turn impossible to resume.
+func GracefulAfterNaturalExit(cmd *exec.Cmd, terminated <-chan struct{}, naturalExitGrace time.Duration, logger interfaces.Logger) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if logger == nil {
+		logger = noopLogger{}
+	}
+	if naturalExitGrace > 0 {
+		timer := time.NewTimer(naturalExitGrace)
+		defer timer.Stop()
+		select {
+		case <-terminated:
+			logger.Infof("[SHUTDOWN] process %d exited naturally after terminal event", cmd.Process.Pid)
+			return
+		case <-timer.C:
+			logger.Infof("[SHUTDOWN] natural-exit grace (%s) expired for pid %d", naturalExitGrace, cmd.Process.Pid)
+		}
+	}
+	Graceful(cmd, terminated, logger)
+}
+
 // sigtermAndWait sends a SIGTERM to the process group and waits up to
 // `grace` for the terminated channel to close. Returns true if the caller
 // should proceed to the next escalation step, false if the process has
