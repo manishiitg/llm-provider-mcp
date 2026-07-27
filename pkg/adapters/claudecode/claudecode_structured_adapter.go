@@ -248,10 +248,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 									args string
 								}{name: block.Name, args: string(block.Input)}
 							}
+							// Carry the arguments on the START chunk. They are already
+							// known here (block.Input), and the ToolCallStart event is
+							// the only one with a field for them — ToolCallEnd has no
+							// arguments field, so attaching them to the end chunk
+							// silently drops them and the UI renders a permanently
+							// empty "Arguments: (no arguments)" section.
 							emitChunk(llmtypes.StreamChunk{
 								Type:       llmtypes.StreamChunkTypeToolCallStart,
 								ToolName:   block.Name,
 								ToolCallID: block.ID,
+								ToolArgs:   string(block.Input),
 							})
 						}
 					}
