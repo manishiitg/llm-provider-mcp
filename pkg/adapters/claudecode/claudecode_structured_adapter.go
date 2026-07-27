@@ -349,6 +349,21 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		v := *totalUsage.CacheTokens
 		genInfo.CachedContentTokens = &v
 	}
+	// Record the cwd this conversation was actually created in, exactly as the
+	// tmux adapter does. Claude keys a resumable conversation by working
+	// directory (~/.claude/projects/<slugified-cwd>/), so a handle without it
+	// forces the resume path to guess — and when the caller isolates the
+	// session in its own workspace, guessing meant resuming against the user's
+	// real workflow dir and failing with "No conversation found with session
+	// ID", silently restarting the turn as a fresh conversation.
+	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+		Provider:        "claude-code",
+		Transport:       llmtypes.CodingProviderTransportStructured,
+		NativeSessionID: sessionID,
+		WorkingDir:      workingDir,
+		Model:           c.modelID,
+		Status:          llmtypes.CodingProviderSessionStatusIdle,
+	})
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
