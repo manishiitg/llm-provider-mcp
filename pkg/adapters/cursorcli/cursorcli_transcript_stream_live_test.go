@@ -15,7 +15,7 @@ import (
 // proof for Cursor, mirroring the Claude/Codex BridgeLive tests: a real
 // authenticated Cursor tmux turn against a real MCP server (api-bridge /
 // contract_echo_token) driving a multi-step task that forces narration
-// interleaved with two MCP tool calls. With CURSOR_CLI_STREAM_TRANSCRIPT=1 it
+// interleaved with two MCP tool calls. With WithStreamTranscript(true) it
 // asserts the store.db tailer streamed structured assistant-text (Content) and
 // MCP tool-call (ToolCallStart) chunks, and that the tools actually executed
 // (both tokens returned). Cursor commits store.db asynchronously so streaming is
@@ -25,7 +25,6 @@ import (
 // Gated behind -coding-cli-p0-live; requires a real cursor-agent CLI, node, tmux.
 func TestCursorCLITranscriptStreamingBridgeLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Setenv(EnvCursorInteractiveStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
@@ -58,6 +57,7 @@ func TestCursorCLITranscriptStreamingBridgeLive(t *testing.T) {
 		WithMCPConfig(mcpConfig),
 		WithApproveMCPs(),
 		WithForce(),
+		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {
@@ -98,14 +98,14 @@ func TestCursorCLITranscriptStreamingBridgeLive(t *testing.T) {
 }
 
 // TestCursorCLITranscriptStreamingDisabledControl is the control for the test
-// above: the SAME real bridge turn with the feature OFF (env flag unset). It
-// proves the structured content/tool stream is produced by THIS feature — with
-// streaming disabled the store.db tailer emits nothing, so a no-terminal UI gets
-// no structured chunks. The tool still runs (tokens come back), it just does not
-// stream as structured chunks.
+// above: the SAME real bridge turn with the feature OFF (default; no
+// WithStreamTranscript option passed). It proves the structured content/tool
+// stream is produced by THIS feature — with streaming disabled the store.db
+// tailer emits nothing, so a no-terminal UI gets no structured chunks. The tool
+// still runs (tokens come back), it just does not stream as structured chunks.
 func TestCursorCLITranscriptStreamingDisabledControl(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	// Deliberately DO NOT set EnvCursorInteractiveStreamTranscript — feature OFF.
+	// Deliberately DO NOT pass WithStreamTranscript — feature OFF by default.
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})

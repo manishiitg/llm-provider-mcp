@@ -52,17 +52,11 @@ const (
 	// task_complete events remain the primary path.
 	defaultCodexInteractiveStalePaneBackstop = 5 * time.Minute
 
-	EnvCodexInteractiveSessionPrefix        = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCodexInteractiveTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCodexInteractiveIdleTimeoutSeconds   = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCodexInteractivePromptWaitSeconds    = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCodexInteractivePromptMaxWaitSeconds = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
-	EnvCodexInteractiveStreamTmuxScreen     = "CODEX_CLI_STREAM_TMUX_SCREEN"
-	// EnvCodexInteractiveStreamTranscript opts into streaming structured content
-	// (assistant text + tool-call starts) by tailing Codex's rollout JSONL
-	// mid-turn, for design-first UIs that never render the terminal pane.
-	// Default OFF — additive to the existing pane-snapshot stream.
-	EnvCodexInteractiveStreamTranscript         = "CODEX_CLI_STREAM_TRANSCRIPT"
+	EnvCodexInteractiveSessionPrefix            = "CODEX_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCodexInteractiveTimeoutSeconds           = "CODEX_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCodexInteractiveIdleTimeoutSeconds       = "CODEX_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCodexInteractivePromptWaitSeconds        = "CODEX_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
+	EnvCodexInteractivePromptMaxWaitSeconds     = "CODEX_CLI_INTERACTIVE_PROMPT_MAX_WAIT_SECONDS"
 	EnvCodexInteractiveStalePaneBackstopSeconds = "CODEX_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
@@ -191,7 +185,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 				// first user message behind the slower full-idle readiness check.
 				waitForStartup = waitForCodexInputPrompt
 			}
-			if err := waitForStartup(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+			if err := waitForStartup(callCtx, session.tmuxSessionName, opts.StreamChan, codexInteractiveStreamTmuxScreenEnabled(opts)); err != nil {
 				markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 				releaseSession = false
 				failedSession := session
@@ -257,7 +251,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	promptSentAt := time.Now()
 	if initialPromptAtLaunch {
 		var err error
-		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan)
+		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan, codexInteractiveStreamTmuxScreenEnabled(opts))
 		if err != nil {
 			inspector.EmitError(err, map[string]interface{}{"phase": "tmux_initial_prompt_start"})
 			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
@@ -285,7 +279,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts))
+	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts))
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		inspector.EmitError(err, map[string]interface{}{
@@ -1378,15 +1372,15 @@ func codexInteractiveShellCommand(args []string, workingDir string) string {
 	return shelllaunch.Command(args, workingDir)
 }
 
-func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
-	return waitForCodexPromptMode(ctx, sessionName, streamChan, false)
+func waitForCodexPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
+	return waitForCodexPromptMode(ctx, sessionName, streamChan, false, streamTerminalScreen)
 }
 
-func waitForCodexInputPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
-	return waitForCodexPromptMode(ctx, sessionName, streamChan, true)
+func waitForCodexInputPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
+	return waitForCodexPromptMode(ctx, sessionName, streamChan, true, streamTerminalScreen)
 }
 
-func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
 	maxWait := codexInteractivePromptMaxWait()
 	maxTimer := time.NewTimer(maxWait)
 	defer maxTimer.Stop()
@@ -1401,7 +1395,6 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var lastStartupCapture string
-	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 
 	for {
 		select {
@@ -1465,7 +1458,7 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 	}
 }
 
-func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, acceptActiveComposer bool) error {
+func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, acceptActiveComposer bool, streamTerminalScreen bool) error {
 	promptWait := codexInteractivePromptWait()
 	maxWait := codexInteractivePromptMaxWait()
 	maxTimer := time.NewTimer(maxWait)
@@ -1488,7 +1481,6 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 	const maxHookTrustDismissAttempts = 6
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	lastActivityAt := time.Now()
 	lastCaptured := ""
 	var promptCandidateSnapshot string
@@ -1749,7 +1741,7 @@ func codexPaneHasEmptyComposer(captured string) bool {
 	return false
 }
 
-func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool) (string, error) {
+func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
@@ -1766,7 +1758,6 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	// in a "not ready" branch can never suppress it.
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
-	streamTerminalScreen := codexInteractiveStreamTmuxScreenEnabled()
 	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir)
 	// Opt-in structured streaming: tail the rollout JSONL mid-turn so a
 	// design-first UI gets assistant text + tool-call starts without the pane.
@@ -4099,15 +4090,17 @@ func codexInteractivePromptMaxWait() time.Duration {
 	return codexDurationFromEnv(EnvCodexInteractivePromptMaxWaitSeconds, defaultCodexPromptMaxWait)
 }
 
-func codexInteractiveStreamTmuxScreenEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvCodexInteractiveStreamTmuxScreen))) {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
+// codexInteractiveStreamTmuxScreenEnabled reports whether to push raw
+// terminal-pane snapshots to the caller's StreamChan mid-turn. Default ON, set
+// per call via WithStreamTmuxScreen — there is no environment-variable
+// fallback.
+func codexInteractiveStreamTmuxScreenEnabled(opts *llmtypes.CallOptions) bool {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyStreamTmuxScreen].(bool); ok {
+			return v
+		}
 	}
+	return true
 }
 
 // codexInteractiveStalePaneBackstop bounds how long the response-wait loop will

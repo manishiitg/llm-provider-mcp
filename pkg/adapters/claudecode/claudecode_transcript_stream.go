@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -20,24 +19,15 @@ const claudeTranscriptStreamPollInterval = 250 * time.Millisecond
 
 // claudeInteractiveStreamTranscriptEnabled reports whether to tail the CLI's
 // JSONL transcript for structured streaming. Opt-in (default OFF): the existing
-// pane-snapshot stream is unaffected when this is disabled.
-// Resolution order: an explicit per-call WithStreamTranscript wins, so one
-// agent in a process can stream while another doesn't; otherwise the env var
-// acts as the process-level default. The env var used to be the ONLY way in,
-// which made the feature invisible from Go and silently off on any machine
-// that hadn't exported it.
+// pane-snapshot stream is unaffected when this is disabled. Set per call via
+// WithStreamTranscript — there is no environment-variable fallback.
 func claudeInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if v, ok := opts.Metadata.Custom[MetadataKeyStreamTranscript].(bool); ok {
 			return v
 		}
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvClaudeTmuxStreamTranscript))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 // claudeTranscriptEvent is one structured item recovered from the transcript

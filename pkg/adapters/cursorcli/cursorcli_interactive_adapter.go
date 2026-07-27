@@ -64,15 +64,10 @@ const (
 	// policy opt-in instead of returning a partial response after a fixed delay.
 	defaultCursorInteractiveStalePaneBackstop = 0
 
-	EnvCursorInteractiveSessionPrefix      = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
-	EnvCursorInteractiveTimeoutSeconds     = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
-	EnvCursorInteractiveIdleTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
-	EnvCursorInteractivePromptWaitSeconds  = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvCursorInteractiveStreamTmuxScreen   = "CURSOR_CLI_STREAM_TMUX_SCREEN"
-	// EnvCursorInteractiveStreamTranscript opts into streaming structured content
-	// (assistant text + tool-call starts) by polling Cursor's store.db mid-turn,
-	// for design-first UIs that never render the terminal pane. Default OFF.
-	EnvCursorInteractiveStreamTranscript            = "CURSOR_CLI_STREAM_TRANSCRIPT"
+	EnvCursorInteractiveSessionPrefix               = "CURSOR_CLI_INTERACTIVE_SESSION_PREFIX"
+	EnvCursorInteractiveTimeoutSeconds              = "CURSOR_CLI_INTERACTIVE_TIMEOUT_SECONDS"
+	EnvCursorInteractiveIdleTimeoutSeconds          = "CURSOR_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
+	EnvCursorInteractivePromptWaitSeconds           = "CURSOR_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
 	EnvCursorInteractiveFirstActivityTimeoutSeconds = "CURSOR_CLI_INTERACTIVE_FIRST_ACTIVITY_TIMEOUT_SECONDS"
 	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
@@ -209,7 +204,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}()
 
 	if created {
-		if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan); err != nil {
+		if err := waitForCursorPrompt(callCtx, session.tmuxSessionName, opts.StreamChan, cursorInteractiveStreamTmuxScreenEnabled(opts)); err != nil {
 			markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 			releaseSession = false
 			failedSession := session
@@ -306,7 +301,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		go func() { defer close(cursorStreamDone); streamState.run(streamCtx, opts.StreamChan) }()
 	}
 
-	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts))
+	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts), cursorInteractiveStreamTmuxScreenEnabled(opts))
 	if cursorStreamStop != nil {
 		cursorStreamStop()
 		<-cursorStreamDone // goroutine (and its final flush) done before any close(opts.StreamChan)
@@ -1302,7 +1297,7 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 	return nil
 }
 
-func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
 	deadline, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
 	defer cancel()
 
@@ -1319,7 +1314,6 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 	// placeholder paints before the input field is interactive.
 	var consecutiveReadyTicks int
 	var bootBannerReadySince time.Time
-	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
 		case <-deadline.Done():
@@ -1608,7 +1602,7 @@ func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message st
 	}
 }
 
-func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool) (string, error) {
+func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	waitStartedAt := time.Now()
@@ -1633,7 +1627,6 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	// keeps the loop in a "not ready" branch can never suppress it.
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
-	streamTerminalScreen := cursorInteractiveStreamTmuxScreenEnabled()
 	for {
 		select {
 		case <-ctx.Done():
@@ -2896,15 +2889,17 @@ func cursorInteractivePromptWait() time.Duration {
 	return tmuxlaunch.PromptWait(EnvCursorInteractivePromptWaitSeconds)
 }
 
-func cursorInteractiveStreamTmuxScreenEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvCursorInteractiveStreamTmuxScreen))) {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
+// cursorInteractiveStreamTmuxScreenEnabled reports whether to push raw
+// terminal-pane snapshots to the caller's StreamChan mid-turn. Default ON, set
+// per call via WithStreamTmuxScreen — there is no environment-variable
+// fallback.
+func cursorInteractiveStreamTmuxScreenEnabled(opts *llmtypes.CallOptions) bool {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyStreamTmuxScreen].(bool); ok {
+			return v
+		}
 	}
+	return true
 }
 
 func cursorDurationFromEnv(key string, fallback time.Duration) time.Duration {

@@ -228,23 +228,19 @@ func TestCodexCLIAdapterGPT56MetadataAndAliases(t *testing.T) {
 }
 
 func TestCodexInteractiveStreamTmuxScreenFlag(t *testing.T) {
-	t.Setenv(EnvCodexInteractiveStreamTmuxScreen, "")
-	if !codexInteractiveStreamTmuxScreenEnabled() {
+	if !codexInteractiveStreamTmuxScreenEnabled(nil) {
 		t.Fatal("tmux screen streaming should be enabled by default")
 	}
 
-	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
-		t.Setenv(EnvCodexInteractiveStreamTmuxScreen, value)
-		if !codexInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be enabled for %q", value)
-		}
+	var opts llmtypes.CallOptions
+	WithStreamTmuxScreen(true)(&opts)
+	if !codexInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be enabled when explicitly set true")
 	}
 
-	for _, value := range []string{"0", "false", "FALSE", "no", "off"} {
-		t.Setenv(EnvCodexInteractiveStreamTmuxScreen, value)
-		if codexInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be disabled for %q", value)
-		}
+	WithStreamTmuxScreen(false)(&opts)
+	if codexInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be disabled when explicitly set false")
 	}
 }
 
@@ -394,7 +390,7 @@ exit 0
 	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "10")
 
 	started := time.Now()
-	if err := waitForCodexPrompt(context.Background(), "working-session", nil); err != nil {
+	if err := waitForCodexPrompt(context.Background(), "working-session", nil, true); err != nil {
 		t.Fatalf("waitForCodexPrompt returned error while pane remained active: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed < time.Second {
@@ -435,7 +431,7 @@ exit 0
 		t.Fatal("full-idle readiness should remain false during MCP startup")
 	}
 
-	if err := waitForCodexInputPrompt(context.Background(), "mcp-startup-session", nil); err != nil {
+	if err := waitForCodexInputPrompt(context.Background(), "mcp-startup-session", nil, true); err != nil {
 		t.Fatalf("input composer was not accepted during MCP startup: %v", err)
 	}
 }
@@ -482,7 +478,7 @@ exit 0
 	}
 
 	started := time.Now()
-	if err := waitForCodexPrompt(context.Background(), "stale-scrollback-session", nil); err != nil {
+	if err := waitForCodexPrompt(context.Background(), "stale-scrollback-session", nil, true); err != nil {
 		t.Fatalf("stable empty composer was not accepted: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed < codexPromptCandidateStableWindow {
@@ -520,7 +516,7 @@ exit 0
 	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "30")
 
 	started := time.Now()
-	if err := waitForCodexPrompt(context.Background(), "rotating-ghost-session", nil); err != nil {
+	if err := waitForCodexPrompt(context.Background(), "rotating-ghost-session", nil, true); err != nil {
 		t.Fatalf("rotating empty composer was not accepted: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed < codexPromptCandidateStableWindow {
@@ -1961,7 +1957,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "", false)
+	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "", false, true)
 	if err != nil {
 		t.Fatalf("completed Codex 0.144.1 pane did not satisfy the response contract: %v", err)
 	}

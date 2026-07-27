@@ -59,7 +59,7 @@ func collectTranscriptStream(streamChan <-chan llmtypes.StreamChunk) <-chan tran
 // MCP server (api-bridge / echo_contract) and a real multi-step task that forces
 // narration interleaved with two MCP tool calls — the text → tool → text → tool
 // → final-text shape a live turn actually produces. With
-// CLAUDE_CODE_STREAM_TRANSCRIPT=1 it asserts the transcript tailer streamed BOTH
+// WithStreamTranscript(true) it asserts the transcript tailer streamed BOTH
 // assistant-text (Content) and MCP tool-call (ToolCallStart) chunks from the
 // live JSONL transcript, and that the tools actually executed end to end.
 //
@@ -68,7 +68,6 @@ func collectTranscriptStream(streamChan <-chan llmtypes.StreamChunk) <-chan tran
 // CLI, `node`, and tmux.
 func TestClaudeCodeTranscriptStreamingBridgeLive(t *testing.T) {
 	skipClaudeInteractiveIntegration(t)
-	t.Setenv(EnvClaudeTmuxStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
@@ -100,6 +99,7 @@ func TestClaudeCodeTranscriptStreamingBridgeLive(t *testing.T) {
 		WithClaudeCodeTools(""),
 		WithAllowedTools("mcp__api-bridge__echo_contract"),
 		WithEffort("low"),
+		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestClaudeCodeTranscriptStreamingBridgeLive(t *testing.T) {
 // structured chunks. Run alongside the enabled test to see the contrast.
 func TestClaudeCodeTranscriptStreamingDisabledControl(t *testing.T) {
 	skipClaudeInteractiveIntegration(t)
-	// Deliberately DO NOT set EnvClaudeTmuxStreamTranscript — feature OFF.
+	// Deliberately DO NOT pass WithStreamTranscript — feature OFF by default.
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})

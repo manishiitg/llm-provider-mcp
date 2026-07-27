@@ -142,7 +142,7 @@ func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	})
 
 	started := time.Now()
-	err = waitForCursorPrompt(ctx, sessionName, nil)
+	err = waitForCursorPrompt(ctx, sessionName, nil, true)
 	if !llmtypes.IsCodingAgentAuthRequiredError(err) {
 		pane, _ := captureCursorPane(context.Background(), sessionName)
 		t.Fatalf("waitForCursorPrompt error = %v, want typed authentication-required error; pane:\n%s", err, pane)
@@ -215,7 +215,7 @@ func TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract(t *testing.T) {
 	}
 
 	trustAcceptedAt := time.Now()
-	if err := waitForCursorPrompt(ctx, sessionName, nil); err != nil {
+	if err := waitForCursorPrompt(ctx, sessionName, nil, true); err != nil {
 		t.Fatalf("handle fresh workspace trust prompt: %v", err)
 	}
 	if elapsed := time.Since(trustAcceptedAt); elapsed < cursorWorkspaceTrustReadyGrace {
@@ -230,7 +230,7 @@ func TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract(t *testing.T) {
 	if err := sendCursorInitialPromptToTmux(ctx, sessionName, prompt); err != nil {
 		t.Fatalf("send first post-trust Cursor prompt: %v", err)
 	}
-	captured, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false)
+	captured, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false, true)
 	if err != nil {
 		t.Fatalf("wait for first post-trust Cursor response: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestCursorCLIRealVisibleMultilineDraftContract(t *testing.T) {
 		defer closeCancel()
 		_ = killCursorTmuxSession(closeCtx, sessionName)
 	})
-	if err := waitForCursorPrompt(ctx, sessionName, nil); err != nil {
+	if err := waitForCursorPrompt(ctx, sessionName, nil, true); err != nil {
 		t.Fatalf("wait for visible draft prompt: %v", err)
 	}
 	baseline, err := captureCursorPane(ctx, sessionName)
@@ -360,7 +360,7 @@ func TestCursorCLIRealVisibleMultilineDraftContract(t *testing.T) {
 	if err := ensureCursorInputSubmitted(ctx, sessionName, prompt); err != nil {
 		t.Fatalf("confirm visible multiline submission: %v", err)
 	}
-	finalPane, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false)
+	finalPane, err := waitForCursorInteractiveResponse(ctx, sessionName, baseline, prompt, nil, nil, false, true)
 	if err != nil {
 		t.Fatalf("wait for visible multiline response: %v", err)
 	}

@@ -20,9 +20,12 @@ const (
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
 	// MetadataKeyStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) mid-turn by polling Cursor's own
-	// store.db. Set via WithStreamTranscript; when unset the
-	// CURSOR_CLI_STREAM_TRANSCRIPT env var decides (default OFF).
+	// store.db. Set via WithStreamTranscript (default OFF).
 	MetadataKeyStreamTranscript = "cursor_stream_transcript"
+	// MetadataKeyStreamTmuxScreen controls whether raw terminal-pane snapshots
+	// are also pushed to the caller's StreamChan mid-turn. Set via
+	// WithStreamTmuxScreen (default ON).
+	MetadataKeyStreamTmuxScreen = "cursor_stream_tmux_screen"
 	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
 	// controlling whether projected workspace artifacts (.cursor/cli.json,
 	// .cursor/mcp.json, hooks.json, deny script) preserve an operator's
@@ -234,22 +237,22 @@ func WithDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 
 // WithStreamTranscript enables (or disables) mid-turn structured streaming —
 // assistant text and tool-call starts pushed to the caller's StreamChan as the
-// turn runs, recovered by polling Cursor's own store.db.
-//
-// This is the discoverable, per-call form of what was previously ONLY reachable
-// through the CURSOR_CLI_STREAM_TRANSCRIPT environment variable. An env-only
-// switch is invisible to callers of this package: nothing in the Go API hints
-// that it exists, it cannot differ between two agents in one process, and on a
-// machine where it simply isn't exported the feature is silently off with no
-// error and no log — which is exactly how "tools stopped streaming" showed up
-// as a mystery on a second machine.
-//
-// Precedence: an explicit option always wins; the env var remains the
-// process-level default for callers that don't set it.
+// turn runs, recovered by polling Cursor's own store.db. Default OFF.
 func WithStreamTranscript(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
+	}
+}
+
+// WithStreamTmuxScreen enables (or disables) pushing raw terminal-pane
+// snapshots to the caller's StreamChan mid-turn. Default ON — pass false to
+// suppress terminal-screen chunks for a design-first UI that only wants
+// WithStreamTranscript's structured content.
+func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTmuxScreen] = enabled
 	}
 }
 

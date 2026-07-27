@@ -300,23 +300,19 @@ func TestHasCursorModeSwitchPrompt(t *testing.T) {
 }
 
 func TestCursorInteractiveStreamTmuxScreenFlag(t *testing.T) {
-	t.Setenv(EnvCursorInteractiveStreamTmuxScreen, "")
-	if !cursorInteractiveStreamTmuxScreenEnabled() {
+	if !cursorInteractiveStreamTmuxScreenEnabled(nil) {
 		t.Fatal("tmux screen streaming should be enabled by default")
 	}
 
-	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
-		t.Setenv(EnvCursorInteractiveStreamTmuxScreen, value)
-		if !cursorInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be enabled for %q", value)
-		}
+	var opts llmtypes.CallOptions
+	WithStreamTmuxScreen(true)(&opts)
+	if !cursorInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be enabled when explicitly set true")
 	}
 
-	for _, value := range []string{"0", "false", "FALSE", "no", "off"} {
-		t.Setenv(EnvCursorInteractiveStreamTmuxScreen, value)
-		if cursorInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be disabled for %q", value)
-		}
+	WithStreamTmuxScreen(false)(&opts)
+	if cursorInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be disabled when explicitly set false")
 	}
 }
 

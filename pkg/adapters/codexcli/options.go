@@ -23,9 +23,12 @@ const (
 	MetadataKeyDisableShellTool = "codex_disable_shell_tool"
 	// MetadataKeyStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) mid-turn by tailing Codex's own
-	// rollout JSONL. Set via WithStreamTranscript; when unset the
-	// CODEX_CLI_STREAM_TRANSCRIPT env var decides (default OFF).
-	MetadataKeyStreamTranscript      = "codex_stream_transcript"
+	// rollout JSONL. Set via WithStreamTranscript (default OFF).
+	MetadataKeyStreamTranscript = "codex_stream_transcript"
+	// MetadataKeyStreamTmuxScreen controls whether raw terminal-pane snapshots
+	// are also pushed to the caller's StreamChan mid-turn. Set via
+	// WithStreamTmuxScreen (default ON).
+	MetadataKeyStreamTmuxScreen      = "codex_stream_tmux_screen"
 	MetadataKeyMCPServers            = "codex_mcp_servers"
 	MetadataKeyConfigOverrides       = "codex_config_overrides"
 	MetadataKeyApprovalPolicy        = "codex_approval_policy"
@@ -354,19 +357,21 @@ func ensureMetadata(opts *llmtypes.CallOptions) {
 
 // WithStreamTranscript enables (or disables) mid-turn structured streaming —
 // assistant text and tool-call starts pushed to the caller's StreamChan as the
-// turn runs, recovered by tailing Codex's own rollout JSONL.
-//
-// This is the discoverable, per-call form of what was previously ONLY reachable
-// through the CODEX_CLI_STREAM_TRANSCRIPT environment variable. An env-only
-// switch is invisible to callers of this package, cannot differ between two
-// agents in one process, and is silently off on any machine that hasn't
-// exported it — with no error and no log to say so.
-//
-// Precedence: an explicit option always wins; the env var remains the
-// process-level default for callers that don't set it.
+// turn runs, recovered by tailing Codex's own rollout JSONL. Default OFF.
 func WithStreamTranscript(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
+	}
+}
+
+// WithStreamTmuxScreen enables (or disables) pushing raw terminal-pane
+// snapshots to the caller's StreamChan mid-turn. Default ON — pass false to
+// suppress terminal-screen chunks for a design-first UI that only wants
+// WithStreamTranscript's structured content.
+func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTmuxScreen] = enabled
 	}
 }

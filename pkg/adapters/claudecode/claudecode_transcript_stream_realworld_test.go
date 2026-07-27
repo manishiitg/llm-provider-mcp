@@ -81,7 +81,6 @@ const workbenchRealWorldTask = "You have three tools from the 'workbench' MCP se
 // disk with the code word).
 func TestClaudeCodeTranscriptStreamingRealWorldLive(t *testing.T) {
 	skipClaudeInteractiveIntegration(t)
-	t.Setenv(EnvClaudeTmuxStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
 
 	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
@@ -103,6 +102,7 @@ func TestClaudeCodeTranscriptStreamingRealWorldLive(t *testing.T) {
 		WithClaudeCodeTools(""),
 		WithAllowedTools("mcp__workbench__web_search mcp__workbench__write_file mcp__workbench__read_file"),
 		WithEffort("low"),
+		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {

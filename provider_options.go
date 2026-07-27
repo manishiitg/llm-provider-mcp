@@ -395,16 +395,8 @@ func WithPiStatuslineExtension(source string) llmtypes.CallOption {
 // These enable structured streaming during a tmux/interactive turn: assistant
 // text and tool-call starts are pushed to the caller's StreamChan as the turn
 // runs, recovered from each CLI's own transcript (Claude/Codex JSONL, Cursor
-// store.db) rather than by scraping the pane.
-//
-// Each was previously reachable ONLY through a per-provider environment
-// variable (CLAUDE_CODE_STREAM_TRANSCRIPT / CODEX_CLI_STREAM_TRANSCRIPT /
-// CURSOR_CLI_STREAM_TRANSCRIPT), all defaulting OFF. That made the capability
-// invisible from Go — nothing in this package hinted it existed — impossible to
-// vary between two agents in one process, and silently disabled on any machine
-// where the var simply wasn't exported, with no error and no log. These options
-// are the discoverable form; the env vars remain as process-level defaults and
-// an explicit option always wins.
+// store.db) rather than by scraping the pane. Default OFF; set per call, per
+// agent — there is no environment-variable form or fallback.
 
 // WithClaudeStreamTranscript enables mid-turn structured streaming for Claude
 // Code by tailing its own JSONL transcript.
@@ -422,4 +414,29 @@ func WithCodexStreamTranscript(enabled bool) llmtypes.CallOption {
 // Cursor CLI by polling its own store.db.
 func WithCursorStreamTranscript(enabled bool) llmtypes.CallOption {
 	return cursorcli.WithStreamTranscript(enabled)
+}
+
+// --- Mid-turn terminal-pane streaming -------------------------------------
+//
+// These control whether raw terminal-pane snapshots are ALSO pushed to the
+// caller's StreamChan mid-turn, alongside (or instead of) the structured
+// transcript streaming above. Default ON; pass false to suppress terminal-
+// screen chunks for a design-first UI that only wants structured content.
+
+// WithClaudeStreamTmuxScreen enables (or disables) raw terminal-pane streaming
+// for Claude Code.
+func WithClaudeStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return claudecodeadapter.WithStreamTmuxScreen(enabled)
+}
+
+// WithCodexStreamTmuxScreen enables (or disables) raw terminal-pane streaming
+// for the Codex CLI.
+func WithCodexStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return codexcli.WithStreamTmuxScreen(enabled)
+}
+
+// WithCursorStreamTmuxScreen enables (or disables) raw terminal-pane streaming
+// for the Cursor CLI.
+func WithCursorStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return cursorcli.WithStreamTmuxScreen(enabled)
 }

@@ -50,7 +50,7 @@ func TestCursorInteractiveResponseFailsFastWhenNoActivityE2E(t *testing.T) {
 	}
 
 	started := time.Now()
-	_, err = waitForCursorInteractiveResponse(ctx, sessionName, baseline, "what is 2+2?", nil, nil, false)
+	_, err = waitForCursorInteractiveResponse(ctx, sessionName, baseline, "what is 2+2?", nil, nil, false, true)
 	elapsed := time.Since(started)
 
 	if err == nil {

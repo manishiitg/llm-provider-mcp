@@ -40,7 +40,6 @@ const (
 	EnvPiInteractiveSessionPrefix       = "PI_CLI_INTERACTIVE_SESSION_PREFIX"
 	EnvPiInteractiveIdleTimeoutSeconds  = "PI_CLI_INTERACTIVE_IDLE_TIMEOUT_SECONDS"
 	EnvPiInteractivePromptWaitSeconds   = "PI_CLI_INTERACTIVE_PROMPT_WAIT_SECONDS"
-	EnvPiInteractiveStreamTmuxScreen    = "PI_CLI_STREAM_TMUX_SCREEN"
 	EnvPiInteractiveUseNpxFallback      = "PI_CLI_USE_NPX_FALLBACK"
 	EnvPiInteractiveNpmIgnoreScripts    = "PI_CLI_NPM_IGNORE_SCRIPTS"
 	EnvPiInteractiveRetentionSeconds    = "PI_CLI_INTERACTIVE_RETENTION_SECONDS"

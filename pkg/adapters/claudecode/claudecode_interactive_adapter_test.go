@@ -17,23 +17,19 @@ import (
 )
 
 func TestClaudeInteractiveStreamTmuxScreenFlag(t *testing.T) {
-	t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, "")
-	if !claudeInteractiveStreamTmuxScreenEnabled() {
+	if !claudeInteractiveStreamTmuxScreenEnabled(nil) {
 		t.Fatal("tmux screen streaming should be enabled by default")
 	}
 
-	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
-		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
-		if !claudeInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be enabled for %q", value)
-		}
+	var opts llmtypes.CallOptions
+	WithStreamTmuxScreen(true)(&opts)
+	if !claudeInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be enabled when explicitly set true")
 	}
 
-	for _, value := range []string{"0", "false", "FALSE", "no", "off"} {
-		t.Setenv(EnvClaudeExperimentalStreamTmuxScreen, value)
-		if claudeInteractiveStreamTmuxScreenEnabled() {
-			t.Fatalf("tmux screen streaming should be disabled for %q", value)
-		}
+	WithStreamTmuxScreen(false)(&opts)
+	if claudeInteractiveStreamTmuxScreenEnabled(&opts) {
+		t.Fatal("tmux screen streaming should be disabled when explicitly set false")
 	}
 }
 
@@ -1388,7 +1384,7 @@ exit 0
 	stream := make(chan llmtypes.StreamChunk, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := waitForTmuxPrompt(ctx, "test-session", stream); err != nil {
+	if err := waitForTmuxPrompt(ctx, "test-session", stream, true); err != nil {
 		t.Fatalf("waitForTmuxPrompt returned error for normal ready prompt: %v", err)
 	}
 	if got, err := os.ReadFile(sendKeysPath); err == nil && strings.TrimSpace(string(got)) != "" {

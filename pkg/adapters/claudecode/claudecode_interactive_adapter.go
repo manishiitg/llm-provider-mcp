@@ -78,12 +78,6 @@ const (
 	// is a sliding inactivity window; this is the absolute backstop.
 	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
 	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeTmuxStreamTmuxScreen     = "CLAUDE_CODE_STREAM_TMUX_SCREEN"
-	// EnvClaudeTmuxStreamTranscript opts into streaming structured content
-	// (assistant text + tool-call starts) by tailing the CLI's JSONL transcript
-	// mid-turn, for design-first UIs that never render the terminal pane.
-	// Default OFF — additive to the existing pane-snapshot stream.
-	EnvClaudeTmuxStreamTranscript = "CLAUDE_CODE_STREAM_TRANSCRIPT"
 	// EnvClaudeInteractiveStalePaneBackstopSeconds bounds how long the
 	// assistant-response loop will keep waiting on a pane that produced activity
 	// and then went byte-identical without ever reaching a ready prompt. Set to
@@ -105,7 +99,6 @@ const (
 	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
 	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalStreamTmuxScreen   = EnvClaudeTmuxStreamTmuxScreen
 	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 )
 
@@ -367,7 +360,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	})
 
 	if createdSession {
-		if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan); err != nil {
+		if err := waitForTmuxPrompt(callCtx, sessionName, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts)); err != nil {
 			discardPersistentSession(err)
 			return nil, err
 		}
@@ -440,7 +433,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		go streamClaudeTranscript(streamCtx, nativeSessionID, turnStart, opts.StreamChan)
 	}
 
-	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan)
+	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))
 	if err != nil {
 		if isClaudeTmuxSessionLostError(err) {
 			discardPersistentSession(err)
@@ -1295,15 +1288,17 @@ func defaultClaudeDisplayName() string {
 	return "mcp-agent-" + time.Now().Format("20060102-150405")
 }
 
-func claudeInteractiveStreamTmuxScreenEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvClaudeExperimentalStreamTmuxScreen))) {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
+// claudeInteractiveStreamTmuxScreenEnabled reports whether to push raw
+// terminal-pane snapshots to the caller's StreamChan mid-turn. Default ON, set
+// per call via WithStreamTmuxScreen — there is no environment-variable
+// fallback.
+func claudeInteractiveStreamTmuxScreenEnabled(opts *llmtypes.CallOptions) bool {
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeyStreamTmuxScreen].(bool); ok {
+			return v
+		}
 	}
+	return true
 }
 
 // waitForMCPReadyFile holds a freshly created session's first prompt until the
@@ -1360,7 +1355,7 @@ func waitForMCPReadyFile(ctx context.Context, opts *llmtypes.CallOptions, sessio
 	}
 }
 
-func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk) error {
+func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
 	// promptWait is a sliding INACTIVITY window, not a hard cap on the whole
 	// wait. On resume Claude Code frequently compacts the conversation, and a
 	// large compaction routinely runs longer than promptWait. A fixed deadline
@@ -1383,7 +1378,6 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	featurePromptsDismissed := 0
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
 
 	lastActivityAt := time.Now()
 	for {
@@ -2409,8 +2403,8 @@ func hasNewAssistantOutput(delta string) bool {
 	return false
 }
 
-func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
-	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan)
+func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
+	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan, streamTerminalScreen)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
@@ -2469,7 +2463,7 @@ func forcedClaudeResponseFromCaptured(captured, paneBaseline string) string {
 	return strings.TrimSpace(newOutput)
 }
 
-func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk) (string, error) {
+func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -2478,7 +2472,6 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	streamTerminalScreen := claudeInteractiveStreamTmuxScreenEnabled()
 	stalePaneBackstop := claudeInteractiveStalePaneBackstop()
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. Tracked at the top of every tick, independent of

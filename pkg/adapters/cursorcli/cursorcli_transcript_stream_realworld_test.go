@@ -125,13 +125,12 @@ func sortedKeys(m map[string]bool) []string {
 
 // TestCursorCLITranscriptStreamingRealWorldLive is the realistic Cursor P0 test:
 // a real Cursor tmux turn, MCP-only, driving search -> edit-a-file -> read-back
-// over a real MCP server, with CURSOR_CLI_STREAM_TRANSCRIPT=1. Cursor commits its
+// over a real MCP server, with WithStreamTranscript(true). Cursor commits its
 // store.db asynchronously so streaming is laggier than the JSONL adapters; the
 // tailer's final flush catches late commits. Asserts real work (result.txt on
 // disk) + that structured chunks streamed, and records output for agent review.
 func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Setenv(EnvCursorInteractiveStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
@@ -155,6 +154,7 @@ func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 		WithMCPConfig(mcpConfig),
 		WithApproveMCPs(),
 		WithForce(),
+		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {

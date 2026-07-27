@@ -71,12 +71,11 @@ func codexBridgeStreamOpts(t *testing.T, streamChan chan<- llmtypes.StreamChunk)
 
 // TestCodexCLITranscriptStreamingBridgeLive is the P0-grade proof for Codex: a
 // real Codex tmux turn against a real MCP bridge (api-bridge / echo_contract)
-// and a real interleaved task, with CODEX_CLI_STREAM_TRANSCRIPT=1. Asserts the
+// and a real interleaved task, with WithStreamTranscript(true). Asserts the
 // rollout tailer streamed BOTH assistant text (Content) and MCP tool-call
 // (ToolCallStart) chunks, and the tools actually executed end to end.
 func TestCodexCLITranscriptStreamingBridgeLive(t *testing.T) {
 	requireRealCodexCLIE2E(t)
-	t.Setenv(EnvCodexInteractiveStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
@@ -88,6 +87,7 @@ func TestCodexCLITranscriptStreamingBridgeLive(t *testing.T) {
 	streamChan := make(chan llmtypes.StreamChunk, 1024)
 	captureDone := collectCodexTranscriptStream(streamChan)
 	_, opts := codexBridgeStreamOpts(t, streamChan)
+	opts = append(opts, WithStreamTranscript(true))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -142,7 +142,7 @@ func TestCodexCLITranscriptStreamingBridgeLive(t *testing.T) {
 // bridge turn with the feature OFF emits no structured content/tool chunks.
 func TestCodexCLITranscriptStreamingDisabledControl(t *testing.T) {
 	requireRealCodexCLIE2E(t)
-	// Feature OFF — do NOT set EnvCodexInteractiveStreamTranscript.
+	// Feature OFF — do NOT pass WithStreamTranscript.
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})

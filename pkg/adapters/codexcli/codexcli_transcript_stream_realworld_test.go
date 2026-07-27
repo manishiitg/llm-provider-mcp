@@ -87,7 +87,6 @@ func distinctToolNames(names []string) map[string]bool {
 // work happened (result.txt written to disk with the searched code word).
 func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	requireRealCodexCLIE2E(t)
-	t.Setenv(EnvCodexInteractiveStreamTranscript, "1")
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
@@ -110,6 +109,7 @@ func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
 		WithApprovalPolicy("never"),
 		WithReasoningEffort("low"),
 		WithConfigOverrides([]string{mcpCommandOverride}),
+		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	}
 
