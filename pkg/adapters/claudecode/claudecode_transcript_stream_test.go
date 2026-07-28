@@ -45,7 +45,7 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 	appendLine(t, path, oldTurn+text1+tool1)
 
 	// First read from offset 0: skips the prior turn, emits text then tool.
-	events, off1, err := readClaudeTranscriptEventsFromFile(path, 0, turnStart)
+	events, off1, err := readClaudeTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 1: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 	partial := `{"type":"assistant","timestamp":"` + ts + `","message":{"id":"msg_C","content":[{"type":"text","text":"Aft`
 	appendLine(t, path, text2+partial)
 
-	events, off2, err := readClaudeTranscriptEventsFromFile(path, off1, turnStart)
+	events, off2, err := readClaudeTranscriptEventsFromFile(path, off1, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 2: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 	rest := `er."}]}}` + "\n"
 	appendLine(t, path, rest)
 
-	events, _, err = readClaudeTranscriptEventsFromFile(path, off2, turnStart)
+	events, _, err = readClaudeTranscriptEventsFromFile(path, off2, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 3: %v", err)
 	}
@@ -89,62 +89,121 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 }
 
 // TestReadClaudeTranscriptEventsInterleavedOrder proves the realistic shape a
-// real turn produces — text → tool → text → tool → final text — streams in the
-// correct ORDER across incremental (append-live) polls, and that tool_result
-// (user) rows are skipped rather than emitted.
+// real turn produces — text → tool → result → text → tool → result → final
+// text — streams in the correct ORDER across incremental (append-live) polls,
+// and that a tool_result (user) row is emitted as the tool's end, not skipped.
+//
+// Before this, the tmux/interactive transport only ever emitted a tool-call
+// START from the transcript: it read "assistant" rows for tool_use and never
+// looked at the "user" rows carrying the result, so every tool call here had
+// no result and no duration — worse than the structured-transport bug fixed
+// earlier (that one only zeroed the duration; this dropped the result too).
 func TestReadClaudeTranscriptEventsInterleavedOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
-	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	tsAt := func(offset time.Duration) string { return turnStart.Add(offset).Format(time.RFC3339Nano) }
 
-	asst := func(id, block string) string {
+	asst := func(id, ts, block string) string {
 		return `{"type":"assistant","timestamp":"` + ts + `","message":{"id":"` + id + `","content":[` + block + `]}}` + "\n"
 	}
 	text := func(s string) string { return `{"type":"text","text":"` + s + `"}` }
 	toolUse := func(id, name string) string {
 		return `{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":{}}`
 	}
-	toolResult := func(id string) string {
-		return `{"type":"user","timestamp":"` + ts + `","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}}` + "\n"
+	toolResult := func(id, ts, result string) string {
+		return `{"type":"user","timestamp":"` + ts + `","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"` + result + `"}]}}` + "\n"
 	}
 
 	rows := []string{
-		asst("mA", text("Let me check the first file.")),
-		asst("mA", toolUse("t1", "read_file")),
-		toolResult("t1"),
-		asst("mB", text("Now the second file.")),
-		asst("mB", toolUse("t2", "read_file")),
-		toolResult("t2"),
-		asst("mC", text("Done. FINAL.")),
+		asst("mA", tsAt(time.Second), text("Let me check the first file.")),
+		asst("mA", tsAt(2*time.Second), toolUse("t1", "read_file")),
+		toolResult("t1", tsAt(5*time.Second), "file one contents"), // 3s duration
+		asst("mB", tsAt(6*time.Second), text("Now the second file.")),
+		asst("mB", tsAt(7*time.Second), toolUse("t2", "read_file")),
+		toolResult("t2", tsAt(9*time.Second), "file two contents"), // 2s duration
+		asst("mC", tsAt(10*time.Second), text("Done. FINAL.")),
 	}
 
-	var got []string
+	type emitted struct {
+		kind     string // text | start | end
+		value    string // text content, tool name, or tool result
+		duration time.Duration
+	}
+	var got []emitted
 	var offset int64
-	for _, row := range rows { // append one row at a time, poll after each
+	pending := map[string]time.Time{} // shared across polls, exactly as streamClaudeTranscript does
+	for _, row := range rows {        // append one row at a time, poll after each
 		appendLine(t, path, row)
-		events, next, err := readClaudeTranscriptEventsFromFile(path, offset, turnStart)
+		events, next, err := readClaudeTranscriptEventsFromFile(path, offset, turnStart, pending)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
 		offset = next
 		for _, e := range events {
-			if e.ToolName != "" {
-				got = append(got, "tool:"+e.ToolName)
-			} else {
-				got = append(got, "text:"+e.Text)
+			switch {
+			case e.IsToolEnd:
+				got = append(got, emitted{kind: "end", value: e.ToolResult, duration: e.ToolDuration})
+			case e.ToolName != "":
+				got = append(got, emitted{kind: "start", value: e.ToolName})
+			default:
+				got = append(got, emitted{kind: "text", value: e.Text})
 			}
 		}
 	}
 
-	want := []string{
-		"text:Let me check the first file.",
-		"tool:read_file",
-		"text:Now the second file.",
-		"tool:read_file",
-		"text:Done. FINAL.",
+	want := []emitted{
+		{kind: "text", value: "Let me check the first file."},
+		{kind: "start", value: "read_file"},
+		{kind: "end", value: "file one contents", duration: 3 * time.Second},
+		{kind: "text", value: "Now the second file."},
+		{kind: "start", value: "read_file"},
+		{kind: "end", value: "file two contents", duration: 2 * time.Second},
+		{kind: "text", value: "Done. FINAL."},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("interleaved emission order wrong:\n got=%v\nwant=%v", got, want)
+		t.Fatalf("interleaved emission order/content wrong:\n got=%+v\nwant=%+v", got, want)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending tool-start map not drained: %v", pending)
+	}
+}
+
+// TestReadClaudeTranscriptEventsToolEndSpansPolls proves the exact shape that
+// makes this hard: a tool_use row and its tool_result row can land in
+// DIFFERENT polls (real tools take real time), so the pending-start map must
+// survive across separate readClaudeTranscriptEventsFromFile calls for the
+// duration to be measured at all.
+func TestReadClaudeTranscriptEventsToolEndSpansPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	startTS := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	endTS := turnStart.Add(4 * time.Second).Format(time.RFC3339Nano)
+
+	pending := map[string]time.Time{}
+
+	appendLine(t, path, `{"type":"assistant","timestamp":"`+startTS+`","message":{"id":"mA","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{}}]}}`+"\n")
+	events, offset, err := readClaudeTranscriptEventsFromFile(path, 0, turnStart, pending)
+	if err != nil {
+		t.Fatalf("read start: %v", err)
+	}
+	if len(events) != 1 || events[0].ToolName != "read_file" {
+		t.Fatalf("expected the tool start alone, got %+v", events)
+	}
+	if _, ok := pending["t1"]; !ok {
+		t.Fatal("tool start was not recorded in the pending map for the next poll to find")
+	}
+
+	// A later, separate poll delivers only the result.
+	appendLine(t, path, `{"type":"user","timestamp":"`+endTS+`","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`+"\n")
+	events, _, err = readClaudeTranscriptEventsFromFile(path, offset, turnStart, pending)
+	if err != nil {
+		t.Fatalf("read end: %v", err)
+	}
+	if len(events) != 1 || !events[0].IsToolEnd {
+		t.Fatalf("expected the tool end alone, got %+v", events)
+	}
+	if events[0].ToolDuration != 3*time.Second {
+		t.Fatalf("ToolDuration = %v, want 3s (measured across two separate polls)", events[0].ToolDuration)
 	}
 }
 

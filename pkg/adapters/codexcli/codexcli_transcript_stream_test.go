@@ -22,18 +22,23 @@ func appendLine(t *testing.T, path, s string) {
 }
 
 // Real Codex (0.144+) rollout rows: assistant prose is an event_msg
-// agent_message; MCP calls are event_msg mcp_tool_call_begin/_end with the tool
-// under invocation.tool.
+// agent_message; MCP calls are event_msg mcp_tool_call_begin/_end, two
+// distinct rows, with the tool under invocation.tool. Native tools
+// (function_call/custom_tool_call + their _output rows) are the
+// response_item form and are built inline where used below.
 func codexAgentMsg(ts, text string) string {
 	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"agent_message","message":"` + text + `"}}` + "\n"
 }
-func codexMCPCallEnd(ts, tool, callID string) string {
-	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"` + callID + `","invocation":{"server":"api-bridge","tool":"` + tool + `"}}}` + "\n"
+func codexMCPCallBegin(ts, tool, callID string) string {
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"mcp_tool_call_begin","call_id":"` + callID + `","invocation":{"server":"api-bridge","tool":"` + tool + `"}}}` + "\n"
+}
+func codexMCPCallEnd(ts, callID string) string {
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"` + callID + `"}}` + "\n"
 }
 
 // TestReadCodexTranscriptEventsIncremental verifies the mid-turn rollout tailer
 // against the REAL schema: prior-turn rows skipped, agent_message → content,
-// mcp_tool_call_end → tool start (name from invocation.tool), reading from the
+// mcp_tool_call_begin → tool start (name from invocation.tool), reading from the
 // returned offset yields only new rows, and a partial trailing line is held back.
 func TestReadCodexTranscriptEventsIncremental(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
@@ -41,9 +46,9 @@ func TestReadCodexTranscriptEventsIncremental(t *testing.T) {
 	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
 	old := turnStart.Add(-time.Second).Format(time.RFC3339Nano)
 
-	appendLine(t, path, codexAgentMsg(old, "PRIOR")+codexAgentMsg(ts, "Reading the file.")+codexMCPCallEnd(ts, "echo_contract", "c1"))
+	appendLine(t, path, codexAgentMsg(old, "PRIOR")+codexAgentMsg(ts, "Reading the file.")+codexMCPCallBegin(ts, "echo_contract", "c1"))
 
-	events, off1, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	events, off1, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 1: %v", err)
 	}
@@ -62,7 +67,7 @@ func TestReadCodexTranscriptEventsIncremental(t *testing.T) {
 	partial := `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"agent_message","message":"Aft`
 	appendLine(t, path, text2+partial)
 
-	events, off2, err := readCodexTranscriptEventsFromFile(path, off1, turnStart)
+	events, off2, err := readCodexTranscriptEventsFromFile(path, off1, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 2: %v", err)
 	}
@@ -74,7 +79,7 @@ func TestReadCodexTranscriptEventsIncremental(t *testing.T) {
 	}
 
 	appendLine(t, path, `er."}}`+"\n")
-	events, _, err = readCodexTranscriptEventsFromFile(path, off2, turnStart)
+	events, _, err = readCodexTranscriptEventsFromFile(path, off2, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 3: %v", err)
 	}
@@ -93,9 +98,9 @@ func TestReadCodexTranscriptEventsInterleavedOrder(t *testing.T) {
 
 	rows := []string{
 		codexAgentMsg(ts, "Let me check the first file."),
-		codexMCPCallEnd(ts, "echo_contract", "c1"),
+		codexMCPCallBegin(ts, "echo_contract", "c1"),
 		codexAgentMsg(ts, "Now the second file."),
-		codexMCPCallEnd(ts, "echo_contract", "c2"),
+		codexMCPCallBegin(ts, "echo_contract", "c2"),
 		codexAgentMsg(ts, "Done. FINAL."),
 	}
 
@@ -103,7 +108,7 @@ func TestReadCodexTranscriptEventsInterleavedOrder(t *testing.T) {
 	var offset int64
 	for _, r := range rows {
 		appendLine(t, path, r)
-		events, next, err := readCodexTranscriptEventsFromFile(path, offset, turnStart)
+		events, next, err := readCodexTranscriptEventsFromFile(path, offset, turnStart, nil)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -141,7 +146,7 @@ func TestReadCodexTranscriptEventsResponseItemForm(t *testing.T) {
 		`{"timestamp":"`+ts+`","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}`+"\n"+
 			`{"timestamp":"`+ts+`","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_A"}}`+"\n")
 
-	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -166,9 +171,9 @@ func TestReadCodexTranscriptEventsRobustToNoiseAndUnicode(t *testing.T) {
 			`{"timestamp":"`+ts+`","type":"session_meta","payload":{"type":"whatever"}}`+"\n"+
 			codexAgentMsg(ts, unicodeMsg)+
 			`{"broken":`+"\n"+ // truncated/garbage JSON
-			codexMCPCallEnd(ts, "echo_contract", "c1"))
+			codexMCPCallBegin(ts, "echo_contract", "c1"))
 
-	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -193,7 +198,7 @@ func TestReadCodexTranscriptEventsLargeContentLine(t *testing.T) {
 	big := strings.Repeat("A", 200*1024) // 200KB assistant message
 
 	appendLine(t, path, codexAgentMsg(ts, big))
-	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart)
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -204,5 +209,122 @@ func TestReadCodexTranscriptEventsLargeContentLine(t *testing.T) {
 			}
 			return 0
 		}(), len(big))
+	}
+}
+
+// TestReadCodexTranscriptEventsMCPCallHasEndWithDuration proves the actual bug
+// fix: mcp_tool_call_begin/_end used to be deduped down to a single Start —
+// the caller (a tmux/interactive session) had no idea the call ever finished,
+// no duration, no result. Now begin produces a Start and end produces a real
+// End carrying the measured duration. ToolResult stays empty for MCP calls:
+// codex's own event stream never includes one, in this transport or the
+// structured one (see codexcli_structured_adapter.go).
+func TestReadCodexTranscriptEventsMCPCallHasEndWithDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	beginTS := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	endTS := turnStart.Add(4 * time.Second).Format(time.RFC3339Nano)
+
+	appendLine(t, path, codexMCPCallBegin(beginTS, "echo_contract", "c1")+codexMCPCallEnd(endTS, "c1"))
+
+	pending := map[string]time.Time{}
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, pending)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (start, end); %+v", len(events), events)
+	}
+	if events[0].IsToolEnd || events[0].ToolName != "echo_contract" || events[0].ToolCallID != "c1" {
+		t.Fatalf("events[0] (start) = %+v", events[0])
+	}
+	if !events[1].IsToolEnd || events[1].ToolCallID != "c1" {
+		t.Fatalf("events[1] (end) = %+v", events[1])
+	}
+	if events[1].ToolResult != "" {
+		t.Fatalf("MCP call end should carry no result text, got %q", events[1].ToolResult)
+	}
+	if events[1].ToolDuration != 3*time.Second {
+		t.Fatalf("ToolDuration = %v, want 3s", events[1].ToolDuration)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending map did not drain: %+v", pending)
+	}
+}
+
+// TestReadCodexTranscriptEventsNativeToolCallHasEndWithResult proves the same
+// fix for codex's native tools (response_item function_call/custom_tool_call):
+// the _output row used to be silently dropped entirely, so a tmux-transport
+// native tool call had a start and nothing else. It now yields a proper End
+// carrying the real output text and measured duration.
+func TestReadCodexTranscriptEventsNativeToolCallHasEndWithResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	callTS := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	outputTS := turnStart.Add(3 * time.Second).Format(time.RFC3339Nano)
+
+	appendLine(t, path,
+		`{"timestamp":"`+callTS+`","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_A"}}`+"\n"+
+			`{"timestamp":"`+outputTS+`","type":"response_item","payload":{"type":"function_call_output","call_id":"call_A","output":"file written"}}`+"\n")
+
+	pending := map[string]time.Time{}
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, pending)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (start, end); %+v", len(events), events)
+	}
+	if events[0].IsToolEnd || events[0].ToolName != "exec_command" {
+		t.Fatalf("events[0] (start) = %+v", events[0])
+	}
+	if !events[1].IsToolEnd || events[1].ToolCallID != "call_A" {
+		t.Fatalf("events[1] (end) = %+v", events[1])
+	}
+	if events[1].ToolResult != "file written" {
+		t.Fatalf("ToolResult = %q, want %q", events[1].ToolResult, "file written")
+	}
+	if events[1].ToolDuration != 2*time.Second {
+		t.Fatalf("ToolDuration = %v, want 2s", events[1].ToolDuration)
+	}
+}
+
+// TestReadCodexTranscriptEventsToolEndSpansPolls proves duration measurement
+// survives across two SEPARATE calls sharing one pending map — the begin row
+// and the end row can land in different polling cycles, since Codex only
+// writes the end once the call actually finishes.
+func TestReadCodexTranscriptEventsToolEndSpansPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	beginTS := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	endTS := turnStart.Add(6 * time.Second).Format(time.RFC3339Nano)
+
+	pending := map[string]time.Time{}
+
+	appendLine(t, path, codexMCPCallBegin(beginTS, "echo_contract", "c1"))
+	events, offset, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, pending)
+	if err != nil {
+		t.Fatalf("poll 1: %v", err)
+	}
+	if len(events) != 1 || events[0].IsToolEnd {
+		t.Fatalf("poll 1: got %+v, want a single start", events)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("poll 1: pending map = %+v, want 1 entry", pending)
+	}
+
+	appendLine(t, path, codexMCPCallEnd(endTS, "c1"))
+	events, _, err = readCodexTranscriptEventsFromFile(path, offset, turnStart, pending)
+	if err != nil {
+		t.Fatalf("poll 2: %v", err)
+	}
+	if len(events) != 1 || !events[0].IsToolEnd {
+		t.Fatalf("poll 2: got %+v, want a single end", events)
+	}
+	if events[0].ToolDuration != 5*time.Second {
+		t.Fatalf("poll 2: ToolDuration = %v, want 5s", events[0].ToolDuration)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("poll 2: pending map did not drain: %+v", pending)
 	}
 }

@@ -31,13 +31,20 @@ func claudeInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 }
 
 // claudeTranscriptEvent is one structured item recovered from the transcript
-// during a turn: either assistant text (Text set) or the start of a tool call
-// (ToolName set). Kept minimal — this is the mid-turn streaming signal, not the
-// authoritative end-of-turn reconstruction (readClaudeTranscriptMessages).
+// during a turn: assistant text (Text set), the start of a tool call (ToolName
+// set), or a tool's result (IsToolEnd set). Kept minimal — this is the mid-turn
+// streaming signal, not the authoritative end-of-turn reconstruction
+// (readClaudeTranscriptMessages).
 type claudeTranscriptEvent struct {
 	Text       string
 	ToolName   string
 	ToolCallID string
+	// IsToolEnd distinguishes a tool_result row from a tool_use row; both
+	// carry ToolCallID, so this is the only way to tell them apart once
+	// mapped onto the shared event shape.
+	IsToolEnd    bool
+	ToolResult   string
+	ToolDuration time.Duration
 }
 
 // streamClaudeTranscript tails the claude-code JSONL transcript for `sessionID`
@@ -59,8 +66,14 @@ func streamClaudeTranscript(ctx context.Context, sessionID string, turnStart tim
 	defer ticker.Stop()
 
 	var offset int64
+	// A tool_use row and its tool_result row can land in different polls (the
+	// CLI writes the result once the tool actually finishes, which is the
+	// whole point of a duration). This carries each start's transcript
+	// timestamp across polls so the matching end can compute a real duration
+	// instead of reporting zero.
+	pendingToolStarts := map[string]time.Time{}
 	for {
-		events, next, err := readClaudeTranscriptEventsSince(sessionID, offset, turnStart)
+		events, next, err := readClaudeTranscriptEventsSince(sessionID, offset, turnStart, pendingToolStarts)
 		if err == nil {
 			offset = next
 			for _, e := range events {
@@ -85,6 +98,15 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 		"claude_code_session_id":    sessionID,
 		"claude_code_stream_source": "transcript",
 	}
+	if e.IsToolEnd {
+		return llmtypes.StreamChunk{
+			Type:         llmtypes.StreamChunkTypeToolCallEnd,
+			ToolCallID:   e.ToolCallID,
+			ToolResult:   e.ToolResult,
+			ToolDuration: e.ToolDuration,
+			Metadata:     meta,
+		}
+	}
 	if e.ToolName != "" {
 		return llmtypes.StreamChunk{
 			Type:       llmtypes.StreamChunkTypeToolCallStart,
@@ -107,7 +129,7 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 // being written mid-poll is never parsed half-formed. Rows older than turnStart
 // are skipped (but still consumed) so a resumed session's prior turns don't
 // replay. Best-effort: any error leaves the offset unadvanced.
-func readClaudeTranscriptEventsSince(sessionID string, offset int64, turnStart time.Time) ([]claudeTranscriptEvent, int64, error) {
+func readClaudeTranscriptEventsSince(sessionID string, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil, offset, nil
 	}
@@ -121,12 +143,12 @@ func readClaudeTranscriptEventsSince(sessionID string, offset int64, turnStart t
 		// next tick.
 		return nil, offset, nil
 	}
-	return readClaudeTranscriptEventsFromFile(matches[0], offset, turnStart)
+	return readClaudeTranscriptEventsFromFile(matches[0], offset, turnStart, pendingToolStarts)
 }
 
 // readClaudeTranscriptEventsFromFile is the file-level core, split out so tests
 // can drive it against a growing fixture without a real ~/.claude tree.
-func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart time.Time) ([]claudeTranscriptEvent, int64, error) {
+func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, offset, err
@@ -163,34 +185,89 @@ func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart tim
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
-		if e.Type != "assistant" {
+		if e.Type != "assistant" && e.Type != "user" {
 			continue
 		}
-		if !turnStart.IsZero() && e.Timestamp != "" {
-			if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && ts.Before(turnStart) {
+		var rowTime time.Time
+		if e.Timestamp != "" {
+			rowTime, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
+		}
+		if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
+			continue
+		}
+
+		switch e.Type {
+		case "assistant":
+			var am struct {
+				Content []claudeAssistantContentBlock `json:"content"`
+			}
+			if err := json.Unmarshal(e.Message, &am); err != nil {
 				continue
 			}
-		}
-		var am struct {
-			Content []claudeAssistantContentBlock `json:"content"`
-		}
-		if err := json.Unmarshal(e.Message, &am); err != nil {
-			continue
-		}
-		// Reuse the same block→parts mapping the end-of-turn reader uses, so
-		// streaming and final reconstruction never diverge.
-		for _, p := range assistantBlocksToParts(am.Content) {
-			switch v := p.(type) {
-			case llmtypes.TextContent:
-				if v.Text != "" {
-					events = append(events, claudeTranscriptEvent{Text: v.Text})
+			// Reuse the same block→parts mapping the end-of-turn reader uses,
+			// so streaming and final reconstruction never diverge.
+			for _, p := range assistantBlocksToParts(am.Content) {
+				switch v := p.(type) {
+				case llmtypes.TextContent:
+					if v.Text != "" {
+						events = append(events, claudeTranscriptEvent{Text: v.Text})
+					}
+				case llmtypes.ToolCall:
+					name := ""
+					if v.FunctionCall != nil {
+						name = v.FunctionCall.Name
+					}
+					events = append(events, claudeTranscriptEvent{ToolName: name, ToolCallID: v.ID})
+					// Recorded even when rowTime is zero (missing/unparseable
+					// timestamp): the matching tool_result below treats a
+					// zero start as "not measured" and reports 0 rather than
+					// a fabricated duration.
+					if pendingToolStarts != nil && v.ID != "" {
+						pendingToolStarts[v.ID] = rowTime
+					}
 				}
-			case llmtypes.ToolCall:
-				name := ""
-				if v.FunctionCall != nil {
-					name = v.FunctionCall.Name
+			}
+
+		case "user":
+			// Claude feeds a tool's result back to the model as a LATER
+			// "user"-role row (verified against the same CLI this adapter's
+			// structured transport drives — see claudecode_structured_adapter.go).
+			// This is the transcript's only record of that result and its
+			// real duration; without it, a tmux-transport tool call has a
+			// start and nothing else.
+			var um struct {
+				Content json.RawMessage `json:"content"`
+			}
+			if err := json.Unmarshal(e.Message, &um); err != nil {
+				continue
+			}
+			var blocks []struct {
+				Type      string          `json:"type"`
+				ToolUseID string          `json:"tool_use_id"`
+				Content   json.RawMessage `json:"content"`
+			}
+			if err := json.Unmarshal(um.Content, &blocks); err != nil {
+				continue
+			}
+			for _, b := range blocks {
+				if b.Type != "tool_result" || b.ToolUseID == "" {
+					continue
 				}
-				events = append(events, claudeTranscriptEvent{ToolName: name, ToolCallID: v.ID})
+				var duration time.Duration
+				if pendingToolStarts != nil {
+					if start, ok := pendingToolStarts[b.ToolUseID]; ok {
+						if !start.IsZero() && !rowTime.IsZero() && rowTime.After(start) {
+							duration = rowTime.Sub(start)
+						}
+						delete(pendingToolStarts, b.ToolUseID)
+					}
+				}
+				events = append(events, claudeTranscriptEvent{
+					IsToolEnd:    true,
+					ToolCallID:   b.ToolUseID,
+					ToolResult:   flattenToolResultContent(b.Content),
+					ToolDuration: duration,
+				})
 			}
 		}
 	}

@@ -24,12 +24,25 @@ func codexInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 }
 
 // codexTranscriptEvent is one structured item recovered from the rollout during
-// a turn: assistant text (Text set) or the start of a tool call (ToolName set).
+// a turn: assistant text (Text set), the start of a tool call (ToolName set),
+// or a tool's completion (IsToolEnd set — from mcp_tool_call_end for MCP
+// bridge calls, or function_call_output/custom_tool_call_output for codex's
+// native tools).
 type codexTranscriptEvent struct {
 	Text       string
 	ToolName   string
 	ToolCallID string
 	Key        string // dedup key for content (row timestamp); tools dedup by ToolCallID
+	// IsToolEnd distinguishes a completion row from a start row; both carry
+	// ToolCallID, so this is the only way to tell them apart once mapped onto
+	// the shared event shape. ToolResult is only populated for native tools —
+	// codex's own event stream never includes an MCP call's result text, not
+	// even in the structured transport (see codexcli_structured_adapter.go's
+	// item.completed handling for mcp_tool_call, verified live against
+	// codex-cli 0.145.0), so this is a real constraint, not a gap.
+	IsToolEnd    bool
+	ToolResult   string
+	ToolDuration time.Duration
 }
 
 // codexTranscriptStreamState tails the current turn's rollout JSONL and emits
@@ -43,12 +56,23 @@ type codexTranscriptStreamState struct {
 	workingDir  string
 	path        string
 	offset      int64
-	seenTool    map[string]bool // dedup tool starts by call_id (begin+end are two rows)
+	seenTool    map[string]bool // defensive dedup of tool starts by call_id
 	seenContent map[string]bool // dedup assistant text (codex writes it as BOTH agent_message and response_item message)
+	// pendingToolStarts carries each tool call's start timestamp across polls
+	// (begin and end rows, or a call and its output row, can land in
+	// different polls) so the matching end can compute a real duration
+	// instead of reporting zero.
+	pendingToolStarts map[string]time.Time
 }
 
 func newCodexTranscriptStreamState(turnStart time.Time, workingDir string) *codexTranscriptStreamState {
-	return &codexTranscriptStreamState{turnStart: turnStart, workingDir: workingDir, seenTool: map[string]bool{}, seenContent: map[string]bool{}}
+	return &codexTranscriptStreamState{
+		turnStart:         turnStart,
+		workingDir:        workingDir,
+		seenTool:          map[string]bool{},
+		seenContent:       map[string]bool{},
+		pendingToolStarts: map[string]time.Time{},
+	}
 }
 
 // poll reads any newly-appended rollout rows and emits their events on
@@ -63,14 +87,14 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 			return // rollout not created yet — try again next tick
 		}
 	}
-	events, next, err := readCodexTranscriptEventsFromFile(s.path, s.offset, s.turnStart)
+	events, next, err := readCodexTranscriptEventsFromFile(s.path, s.offset, s.turnStart, s.pendingToolStarts)
 	if err != nil {
 		return
 	}
 	s.offset = next
 	for _, e := range events {
-		// A tool call can appear twice (mcp_tool_call_begin + _end); emit its
-		// start only once, keyed by call_id.
+		// Defensive: emit a given tool call's start only once, keyed by
+		// call_id, in case a row is ever re-observed.
 		if e.ToolName != "" && e.ToolCallID != "" {
 			if s.seenTool[e.ToolCallID] {
 				continue
@@ -98,6 +122,15 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 
 func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {
 	meta := map[string]interface{}{"codex_cli_stream_source": "transcript"}
+	if e.IsToolEnd {
+		return llmtypes.StreamChunk{
+			Type:         llmtypes.StreamChunkTypeToolCallEnd,
+			ToolCallID:   e.ToolCallID,
+			ToolResult:   e.ToolResult,
+			ToolDuration: e.ToolDuration,
+			Metadata:     meta,
+		}
+	}
 	if e.ToolName != "" {
 		return llmtypes.StreamChunk{
 			Type:       llmtypes.StreamChunkTypeToolCallStart,
@@ -119,8 +152,13 @@ func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {
 // partial trailing line. Rows older than turnStart are skipped (but consumed).
 // Parses the same rollout schema as readCodexTranscriptMessagesFile:
 // response_item → message(assistant output_text) / function_call /
-// custom_tool_call; tool outputs (results) are intentionally not streamed.
-func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time.Time) ([]codexTranscriptEvent, int64, error) {
+// custom_tool_call / function_call_output / custom_tool_call_output, plus
+// event_msg → mcp_tool_call_begin/_end for MCP bridge calls. pendingToolStarts
+// carries each call's start timestamp across calls (a call and its
+// completion row can land in different polls) so a matching completion can
+// compute a real duration instead of reporting zero; pass the same map back
+// in on every call.
+func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]codexTranscriptEvent, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, offset, err
@@ -158,6 +196,8 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		// response_item: function_call / custom_tool_call
 		Name   string `json:"name"`
 		CallID string `json:"call_id"`
+		// response_item: function_call_output / custom_tool_call_output
+		Output string `json:"output"`
 		// event_msg: agent_message
 		Message string `json:"message"`
 		// event_msg: mcp_tool_call_begin / _end
@@ -179,10 +219,12 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
-		if !turnStart.IsZero() && e.Timestamp != "" {
-			if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && ts.Before(turnStart) {
-				continue
-			}
+		var rowTime time.Time
+		if e.Timestamp != "" {
+			rowTime, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
+		}
+		if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
+			continue
 		}
 		switch e.Type {
 		case "event_msg":
@@ -193,11 +235,29 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 				if e.Payload.Message != "" {
 					events = append(events, codexTranscriptEvent{Text: e.Payload.Message, Key: e.Timestamp})
 				}
-			case "mcp_tool_call_begin", "mcp_tool_call_end":
+			case "mcp_tool_call_begin":
 				if e.Payload.Invocation != nil && e.Payload.Invocation.Tool != "" {
 					events = append(events, codexTranscriptEvent{
 						ToolName:   e.Payload.Invocation.Tool,
 						ToolCallID: e.Payload.CallID,
+					})
+					// Recorded even when rowTime is zero (missing/unparseable
+					// timestamp): the matching _end below treats a zero start
+					// as "not measured" and reports 0 rather than a
+					// fabricated duration.
+					if pendingToolStarts != nil && e.Payload.CallID != "" {
+						pendingToolStarts[e.Payload.CallID] = rowTime
+					}
+				}
+			case "mcp_tool_call_end":
+				if e.Payload.CallID != "" {
+					events = append(events, codexTranscriptEvent{
+						IsToolEnd:  true,
+						ToolCallID: e.Payload.CallID,
+						// No ToolResult: codex's own event stream never
+						// includes an MCP call's result text (see the
+						// codexTranscriptEvent doc comment).
+						ToolDuration: consumeCodexPendingStart(pendingToolStarts, e.Payload.CallID, rowTime),
 					})
 				}
 			}
@@ -220,8 +280,39 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 				}
 			case "function_call", "custom_tool_call":
 				events = append(events, codexTranscriptEvent{ToolName: e.Payload.Name, ToolCallID: e.Payload.CallID})
+				if pendingToolStarts != nil && e.Payload.CallID != "" {
+					pendingToolStarts[e.Payload.CallID] = rowTime
+				}
+			case "function_call_output", "custom_tool_call_output":
+				if e.Payload.CallID != "" {
+					events = append(events, codexTranscriptEvent{
+						IsToolEnd:    true,
+						ToolCallID:   e.Payload.CallID,
+						ToolResult:   e.Payload.Output,
+						ToolDuration: consumeCodexPendingStart(pendingToolStarts, e.Payload.CallID, rowTime),
+					})
+				}
 			}
 		}
 	}
 	return events, nextOffset, nil
+}
+
+// consumeCodexPendingStart looks up and removes callID's recorded start time,
+// returning the elapsed duration to endTime, or 0 if the start is missing,
+// zero, or the end row's own timestamp couldn't be parsed — "not measured",
+// never a fabricated value.
+func consumeCodexPendingStart(pendingToolStarts map[string]time.Time, callID string, endTime time.Time) time.Duration {
+	if pendingToolStarts == nil {
+		return 0
+	}
+	start, ok := pendingToolStarts[callID]
+	if !ok {
+		return 0
+	}
+	delete(pendingToolStarts, callID)
+	if start.IsZero() || endTime.IsZero() || !endTime.After(start) {
+		return 0
+	}
+	return endTime.Sub(start)
 }

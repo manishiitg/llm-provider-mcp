@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
 // cursorTranscriptStreamPollInterval is how often the tailer checks Cursor's
@@ -45,15 +46,21 @@ type cursorTranscriptStreamState struct {
 	// to the real turn, so we skip the warmups.
 	baseline time.Time
 	seenTool map[string]bool
+	// toolStartedAt records wall-clock observation time (time.Now() when this
+	// process first sees the tool-call blob), not a blob-carried timestamp —
+	// cursor's message blobs have no per-message time field. Mirrors the
+	// pattern the structured cursor adapter already uses for the same reason.
+	toolStartedAt map[string]time.Time
 }
 
 func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID string) *cursorTranscriptStreamState {
 	_ = turnStart // baseline is "now" (real-turn start), tighter than turnStart which predates warmups
 	s := &cursorTranscriptStreamState{
-		workingDir: workingDir,
-		streamKey:  ownerSessionID + "\x00transcript-stream",
-		baseline:   time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
-		seenTool:   map[string]bool{},
+		workingDir:    workingDir,
+		streamKey:     ownerSessionID + "\x00transcript-stream",
+		baseline:      time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
+		seenTool:      map[string]bool{},
+		toolStartedAt: map[string]time.Time{},
 	}
 	s.primeSeenBlobs()
 	return s
@@ -203,7 +210,7 @@ func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<
 		return
 	}
 	msgs := readCursorStoreDBMessages(path, s.streamKey)
-	for _, chunk := range cursorMessagesToChunks(msgs, s.seenTool) {
+	for _, chunk := range cursorMessagesToChunks(msgs, s.seenTool, s.toolStartedAt) {
 		select {
 		case streamChan <- chunk:
 		case <-ctx.Done():
@@ -213,10 +220,13 @@ func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<
 }
 
 // cursorMessagesToChunks maps new transcript messages to stream chunks:
-// assistant text -> Content, tool_use -> ToolCallStart (deduped by call id).
-// Blob-level dedup already prevents a message being returned twice, so no
-// content dedup is needed here. Pure/testable — no sqlite.
-func cursorMessagesToChunks(msgs []llmtypes.MessageContent, seenTool map[string]bool) []llmtypes.StreamChunk {
+// assistant text -> Content, tool-call -> ToolCallStart (deduped by call id),
+// tool-result -> ToolCallEnd carrying the real result text and a duration
+// measured from this process's own observation of the matching start (see
+// toolStartedAt's doc comment for why: cursor's blobs carry no per-message
+// timestamp). Blob-level dedup already prevents a message being returned
+// twice, so no content dedup is needed here. Pure/testable — no sqlite.
+func cursorMessagesToChunks(msgs []llmtypes.MessageContent, seenTool map[string]bool, toolStartedAt map[string]time.Time) []llmtypes.StreamChunk {
 	var out []llmtypes.StreamChunk
 	meta := map[string]interface{}{"cursor_cli_stream_source": "transcript"}
 	for _, m := range msgs {
@@ -237,8 +247,19 @@ func cursorMessagesToChunks(msgs []llmtypes.MessageContent, seenTool map[string]
 						continue
 					}
 					seenTool[v.ID] = true
+					if toolStartedAt != nil {
+						toolStartedAt[v.ID] = time.Now()
+					}
 				}
 				out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: name, ToolCallID: v.ID, Metadata: meta})
+			case llmtypes.ToolCallResponse:
+				out = append(out, llmtypes.StreamChunk{
+					Type:         llmtypes.StreamChunkTypeToolCallEnd,
+					ToolCallID:   v.ToolCallID,
+					ToolResult:   v.Content,
+					ToolDuration: toolclock.Elapsed(toolStartedAt, v.ToolCallID),
+					Metadata:     meta,
+				})
 			}
 		}
 	}
