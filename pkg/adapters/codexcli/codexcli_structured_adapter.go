@@ -14,6 +14,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
 // codexExecEvent is one JSONL line from `codex exec --json`. Verified live
@@ -210,6 +211,12 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
+	// StreamChunk.ToolDuration existed but was never set by any
+	// structured adapter, so the whole chain downstream reported zero:
+	// ToolCallEndEvent.Duration, ToolCallEntry.Duration, and the persisted
+	// timing summary's total_duration_ms. A turn then looked entirely
+	// generation-bound even when real tool time was part of its wall clock.
+	toolStartedAt := map[string]time.Time{}
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -231,6 +238,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			switch event.Type {
 			case "item.started":
 				if event.Item != nil && isCodexToolItem(event.Item.Type) {
+					toolStartedAt[event.Item.ID] = time.Now()
 					emitChunk(llmtypes.StreamChunk{
 						Type:       llmtypes.StreamChunkTypeToolCallStart,
 						Content:    codexToolItemLabel(event.Item),
@@ -252,9 +260,10 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 					}
 				case isCodexToolItem(event.Item.Type):
 					emitChunk(llmtypes.StreamChunk{
-						Type:       llmtypes.StreamChunkTypeToolCallEnd,
-						Content:    event.Item.ID,
-						ToolCallID: event.Item.ID,
+						Type:         llmtypes.StreamChunkTypeToolCallEnd,
+						Content:      event.Item.ID,
+						ToolCallID:   event.Item.ID,
+						ToolDuration: toolclock.Elapsed(toolStartedAt, event.Item.ID),
 					})
 				}
 			case "turn.completed":

@@ -14,6 +14,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
 const claudeStructuredNaturalExitGrace = 3 * time.Second
@@ -212,8 +213,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// exclusively from End chunks, so every reconstructed tool call had a
 	// blank name and arguments.
 	pendingToolCalls := map[string]struct {
-		name string
-		args string
+		name      string
+		args      string
+		startedAt time.Time
 	}{}
 	scannerDone := make(chan struct{})
 
@@ -244,9 +246,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 						if block.Type == "tool_use" && block.Name != "" {
 							if block.ID != "" {
 								pendingToolCalls[block.ID] = struct {
-									name string
-									args string
-								}{name: block.Name, args: string(block.Input)}
+									name      string
+									args      string
+									startedAt time.Time
+								}{name: block.Name, args: string(block.Input), startedAt: time.Now()}
 							}
 							// Carry the arguments on the START chunk. They are already
 							// known here (block.Input), and the ToolCallStart event is
@@ -283,12 +286,19 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 						}
 						pending := pendingToolCalls[block.ToolUseID]
 						delete(pendingToolCalls, block.ToolUseID)
+						// StreamChunk.ToolDuration existed but was never set here, so
+						// every consumer downstream saw zero: ToolCallEndEvent.Duration
+						// was zero, ToolCallEntry.Duration was zero, and the persisted
+						// timing summary reported total_duration_ms=0 across successful
+						// calls. That made a turn look purely generation-bound when part
+						// of its wall clock was genuinely tool time.
 						emitChunk(llmtypes.StreamChunk{
-							Type:       llmtypes.StreamChunkTypeToolCallEnd,
-							ToolCallID: block.ToolUseID,
-							ToolName:   pending.name,
-							ToolArgs:   pending.args,
-							ToolResult: result,
+							Type:         llmtypes.StreamChunkTypeToolCallEnd,
+							ToolCallID:   block.ToolUseID,
+							ToolName:     pending.name,
+							ToolArgs:     pending.args,
+							ToolResult:   result,
+							ToolDuration: toolclock.Since(pending.startedAt),
 						})
 					}
 				}

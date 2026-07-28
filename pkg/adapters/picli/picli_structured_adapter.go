@@ -15,6 +15,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
 // piJSONEvent is one JSONL line from `pi --print --mode json`. Verified live
@@ -193,6 +194,12 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
+	// StreamChunk.ToolDuration existed but was never set by any
+	// structured adapter, so the whole chain downstream reported zero:
+	// ToolCallEndEvent.Duration, ToolCallEntry.Duration, and the persisted
+	// timing summary's total_duration_ms. A turn then looked entirely
+	// generation-bound even when real tool time was part of its wall clock.
+	toolStartedAt := map[string]time.Time{}
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -230,6 +237,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					}
 				}
 			case "tool_execution_start":
+				toolStartedAt[event.ToolCallID] = time.Now()
 				emitChunk(llmtypes.StreamChunk{
 					Type:       llmtypes.StreamChunkTypeToolCallStart,
 					Content:    event.ToolName,
@@ -237,9 +245,10 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				})
 			case "tool_execution_end":
 				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallEnd,
-					Content:    event.ToolCallID,
-					ToolCallID: event.ToolCallID,
+					Type:         llmtypes.StreamChunkTypeToolCallEnd,
+					Content:      event.ToolCallID,
+					ToolCallID:   event.ToolCallID,
+					ToolDuration: toolclock.Elapsed(toolStartedAt, event.ToolCallID),
 				})
 			case "turn_end":
 				// The LAST turn_end's accumulated text is the real final answer —

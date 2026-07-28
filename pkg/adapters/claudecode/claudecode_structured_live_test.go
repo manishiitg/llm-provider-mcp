@@ -150,13 +150,24 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 				if strings.TrimSpace(e.ToolArgs) == "" {
 					t.Errorf("ToolCallEnd %s missing ToolArgs: %+v", e.ToolCallID, e)
 				}
+				// ToolDuration existed on StreamChunk from the start but no
+				// structured adapter ever set it, so every consumer downstream
+				// read zero: ToolCallEndEvent.Duration, ToolCallEntry.Duration,
+				// and the persisted timing summary's tools.total_duration_ms.
+				// A production step then reported total_duration_ms=0 across 4
+				// successful shell calls, which made the turn look purely
+				// generation-bound and hid tool time from every cost/time
+				// review. A real tool call cannot take zero time.
+				if e.ToolDuration <= 0 {
+					t.Errorf("ToolCallEnd %s has ToolDuration=%v; a real tool call is never instant, and zero here is what blinded the timing summary", e.ToolCallID, e.ToolDuration)
+				}
 			}
 		}
 	}
 	if !matched {
 		t.Errorf("no ToolCallStart/ToolCallEnd pair shared a matching ToolCallID: starts=%+v ends=%+v", starts, ends)
 	}
-	t.Logf("tool lifecycle verified: %d start(s), %d end(s), matched=%v", len(starts), len(ends), matched)
+	t.Logf("tool lifecycle verified: %d start(s), %d end(s), matched=%v, first end duration=%v", len(starts), len(ends), matched, ends[0].ToolDuration)
 }
 
 // TestClaudeStructuredUsageNotDoubled proves the fix for a real bug: usage was

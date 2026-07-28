@@ -15,6 +15,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
 type cursorEvent struct {
@@ -239,6 +240,12 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	// contract §9). Writes to finalContent/totalUsage/sessionID/modelName
 	// inside the loop are made visible to the main goroutine by the
 	// happens-before relationship from close → receive.
+	// StreamChunk.ToolDuration existed but was never set by any
+	// structured adapter, so the whole chain downstream reported zero:
+	// ToolCallEndEvent.Duration, ToolCallEntry.Duration, and the persisted
+	// timing summary's total_duration_ms. A turn then looked entirely
+	// generation-bound even when real tool time was part of its wall clock.
+	toolStartedAt := map[string]time.Time{}
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -290,6 +297,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			case "tool_call":
 				switch event.Subtype {
 				case "started":
+					toolStartedAt[event.CallID] = time.Now()
 					emitChunk(llmtypes.StreamChunk{
 						Type:       llmtypes.StreamChunkTypeToolCallStart,
 						Content:    fmt.Sprintf("tool_call(%s)", event.CallID),
@@ -297,9 +305,10 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 					})
 				case "completed":
 					emitChunk(llmtypes.StreamChunk{
-						Type:       llmtypes.StreamChunkTypeToolCallEnd,
-						Content:    event.CallID,
-						ToolCallID: event.CallID,
+						Type:         llmtypes.StreamChunkTypeToolCallEnd,
+						Content:      event.CallID,
+						ToolCallID:   event.CallID,
+						ToolDuration: toolclock.Elapsed(toolStartedAt, event.CallID),
 					})
 				}
 
