@@ -141,6 +141,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	mode := ""
 	sandbox := ""
 	approveMCPs := false
+	denyBuiltins := false
 	resumeID := ""
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCursorModel].(string); ok && strings.TrimSpace(model) != "" {
@@ -149,17 +150,19 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		if m, ok := opts.Metadata.Custom[MetadataKeyMode].(string); ok {
 			mode = strings.TrimSpace(m)
 		}
-		// Bridge-only containment for structured mode: unlike tmux (which denies
-		// built-ins via a generated .cursor/hooks.json — see
-		// WithCursorDenyBuiltinTools), structured mode has no hook mechanism to
-		// install before a one-shot process launch. "--mode ask" is cursor's own
-		// containment for this case: it refuses natural-language write requests
-		// outright rather than executing them. Only applied when the caller
-		// hasn't already picked an explicit --mode.
-		if mode == "" {
-			if deny, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && deny {
-				mode = "ask"
-			}
+		// Deny-builtins is honoured here the same way tmux honours it: by writing
+		// .cursor/hooks.json before launch (see denyBuiltins below).
+		//
+		// This used to resolve to "--mode ask" instead, on the premise that a
+		// one-shot --print launch had no hook mechanism available. That premise
+		// was wrong — hooks are files in .cursor/, and this path already writes
+		// .cursor/mcp.json into the same directory before launching. The cost was
+		// severe: "ask" is a read-only stance, so every structured step that had
+		// to write $STEP_OUTPUT_DIR or drive a browser refused its own task with
+		// "Ask mode blocks browser automation ... switch to Agent mode", which
+		// reads like a model excuse and is in fact an accurate report.
+		if deny, ok := opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool); ok && deny {
+			denyBuiltins = true
 		}
 		if s, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(s) != "" {
 			sandbox = strings.TrimSpace(s)
@@ -178,6 +181,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			fn()
 		}
 	}()
+	hooksInstalled := false
 	if workingDir != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		cursorDir := filepath.Join(workingDir, ".cursor")
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
@@ -186,6 +190,26 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				return nil, fmt.Errorf("cursor MCP config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
+		}
+		if denyBuiltins {
+			// Same hooks the tmux path installs, in the same place. They deny
+			// cursor's built-in shell/file tools so the agent routes through the
+			// MCP bridge, while leaving it in agent mode and able to act.
+			cleanup, werr := writeCursorDenyBuiltinHooks(cursorDir, true)
+			if werr != nil {
+				return nil, fmt.Errorf("cursor deny-builtin hooks: %w", werr)
+			}
+			configCleanups = append(configCleanups, cleanup)
+			hooksInstalled = true
+		}
+	}
+	if denyBuiltins && !hooksInstalled {
+		// No working directory means nowhere to put .cursor/hooks.json, so the
+		// containment the caller asked for cannot be applied. Fall back to
+		// cursor's read-only stance rather than silently running unconstrained —
+		// but only here, where there is genuinely no alternative.
+		if mode == "" {
+			mode = "ask"
 		}
 	}
 	if workingDir != "" {
@@ -198,7 +222,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 	}
 
-	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, resumeID, prompt)
+	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, hooksInstalled, resumeID, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
