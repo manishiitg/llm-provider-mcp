@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1714,6 +1715,11 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 }
 
 func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
+	// matters: "pasted" is the mechanical delivery cost, the rest is however
+	// many submit/verify retries it took to confirm Claude actually picked
+	// the input up.
+	start := time.Now()
 	bufferName := "mlp-claude-steer-" + randomHex(6)
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
@@ -1728,6 +1734,7 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
 	}
+	pasted := time.Since(start)
 	// Submit immediately after the paste. The pty delivers the pasted bytes and
 	// the C-e/Enter keystrokes in order, so waiting for the draft to *render*
 	// first adds latency without changing what Claude Code receives. (The old
@@ -1736,17 +1743,21 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	// burned a fixed 250ms and then submitted anyway.) The submitted-draft
 	// verify + retry loop below remains the safety net for a swallowed Enter.
 	var lastErr error
-	for _, submitWait := range claudeLiveInputSubmitBackoff {
+	for i, submitWait := range claudeLiveInputSubmitBackoff {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
 		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message, submitWait); err == nil {
+			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms confirmed=%dms retries=%d",
+				sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), i)
 			return nil
 		} else {
 			lastErr = err
 		}
 	}
+	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms confirmed=%dms retries=exhausted err=%v",
+		sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
 	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
 }
 

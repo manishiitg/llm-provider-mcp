@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1425,11 +1426,18 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 }
 
 func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
+	// matters: how long delivery + submit-confirmation actually took, broken
+	// out from the model's own thinking time.
+	start := time.Now()
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
 	}
-	return typeCursorInputToTmux(ctx, sessionName, message)
+	err := typeCursorInputToTmux(ctx, sessionName, message)
+	log.Printf("[LATENCY_DEBUG] cursor tmux delivery | session=%s confirmed=%dms err=%v",
+		sessionName, time.Since(start).Milliseconds(), err)
+	return err
 }
 
 // typeCursorInputToTmux delivers every message as visible editor input. Literal
