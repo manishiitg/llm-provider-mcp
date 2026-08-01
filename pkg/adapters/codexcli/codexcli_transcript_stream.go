@@ -230,6 +230,9 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		case "event_msg":
 			// Current Codex (0.144+) records assistant prose as agent_message and
 			// MCP calls as mcp_tool_call_begin/_end (not as response_item rows).
+			// Some 0.145 code-mode calls only persist the _end row; that row still
+			// carries the full invocation, so synthesize the missing start instead
+			// of losing the actual MCP tool name from the stream.
 			switch e.Payload.Type {
 			case "agent_message":
 				if e.Payload.Message != "" {
@@ -251,6 +254,12 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 				}
 			case "mcp_tool_call_end":
 				if e.Payload.CallID != "" {
+					if _, began := pendingToolStarts[e.Payload.CallID]; !began && e.Payload.Invocation != nil && e.Payload.Invocation.Tool != "" {
+						events = append(events, codexTranscriptEvent{
+							ToolName:   e.Payload.Invocation.Tool,
+							ToolCallID: e.Payload.CallID,
+						})
+					}
 					events = append(events, codexTranscriptEvent{
 						IsToolEnd:  true,
 						ToolCallID: e.Payload.CallID,
