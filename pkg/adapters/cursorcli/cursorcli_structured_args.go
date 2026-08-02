@@ -8,18 +8,22 @@ package cursorcli
 // not argv — so this function is pure.
 //
 // Resume is the invariant this pins: a resume turn adds --resume <priorID>
-// (id already trimmed by the caller). The mode value carries structured mode's
-// bridge-only containment: with no explicit --mode, a deny-builtins request
-// resolves to "ask" (cursor refuses natural-language writes rather than
-// executing them) since a one-shot print launch has no hook mechanism to
-// install the tmux-style .cursor/hooks.json denylist.
-func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, approveMCPs bool, resumeID, prompt string) []string {
+// (id already trimmed by the caller).
+//
+// hooksInstalled reports that the caller wrote .cursor/hooks.json for this turn.
+// --force is withheld when it has, because --force bypasses cursor hooks — with
+// both set the denylist would be silently inert. Structured mode used to lack
+// hooks entirely and contained the agent with "--mode ask" instead, which is
+// read-only and cost every step its ability to write or drive a browser.
+func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, approveMCPs, hooksInstalled bool, resumeID, prompt string) []string {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--stream-partial-output",
 		"--trust",
-		"--force",
+	}
+	if !hooksInstalled {
+		args = append(args, "--force")
 	}
 	if workingDir != "" {
 		args = append(args, "--workspace", workingDir)

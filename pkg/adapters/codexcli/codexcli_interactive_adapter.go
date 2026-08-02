@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1603,6 +1604,14 @@ func sendCodexInputToTmuxWithReadiness(ctx context.Context, sessionName, message
 }
 
 func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+	// [LATENCY_DEBUG] timing: this whole function is "how long until Codex
+	// actually started working on this message" — pane reset + paste + Enter
+	// (pasted) is the mechanical delivery cost; the remaining time up to
+	// confirmed is waitForCodexInputSubmitted polling the pane for Codex to
+	// visibly pick the input up. Neither half was logged anywhere before —
+	// a slow turn with a fast model response looked identical to one where
+	// tmux itself was the bottleneck.
+	start := time.Now()
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Codex interactive input is empty")
@@ -1632,12 +1641,16 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	if err := runCodexCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
 		return fmt.Errorf("failed to paste input into Codex interactive session: %w", err)
 	}
+	pasted := time.Since(start)
 	// Codex 0.142's TUI accepts tmux's literal Enter key here, while C-m can
 	// leave the pasted text sitting in the input buffer without starting a turn.
 	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
 		return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
 	}
-	return waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 8*time.Second)
+	err = waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 8*time.Second)
+	log.Printf("[LATENCY_DEBUG] codex tmux delivery | session=%s pasted=%dms confirmed=%dms err=%v",
+		sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), err)
+	return err
 }
 
 func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, baseline string, timeout time.Duration) error {
