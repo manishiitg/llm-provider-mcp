@@ -181,9 +181,10 @@ func TestCodexCLIStructuredSkillsLoaded(t *testing.T) {
 	t.Logf("skill canary verified: %q", content)
 }
 
-// TestCodexCLIStructuredMCPBridge proves a real MCP bridge tool is callable
-// under codex's structured transport, with tool-call events streamed as
-// distinct start/end chunks (not buried in text).
+// TestCodexCLIStructuredMCPBridge is the adapter-level live regression proof
+// for structured Codex tool identity. The release-blocking bridge-only E2E lives
+// at mcpagent's TestStructuredTransportToolFailureGiveUp/Codex; this narrower
+// test isolates the provider JSON mapping.
 func TestCodexCLIStructuredMCPBridge(t *testing.T) {
 	requireCodexCLIStructuredE2E(t)
 
@@ -226,13 +227,20 @@ func TestCodexCLIStructuredMCPBridge(t *testing.T) {
 		errCh <- err
 	}()
 
-	var hasToolStart, hasToolEnd bool
+	starts := map[string]llmtypes.StreamChunk{}
+	ends := map[string]llmtypes.StreamChunk{}
 	for chunk := range stream {
 		switch chunk.Type {
 		case llmtypes.StreamChunkTypeToolCallStart:
-			hasToolStart = true
+			if strings.TrimSpace(chunk.ToolName) == "" {
+				t.Fatalf("ToolCallStart %q has an empty ToolName; the UI will render it as generic \"tool\"", chunk.ToolCallID)
+			}
+			starts[chunk.ToolCallID] = chunk
 		case llmtypes.StreamChunkTypeToolCallEnd:
-			hasToolEnd = true
+			if strings.TrimSpace(chunk.ToolName) == "" {
+				t.Fatalf("ToolCallEnd %q has an empty ToolName; completed-call history will lose tool identity", chunk.ToolCallID)
+			}
+			ends[chunk.ToolCallID] = chunk
 		}
 	}
 
@@ -245,7 +253,27 @@ func TestCodexCLIStructuredMCPBridge(t *testing.T) {
 	if !strings.Contains(content, want) {
 		t.Fatalf("content = %q, want bridge tool result %q", content, want)
 	}
-	t.Logf("MCP bridge: tool_start=%v tool_end=%v content contains bridge result", hasToolStart, hasToolEnd)
+	var matched bool
+	for id, start := range starts {
+		if start.ToolName != "echo_contract" {
+			continue
+		}
+		end, ok := ends[id]
+		if !ok {
+			t.Fatalf("echo_contract ToolCallStart %q has no matching ToolCallEnd", id)
+		}
+		if end.ToolName != start.ToolName {
+			t.Fatalf("tool name changed across %q: start=%q end=%q", id, start.ToolName, end.ToolName)
+		}
+		if !strings.Contains(start.ToolArgs, bridgeToken) {
+			t.Fatalf("echo_contract ToolCallStart %q args = %q, want token %q", id, start.ToolArgs, bridgeToken)
+		}
+		matched = true
+	}
+	if !matched {
+		t.Fatalf("no named echo_contract start/end pair; starts=%+v ends=%+v", starts, ends)
+	}
+	t.Logf("MCP bridge: named echo_contract start/end pair preserved; content contains bridge result")
 }
 
 // TestCodexCLIStructuredSandboxContainment proves the structured-transport

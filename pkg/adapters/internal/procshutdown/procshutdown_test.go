@@ -285,3 +285,62 @@ func TestGracefulHandlesAlreadyDeadProcess(t *testing.T) {
 		t.Fatalf("should not escalate to SIGKILL for already-dead process; got %v", log.lines)
 	}
 }
+
+// TestReapReturnsPromptlyForExitedProcess is the ordinary path: the process is
+// already on its way out, so Reap must behave exactly like a bare cmd.Wait and
+// never reach the escalation ladder.
+func TestReapReturnsPromptlyForExitedProcess(t *testing.T) {
+	log := &testLogger{}
+	cmd := startSleepingChild(t, "0.1")
+
+	start := time.Now()
+	if err := Reap(cmd, 5*time.Second, log); err != nil {
+		t.Fatalf("Reap returned error for clean exit: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Reap waited %s for a process that exits in 100ms", elapsed)
+	}
+	if log.contains("reap grace") {
+		t.Fatalf("should not have escalated for a cleanly exiting process; got %v", log.lines)
+	}
+}
+
+// TestReapKillsProcessThatOutlivesItsOutputStream is the regression for the
+// 2026-08-01 Pulse fixer hang. Codex wrote its complete result and a native
+// task_complete to its rollout, then stayed alive at 0% CPU for 65 minutes.
+// Teardown was reachable only from the stdout `turn.completed` branch, so with
+// no terminal event on that stream nothing ever signalled the process and the
+// adapter's bare cmd.Wait() blocked for as long as its caller would hold on.
+// Reap must bound that: escalate, and return.
+func TestReapKillsProcessThatOutlivesItsOutputStream(t *testing.T) {
+	shrinkGraces(t, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond)
+	log := &testLogger{}
+	// Ignores SIGTERM, so only the SIGKILL at the end of the ladder frees it —
+	// the strongest form of "nobody is coming to stop this".
+	cmd, _ := startTrapScript(t)
+
+	done := make(chan error, 1)
+	go func() { done <- Reap(cmd, 100*time.Millisecond, log) }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("Reap never returned for a process that outlived its output stream")
+	}
+
+	if !log.contains("reap grace") {
+		t.Fatalf("expected the reap grace to be reported; got %v", log.lines)
+	}
+	if !log.contains("sending SIGKILL") {
+		t.Fatalf("expected escalation to SIGKILL for a SIGTERM-ignoring process; got %v", log.lines)
+	}
+}
+
+// TestReapNilCmdIsNoOp mirrors the nil guards on Graceful so callers can invoke
+// it unconditionally.
+func TestReapNilCmdIsNoOp(t *testing.T) {
+	if err := Reap(nil, time.Second, &testLogger{}); err != nil {
+		t.Fatalf("Reap(nil) returned %v", err)
+	}
+}

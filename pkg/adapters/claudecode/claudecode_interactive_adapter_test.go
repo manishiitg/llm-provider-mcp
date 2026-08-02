@@ -124,8 +124,10 @@ exit 0
 	// The fake tmux reports success without launching the self-deleting wrapper.
 	// Remove that private test artifact rather than relying on the production
 	// delayed-cleanup timer, which may not fire before this test process exits.
+	var launchScriptPath string
 	for _, part := range strings.Split(string(args), "'") {
 		if strings.Contains(part, "mlp-coding-agent-launch-") {
+			launchScriptPath = part
 			defer os.Remove(part)
 		}
 	}
@@ -136,6 +138,16 @@ exit 0
 		if !strings.Contains(string(args), want) {
 			t.Fatalf("tmux args missing ambient credential reset %q: %s", want, string(args))
 		}
+	}
+	launchScript, err := os.ReadFile(launchScriptPath)
+	if err != nil {
+		t.Fatalf("read private launch script: %v", err)
+	}
+	if !strings.Contains(string(launchScript), `export ANTHROPIC_AUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
+		t.Fatalf("launch script did not apply the workflow token through the interactive bearer path: %s", launchScript)
+	}
+	if strings.Contains(string(launchScript), `export CLAUDE_CODE_OAUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
+		t.Fatalf("launch script used Claude's broken interactive OAuth path: %s", launchScript)
 	}
 }
 
@@ -153,6 +165,57 @@ func TestClaudeCredentialFingerprintDoesNotExposeToken(t *testing.T) {
 	}
 	if got := claudeCredentialFingerprint(""); got != "saved-login" {
 		t.Fatalf("empty token fingerprint = %q, want saved-login", got)
+	}
+}
+
+func TestClaudeInteractiveFinalEnvUsesScopedBearerPath(t *testing.T) {
+	const token = "workflow-oauth-secret"
+	got := claudeInteractiveFinalEnv("  " + token + "  ")
+	want := []string{"ANTHROPIC_AUTH_TOKEN=" + token}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claude interactive final env = %v, want %v", got, want)
+	}
+	if containsArg(got, "CLAUDE_CODE_OAUTH_TOKEN="+token) {
+		t.Fatalf("interactive final env used the broken OAuth refresh path: %v", got)
+	}
+	if got := claudeInteractiveFinalEnv("  "); got != nil {
+		t.Fatalf("empty token final env = %v, want nil", got)
+	}
+}
+
+func TestClaudeInteractiveAuthenticationFailureDetection(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "expired setup token",
+			content: "Please run /login · API Error: 401 OAuth access token has expired. Re-authenticate to continue.",
+			want:    true,
+		},
+		{
+			name:    "invalid setup token",
+			content: "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+			want:    true,
+		},
+		{
+			name:    "ordinary discussion of a 401",
+			content: "The tool returned API Error: 401, so I updated its request headers.",
+			want:    false,
+		},
+		{
+			name:    "login guidance without request failure",
+			content: "Please run /login if you want to change accounts.",
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isClaudeInteractiveAuthenticationFailure(tt.content); got != tt.want {
+				t.Fatalf("isClaudeInteractiveAuthenticationFailure(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
 	}
 }
 

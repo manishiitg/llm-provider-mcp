@@ -124,6 +124,49 @@ func GracefulAfterNaturalExit(cmd *exec.Cmd, terminated <-chan struct{}, natural
 	Graceful(cmd, terminated, logger)
 }
 
+// Reap calls cmd.Wait, escalating through the shutdown sequence if the process
+// does not exit within grace.
+//
+// A bare cmd.Wait() after the stdout stream ends is unbounded, and every
+// structured adapter used one. That is safe only while the terminal event is
+// guaranteed to arrive: teardown is triggered by observing it, so a turn that
+// ends without one leaves a live process nobody will ever signal, and Wait
+// blocks for as long as the caller is willing to hold on — which in practice
+// meant forever. Reap makes the reap itself the last line of defence, so the
+// worst case is a bounded, logged kill rather than a stuck call.
+//
+// Callers must still only invoke this once all reads from the process's stdout
+// pipe have completed, per os/exec's contract for StdoutPipe.
+func Reap(cmd *exec.Cmd, grace time.Duration, logger interfaces.Logger) error {
+	if cmd == nil {
+		return nil
+	}
+	if logger == nil {
+		logger = noopLogger{}
+	}
+	waitDone := make(chan error, 1)
+	exited := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		waitDone <- err
+		close(exited)
+	}()
+
+	if grace > 0 {
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case err := <-waitDone:
+			return err
+		case <-timer.C:
+			logger.Errorf("[SHUTDOWN] reap grace (%s) expired — process still alive after its output stream ended; escalating", grace)
+		}
+	}
+
+	Graceful(cmd, exited, logger)
+	return <-waitDone
+}
+
 // sigtermAndWait sends a SIGTERM to the process group and waits up to
 // `grace` for the terminated channel to close. Returns true if the caller
 // should proceed to the next escalation step, false if the process has

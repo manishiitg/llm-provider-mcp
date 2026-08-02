@@ -33,8 +33,9 @@ func GetAllCursorCLIModels() []*llmtypes.ModelMetadata {
 // --model arg passed to cursor-agent.
 //
 // Generic Runloop selectors pin Cursor to the current high-quality Composer
-// default. Use "auto" when the caller explicitly wants Cursor to choose the
-// account default without passing --model. "grok-4.5" is Runloop's friendly
+// default. Use "auto" when the caller explicitly wants Cursor's Auto router;
+// it must be passed as `--model auto` because omitting the flag can retain the
+// account's current pinned model. "grok-4.5" is Runloop's friendly
 // selector for Cursor's canonical grok-4.5-xhigh id. Explicit Cursor model ids
 // such as composer-2.5, gpt-5, or sonnet-4-thinking still pass through unchanged.
 func resolveCursorCLIModelID(modelID string) string {
@@ -42,7 +43,7 @@ func resolveCursorCLIModelID(modelID string) string {
 	case "", "cursor-cli", "high", "medium", "low":
 		return "composer-2.5"
 	case "auto":
-		return ""
+		return "auto"
 	case "grok-4.5":
 		return "grok-4.5-xhigh"
 	default:

@@ -216,6 +216,33 @@ func claudeCredentialFingerprint(oauthToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// claudeInteractiveFinalEnv returns the credential environment applied after
+// login-shell initialization for the interactive TUI transport.
+//
+// Claude Code 2.1.220 can accept a setup-token credential in print mode while
+// returning "OAuth access token has expired" for that same credential in its
+// interactive OAuth path. Supplying the exact same OAuth credential via the
+// generic bearer-token input avoids that TUI-specific failure. This does not
+// install an Anthropic API key: the value remains the explicitly scoped
+// subscription OAuth token owned by this adapter instance.
+func claudeInteractiveFinalEnv(oauthToken string) []string {
+	oauthToken = strings.TrimSpace(oauthToken)
+	if oauthToken == "" {
+		return nil
+	}
+	return []string{"ANTHROPIC_AUTH_TOKEN=" + oauthToken}
+}
+
+func isClaudeInteractiveAuthenticationFailure(content string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(content), " "))
+	if strings.HasPrefix(normalized, "please run /login") &&
+		strings.Contains(normalized, "api error: 401") {
+		return true
+	}
+	return strings.HasPrefix(normalized, "failed to authenticate") &&
+		strings.Contains(normalized, "api error: 401")
+}
+
 func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -447,6 +474,14 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 		// opts.StreamChan close is owned by WithObservability.
 		return nil, err
+	}
+	// Claude renders authentication failures as ordinary assistant-shaped text.
+	// Treating that pane content as a successful completion poisons workflow
+	// state and leaves a retained session permanently unusable.
+	if isClaudeInteractiveAuthenticationFailure(content) {
+		authErr := errors.New("claude-code interactive authentication failed: the CLI rejected the configured credential with HTTP 401")
+		discardPersistentSession(authErr)
+		return nil, authErr
 	}
 	// Cancellation wins over a response detected in the same polling cycle.
 	// Without this check, a tool can finish just after the parent cancels and
@@ -995,10 +1030,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
 		preTrustClaudeWorkingDir(workingDir)
 	}
-	finalEnv := []string(nil)
-	if c.oauthToken != "" {
-		finalEnv = append(finalEnv, "CLAUDE_CODE_OAUTH_TOKEN="+c.oauthToken)
-	}
+	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
 	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, []string{
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",

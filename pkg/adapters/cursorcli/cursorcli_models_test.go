@@ -11,8 +11,8 @@ func TestResolveCursorCLIModelIDPinsDefaultToComposer25(t *testing.T) {
 }
 
 func TestResolveCursorCLIModelIDLeavesAutoUnpinned(t *testing.T) {
-	if got := resolveCursorCLIModelID("auto"); got != "" {
-		t.Fatalf("resolveCursorCLIModelID(auto) = %q, want empty selector", got)
+	if got := resolveCursorCLIModelID("auto"); got != "auto" {
+		t.Fatalf("resolveCursorCLIModelID(auto) = %q, want explicit auto selector", got)
 	}
 }
 

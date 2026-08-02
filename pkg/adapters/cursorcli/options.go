@@ -45,9 +45,9 @@ const (
 	MetadataKeyStructuredTransport = "cursor_structured_transport"
 )
 
-// WithCursorModel sets the Cursor Agent CLI --model flag. Use "auto" to let
-// Cursor use its configured default without passing --model. The "cursor-cli"
-// alias pins to the Runloop default model.
+// WithCursorModel sets the Cursor Agent CLI --model flag. Use "auto" to select
+// Cursor's Auto router explicitly. The "cursor-cli" alias pins to the Runloop
+// default model.
 func WithCursorModel(model string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

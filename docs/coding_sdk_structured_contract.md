@@ -185,7 +185,9 @@ rather than open-coding the sequence. The helper owns the timing policy
 4. If still alive: sends `SIGTERM #3`, waits up to `ThirdGrace` (5s).
 5. If still alive: sends `SIGKILL` to the process group.
 6. Returns once the kill has been issued. The adapter's main goroutine
-   remains responsible for `cmd.Wait()` and reaping.
+   remains responsible for `cmd.Wait()` and reaping — via
+   `procshutdown.Reap`, never a bare `cmd.Wait()`. See "Completion is not
+   guaranteed to arrive on stdout" below.
 
 The helper is launched as a goroutine from the decode loop so the scanner
 keeps draining stdout while shutdown is in progress.
@@ -210,6 +212,37 @@ Token usage and pricing data MUST already be captured from the terminal
 event itself — not from on-disk transcripts — so escalating to `SIGKILL`
 after the 25s grace does NOT cost the current turn's billing accuracy.
 It only forfeits `--resume` for that turn.
+
+**Completion is not guaranteed to arrive on stdout.** Earlier revisions of
+this section made teardown conditional on observing the terminal event
+there, and left reaping to a plain `cmd.Wait()`. Both assumptions are
+unsafe, and together they turn one missing event into an unbounded hang:
+nothing signals the process, and the adapter blocks on it for as long as
+its caller is willing to wait. On 2026-08-01 a codex Pulse Fixer wrote its
+complete result and a native `task_complete` to its rollout, then held its
+caller's HTTP response open for 65 minutes at 3.4s of CPU. Every adapter
+MUST therefore provide:
+
+1. **An independent completion signal.** Where the CLI records turn state
+   on disk, tail it and treat its native terminal marker as authoritative
+   — codex's rollout JSONL (`event_msg/task_complete`, matched by
+   `session_meta.cwd`) is the reference implementation, shared by the
+   interactive and structured adapters. Route every signal through one
+   idempotent teardown so the first to fire wins.
+2. **A bounded reap.** `procshutdown.Reap(cmd, grace, logger)`, with a
+   grace above the full 28s ladder so an in-flight teardown always wins
+   the race. A bare `cmd.Wait()` is a contract violation.
+3. **Surfaced decode failures.** `scanner.Err()` MUST be checked and MUST
+   force teardown. Unchecked, an oversized line is indistinguishable from
+   a clean end of stream.
+
+A stalled stream MUST NOT lose a result the CLI already produced: recover
+the final assistant text from the transcript before failing the turn.
+
+None of this may curtail a turn that is genuinely still running. Each
+trigger fires only on positive evidence that the turn ended — a native
+terminal marker, a decode error, or an output stream that has already
+closed.
 
 **What the contract is NOT.**
 
@@ -261,7 +294,8 @@ event format end-to-end.
 | 19 | No internal memory | Fresh session (no resume) cannot recall data from a previous session; agent memory is isolated. |
 | 20 | Graceful cancel | Context cancellation mid-run preserves all streamed chunks; stream channel is closed; partial content is returned if available. |
 | 21 | Sandboxed MCP | Built-in tools disabled while MCP bridge tools remain callable. Proves the production pattern: agent can only use tools you explicitly provide. |
-| 22 | End-of-turn shutdown | On terminal event (result/done/task_complete), adapter calls `procshutdown.Graceful` → 3 SIGTERMs (10s/10s/5s graces) → SIGKILL. Asserts no post-result `tool_use` events leak through after `cmd.Wait()` returns. See §9 Process Shutdown Contract. |
+| 22 | End-of-turn shutdown | On terminal event (result/done/task_complete), adapter calls `procshutdown.Graceful` → 3 SIGTERMs (10s/10s/5s graces) → SIGKILL. Asserts no post-result `tool_use` events leak through after the reap returns. See §9 Process Shutdown Contract. |
+| 22a | Completion without stdout | A turn whose terminal event never reaches stdout still tears down and returns within a bounded time: the on-disk transcript marker triggers teardown, `scanner.Err()` forces it, and `procshutdown.Reap` bounds the reap. Asserts the adapter never blocks on a process that outlived its output stream, and that a result already written to the transcript is recovered rather than lost. See §9. |
 
 ## Current Test Coverage
 

@@ -9,12 +9,27 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
+)
+
+// Package-level vars rather than consts so tests can shrink them.
+var (
+	// codexNaturalExitGrace is how long codex is given to exit on its own after
+	// a terminal event before procshutdown starts signalling.
+	codexNaturalExitGrace = 3 * time.Second
+	// codexRolloutPollInterval is how often the rollout is checked for a native
+	// task_complete while stdout has not reported turn.completed.
+	codexRolloutPollInterval = 2 * time.Second
+	// codexReapGrace bounds the final cmd.Wait. It sits above the full
+	// procshutdown ladder (3 + 10 + 10 + 5s) so a teardown already in flight
+	// always wins the race and this stays a genuine last resort.
+	codexReapGrace = 45 * time.Second
 )
 
 // codexExecEvent is one JSONL line from `codex exec --json`. Verified live
@@ -38,8 +53,11 @@ type codexExecItem struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	Status           string `json:"status,omitempty"`
 	// mcp_tool_call fields — verified live against codex-cli 0.145.0.
-	Server string `json:"server,omitempty"`
-	Tool   string `json:"tool,omitempty"`
+	Server    string          `json:"server,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	Error     json.RawMessage `json:"error,omitempty"`
 }
 
 // isCodexToolItem reports whether an item type represents a real tool
@@ -55,6 +73,63 @@ func codexToolItemLabel(item *codexExecItem) string {
 		return item.Server + "." + item.Tool
 	}
 	return item.Command
+}
+
+// codexToolItemName returns the semantic tool name consumed by downstream
+// ToolCallStart/ToolCallEnd events. Content is display text only; putting the
+// label there without setting StreamChunk.ToolName makes the app fall back to
+// the literal name "tool".
+func codexToolItemName(item *codexExecItem) string {
+	if item == nil {
+		return ""
+	}
+	if item.Type == "mcp_tool_call" {
+		return strings.TrimSpace(item.Tool)
+	}
+	if item.Type == "command_execution" {
+		return "exec_command"
+	}
+	return ""
+}
+
+func codexToolItemArgs(item *codexExecItem) string {
+	if item == nil {
+		return ""
+	}
+	if item.Type == "mcp_tool_call" {
+		return compactCodexJSON(item.Arguments)
+	}
+	if item.Type == "command_execution" && item.Command != "" {
+		args, err := json.Marshal(map[string]string{"command": item.Command})
+		if err == nil {
+			return string(args)
+		}
+	}
+	return ""
+}
+
+func codexToolItemResult(item *codexExecItem) string {
+	if item == nil {
+		return ""
+	}
+	if item.Type == "command_execution" {
+		return item.AggregatedOutput
+	}
+	if result := compactCodexJSON(item.Result); result != "" {
+		return result
+	}
+	return compactCodexJSON(item.Error)
+}
+
+func compactCodexJSON(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return string(raw)
+	}
+	return compact.String()
 }
 
 type codexExecUsage struct {
@@ -200,6 +275,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	if c.logger != nil {
 		c.logger.Infof("Executing Codex CLI structured: %s", logCmd)
 	}
+	turnStart := time.Now()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
@@ -217,7 +293,56 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// timing summary's total_duration_ms. A turn then looked entirely
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
+	pendingToolCalls := map[string]struct {
+		name string
+		args string
+	}{}
 	scannerDone := make(chan struct{})
+
+	// Teardown must be reachable from more than one place. It used to live
+	// only inside the `turn.completed` branch below, so a turn whose terminal
+	// event never reached stdout was never signalled at all: the scan loop had
+	// nothing left to read, cmd.Wait() blocked on a live process, and the call
+	// hung with no timeout. On 2026-08-01 a Pulse fixer stage wrote its
+	// complete result and `task_complete` to the rollout at 10:20:02Z, then sat
+	// at 0% CPU for 65 minutes holding its caller's HTTP response open. The
+	// durable work was already done; only the transport was stuck.
+	var teardownOnce sync.Once
+	startTeardown := func(naturalExitGrace time.Duration) {
+		teardownOnce.Do(func() {
+			go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, naturalExitGrace, c.logger)
+		})
+	}
+
+	// Independent completion signal. The rollout JSONL records `task_complete`
+	// natively, which is how the interactive adapter has always confirmed a
+	// turn (codexcli_transcript_completion.go). The structured adapter trusted
+	// stdout alone and so had no second opinion when that stream went quiet.
+	// Requires a working dir: the rollout is matched by its session_meta.cwd.
+	if workingDir != "" {
+		go func() {
+			tracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+			ticker := time.NewTicker(codexRolloutPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-scannerDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if tracker.completed() {
+						if c.logger != nil {
+							c.logger.Infof("codex: rollout reported task_complete without a turn.completed on stdout — tearing down pid %d", cmd.Process.Pid)
+						}
+						startTeardown(codexNaturalExitGrace)
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	go func() {
 		defer close(scannerDone)
 		for scanner.Scan() {
@@ -239,10 +364,18 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			case "item.started":
 				if event.Item != nil && isCodexToolItem(event.Item.Type) {
 					toolStartedAt[event.Item.ID] = time.Now()
+					name := codexToolItemName(event.Item)
+					args := codexToolItemArgs(event.Item)
+					pendingToolCalls[event.Item.ID] = struct {
+						name string
+						args string
+					}{name: name, args: args}
 					emitChunk(llmtypes.StreamChunk{
 						Type:       llmtypes.StreamChunkTypeToolCallStart,
 						Content:    codexToolItemLabel(event.Item),
+						ToolName:   name,
 						ToolCallID: event.Item.ID,
+						ToolArgs:   args,
 					})
 				}
 			case "item.completed":
@@ -259,17 +392,30 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 						})
 					}
 				case isCodexToolItem(event.Item.Type):
+					pending := pendingToolCalls[event.Item.ID]
+					delete(pendingToolCalls, event.Item.ID)
+					name := codexToolItemName(event.Item)
+					if name == "" {
+						name = pending.name
+					}
+					args := codexToolItemArgs(event.Item)
+					if args == "" {
+						args = pending.args
+					}
 					emitChunk(llmtypes.StreamChunk{
 						Type:         llmtypes.StreamChunkTypeToolCallEnd,
 						Content:      event.Item.ID,
+						ToolName:     name,
 						ToolCallID:   event.Item.ID,
+						ToolArgs:     args,
+						ToolResult:   codexToolItemResult(event.Item),
 						ToolDuration: toolclock.Elapsed(toolStartedAt, event.Item.ID),
 					})
 				}
 			case "turn.completed":
 				// End-of-turn teardown per the structured-CLI shutdown contract
 				// (docs/coding_sdk_structured_contract.md §9).
-				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, c.logger)
+				startTeardown(codexNaturalExitGrace)
 				if event.Usage != nil {
 					totalUsage.InputTokens += event.Usage.InputTokens
 					totalUsage.OutputTokens += event.Usage.OutputTokens
@@ -284,8 +430,32 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	}()
 	<-scannerDone
 
-	waitErr := cmd.Wait()
+	// A scan failure is not EOF. The process is very likely still running with
+	// nobody left to read its stdout, so say so and force teardown — otherwise
+	// the reap below waits out its full grace for a turn that already ended.
+	// This was silent before: scanner.Err() was never consulted, making an
+	// oversized line indistinguishable from a clean end of stream.
+	if err := scanner.Err(); err != nil {
+		if c.logger != nil {
+			c.logger.Errorf("codex: stdout scan failed (%v) — forcing teardown of pid %d", err, cmd.Process.Pid)
+		}
+		startTeardown(0)
+	}
+
+	waitErr := procshutdown.Reap(cmd, codexReapGrace, c.logger)
 	content := strings.TrimSpace(finalContent)
+
+	// stdout may have stalled before the final agent_message arrived even
+	// though the turn genuinely finished. The rollout holds the same answer, so
+	// recover it rather than failing a turn whose work is already durable.
+	if content == "" && workingDir != "" {
+		if recovered, _ := readCodexTranscriptFinalAssistantText(turnStart, workingDir); strings.TrimSpace(recovered) != "" {
+			content = strings.TrimSpace(recovered)
+			if c.logger != nil {
+				c.logger.Infof("codex: recovered final assistant text from the rollout after stdout produced none")
+			}
+		}
+	}
 
 	if waitErr != nil && content == "" {
 		stderrStr := strings.TrimSpace(stderr.String())
