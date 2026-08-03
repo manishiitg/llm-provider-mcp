@@ -46,13 +46,13 @@ func TestReadClaudeTranscriptUsageAggregatesTurn(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	gi, model := readClaudeTranscriptUsage(sessionID, turnStart)
+	gi, model := readClaudeTranscriptUsage(sessionID, "", turnStart)
 	if gi == nil {
 		t.Fatal("expected non-nil GenerationInfo")
 	}
-	// PromptTokens = input(10+1) + cache_creation(5+0) = 16
-	if gi.PromptTokens == nil || *gi.PromptTokens != 16 {
-		t.Fatalf("PromptTokens = %v, want 16", gi.PromptTokens)
+	// PromptTokens includes every input token, including cache-served input.
+	if gi.PromptTokens == nil || *gi.PromptTokens != 216 {
+		t.Fatalf("PromptTokens = %v, want 216", gi.PromptTokens)
 	}
 	// CompletionTokens = output(20+50) = 70
 	if gi.CompletionTokens == nil || *gi.CompletionTokens != 70 {
@@ -62,7 +62,7 @@ func TestReadClaudeTranscriptUsageAggregatesTurn(t *testing.T) {
 	if gi.CachedContentTokens == nil || *gi.CachedContentTokens != 200 {
 		t.Fatalf("CachedContentTokens = %v, want 200", gi.CachedContentTokens)
 	}
-	// TotalTokens = prompt(16) + completion(70) + cache_read(200) = 286
+	// TotalTokens = prompt(216) + completion(70) = 286.
 	if gi.TotalTokens == nil || *gi.TotalTokens != 286 {
 		t.Fatalf("TotalTokens = %v, want 286", gi.TotalTokens)
 	}
@@ -107,13 +107,13 @@ func TestReadClaudeTranscriptUsageDedupesByMessageID(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	gi, _ := readClaudeTranscriptUsage(sessionID, turnStart)
+	gi, _ := readClaudeTranscriptUsage(sessionID, "", turnStart)
 	if gi == nil {
 		t.Fatal("expected non-nil GenerationInfo")
 	}
-	// PromptTokens = (3 + 42339) + (1 + 1000) = 43343
-	if gi.PromptTokens == nil || *gi.PromptTokens != 43343 {
-		t.Fatalf("PromptTokens = %v, want 43343 (msg_A counted once + msg_B)", gi.PromptTokens)
+	// PromptTokens includes msg_B's 42442 cache-read tokens.
+	if gi.PromptTokens == nil || *gi.PromptTokens != 85785 {
+		t.Fatalf("PromptTokens = %v, want 85785 (msg_A counted once + msg_B)", gi.PromptTokens)
 	}
 	// CompletionTokens = 100 + 50 = 150
 	if gi.CompletionTokens == nil || *gi.CompletionTokens != 150 {
@@ -139,13 +139,42 @@ func TestReadClaudeTranscriptUsageDedupesByMessageID(t *testing.T) {
 	}
 }
 
+func TestReadClaudeTranscriptUsagePromptIncludesCacheRead(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	workingDir := t.TempDir()
+	sessionID := "11111111-2222-4333-8444-555555555555"
+	transcriptDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-pricing")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"assistant","timestamp":"2026-08-03T10:00:00Z","message":{"id":"msg-1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":400}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(transcriptDir, sessionID+".jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	usage, model := readClaudeTranscriptUsage(sessionID, workingDir, time.Time{})
+	if usage == nil || usage.PromptTokens == nil || *usage.PromptTokens != 530 {
+		t.Fatalf("PromptTokens = %#v, want 530 (fresh + cache creation + cache read)", usage)
+	}
+	if usage.TotalTokens == nil || *usage.TotalTokens != 550 {
+		t.Fatalf("TotalTokens = %#v, want 550", usage.TotalTokens)
+	}
+	if usage.CachedContentTokens == nil || *usage.CachedContentTokens != 400 {
+		t.Fatalf("CachedContentTokens = %#v, want 400", usage.CachedContentTokens)
+	}
+	if model != "claude-opus-5" {
+		t.Fatalf("model = %q, want claude-opus-5", model)
+	}
+}
+
 // TestReadClaudeTranscriptUsageReturnsNilWhenMissing makes sure the
 // extractor is silent (no panics, no logging) when the transcript
 // doesn't exist.
 func TestReadClaudeTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	if gi, model := readClaudeTranscriptUsage("nonexistent-session-id", time.Time{}); gi != nil || model != "" {
+	if gi, model := readClaudeTranscriptUsage("nonexistent-session-id", "", time.Time{}); gi != nil || model != "" {
 		t.Fatalf("expected nil/empty for missing transcript; got gi=%+v model=%q", gi, model)
 	}
 }
@@ -154,7 +183,7 @@ func TestReadClaudeTranscriptUsageRejectsNonUUIDSessionID(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	for _, sessionID := range []string{"../secret", "--help", "deadbeef-1111-2222-3333-444455556666/extra"} {
-		if gi, model := readClaudeTranscriptUsage(sessionID, time.Time{}); gi != nil || model != "" {
+		if gi, model := readClaudeTranscriptUsage(sessionID, "", time.Time{}); gi != nil || model != "" {
 			t.Fatalf("session %q returned gi=%+v model=%q, want nil/empty", sessionID, gi, model)
 		}
 	}

@@ -70,7 +70,7 @@ func TestReadClaudeTranscriptMessagesShapesAToolUseLoop(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	msgs := readClaudeTranscriptMessages(sessionID, turnStart)
+	msgs := readClaudeTranscriptMessages(sessionID, "", turnStart)
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3 (msg_A AI, tool_result, msg_B AI); msgs=%+v", len(msgs), msgs)
 	}
@@ -149,7 +149,7 @@ func TestReadClaudeTranscriptMessagesHonorsTurnStart(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	msgs := readClaudeTranscriptMessages(sessionID, turnStart)
+	msgs := readClaudeTranscriptMessages(sessionID, "", turnStart)
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages, want 1 (prior turn must be excluded); msgs=%+v", len(msgs), msgs)
 	}
@@ -162,7 +162,7 @@ func TestReadClaudeTranscriptMessagesRejectsNonUUIDSessionID(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	for _, sessionID := range []string{"../secret", "--help", "deadbeef-0000-0000-0000-000000000000/extra"} {
-		if msgs := readClaudeTranscriptMessages(sessionID, time.Time{}); len(msgs) != 0 {
+		if msgs := readClaudeTranscriptMessages(sessionID, "", time.Time{}); len(msgs) != 0 {
 			t.Fatalf("session %q returned %d messages, want none", sessionID, len(msgs))
 		}
 	}

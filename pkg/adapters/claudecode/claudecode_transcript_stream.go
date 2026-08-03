@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -58,14 +58,15 @@ type claudeTranscriptEvent struct {
 // It relies on the transcript being append-live (claude-code writes one JSONL
 // row per content block during the turn) and on `sessionID` (a pre-generated
 // UUID passed to the CLI) being known before the turn starts.
-func streamClaudeTranscript(ctx context.Context, sessionID string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk) {
+func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk) {
 	if streamChan == nil || !isClaudeTranscriptSessionID(sessionID) {
 		return
 	}
 	ticker := time.NewTicker(claudeTranscriptStreamPollInterval)
 	defer ticker.Stop()
+	tailer := newClaudeTranscriptTailer(sessionID, workingDir)
+	defer tailer.Close()
 
-	var offset int64
 	// A tool_use row and its tool_result row can land in different polls (the
 	// CLI writes the result once the tool actually finishes, which is the
 	// whole point of a duration). This carries each start's transcript
@@ -73,9 +74,8 @@ func streamClaudeTranscript(ctx context.Context, sessionID string, turnStart tim
 	// instead of reporting zero.
 	pendingToolStarts := map[string]time.Time{}
 	for {
-		events, next, err := readClaudeTranscriptEventsSince(sessionID, offset, turnStart, pendingToolStarts)
+		events, err := tailer.Read(time.Now(), turnStart, pendingToolStarts)
 		if err == nil {
-			offset = next
 			for _, e := range events {
 				chunk := transcriptEventToChunk(sessionID, e)
 				select {
@@ -90,6 +90,107 @@ func streamClaudeTranscript(ctx context.Context, sessionID string, turnStart tim
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// claudeTranscriptTailer owns transcript discovery and the open file for one
+// streaming turn. Normal polling performs only a seek+read on this file. Before
+// the transcript exists, path discovery backs off; the expensive compatibility
+// glob is delayed when workingDir is known, then runs at most every 30s.
+type claudeTranscriptTailer struct {
+	sessionID      string
+	workingDir     string
+	path           string
+	file           *os.File
+	offset         int64
+	nextResolveAt  time.Time
+	resolveBackoff time.Duration
+	nextFallbackAt time.Time
+}
+
+func newClaudeTranscriptTailer(sessionID, workingDir string) *claudeTranscriptTailer {
+	return &claudeTranscriptTailer{
+		sessionID:      sessionID,
+		workingDir:     workingDir,
+		resolveBackoff: claudeTranscriptStreamPollInterval,
+	}
+}
+
+func (t *claudeTranscriptTailer) Close() {
+	if t == nil || t.file == nil {
+		return
+	}
+	_ = t.file.Close()
+	t.file = nil
+}
+
+func (t *claudeTranscriptTailer) Read(now, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, error) {
+	if t == nil {
+		return nil, nil
+	}
+	if err := t.ensureOpen(now); err != nil || t.file == nil {
+		return nil, err
+	}
+	events, next, err := readClaudeTranscriptEventsFromOpenFile(t.file, t.offset, turnStart, pendingToolStarts)
+	if err != nil {
+		t.Close()
+		forgetClaudeTranscriptPath(t.sessionID, t.path)
+		t.path = ""
+		t.scheduleResolve(now)
+		return nil, err
+	}
+	t.offset = next
+	return events, nil
+}
+
+func (t *claudeTranscriptTailer) ensureOpen(now time.Time) error {
+	if t.file != nil {
+		return nil
+	}
+	if !t.nextResolveAt.IsZero() && now.Before(t.nextResolveAt) {
+		return nil
+	}
+
+	allowFallback := false
+	if t.nextFallbackAt.IsZero() {
+		// A known working directory is the normal case. Give Claude two seconds
+		// to create its directly-addressable transcript before paying for the
+		// compatibility scan. Callers without a working directory retain one
+		// immediate fallback for legacy use.
+		allowFallback = strings.TrimSpace(t.workingDir) == ""
+		t.nextFallbackAt = now.Add(2 * time.Second)
+	} else if !now.Before(t.nextFallbackAt) {
+		allowFallback = true
+		t.nextFallbackAt = now.Add(30 * time.Second)
+	}
+	path, err := resolveClaudeTranscriptPath(t.sessionID, t.workingDir, allowFallback)
+	if err != nil || path == "" {
+		t.scheduleResolve(now)
+		return err
+	}
+	f, err := claudeTranscriptOpen(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			forgetClaudeTranscriptPath(t.sessionID, path)
+		}
+		t.scheduleResolve(now)
+		return err
+	}
+	t.path = path
+	t.file = f
+	t.resolveBackoff = claudeTranscriptStreamPollInterval
+	t.nextResolveAt = time.Time{}
+	return nil
+}
+
+func (t *claudeTranscriptTailer) scheduleResolve(now time.Time) {
+	if t.resolveBackoff <= 0 {
+		t.resolveBackoff = claudeTranscriptStreamPollInterval
+	}
+	t.nextResolveAt = now.Add(t.resolveBackoff)
+	t.resolveBackoff *= 2
+	if t.resolveBackoff > 2*time.Second {
+		t.resolveBackoff = 2 * time.Second
 	}
 }
 
@@ -122,30 +223,6 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 	}
 }
 
-// readClaudeTranscriptEventsSince reads new transcript rows for `sessionID`
-// starting at byte `offset`, returning the structured events plus the offset to
-// resume from next time. It only consumes up to the last complete
-// (newline-terminated) line, holding back any partial trailing line so a row
-// being written mid-poll is never parsed half-formed. Rows older than turnStart
-// are skipped (but still consumed) so a resumed session's prior turns don't
-// replay. Best-effort: any error leaves the offset unadvanced.
-func readClaudeTranscriptEventsSince(sessionID string, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
-	if !isClaudeTranscriptSessionID(sessionID) {
-		return nil, offset, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, offset, err
-	}
-	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		// Transcript not created yet (first turn of a fresh session) — try again
-		// next tick.
-		return nil, offset, nil
-	}
-	return readClaudeTranscriptEventsFromFile(matches[0], offset, turnStart, pendingToolStarts)
-}
-
 // readClaudeTranscriptEventsFromFile is the file-level core, split out so tests
 // can drive it against a growing fixture without a real ~/.claude tree.
 func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
@@ -154,10 +231,15 @@ func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart tim
 		return nil, offset, err
 	}
 	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return nil, offset, err
-		}
+	return readClaudeTranscriptEventsFromOpenFile(f, offset, turnStart, pendingToolStarts)
+}
+
+func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
+	// Seek even when offset is zero. A previous poll may have read an
+	// incomplete first line to EOF without advancing the logical offset; the
+	// next poll must reread that partial line together with its appended tail.
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, offset, err
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {

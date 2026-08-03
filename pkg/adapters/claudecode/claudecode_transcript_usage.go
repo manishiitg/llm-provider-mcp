@@ -3,8 +3,6 @@ package claudecode
 import (
 	"bufio"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -18,28 +16,20 @@ import (
 //
 //	~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
 //
-// where <encoded-cwd> is the cwd with `/`, `_`, and `.` replaced by `-`.
-// Rather than mirror that encoding (which has drifted over claude
-// versions), we glob `~/.claude/projects/*/<session-id>.jsonl`: session
-// IDs are UUIDs so the match is unambiguous and the glob is cheap.
+// where <encoded-cwd> is derived from the CLI working directory. The shared
+// resolver tries that exact directory first and caches the result. A global
+// session-ID glob remains only as a one-time compatibility fallback for older
+// Claude Code directory encodings.
 //
 // Returns nil/empty on any error or if no usage data is available.
 // Best-effort by design — never surface IO errors to the caller. The
 // model string is the latest model seen on an in-turn assistant event
 // (claude-code can swap models mid-session via /model).
-func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
+func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil, ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, ""
-	}
-	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		return nil, ""
-	}
-	f, err := os.Open(matches[0])
+	f, _, err := openClaudeTranscript(sessionID, workingDir)
 	if err != nil {
 		return nil, ""
 	}
@@ -101,8 +91,13 @@ func readClaudeTranscriptUsage(sessionID string, turnStart time.Time) (*llmtypes
 		return nil, latestModel
 	}
 
-	prompt := input + cacheCreate
-	total := prompt + output + cacheRead
+	// GenerationInfo's cross-provider contract defines PromptTokens as all
+	// input consumed by the model, including the cache-served subset. Keep the
+	// raw Anthropic components in Additional below. Returning only fresh/cache-
+	// creation input here made downstream pricing subtract cacheRead from a
+	// smaller number, clamp fresh input to zero, and silently omit input cost.
+	prompt := input + cacheCreate + cacheRead
+	total := prompt + output
 	gi := &llmtypes.GenerationInfo{
 		PromptTokens:     intRef(prompt),
 		CompletionTokens: intRef(output),

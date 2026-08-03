@@ -458,7 +458,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
 		streamCtx, stopTranscriptStream := context.WithCancel(callCtx)
 		defer stopTranscriptStream()
-		go streamClaudeTranscript(streamCtx, nativeSessionID, turnStart, opts.StreamChan)
+		go streamClaudeTranscript(streamCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan)
 	}
 
 	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))
@@ -560,7 +560,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// records `usage` on every assistant event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	effectiveModel := c.modelID
-	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, turnStart); usage != nil || transcriptModel != "" {
+	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart); usage != nil || transcriptModel != "" {
 		if usage != nil {
 			gi.PromptTokens = usage.PromptTokens
 			gi.CompletionTokens = usage.CompletionTokens
@@ -604,7 +604,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// their persisted history. Best-effort: empty when the transcript
 	// is missing, unparsable, or only contains the final assistant
 	// text with no internal loop.
-	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, turnStart); len(sidecarMsgs) > 0 {
+	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart); len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "claude-code",
 			Transport: llmtypes.CodingProviderTransportTmux,
@@ -627,7 +627,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// test never fired. ReconcileFinalAnswer compares the two by WORDS instead,
 	// so it accepts the transcript for both cases while still refusing a
 	// transcript that is genuinely a different message — see its doc comment.
-	content = llmtypes.ReconcileFinalAnswer(content, fullAssistantProseFromTranscript(responseSessionID, turnStart))
+	content = llmtypes.ReconcileFinalAnswer(content, fullAssistantProseFromTranscript(responseSessionID, workingDir, turnStart))
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
@@ -684,7 +684,8 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			OutputCostPer1MTokens: 25.00,
 			// Cache read pricing (10% of base input), matching the same
 			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.5,
+			CachedInputCostPer1MTokens:      0.5,
+			CachedInputCostWritePer1MTokens: 6.25,
 		}, nil
 	case "claude-opus-4-8":
 		return &llmtypes.ModelMetadata{
@@ -732,7 +733,8 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			OutputCostPer1MTokens: 15.00,
 			// Cache read pricing (10% of base input), matching the same
 			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.3,
+			CachedInputCostPer1MTokens:      0.3,
+			CachedInputCostWritePer1MTokens: 3.75,
 		}, nil
 	case "claude-sonnet-4-6":
 		return &llmtypes.ModelMetadata{

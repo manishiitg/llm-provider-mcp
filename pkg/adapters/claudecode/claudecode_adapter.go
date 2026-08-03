@@ -375,7 +375,8 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			OutputCostPer1MTokens: 25.00,
 			// Cache read pricing (10% of base input), matching the same
 			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.5,
+			CachedInputCostPer1MTokens:      0.5,
+			CachedInputCostWritePer1MTokens: 6.25,
 		}, nil
 	case "claude-opus-4-8":
 		return &llmtypes.ModelMetadata{
@@ -423,7 +424,8 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			OutputCostPer1MTokens: 15.00,
 			// Cache read pricing (10% of base input), matching the same
 			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.3,
+			CachedInputCostPer1MTokens:      0.3,
+			CachedInputCostWritePer1MTokens: 3.75,
 		}, nil
 	case "claude-sonnet-4-6":
 		return &llmtypes.ModelMetadata{

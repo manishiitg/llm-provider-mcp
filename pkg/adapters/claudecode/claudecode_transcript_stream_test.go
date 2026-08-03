@@ -230,7 +230,7 @@ func TestStreamClaudeTranscriptEmitsChunks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	ch := make(chan llmtypes.StreamChunk, 8)
-	go streamClaudeTranscript(ctx, sessionID, turnStart, ch)
+	go streamClaudeTranscript(ctx, sessionID, "/tmp/fake", turnStart, ch)
 
 	got := map[llmtypes.StreamChunkType]llmtypes.StreamChunk{}
 	deadline := time.After(3 * time.Second)

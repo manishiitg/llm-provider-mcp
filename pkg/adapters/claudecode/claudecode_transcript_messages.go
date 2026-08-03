@@ -3,8 +3,6 @@ package claudecode
 import (
 	"bufio"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,19 +37,11 @@ import (
 //
 // Returns nil/empty on any error or if the transcript is missing.
 // Best-effort by design — never surfaces IO errors to the caller.
-func readClaudeTranscriptMessages(sessionID string, turnStart time.Time) []llmtypes.MessageContent {
+func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.Time) []llmtypes.MessageContent {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		return nil
-	}
-	f, err := os.Open(matches[0])
+	f, _, err := openClaudeTranscript(sessionID, workingDir)
 	if err != nil {
 		return nil
 	}
@@ -181,8 +171,8 @@ func readClaudeTranscriptMessages(sessionID string, turnStart time.Time) []llmty
 // The transcript is the authoritative record and preserves all of it; callers
 // use this to repair that truncation. Returns "" if the transcript is missing,
 // unparsable, or has no assistant text.
-func fullAssistantProseFromTranscript(sessionID string, turnStart time.Time) string {
-	msgs := readClaudeTranscriptMessages(sessionID, turnStart)
+func fullAssistantProseFromTranscript(sessionID, workingDir string, turnStart time.Time) string {
+	msgs := readClaudeTranscriptMessages(sessionID, workingDir, turnStart)
 	if len(msgs) == 0 {
 		return ""
 	}
