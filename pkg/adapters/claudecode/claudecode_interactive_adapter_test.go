@@ -2013,3 +2013,56 @@ func TestIsClaudeBlockingChoiceMenu(t *testing.T) {
 		t.Fatal("false positive on a normal pane")
 	}
 }
+
+// TestEmptyPromptBeforeRenderIsNotProofOfSubmit reproduces the production defect
+// behind "I sent a message to the tmux terminal and it never went". Live send
+// order is: clear the prompt draft, paste, press Enter, verify. The verifier's
+// first capture lands ~15-90ms after the paste — before Claude Code's TUI has
+// rendered it — so the ❯ box is still empty from the clear in step 1. Reading
+// that empty box as "the draft cleared, so it submitted" made the verifier a
+// no-op: every send in the 2026-08-03 logs confirmed in 14-90ms with retries=0,
+// including two sends that were still sitting in the input box two minutes
+// later, until the user pressed Enter by hand.
+func TestEmptyPromptBeforeRenderIsNotProofOfSubmit(t *testing.T) {
+	const message = "status"
+	emptyPrompt := "✻ Cooked for 21s\n\n❯\n  ⏵⏵ don't ask on (shift+tab to cycle)\n"
+	draftShown := "✻ Cooked for 21s\n\n❯ status\n  ⏵⏵ don't ask on (shift+tab to cycle)\n"
+
+	verifier := &claudeSubmitVerifier{message: message}
+	if verifier.submitted(emptyPrompt) {
+		t.Fatal("an empty prompt seen before the paste rendered must not count as submitted")
+	}
+	if verifier.submitted(draftShown) {
+		t.Fatal("the pasted draft sitting in the box is the opposite of submitted")
+	}
+	if !verifier.submitted(emptyPrompt) {
+		t.Fatal("once the draft has been seen, an empty prompt is a real submit")
+	}
+}
+
+// TestPlaceholderHintIsNotProofOfSubmit covers the second instance of the same
+// defect. latestClaudePromptDraftRaw already classifies Claude Code's "Type your
+// message..." hint as a placeholder, but the old verifier called
+// latestClaudePromptDraft, which discarded that flag — so the hint painted into
+// an *empty* box read as a different draft, i.e. as a successful submit.
+func TestPlaceholderHintIsNotProofOfSubmit(t *testing.T) {
+	verifier := &claudeSubmitVerifier{message: "status"}
+	placeholder := "✻ Cooked for 21s\n\n❯ Type your message...\n"
+	if verifier.submitted(placeholder) {
+		t.Fatal("the empty-box placeholder hint must not count as submitted")
+	}
+	verifier.sawDraft = true
+	if !verifier.submitted(placeholder) {
+		t.Fatal("after the draft was seen, the placeholder means the box emptied")
+	}
+}
+
+// TestMissingPromptRowStaysInconclusive keeps the pre-existing guarantee: a
+// repaint frame with no ❯ row at all is inconclusive in both directions, even
+// once the draft has been observed.
+func TestMissingPromptRowStaysInconclusive(t *testing.T) {
+	verifier := &claudeSubmitVerifier{message: "status", sawDraft: true}
+	if verifier.submitted("✻ Cooked for 21s\n\n  ⏵⏵ don't ask on\n") {
+		t.Fatal("a frame with no ❯ row is a transient repaint, not proof of submission")
+	}
+}

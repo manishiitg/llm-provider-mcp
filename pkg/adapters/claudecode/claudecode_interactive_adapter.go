@@ -1735,24 +1735,73 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 	return fmt.Errorf("Claude Code prompt did not start after submit retries: %w", lastErr)
 }
 
+// claudeLiveInputDeliveryMaxWait bounds the detached delivery operation. It has
+// to clear claudeCompactionMaxWait plus the submit/verify backoff, because the
+// operation owns the session's input slot for its whole life.
+const claudeLiveInputDeliveryMaxWait = claudeCompactionMaxWait + time.Minute
+
 func sendInputToActiveTmux(ctx context.Context, sessionName, message string) error {
-	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "claude-code",
-	}, func(ctx context.Context) error {
-		if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
-			return err
+	// Delivery is synchronous, verification is not. The verify+retry loop only
+	// re-presses Enter on a draft the TUI swallowed — it cannot change what
+	// Claude Code already received — so putting a TUI repaint on the caller's
+	// clock would add latency to every live send and buy nothing. It still runs
+	// inside the broker operation, which means it holds this session's input slot
+	// and a following message cannot interleave with a retry.
+	handoff := make(chan error, 1)
+
+	// The caller's context is typically an HTTP request context that is canceled
+	// the instant we return, which would kill the verify half before its first
+	// look. Detach the cancellation but keep a ceiling.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claudeLiveInputDeliveryMaxWait)
+	go func() {
+		defer cancel()
+		_, err := tmuxinput.Default.Do(opCtx, tmuxinput.Request{
+			SessionID: sessionName,
+			Source:    "claude-code",
+		}, func(ctx context.Context) error {
+			if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
+				return err
+			}
+			return sendInputToActiveTmuxUnserialized(ctx, sessionName, message, func(err error) {
+				handoff <- err
+			})
+		})
+		// Do can fail before the operation body ever runs — readiness wait, enqueue,
+		// context death — and in that case nothing has released the caller yet.
+		select {
+		case handoff <- err:
+		default:
 		}
-		return sendInputToActiveTmuxUnserialized(ctx, sessionName, message)
-	})
-	return err
+	}()
+
+	select {
+	case err := <-handoff:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+// sendInputToActiveTmuxUnserialized pastes message into sessionName and submits
+// it, then verifies the prompt actually cleared and re-presses Enter if it did
+// not. delivered is invoked exactly once, as soon as the paste and the first
+// Enter are in the pty (or earlier with the error that stopped them) — see
+// sendInputToActiveTmux for why the verify half must not be on the caller's
+// clock.
+func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message string, delivered func(error)) (err error) {
+	if delivered == nil {
+		delivered = func(error) {}
+	}
+	var releaseOnce sync.Once
+	release := func(err error) { releaseOnce.Do(func() { delivered(err) }) }
+	// Every path that returns before the explicit release below must still hand
+	// the caller its real error rather than leaving it blocked.
+	defer func() { release(err) }()
+
 	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
-	// matters: "pasted" is the mechanical delivery cost, the rest is however
-	// many submit/verify retries it took to confirm Claude actually picked
-	// the input up.
+	// matters: "pasted" is the mechanical delivery cost, "handoff" is what the
+	// caller actually waits for, and "confirmed" is however many submit/verify
+	// retries it took to prove Claude picked the input up.
 	start := time.Now()
 	bufferName := "mlp-claude-steer-" + randomHex(6)
 	message = strings.TrimRight(message, "\r\n")
@@ -1777,21 +1826,34 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	// burned a fixed 250ms and then submitted anyway.) The submitted-draft
 	// verify + retry loop below remains the safety net for a swallowed Enter.
 	var lastErr error
+	var handoff time.Duration
+	verifier := &claudeSubmitVerifier{message: message}
 	for i, submitWait := range claudeLiveInputSubmitBackoff {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
-		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, message, submitWait); err == nil {
-			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms confirmed=%dms retries=%d",
-				sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), i)
+		if i == 0 {
+			// The pty has the pasted bytes and the Enter, in order. Nothing the
+			// verify loop does from here changes what Claude Code receives — it
+			// only re-presses Enter if the draft is still sitting there — so the
+			// caller is released now instead of paying for a repaint it does not
+			// need to see.
+			handoff = time.Since(start)
+			release(nil)
+		}
+		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, verifier, submitWait); err == nil {
+			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=%d",
+				sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), i)
 			return nil
 		} else {
 			lastErr = err
 		}
 	}
-	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms confirmed=%dms retries=exhausted err=%v",
-		sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
+	// The caller was already told the message went out, so this log is the only
+	// place a genuinely swallowed Enter surfaces. Keep it loud.
+	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
+		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
 	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
 }
 
@@ -2379,7 +2441,53 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prom
 	}
 }
 
-func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message string, timeout time.Duration) error {
+// claudeSubmitVerifier decides whether a pasted live message actually left the
+// prompt. It carries state ACROSS submit retries on purpose: the evidence that
+// matters ("the draft was in the box, and now it is not") spans attempts, and a
+// per-attempt verifier would re-arm itself after the Enter that worked and then
+// report failure for a message that did submit.
+//
+// The rule is that an empty prompt is only proof of a submit once the draft has
+// been positively observed. clearClaudePromptDraftBeforePaste empties the box
+// immediately before every paste, so the box is *already* empty when the first
+// capture lands ~15ms later — reading that as "submitted" made this verifier a
+// no-op that confirmed every send in ~15-90ms with retries=0, including sends
+// that were still sitting unsubmitted in the input box minutes later.
+type claudeSubmitVerifier struct {
+	message  string
+	sawDraft bool
+}
+
+// submitted reports whether the captured pane proves the message left the prompt.
+func (v *claudeSubmitVerifier) submitted(captured string) bool {
+	draft, placeholder, ok := latestClaudePromptDraftRaw(captured)
+	if !ok {
+		// A missing ❯ line is a transient TUI repaint mid-paste, NOT proof the
+		// message was submitted: Claude Code keeps the ❯ input visible (empty)
+		// even while a turn runs, so a genuine submit shows up as an
+		// empty/changed draft above. Residual spinner activity from Claude's
+		// *prior* turn used to be misread as success here, leaving pasted
+		// AUTO-NOTIFICATIONs stacked unsubmitted in the input box. Treat it as
+		// inconclusive and keep polling; the submit retry loop presses Enter
+		// again until the draft positively clears.
+		return false
+	}
+	if claudePromptDraftStillMatchesMessage(draft, v.message) {
+		// The paste has rendered. Only now can a later empty box mean anything.
+		v.sawDraft = true
+		return false
+	}
+	if placeholder || strings.TrimSpace(draft) == "" {
+		// An empty box, and the hint Claude Code paints into an empty box, are the
+		// same state — and it is the state we created ourselves before pasting.
+		// Conclusive only once the draft has actually been seen.
+		return v.sawDraft
+	}
+	// A different, non-empty draft means the prompt moved on from our message.
+	return true
+}
+
+func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName string, verifier *claudeSubmitVerifier, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
@@ -2400,18 +2508,9 @@ func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName, message s
 			}
 		} else {
 			lastCaptured = captured
-			draft, ok := latestClaudePromptDraft(captured)
-			if ok && !claudePromptDraftStillMatchesMessage(draft, message) {
+			if verifier.submitted(captured) {
 				return nil
 			}
-			// A missing ❯ line is a transient TUI repaint mid-paste, NOT proof the
-			// message was submitted: Claude Code keeps the ❯ input visible (empty)
-			// even while a turn runs, so a genuine submit shows up as an
-			// empty/changed draft above. Residual spinner activity from Claude's
-			// *prior* turn used to be misread as success here, leaving pasted
-			// AUTO-NOTIFICATIONs stacked unsubmitted in the input box. Treat it as
-			// inconclusive and keep polling; the submit retry loop presses Enter
-			// again until the draft positively clears.
 		}
 		select {
 		case <-deadline.Done():
