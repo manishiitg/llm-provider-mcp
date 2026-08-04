@@ -19,12 +19,30 @@ func ComputeUSDCostFromMetadata(meta *ModelMetadata, gi *GenerationInfo) float64
 	prompt := firstNonZeroIntPtr(gi.PromptTokens, gi.InputTokens, gi.PromptTokensCap, gi.InputTokensCap)
 	completion := firstNonZeroIntPtr(gi.CompletionTokens, gi.OutputTokens, gi.CompletionTokensCap, gi.OutputTokensCap)
 	cached := firstNonZeroIntPtr(gi.CachedContentTokens)
-	if prompt == 0 && completion == 0 && cached == 0 {
+	cacheWrite := generationInfoAdditionalInt(gi.Additional, "cache_creation_input_tokens", "CacheCreationInputTokens")
+	if prompt == 0 && completion == 0 && cached == 0 && cacheWrite == 0 {
 		return 0
 	}
 
+	// Prompt token conventions differ across providers. API usage objects
+	// traditionally report prompt as the complete input footprint, including
+	// cache buckets, so preserve that as the compatibility default. Coding
+	// adapters that normalize prompt to fresh-only input explicitly set this
+	// marker false; inclusive coding transports set it true for clarity.
+	freshPrompt := prompt
+	promptIncludesCache := true
+	if markedValue, marked := gi.Additional["prompt_tokens_include_cache"].(bool); marked {
+		promptIncludesCache = markedValue
+	}
+	if promptIncludesCache {
+		freshPrompt -= cached + cacheWrite
+		if freshPrompt < 0 {
+			freshPrompt = 0
+		}
+	}
+
 	var cost float64
-	cost += float64(prompt) * meta.InputCostPer1MTokens / 1_000_000
+	cost += float64(freshPrompt) * meta.InputCostPer1MTokens / 1_000_000
 	cost += float64(completion) * meta.OutputCostPer1MTokens / 1_000_000
 	if cached > 0 {
 		rate := meta.CachedInputCostPer1MTokens
@@ -37,6 +55,13 @@ func ComputeUSDCostFromMetadata(meta *ModelMetadata, gi *GenerationInfo) float64
 		}
 		cost += float64(cached) * rate / 1_000_000
 	}
+	if cacheWrite > 0 {
+		rate := meta.CachedInputCostWritePer1MTokens
+		if rate == 0 {
+			rate = meta.InputCostPer1MTokens
+		}
+		cost += float64(cacheWrite) * rate / 1_000_000
+	}
 	return cost
 }
 
@@ -44,6 +69,26 @@ func firstNonZeroIntPtr(ptrs ...*int) int {
 	for _, p := range ptrs {
 		if p != nil && *p > 0 {
 			return *p
+		}
+	}
+	return 0
+}
+
+func generationInfoAdditionalInt(additional map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		valueInt := 0
+		switch value := additional[key].(type) {
+		case int:
+			valueInt = value
+		case int64:
+			valueInt = int(value)
+		case float64:
+			valueInt = int(value)
+		case float32:
+			valueInt = int(value)
+		}
+		if valueInt > 0 {
+			return valueInt
 		}
 	}
 	return 0

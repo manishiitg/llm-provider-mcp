@@ -115,6 +115,10 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 	// even though the turn was largely cache-served.
 	if cacheRead > 0 || cacheCreate > 0 {
 		gi.Additional = map[string]interface{}{}
+		// PromptTokens above is intentionally the complete input footprint.
+		// Tell the shared pricing helper to remove these cache buckets before
+		// charging the fresh-input rate, then charge each at its own rate.
+		gi.Additional["prompt_tokens_include_cache"] = true
 		if cacheRead > 0 {
 			gi.Additional["cache_read_input_tokens"] = cacheRead
 		}

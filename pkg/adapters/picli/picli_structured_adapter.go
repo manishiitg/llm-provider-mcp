@@ -189,6 +189,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	var finalContent string
 	var turnTextBuf strings.Builder
 	var totalUsage llmtypes.Usage
+	var cacheWriteTokens int
 	sawTerminal := false
 
 	scanner := bufio.NewScanner(stdout)
@@ -235,6 +236,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 						cacheRead := u.CacheRead
 						totalUsage.CacheTokens = &cacheRead
 					}
+					cacheWriteTokens = u.CacheWrite
 				}
 			case "tool_execution_start":
 				toolStartedAt[event.ToolCallID] = time.Now()
@@ -297,6 +299,13 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		v := *totalUsage.CacheTokens
 		genInfo.CachedContentTokens = &v
 		additional["cache_read_input_tokens"] = v
+	}
+	if cacheWriteTokens > 0 {
+		additional["cache_creation_input_tokens"] = cacheWriteTokens
+	}
+	if (totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0) || cacheWriteTokens > 0 {
+		// Pi reports fresh input separately from its cache buckets.
+		additional["prompt_tokens_include_cache"] = false
 	}
 
 	return &llmtypes.ContentResponse{

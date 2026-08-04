@@ -412,50 +412,24 @@ func ExtractUsageFromGenerationInfo(genInfo *GenerationInfo) *Usage {
 		usage.ThoughtsTokens = genInfo.ThoughtsTokens
 	}
 
-	// Extract cache tokens (from multiple sources and providers)
-	cacheTokens := 0
-
-	// 1. Check CachedContentTokens (OpenAI, Gemini, OpenRouter)
-	if genInfo.CachedContentTokens != nil {
-		cacheTokens += *genInfo.CachedContentTokens
+	// Extract cache tokens by semantic bucket, not by field name. Adapters may
+	// expose the same provider value through both a typed field and raw
+	// compatibility aliases; adding every alias would double- or triple-count
+	// one cache read/write.
+	cacheReadTokens := firstNonZeroIntPtr(genInfo.CachedContentTokens)
+	if cacheReadTokens == 0 {
+		cacheReadTokens = generationInfoAdditionalInt(
+			genInfo.Additional,
+			"cache_read_input_tokens",
+			"CacheReadInputTokens",
+		)
 	}
-
-	// 2. Check Anthropic cache tokens from Additional map
-	if genInfo.Additional != nil {
-		// CacheReadInputTokens (tokens read from cache)
-		if cacheRead, ok := genInfo.Additional["CacheReadInputTokens"]; ok {
-			if cacheReadInt, ok := cacheRead.(int); ok {
-				cacheTokens += cacheReadInt
-			} else if cacheReadFloat, ok := cacheRead.(float64); ok {
-				cacheTokens += int(cacheReadFloat)
-			}
-		}
-		// Also check lowercase variant
-		if cacheRead, ok := genInfo.Additional["cache_read_input_tokens"]; ok {
-			if cacheReadInt, ok := cacheRead.(int); ok {
-				cacheTokens += cacheReadInt
-			} else if cacheReadFloat, ok := cacheRead.(float64); ok {
-				cacheTokens += int(cacheReadFloat)
-			}
-		}
-
-		// CacheCreationInputTokens (tokens used to create cache)
-		if cacheCreate, ok := genInfo.Additional["CacheCreationInputTokens"]; ok {
-			if cacheCreateInt, ok := cacheCreate.(int); ok {
-				cacheTokens += cacheCreateInt
-			} else if cacheCreateFloat, ok := cacheCreate.(float64); ok {
-				cacheTokens += int(cacheCreateFloat)
-			}
-		}
-		// Also check lowercase variant
-		if cacheCreate, ok := genInfo.Additional["cache_creation_input_tokens"]; ok {
-			if cacheCreateInt, ok := cacheCreate.(int); ok {
-				cacheTokens += cacheCreateInt
-			} else if cacheCreateFloat, ok := cacheCreate.(float64); ok {
-				cacheTokens += int(cacheCreateFloat)
-			}
-		}
-	}
+	cacheWriteTokens := generationInfoAdditionalInt(
+		genInfo.Additional,
+		"cache_creation_input_tokens",
+		"CacheCreationInputTokens",
+	)
+	cacheTokens := cacheReadTokens + cacheWriteTokens
 
 	// Set cache tokens if any were found
 	if cacheTokens > 0 {

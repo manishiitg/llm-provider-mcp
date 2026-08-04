@@ -163,6 +163,9 @@ func TestReadClaudeTranscriptUsagePromptIncludesCacheRead(t *testing.T) {
 	if usage.CachedContentTokens == nil || *usage.CachedContentTokens != 400 {
 		t.Fatalf("CachedContentTokens = %#v, want 400", usage.CachedContentTokens)
 	}
+	if inclusive, _ := usage.Additional["prompt_tokens_include_cache"].(bool); !inclusive {
+		t.Fatalf("prompt_tokens_include_cache = %#v, want true", usage.Additional["prompt_tokens_include_cache"])
+	}
 	if model != "claude-opus-5" {
 		t.Fatalf("model = %q, want claude-opus-5", model)
 	}

@@ -245,6 +245,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 
 	var finalContent string
 	var totalUsage llmtypes.Usage
+	var cacheWriteTokens int
 	var sessionID string
 	var modelName string
 	// resultIsError mirrors claudecode's identical fix: a "result" event with
@@ -353,6 +354,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						cacheRead := event.Usage.CacheReadTokens
 						totalUsage.CacheTokens = &cacheRead
 					}
+					cacheWriteTokens += event.Usage.CacheWriteTokens
 				}
 				if event.SessionID != "" {
 					sessionID = event.SessionID
@@ -399,6 +401,13 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		genInfo.CachedContentTokens = &v
 		// Mirror under the raw Anthropic-style key the cost ledger reads.
 		additional["cache_read_input_tokens"] = v
+	}
+	if cacheWriteTokens > 0 {
+		additional["cache_creation_input_tokens"] = cacheWriteTokens
+	}
+	if (totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0) || cacheWriteTokens > 0 {
+		// Cursor reports fresh input separately from its cache buckets.
+		additional["prompt_tokens_include_cache"] = false
 	}
 	// Cost lookup: prefer the cursor-reported effective model name, fall
 	// back to the requested model alias.

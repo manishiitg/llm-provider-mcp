@@ -706,11 +706,13 @@ func TestEnsurePiInputSubmittedSendsRecoveryEnter(t *testing.T) {
 
 func TestPiSessionHandleUsesNativeSessionID(t *testing.T) {
 	session := &piInteractiveSession{
-		ownerSessionID:  "app-owner-session",
-		nativeSessionID: "mlp-pi-native-session",
-		tmuxSessionName: "mlp-pi-cli-int-test",
-		workingDir:      "/tmp/pi-work",
-		modelID:         "google/gemini-3.5-flash",
+		ownerSessionID:   "app-owner-session",
+		nativeSessionID:  "mlp-pi-native-session",
+		tmuxSessionName:  "mlp-pi-cli-int-test",
+		workingDir:       "/tmp/pi-work",
+		modelID:          "google/gemini-3.5-flash",
+		cacheReadTokens:  100,
+		cacheWriteTokens: 20,
 	}
 
 	handle := piSessionHandle(session, llmtypes.CodingProviderSessionStatusIdle)
@@ -723,6 +725,9 @@ func TestPiSessionHandleUsesNativeSessionID(t *testing.T) {
 	additional := piResponseAdditional(session, true)
 	if additional["pi_session_id"] != "mlp-pi-native-session" {
 		t.Fatalf("pi_session_id = %v, want native session id", additional["pi_session_id"])
+	}
+	if includes, ok := additional["prompt_tokens_include_cache"].(bool); !ok || includes {
+		t.Fatalf("prompt_tokens_include_cache = %#v, want explicit false", additional["prompt_tokens_include_cache"])
 	}
 }
 

@@ -282,6 +282,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 
 	var finalContent string
 	var totalUsage llmtypes.Usage
+	var cacheWriteTokens int
 	var threadID string
 
 	scanner := bufio.NewScanner(stdout)
@@ -424,6 +425,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 						cacheRead := event.Usage.CachedInputTokens
 						totalUsage.CacheTokens = &cacheRead
 					}
+					cacheWriteTokens += event.Usage.CacheWriteInputTokens
 				}
 			}
 		}
@@ -484,6 +486,15 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		v := *totalUsage.CacheTokens
 		genInfo.CachedContentTokens = &v
 		additional["cache_read_input_tokens"] = v
+	}
+	if cacheWriteTokens > 0 {
+		additional["cache_creation_input_tokens"] = cacheWriteTokens
+	}
+	if (totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0) || cacheWriteTokens > 0 {
+		// codex exec reports input_tokens as total prompt-side usage. Mark
+		// that convention so pricing charges the cache buckets at their own
+		// rates instead of charging them again as fresh input.
+		additional["prompt_tokens_include_cache"] = true
 	}
 	costLookupModel := modelToUse
 	if costLookupModel != "" {

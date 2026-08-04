@@ -82,6 +82,9 @@ func TestReadCodexTranscriptUsageTakesLatestEventInTurn(t *testing.T) {
 	if v, ok := gi.Additional["cache_read_input_tokens"]; !ok || v.(int) != 120 {
 		t.Fatalf("gi.Additional[cache_read_input_tokens] = %v, want 120", v)
 	}
+	if includes, ok := gi.Additional["prompt_tokens_include_cache"].(bool); !ok || includes {
+		t.Fatalf("prompt_tokens_include_cache = %#v, want explicit false", gi.Additional["prompt_tokens_include_cache"])
+	}
 	if gi.ReasoningTokens == nil || *gi.ReasoningTokens != 20 {
 		t.Fatalf("ReasoningTokens = %v, want 20", gi.ReasoningTokens)
 	}

@@ -12,29 +12,30 @@ import (
 //	CacheTokens:  subset of PromptTokens that were cached
 //
 // and it prices fresh input as PromptTokens - CacheTokens. Anthropic's wire
-// format is the opposite -- input_tokens excludes cache_read_input_tokens --
-// so the adapter has to reconcile the two. Reporting the raw Anthropic split
+// format is the opposite -- input_tokens excludes cache read/write tokens --
+// so the adapter has to reconcile the three buckets. Reporting the raw Anthropic split
 // drives that subtraction negative, where a clamp turns the whole fresh-input
 // charge into zero: a real production conversation recorded prompt=18 against
 // cache=54717, billing every one of those fresh tokens as free.
 func TestAccumulateClaudeUsageKeepsCacheASubsetOfInput(t *testing.T) {
 	var got llmtypes.Usage
 	accumulateClaudeUsage(&got, &claudeStreamUsage{
-		InputTokens:          18,
-		OutputTokens:         909,
-		CacheReadInputTokens: 54717,
+		InputTokens:              18,
+		OutputTokens:             909,
+		CacheReadInputTokens:     54717,
+		CacheCreationInputTokens: 11,
 	})
 
 	if got.CacheTokens == nil {
 		t.Fatal("cache reads were dropped entirely")
 	}
 	cache := *got.CacheTokens
-	if cache != 54717 {
-		t.Errorf("CacheTokens = %d, want 54717", cache)
+	if cache != 54717+11 {
+		t.Errorf("CacheTokens = %d, want %d", cache, 54717+11)
 	}
-	if got.InputTokens != 18+54717 {
-		t.Errorf("InputTokens = %d, want %d (fresh + cache read, so cache is a subset)",
-			got.InputTokens, 18+54717)
+	if got.InputTokens != 18+54717+11 {
+		t.Errorf("InputTokens = %d, want %d (fresh + cache read/write, so cache is a subset)",
+			got.InputTokens, 18+54717+11)
 	}
 	if fresh := got.InputTokens - cache; fresh != 18 {
 		t.Errorf("InputTokens-CacheTokens = %d, want 18 fresh tokens; a negative or "+

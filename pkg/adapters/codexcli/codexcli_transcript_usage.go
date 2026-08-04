@@ -193,7 +193,8 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		// "creation" event), so cache_write stays zero — only
 		// cache_read_input_tokens needs surfacing.
 		gi.Additional = map[string]interface{}{
-			"cache_read_input_tokens": latest.CachedInputTokens,
+			"cache_read_input_tokens":     latest.CachedInputTokens,
+			"prompt_tokens_include_cache": false,
 		}
 	}
 	if latest.ReasoningOutputTokens > 0 {

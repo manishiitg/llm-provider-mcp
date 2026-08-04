@@ -77,9 +77,10 @@ func claudeToolResultText(raw json.RawMessage) string {
 }
 
 type claudeStreamUsage struct {
-	InputTokens          int `json:"input_tokens"`
-	OutputTokens         int `json:"output_tokens"`
-	CacheReadInputTokens int `json:"cache_read_input_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // generateContentStructured drives `claude -p --output-format stream-json` —
@@ -203,6 +204,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// carries no usage at all.
 	var totalUsage llmtypes.Usage
 	var assistantUsageFallback llmtypes.Usage
+	var totalCacheReadTokens, totalCacheWriteTokens int
+	var fallbackCacheReadTokens, fallbackCacheWriteTokens int
 	sawResult := false
 	resultIsError := false
 	// pendingToolCalls correlates a ToolCallEnd back to its Start: the name
@@ -267,6 +270,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 					if ev.Message.Usage != nil {
 						accumulateClaudeUsage(&assistantUsageFallback, ev.Message.Usage)
+						fallbackCacheReadTokens += ev.Message.Usage.CacheReadInputTokens
+						fallbackCacheWriteTokens += ev.Message.Usage.CacheCreationInputTokens
 					}
 				}
 			case "user":
@@ -310,6 +315,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 				if ev.Usage != nil {
 					accumulateClaudeUsage(&totalUsage, ev.Usage)
+					totalCacheReadTokens += ev.Usage.CacheReadInputTokens
+					totalCacheWriteTokens += ev.Usage.CacheCreationInputTokens
 				}
 				// Claude emits the result before its resumable transcript is
 				// guaranteed to be flushed. Let it exit naturally first; the
@@ -341,6 +348,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 	if totalUsage.TotalTokens == 0 {
 		totalUsage = assistantUsageFallback
+		totalCacheReadTokens = fallbackCacheReadTokens
+		totalCacheWriteTokens = fallbackCacheWriteTokens
 	}
 
 	content := strings.TrimSpace(resultText)
@@ -362,9 +371,16 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		TotalTokens:  intPtrIfNonZeroClaude(totalUsage.InputTokens + totalUsage.OutputTokens),
 		Additional:   additional,
 	}
-	if totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0 {
-		v := *totalUsage.CacheTokens
+	if totalCacheReadTokens > 0 {
+		v := totalCacheReadTokens
 		genInfo.CachedContentTokens = &v
+		additional["cache_read_input_tokens"] = v
+	}
+	if totalCacheWriteTokens > 0 {
+		additional["cache_creation_input_tokens"] = totalCacheWriteTokens
+	}
+	if totalCacheReadTokens > 0 || totalCacheWriteTokens > 0 {
+		additional["prompt_tokens_include_cache"] = true
 	}
 	// Record the cwd this conversation was actually created in, exactly as the
 	// tmux adapter does. Claude keys a resumable conversation by working
@@ -392,28 +408,24 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 // accumulateClaudeUsage folds one stream usage event into the running total.
 //
-// Anthropic reports input_tokens EXCLUSIVE of cache_read_input_tokens, but the
-// consumer's contract is the opposite (mcpagent agent.go: "PromptTokens: total
-// input tokens (includes cached portion)" / "CacheTokens: subset of
-// PromptTokens that were cached"). It prices fresh input as
-// PromptTokens - CacheTokens, so reporting Anthropic's raw split makes that
-// subtraction go negative; the clamp there then silently drops the entire
-// fresh-input charge rather than reporting it. Fold cache reads into the input
-// total here so CacheTokens really is a subset, and every consumer that
-// subtracts gets the fresh remainder it expects.
+// Anthropic reports input_tokens EXCLUSIVE of cache read/write tokens, while
+// this adapter's normalized prompt count is the complete input footprint.
+// Fold both cache buckets into InputTokens and CacheTokens; GenerationInfo
+// preserves their separate raw values so pricing can apply the correct read
+// and write rates exactly once.
 func accumulateClaudeUsage(dst *llmtypes.Usage, src *claudeStreamUsage) {
 	if src == nil {
 		return
 	}
-	dst.InputTokens += src.InputTokens + src.CacheReadInputTokens
+	dst.InputTokens += src.InputTokens + src.CacheReadInputTokens + src.CacheCreationInputTokens
 	dst.OutputTokens += src.OutputTokens
 	dst.TotalTokens = dst.InputTokens + dst.OutputTokens
-	if src.CacheReadInputTokens > 0 {
+	if cacheTokens := src.CacheReadInputTokens + src.CacheCreationInputTokens; cacheTokens > 0 {
 		cur := 0
 		if dst.CacheTokens != nil {
 			cur = *dst.CacheTokens
 		}
-		cur += src.CacheReadInputTokens
+		cur += cacheTokens
 		dst.CacheTokens = &cur
 	}
 }

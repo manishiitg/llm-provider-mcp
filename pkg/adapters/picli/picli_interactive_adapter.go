@@ -1792,6 +1792,10 @@ func piResponseAdditional(session *piInteractiveSession, persistent bool) map[st
 	if session.cacheWriteTokens > 0 {
 		additional["cache_creation_input_tokens"] = session.cacheWriteTokens
 	}
+	if session.cacheReadTokens > 0 || session.cacheWriteTokens > 0 {
+		// Pi transcript usage keeps fresh input separate from cache usage.
+		additional["prompt_tokens_include_cache"] = false
+	}
 	if session.costUSD > 0 {
 		additional["cost_usd"] = session.costUSD
 		additional["input_cost_usd"] = session.inputCostUSD
