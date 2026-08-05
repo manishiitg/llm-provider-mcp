@@ -2431,6 +2431,12 @@ func hasCursorReadyPrompt(captured string) bool {
 	return true
 }
 
+// PaneReadyForInput reports whether Cursor CLI's current tmux screen is at its
+// idle composer rather than an approval, startup, queue, or generation state.
+func PaneReadyForInput(captured string) bool {
+	return hasCursorReadyPrompt(captured)
+}
+
 // hasCursorQueuedFollowupsSendPrompt detects Cursor's queued-message
 // confirmation overlay. Both structural regions are required so ordinary
 // assistant prose mentioning "follow-ups" or "send now" cannot trigger an

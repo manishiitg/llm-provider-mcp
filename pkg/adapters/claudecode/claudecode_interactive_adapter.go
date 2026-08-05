@@ -2196,6 +2196,14 @@ func hasReadyEmptyInputPrompt(captured string) bool {
 	return strings.TrimSpace(draft) == "" || placeholder
 }
 
+// PaneReadyForInput reports whether Claude Code's current tmux screen is at
+// its empty, idle composer. Host runtimes use this after a stream-driven quiet
+// boundary to settle a retained logical turn without terminating the reusable
+// Claude process.
+func PaneReadyForInput(captured string) bool {
+	return hasReadyEmptyInputPrompt(captured)
+}
+
 func hasReadyInputPrompt(captured string) bool {
 	normalized := strings.ReplaceAll(captured, "\u00a0", " ")
 	lines := strings.Split(normalized, "\n")

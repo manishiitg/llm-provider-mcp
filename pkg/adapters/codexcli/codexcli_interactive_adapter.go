@@ -3123,6 +3123,14 @@ func hasCodexReadyPrompt(captured string) bool {
 	return !hasCodexActivity(captured)
 }
 
+// PaneReadyForInput reports whether Codex CLI's current tmux screen is at its
+// empty, idle composer. Host runtimes call it only at a stream-driven quiet
+// boundary; retained scrollback activity is rejected by the canonical Codex
+// prompt and activity checks above.
+func PaneReadyForInput(captured string) bool {
+	return hasCodexReadyPrompt(captured)
+}
+
 func hasCodexExplicitCompletedMarker(captured string) bool {
 	for _, line := range strings.Split(stripCodexANSI(captured), "\n") {
 		if strings.EqualFold(strings.TrimSpace(line), "STATUS: COMPLETED") {

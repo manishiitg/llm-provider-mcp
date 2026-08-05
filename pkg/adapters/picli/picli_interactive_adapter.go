@@ -1229,6 +1229,12 @@ func piPaneReadyForInput(captured string) bool {
 	return piPaneHasStatusLine(captured) && piPaneLooksIdle(captured)
 }
 
+// PaneReadyForInput reports whether Pi CLI's current tmux screen is at its
+// idle composer and therefore able to accept another logical turn.
+func PaneReadyForInput(captured string) bool {
+	return piPaneReadyForInput(captured)
+}
+
 func piPaneEditorContainsPrompt(captured, prompt string) bool {
 	_, plainLines := piPromptEditorRegion(captured)
 	editor := piCompactDraftText(strings.Join(plainLines, ""))
