@@ -24,7 +24,7 @@ export OPENAI_API_KEY=your-api-key-here
 
 2. Navigate to the custom_logger directory:
 ```bash
-cd llm-providers/examples/custom_logger
+cd examples/custom_logger
 ```
 
 3. Run the example:

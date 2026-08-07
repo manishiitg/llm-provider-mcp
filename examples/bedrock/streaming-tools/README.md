@@ -18,7 +18,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret-key-here
 
 2. Navigate to the examples directory:
 ```bash
-cd llm-providers/examples/bedrock/streaming-tools
+cd examples/bedrock/streaming-tools
 ```
 
 3. Run the example:

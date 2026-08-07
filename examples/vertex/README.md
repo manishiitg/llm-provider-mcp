@@ -12,7 +12,7 @@ A minimal example showing basic text generation.
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/vertex/simple
+cd examples/vertex/simple
 export VERTEX_API_KEY=your-api-key-here
 go run vertex_simple.go
 ```
@@ -27,7 +27,7 @@ An advanced example demonstrating parallel tool calls with streaming enabled and
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/vertex/streaming-tools
+cd examples/vertex/streaming-tools
 export VERTEX_API_KEY=your-api-key-here
 go run vertex_streaming_tool_calls.go
 ```

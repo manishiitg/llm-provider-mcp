@@ -1,8 +1,10 @@
-# Go Compatibility Library
+# Go Provider API
 
-The repository includes a general Go provider module used by MCP Agent and MCP
-Agent Builder. It predates the `llm-provider-mcp` product and remains supported
-as a compatibility surface for those downstream repositories.
+The Go module is the repository's core integration surface. It gives host
+applications one set of model interfaces for direct APIs, cloud platforms,
+media providers, and local coding-agent CLIs. MCP Agent and MCP Agent Builder
+are existing downstream consumers, but the module is not limited to those
+projects.
 
 The module path intentionally remains:
 
@@ -30,7 +32,6 @@ Coding-agent adapters:
 - Codex CLI
 - Cursor Agent
 - Pi CLI
-- Antigravity CLI for deprecated compatibility
 
 Gemini CLI was removed. Use Pi CLI for Gemini models or Vertex for direct
 Gemini API access.
@@ -50,6 +51,7 @@ Depending on the provider, the common interfaces cover:
 - Token usage and model metadata
 - Embeddings
 - Image input and image generation
+- Video generation and conversational video editing
 - Audio generation and transcription
 - Music generation
 - CLI-native coding-agent execution
@@ -59,9 +61,7 @@ Depending on the provider, the common interfaces cover:
 ```go
 model, err := llmproviders.InitializeLLM(llmproviders.Config{
     Provider: llmproviders.ProviderOpenAI,
-    ModelID:  "gpt-5.4",
-    APIKey:   os.Getenv("OPENAI_API_KEY"),
-    Logger:   logger,
+    ModelID:  "gpt-4.1-mini",
 })
 if err != nil {
     return err
@@ -71,22 +71,42 @@ if err != nil {
 See `.env.example`, package documentation, and the adapter tests for the
 provider-specific configuration currently supported.
 
-## Compatibility Policy
+## Transport Choice
 
-- Existing exported APIs used by MCP Agent and MCP Agent Builder are protected
-  by downstream compile checks in CI.
-- New product-facing functionality should be added through the coding-agent MCP
-  packages unless it is genuinely reusable provider behavior.
+API and cloud providers use their provider SDK or normal HTTP transport. They
+are appropriate for conventional request/response applications and hosted
+model capabilities.
+
+Coding-agent providers use installed native CLIs. Their default interactive
+transport runs in tmux so the library can preserve session state, stream
+terminal progress, send follow-up input, interrupt work, and recover native
+sessions. Provider-specific call options select working directories, models,
+approval policies, tools, and continuation behavior.
+
+The optional `llm-provider-mcp` command builds an asynchronous MCP delegation
+surface on top of these coding-agent adapters. Applications can use the Go API
+directly without installing or running the MCP server.
+
+## Stability Policy
+
+- Exported APIs used by MCP Agent and MCP Agent Builder are protected by
+  downstream compile checks in CI.
+- Reusable model, transport, and provider behavior belongs in the Go module.
+- MCP-specific job lifecycle and tool schemas belong in the MCP packages.
 - Deprecated exported APIs are removed only in a documented breaking release.
-- The repository rename does not change the Go module path.
+- The stable module path is
+  `github.com/manishiitg/multi-llm-provider-go`.
 
 ## Testing
 
 ```bash
-go test ./...
+go test -p 1 ./...
 make build
 ./bin/llm-test --help
 ```
 
 Real provider tests require the corresponding native CLI or API credentials and
-are opt-in. Replay and contract tests remain the normal CI path.
+are opt-in. Replay and contract tests remain the normal CI path. See the
+[API provider test contract](api_provider_test_contract.md) and
+[coding-agent tmux contract](coding_sdk_tmux_contract.md) for the detailed
+coverage matrices.

@@ -712,7 +712,6 @@ Add to your CI pipeline:
 # .github/workflows/test.yml
 - name: Run Test Suite
   run: |
-    cd llm-providers
     ./bin/llm-test test-suite
 ```
 
@@ -851,4 +850,3 @@ The recording/replay testing system provides:
 - Type-safe function signatures ensure consistency
 
 Use this system to build a robust test suite for your LLM provider implementations!
-

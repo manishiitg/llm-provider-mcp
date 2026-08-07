@@ -12,7 +12,7 @@ A minimal example showing basic text generation.
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/openai/simple
+cd examples/openai/simple
 export OPENAI_API_KEY=your-api-key-here
 go run openai_simple.go
 ```
@@ -27,7 +27,7 @@ An advanced example demonstrating parallel tool calls with streaming enabled and
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/openai/streaming-tools
+cd examples/openai/streaming-tools
 export OPENAI_API_KEY=your-api-key-here
 go run openai_streaming_tool_calls.go
 ```

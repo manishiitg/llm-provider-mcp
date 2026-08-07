@@ -1,6 +1,6 @@
 # Examples
 
-Simple examples demonstrating how to use the `llm-providers` library.
+Simple examples demonstrating how to use the `multi-llm-provider-go` library.
 
 ## Available Examples
 
@@ -17,12 +17,12 @@ Examples showing how to use the OpenAI provider for various use cases.
 **Quick Start**:
 ```bash
 # Simple example
-cd llm-providers/examples/openai/simple
+cd examples/openai/simple
 export OPENAI_API_KEY=your-api-key-here
 go run openai_simple.go
 
 # Streaming with tool calls example
-cd llm-providers/examples/openai/streaming-tools
+cd examples/openai/streaming-tools
 export OPENAI_API_KEY=your-api-key-here
 go run openai_streaming_tool_calls.go
 ```
@@ -42,12 +42,12 @@ Examples showing how to use the Vertex AI provider for various use cases.
 **Quick Start**:
 ```bash
 # Simple example
-cd llm-providers/examples/vertex/simple
+cd examples/vertex/simple
 export VERTEX_API_KEY=your-api-key-here
 go run vertex_simple.go
 
 # Streaming with tool calls example
-cd llm-providers/examples/vertex/streaming-tools
+cd examples/vertex/streaming-tools
 export VERTEX_API_KEY=your-api-key-here
 go run vertex_streaming_tool_calls.go
 ```
@@ -67,14 +67,14 @@ Examples showing how to use the AWS Bedrock provider for various use cases.
 **Quick Start**:
 ```bash
 # Simple example
-cd llm-providers/examples/bedrock/simple
+cd examples/bedrock/simple
 export AWS_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=your-access-key-here
 export AWS_SECRET_ACCESS_KEY=your-secret-key-here
 go run bedrock_simple.go
 
 # Streaming with tool calls example
-cd llm-providers/examples/bedrock/streaming-tools
+cd examples/bedrock/streaming-tools
 export AWS_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=your-access-key-here
 export AWS_SECRET_ACCESS_KEY=your-secret-key-here
@@ -91,7 +91,7 @@ An example demonstrating how to implement and use a custom logger that writes lo
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/custom_logger
+cd examples/custom_logger
 export OPENAI_API_KEY=your-api-key-here
 go run custom_logger.go
 ```
@@ -108,7 +108,7 @@ An example demonstrating how to implement and use a custom event emitter that ca
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/custom_event_emitter
+cd examples/custom_event_emitter
 export OPENAI_API_KEY=your-api-key-here
 go run custom_event_emitter.go
 ```

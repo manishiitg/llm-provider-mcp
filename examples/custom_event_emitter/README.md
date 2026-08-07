@@ -24,7 +24,7 @@ export OPENAI_API_KEY=your-api-key-here
 
 2. Navigate to the custom_event_emitter directory:
 ```bash
-cd llm-providers/examples/custom_event_emitter
+cd examples/custom_event_emitter
 ```
 
 3. Run the example:

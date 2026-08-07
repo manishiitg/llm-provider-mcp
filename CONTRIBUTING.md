@@ -1,7 +1,8 @@
 # Contributing
 
-Contributions should preserve the local, asynchronous coding-agent delegation
-workflow and the public Go APIs consumed by downstream repositories.
+Contributions should preserve the shared Go provider API, direct API/cloud
+transports, tmux-backed coding-agent behavior, and the optional asynchronous MCP
+delegation workflow.
 
 ## Before Opening An Issue
 
@@ -23,8 +24,9 @@ Requirements:
 git clone https://github.com/manishiitg/llm-provider-mcp.git
 cd llm-provider-mcp
 go mod download
+make build
 make build-mcp
-go test ./...
+go test -p 1 ./...
 ```
 
 ## Required Checks
@@ -33,13 +35,23 @@ Before opening a pull request:
 
 ```bash
 gofmt -w <changed-go-files>
-go test ./...
+go test -p 1 ./...
 golangci-lint run --timeout=5m ./...
 git diff --check
 ```
 
 Changes to exported provider APIs must also compile against MCP Agent and MCP
 Agent Builder. CI performs those downstream checks automatically.
+
+## Provider Changes
+
+Direct API and cloud adapter changes should update request conversion, response
+parsing, metadata, error classification, and the relevant unit or opt-in real
+tests. Keep provider-specific behavior inside its adapter when it cannot be
+expressed safely through a shared contract.
+
+See `docs/api_provider_test_contract.md` for the expected API-provider test
+areas.
 
 ## Coding-Agent Changes
 
@@ -65,6 +77,9 @@ credentials in the skip message.
 
 Use the smallest real model suitable for contract verification. Real E2E tests
 must clean up owned tmux sessions and temporary project artifacts.
+
+Run the full local suite with `-p 1`, matching CI, because interactive adapter
+packages share the machine's tmux service.
 
 ## Pull Requests
 

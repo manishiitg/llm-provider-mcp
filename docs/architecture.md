@@ -1,21 +1,46 @@
 # Architecture
 
-`llm-provider-mcp` is a local stdio MCP server with a durable asynchronous job
-layer and tmux-backed coding-agent adapters.
+`multi-llm-provider-go` is a provider runtime with two transport families:
+hosted API/cloud adapters and local coding-agent CLI adapters. The optional
+`llm-provider-mcp` server adds durable asynchronous delegation on top of the
+coding-agent family.
 
 ## Components
 
 | Component | Package | Responsibility |
 |---|---|---|
+| Public provider API | root package | Configuration, initialization, fallbacks, shared behavior |
+| Model contracts | `llmtypes` | Messages, responses, tools, streams, metadata, call options |
+| Host interfaces | `interfaces` | Logging, events, trace and support contracts |
+| API/cloud adapters | `pkg/adapters/*` | Provider SDK/HTTP conversion and model behavior |
+| Coding-agent adapters | `pkg/adapters/*cli` | Native CLI launch, prompts, tools, extraction |
+| tmux transport | `pkg/adapters/internal/*`, `pkg/tmuxcapture` | Sessions, input, pane capture, process cleanup |
 | CLI | `cmd/llm-provider-mcp` | MCP entry point and lifecycle commands |
 | MCP server | `pkg/codingagentmcp` | Tool schemas, validation, responses |
 | Job manager | `pkg/codingagentjob` | Persistence, workers, cancellation, recovery |
 | Setup | `pkg/codingagentsetup` | Detection, auth, registration, skills |
 | Model catalog | `pkg/codingagentmodels` | Curated and provider-visible selectors |
-| Terminal capture | `pkg/tmuxcapture` | Bounded, cleaned progress snapshots |
-| Adapters | `pkg/adapters/*cli` | Native CLI launch, prompts, tools, extraction |
 
-## Process Model
+## Core Provider Model
+
+```mermaid
+flowchart LR
+    App[Go application] --> Init[Initialize provider]
+    Init --> Model[llmtypes.Model]
+    Model --> API[API / cloud adapter]
+    Model --> Agent[Coding-agent adapter]
+    API --> Remote[Hosted model]
+    Agent --> Tmux[tmux session]
+    Tmux --> Native[Native coding CLI]
+```
+
+The root package chooses and initializes an adapter from `Config`. Every text
+provider returns `llmtypes.Model`, allowing the caller to keep the same message,
+response, streaming, tool, metadata, logging, and event abstractions while
+changing providers. Specialized factories initialize embedding, image, video,
+audio, transcription, and music interfaces.
+
+## Optional MCP Process Model
 
 ```mermaid
 flowchart LR
@@ -29,8 +54,9 @@ flowchart LR
 ```
 
 The MCP request that creates a job returns after persistence, not after provider
-completion. A worker process owns the long-running provider call so the job can
-outlive the original MCP tool invocation.
+completion. A worker process owns the long-running coding-agent call so the job
+can outlive the original MCP tool invocation. This job layer is not involved
+when an application calls the Go provider API directly.
 
 ## Persistence
 
@@ -44,7 +70,11 @@ The default database is:
 provider, workspace, status, progress, tmux metadata, final result, and failure
 details.
 
-## Provider Contract
+## Provider Contracts
+
+`llmtypes.Model` is the common text-generation contract. Provider-specific
+capabilities are represented through metadata, additional interfaces, and call
+options rather than assuming that every model supports every feature.
 
 `CodingAgentProviderContracts()` is the source of truth for supported coding
 CLIs and capabilities. Setup, model discovery, and job validation consume the
@@ -64,9 +94,9 @@ returned to the host.
 The same capture package is consumed by MCP Agent Builder, preventing two
 different implementations of terminal-progress handling.
 
-## Compatibility Boundary
+## Public API Stability
 
-The repository also exports a broader Go provider API used by MCP Agent and MCP
-Agent Builder. Downstream compile checks run in CI before changes merge. The Go
-module path remains `github.com/manishiitg/multi-llm-provider-go` even though
-the repository product is branded `llm-provider-mcp`.
+The Go module path is `github.com/manishiitg/multi-llm-provider-go`. MCP Agent
+and MCP Agent Builder consume this public API, and downstream compile checks run
+in CI before changes merge. MCP-specific schemas and persisted job state remain
+in their dedicated packages so they do not define the general provider API.

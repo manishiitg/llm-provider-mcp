@@ -18,7 +18,7 @@ export GOOGLE_API_KEY=your-api-key-here
 
 2. Navigate to the examples directory:
 ```bash
-cd llm-providers/examples/vertex/simple
+cd examples/vertex/simple
 ```
 
 3. Run the example:

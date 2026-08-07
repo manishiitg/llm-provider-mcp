@@ -18,7 +18,7 @@ export GOOGLE_API_KEY=your-api-key-here
 
 2. Navigate to the examples directory:
 ```bash
-cd llm-providers/examples/vertex/streaming-tools
+cd examples/vertex/streaming-tools
 ```
 
 3. Run the example:

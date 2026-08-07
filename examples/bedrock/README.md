@@ -12,7 +12,7 @@ A minimal example showing basic text generation.
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/bedrock/simple
+cd examples/bedrock/simple
 export AWS_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=your-access-key-here
 export AWS_SECRET_ACCESS_KEY=your-secret-key-here
@@ -29,7 +29,7 @@ An advanced example demonstrating parallel tool calls with streaming enabled and
 
 **Quick Start**:
 ```bash
-cd llm-providers/examples/bedrock/streaming-tools
+cd examples/bedrock/streaming-tools
 export AWS_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=your-access-key-here
 export AWS_SECRET_ACCESS_KEY=your-secret-key-here

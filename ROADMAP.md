@@ -1,10 +1,15 @@
 # Roadmap
 
-The roadmap records direction, not guaranteed delivery dates. Provider CLI and
-MCP client behavior can change independently of this project.
+The roadmap records direction, not guaranteed delivery dates. Hosted APIs,
+provider SDKs, coding CLIs, and MCP clients can change independently of this
+project.
 
 ## Available Now
 
+- One Go model interface across direct API, cloud, and coding-agent providers
+- Text, streaming, tools, structured output, embeddings, and media interfaces
+- OpenAI, Anthropic, OpenRouter, Bedrock, Vertex, Azure, Z.AI, Kimi, and MiniMax adapters
+- tmux-backed Claude Code, Codex CLI, Cursor Agent, and Pi providers
 - Project-local setup for Codex and Claude Code hosts
 - Cursor, Pi, Codex, and Claude Code delegation targets
 - Durable asynchronous jobs with SQLite state
@@ -14,15 +19,16 @@ MCP client behavior can change independently of this project.
 - Curated and provider-visible model discovery
 - Managed project skills
 - Authentication checks and optional connectivity prompts
+- Official MCP Registry publication and release automation
 - Downstream compatibility checks for MCP Agent and MCP Agent Builder
 
 ## Next
 
 - Launch-focused documentation and real terminal demo
-- Official MCP Registry publication
+- Keep registry packaging and release automation current
 - Provider-independent workspace sandbox evaluation
 - Additional installer validation across supported macOS and Linux platforms
-- More direct package-level tests for compatibility-only API providers
+- More direct package-level and opt-in real tests for API providers
 
 ## Evaluating
 
@@ -32,10 +38,8 @@ MCP client behavior can change independently of this project.
 - Structured progress events beyond terminal snapshots
 - Provider health and capability diagnostics
 
-## Compatibility Cleanup
+## API And Compatibility Cleanup
 
-- Coordinate removal of the deprecated Antigravity CLI integration across all
-  three dependent repositories.
 - Deprecate unused exported event compatibility declarations before removal.
 - Continue splitting the historical provider implementation into smaller files
   without changing the public Go package.

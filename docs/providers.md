@@ -77,8 +77,7 @@ Claude Code accepts its native model selectors and uses project-scoped tool
 permissions for detached jobs. Setup checks the existing Claude authentication
 status and can open the native login flow when needed.
 
-## Deprecated Compatibility Providers
+## Removed Providers
 
-Antigravity CLI remains in the Go module for existing downstream sessions. New
-MCP setup does not offer it. Gemini CLI has been removed; use Pi for Gemini
-model routing or Vertex for direct Gemini API access.
+Gemini CLI has been removed. Use Pi for Gemini model routing or Vertex for
+direct Gemini API access.
