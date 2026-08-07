@@ -452,9 +452,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 
 	// Opt-in: stream structured content (assistant text + tool-call starts) by
 	// tailing the CLI's JSONL transcript mid-turn, so a design-first UI can
-	// render real content without the terminal pane. Additive — the turn's final
-	// response is still built from the pane parse below, and the goroutine stops
-	// when this function returns.
+	// render real content without the terminal pane. Additive — the goroutine
+	// stops when this function returns. The completed JSONL end_turn below is the
+	// authoritative final response; the pane remains the completion/display rail.
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
 		streamCtx, stopTranscriptStream := context.WithCancel(callCtx)
 		defer stopTranscriptStream()
@@ -492,6 +492,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		discardPersistentSession(ctxErr)
 		return nil, ctxErr
+	}
+	finalExtractionSource := "tmux_pane"
+	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart)
+	if transcriptResponse.Found {
+		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
+			transcriptErr := errors.New("Claude Code transcript exists but the current turn has no completed end_turn response")
+			discardPersistentSession(transcriptErr)
+			return nil, transcriptErr
+		}
+		content = transcriptResponse.Text
+		finalExtractionSource = "jsonl_end_turn"
 	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	// Skip for persistent interactive sessions: they live past the call
@@ -612,22 +623,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		})
 	}
 
-	// Prefer the JSONL transcript's prose over the pane scrape. It repairs two
-	// distinct defects at once:
-	//
-	//  1. Truncation — the pane scrape keeps only the FINAL assistant text block,
-	//     so prose written before a trailing tool call (an answer followed by a
-	//     suggest_actions / open_file call) is lost.
-	//  2. Wrapping — the pane hard-wraps at its width, destroying paragraph and
-	//     list structure in a reply that callers render as markdown.
-	//
-	// This used to be gated on `len(full) > len(content)`, which caught (1) but
-	// silently missed (2): re-wrapping substitutes newlines for spaces, so the
-	// wrapped and authored forms are the SAME length and the longer-is-better
-	// test never fired. ReconcileFinalAnswer compares the two by WORDS instead,
-	// so it accepts the transcript for both cases while still refusing a
-	// transcript that is genuinely a different message — see its doc comment.
-	content = llmtypes.ReconcileFinalAnswer(content, fullAssistantProseFromTranscript(responseSessionID, workingDir, turnStart))
+	// Claude's committed end_turn transcript message is authoritative, matching
+	// the Codex rollout path. The tmux pane is a rendering and may contain tool
+	// progress, spinners, token counters, or tips beside the answer. Keep pane
+	// parsing only as a compatibility fallback for CLI versions/environments in
+	// which the transcript cannot be read.
+	additional["claude_code_final_extraction_source"] = finalExtractionSource
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{
@@ -2583,9 +2584,6 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan, streamTerminalScreen)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
-		if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
-			return content, nil
-		}
 		if isClaudeTmuxSessionLostError(err) {
 			return "", fmt.Errorf("Claude Code tmux session ended before response could be captured: %w", err)
 		}
@@ -2608,6 +2606,12 @@ func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMar
 
 func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
 	newOutput := capturedAfterPaneBaseline(captured, paneBaseline)
+	// A running pane is never a final response. In particular this rejects a
+	// partial assistant paragraph followed by tool progress/status chrome when a
+	// context cancellation or server restart snapshots the terminal mid-turn.
+	if hasClaudeActivity(newOutput) {
+		return "", false
+	}
 	if content, ok := extractBetweenLastMarkers(newOutput, startMarker, endMarker); ok {
 		return strings.TrimSpace(content), true
 	}

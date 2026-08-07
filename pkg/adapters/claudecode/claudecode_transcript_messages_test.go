@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,91 @@ func TestReadClaudeTranscriptMessagesRejectsNonUUIDSessionID(t *testing.T) {
 		if msgs := readClaudeTranscriptMessages(sessionID, "", time.Time{}); len(msgs) != 0 {
 			t.Fatalf("session %q returned %d messages, want none", sessionID, len(msgs))
 		}
+	}
+}
+
+func TestCompletedAssistantResponseFromTranscriptUsesOnlyCommittedEndTurn(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "9b6a291d-04e1-41d3-b64a-fb70293db03a"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+	turnStart := time.Date(2026, 8, 6, 14, 0, 0, 0, time.UTC)
+	before := turnStart.Add(-time.Second).Format(time.RFC3339Nano)
+	after := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	lines := []string{
+		`{"type":"assistant","timestamp":"` + before + `","message":{"id":"old","stop_reason":"end_turn","content":[{"type":"text","text":"prior turn"}]}}`,
+		`{"type":"assistant","timestamp":"` + after + `","message":{"id":"tool-call","stop_reason":"tool_use","content":[{"type":"text","text":"Running deeper technical checks now."}]}}`,
+		`{"type":"assistant","timestamp":"` + after + `","message":{"id":"tool-call","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"api-bridge","input":{}}]}}`,
+		`{"type":"assistant","timestamp":"` + after + `","message":{"id":"final","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"done"}]}}`,
+		`{"type":"assistant","timestamp":"` + after + `","message":{"id":"final","stop_reason":"end_turn","content":[{"type":"text","text":"The quality check finished.\n\n**Result: ready.**"}]}}`,
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	want := "The quality check finished.\n\n**Result: ready.**"
+	got := completedAssistantResponseFromTranscript(sessionID, "", turnStart)
+	if !got.Found || !got.Completed || got.Text != want {
+		t.Fatalf("completed response = %+v, want found completed text %q", got, want)
+	}
+}
+
+func TestCompletedAssistantResponseFromTranscriptRejectsInterruptedTurn(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "7ea267a7-9e91-4167-89ad-071ef14345bd"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+	ts := time.Now().UTC()
+	line := `{"type":"assistant","timestamp":"` + ts.Format(time.RFC3339Nano) + `","message":{"id":"active","stop_reason":"tool_use","content":[{"type":"text","text":"Running deeper technical checks now."}]}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(line), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	got := completedAssistantResponseFromTranscript(sessionID, "", ts.Add(-time.Second))
+	if !got.Found || got.Completed || got.Text != "" {
+		t.Fatalf("interrupted response = %+v, want found but incomplete without end_turn", got)
+	}
+}
+
+func TestWaitForCompletedAssistantResponseFromTranscriptAllowsDelayedCommit(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "84fbf51a-54d9-4fbe-a20d-3c62dc457fe4"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+	turnStart := time.Now().UTC().Add(-time.Second)
+	initial := `{"type":"assistant","timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","message":{"id":"final","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"done"}]}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		committed := `{"type":"assistant","timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","message":{"id":"final","stop_reason":"end_turn","content":[{"type":"text","text":"Hello from Video Studio."}]}}` + "\n"
+		f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString(committed)
+	}()
+
+	got := waitForCompletedAssistantResponseFromTranscript(context.Background(), sessionID, "", turnStart)
+	if !got.Found || !got.Completed || got.Text != "Hello from Video Studio." {
+		t.Fatalf("completed response = %+v, want delayed committed final text", got)
 	}
 }

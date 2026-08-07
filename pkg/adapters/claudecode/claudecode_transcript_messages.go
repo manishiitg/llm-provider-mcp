@@ -2,12 +2,16 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+const claudeTranscriptCommitGrace = 2 * time.Second
 
 // readClaudeTranscriptMessages reconstructs the assistant's internal
 // tool-use loop from the same sidecar JSONL that readClaudeTranscriptUsage
@@ -160,43 +164,138 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 	return out
 }
 
-// fullAssistantProseFromTranscript reconstructs the COMPLETE assistant prose for
-// a turn from claude-code's JSONL transcript: every text block from every
-// assistant message emitted since turnStart, in order, joined with blank lines.
-// tool_use blocks are skipped.
+// claudeCompletedTranscriptResponse describes whether Claude's session JSONL
+// exists and whether the current turn contains a committed end_turn message.
+// Found and Completed are intentionally separate: an existing but incomplete
+// transcript means the turn was interrupted and must never fall back to a pane
+// scrape, while a genuinely unavailable transcript retains legacy compatibility.
+type claudeCompletedTranscriptResponse struct {
+	Text      string
+	Found     bool
+	Completed bool
+}
+
+// completedAssistantResponseFromTranscript returns the final assistant message
+// that Claude Code explicitly committed with stop_reason=end_turn during the
+// current turn. It deliberately skips narration attached to tool_use calls:
+// those blocks are progress within the turn, not the final response callers
+// should persist.
 //
-// The tmux pane scrape keeps only the FINAL assistant text block, so any prose
-// the model writes BEFORE a tool call (e.g. a full answer followed by a trailing
-// suggest_actions / open_file tool call) is dropped from the captured response.
-// The transcript is the authoritative record and preserves all of it; callers
-// use this to repair that truncation. Returns "" if the transcript is missing,
-// unparsable, or has no assistant text.
-func fullAssistantProseFromTranscript(sessionID, workingDir string, turnStart time.Time) string {
-	msgs := readClaudeTranscriptMessages(sessionID, workingDir, turnStart)
-	if len(msgs) == 0 {
-		return ""
+// Claude writes one JSONL row per content block and may repeat a message ID, so
+// text is accumulated by message ID and the last completed message wins.
+func completedAssistantResponseFromTranscript(sessionID, workingDir string, turnStart time.Time) claudeCompletedTranscriptResponse {
+	if !isClaudeTranscriptSessionID(sessionID) {
+		return claudeCompletedTranscriptResponse{}
 	}
-	var b strings.Builder
-	for _, m := range msgs {
-		if m.Role != llmtypes.ChatMessageTypeAI {
+	f, _, err := openClaudeTranscript(sessionID, workingDir)
+	if err != nil {
+		return claudeCompletedTranscriptResponse{}
+	}
+	defer f.Close()
+	result := claudeCompletedTranscriptResponse{Found: true}
+
+	type assistantMessage struct {
+		ID         string                        `json:"id"`
+		StopReason string                        `json:"stop_reason"`
+		Content    []claudeAssistantContentBlock `json:"content"`
+	}
+	type event struct {
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Message   json.RawMessage `json:"message"`
+	}
+	type group struct {
+		text      []string
+		completed bool
+	}
+
+	groups := make(map[string]*group)
+	order := make([]string, 0)
+	standalone := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var e event
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || e.Type != "assistant" {
 			continue
 		}
-		for _, p := range m.Parts {
-			tc, ok := p.(llmtypes.TextContent)
-			if !ok {
+		if !turnStart.IsZero() && e.Timestamp != "" {
+			if ts, parseErr := time.Parse(time.RFC3339Nano, e.Timestamp); parseErr == nil && ts.Before(turnStart) {
 				continue
 			}
-			t := strings.TrimSpace(tc.Text)
-			if t == "" {
-				continue
-			}
-			if b.Len() > 0 {
-				b.WriteString("\n\n")
-			}
-			b.WriteString(t)
+		}
+		var am assistantMessage
+		if json.Unmarshal(e.Message, &am) != nil {
+			continue
+		}
+		id := am.ID
+		if id == "" {
+			standalone++
+			id = "__standalone_" + strconv.Itoa(standalone)
+		}
+		g, ok := groups[id]
+		if !ok {
+			g = &group{}
+			groups[id] = g
+			order = append(order, id)
+		}
+		g.text = append(g.text, textFromClaudeBlocks(am.Content)...)
+		if am.StopReason == "end_turn" {
+			g.completed = true
+			result.Completed = true
 		}
 	}
-	return strings.TrimSpace(b.String())
+
+	for i := len(order) - 1; i >= 0; i-- {
+		g := groups[order[i]]
+		if g.completed && len(g.text) > 0 {
+			result.Text = strings.TrimSpace(strings.Join(g.text, "\n\n"))
+			return result
+		}
+	}
+	return result
+}
+
+// waitForCompletedAssistantResponseFromTranscript gives Claude Code a short
+// grace window to append the final text block after its TUI has already
+// returned to the prompt. In practice the prompt can become visible a few
+// hundred milliseconds before the JSONL writer commits the end_turn row.
+// Without this wait, a valid response is occasionally misclassified as an
+// interrupted turn.
+func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time) claudeCompletedTranscriptResponse {
+	response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
+	if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
+		return response
+	}
+
+	timer := time.NewTimer(claudeTranscriptCommitGrace)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return response
+		case <-timer.C:
+			return response
+		case <-ticker.C:
+			response = completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
+			if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
+				return response
+			}
+		}
+	}
+}
+
+func textFromClaudeBlocks(blocks []claudeAssistantContentBlock) []string {
+	var text []string
+	for _, block := range blocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			text = append(text, strings.TrimSpace(block.Text))
+		}
+	}
+	return text
 }
 
 // claudeAssistantContentBlock is one block inside an assistant

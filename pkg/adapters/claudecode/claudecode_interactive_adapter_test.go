@@ -2066,3 +2066,18 @@ func TestMissingPromptRowStaysInconclusive(t *testing.T) {
 		t.Fatal("a frame with no ❯ row is a transient repaint, not proof of submission")
 	}
 }
+
+func TestClaudeRunningPaneCannotBecomeFinalResponse(t *testing.T) {
+	pane := `
+⏺ Good, the file exists intact: 1080×1920, 20.0s, single video stream, no audio.
+  Running deeper technical checks now.
+
+⏺ Calling api-bridge 2 times · 12s…
+
+· Determining… (1m 5s · ↓ 1.0k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+`
+	if got, ok := parseClaudeResponseFromCaptured(pane, "", "", ""); ok {
+		t.Fatalf("running pane parsed as final response: %q", got)
+	}
+}
