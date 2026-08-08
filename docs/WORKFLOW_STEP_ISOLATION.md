@@ -50,6 +50,34 @@ Read/Edit/Write/Shell tools for ordinary project work while retaining MCP for
 application capabilities. `native_only` is mainly diagnostic because it cannot
 use application capabilities exposed only through MCP.
 
+### API-spec bridge rule
+
+Native coding-agent tools do **not** replace the AgentWorks shell bridge in a
+product that exposes custom capabilities through `get_api_spec`. The normal
+call path is:
+
+```text
+coding CLI → get_api_spec → execute_shell_command → authenticated product HTTP endpoint
+```
+
+For example, a coding agent discovers `list_secrets`, `set_workflow_secret`,
+or a product-specific presentation tool from the API spec, then invokes the
+registered endpoint through the guarded `execute_shell_command` executor.
+The provider's native shell is useful for ordinary workspace work, but it is
+not a substitute for this authenticated AgentWorks bridge.
+
+Therefore a product using `agent_tools.mode: hybrid` must keep
+`execute_shell_command` enabled whenever its system prompt or API spec tells
+the coding agent to use product tools. Disabling it while retaining API-spec
+tools creates a broken hybrid: the agent can discover the endpoint but has no
+supported way to call it, and will repeatedly fail with an unregistered shell
+bridge. `native_only` is incompatible with API-spec-only product tools.
+
+The shell bridge remains subject to the AgentWorks folder guard and shell
+sandboxing. It must not be used to print secret values. Prefer the Secret UI
+for entering a value; if a secret-management endpoint is called through the
+bridge, its payload must be redacted from debug and error logs.
+
 In `compatibility` mode, native tools run in the provider's normal host
 environment. MCP calls remain guarded, but AgentWorks FolderGuard does not
 constrain native tools. `hybrid + compatibility` is therefore a legitimate,
