@@ -50,43 +50,52 @@ Read/Edit/Write/Shell tools for ordinary project work while retaining MCP for
 application capabilities. `native_only` is mainly diagnostic because it cannot
 use application capabilities exposed only through MCP.
 
-### API-spec bridge rule
+### Product API transport for hybrid profiles
 
-Native coding-agent tools do **not** replace the AgentWorks shell bridge in a
-product that exposes custom capabilities through `get_api_spec`. The normal
-call path is:
+A product that exposes custom capabilities through `get_api_spec` needs a way
+to *invoke* them, not only discover them. `get_api_spec` is an mcpagent virtual
+tool injected into the CLI separately from bridge tools, so the fact that it
+answers proves nothing about whether product tools are callable. Discovery
+working is not evidence that invocation works — that inference is what sent an
+earlier version of this section the wrong way.
 
-```text
-coding CLI → get_api_spec → execute_shell_command → authenticated product HTTP endpoint
-```
+There are two supported transports, selected by `runtime.api_transport.mode`:
 
-For example, a coding agent discovers `list_secrets`, `set_workflow_secret`,
-or a product-specific presentation tool from the API spec, then invokes the
-registered endpoint through the guarded `execute_shell_command` executor.
-The provider's native shell is useful for ordinary workspace work, but it is
-not a substitute for this authenticated AgentWorks bridge.
+- **`bridge_shell`** — the agent calls the documented endpoint through
+  AgentWorks' guarded `execute_shell_command` executor. Appropriate for
+  `mcp_only` products, which have no native shell of their own.
+- **`native_shell`** — the server injects a session-scoped route
+  (`MCP_API_URL`, `MCP_API_TOKEN`, `MCP_SESSION_ID`, the derived `MCP_MCP` /
+  `MCP_CUSTOM` / `MCP_VIRTUAL` routes, and `MCP_AUTH`) into the coding agent's
+  environment. The provider's own Bash calls the endpoint directly, e.g.
+  `curl "$MCP_CUSTOM/<tool>" -H "$MCP_AUTH"`. No AgentWorks shell executor is
+  exposed.
 
-Therefore a product using `agent_tools.mode: hybrid` must keep
-`execute_shell_command` enabled whenever its system prompt or API spec tells
-the coding agent to use product tools. Disabling it while retaining API-spec
-tools creates a broken hybrid: the agent can discover the endpoint but has no
-supported way to call it, and will repeatedly fail with an unregistered shell
-bridge. `native_only` is incompatible with API-spec-only product tools.
+**A `hybrid` profile should not enable `execute_shell_command`.** It has a
+native shell already; adding the AgentWorks executor grants a second, broader
+one whose only unique property is the folder guard. Use `native_shell` and give
+that native Bash the scoped route instead. `native_only` remains incompatible
+with API-spec product tools, which have no transport at all under it.
 
-Verified on Video Studio, 2026-08-08. Its product tools were moved to an
-explicit allow list that omitted `execute_shell_command`, on the assumption
-that `agent_tools.mode: hybrid` meant the provider's native shell covered
-everything. Every product tool became uncallable — not only secrets.
+Two failure modes are worth naming, because both have shipped:
 
-Asked to call `list_secrets` without a shell, the agent answered: *no direct
-list_secrets tool is available — this environment only exposes secret_tools
-via the HTTP API (curl through execute_shell_command)*.
+1. **A hybrid profile with no transport configured.** Product tools are
+   registered and specced, and nothing can call them. The agent does not report
+   this as a configuration gap — it reports the mechanism it happens to know
+   about, blames an outage, and asks the user to reload. Treat an agent's
+   account of its own environment as a symptom, never as evidence.
+2. **A transport declared but incompletely provisioned.** The `native_shell`
+   branch currently logs `[API_TRANSPORT] native_shell requested but MCP bridge
+   environment is incomplete` and continues, which reproduces failure mode 1
+   with a warning nobody reads.
 
-One observation misleads here and is worth naming, because it is what sent an
-earlier analysis the wrong way: `get_api_spec` DOES work with no shell. It is
-an mcpagent virtual tool, injected into the CLI separately from bridge tools,
-so its success says nothing about whether product tools are directly callable.
-Discovery working is not evidence that invocation works.
+Whichever transport is selected, the system prompt must say how to reach
+product APIs. A route the prompt never mentions is functionally absent: the
+same profile lost `set_workflow_secret` for exactly this reason while the tool
+was registered and correctly specced the whole time.
+
+See `docs/design/native_coding_agent_environment_policy.md` in the AgentWorks
+repository for the scoped-environment key policy and its single-owner proposal.
 
 The shell bridge remains subject to the AgentWorks folder guard and shell
 sandboxing. It must not be used to print secret values. Prefer the Secret UI
