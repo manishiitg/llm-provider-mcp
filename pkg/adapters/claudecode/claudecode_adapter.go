@@ -17,16 +17,16 @@ const (
 	// (for example "auto"). It is intentionally separate from the legacy
 	// dangerously-skip flag so callers can opt into provider-reviewed native
 	// tools without also bypassing every approval.
-	MetadataKeyPermissionMode             = "claude_code_permission_mode"
-	MetadataKeyTools                      = "claude_code_tools"
-	MetadataKeyAllowedTools               = "claude_code_allowed_tools"
-	MetadataKeySettings                   = "claude_code_settings"
-	MetadataKeyMaxTurns                   = "claude_code_max_turns"
-	MetadataKeyResumeSessionID            = "claude_code_resume_session_id"
-	MetadataKeyEffort                     = "claude_code_effort"
-	MetadataKeyInteractiveSessionID       = "claude_code_interactive_session_id"
-	MetadataKeyPersistentInteractive      = "claude_code_persistent_interactive"
-	MetadataKeyWorkingDir                 = "claude_code_working_dir"
+	MetadataKeyPermissionMode        = "claude_code_permission_mode"
+	MetadataKeyTools                 = "claude_code_tools"
+	MetadataKeyAllowedTools          = "claude_code_allowed_tools"
+	MetadataKeySettings              = "claude_code_settings"
+	MetadataKeyMaxTurns              = "claude_code_max_turns"
+	MetadataKeyResumeSessionID       = "claude_code_resume_session_id"
+	MetadataKeyEffort                = "claude_code_effort"
+	MetadataKeyInteractiveSessionID  = "claude_code_interactive_session_id"
+	MetadataKeyPersistentInteractive = "claude_code_persistent_interactive"
+	MetadataKeyWorkingDir            = "claude_code_working_dir"
 	// MetadataKeyStructuredTransport selects `claude -p --output-format
 	// stream-json` (per-turn, one-shot, no tmux) instead of the tmux
 	// interactive transport (tmux stays the default).
@@ -39,12 +39,20 @@ const (
 	// are also pushed to the caller's StreamChan mid-turn. Set via
 	// WithStreamTmuxScreen (default ON).
 	MetadataKeyStreamTmuxScreen = "claude_code_stream_tmux_screen"
-	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
-	// flag for writing the per-session system prompt to .claude/rules/
-	// as a markdown file the CLI auto-loads. Default off because the
-	// adapter already injects via --system-prompt-file <tmp>, and
-	// duplicating into a workspace file is belt-and-suspenders only useful
-	// when the operator wants the prompt visible inside the cwd.
+	// MetadataKeyWriteProjectInstructionFile is the ON-by-default feature
+	// flag for projecting the per-session system prompt into
+	// <workingDir>/CLAUDE.md, which the CLI auto-loads as project
+	// instructions. writeProjectInstructionFromOptions returns true when the
+	// key is absent, so leaving it unset enables projection; pass
+	// WithWriteProjectInstructionFile(false) to opt out.
+	//
+	// This applies to the interactive (tmux) adapter only. The structured
+	// adapter has no projection at all and passes the prompt through
+	// --append-system-prompt on every invocation, so no CLAUDE.md is written
+	// for a structured session and none should be expected on disk.
+	//
+	// The comment here previously said OFF-by-default, which contradicted both
+	// the reader and the exported wrapper.
 	MetadataKeyWriteProjectInstructionFile = "claude_code_write_project_instruction_file"
 	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
 	// controlling whether projected workspace artifacts (CLAUDE.md,

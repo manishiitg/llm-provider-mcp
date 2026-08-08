@@ -135,9 +135,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	var tempFiles []string
 	defer func() {
-		for _, f := range tempFiles {
-			_ = os.Remove(f)
-		}
+		// removeFiles, not a bare os.Remove loop: writeClaudeCodeProjectInstructionFile
+		// may register an operator's prior CLAUDE.md bytes for byte-restore, and
+		// deleting the path instead of restoring it would destroy their content.
+		removeFiles(tempFiles)
 	}()
 	// MCP-config file write is a disk side-effect; the resolved path feeds the
 	// argv builder below.
@@ -149,6 +150,30 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 		tempFiles = append(tempFiles, configPath)
 		mcpConfigPath = configPath
+	}
+
+	// Project the system prompt into <workingDir>/CLAUDE.md, as the interactive
+	// adapter does. The prompt still goes through --append-system-prompt below:
+	// that is the structured transport's carrier and the stronger channel, so it
+	// is deliberately NOT skipped here the way project-instruction-only mode
+	// skips --system-prompt-file on the tmux path.
+	//
+	// The file exists for everything else that reads project instructions —
+	// nested claude invocations, sub-agents, tooling pointed at the workspace —
+	// which previously saw nothing at all under structured transport, since this
+	// adapter had no projection. It also makes the live prompt inspectable on
+	// disk while a turn runs, which is otherwise impossible to check here.
+	//
+	// Structured turns are one-shot, so the file is written per turn and cleaned
+	// up by the deferred removeFiles above.
+	if writeProjectInstructionFromOptions(opts) && workingDir != "" && strings.TrimSpace(systemPrompt) != "" {
+		if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt, restoreProjectFilesFromOptions(opts)); err != nil {
+			// Best-effort: --append-system-prompt already carries the prompt, so a
+			// projection failure must never fail the turn.
+			_ = err
+		} else if rulePath != "" {
+			tempFiles = append(tempFiles, rulePath)
+		}
 	}
 
 	// Mint a fresh session id only when NOT resuming (avoid burning an id on a
