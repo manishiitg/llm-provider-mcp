@@ -144,3 +144,23 @@ func TestCursorMessagesToChunksToolResultSpansPolls(t *testing.T) {
 		t.Fatalf("poll 2: toolStartedAt did not drain: %+v", started)
 	}
 }
+
+func TestCursorMessagesToChunksCarriesToolArguments(t *testing.T) {
+	chunks := cursorMessagesToChunks([]llmtypes.MessageContent{{
+		Role: llmtypes.ChatMessageTypeAI,
+		Parts: []llmtypes.ContentPart{llmtypes.ToolCall{
+			ID:   "call-with-args",
+			Type: "function",
+			FunctionCall: &llmtypes.FunctionCall{
+				Name:      "mcp__api-bridge__execute_shell_command",
+				Arguments: `{"command":"pwd"}`,
+			},
+		}},
+	}}, map[string]bool{}, map[string]time.Time{})
+	if len(chunks) != 1 || chunks[0].Type != llmtypes.StreamChunkTypeToolCallStart {
+		t.Fatalf("chunks = %+v, want one tool-call start", chunks)
+	}
+	if chunks[0].ToolName != "mcp__api-bridge__execute_shell_command" || chunks[0].ToolArgs != `{"command":"pwd"}` {
+		t.Fatalf("tool start = %+v, want concrete name and args", chunks[0])
+	}
+}

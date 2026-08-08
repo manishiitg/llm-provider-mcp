@@ -13,6 +13,11 @@ import (
 const (
 	MetadataKeyMCPConfig                  = "mcp_config"
 	MetadataKeyDangerouslySkipPermissions = "dangerously_skip_permissions"
+	// MetadataKeyPermissionMode selects Claude Code's native permission policy
+	// (for example "auto"). It is intentionally separate from the legacy
+	// dangerously-skip flag so callers can opt into provider-reviewed native
+	// tools without also bypassing every approval.
+	MetadataKeyPermissionMode             = "claude_code_permission_mode"
 	MetadataKeyTools                      = "claude_code_tools"
 	MetadataKeyAllowedTools               = "claude_code_allowed_tools"
 	MetadataKeySettings                   = "claude_code_settings"
@@ -137,6 +142,16 @@ func WithDangerouslySkipPermissions() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions] = true
+	}
+}
+
+// WithPermissionMode sets Claude Code's --permission-mode value. Use "auto"
+// when the caller intentionally enables native tools and wants Claude Code's
+// own safety classifier to decide which actions run automatically.
+func WithPermissionMode(mode string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyPermissionMode] = strings.TrimSpace(mode)
 	}
 }
 

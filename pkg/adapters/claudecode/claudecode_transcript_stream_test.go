@@ -39,24 +39,29 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 	old := turnStart.Add(-time.Second).Format(time.RFC3339Nano)
 
 	oldTurn := `{"type":"assistant","timestamp":"` + old + `","message":{"id":"msg_0","content":[{"type":"text","text":"PRIOR TURN"}]}}` + "\n"
+	thinking := `{"type":"assistant","timestamp":"` + ts + `","message":{"id":"msg_A","content":[{"type":"thinking","thinking":"I will inspect the requested file first."}]}}` + "\n"
 	text1 := `{"type":"assistant","timestamp":"` + ts + `","message":{"id":"msg_A","content":[{"type":"text","text":"Reading the file."}]}}` + "\n"
 	tool1 := `{"type":"assistant","timestamp":"` + ts + `","message":{"id":"msg_A","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"foo.go"}}]}}` + "\n"
 
-	appendLine(t, path, oldTurn+text1+tool1)
+	appendLine(t, path, oldTurn+thinking+text1+tool1)
 
-	// First read from offset 0: skips the prior turn, emits text then tool.
+	// First read from offset 0: skips the prior turn, emits reasoning, text,
+	// then a tool call.
 	events, off1, err := readClaudeTranscriptEventsFromFile(path, 0, turnStart, nil)
 	if err != nil {
 		t.Fatalf("read 1: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("read 1: got %d events, want 2 (text, tool); %+v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("read 1: got %d events, want 3 (reasoning, text, tool); %+v", len(events), events)
 	}
-	if events[0].Text != "Reading the file." || events[0].ToolName != "" {
-		t.Fatalf("read 1 events[0] = %+v, want text 'Reading the file.'", events[0])
+	if events[0].Reasoning != "I will inspect the requested file first." {
+		t.Fatalf("read 1 events[0] = %+v, want reasoning", events[0])
 	}
-	if events[1].ToolName != "Read" || events[1].ToolCallID != "toolu_1" || events[1].Text != "" {
-		t.Fatalf("read 1 events[1] = %+v, want tool Read/toolu_1", events[1])
+	if events[1].Text != "Reading the file." || events[1].ToolName != "" {
+		t.Fatalf("read 1 events[1] = %+v, want text 'Reading the file.'", events[1])
+	}
+	if events[2].ToolName != "Read" || events[2].ToolCallID != "toolu_1" || events[2].Text != "" {
+		t.Fatalf("read 1 events[2] = %+v, want tool Read/toolu_1", events[2])
 	}
 
 	// Append one complete line plus a PARTIAL line (no trailing newline yet).

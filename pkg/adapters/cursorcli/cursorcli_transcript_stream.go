@@ -251,7 +251,11 @@ func cursorMessagesToChunks(msgs []llmtypes.MessageContent, seenTool map[string]
 						toolStartedAt[v.ID] = time.Now()
 					}
 				}
-				out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: name, ToolCallID: v.ID, Metadata: meta})
+				args := ""
+				if v.FunctionCall != nil {
+					args = v.FunctionCall.Arguments
+				}
+				out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: name, ToolCallID: v.ID, ToolArgs: args, Metadata: meta})
 			case llmtypes.ToolCallResponse:
 				out = append(out, llmtypes.StreamChunk{
 					Type:         llmtypes.StreamChunkTypeToolCallEnd,

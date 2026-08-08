@@ -23,7 +23,7 @@ func has(args []string, want string) bool {
 // allow).
 func TestBuildClaudeStructuredArgs(t *testing.T) {
 	t.Run("fresh turn with mcp config and allowed tools", func(t *testing.T) {
-		got, sessionID := buildClaudeStructuredArgs("claude-x", "sys", "mcp__bridge__do", "/tmp/mcp.json", "", "fresh-1", "/work")
+		got, sessionID := buildClaudeStructuredArgs("claude-x", "sys", "", "mcp__bridge__do", "", "/tmp/mcp.json", "", "fresh-1", "/work")
 		want := []string{
 			"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions",
 			"--model", "claude-x",
@@ -43,7 +43,7 @@ func TestBuildClaudeStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("resume turn: --resume, runs under prior id, no --session-id", func(t *testing.T) {
-		got, sessionID := buildClaudeStructuredArgs("claude-x", "", "mcp__bridge__do", "", "prior-9", "unused-fresh", "")
+		got, sessionID := buildClaudeStructuredArgs("claude-x", "", "", "mcp__bridge__do", "", "", "prior-9", "unused-fresh", "")
 		if sessionID != "prior-9" {
 			t.Errorf("resume turn should run under prior id, got %q", sessionID)
 		}
@@ -57,17 +57,30 @@ func TestBuildClaudeStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("disallowedTools tracks allowedTools", func(t *testing.T) {
-		with, _ := buildClaudeStructuredArgs("claude-x", "", "mcp__bridge__do", "", "", "f", "")
+		with, _ := buildClaudeStructuredArgs("claude-x", "", "", "mcp__bridge__do", "", "", "", "f", "")
 		if !has(with, "--disallowedTools") {
 			t.Errorf("allowedTools set => --disallowedTools denylist required, got %v", with)
 		}
-		without, _ := buildClaudeStructuredArgs("claude-x", "", "", "", "", "f", "")
+		without, _ := buildClaudeStructuredArgs("claude-x", "", "", "", "", "", "", "f", "")
 		if has(without, "--allowedTools") || has(without, "--disallowedTools") {
 			t.Errorf("no allowedTools => neither allow/deny flag, got %v", without)
 		}
 		// The permission bypass is always present regardless of tool flags.
 		if !has(without, "--dangerously-skip-permissions") {
 			t.Errorf("--dangerously-skip-permissions must always be present, got %v", without)
+		}
+	})
+
+	t.Run("hybrid provider auto preserves native tools", func(t *testing.T) {
+		got, _ := buildClaudeStructuredArgs("claude-x", "sys", "default", "mcp__bridge__do", "auto", "/tmp/mcp.json", "", "fresh-1", "/work")
+		if !has(got, "--permission-mode") || !has(got, "auto") {
+			t.Fatalf("hybrid argv missing --permission-mode auto: %v", got)
+		}
+		if !has(got, "--tools") || !has(got, "default") {
+			t.Fatalf("hybrid argv missing --tools default: %v", got)
+		}
+		if has(got, "--dangerously-skip-permissions") || has(got, "--disallowedTools") {
+			t.Fatalf("hybrid provider_auto must not bypass approvals or deny native tools: %v", got)
 		}
 	})
 }

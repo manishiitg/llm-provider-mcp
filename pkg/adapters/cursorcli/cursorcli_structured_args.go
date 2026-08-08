@@ -15,15 +15,18 @@ package cursorcli
 // both set the denylist would be silently inert. Structured mode used to lack
 // hooks entirely and contained the agent with "--mode ask" instead, which is
 // read-only and cost every step its ability to write or drive a browser.
-func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, approveMCPs, hooksInstalled bool, resumeID, prompt string) []string {
+func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, approveMCPs, hooksInstalled, force, autoReview bool, resumeID, prompt string) []string {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--stream-partial-output",
 		"--trust",
 	}
-	if !hooksInstalled {
+	if force && !hooksInstalled {
 		args = append(args, "--force")
+	}
+	if autoReview {
+		args = append(args, "--auto-review")
 	}
 	if workingDir != "" {
 		args = append(args, "--workspace", workingDir)

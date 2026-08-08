@@ -27,6 +27,9 @@ const (
 	// key — mcpagent's ensureSystemPrompt already surfaces the listing
 	// in the outgoing system prompt for them.
 	AttachedSkillsMetadataKey = "attached_skills"
+	// CodingAgentSecretEnvironmentMetadataKey carries a per-turn, scoped secret
+	// environment to native coding-agent processes. It is never prompt content.
+	CodingAgentSecretEnvironmentMetadataKey = "coding_agent_secret_environment"
 )
 
 // CodingProviderSessionHandle is the provider-owned continuation state for a

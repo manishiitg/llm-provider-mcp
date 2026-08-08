@@ -2,6 +2,7 @@ package cursorcli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,104 @@ func TestCursorCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	if _, ok := interface{}(adapter).(llmtypes.WebSearchModel); !ok {
 		t.Fatal("CursorCLIAdapter should implement llmtypes.WebSearchModel")
+	}
+}
+
+func TestCursorCLIDefaultsToStructuredTransport(t *testing.T) {
+	fakeBin := t.TempDir()
+	argsPath := filepath.Join(fakeBin, "cursor-agent-args.txt")
+	cursorPath := filepath.Join(fakeBin, "cursor-agent")
+	script := `#!/bin/sh
+printf '%s\n' "$*" > "$CURSOR_AGENT_TEST_ARGS"
+printf '%s\n' '{"type":"system","session_id":"cursor-native-session","model":"auto"}'
+printf '%s\n' '{"type":"thinking","subtype":"delta","text":"Planning the reply."}'
+printf '%s\n' '{"type":"tool_call","subtype":"started","call_id":"call-1","tool_call":{"mcpToolCall":{"args":{"server":"api-bridge","toolName":"execute_shell_command","arguments":{"command":"pwd"}}}}}'
+printf '%s\n' '{"type":"tool_call","subtype":"completed","call_id":"call-1","tool_call":{"mcpToolCall":{"result":{"content":"ok"}}}}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"STRUCTURED_DEFAULT_OK"}]}}'
+printf '%s\n' '{"type":"result","result":"STRUCTURED_DEFAULT_OK","session_id":"cursor-native-session","usage":{"inputTokens":3,"outputTokens":2}}'
+`
+	if err := os.WriteFile(cursorPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake cursor-agent: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CURSOR_AGENT_TEST_ARGS", argsPath)
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	stream := make(chan llmtypes.StreamChunk, 8)
+	resp, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with the test marker."}}},
+	}, WithCursorStructuredTransport(false), llmtypes.WithStreamingChan(stream))
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Content != "STRUCTURED_DEFAULT_OK" {
+		t.Fatalf("response = %#v, want structured response", resp)
+	}
+	if resp.Choices[0].GenerationInfo == nil || resp.Choices[0].GenerationInfo.Additional["cursor_mode"] != "structured" {
+		t.Fatalf("generation info = %#v, want structured mode", resp.Choices[0].GenerationInfo)
+	}
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandle(resp.Choices[0].GenerationInfo)
+	if !ok || handle.Provider != "cursor-cli" || handle.Transport != llmtypes.CodingProviderTransportStructured || handle.NativeSessionID != "cursor-native-session" {
+		t.Fatalf("structured Cursor continuation handle = %#v (ok=%v)", handle, ok)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake cursor-agent args: %v", err)
+	}
+	for _, want := range []string{"--print", "--output-format stream-json", "--stream-partial-output"} {
+		if !strings.Contains(string(args), want) {
+			t.Fatalf("structured Cursor argument %q missing from %q", want, args)
+		}
+	}
+	var sawReasoning, sawAssistantContent, sawToolStart, sawToolEnd bool
+	for chunk := range stream {
+		if chunk.Type == llmtypes.StreamChunkTypeReasoning && chunk.Content == "Planning the reply." {
+			sawReasoning = true
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeContent && chunk.Content == "STRUCTURED_DEFAULT_OK" {
+			sawAssistantContent = true
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart && chunk.ToolName == "mcp__api-bridge__execute_shell_command" && chunk.ToolArgs == `{"command":"pwd"}` {
+			sawToolStart = true
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallEnd && chunk.ToolName == "mcp__api-bridge__execute_shell_command" && chunk.ToolArgs == `{"command":"pwd"}` {
+			sawToolEnd = true
+		}
+	}
+	if !sawReasoning || !sawAssistantContent || !sawToolStart || !sawToolEnd {
+		t.Fatalf("stream must preserve reasoning, content, and tool details; reasoning=%v content=%v tool_start=%v tool_end=%v", sawReasoning, sawAssistantContent, sawToolStart, sawToolEnd)
+	}
+}
+
+func TestCursorStructuredToolCallDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, wantName, wantArgs string
+	}{
+		{
+			name:     "native shell",
+			raw:      `{"shellToolCall":{"args":{"command":"pwd","timeout":30000}}}`,
+			wantName: "shell",
+			wantArgs: `{"command":"pwd","timeout":30000}`,
+		},
+		{
+			name:     "mcp bridge",
+			raw:      `{"mcpToolCall":{"args":{"server":"api-bridge","toolName":"execute_shell_command","arguments":{"command":"pwd"}}}}`,
+			wantName: "mcp__api-bridge__execute_shell_command",
+			wantArgs: `{"command":"pwd"}`,
+		},
+		{
+			name:     "dynamic bridge",
+			raw:      `{"dynamicToolCall":{"args":{"args":{"command":"pwd"},"providerIdentifier":"api-bridge","toolName":"execute_shell_command"}}}`,
+			wantName: "mcp__api-bridge__execute_shell_command",
+			wantArgs: `{"command":"pwd"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cursorStructuredToolCallDetails(json.RawMessage(tc.raw))
+			if got.Name != tc.wantName || got.Args != tc.wantArgs {
+				t.Fatalf("details = %#v, want name=%q args=%q", got, tc.wantName, tc.wantArgs)
+			}
+		})
 	}
 }
 
@@ -625,6 +724,7 @@ func TestBuildCursorInteractiveLaunchUsesTmuxTUIArgs(t *testing.T) {
 }
 
 func TestBuildCursorInteractiveLaunchPinsDefaultAliasToComposer25(t *testing.T) {
+	t.Setenv(EnvCursorCLITestModel, "")
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	workDir := t.TempDir()
 	opts := &llmtypes.CallOptions{}
@@ -641,6 +741,23 @@ func TestBuildCursorInteractiveLaunchPinsDefaultAliasToComposer25(t *testing.T) 
 	}
 	if !cursorArgsContainPair(args, "--model", "composer-2.5") {
 		t.Fatalf("args = %v, default cursor-cli alias should pin --model composer-2.5", args)
+	}
+}
+
+func TestBuildCursorInteractiveLaunchUsesAutoForTestHarness(t *testing.T) {
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	workDir := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(workDir)(opts)
+
+	args, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Follow repo rules.", "test-session-build-auto-e2e-launch")
+	if err != nil {
+		t.Fatalf("buildCursorInteractiveLaunch error = %v", err)
+	}
+	defer cleanup()
+
+	if !cursorArgsContainPair(args, "--model", "auto") {
+		t.Fatalf("args = %v, Cursor tests must launch legacy selectors with --model auto", args)
 	}
 }
 
@@ -796,6 +913,16 @@ func TestCursorPaneShowsHardWrappedSingleLinePromptDraft(t *testing.T) {
 	}
 	if !cursorPaneShowsPromptDraft(captured, prompt) {
 		t.Fatalf("expected hard-wrapped single-line prompt to be detected; pane:\n%s", captured)
+	}
+}
+
+func TestCursorPaneDoesNotTreatWorkingSubmittedInputAsDraft(t *testing.T) {
+	prompt := "hi"
+	// Cursor Agent v2026.08 displays the submitted prompt in the same visual
+	// position as the composer while the turn is running.
+	captured := "Cursor Agent\n\n→ hi\n\n⠘⠆ Working\n\nAuto · ctx 0%\n"
+	if cursorPaneShowsPromptDraft(captured, prompt) {
+		t.Fatal("working Cursor turn was mistaken for an unsent prompt draft")
 	}
 }
 

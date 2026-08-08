@@ -103,6 +103,48 @@ saved %s`, token, token)
 	}
 }
 
+// TestCursorCLIRealInteractiveFreshSessionFirstPromptP0Contract is the P0
+// regression contract for Cursor's cold-composer race. A fresh cursor-agent
+// process can paint an apparently ready editor before it accepts keystrokes;
+// the production adapter must either deliver the first prompt immediately or
+// recover it in place after confirming that the draft was never visible.
+//
+// This deliberately creates independent persistent sessions rather than
+// reusing one: the defect happens at process/session startup, whereas a second
+// turn in a healthy session cannot expose it. Existing trust-workspace P0
+// coverage exercises the separate trust overlay path.
+func TestCursorCLIRealInteractiveFreshSessionFirstPromptP0Contract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		attempt := attempt
+		t.Run(fmt.Sprintf("fresh-session-%d", attempt), func(t *testing.T) {
+			ownerSessionID := fmt.Sprintf("cursor-fresh-first-prompt-%d-%s", attempt, cursorRandomHex(4))
+			token := fmt.Sprintf("CURSOR_FRESH_FIRST_PROMPT_%d_%s", attempt, cursorRandomHex(4))
+			response, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+				{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Reply with exactly the requested token."}}},
+				{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply exactly: " + token}}},
+			},
+				WithInteractiveSessionID(ownerSessionID),
+				WithPersistentInteractiveSession(true),
+				WithDenyBuiltinTools(true),
+			)
+			if err != nil {
+				t.Fatalf("first prompt in fresh Cursor session failed: %v", err)
+			}
+			content := strings.TrimSpace(response.Choices[0].Content)
+			if content != token {
+				t.Fatalf("first fresh-session response = %q, want exactly %q", content, token)
+			}
+		})
+	}
+}
+
 func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 
@@ -497,6 +539,9 @@ func requireRealCursorCLIE2E(t *testing.T) {
 	if !*codingCLIP0Live {
 		t.Skip("run through the live coding CLI P0 runner")
 	}
+	// All authenticated Cursor P0 contracts must exercise the quota-friendly
+	// Auto route, never the user's ambient Cursor model selection.
+	t.Setenv(EnvCursorCLITestModel, "auto")
 	for _, bin := range []string{"cursor-agent", "tmux"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Fatalf("real Cursor CLI tests require %s in PATH: %v", bin, err)
@@ -1681,6 +1726,7 @@ func primeCursorWorkspaceForMCP(workDir, mcpConfig, serverName string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		cmd := exec.CommandContext(ctx, "cursor-agent",
 			"--workspace", dir,
+			"--model", "auto",
 			"--force", "--approve-mcps", "--trust",
 			"-p", "respond with the single word OK",
 		)

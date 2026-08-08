@@ -21,7 +21,7 @@ import (
 // flags placed AFTER "exec". Getting that ordering wrong silently breaks resume
 // (the flags are rejected or ignored), which is exactly the regression this
 // builder + its test exist to catch.
-func buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse string, disabledFeatures, configOverrides []string, prompt string) []string {
+func buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, approvalPolicy string, disabledFeatures, configOverrides []string, prompt string) []string {
 	var args []string
 	// Bridge-only containment. `--disable <feature>` are GLOBAL flags (each is
 	// exactly `-c features.<name>=false`) and MUST precede the exec subcommand.
@@ -42,6 +42,12 @@ func buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, work
 		}
 		args = append(args, "--disable", f)
 		seen[f] = true
+	}
+	// --ask-for-approval is a GLOBAL Codex option. It must precede `exec`,
+	// including `exec resume`, or structured Video Studio turns silently ignore
+	// the profile's approval policy.
+	if strings.TrimSpace(approvalPolicy) != "" {
+		args = append(args, "--ask-for-approval", approvalPolicy)
 	}
 	if resumeSessionID != "" {
 		if sessionProfile != "" {

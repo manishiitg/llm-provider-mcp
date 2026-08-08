@@ -6,6 +6,7 @@ const (
 	MetadataKeyCursorModel           = "cursor_model"
 	MetadataKeyResumeSessionID       = "cursor_resume_session_id"
 	MetadataKeyForce                 = "cursor_force"
+	MetadataKeyAutoReview            = "cursor_auto_review"
 	MetadataKeySandbox               = "cursor_sandbox"
 	MetadataKeyMode                  = "cursor_mode"
 	MetadataKeyWorkingDir            = "cursor_working_dir"
@@ -34,14 +35,9 @@ const (
 	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
 	// back into the legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "cursor_restore_project_files"
-	// MetadataKeyStructuredTransport selects `cursor-agent --print
-	// --output-format stream-json` (per-turn, one-shot, no tmux dependency)
-	// instead of the tmux interactive transport. OFF by default — see
-	// docs/coding_sdk_tmux_contract.md: tmux is the normal product path
-	// (persistent chat, live steering, terminal streaming); structured is for
-	// callers with neither need (e.g. unattended workflow steps) that want
-	// native per-turn token/cost and clean typed tool events instead. Pass
-	// WithCursorStructuredTransport(true) to opt in.
+	// MetadataKeyStructuredTransport is retained for backwards-compatible
+	// configuration parsing. Cursor always uses structured transport now, so
+	// this setting no longer changes runtime behaviour.
 	MetadataKeyStructuredTransport = "cursor_structured_transport"
 )
 
@@ -68,6 +64,16 @@ func WithForce() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyForce] = true
+	}
+}
+
+// WithAutoReview enables Cursor's Smart Auto mode. Cursor's server-side
+// classifier automatically runs safe native tool calls and asks for the rest;
+// unlike --force it does not bypass every approval or hook.
+func WithAutoReview() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyAutoReview] = true
 	}
 }
 
@@ -121,9 +127,8 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	}
 }
 
-// WithCursorStructuredTransport selects the structured `--print
-// --output-format stream-json` transport instead of tmux. See
-// MetadataKeyStructuredTransport doc comment for when to use this.
+// WithCursorStructuredTransport is retained for backwards-compatible callers.
+// Cursor always uses `--print --output-format stream-json`; enabled is ignored.
 func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

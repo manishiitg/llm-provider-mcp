@@ -456,15 +456,12 @@ func cursorAssistantPartsFromContent(raw json.RawMessage) []llmtypes.ContentPart
 			}
 			parts = append(parts, llmtypes.TextContent{Text: b.Text})
 		case "tool-call":
-			args := "{}"
-			if len(b.Args) > 0 {
-				args = string(b.Args)
-			}
+			name, args := normalizeCursorTranscriptToolCall(b.ToolName, b.Args)
 			parts = append(parts, llmtypes.ToolCall{
 				ID:   b.ToolCallID,
 				Type: "function",
 				FunctionCall: &llmtypes.FunctionCall{
-					Name:      b.ToolName,
+					Name:      name,
 					Arguments: args,
 				},
 			})
@@ -472,6 +469,38 @@ func cursorAssistantPartsFromContent(raw json.RawMessage) []llmtypes.ContentPart
 		}
 	}
 	return parts
+}
+
+// normalizeCursorTranscriptToolCall unwraps Cursor's native MCP envelope.
+// Cursor records every bridge call as CallMcpTool and nests the actual tool
+// name, server, and arguments beneath args. Passing that wrapper through makes
+// the UI show only "CallMcpTool" and hides the useful command or payload.
+func normalizeCursorTranscriptToolCall(rawName string, rawArgs json.RawMessage) (string, string) {
+	name := rawName
+	args := "{}"
+	if len(rawArgs) > 0 {
+		args = string(rawArgs)
+	}
+	if !strings.EqualFold(strings.TrimSpace(rawName), "CallMcpTool") {
+		return name, args
+	}
+
+	var envelope struct {
+		Arguments json.RawMessage `json:"arguments"`
+		Server    string          `json:"server"`
+		ToolName  string          `json:"toolName"`
+	}
+	if err := json.Unmarshal(rawArgs, &envelope); err != nil || strings.TrimSpace(envelope.ToolName) == "" {
+		return name, args
+	}
+	name = strings.TrimSpace(envelope.ToolName)
+	if server := strings.TrimSpace(envelope.Server); server != "" {
+		name = "mcp__" + server + "__" + name
+	}
+	if len(envelope.Arguments) > 0 && string(envelope.Arguments) != "null" {
+		args = string(envelope.Arguments)
+	}
+	return name, args
 }
 
 // cursorToolPartsFromContent maps a tool-role message into a

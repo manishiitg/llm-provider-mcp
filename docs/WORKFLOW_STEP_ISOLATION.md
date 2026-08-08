@@ -5,8 +5,97 @@ the user's actual workflow directory by running each step in a fresh
 per-call tmp dir. Chat (multi-agent + builder) continues to use the
 user's workspace dir directly.
 
-Status: **design proposal, not yet implemented.** Awaiting alignment
-before code.
+Status: **per-session workspace support is implemented in mcpagent.** The
+cross-provider whole-process security model remains partially implemented and
+must fail closed where a provider has not been certified.
+
+## 0. Scope: four controls that must not be conflated
+
+A working directory, a tool allowlist, an approval classifier, and an OS
+sandbox solve different problems:
+
+1. **Workspace placement** selects the directory in which the CLI starts. A
+   per-step temporary directory prevents projection-file collisions, but `cwd`
+   alone does not prevent a native tool from opening an absolute path or using
+   `..` to leave that directory.
+2. **Tool mode** controls which tool implementations the model can call:
+   `mcp_only`, `hybrid`, or `native_only`.
+3. **Approval mode** controls whether the provider automatically allows,
+   classifies, prompts for, or denies a proposed tool action. For example,
+   current Claude Code supports `--permission-mode auto`; this is safer than
+   `--dangerously-skip-permissions`, but it is a policy classifier rather than
+   a filesystem boundary.
+4. **Security mode** controls the host resources visible to the entire coding
+   CLI process: `compatibility`, `verified`, or `isolated`.
+
+The reusable configuration vocabulary is:
+
+| Setting | Values | Purpose |
+|---|---|---|
+| `agent_tools.mode` | `mcp_only`, `hybrid`, `native_only` | Select bridge tools, native tools, or both. |
+| `approvals.mode` | `provider_auto`, `approve_all` | Use the provider's guarded automatic reviewer or explicitly skip approval review. |
+| `security.mode` | `compatibility`, `verified`, `isolated` | Select normal host access, enforced approved paths, or a private home/account environment. |
+
+`provider_auto` maps to Claude Code `--permission-mode auto`, Cursor
+`--auto-review`, and Codex `--ask-for-approval untrusted` with
+`approvals_reviewer="auto_review"`. `approve_all` maps to Claude Code
+`--dangerously-skip-permissions`, Cursor `--force`, and Codex
+`--ask-for-approval never`. Approval mode must not change security mode: in
+particular, Codex `--dangerously-bypass-approvals-and-sandbox` is not a valid
+implementation of `approve_all` because it also removes the sandbox.
+
+`mcp_only` sends file and shell work through AgentWorks executors, where
+FolderGuard and shell sandboxing apply. `hybrid` gives the provider native
+Read/Edit/Write/Shell tools for ordinary project work while retaining MCP for
+application capabilities. `native_only` is mainly diagnostic because it cannot
+use application capabilities exposed only through MCP.
+
+In `compatibility` mode, native tools run in the provider's normal host
+environment. MCP calls remain guarded, but AgentWorks FolderGuard does not
+constrain native tools. `hybrid + compatibility` is therefore a legitimate,
+explicit risk-accepting option for a trusted local developer who values native
+agent capability over hard folder isolation. The UI and configuration must
+state that the coding provider may access files outside the project.
+
+In `verified` mode, the sandbox wraps the entire coding CLI process and grants
+only approved workspace plus required runtime/auth paths. Native tools and
+their child processes inherit that boundary. `isolated` adds a private home and
+separate account environment. A system prompt, provider action classifier, or
+working directory cannot substitute for either boundary.
+
+Strict whole-process enforcement is currently available only for Codex on
+supported macOS hosts. Claude Code, Cursor, and Pi require independent
+sandbox/credential-path certification. A request for `verified` or `isolated`
+with an uncertified provider must fail closed or explicitly fall back to
+`mcp_only`; it must never silently become unsandboxed hybrid mode.
+
+Example local, risk-accepting interactive configuration:
+
+```yaml
+agent_tools:
+  mode: hybrid
+approvals:
+  mode: provider_auto
+security:
+  mode: compatibility
+```
+
+Example future preferred configuration after provider certification:
+
+```yaml
+agent_tools:
+  mode: hybrid
+approvals:
+  mode: provider_auto
+security:
+  mode: verified
+```
+
+Workflow steps remain `mcp_only` by default. Their per-session temporary
+directory prevents configuration collisions; their guarded MCP executors
+provide the actual workspace access policy. Native tools should be enabled for
+a workflow step only when the whole CLI process has a stage-specific verified
+or isolated boundary.
 
 ## 1. Why
 

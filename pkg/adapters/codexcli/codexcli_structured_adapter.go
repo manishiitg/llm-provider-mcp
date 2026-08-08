@@ -181,6 +181,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	sandboxMode := "workspace-write" // matches this session's flipped default (agent/coding_agent_integrations.go) — not read-only
 	var mcpServersJSON string
 	autoApproveMCPTools := false
+	approvalPolicy := ""
 	var configOverrides []string
 	var disabledFeatures []string
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -197,7 +198,8 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			mcpServersJSON = v
 		}
 		if policy, ok := opts.Metadata.Custom[MetadataKeyApprovalPolicy].(string); ok {
-			autoApproveMCPTools = strings.TrimSpace(policy) == "never"
+			approvalPolicy = strings.TrimSpace(policy)
+			autoApproveMCPTools = approvalPolicy == "never"
 		}
 		if overrides, ok := opts.Metadata.Custom[MetadataKeyConfigOverrides].([]string); ok {
 			configOverrides = overrides
@@ -255,14 +257,14 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 
 	// argv SHAPE (the resume-vs-fresh ordering) is owned by the extracted,
 	// unit-tested builder — see buildCodexStructuredArgs / TestBuildCodexStructuredArgs.
-	args := buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, disabledFeatures, configOverrides, prompt)
+	args := buildCodexStructuredArgs(resumeSessionID, sessionProfile, sandboxMode, workingDir, modelToUse, approvalPolicy, disabledFeatures, configOverrides, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = buildCodexStructuredEnv(c.apiKey)
+	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)
 	cmd.Stdin = strings.NewReader("") // codex exec reads stdin unless explicitly closed/empty; avoid any hang
 
 	stdout, err := cmd.StdoutPipe()

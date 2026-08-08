@@ -368,6 +368,11 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		"cursor_persistent_interactive": persistent,
 		"cursor_uses_print_json":        false,
 		"cursor_working_dir":            session.workingDir,
+		// Cursor's TUI exposes neither tokenizer telemetry nor billing totals.
+		// Preserve this fact through the event bridge so product UIs do not
+		// present the fallback character count as exact model usage.
+		"token_usage_estimated": true,
+		"token_usage_source":    "character_estimate",
 	}
 	if !persistent {
 		// terminal_retention_seconds intentionally not set: the rail
@@ -567,7 +572,7 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		return nil, nil, "", nil, err
 	}
 
-	modelToUse := resolveCursorCLIModelID(c.modelID)
+	modelToUse := cursorCLIModelForLaunch(c.modelID)
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCursorModel].(string); ok {
 			modelToUse = resolveCursorCLIModelID(model)
@@ -587,6 +592,9 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		// flags handle it; that prompt-scrape is the only dependable mechanism.
 		if force, ok := opts.Metadata.Custom[MetadataKeyForce].(bool); ok && force {
 			args = append(args, "--force")
+		}
+		if autoReview, ok := opts.Metadata.Custom[MetadataKeyAutoReview].(bool); ok && autoReview {
+			args = append(args, "--auto-review")
 		}
 		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
 			args = append(args, "--approve-mcps")
@@ -1420,9 +1428,38 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 		Source:          "cursor-cli",
 		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
-		return sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+		// `tmuxinput` serializes keystrokes but intentionally does not wait for
+		// Cursor's composer. The launch-time readiness check is not sufficient
+		// for the first prompt: Cursor can open its MCP approval/transition UI
+		// after that check while the bridge is connecting. Re-check immediately
+		// before every delivery, including a cold session, so typed input cannot
+		// be sent into an overlay and silently dropped.
+		if err := waitForCursorPrompt(ctx, sessionName, nil, false); err != nil {
+			if initialPrompt {
+				return fmt.Errorf("Cursor was not ready to accept initial input: %w", err)
+			}
+			return fmt.Errorf("Cursor was not ready to accept follow-up input: %w", err)
+		}
+		err := sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+		if initialPrompt && isCursorMissingDraftError(err) {
+			// Cursor can paint its cold-start composer just before it begins
+			// accepting keystrokes. The first visible-draft check correctly
+			// rejects that dropped input; do not throw the session away yet.
+			// Re-confirm the idle composer and make one bounded retry. Retrying
+			// is safe here because the first attempt never appeared in the
+			// editor, therefore it could not have been submitted to Cursor.
+			if readyErr := waitForCursorPrompt(ctx, sessionName, nil, false); readyErr != nil {
+				return fmt.Errorf("Cursor initial prompt was not ready after dropped input: %w", readyErr)
+			}
+			err = sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+		}
+		return err
 	})
 	return err
+}
+
+func isCursorMissingDraftError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "typed Cursor input did not appear in the prompt before submit")
 }
 
 func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
@@ -1505,18 +1542,26 @@ func writeCursorVisibleDraftToTmux(ctx context.Context, sessionName, message str
 // this exact overlay is demonstrably unhandled on this specific path while
 // already handled on the sibling path, for the same reason it fails here.
 func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) error {
-	deadline, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Cursor can finish painting a ready-looking composer before it is actually
+	// ready to consume Enter, especially after a cold tmux launch or overlay
+	// dismissal. Keep the same draft in place and retry submit over a bounded
+	// window; do not re-type the prompt, which would duplicate user input.
+	deadline, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	// Verify-then-recover: return as soon as the draft leaves the input field
 	// (checked immediately, then every 50ms — the old single 150ms-delayed probe
 	// added a fixed 150ms to every send). If the draft is still sitting there
 	// after a grace period (the follow-ups menu swallowed the first Enter), send
-	// one recovery Enter and keep verifying until it clears or the deadline hits.
-	const recoveryGrace = 250 * time.Millisecond
+	// a few recovery Enters and keep verifying until it clears or the deadline
+	// hits.
+	const recoveryGrace = 400 * time.Millisecond
+	const maxSubmitRetries = 3
+	const submitRetryInterval = time.Second
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	started := time.Now()
-	recovered := false
+	submitRetries := 0
+	var lastSubmitRetryAt time.Time
 	var lastModeSwitchRejectAt time.Time
 	for {
 		captured, err := captureCursorPane(deadline, sessionName)
@@ -1539,10 +1584,12 @@ func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string
 					// a full fresh grace window instead of racing whatever was
 					// left of the original one.
 					started = time.Now()
-					recovered = false
+					submitRetries = 0
+					lastSubmitRetryAt = time.Time{}
 				}
-			} else if !recovered && time.Since(started) >= recoveryGrace {
-				recovered = true
+			} else if time.Since(started) >= recoveryGrace && submitRetries < maxSubmitRetries && (lastSubmitRetryAt.IsZero() || time.Since(lastSubmitRetryAt) >= submitRetryInterval) {
+				submitRetries++
+				lastSubmitRetryAt = time.Now()
 				if err := runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 					return fmt.Errorf("failed to retry Cursor input submission: %w", err)
 				}
@@ -2318,6 +2365,14 @@ func nonEmptyCursorLines(text string) []string {
 }
 
 func cursorPaneShowsPromptDraft(captured, prompt string) bool {
+	// Cursor 2026.08 retains the submitted text next to its `→` marker while a
+	// turn is already running (for example: `→ hi` plus `⠘ Working`). That is
+	// response-state chrome, not an unsent composer draft. Treating it as a
+	// draft caused ensureCursorInputSubmitted to keep pressing Enter until it
+	// failed a healthy request.
+	if hasCursorActivity(captured) {
+		return false
+	}
 	visibleLines := strings.Split(strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured))), "\n")
 	lastPromptMarker := -1
 	for i := len(visibleLines) - 1; i >= 0; i-- {

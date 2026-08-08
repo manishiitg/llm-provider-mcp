@@ -114,13 +114,19 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 
 	workingDir := ""
-	var allowedTools, mcpConfigJSON string
+	var tools, allowedTools, permissionMode, mcpConfigJSON string
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if dir, ok := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); ok {
 			workingDir = strings.TrimSpace(dir)
 		}
 		if v, ok := opts.Metadata.Custom[MetadataKeyAllowedTools].(string); ok {
 			allowedTools = strings.TrimSpace(v)
+		}
+		if v, ok := opts.Metadata.Custom[MetadataKeyTools].(string); ok {
+			tools = strings.TrimSpace(v)
+		}
+		if v, ok := opts.Metadata.Custom[MetadataKeyPermissionMode].(string); ok {
+			permissionMode = strings.TrimSpace(v)
 		}
 		if v, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok {
 			mcpConfigJSON = strings.TrimSpace(v)
@@ -153,7 +159,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if resumeSessionID == "" {
 		freshSessionID = newClaudeNativeSessionID()
 	}
-	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, allowedTools, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
 
 	if workingDir != "" {
 		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
@@ -169,7 +175,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
 	cmd.Stdin = strings.NewReader(prompt) // prompt via stdin (--input-format text default)
 
 	stdout, err := cmd.StdoutPipe()

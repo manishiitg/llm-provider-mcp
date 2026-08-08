@@ -161,6 +161,25 @@ func TestReadCursorTranscriptMessagesShapesAToolLoop(t *testing.T) {
 	}
 }
 
+func TestCursorTranscriptUnwrapsCallMcpToolArguments(t *testing.T) {
+	parts := cursorAssistantPartsFromContent(json.RawMessage(`[
+		{"type":"tool-call","toolCallId":"call-1","toolName":"CallMcpTool","args":{"arguments":{"command":"pwd"},"server":"api-bridge","toolName":"execute_shell_command"}}
+	]`))
+	if len(parts) != 1 {
+		t.Fatalf("parts = %+v, want one tool call", parts)
+	}
+	call, ok := parts[0].(llmtypes.ToolCall)
+	if !ok || call.FunctionCall == nil {
+		t.Fatalf("part = %#v, want ToolCall", parts[0])
+	}
+	if call.FunctionCall.Name != "mcp__api-bridge__execute_shell_command" {
+		t.Fatalf("tool name = %q, want concrete api-bridge shell tool", call.FunctionCall.Name)
+	}
+	if call.FunctionCall.Arguments != `{"command":"pwd"}` {
+		t.Fatalf("tool arguments = %q, want unwrapped command payload", call.FunctionCall.Arguments)
+	}
+}
+
 // TestReadCursorTranscriptMessagesDedupesAcrossMultiTurnCalls
 // proves the per-session cache: cursor's root is cumulative, so on
 // turn 2 the root references both turn-1 and turn-2 message blobs.

@@ -169,7 +169,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()

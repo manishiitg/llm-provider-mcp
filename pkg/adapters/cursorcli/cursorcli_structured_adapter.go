@@ -61,6 +61,106 @@ type cursorEventUsage struct {
 	CacheWriteTokens int `json:"cacheWriteTokens"`
 }
 
+type cursorStructuredToolCall struct {
+	Name string
+	Args string
+}
+
+// cursorStructuredToolCallDetails translates Cursor's stream-json tool_call
+// envelope into the provider-neutral stream fields used by the event/UI layer.
+// Cursor puts the actual call under a typed key (for example shellToolCall or
+// mcpToolCall), rather than exposing a top-level name/arguments pair.
+func cursorStructuredToolCallDetails(raw json.RawMessage) cursorStructuredToolCall {
+	if len(raw) == 0 {
+		return cursorStructuredToolCall{}
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return cursorStructuredToolCall{}
+	}
+
+	for kind, payload := range envelope {
+		if !strings.HasSuffix(kind, "ToolCall") {
+			continue
+		}
+		var call map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &call); err != nil {
+			continue
+		}
+		var args map[string]json.RawMessage
+		if rawArgs, ok := call["args"]; ok {
+			_ = json.Unmarshal(rawArgs, &args)
+		}
+
+		name := strings.TrimSuffix(kind, "ToolCall")
+		server := cursorStructuredToolString(args, "server", "serverName", "namespace", "providerIdentifier", "serverIdentifier")
+		tool := cursorStructuredToolString(args, "toolName", "tool_name", "name")
+		isMCPCall := kind == "mcpToolCall" || (server != "" && tool != "")
+		if isMCPCall {
+			// MCP calls carry the target in their argument envelope. Preserve the
+			// standard mcp__server__tool spelling so existing UI renderers show
+			// the actual bridge tool, not Cursor's generic CallMcpTool wrapper.
+			if server != "" && tool != "" {
+				name = "mcp__" + server + "__" + tool
+			} else if tool != "" {
+				name = tool
+			} else {
+				name = "CallMcpTool"
+			}
+		}
+		if name == "" {
+			continue
+		}
+
+		// For MCP calls the useful arguments are the target-tool arguments, not
+		// Cursor's wrapper fields (server/toolName/description). For native
+		// Cursor tools, preserve the complete args object.
+		argValue := json.RawMessage(nil)
+		if isMCPCall && args != nil {
+			argValue = firstCursorStructuredToolRaw(args, "arguments", "input", "args")
+		}
+		if len(argValue) == 0 && args != nil {
+			argValue, _ = json.Marshal(args)
+		}
+		return cursorStructuredToolCall{Name: name, Args: compactCursorStructuredJSON(argValue)}
+	}
+	return cursorStructuredToolCall{}
+}
+
+func cursorStructuredToolString(values map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := values[key]
+		if !ok {
+			continue
+		}
+		var value string
+		if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func firstCursorStructuredToolRaw(values map[string]json.RawMessage, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		if raw, ok := values[key]; ok && len(raw) > 0 && string(raw) != "null" {
+			return raw
+		}
+	}
+	return nil
+}
+
+func compactCursorStructuredJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) == nil {
+		return compact.String()
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 // cursorResultErrorMessage decides whether a completed structured run
 // represents a genuine error, mirroring claudecode's identical, live-verified
 // fix: a "result" event with is_error:true is a semantic failure the CLI can
@@ -137,11 +237,13 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	// unit-tested builder below (buildCursorStructuredArgs). Disk side-effects
 	// (.cursor/mcp.json, skill projection) stay in this function.
 	workingDir := cursorWorkingDirFromOptions(opts)
-	modelToUse := resolveCursorCLIModelID(c.modelID)
+	modelToUse := cursorCLIModelForLaunch(c.modelID)
 	mode := ""
 	sandbox := ""
 	approveMCPs := false
 	denyBuiltins := false
+	force := true // preserve the historical direct structured-launch default.
+	autoReview := false
 	resumeID := ""
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if model, ok := opts.Metadata.Custom[MetadataKeyCursorModel].(string); ok && strings.TrimSpace(model) != "" {
@@ -169,6 +271,13 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
 			approveMCPs = true
+		}
+		if value, ok := opts.Metadata.Custom[MetadataKeyForce].(bool); ok {
+			force = value
+		}
+		if value, ok := opts.Metadata.Custom[MetadataKeyAutoReview].(bool); ok && value {
+			autoReview = true
+			force = false
 		}
 		if rid, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(rid) != "" {
 			resumeID = strings.TrimSpace(rid)
@@ -222,14 +331,14 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 	}
 
-	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, hooksInstalled, resumeID, prompt)
+	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, hooksInstalled, force, autoReview, resumeID, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = buildCursorStructuredEnv(c.apiKey)
+	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -271,6 +380,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	// timing summary's total_duration_ms. A turn then looked entirely
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
+	toolCalls := map[string]cursorStructuredToolCall{}
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -302,7 +412,11 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			case "thinking":
 				if event.Subtype == "delta" && event.Text != "" {
 					emitChunk(llmtypes.StreamChunk{
-						Type:    llmtypes.StreamChunkTypeContent,
+						// Cursor exposes a user-safe progress/thinking stream separately
+						// from assistant content. Preserve that distinction so product
+						// UIs render it in their Thinking surface instead of prepending
+						// it to the final answer.
+						Type:    llmtypes.StreamChunkTypeReasoning,
 						Content: event.Text,
 					})
 				}
@@ -323,16 +437,26 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				switch event.Subtype {
 				case "started":
 					toolStartedAt[event.CallID] = time.Now()
+					details := cursorStructuredToolCallDetails(event.ToolCall)
+					toolCalls[event.CallID] = details
 					emitChunk(llmtypes.StreamChunk{
 						Type:       llmtypes.StreamChunkTypeToolCallStart,
 						Content:    fmt.Sprintf("tool_call(%s)", event.CallID),
+						ToolName:   details.Name,
 						ToolCallID: event.CallID,
+						ToolArgs:   details.Args,
 					})
 				case "completed":
+					details := toolCalls[event.CallID]
+					if details.Name == "" {
+						details = cursorStructuredToolCallDetails(event.ToolCall)
+					}
 					emitChunk(llmtypes.StreamChunk{
 						Type:         llmtypes.StreamChunkTypeToolCallEnd,
 						Content:      event.CallID,
+						ToolName:     details.Name,
 						ToolCallID:   event.CallID,
+						ToolArgs:     details.Args,
 						ToolDuration: toolclock.Elapsed(toolStartedAt, event.CallID),
 					})
 				}
@@ -422,6 +546,21 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				additional["cost_model_id"] = costLookupModel
 			}
 		}
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		// The structured CLI owns a fresh process for each turn, so its native
+		// session ID is the only durable continuity mechanism. Attach the typed
+		// handle as well as the legacy cursor_session_id metadata; mcpagent and
+		// product runtimes persist this handle and pass it back as --resume after
+		// a server restart.
+		llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
+			Provider:        "cursor-cli",
+			Transport:       llmtypes.CodingProviderTransportStructured,
+			NativeSessionID: sessionID,
+			WorkingDir:      workingDir,
+			Model:           costLookupModel,
+			Status:          llmtypes.CodingProviderSessionStatusIdle,
+		})
 	}
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

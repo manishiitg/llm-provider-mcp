@@ -832,7 +832,13 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// --no-chrome prevents the "Claude in Chrome extension detected" startup modal
 	// (offered in dontAsk mode when the Chrome extension is present), which would
 	// otherwise block the input prompt and time the session out after 5m.
-	args := []string{"claude", "--permission-mode", "dontAsk", "--no-chrome"}
+	permissionMode := "dontAsk"
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if mode, ok := opts.Metadata.Custom[MetadataKeyPermissionMode].(string); ok && strings.TrimSpace(mode) != "" {
+			permissionMode = strings.TrimSpace(mode)
+		}
+	}
+	args := []string{"claude", "--permission-mode", permissionMode, "--no-chrome"}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	} else if nativeSessionID != "" {

@@ -85,7 +85,11 @@ type DocumentContent struct {
 type StreamChunkType string
 
 const (
-	StreamChunkTypeContent       StreamChunkType = "content"   // Text content chunk
+	StreamChunkTypeContent StreamChunkType = "content" // Text content chunk
+	// Reasoning is provider-supplied, user-visible reasoning/progress text. It
+	// is intentionally distinct from assistant content so product UIs can render
+	// it as a collapsible progress card without treating it as the final answer.
+	StreamChunkTypeReasoning     StreamChunkType = "reasoning"
 	StreamChunkTypeToolCall      StreamChunkType = "tool_call" // Complete tool call
 	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
@@ -116,8 +120,8 @@ type StatusLineProvider interface {
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	Type         StreamChunkType // Type of chunk: "content", "tool_call", "terminal", or "status_line"
-	Content      string          // Text content (when Type is "content")
+	Type         StreamChunkType // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
+	Content      string          // Text content (when Type is "content" or "reasoning")
 	Metadata     map[string]interface{}
 	ToolCall     *ToolCall     // Complete tool call (when Type is "tool_call")
 	ToolName     string        // Name of the tool (when Type is "tool_call_start" or "tool_call_end")

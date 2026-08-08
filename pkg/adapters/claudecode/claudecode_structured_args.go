@@ -22,18 +22,30 @@ const claudeStructuredDisallowedTools = "Bash,Read,Edit,Write,MultiEdit,Notebook
 // runs under that id; a fresh turn mints an id and uses --session-id <id> so it
 // can be surfaced and resumed next turn. That capture-and-resume symmetry is
 // what carries context across structured turns.
-func buildClaudeStructuredArgs(modelID, systemPrompt, allowedTools, mcpConfigPath, resumeSessionID, freshSessionID, workingDir string) (args []string, sessionID string) {
+func buildClaudeStructuredArgs(modelID, systemPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir string) (args []string, sessionID string) {
 	// --output-format stream-json REQUIRES --verbose on current claude builds.
-	args = []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	args = []string{"-p", "--output-format", "stream-json", "--verbose"}
+	if strings.TrimSpace(permissionMode) != "" {
+		args = append(args, "--permission-mode", permissionMode)
+	} else {
+		// Preserve the historical bridge-only structured behavior for callers
+		// that have not explicitly selected a native-tool approval policy.
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	if strings.TrimSpace(modelID) != "" {
 		args = append(args, "--model", modelID)
 	}
 	if strings.TrimSpace(systemPrompt) != "" {
 		args = append(args, "--append-system-prompt", systemPrompt)
 	}
+	if tools != "" {
+		args = append(args, "--tools", tools)
+	}
 	if allowedTools != "" {
 		args = append(args, "--allowedTools", allowedTools)
-		args = append(args, "--disallowedTools", claudeStructuredDisallowedTools)
+		if strings.TrimSpace(permissionMode) == "" {
+			args = append(args, "--disallowedTools", claudeStructuredDisallowedTools)
+		}
 	}
 	if mcpConfigPath != "" {
 		args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")

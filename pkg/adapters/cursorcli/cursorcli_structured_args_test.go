@@ -18,7 +18,7 @@ func has(args []string, want string) bool {
 // native --resume flag and the mutual exclusion of --force and hooks.
 func TestBuildCursorStructuredArgs(t *testing.T) {
 	t.Run("full turn with resume", func(t *testing.T) {
-		got := buildCursorStructuredArgs("/work", "gpt-5", "ask", "danger", true, false, "cur-sess-1", "hello")
+		got := buildCursorStructuredArgs("/work", "gpt-5", "ask", "danger", true, false, true, false, "cur-sess-1", "hello")
 		want := []string{
 			"--print",
 			"--output-format", "stream-json",
@@ -39,7 +39,7 @@ func TestBuildCursorStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("fresh turn: no --resume", func(t *testing.T) {
-		got := buildCursorStructuredArgs("/work", "gpt-5", "", "", false, false, "", "hi")
+		got := buildCursorStructuredArgs("/work", "gpt-5", "", "", false, false, true, false, "", "hi")
 		if has(got, "--resume") {
 			t.Errorf("fresh turn must not carry --resume, got %v", got)
 		}
@@ -57,7 +57,7 @@ func TestBuildCursorStructuredArgs(t *testing.T) {
 // denylist installed but inert — the agent would keep full built-in access while
 // the caller believed it was contained.
 func TestStructuredArgsWithholdForceWhenHooksInstalled(t *testing.T) {
-	got := buildCursorStructuredArgs("/work", "gpt-5", "", "", true, true, "", "hi")
+	got := buildCursorStructuredArgs("/work", "gpt-5", "", "", true, true, true, false, "", "hi")
 	if has(got, "--force") {
 		t.Fatalf("--force must be withheld when hooks are installed, got %v", got)
 	}
@@ -69,8 +69,18 @@ func TestStructuredArgsWithholdForceWhenHooksInstalled(t *testing.T) {
 // Without hooks there is nothing to bypass, and --force keeps the one-shot run
 // from stalling on a permission prompt no one can answer.
 func TestStructuredArgsKeepForceWithoutHooks(t *testing.T) {
-	got := buildCursorStructuredArgs("/work", "gpt-5", "", "", true, false, "", "hi")
+	got := buildCursorStructuredArgs("/work", "gpt-5", "", "", true, false, true, false, "", "hi")
 	if !has(got, "--force") {
 		t.Fatalf("--force expected when no hooks are installed, got %v", got)
+	}
+}
+
+func TestStructuredArgsAutoReviewKeepsNativeToolsWithoutForce(t *testing.T) {
+	got := buildCursorStructuredArgs("/work", "auto", "", "enabled", true, false, false, true, "", "hi")
+	if !has(got, "--auto-review") {
+		t.Fatalf("--auto-review missing: %v", got)
+	}
+	if has(got, "--force") {
+		t.Fatalf("provider auto must not pass --force: %v", got)
 	}
 }

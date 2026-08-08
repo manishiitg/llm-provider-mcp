@@ -21,7 +21,7 @@ func indexOf(args []string, want string) int {
 // breaks native resume, which this test catches without touching a CLI.
 func TestBuildCodexStructuredArgs(t *testing.T) {
 	t.Run("fresh turn: exec with subcommand-level flags after exec", func(t *testing.T) {
-		got := buildCodexStructuredArgs("", "prof", "workspace-write", "/work", "gpt-5-codex", nil, []string{"a=b"}, "hello")
+		got := buildCodexStructuredArgs("", "prof", "workspace-write", "/work", "gpt-5-codex", "", nil, []string{"a=b"}, "hello")
 		want := []string{
 			"exec", "--json", "--skip-git-repo-check",
 			"-C", "/work",
@@ -39,7 +39,7 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 	t.Run("bridge-only: --disable feature flags are GLOBAL, before exec", func(t *testing.T) {
 		// resume + disabled features: every --disable must precede exec resume,
 		// since they are global (-c features.X=false) flags.
-		got := buildCodexStructuredArgs("sess-9", "prof", "read-only", "/work", "codex-cli",
+		got := buildCodexStructuredArgs("sess-9", "prof", "read-only", "/work", "codex-cli", "",
 			[]string{"shell_tool", "unified_exec", "shell_tool"}, nil, "go")
 		execIdx := indexOf(got, "exec")
 		disableIdx := indexOf(got, "--disable")
@@ -65,7 +65,7 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("resume turn: global --profile and -c sandbox precede exec resume", func(t *testing.T) {
-		got := buildCodexStructuredArgs("sess-123", "prof", "danger-full-access", "/work", "gpt-5-codex", nil, []string{"a=b"}, "hello")
+		got := buildCodexStructuredArgs("sess-123", "prof", "danger-full-access", "/work", "gpt-5-codex", "", nil, []string{"a=b"}, "hello")
 		want := []string{
 			"--profile", "prof",
 			"-c", `sandbox_mode="danger-full-access"`,
@@ -89,7 +89,7 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("resume without a session profile: no --profile, still -c sandbox before exec", func(t *testing.T) {
-		got := buildCodexStructuredArgs("sess-123", "", "workspace-write", "/work", "codex-cli", nil, nil, "hi")
+		got := buildCodexStructuredArgs("sess-123", "", "workspace-write", "/work", "codex-cli", "", nil, nil, "hi")
 		if indexOf(got, "--profile") != -1 {
 			t.Errorf("no profile => no --profile flag, got %v", got)
 		}
@@ -100,6 +100,15 @@ func TestBuildCodexStructuredArgs(t *testing.T) {
 		// model "codex-cli" is the placeholder id and must be omitted.
 		if indexOf(got, "--model") != -1 {
 			t.Errorf("placeholder model codex-cli must not add --model, got %v", got)
+		}
+	})
+
+	t.Run("provider auto approval is global before exec", func(t *testing.T) {
+		got := buildCodexStructuredArgs("", "prof", "workspace-write", "/work", "gpt-5-codex", "untrusted", nil, []string{`approvals_reviewer="auto_review"`}, "hello")
+		execIdx := indexOf(got, "exec")
+		askIdx := indexOf(got, "--ask-for-approval")
+		if askIdx == -1 || askIdx > execIdx || got[askIdx+1] != "untrusted" {
+			t.Fatalf("approval policy must be global before exec: %v", got)
 		}
 	})
 }

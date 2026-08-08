@@ -46,6 +46,13 @@ func WithDangerouslySkipPermissions() llmtypes.CallOption {
 	return claudecodeadapter.WithDangerouslySkipPermissions()
 }
 
+// WithClaudeCodePermissionMode selects Claude Code's native permission policy
+// (for example "auto"). Unlike WithDangerouslySkipPermissions, this preserves
+// Claude Code's own approval classifier.
+func WithClaudeCodePermissionMode(mode string) llmtypes.CallOption {
+	return claudecodeadapter.WithPermissionMode(mode)
+}
+
 // WithClaudeCodeSettings sets the --settings flag for the Claude Code CLI.
 // It accepts either a JSON string or a file path.
 func WithClaudeCodeSettings(settings string) llmtypes.CallOption {
@@ -193,9 +200,8 @@ func WithClaudeStructuredTransport(enabled bool) llmtypes.CallOption {
 	return claudecodeadapter.WithClaudeStructuredTransport(enabled)
 }
 
-// WithCursorStructuredTransport selects `cursor-agent --print --output-format
-// stream-json` instead of the tmux interactive transport. OFF by default —
-// see WithCodexStructuredTransport doc comment for the rationale.
+// WithCursorStructuredTransport is retained for backwards compatibility.
+// Cursor always uses `cursor-agent --print --output-format stream-json`.
 func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
 	return cursorcli.WithCursorStructuredTransport(enabled)
 }
@@ -282,6 +288,11 @@ func WithCursorProjectConfig(config string) llmtypes.CallOption {
 // WithCursorForce enables Cursor Agent CLI's --force flag.
 func WithCursorForce() llmtypes.CallOption {
 	return cursorcli.WithForce()
+}
+
+// WithCursorAutoReview enables Cursor's Smart Auto approval classifier.
+func WithCursorAutoReview() llmtypes.CallOption {
+	return cursorcli.WithAutoReview()
 }
 
 // WithCursorApproveMCPs enables Cursor Agent CLI's --approve-mcps flag, which

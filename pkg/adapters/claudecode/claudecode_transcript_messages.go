@@ -302,11 +302,12 @@ func textFromClaudeBlocks(blocks []claudeAssistantContentBlock) []string {
 // message in claude-code's JSONL transcript. Hoisted to package scope
 // so the helper below can take it as a typed parameter.
 type claudeAssistantContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
 }
 
 // assistantBlocksToParts maps claude content blocks into llmtypes parts.

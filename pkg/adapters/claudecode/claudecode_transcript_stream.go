@@ -37,6 +37,7 @@ func claudeInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 // (readClaudeTranscriptMessages).
 type claudeTranscriptEvent struct {
 	Text       string
+	Reasoning  string
 	ToolName   string
 	ToolCallID string
 	// IsToolEnd distinguishes a tool_result row from a tool_use row; both
@@ -216,6 +217,13 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 			Metadata:   meta,
 		}
 	}
+	if e.Reasoning != "" {
+		return llmtypes.StreamChunk{
+			Type:     llmtypes.StreamChunkTypeReasoning,
+			Content:  e.Reasoning,
+			Metadata: meta,
+		}
+	}
 	return llmtypes.StreamChunk{
 		Type:     llmtypes.StreamChunkTypeContent,
 		Content:  e.Text,
@@ -285,6 +293,14 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 			}
 			if err := json.Unmarshal(e.Message, &am); err != nil {
 				continue
+			}
+			// Thinking is deliberately not part of the replayed conversation
+			// history, but it is a first-class structured progress stream.
+			// Text/tool blocks still use the common reconstruction mapping.
+			for _, block := range am.Content {
+				if block.Type == "thinking" && strings.TrimSpace(block.Thinking) != "" {
+					events = append(events, claudeTranscriptEvent{Reasoning: strings.TrimSpace(block.Thinking)})
+				}
 			}
 			// Reuse the same block→parts mapping the end-of-turn reader uses,
 			// so streaming and final reconstruction never diverge.

@@ -1,6 +1,9 @@
 package llmtypes
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // WithModel sets the model ID
 func WithModel(model string) CallOption {
@@ -211,6 +214,71 @@ func AttachedSkillsFromOptions(opts *CallOptions) []*Skill {
 	}
 	skills, _ := opts.Metadata.Custom[AttachedSkillsMetadataKey].([]*Skill)
 	return skills
+}
+
+// WithCodingAgentSecretEnvironment passes only SECRET_* values to a native
+// coding-agent process for this call. Values stay out of prompts, logs, and
+// persisted call metadata.
+func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption {
+	copy := map[string]string{}
+	for key, value := range environment {
+		key = strings.TrimSpace(key)
+		if strings.HasPrefix(key, "SECRET_") && value != "" {
+			copy[key] = value
+		}
+	}
+	return func(opts *CallOptions) {
+		if len(copy) == 0 {
+			return
+		}
+		if opts.Metadata == nil {
+			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
+		}
+		if opts.Metadata.Custom == nil {
+			opts.Metadata.Custom = make(map[string]interface{})
+		}
+		opts.Metadata.Custom[CodingAgentSecretEnvironmentMetadataKey] = copy
+	}
+}
+
+func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return nil
+	}
+	environment, _ := opts.Metadata.Custom[CodingAgentSecretEnvironmentMetadataKey].(map[string]string)
+	copy := make(map[string]string, len(environment))
+	for key, value := range environment {
+		if strings.HasPrefix(key, "SECRET_") && value != "" {
+			copy[key] = value
+		}
+	}
+	return copy
+}
+
+// MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
+// environment without mutating the caller's slice.
+func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
+	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
+	if len(secrets) == 0 {
+		return append([]string(nil), base...)
+	}
+	out := make([]string, 0, len(base)+len(secrets))
+	for _, entry := range base {
+		key, _, found := strings.Cut(entry, "=")
+		if found && secrets[key] != "" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	keys := make([]string, 0, len(secrets))
+	for key := range secrets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		out = append(out, key+"="+secrets[key])
+	}
+	return out
 }
 
 // WithStreamingFunc is a convenience function that creates a channel and callback

@@ -3,16 +3,40 @@ package cursorcli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
+// EnvCursorCLITestModel is deliberately test-scoped. Authenticated Cursor E2E
+// contracts set it to "auto" so their result does not depend on whichever
+// paid model a developer last selected in the local Cursor UI.
+const EnvCursorCLITestModel = "CURSOR_CLI_TEST_MODEL"
+
+func cursorCLIModelForLaunch(modelID string) string {
+	if testModel := strings.TrimSpace(os.Getenv(EnvCursorCLITestModel)); testModel != "" && isCursorLegacyModelSelector(modelID) {
+		return resolveCursorCLIModelID(testModel)
+	}
+	return resolveCursorCLIModelID(modelID)
+}
+
+func isCursorLegacyModelSelector(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "", "cursor-cli", "high", "medium", "low":
+		return true
+	default:
+		return false
+	}
+}
+
 // CursorCLIAdapter implements the LLM interface for Cursor Agent CLI.
-// Transport is tmux-only — cursor-cli requires a persistent tmux session
-// for every turn. The structured stream-json path was removed; see git
-// history for the prior implementation if it ever needs reinstating.
+//
+// Cursor uses its native structured CLI transport for every production turn:
+// `cursor-agent --print --output-format stream-json`. It returns typed stream
+// events and carries a conversation forward through Cursor's native --resume
+// session ID, without injecting keystrokes into Cursor's terminal UI.
 type CursorCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -28,11 +52,10 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent generates content using Cursor Agent CLI via the
-// tmux transport. Cursor is tmux-only: if the caller did not pass an
-// interactive session ID, generateContentTmux auto-generates a bounded
-// one. The structured stream-json path is intentionally bypassed here
-// to keep a single contract across chat and workflow steps.
+// GenerateContent generates content through Cursor's structured CLI transport.
+// Each call is an isolated process; callers preserve project conversation
+// continuity by passing the native session ID returned in GenerationInfo via
+// WithResumeSessionID on the next turn.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -57,12 +80,7 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
-			return c.generateContentStructured(ctx, messages, opts, nil)
-		}
-	}
-	return c.generateContentTmux(ctx, messages, opts)
+	return c.generateContentStructured(ctx, messages, opts, nil)
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns

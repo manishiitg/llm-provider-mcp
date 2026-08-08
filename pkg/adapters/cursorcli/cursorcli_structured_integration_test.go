@@ -20,6 +20,9 @@ func requireCursorCLIStructuredE2E(t *testing.T) {
 	if !*codingCLIP0Live && os.Getenv("RUN_CURSOR_CLI_STREAM_JSON_E2E") == "" {
 		t.Skip("set RUN_CURSOR_CLI_STREAM_JSON_E2E=1 to run Cursor CLI structured JSON e2e tests")
 	}
+	// Keep structured transport coverage on the same Auto-only policy as the
+	// tmux P0 suite.
+	t.Setenv(EnvCursorCLITestModel, "auto")
 	if _, err := exec.LookPath("cursor-agent"); err != nil {
 		t.Fatalf("cursor-agent not found in PATH: %v", err)
 	}
@@ -65,9 +68,8 @@ func TestCursorCLIStructuredTwoTurnResume(t *testing.T) {
 
 // TestCursorCLIStructuredBasicRun proves the revived structured transport
 // (cursor-agent --print --output-format stream-json) actually launches the
-// real CLI and returns a real answer, opted into via
-// WithCursorStructuredTransport(true) (structured is NOT the default —
-// tmux is, per docs/coding_sdk_tmux_contract.md).
+// real CLI and returns a real answer. Structured transport is Cursor's normal
+// product path; callers no longer need to opt in.
 func TestCursorCLIStructuredBasicRun(t *testing.T) {
 	requireCursorCLIStructuredE2E(t)
 
