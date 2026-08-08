@@ -73,6 +73,21 @@ tools creates a broken hybrid: the agent can discover the endpoint but has no
 supported way to call it, and will repeatedly fail with an unregistered shell
 bridge. `native_only` is incompatible with API-spec-only product tools.
 
+Verified on Video Studio, 2026-08-08. Its product tools were moved to an
+explicit allow list that omitted `execute_shell_command`, on the assumption
+that `agent_tools.mode: hybrid` meant the provider's native shell covered
+everything. Every product tool became uncallable — not only secrets.
+
+Asked to call `list_secrets` without a shell, the agent answered: *no direct
+list_secrets tool is available — this environment only exposes secret_tools
+via the HTTP API (curl through execute_shell_command)*.
+
+One observation misleads here and is worth naming, because it is what sent an
+earlier analysis the wrong way: `get_api_spec` DOES work with no shell. It is
+an mcpagent virtual tool, injected into the CLI separately from bridge tools,
+so its success says nothing about whether product tools are directly callable.
+Discovery working is not evidence that invocation works.
+
 The shell bridge remains subject to the AgentWorks folder guard and shell
 sandboxing. It must not be used to print secret values. Prefer the Secret UI
 for entering a value; if a secret-management endpoint is called through the
