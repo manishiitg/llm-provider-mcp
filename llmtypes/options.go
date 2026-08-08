@@ -216,14 +216,19 @@ func AttachedSkillsFromOptions(opts *CallOptions) []*Skill {
 	return skills
 }
 
-// WithCodingAgentSecretEnvironment passes only SECRET_* values to a native
-// coding-agent process for this call. Values stay out of prompts, logs, and
-// persisted call metadata.
+// WithCodingAgentSecretEnvironment passes scoped secrets, workflow variables,
+// and the session-bound MCP API routes to a native coding-agent process for
+// this call. Values stay out of prompts, logs, and persisted call metadata.
+// The MCP routes let a product use native Bash for documented product APIs
+// without exposing AgentWorks' execute_shell_command bridge.
+//
+// Admission is decided by IsScopedCodingAgentEnvironmentKey, which is the only
+// place that policy lives.
 func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption {
 	copy := map[string]string{}
 	for key, value := range environment {
 		key = strings.TrimSpace(key)
-		if strings.HasPrefix(key, "SECRET_") && value != "" {
+		if IsScopedCodingAgentEnvironmentKey(key) && value != "" {
 			copy[key] = value
 		}
 	}
@@ -241,6 +246,50 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 	}
 }
 
+// IsScopedCodingAgentEnvironmentKey reports whether a key may be passed into a
+// native coding-agent process. It is the single owner of that policy: the
+// option setter, the reader, and the subprocess merge all consult it, and
+// mcpagent calls it rather than keeping its own copy.
+//
+// One copy matters because the drift is silent. The MCP_CUSTOM_set=no failure
+// was exactly this: AgentWorks created the routes, a second list one layer down
+// admitted only SECRET_*, and the provider then faithfully passed on an
+// already-filtered environment. Nothing errored — the child simply did not see
+// the key, which is indistinguishable from the feature not existing.
+//
+// Three prefixes are admitted, matching what the shell whitelist already
+// promises (MCP_*, SECRET_*, VAR_*):
+//
+//	SECRET_*  selected secret values
+//	VAR_*     workflow variables, VAR_WORKSPACE_PATH, VAR_GROUP_NAME
+//	MCP_*     the session-bound API routes, closed set below
+//
+// VAR_* is not optional. mcpagent's prompt builder documents $VAR_<NAME> to
+// every coding agent as the way to read workflow config and tells it to fail
+// loudly when one is missing, so dropping the prefix produces an agent doing
+// exactly as instructed: failing, and blaming the workflow. It would also fail
+// only on the native-shell transport while the bridge transport kept working,
+// which presents as a transport-dependent workflow bug.
+//
+// To admit a new key: add it here, and add a case to the cross-module contract
+// test. Both, or the next reader inherits the same silent failure.
+func IsScopedCodingAgentEnvironmentKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_") {
+		return true
+	}
+	return isScopedCodingAgentMCPEnvironmentKey(key)
+}
+
+func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
+	switch key {
+	case "MCP_API_URL", "MCP_API_TOKEN", "MCP_SESSION_ID", "MCP_MCP", "MCP_CUSTOM", "MCP_VIRTUAL", "MCP_AUTH":
+		return true
+	default:
+		return false
+	}
+}
+
 func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]string {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return nil
@@ -248,7 +297,7 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 	environment, _ := opts.Metadata.Custom[CodingAgentSecretEnvironmentMetadataKey].(map[string]string)
 	copy := make(map[string]string, len(environment))
 	for key, value := range environment {
-		if strings.HasPrefix(key, "SECRET_") && value != "" {
+		if IsScopedCodingAgentEnvironmentKey(key) && value != "" {
 			copy[key] = value
 		}
 	}

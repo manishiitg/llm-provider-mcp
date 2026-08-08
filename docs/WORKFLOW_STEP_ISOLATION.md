@@ -52,50 +52,37 @@ use application capabilities exposed only through MCP.
 
 ### Product API transport for hybrid profiles
 
-A product that exposes custom capabilities through `get_api_spec` needs a way
-to *invoke* them, not only discover them. `get_api_spec` is an mcpagent virtual
-tool injected into the CLI separately from bridge tools, so the fact that it
-answers proves nothing about whether product tools are callable. Discovery
-working is not evidence that invocation works — that inference is what sent an
-earlier version of this section the wrong way.
+A product exposing custom capabilities through `get_api_spec` needs a way to
+*invoke* them, not only discover them. Two transports exist, selected by the
+profile's `runtime.api_transport.mode`:
 
-There are two supported transports, selected by `runtime.api_transport.mode`:
+- **`bridge_shell`** — the agent calls the endpoint through AgentWorks'
+  guarded `execute_shell_command` executor. For `mcp_only` products, which have
+  no native shell of their own.
+- **`native_shell`** — the provider's own Bash calls the endpoint using a
+  session-scoped environment this library admits and overlays onto the child
+  process. No AgentWorks shell executor is exposed.
 
-- **`bridge_shell`** — the agent calls the documented endpoint through
-  AgentWorks' guarded `execute_shell_command` executor. Appropriate for
-  `mcp_only` products, which have no native shell of their own.
-- **`native_shell`** — the server injects a session-scoped route
-  (`MCP_API_URL`, `MCP_API_TOKEN`, `MCP_SESSION_ID`, the derived `MCP_MCP` /
-  `MCP_CUSTOM` / `MCP_VIRTUAL` routes, and `MCP_AUTH`) into the coding agent's
-  environment. The provider's own Bash calls the endpoint directly, e.g.
-  `curl "$MCP_CUSTOM/<tool>" -H "$MCP_AUTH"`. No AgentWorks shell executor is
-  exposed.
+What this library owns is the second half of that: which environment keys may
+cross into a coding-agent subprocess. That policy has exactly one
+implementation, `llmtypes.IsScopedCodingAgentEnvironmentKey`, admitting
+`SECRET_*`, `VAR_*`, and the closed MCP route set. `WithCodingAgentSecretEnvironment`,
+`CodingAgentSecretEnvironmentFromOptions`, and the subprocess merge all consult
+it, and mcpagent calls it rather than keeping its own list — a second list one
+layer down is what produced `MCP_CUSTOM_set=no`, where the routes were created
+and then silently filtered before the child ever saw them.
 
-**A `hybrid` profile should not enable `execute_shell_command`.** It has a
-native shell already; adding the AgentWorks executor grants a second, broader
-one whose only unique property is the folder guard. Use `native_shell` and give
-that native Bash the scoped route instead. `native_only` remains incompatible
-with API-spec product tools, which have no transport at all under it.
+One inference to avoid, because it has already misled a review: `get_api_spec`
+answering proves nothing about whether product tools are callable. It is an
+mcpagent virtual tool, injected separately from bridge tools. Discovery working
+is not evidence that invocation works.
 
-Two failure modes are worth naming, because both have shipped:
-
-1. **A hybrid profile with no transport configured.** Product tools are
-   registered and specced, and nothing can call them. The agent does not report
-   this as a configuration gap — it reports the mechanism it happens to know
-   about, blames an outage, and asks the user to reload. Treat an agent's
-   account of its own environment as a symptom, never as evidence.
-2. **A transport declared but incompletely provisioned.** The `native_shell`
-   branch currently logs `[API_TRANSPORT] native_shell requested but MCP bridge
-   environment is incomplete` and continues, which reproduces failure mode 1
-   with a warning nobody reads.
-
-Whichever transport is selected, the system prompt must say how to reach
-product APIs. A route the prompt never mentions is functionally absent: the
-same profile lost `set_workflow_secret` for exactly this reason while the tool
-was registered and correctly specced the whole time.
-
-See `docs/design/native_coding_agent_environment_policy.md` in the AgentWorks
-repository for the scoped-environment key policy and its single-owner proposal.
+Which transport a profile should choose, why a hybrid profile does not also
+take the bridge, the failure modes when a transport is unconfigured, and the
+requirement that the system prompt name the route are AgentWorks concerns and
+live with the profile policy — see
+`docs/design/native_coding_agent_environment_policy.md` in that repository.
+Restating them here is how the two would drift.
 
 The shell bridge remains subject to the AgentWorks folder guard and shell
 sandboxing. It must not be used to print secret values. Prefer the Secret UI
