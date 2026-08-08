@@ -8,6 +8,7 @@ func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) 
 	WithCodingAgentSecretEnvironment(map[string]string{
 		"SECRET_PRESENT": "new",
 		"SECRET_ONLY":    "value",
+		"MCP_CUSTOM":     "http://127.0.0.1/s/session/tools/custom",
 		"PATH":           "must-not-pass",
 	})(opts)
 
@@ -19,7 +20,7 @@ func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) 
 	for _, item := range got {
 		joined += item + "\n"
 	}
-	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value"} {
+	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value", "MCP_CUSTOM=http://127.0.0.1/s/session/tools/custom"} {
 		if !containsEnvironmentEntry(joined, want) {
 			t.Fatalf("merged environment missing %q: %q", want, joined)
 		}
