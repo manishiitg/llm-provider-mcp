@@ -361,6 +361,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"codex_persistent_interactive":  persistent,
 		"codex_uses_exec_json":          false,
 		"codex_final_extraction_source": finalExtractionSource,
+		"context_window_usage_known":    false,
 	}
 	if !persistent {
 		// terminal_retention_seconds intentionally not set — see cursor.
@@ -1431,8 +1432,8 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 			}
 			if hasCodexRateLimitReminderModal(captured) {
 				if !dismissedRateReminder {
-					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
-					dismissedRateReminder = true
+					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
+					dismissedRateReminder = handled
 				}
 				continue
 			}
@@ -1534,9 +1535,11 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 			}
 			if hasCodexRateLimitReminderModal(captured) {
 				if !dismissedRateReminder {
-					_ = dismissCodexRateLimitReminder(ctx, sessionName, captured)
-					dismissedRateReminder = true
-					lastActivityAt = time.Now()
+					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
+					dismissedRateReminder = handled
+					if handled {
+						lastActivityAt = time.Now()
+					}
 				}
 				continue
 			}
@@ -1765,6 +1768,12 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var lastTerminalStreamedAt time.Time
 	var dismissedRateReminder bool
 	var dismissedSafetyChecks bool
+	// Codex can write its native completion event just before rendering a
+	// follow-up runtime modal (notably the rate-limit reminder). Keep watching
+	// briefly after that event so the modal is dismissed before this session is
+	// released to the next workflow stage.
+	var completionObservedAt time.Time
+	const postCompletionModalGrace = time.Second
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. Tracked at the top of every tick, independent of
 	// all the branch logic below, so a prompt-detection bug that keeps the loop
@@ -1801,10 +1810,47 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			if transcriptStream != nil {
 				transcriptStream.poll(ctx, streamChan)
 			}
+			// These menus can be drawn immediately after Codex's final-answer
+			// transcript event. They must be handled before honoring completion,
+			// otherwise the caller advances while an orphaned Codex process still
+			// owns this tmux pane.
+			if hasCodexRateLimitReminderModal(captured) {
+				if !dismissedRateReminder {
+					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
+					dismissedRateReminder = handled
+					if handled {
+						completionObservedAt = time.Time{}
+					}
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = stableCapture
+				continue
+			}
+			if hasCodexAdditionalSafetyChecksModal(captured) {
+				if !dismissedSafetyChecks {
+					handled, _ := dismissCodexAdditionalSafetyChecksSerialized(ctx, sessionName)
+					dismissedSafetyChecks = handled
+					if handled {
+						completionObservedAt = time.Time{}
+					}
+				}
+				sawActivity = true
+				idleSince = time.Time{}
+				lastCaptured = stableCapture
+				continue
+			}
 			// Prefer Codex's native per-turn completion event. Terminal status
 			// lines are retained in tmux scrollback and are therefore only a
 			// compatibility fallback, not the source of truth for liveness.
 			if completionTracker.completed() {
+				if completionObservedAt.IsZero() {
+					completionObservedAt = time.Now()
+					continue
+				}
+				if time.Since(completionObservedAt) < postCompletionModalGrace {
+					continue
+				}
 				return captured, nil
 			}
 			rolloutBlocksTerminalFallback := completionTracker.blocksTerminalFallback()
@@ -1841,26 +1887,6 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				continue
 			}
 			if hasCodexQueuedInput(delta) {
-				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = stableCapture
-				continue
-			}
-			if hasCodexRateLimitReminderModal(captured) {
-				if !dismissedRateReminder {
-					handled, _ := dismissCodexRateLimitReminderSerialized(ctx, sessionName)
-					dismissedRateReminder = handled
-				}
-				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = stableCapture
-				continue
-			}
-			if hasCodexAdditionalSafetyChecksModal(captured) {
-				if !dismissedSafetyChecks {
-					handled, _ := dismissCodexAdditionalSafetyChecksSerialized(ctx, sessionName)
-					dismissedSafetyChecks = handled
-				}
 				sawActivity = true
 				idleSince = time.Time{}
 				lastCaptured = stableCapture
@@ -3308,7 +3334,10 @@ func isCodexTrustPromptLine(line string) bool {
 }
 
 func hasCodexRateLimitReminderModal(captured string) bool {
-	lower := strings.ToLower(stripCodexANSI(captured))
+	// capture-pane includes scrollback, so a reminder answered on an earlier
+	// turn must not make the current turn look blocked. The live menu is always
+	// rendered in the visible tail of the pane.
+	lower := strings.ToLower(lastNCodexLines(stripCodexANSI(captured), 40))
 	return strings.Contains(lower, "approaching rate limits") &&
 		strings.Contains(lower, "switch to ") &&
 		strings.Contains(lower, "keep current model") &&
@@ -3518,8 +3547,11 @@ func dismissCodexRateLimitReminder(ctx context.Context, sessionName, captured st
 	if selected < 1 || selected > 3 {
 		selected = 1
 	}
-	keys := make([]string, 0, 4)
-	for selected < 3 {
+	// Keep the configured model, but leave the user-visible reminder enabled.
+	// Choosing option 3 would mutate the user's Codex preference to hide future
+	// capacity warnings; a background workflow must not make that durable choice.
+	keys := make([]string, 0, 2)
+	for selected < 2 {
 		keys = append(keys, "Down")
 		selected++
 	}

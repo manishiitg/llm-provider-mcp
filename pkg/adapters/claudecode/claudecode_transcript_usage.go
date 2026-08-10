@@ -102,6 +102,11 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 		PromptTokens:     intRef(prompt),
 		CompletionTokens: intRef(output),
 		TotalTokens:      intRef(total),
+		// Transcript usage is an aggregate over CLI model activity, not a
+		// reliable current-context snapshot for mcpagent's percentage meter.
+		Additional: map[string]interface{}{
+			"context_window_usage_known": false,
+		},
 	}
 	if cacheRead > 0 {
 		gi.CachedContentTokens = intRef(cacheRead)
@@ -114,7 +119,6 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 	// claude-code chat ledger entries showed cache_read/write=0
 	// even though the turn was largely cache-served.
 	if cacheRead > 0 || cacheCreate > 0 {
-		gi.Additional = map[string]interface{}{}
 		// PromptTokens above is intentionally the complete input footprint.
 		// Tell the shared pricing helper to remove these cache buckets before
 		// charging the fresh-input rate, then charge each at its own rate.

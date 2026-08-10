@@ -184,6 +184,11 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		PromptTokens:     intRef(uncachedPrompt),
 		CompletionTokens: intRef(latest.OutputTokens),
 		TotalTokens:      intRef(latest.TotalTokens),
+		// A rollout's token_count is useful for accounting, but it is not a
+		// portable snapshot of the prompt currently held in context.
+		Additional: map[string]interface{}{
+			"context_window_usage_known": false,
+		},
 	}
 	if latest.CachedInputTokens > 0 {
 		gi.CachedContentTokens = intRef(latest.CachedInputTokens)
@@ -192,10 +197,8 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		// prompt caching is automatic and read-only (no separate
 		// "creation" event), so cache_write stays zero — only
 		// cache_read_input_tokens needs surfacing.
-		gi.Additional = map[string]interface{}{
-			"cache_read_input_tokens":     latest.CachedInputTokens,
-			"prompt_tokens_include_cache": false,
-		}
+		gi.Additional["cache_read_input_tokens"] = latest.CachedInputTokens
+		gi.Additional["prompt_tokens_include_cache"] = false
 	}
 	if latest.ReasoningOutputTokens > 0 {
 		gi.ReasoningTokens = intRef(latest.ReasoningOutputTokens)

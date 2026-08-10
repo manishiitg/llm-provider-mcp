@@ -91,7 +91,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "send-keys -t codex-reminder-visible Down Down C-m") {
+	if !strings.Contains(string(data), "send-keys -t codex-reminder-visible Down C-m") {
 		t.Fatalf("send-keys log = %q", data)
 	}
 }

@@ -30,6 +30,13 @@ type codexTurnCompletionTracker struct {
 	pendingToolCalls   map[string]struct{}
 	sawTurnEvent       bool
 	sawFinalAnswer     bool
+	// completedLatched makes completion sticky. Reading the rollout advances
+	// offset past each line before matching it, so task_complete is consumed by
+	// the poll that finds it and no later poll can rediscover it. Callers that
+	// re-ask after observing completion — the post-completion modal grace period
+	// in the interactive adapter — would otherwise see false forever and hang
+	// the turn even though it finished.
+	completedLatched bool
 }
 
 func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string) *codexTurnCompletionTracker {
@@ -43,6 +50,9 @@ func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir strin
 func (t *codexTurnCompletionTracker) completed() bool {
 	if t == nil || t.turnStart.IsZero() || t.expectedWorkingDir == "" {
 		return false
+	}
+	if t.completedLatched {
+		return true
 	}
 	if t.rolloutPath == "" {
 		t.rolloutPath = findCodexRolloutForTurn(t.turnStart, t.expectedWorkingDir)
@@ -73,6 +83,7 @@ func (t *codexTurnCompletionTracker) completed() bool {
 		}
 		t.offset += int64(len(line))
 		if t.observe(line) {
+			t.completedLatched = true
 			return true
 		}
 		if err == io.EOF {

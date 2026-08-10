@@ -558,6 +558,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		"claude_code_uses_print_flag":        false,
 		"claude_code_structured_streaming":   false,
 		"claude_code_persistent_interactive": persistentInteractive,
+		"context_window_usage_known":         false,
 	}
 	if !persistentInteractive {
 		// terminal_retention_seconds intentionally not set: the rail

@@ -473,10 +473,11 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	}
 
 	additional := map[string]any{
-		"provider":        "codex-cli",
-		"codex_mode":      "structured",
-		"codex_thread_id": threadID,
-		"codex_model":     modelToUse,
+		"provider":                   "codex-cli",
+		"codex_mode":                 "structured",
+		"codex_thread_id":            threadID,
+		"codex_model":                modelToUse,
+		"context_window_usage_known": false,
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZero(totalUsage.InputTokens),

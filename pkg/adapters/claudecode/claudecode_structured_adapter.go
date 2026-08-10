@@ -392,9 +392,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 
 	additional := map[string]any{
-		"provider":               "claude-code",
-		"claude_code_mode":       "structured",
-		"claude_code_session_id": sessionID, // surfaced so mcpagent captures a.ClaudeCodeSessionID and can --resume next turn
+		"provider":                   "claude-code",
+		"claude_code_mode":           "structured",
+		"claude_code_session_id":     sessionID, // surfaced so mcpagent captures a.ClaudeCodeSessionID and can --resume next turn
+		"context_window_usage_known": false,
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZeroClaude(totalUsage.InputTokens),

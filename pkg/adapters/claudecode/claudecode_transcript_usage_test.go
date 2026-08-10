@@ -66,6 +66,9 @@ func TestReadClaudeTranscriptUsageAggregatesTurn(t *testing.T) {
 	if gi.TotalTokens == nil || *gi.TotalTokens != 286 {
 		t.Fatalf("TotalTokens = %v, want 286", gi.TotalTokens)
 	}
+	if known, ok := gi.Additional["context_window_usage_known"].(bool); !ok || known {
+		t.Fatalf("context_window_usage_known = %#v, want false for aggregate transcript accounting", gi.Additional["context_window_usage_known"])
+	}
 	if model != "claude-opus-4-7" {
 		t.Fatalf("model = %q, want claude-opus-4-7 (latest in-turn assistant event)", model)
 	}
