@@ -19,10 +19,10 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 5.6 terra xhigh",
+			name:          "codex uses gpt 5.6 terra medium",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-terra",
-			wantReasoning: "xhigh",
+			wantReasoning: "medium",
 		},
 		{
 			name:          "claude code uses sonnet 5 high",
@@ -125,6 +125,9 @@ func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
 	}
 	if defaults.Medium.ModelID != "claude-sonnet-5" || defaults.Medium.Options["reasoning_effort"] != "medium" {
 		t.Fatalf("medium = %+v, want claude-sonnet-5/medium", defaults.Medium)
+	}
+	if defaults.Low.ModelID != "claude-haiku-4-5-20251001" || defaults.Low.Options["reasoning_effort"] != "medium" {
+		t.Fatalf("low = %+v, want claude-haiku-4-5-20251001/medium", defaults.Low)
 	}
 }
 
@@ -288,8 +291,8 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		effort string
 	}{
 		"builder":     {ref: defaults.Builder, model: "gpt-5.6-sol", effort: "high"},
-		"high":        {ref: defaults.High, model: "gpt-5.6-terra", effort: "xhigh"},
-		"medium":      {ref: defaults.Medium, model: "gpt-5.6-terra", effort: "medium"},
+		"high":        {ref: defaults.High, model: "gpt-5.6-terra", effort: "medium"},
+		"medium":      {ref: defaults.Medium, model: "gpt-5.6-luna", effort: "high"},
 		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
 		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "high"},
 		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "xhigh"},

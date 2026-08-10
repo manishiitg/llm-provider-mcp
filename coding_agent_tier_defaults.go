@@ -48,11 +48,11 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "xhigh")
+		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
 		maintenance := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
 		builder := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
 		pulse := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "xhigh")
-		medium := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
+		medium := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "high")
 		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "low")
 		return &CodingAgentDefaultTierModels{
 			Builder:      builder,
@@ -73,7 +73,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Builder:      builder,
 			High:         high,
 			Medium:       medium,
-			Low:          codingAgentHighReasoningRef(providerID, "claude-haiku-4-5-20251001"),
+			Low:          codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
 			Maintenance:  maintenance,
 			Pulse:        pulse,
 			ChiefOfStaff: maintenance,
