@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -292,6 +294,22 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	}()
 	hooksInstalled := false
 	if workingDir != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		// cursor-agent discovers .cursor/mcp.json by walking up from workingDir
+		// to the nearest git repo root, not by reading workingDir literally. A
+		// Video Studio project folder is a plain subdirectory (not its own git
+		// repo), so without this marker cursor-agent walks up to the enclosing
+		// monorepo root, finds no .cursor/mcp.json there, and silently never
+		// spawns the api-bridge MCP server — the bridge tool then either fails
+		// to appear at all or reports connection errors the model faithfully
+		// relays as "not connected". Same fix as the tmux/interactive adapter's
+		// prepareCursorProjectFiles; see its comment for the original diagnosis.
+		if !cursorWorkingDirIsGitRoot(workingDir) {
+			if mkErr := initCursorWorkspaceGitMarker(workingDir); mkErr == nil {
+				configCleanups = append(configCleanups, func() {
+					_ = os.RemoveAll(filepath.Join(workingDir, ".git"))
+				})
+			}
+		}
 		cursorDir := filepath.Join(workingDir, ".cursor")
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
 			cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON), true)
@@ -353,10 +371,18 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	}
 
 	var finalContent string
+	// segments accumulates one completed text block per assistant "reply span"
+	// — a run of text bounded by tool calls. Cursor's own end-of-turn "result"
+	// field re-joins those spans WITHOUT a separator when a tool call sits
+	// between two of them (confirmed against a live run: result:"Checking the
+	// file now.Done reading it." — no space). segments lets us reconstruct the
+	// turn's text ourselves, correctly spaced, instead of trusting that field.
+	var segments []string
 	var totalUsage llmtypes.Usage
 	var cacheWriteTokens int
 	var sessionID string
 	var modelName string
+	var resultText string
 	// resultIsError mirrors claudecode's identical fix: a "result" event with
 	// is_error:true is a genuine semantic failure the CLI can report with
 	// exit code 0. The field was already parsed into cursorEvent.IsError but
@@ -436,6 +462,15 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			case "tool_call":
 				switch event.Subtype {
 				case "started":
+					// A tool call closes off whatever text span was building.
+					// Cursor starts a fresh span after the tool result comes
+					// back, and re-joining those spans is exactly where its
+					// own "result" field loses the separating space — bank
+					// this span now, correctly trimmed, before it's lost.
+					if trimmed := strings.TrimSpace(finalContent); trimmed != "" {
+						segments = append(segments, trimmed)
+						finalContent = ""
+					}
 					toolStartedAt[event.CallID] = time.Now()
 					details := cursorStructuredToolCallDetails(event.ToolCall)
 					toolCalls[event.CallID] = details
@@ -467,9 +502,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				// grace for ~/.cursor state flush → SIGKILL.
 				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, c.logger)
 				resultIsError = event.IsError
-				if event.Result != "" {
-					finalContent = event.Result
-				}
+				resultText = event.Result
 				if event.Usage != nil {
 					totalUsage.InputTokens += event.Usage.InputTokens
 					totalUsage.OutputTokens += event.Usage.OutputTokens
@@ -490,7 +523,21 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 
 	waitErr := cmd.Wait()
 
-	content := strings.TrimSpace(finalContent)
+	// Bank whatever text span was still building when the stream ended.
+	if trimmed := strings.TrimSpace(finalContent); trimmed != "" {
+		segments = append(segments, trimmed)
+	}
+	content := joinTextWithSpacing(segments)
+	if resultIsError {
+		// Cursor's own error text (e.g. an auth failure) never streams as
+		// assistant-text segments, so there's nothing to reconstruct from —
+		// use it directly.
+		content = strings.TrimSpace(resultText)
+	} else if content == "" {
+		// Defensive fallback: reconstruction found nothing (an unexpected
+		// event shape), but Cursor's own end-of-turn summary did.
+		content = strings.TrimSpace(resultText)
+	}
 
 	if errMsg, isErr := cursorResultErrorMessage(resultIsError, content, stderr.String()); isErr {
 		return nil, fmt.Errorf("cursor run reported an error result: %s", errMsg)
@@ -574,14 +621,57 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	}, nil
 }
 
+// cursorEventMessageText joins the text blocks of a single assistant message.
+// Cursor's stream sends distinct text blocks for separate checkpoints/paragraphs
+// (e.g. "...building the scenes." then "I'll build the eight scenes..." as two
+// blocks), each already trimmed of surrounding whitespace. A bare join glues
+// them into one run-on word ("scenes.I'll"), so a block boundary gets a space
+// unless one side already supplies it or the next block opens with punctuation
+// that attaches to what precedes it (e.g. "world" + "!" must stay "world!").
 func cursorEventMessageText(msg *cursorEventMessage) string {
-	var parts []string
+	parts := make([]string, 0, len(msg.Content))
 	for _, c := range msg.Content {
-		if c.Type == "text" && c.Text != "" {
-			parts = append(parts, c.Text)
+		if c.Type != "text" || c.Text == "" {
+			continue
 		}
+		parts = append(parts, c.Text)
 	}
-	return strings.Join(parts, "")
+	return joinTextWithSpacing(parts)
+}
+
+// joinTextWithSpacing concatenates already-trimmed text pieces, inserting a
+// space at a boundary only when neither side already supplies one and the
+// next piece isn't attaching punctuation (see attachingPunctuation).
+func joinTextWithSpacing(parts []string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if b.Len() > 0 && !endsWithSpace(b.String()) && !startsWithSpaceOrAttachingPunct(p) {
+			b.WriteByte(' ')
+		}
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+func endsWithSpace(s string) bool {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return r != utf8.RuneError && unicode.IsSpace(r)
+}
+
+// attachingPunctuation is trailing punctuation that hugs the text before it
+// rather than starting a new clause/word, so it must never gain a space of
+// its own.
+const attachingPunctuation = ".,!?;:)]}"
+
+func startsWithSpaceOrAttachingPunct(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return false
+	}
+	return unicode.IsSpace(r) || strings.ContainsRune(attachingPunctuation, r)
 }
 
 func buildCursorStructuredEnv(apiKey string) []string {
