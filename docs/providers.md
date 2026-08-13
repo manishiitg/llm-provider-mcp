@@ -25,8 +25,8 @@ the current account-visible model catalog.
 ## Cursor Agent
 
 Omitting the model currently selects `composer-2.5`. The friendly selector
-`grok-4.5` maps to Cursor's `grok-4.5-xhigh`; exact Cursor IDs pass through
-unchanged.
+`grok-4.6` maps to Cursor's `cursor-grok-4.6-medium`; exact Cursor IDs pass
+through unchanged.
 
 Cursor model availability belongs to the current Cursor account and can change
 independently of this project. Run `cursor-agent models` or the live catalog

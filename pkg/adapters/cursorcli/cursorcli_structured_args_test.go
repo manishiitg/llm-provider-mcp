@@ -5,6 +5,81 @@ import (
 	"testing"
 )
 
+// TestCursorEventMessageTextSpacesBlockBoundaries reproduces a real Video
+// Studio run: Cursor's stream sends the reply as separate text blocks per
+// checkpoint, each already trimmed. A bare join glued them into a run-on
+// word ("scenes.I'll") in the persisted transcript.
+func TestCursorEventMessageTextSpacesBlockBoundaries(t *testing.T) {
+	msg := &cursorEventMessage{Content: []cursorEventContent{
+		{Type: "text", Text: "Visual system is locked."},
+		{Type: "text", Text: "I'll build the eight scenes next."},
+	}}
+	got := cursorEventMessageText(msg)
+	want := "Visual system is locked. I'll build the eight scenes next."
+	if got != want {
+		t.Fatalf("cursorEventMessageText = %q, want %q", got, want)
+	}
+}
+
+// TestCursorEventMessageTextDoesNotDoubleSpace covers a block that already
+// carries its own leading/trailing whitespace (token-level deltas), which
+// must not gain an extra space on top of what the block already supplies.
+func TestCursorEventMessageTextDoesNotDoubleSpace(t *testing.T) {
+	msg := &cursorEventMessage{Content: []cursorEventContent{
+		{Type: "text", Text: "Hello"},
+		{Type: "text", Text: " world"},
+		{Type: "text", Text: "!\n"},
+		{Type: "text", Text: "\nNext paragraph."},
+	}}
+	got := cursorEventMessageText(msg)
+	want := "Hello world!\n\nNext paragraph."
+	if got != want {
+		t.Fatalf("cursorEventMessageText = %q, want %q", got, want)
+	}
+}
+
+// TestCursorEventMessageTextSkipsNonTextBlocks ignores non-text content
+// (e.g. tool_use) and empty text blocks when building the joined string.
+func TestCursorEventMessageTextSkipsNonTextBlocks(t *testing.T) {
+	msg := &cursorEventMessage{Content: []cursorEventContent{
+		{Type: "text", Text: "Before."},
+		{Type: "tool_use", Text: "ignored"},
+		{Type: "text", Text: ""},
+		{Type: "text", Text: "After."},
+	}}
+	got := cursorEventMessageText(msg)
+	want := "Before. After."
+	if got != want {
+		t.Fatalf("cursorEventMessageText = %q, want %q", got, want)
+	}
+}
+
+// TestJoinTextWithSpacingReproducesCursorToolSplitBug is the exact failure
+// captured live from cursor-agent's own stream-json output: a tool call
+// between two text spans made Cursor's own end-of-turn "result" field read
+// `"Checking the file now.Done reading it."` — no space, straight from the
+// CLI itself. generateContentStructured now reconstructs the turn from its
+// own per-span segments (banked at each tool_call "started" event) via this
+// function instead of trusting that field.
+func TestJoinTextWithSpacingReproducesCursorToolSplitBug(t *testing.T) {
+	got := joinTextWithSpacing([]string{"Checking the file now.", "Done reading it."})
+	want := "Checking the file now. Done reading it."
+	if got != want {
+		t.Fatalf("joinTextWithSpacing = %q, want %q", got, want)
+	}
+}
+
+// TestJoinTextWithSpacingSkipsEmptySegments covers a tool_call "started"
+// event that fires with no text span pending (e.g. two tool calls back to
+// back), which must not inject a spurious empty segment.
+func TestJoinTextWithSpacingSkipsEmptySegments(t *testing.T) {
+	got := joinTextWithSpacing([]string{"First.", "", "Second."})
+	want := "First. Second."
+	if got != want {
+		t.Fatalf("joinTextWithSpacing = %q, want %q", got, want)
+	}
+}
+
 func has(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {

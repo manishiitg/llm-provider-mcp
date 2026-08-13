@@ -183,6 +183,22 @@ func TestClaudeInteractiveFinalEnvUsesScopedOAuthPath(t *testing.T) {
 	}
 }
 
+func TestStripClaudeAmbientAuthEnvRemovesOnlyAuthKeys(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_API_KEY=stale-placeholder",
+		"ANTHROPIC_AUTH_TOKEN=stale-token",
+		"ANTHROPIC_BASE_URL=https://stale.example.com",
+		"CLAUDE_CODE_OAUTH_TOKEN=stale-oauth",
+		"HOME=/Users/example",
+	}
+	got := stripClaudeAmbientAuthEnv(base)
+	want := []string{"PATH=/usr/bin", "HOME=/Users/example"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stripped env = %v, want %v", got, want)
+	}
+}
+
 func TestClaudeInteractiveAuthenticationFailureDetection(t *testing.T) {
 	tests := []struct {
 		name    string

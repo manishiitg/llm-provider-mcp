@@ -235,6 +235,38 @@ func claudeInteractiveFinalEnv(oauthToken string) []string {
 	return []string{"CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken}
 }
 
+// claudeAmbientAuthEnvKeys route Claude Code's own auth. They must never leak
+// from the server process into a per-user/per-project Claude Code invocation:
+// an ambient ANTHROPIC_API_KEY (or a wrong-scope OAuth token) would silently
+// override the deliberately-scoped credential resolution above.
+var claudeAmbientAuthEnvKeys = []string{
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_BASE_URL",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+}
+
+// stripClaudeAmbientAuthEnv removes claudeAmbientAuthEnvKeys from base. Use
+// before handing a raw os.Environ() to a claude invocation that doesn't
+// already go through startSession's shell-level unset.
+func stripClaudeAmbientAuthEnv(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		stripped := false
+		for _, ambientKey := range claudeAmbientAuthEnvKeys {
+			if key == ambientKey {
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func isClaudeInteractiveAuthenticationFailure(content string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(content), " "))
 	if strings.HasPrefix(normalized, "please run /login") &&
@@ -1043,12 +1075,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		preTrustClaudeWorkingDir(workingDir)
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"CLAUDE_CODE_OAUTH_TOKEN",
-	})
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, claudeAmbientAuthEnvKeys)
 	if err != nil {
 		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
 	}

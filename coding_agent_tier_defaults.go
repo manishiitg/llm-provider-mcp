@@ -79,7 +79,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			ChiefOfStaff: maintenance,
 		}, true
 	case ProviderCursorCLI:
-		high := codingAgentHighReasoningRef(providerID, "grok-4.5")
+		high := codingAgentHighReasoningRef(providerID, "grok-4.6")
 		medium := codingAgentHighReasoningRef(providerID, DefaultCursorCLIModel)
 		low := codingAgentHighReasoningRef(providerID, "auto")
 		return &CodingAgentDefaultTierModels{

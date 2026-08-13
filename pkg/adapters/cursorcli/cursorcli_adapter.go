@@ -150,11 +150,11 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			ContextWindow:     200000,
 			SupportsToolCalls: true,
 		}, nil
-	case "grok-4.5-xhigh":
+	case "cursor-grok-4.6-medium":
 		return &llmtypes.ModelMetadata{
 			ModelID:           metadataModelID,
 			Provider:          "cursor-cli",
-			ModelName:         "Grok 4.5 (Cursor Agent CLI)",
+			ModelName:         "Grok 4.6 (Cursor Agent CLI)",
 			ContextWindow:     500000,
 			SupportsToolCalls: true,
 		}, nil

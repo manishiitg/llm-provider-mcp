@@ -75,9 +75,9 @@ func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
 			wantProviderSet: true,
 		},
 		{
-			name:            "cursor uses grok 4.5",
+			name:            "cursor uses grok 4.6",
 			provider:        ProviderCursorCLI,
-			wantModelID:     "grok-4.5",
+			wantModelID:     "grok-4.6",
 			wantReasoning:   "high",
 			wantProviderSet: true,
 		},
@@ -152,9 +152,9 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "xhigh",
 		},
 		{
-			name:          "cursor uses grok 4.5 high",
+			name:          "cursor uses grok 4.6 high",
 			provider:      ProviderCursorCLI,
-			wantModelID:   "grok-4.5",
+			wantModelID:   "grok-4.6",
 			wantReasoning: "high",
 		},
 		{
@@ -242,7 +242,7 @@ func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:           "cursor follows grok 4.5 high",
+			name:           "cursor follows grok 4.6 high",
 			provider:       ProviderCursorCLI,
 			wantSameAsHigh: true,
 			wantReasoning:  "high",
@@ -321,13 +321,13 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
 		}
 	}
-	check("high", defaults.High, "grok-4.5")
+	check("high", defaults.High, "grok-4.6")
 	check("medium", defaults.Medium, "composer-2.5")
 	check("low", defaults.Low, "auto")
-	check("builder", defaults.Builder, "grok-4.5")
-	check("pulse", defaults.Pulse, "grok-4.5")
-	check("maintenance", defaults.Maintenance, "grok-4.5")
-	check("chief_of_staff", defaults.ChiefOfStaff, "grok-4.5")
+	check("builder", defaults.Builder, "grok-4.6")
+	check("pulse", defaults.Pulse, "grok-4.6")
+	check("maintenance", defaults.Maintenance, "grok-4.6")
+	check("chief_of_staff", defaults.ChiefOfStaff, "grok-4.6")
 }
 
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
