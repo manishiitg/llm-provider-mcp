@@ -36,10 +36,6 @@ func codexMCPCallEnd(ts, callID string) string {
 	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"` + callID + `"}}` + "\n"
 }
 
-func codexMCPCallEndWithInvocation(ts, tool, callID string) string {
-	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"` + callID + `","invocation":{"server":"api-bridge","tool":"` + tool + `"}}}` + "\n"
-}
-
 // TestReadCodexTranscriptEventsIncremental verifies the mid-turn rollout tailer
 // against the REAL schema: prior-turn rows skipped, agent_message → content,
 // mcp_tool_call_begin → tool start (name from invocation.tool), reading from the
@@ -265,7 +261,9 @@ func TestReadCodexTranscriptEventsMCPCallEndOnlySynthesizesStart(t *testing.T) {
 	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
 
-	appendLine(t, path, codexMCPCallEndWithInvocation(ts, "execute_shell_command", "exec-1"))
+	// This is the observed code-mode shape: Codex persists only the end row,
+	// but that row still holds the input inside invocation.arguments.
+	appendLine(t, path, `{"timestamp":"`+ts+`","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"exec-1","invocation":{"server":"api-bridge","tool":"execute_shell_command","arguments":{"command":"printf hello","timeout":30}}}}`+"\n")
 
 	pending := map[string]time.Time{}
 	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, pending)
@@ -277,6 +275,12 @@ func TestReadCodexTranscriptEventsMCPCallEndOnlySynthesizesStart(t *testing.T) {
 	}
 	if events[0].IsToolEnd || events[0].ToolName != "execute_shell_command" || events[0].ToolCallID != "exec-1" {
 		t.Fatalf("events[0] (synthesized start) = %+v", events[0])
+	}
+	if events[0].ToolArgs != `{"command":"printf hello","timeout":30}` {
+		t.Fatalf("events[0].ToolArgs = %q", events[0].ToolArgs)
+	}
+	if chunk := codexTranscriptEventToChunk(events[0]); chunk.ToolArgs != events[0].ToolArgs {
+		t.Fatalf("start chunk ToolArgs = %q, want %q", chunk.ToolArgs, events[0].ToolArgs)
 	}
 	if !events[1].IsToolEnd || events[1].ToolCallID != "exec-1" {
 		t.Fatalf("events[1] (end) = %+v", events[1])

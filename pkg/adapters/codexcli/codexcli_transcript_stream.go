@@ -32,7 +32,11 @@ type codexTranscriptEvent struct {
 	Text       string
 	ToolName   string
 	ToolCallID string
-	Key        string // dedup key for content (row timestamp); tools dedup by ToolCallID
+	// ToolArgs is recorded for MCP calls as invocation.arguments.  The rollout
+	// commonly persists only the mcp_tool_call_end row, so retaining it here
+	// lets the synthesized start event carry the actual call input to consumers.
+	ToolArgs string
+	Key      string // dedup key for content (row timestamp); tools dedup by ToolCallID
 	// IsToolEnd distinguishes a completion row from a start row; both carry
 	// ToolCallID, so this is the only way to tell them apart once mapped onto
 	// the shared event shape. ToolResult is only populated for native tools —
@@ -126,6 +130,7 @@ func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {
 		return llmtypes.StreamChunk{
 			Type:         llmtypes.StreamChunkTypeToolCallEnd,
 			ToolCallID:   e.ToolCallID,
+			ToolArgs:     e.ToolArgs,
 			ToolResult:   e.ToolResult,
 			ToolDuration: e.ToolDuration,
 			Metadata:     meta,
@@ -136,6 +141,7 @@ func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {
 			Type:       llmtypes.StreamChunkTypeToolCallStart,
 			ToolName:   e.ToolName,
 			ToolCallID: e.ToolCallID,
+			ToolArgs:   e.ToolArgs,
 			Metadata:   meta,
 		}
 	}
@@ -185,8 +191,9 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		Text string `json:"text"`
 	}
 	type invocation struct {
-		Server string `json:"server"`
-		Tool   string `json:"tool"`
+		Server    string          `json:"server"`
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	type rolloutPayload struct {
 		Type string `json:"type"`
@@ -243,6 +250,7 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 					events = append(events, codexTranscriptEvent{
 						ToolName:   e.Payload.Invocation.Tool,
 						ToolCallID: e.Payload.CallID,
+						ToolArgs:   compactCodexJSON(e.Payload.Invocation.Arguments),
 					})
 					// Recorded even when rowTime is zero (missing/unparseable
 					// timestamp): the matching _end below treats a zero start
@@ -258,6 +266,7 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 						events = append(events, codexTranscriptEvent{
 							ToolName:   e.Payload.Invocation.Tool,
 							ToolCallID: e.Payload.CallID,
+							ToolArgs:   compactCodexJSON(e.Payload.Invocation.Arguments),
 						})
 					}
 					events = append(events, codexTranscriptEvent{
