@@ -200,7 +200,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
+	cmd.Env = claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken)
 	cmd.Stdin = strings.NewReader(prompt) // prompt via stdin (--input-format text default)
 
 	stdout, err := cmd.StdoutPipe()
@@ -436,6 +436,39 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		},
 		Usage: &totalUsage,
 	}, nil
+}
+
+// claudeStructuredProcessEnv applies the workflow-scoped Claude setup token at
+// the final process boundary used by `claude -p`. Workflow steps use this
+// structured transport rather than the retained tmux transport, so consulting
+// only CallOptions here silently discarded the token stored on the adapter.
+//
+// When a workflow token is present, remove every competing ambient Anthropic
+// credential before setting it. This prevents the server process's saved/default
+// Claude account from winning account selection on multi-account machines.
+func claudeStructuredProcessEnv(base []string, opts *llmtypes.CallOptions, oauthToken string) []string {
+	environment := llmtypes.MergeCodingAgentSecretEnvironment(base, opts)
+	oauthToken = strings.TrimSpace(oauthToken)
+	if oauthToken == "" {
+		return environment
+	}
+
+	blocked := map[string]struct{}{
+		"ANTHROPIC_API_KEY":       {},
+		"ANTHROPIC_AUTH_TOKEN":    {},
+		"CLAUDE_CODE_OAUTH_TOKEN": {},
+	}
+	filtered := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, discard := blocked[key]; discard {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
 }
 
 // accumulateClaudeUsage folds one stream usage event into the running total.

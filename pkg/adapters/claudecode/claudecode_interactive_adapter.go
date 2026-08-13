@@ -220,18 +220,19 @@ func claudeCredentialFingerprint(oauthToken string) string {
 // claudeInteractiveFinalEnv returns the credential environment applied after
 // login-shell initialization for the interactive TUI transport.
 //
-// Claude Code 2.1.220 can accept a setup-token credential in print mode while
-// returning "OAuth access token has expired" for that same credential in its
-// interactive OAuth path. Supplying the exact same OAuth credential via the
-// generic bearer-token input avoids that TUI-specific failure. This does not
-// install an Anthropic API key: the value remains the explicitly scoped
-// subscription OAuth token owned by this adapter instance.
+// A token produced by `claude setup-token` is a Claude Code OAuth credential,
+// not a generic Anthropic gateway bearer token. It must therefore remain in
+// CLAUDE_CODE_OAUTH_TOKEN all the way to the spawned CLI. Mapping it to
+// ANTHROPIC_AUTH_TOKEN lets the interactive client consult its saved ~/.claude
+// login for subscription/account state; on a machine with multiple Claude
+// accounts that can charge or rate-limit the wrong account even though the
+// workflow token reached this adapter.
 func claudeInteractiveFinalEnv(oauthToken string) []string {
 	oauthToken = strings.TrimSpace(oauthToken)
 	if oauthToken == "" {
 		return nil
 	}
-	return []string{"ANTHROPIC_AUTH_TOKEN=" + oauthToken}
+	return []string{"CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken}
 }
 
 func isClaudeInteractiveAuthenticationFailure(content string) bool {

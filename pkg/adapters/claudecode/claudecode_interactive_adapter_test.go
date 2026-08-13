@@ -143,11 +143,11 @@ exit 0
 	if err != nil {
 		t.Fatalf("read private launch script: %v", err)
 	}
-	if !strings.Contains(string(launchScript), `export ANTHROPIC_AUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
-		t.Fatalf("launch script did not apply the workflow token through the interactive bearer path: %s", launchScript)
+	if !strings.Contains(string(launchScript), `export CLAUDE_CODE_OAUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
+		t.Fatalf("launch script did not apply the workflow setup token through Claude Code's OAuth path: %s", launchScript)
 	}
-	if strings.Contains(string(launchScript), `export CLAUDE_CODE_OAUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
-		t.Fatalf("launch script used Claude's broken interactive OAuth path: %s", launchScript)
+	if strings.Contains(string(launchScript), `export ANTHROPIC_AUTH_TOKEN="$__MLP_CODING_AGENT_ENV_0"`) {
+		t.Fatalf("launch script incorrectly remapped the workflow OAuth token to a generic bearer token: %s", launchScript)
 	}
 }
 
@@ -168,15 +168,15 @@ func TestClaudeCredentialFingerprintDoesNotExposeToken(t *testing.T) {
 	}
 }
 
-func TestClaudeInteractiveFinalEnvUsesScopedBearerPath(t *testing.T) {
+func TestClaudeInteractiveFinalEnvUsesScopedOAuthPath(t *testing.T) {
 	const token = "workflow-oauth-secret"
 	got := claudeInteractiveFinalEnv("  " + token + "  ")
-	want := []string{"ANTHROPIC_AUTH_TOKEN=" + token}
+	want := []string{"CLAUDE_CODE_OAUTH_TOKEN=" + token}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude interactive final env = %v, want %v", got, want)
 	}
-	if containsArg(got, "CLAUDE_CODE_OAUTH_TOKEN="+token) {
-		t.Fatalf("interactive final env used the broken OAuth refresh path: %v", got)
+	if containsArg(got, "ANTHROPIC_AUTH_TOKEN="+token) {
+		t.Fatalf("interactive final env remapped the OAuth token to a generic bearer token: %v", got)
 	}
 	if got := claudeInteractiveFinalEnv("  "); got != nil {
 		t.Fatalf("empty token final env = %v, want nil", got)
