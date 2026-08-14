@@ -3,6 +3,8 @@ package llmproviders
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
@@ -194,6 +196,24 @@ func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message strin
 // session registered for the owning application session.
 func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
+}
+
+// ReadCodingAgentRetainedTurnMessages reconstructs the structured messages for
+// a turn that was injected directly into an already-running coding CLI. It is a
+// read-only sidecar operation: it never starts or resumes an agent session.
+func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	switch Provider(strings.ToLower(strings.TrimSpace(string(provider)))) {
+	case ProviderClaudeCode:
+		return claudecodeadapter.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderCodexCLI:
+		return codexcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderCursorCLI:
+		return cursorcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderPiCLI:
+		return picli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	default:
+		return nil
+	}
 }
 
 // SendClaudeCodeControlKey injects a tmux control key (e.g. "Escape", "C-c")

@@ -52,10 +52,10 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent generates content through Cursor's structured CLI transport.
-// Each call is an isolated process; callers preserve project conversation
-// continuity by passing the native session ID returned in GenerationInfo via
-// WithResumeSessionID on the next turn.
+// GenerateContent uses Cursor's declared tmux transport by default and switches
+// to one-shot stream-json only when the caller explicitly selects structured
+// transport. Interactive chats therefore retain a steerable Cursor process,
+// while workflow/background turns can still choose clean typed JSON events.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -80,7 +80,18 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	return c.generateContentStructured(ctx, messages, opts, nil)
+	if cursorStructuredTransportRequested(opts) {
+		return c.generateContentStructured(ctx, messages, opts, nil)
+	}
+	return c.generateContentTmux(ctx, messages, opts)
+}
+
+func cursorStructuredTransportRequested(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	structured, _ := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool)
+	return structured
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns

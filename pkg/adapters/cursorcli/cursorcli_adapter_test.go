@@ -31,7 +31,7 @@ func TestCursorCLIAdapterImplementsWebSearchModel(t *testing.T) {
 	}
 }
 
-func TestCursorCLIDefaultsToStructuredTransport(t *testing.T) {
+func TestCursorCLIExplicitStructuredTransport(t *testing.T) {
 	fakeBin := t.TempDir()
 	argsPath := filepath.Join(fakeBin, "cursor-agent-args.txt")
 	cursorPath := filepath.Join(fakeBin, "cursor-agent")
@@ -54,7 +54,7 @@ printf '%s\n' '{"type":"result","result":"STRUCTURED_DEFAULT_OK","session_id":"c
 	stream := make(chan llmtypes.StreamChunk, 8)
 	resp, err := adapter.GenerateContent(context.Background(), []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with the test marker."}}},
-	}, WithCursorStructuredTransport(false), llmtypes.WithStreamingChan(stream))
+	}, WithCursorStructuredTransport(true), llmtypes.WithStreamingChan(stream))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -94,6 +94,28 @@ printf '%s\n' '{"type":"result","result":"STRUCTURED_DEFAULT_OK","session_id":"c
 	}
 	if !sawReasoning || !sawAssistantContent || !sawToolStart || !sawToolEnd {
 		t.Fatalf("stream must preserve reasoning, content, and tool details; reasoning=%v content=%v tool_start=%v tool_end=%v", sawReasoning, sawAssistantContent, sawToolStart, sawToolEnd)
+	}
+}
+
+func TestCursorStructuredTransportRequiresExplicitOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []llmtypes.CallOption
+		want bool
+	}{
+		{name: "unset defaults to tmux", want: false},
+		{name: "false remains tmux", opts: []llmtypes.CallOption{WithCursorStructuredTransport(false)}, want: false},
+		{name: "true selects structured", opts: []llmtypes.CallOption{WithCursorStructuredTransport(true)}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &llmtypes.CallOptions{}
+			for _, option := range tc.opts {
+				option(opts)
+			}
+			if got := cursorStructuredTransportRequested(opts); got != tc.want {
+				t.Fatalf("cursorStructuredTransportRequested() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

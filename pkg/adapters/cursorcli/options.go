@@ -35,9 +35,9 @@ const (
 	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
 	// back into the legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "cursor_restore_project_files"
-	// MetadataKeyStructuredTransport is retained for backwards-compatible
-	// configuration parsing. Cursor always uses structured transport now, so
-	// this setting no longer changes runtime behaviour.
+	// MetadataKeyStructuredTransport selects `cursor-agent --print
+	// --output-format stream-json` (per-turn, one-shot, no tmux dependency)
+	// instead of the default tmux interactive transport.
 	MetadataKeyStructuredTransport = "cursor_structured_transport"
 )
 
@@ -127,8 +127,8 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 	}
 }
 
-// WithCursorStructuredTransport is retained for backwards-compatible callers.
-// Cursor always uses `--print --output-format stream-json`; enabled is ignored.
+// WithCursorStructuredTransport selects the structured `--print
+// --output-format stream-json` transport instead of tmux.
 func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
