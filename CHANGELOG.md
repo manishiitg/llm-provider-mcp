@@ -11,6 +11,9 @@
 
 ### Changed
 
+- Updated the Pi default and workflow tiers to Gemini 3.7 Flash. Gemini 3.6
+  Flash remains supported by Pi's custom model-ID path for existing
+  configurations; Vertex remains on 3.6 until Google's Vertex rollout.
 - Updated the Vertex and Pi defaults to Gemini 3.6 Flash, added Gemini 3.5
   Flash-Lite as the low-cost Pi tier and Vertex validation model, and omitted
   sampling parameters deprecated by both new model APIs.

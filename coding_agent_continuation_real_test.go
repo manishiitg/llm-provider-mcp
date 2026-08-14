@@ -100,9 +100,6 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 			model:    codingAgentContinuationE2EModel("PI_CLI_REAL_CONTRACT_MODEL", DefaultPiCLIModel),
 			require: func(t *testing.T) {
 				requireCodingAgentContinuationPiRuntime(t)
-				if firstNonEmptyCodingAgentContinuationEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY") == "" {
-					t.Skip("GEMINI_API_KEY, GOOGLE_API_KEY, or PI_API_KEY is required for real Pi CLI continuation test")
-				}
 			},
 			setup: func(t *testing.T) {
 				t.Setenv("PI_CODING_AGENT_SESSION_DIR", t.TempDir())
@@ -230,15 +227,6 @@ func requireCodingAgentContinuationPiRuntime(t *testing.T) {
 		return
 	}
 	t.Skip("pi not found in PATH and npx fallback unavailable")
-}
-
-func firstNonEmptyCodingAgentContinuationEnv(keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func killCodingAgentContinuationTmuxSession(t *testing.T, sessionName string) {

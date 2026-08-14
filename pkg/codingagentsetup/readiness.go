@@ -306,6 +306,7 @@ func parsePiModels(output string) []piModel {
 func recommendedPiModel(models []piModel) piModel {
 	preferred := []string{
 		"openrouter/openrouter/free",
+		"google/gemini-3.7-flash",
 		"google/gemini-3.6-flash",
 		"google/gemini-3.5-flash-lite",
 		"google/gemini-3.1-pro-preview",

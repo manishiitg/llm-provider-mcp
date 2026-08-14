@@ -78,8 +78,32 @@ type piJSONMessage struct {
 type piJSONUsage struct {
 	Input      int `json:"input"`
 	Output     int `json:"output"`
+	Reasoning  int `json:"reasoning"`
+	Total      int `json:"totalTokens"`
 	CacheRead  int `json:"cacheRead"`
 	CacheWrite int `json:"cacheWrite"`
+}
+
+func applyPiJSONUsage(message *piJSONMessage, totalUsage *llmtypes.Usage, cacheWriteTokens *int) {
+	if message == nil || message.Usage == nil || totalUsage == nil || cacheWriteTokens == nil {
+		return
+	}
+	u := message.Usage
+	totalUsage.InputTokens = u.Input
+	totalUsage.OutputTokens = u.Output
+	totalUsage.TotalTokens = u.Total
+	if totalUsage.TotalTokens == 0 {
+		totalUsage.TotalTokens = u.Input + u.Output
+	}
+	if u.Reasoning > 0 {
+		reasoning := u.Reasoning
+		totalUsage.ReasoningTokens = &reasoning
+	}
+	if u.CacheRead > 0 {
+		cacheRead := u.CacheRead
+		totalUsage.CacheTokens = &cacheRead
+	}
+	*cacheWriteTokens = u.CacheWrite
 }
 
 // generateContentStructured drives `pi --print --mode json` — per-turn,
@@ -216,6 +240,11 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				}
 				continue
 			}
+			// Pi 0.84 reports final non-zero usage on message_end/turn_end.
+			// Earlier versions also exposed it on message_update. Accept every
+			// message-bearing event with last-seen-wins semantics so both shapes
+			// remain valid and a legitimate final usage record is never dropped.
+			applyPiJSONUsage(event.Message, &totalUsage, &cacheWriteTokens)
 
 			switch event.Type {
 			case "message_update":
@@ -224,19 +253,6 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				}
 				if d := piApplyAssistantEvent(&turnTextBuf, event.AssistantMessageEvt); d != "" {
 					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: d})
-				}
-				if event.Message != nil && event.Message.Usage != nil {
-					// pi reports a running total per response step, not a delta —
-					// last-seen-wins rather than summing avoids massive overcount.
-					u := event.Message.Usage
-					totalUsage.InputTokens = u.Input
-					totalUsage.OutputTokens = u.Output
-					totalUsage.TotalTokens = u.Input + u.Output
-					if u.CacheRead > 0 {
-						cacheRead := u.CacheRead
-						totalUsage.CacheTokens = &cacheRead
-					}
-					cacheWriteTokens = u.CacheWrite
 				}
 			case "tool_execution_start":
 				toolStartedAt[event.ToolCallID] = time.Now()
@@ -294,6 +310,10 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		OutputTokens: intPtrIfNonZeroPi(totalUsage.OutputTokens),
 		TotalTokens:  intPtrIfNonZeroPi(totalUsage.TotalTokens),
 		Additional:   additional,
+	}
+	if totalUsage.ReasoningTokens != nil && *totalUsage.ReasoningTokens > 0 {
+		reasoning := *totalUsage.ReasoningTokens
+		genInfo.ReasoningTokens = &reasoning
 	}
 	if totalUsage.CacheTokens != nil && *totalUsage.CacheTokens > 0 {
 		v := *totalUsage.CacheTokens

@@ -43,11 +43,11 @@ func TestResolvePiProviderModel(t *testing.T) {
 		wantProvider     string
 		wantModel        string
 	}{
-		{name: "default", wantProvider: "google", wantModel: "gemini-3.6-flash"},
+		{name: "default", wantProvider: "google", wantModel: "gemini-3.7-flash"},
 		{name: "provider model", modelID: "google/gemini-3.5-flash", wantProvider: "google", wantModel: "gemini-3.5-flash"},
 		{name: "openrouter nested model", modelID: "openrouter/minimax/minimax-m3-20260531", wantProvider: "openrouter", wantModel: "minimax/minimax-m3-20260531"},
 		{name: "override", modelID: "gemini-3.5-flash", providerOverride: "google-vertex", wantProvider: "google-vertex", wantModel: "gemini-3.5-flash"},
-		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.6-flash"},
+		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.7-flash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -274,6 +274,7 @@ func TestPiLaunchArgsForwardsReasoningEffortAsThinking(t *testing.T) {
 func TestPiMCPOutputGuardExtensionSourceCoversMCPResults(t *testing.T) {
 	source := piMCPOutputGuardExtensionSource()
 	for _, want := range []string{
+		`DEFAULT_MAX_RESULT_LINE_CHARS = 4000`,
 		`pi.on("tool_result"`,
 		`hasOwn(details, "mcpResult")`,
 		`toolName.startsWith("api_bridge_")`,
@@ -281,7 +282,6 @@ func TestPiMCPOutputGuardExtensionSourceCoversMCPResults(t *testing.T) {
 		`PI_CLI_MCP_RESULT_MAX_CHARS`,
 		`PI_CLI_MCP_RESULT_MAX_LINES`,
 		`PI_CLI_MCP_RESULT_MAX_LINE_CHARS`,
-		`DEFAULT_MAX_RESULT_LINE_CHARS = 48`,
 		`outputWrapped`,
 		`mlp-mcp-output-guard`,
 	} {
@@ -569,6 +569,40 @@ func TestPiPaneShowsPromptDraftRequiresCursorNearDraftWhenANSIIsPresent(t *testi
 
 	if piPaneShowsPromptDraft(captured, prompt) {
 		t.Fatalf("stale transcript text with a distant cursor must not be treated as active draft")
+	}
+}
+
+func TestPiPaneShowsShortPromptDraftWithoutMatchingSubstringInStaleText(t *testing.T) {
+	prompt := "hi"
+	before := "Thinking level: high\n" +
+		"\x1b[7m \x1b[0m\n" +
+		"────────────────────────\n" +
+		"\x1b[1mπ\x1b[0m • 🤖 gemini-3.7-flash • 💤 idle\n"
+	after := "Thinking level: high\n" +
+		"hi\x1b[7m \x1b[0m\n" +
+		"────────────────────────\n" +
+		"\x1b[1mπ\x1b[0m • 🤖 gemini-3.7-flash • 💤 idle\n"
+
+	if piPaneEditorPromptMatchCount(before, prompt) != 0 {
+		t.Fatal("letters inside stale words must not count as a short prompt")
+	}
+	if !piPaneShowsPromptDraft(after, prompt) {
+		t.Fatal("expected the exact short draft next to the editor cursor to be detected")
+	}
+	if got := piPaneEditorPromptMatchCount(after, prompt); got != 1 {
+		t.Fatalf("short prompt match count = %d, want 1", got)
+	}
+}
+
+func TestPiPaneShortPromptMatchCountDetectsNewDraftAfterPriorIdenticalMessage(t *testing.T) {
+	prompt := "hi"
+	before := "hi\nThinking level: high\n────────────────────────\nπ • 🤖 gemini-3.7-flash • 💤 idle\n"
+	after := "hi\nThinking level: high\nhi\n────────────────────────\nπ • 🤖 gemini-3.7-flash • 💤 idle\n"
+
+	beforeCount := piPaneEditorPromptMatchCount(before, prompt)
+	afterCount := piPaneEditorPromptMatchCount(after, prompt)
+	if beforeCount != 1 || afterCount != 2 {
+		t.Fatalf("short prompt counts before=%d after=%d, want 1 then 2", beforeCount, afterCount)
 	}
 }
 

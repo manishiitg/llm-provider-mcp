@@ -223,6 +223,7 @@ func TestPiCLIStructuredMCPBridge(t *testing.T) {
 			},
 		},
 			WithMCPConfig(mcpConfig),
+			WithBridgeOnlyTools(true),
 			WithWorkingDir(workspaceDir),
 			WithPiStructuredTransport(true),
 			llmtypes.WithStreamingChan(stream),

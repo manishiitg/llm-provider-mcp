@@ -56,7 +56,7 @@ const (
 	defaultPiNodeMaxOldSpaceMB          = "4096"
 	defaultPiInteractiveNpxPackage      = "@earendil-works/pi-coding-agent"
 	defaultPiProvider                   = "google"
-	defaultPiModel                      = "gemini-3.6-flash"
+	defaultPiModel                      = "gemini-3.7-flash"
 	piInteractiveMarkerExtensionFile    = "mlp-marker.ts"
 	piInteractiveMCPOutputGuardFile     = "mlp-mcp-output-guard.ts"
 	piInteractiveMarkerJSONLFile        = "markers.jsonl"
@@ -202,13 +202,24 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 			}
 			return nil, fmt.Errorf("failed to start Pi CLI tmux session %q: %w", session.tmuxSessionName, err)
 		}
+	}
+
+	// Cold session: hold the first prompt until the MCP bridge reports tools/list
+	// answered. MCP startup can redraw Pi's TUI, so this must happen before the
+	// final editor-readiness check below; checking the editor first leaves a race
+	// where a restored session looks idle briefly and then loses the pasted draft
+	// when the bridge finishes connecting. No-op on reused sessions / when
+	// unconfigured; bounded, best-effort. See pkg/codingready.
+	if createdSession && opts.Metadata != nil {
+		if rf := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); rf != "" {
+			codingready.WaitForMCPReadyFile(ctx, rf, codingready.MCPReadyWait())
+		}
+	}
+
+	if createdSession {
 		// session_start means Pi loaded the marker extension; it does not mean the
-		// terminal editor is ready. In particular, pi-mcp-adapter may still be
-		// connecting servers and redraw the TUI after session_start. Pasting during
-		// that window loses the draft, so wait for Pi's actual idle prompt before
-		// delivering either a launch-only handoff or the first user turn. Same
-		// once-per-launch reasoning as session_start above — only meaningful
-		// right after a fresh launch, not on every reused-session turn.
+		// terminal editor is ready. Confirm the actual idle composer only after MCP
+		// startup has settled so the first prompt cannot be erased by a late redraw.
 		if err := waitForPiPromptReady(ctx, session.tmuxSessionName, piPromptWait()); err != nil {
 			releaseSession = false
 			session.mu.Unlock()
@@ -217,17 +228,6 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 				close(opts.StreamChan)
 			}
 			return nil, fmt.Errorf("Pi CLI prompt did not become ready in tmux session %q: %w", session.tmuxSessionName, err)
-		}
-	}
-
-	// Cold session: pi's idle prompt being ready does not mean the MCP bridge
-	// (pi-mcp-adapter) has finished connecting — the comment above notes it may
-	// still be connecting servers after session_start. Hold the first prompt until
-	// the bridge reports tools/list answered (marker file). No-op on reused
-	// sessions / when unconfigured; bounded, best-effort. See pkg/codingready.
-	if createdSession && opts.Metadata != nil {
-		if rf := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); rf != "" {
-			codingready.WaitForMCPReadyFile(ctx, rf, codingready.MCPReadyWait())
 		}
 	}
 
@@ -1181,7 +1181,7 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 			// Some extension combinations render the editor draft without an
 			// ANSI reverse-video cursor. A substantial prompt signature that
 			// appeared only after this paste is still reliable delivery proof.
-			if piPaneEditorContainsPrompt(captured, message) && !piPaneEditorContainsPrompt(beforePaste, message) {
+			if piPaneEditorPromptMatchCount(captured, message) > piPaneEditorPromptMatchCount(beforePaste, message) {
 				return true
 			}
 			if beforePaste != "" && stripPiANSI(captured) != beforePaste && !piPaneLooksIdle(captured) {
@@ -1236,23 +1236,42 @@ func PaneReadyForInput(captured string) bool {
 }
 
 func piPaneEditorContainsPrompt(captured, prompt string) bool {
+	return piPaneEditorPromptMatchCount(captured, prompt) > 0
+}
+
+func piPaneEditorPromptMatchCount(captured, prompt string) int {
 	_, plainLines := piPromptEditorRegion(captured)
-	editor := piCompactDraftText(strings.Join(plainLines, ""))
 	target := piCompactDraftText(prompt)
-	if editor == "" || target == "" {
-		return false
+	if target == "" {
+		return 0
+	}
+	if len([]rune(target)) < 8 {
+		matches := 0
+		for _, line := range plainLines {
+			if piCompactDraftText(line) == target {
+				matches++
+			}
+		}
+		return matches
+	}
+	editor := piCompactDraftText(strings.Join(plainLines, ""))
+	if editor == "" {
+		return 0
 	}
 	if strings.Contains(editor, target) {
-		return true
+		return 1
 	}
 	// Long prompts can scroll their beginning outside the bounded editor
 	// region. Their suffix remains adjacent to the status bar and cursor.
 	targetRunes := []rune(target)
 	const signatureRunes = 64
 	if len(targetRunes) <= signatureRunes {
-		return false
+		return 0
 	}
-	return strings.Contains(editor, string(targetRunes[len(targetRunes)-signatureRunes:]))
+	if strings.Contains(editor, string(targetRunes[len(targetRunes)-signatureRunes:])) {
+		return 1
+	}
+	return 0
 }
 
 // ensurePiInputSubmitted is a best-effort recovery for the Pi TUI prompt
@@ -1644,7 +1663,7 @@ func piPaneShowsPromptDraft(captured, prompt string) bool {
 			continue
 		}
 		for _, promptLine := range promptLines {
-			if strings.Contains(compactLine, promptLine) {
+			if piCompactLineMatchesPrompt(compactLine, promptLine) {
 				if firstMatch == -1 {
 					firstMatch = i
 				}
@@ -1702,7 +1721,7 @@ func piComparablePromptLines(prompt string) []string {
 	for _, line := range strings.Split(stripPiANSI(prompt), "\n") {
 		compact := piCompactDraftText(line)
 		runes := []rune(compact)
-		if len(runes) < 8 {
+		if len(runes) == 0 {
 			continue
 		}
 		if len(runes) > 64 {
@@ -1717,6 +1736,16 @@ func piComparablePromptLines(prompt string) []string {
 		lines = append(lines, compact)
 	}
 	return lines
+}
+
+func piCompactLineMatchesPrompt(line, prompt string) bool {
+	// Short messages such as "hi" must match a complete editor row. A substring
+	// match mistakes the same letters inside stale text such as "thinking" for
+	// proof that the newly pasted draft is visible.
+	if len([]rune(prompt)) < 8 {
+		return line == prompt
+	}
+	return strings.Contains(line, prompt)
 }
 
 func piCompactDraftText(s string) string {
@@ -2204,7 +2233,11 @@ func piRandomHex(n int) string {
 func piMCPOutputGuardExtensionSource() string {
 	return `const DEFAULT_MAX_RESULT_CHARS = 20000;
 const DEFAULT_MAX_RESULT_LINES = 200;
-const DEFAULT_MAX_RESULT_LINE_CHARS = 48;
+// Preserve ordinary paths, URLs, SQL, and JSON fragments exactly. The old
+// 48-character limit inserted newlines into normal tool results, changing their
+// meaning. Very large single-line payloads remain bounded well below the total
+// result cap without corrupting everyday values.
+const DEFAULT_MAX_RESULT_LINE_CHARS = 4000;
 const DEFAULT_MAX_DETAILS_KEYS = 20;
 
 function envInt(name: string, fallback: number): number {

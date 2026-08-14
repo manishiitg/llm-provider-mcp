@@ -12,34 +12,26 @@
   ],
   "output": {
     "content_chunks": [
-      "I will call the echo_",
-      "contract tool with token A_0db30a74.",
-      "I will search for the echo_contract tool in the MCP server.",
-      "I will call api_bridge_echo_contract",
-      " with token A_0db30a74.",
-      "I will call api_bridge_echo_contract with token B_04921",
-      "05c.",
-      "PI_STREAM_A_0db30a74 PI_STREAM_",
-      "B_0492105c"
+      "Calling the echo_contract tool with token A_a4abbf8a.",
+      "Searching the api-bridge server tools.",
+      "Calling the api_bridge_echo_contract tool with token A_a4abbf8a.",
+      "Calling the api_bridge_echo_contract tool with token B_8c5434c8.",
+      "PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8"
     ],
-    "final": "PI_STREAM_A_0db30a74 PI_STREAM_B_0492105c",
-    "reassembled_message": "I will call the echo_contract tool with token A_0db30a74.I will search for the echo_contract tool in the MCP server.\nI will call api_bridge_echo_contract with token A_0db30a74.\nI will call api_bridge_echo_contract with token B_0492105c.\nPI_STREAM_A_0db30a74 PI_STREAM_B_0492105c",
+    "final": "PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
+    "reassembled_message": "Calling the echo_contract tool with token A_a4abbf8a.Searching the api-bridge server tools.\nCalling the api_bridge_echo_contract tool with token A_a4abbf8a.\nCalling the api_bridge_echo_contract tool with token B_8c5434c8.\nPI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
     "stream_order": [
       "text",
-      "text",
       "tool",
       "text",
       "tool",
       "text",
-      "text",
       "tool",
       "text",
-      "text",
       "tool",
-      "text",
       "text"
     ],
-    "streamed_content": "I will call the echo_contract tool with token A_0db30a74.I will search for the echo_contract tool in the MCP server.I will call api_bridge_echo_contract with token A_0db30a74.I will call api_bridge_echo_contract with token B_0492105c.PI_STREAM_A_0db30a74 PI_STREAM_B_0492105c",
+    "streamed_content": "Calling the echo_contract tool with token A_a4abbf8a.Searching the api-bridge server tools.Calling the api_bridge_echo_contract tool with token A_a4abbf8a.Calling the api_bridge_echo_contract tool with token B_8c5434c8.PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
     "tool_names": [
       "mcp",
       "mcp",

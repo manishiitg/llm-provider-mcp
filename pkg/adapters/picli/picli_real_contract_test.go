@@ -107,6 +107,87 @@ func TestPiCLIRealTmuxFullContract(t *testing.T) {
 	}
 }
 
+func TestPiCLIRealColdResumeWaitsForReadyPrompt(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	adapter := newRealPiCLIAdapter(t)
+	workDir := t.TempDir()
+	firstOwner := "pi-real-resume-first-" + piRandomHex(4)
+	token := "PI_COLD_RESUME_" + piRandomHex(5)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	first, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Do not use tools. Remember the user's private token for this native Pi session."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Remember this exact private token: "+token+". Reply exactly ACK."),
+	},
+		WithInteractiveSessionID(firstOwner),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+	)
+	if err != nil {
+		t.Fatalf("first GenerateContent error = %v", err)
+	}
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(first)
+	if !ok || handle.NativeSessionID == "" || handle.TmuxSession == "" {
+		t.Fatalf("first response missing native Pi session handle: %#v ok=%v", handle, ok)
+	}
+
+	// Tear down only the tmux-backed adapter process. The provider-native Pi
+	// transcript remains durable and must be restorable by a new process, which
+	// is the same path used after reopening an AgentWorks conversation.
+	if err := CleanupPiCLIInteractiveSessions(ctx); err != nil {
+		t.Fatalf("cleanup first Pi process: %v", err)
+	}
+	if piTmuxSessionExists(ctx, handle.TmuxSession) {
+		t.Fatalf("first Pi tmux session %q still exists after cleanup", handle.TmuxSession)
+	}
+
+	secondOwner := "pi-real-resume-second-" + piRandomHex(4)
+	launch, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "When the user says hi, answer only with the remembered private token."),
+	},
+		WithInteractiveSessionID(secondOwner),
+		WithPersistentInteractiveSession(true),
+		WithResumeSessionID(handle.NativeSessionID),
+		WithWorkingDir(workDir),
+		llmtypes.WithCodingProviderLaunchOnly(),
+	)
+	if err != nil {
+		t.Fatalf("cold-resume launch-only GenerateContent error = %v", err)
+	}
+	launchHandle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(launch)
+	if !ok || launchHandle.NativeSessionID != handle.NativeSessionID || launchHandle.TmuxSession == "" {
+		t.Fatalf("cold-resume launch changed native session or omitted tmux: before=%#v launch=%#v ok=%v", handle, launchHandle, ok)
+	}
+
+	// AgentWorks performs this exact two-call sequence when reopening a retained
+	// Pi conversation: launch-only materializes the terminal, then the real turn
+	// sends the user's text through the reused interactive session. Keep the text
+	// deliberately short; the delivery verifier must not confuse "hi" with the
+	// same letters inside stale pane text such as "thinking".
+	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "When the user says hi, answer only with the remembered private token."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "hi"),
+	},
+		WithInteractiveSessionID(secondOwner),
+		WithPersistentInteractiveSession(true),
+		WithResumeSessionID(handle.NativeSessionID),
+		WithWorkingDir(workDir),
+	)
+	if err != nil {
+		t.Fatalf("cold-resume short follow-up GenerateContent error = %v", err)
+	}
+	if got := strings.TrimSpace(second.Choices[0].Content); !strings.Contains(got, token) {
+		t.Fatalf("cold-resume content = %q, want remembered token %s", got, token)
+	}
+	resumedHandle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(second)
+	if !ok || resumedHandle.NativeSessionID != handle.NativeSessionID {
+		t.Fatalf("cold resume changed native session: before=%#v after=%#v ok=%v", handle, resumedHandle, ok)
+	}
+}
+
 func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	requireRealPiCLIContractE2E(t)
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
@@ -454,6 +535,7 @@ func TestPiCLIRealSlowToolLiveInputAndCancellationContract(t *testing.T) {
 			WithPersistentInteractiveSession(true),
 			WithWorkingDir(workDir),
 			WithMCPConfig(mcpConfig),
+			WithBridgeOnlyTools(true),
 		)
 		out := piRealResult{err: err}
 		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
@@ -574,6 +656,7 @@ func TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing
 			WithPersistentInteractiveSession(true),
 			WithWorkingDir(workDir),
 			WithMCPConfig(mcpConfig),
+			WithBridgeOnlyTools(true),
 		)
 		out := piRealResult{err: err}
 		if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
