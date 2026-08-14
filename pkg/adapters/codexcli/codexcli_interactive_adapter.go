@@ -153,6 +153,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		})
 		return nil, err
 	}
+	c.logger.Debugf("codex interactive startup timing owner=%s stage=acquire created=%v elapsed=%s total=%s", ownerSessionID, created, time.Since(acquireStart).Round(time.Millisecond), time.Since(turnStart).Round(time.Millisecond))
 	tmuxSessionName = session.tmuxSessionName
 	tmuxstartup.Publish(callCtx, opts.StreamChan, "codex-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
 		"codex_interactive_session": session.tmuxSessionName,
@@ -179,6 +180,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s with launch prompt", ownerSessionID, session.tmuxSessionName)
 		} else {
 			c.logger.Debugf("codex interactive acquired new session owner=%s tmux=%s; waiting for startup prompt", ownerSessionID, session.tmuxSessionName)
+			startupWaitStart := time.Now()
 			waitForStartup := waitForCodexPrompt
 			if !launchOnly {
 				// Codex exposes its composer before MCP startup has gone quiet. The
@@ -195,16 +197,26 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 				cleanupFailedCodexInteractiveSession(failedSession)
 				return nil, err
 			}
-			c.logger.Debugf("codex interactive startup prompt ready owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
+			c.logger.Debugf("codex interactive startup timing owner=%s stage=prompt_ready tmux=%s launch_only=%v elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, launchOnly, time.Since(startupWaitStart).Round(time.Millisecond), time.Since(turnStart).Round(time.Millisecond))
 		}
 	} else {
 		c.logger.Debugf("codex interactive reused initialized session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	}
 
 	if launchOnly {
+		launchFinalizeStart := time.Now()
 		tmuxinput.MarkReady(session.tmuxSessionName)
+		markReadyElapsed := time.Since(launchFinalizeStart)
 		var lastSnapshot string
-		streamCodexTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
+		snapshotStart := time.Now()
+		// A launch-only call has not completed a model turn yet, so there is no
+		// current token usage to publish. Avoid walking every historical Codex
+		// rollout merely to render the initial terminal pane; on a large session
+		// archive that scan added multiple seconds to an otherwise millisecond
+		// launch finalization.
+		streamCodexTerminalPaneSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
+		snapshotElapsed := time.Since(snapshotStart)
+		handleStart := time.Now()
 		additional := map[string]interface{}{
 			"provider":                     "codex-cli",
 			"codex_mode":                   "interactive",
@@ -226,6 +238,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			Model:           handleModel,
 			Status:          llmtypes.CodingProviderSessionStatusIdle,
 		})
+		c.logger.Debugf("codex interactive startup timing owner=%s stage=launch_finalize tmux=%s mark_ready=%s snapshot=%s handle=%s total=%s", ownerSessionID, session.tmuxSessionName, markReadyElapsed.Round(time.Millisecond), snapshotElapsed.Round(time.Millisecond), time.Since(handleStart).Round(time.Millisecond), time.Since(turnStart).Round(time.Millisecond))
 		return &llmtypes.ContentResponse{
 			Choices: []*llmtypes.ContentChoice{{
 				Content:        "",
@@ -336,20 +349,27 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		}
 		return nil, err
 	}
-	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
-	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
-		func(ctx context.Context) (string, error) {
-			snap, err := captureCodexPane(ctx, session.tmuxSessionName)
-			if err != nil {
-				return "", err
-			}
-			return strings.TrimRight(stripCodexANSI(snap), "\n"), nil
-		},
-		map[string]interface{}{
-			"tmux_session":              session.tmuxSessionName,
-			"codex_interactive_session": session.tmuxSessionName,
-		},
-	)
+	// A bounded session is about to be torn down, so retain the grace window
+	// that captures late terminal output before destruction. Persistent chat
+	// sessions remain live and have their own terminal stream; waiting for two
+	// unchanged two-second polls here only delays the structured final answer.
+	if !persistent {
+		llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
+			func(ctx context.Context) (string, error) {
+				snap, err := captureCodexPane(ctx, session.tmuxSessionName)
+				if err != nil {
+					return "", err
+				}
+				return strings.TrimRight(stripCodexANSI(snap), "\n"), nil
+			},
+			map[string]interface{}{
+				"tmux_session":              session.tmuxSessionName,
+				"codex_interactive_session": session.tmuxSessionName,
+			},
+		)
+	} else {
+		c.logger.Debugf("codex interactive trailing capture skipped owner=%s tmux=%s reason=persistent_session", ownerSessionID, session.tmuxSessionName)
+	}
 	if opts.StreamChan != nil {
 		close(opts.StreamChan)
 	}
@@ -465,6 +485,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
 func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ownerSessionID string, opts *llmtypes.CallOptions, systemPrompt, initialPrompt string) (*codexInteractiveSession, bool, error) {
+	acquireStart := time.Now()
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
@@ -494,6 +515,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		// map only; grab the pointer under it, release it, then take the
 		// per-session lock. Holding a pointer keeps the session valid even if a
 		// concurrent teardown removes it from the map (initErr guards that).
+		sessionLockStart := time.Now()
 		session.mu.Lock()
 		if session.cliSecurityFingerprint != securityFingerprint {
 			session.mu.Unlock()
@@ -509,7 +531,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			session.idleTimer = nil
 		}
 		session.lastUsed = time.Now()
-		c.logger.Debugf("codex interactive reusing session owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
+		c.logger.Debugf("codex interactive startup timing owner=%s stage=reuse_lock tmux=%s elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, time.Since(sessionLockStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 		return session, false, nil
 	}
 
@@ -525,6 +547,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// additive and useful when downstream tooling reads codex's on-disk
 	// conventions directly.
 	c.logger.Debugf("codex interactive building args owner=%s tmux=%s workingDir=%q", ownerSessionID, session.tmuxSessionName, workingDir)
+	argsStart := time.Now()
 	args, systemPromptTempFile, projectCleanup, err := c.buildCodexInteractiveArgs(opts, systemPrompt)
 	if err != nil {
 		session.initErr = err
@@ -532,7 +555,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		removeCodexPersistentSession(ownerSessionID, session)
 		return nil, false, err
 	}
-	c.logger.Debugf("codex interactive built args owner=%s args=%d", ownerSessionID, len(args))
+	c.logger.Debugf("codex interactive startup timing owner=%s stage=build_args args=%d elapsed=%s total=%s", ownerSessionID, len(args), time.Since(argsStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 	args = appendCodexInitialPromptArgs(args, opts, initialPrompt)
 	session.systemPromptTempFile = systemPromptTempFile
 	session.projectInstructionCleanup = projectCleanup
@@ -548,6 +571,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	}
 	c.logger.Debugf("codex interactive starting tmux owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	runtimeReadPaths := []string{systemPromptTempFile}
+	runtimePathsStart := time.Now()
 	mcpRuntimePaths, err := strictCodexMCPRuntimePaths(opts)
 	if err != nil {
 		session.initErr = err
@@ -563,6 +587,8 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, false, err
 	}
 	runtimeReadPaths = append(runtimeReadPaths, mcpRuntimePaths...)
+	c.logger.Debugf("codex interactive startup timing owner=%s stage=runtime_paths elapsed=%s total=%s", ownerSessionID, time.Since(runtimePathsStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
+	tmuxStart := time.Now()
 	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths); err != nil {
 		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
@@ -578,7 +604,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		return nil, false, err
 	}
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
-	c.logger.Debugf("codex interactive started owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
+	c.logger.Debugf("codex interactive startup timing owner=%s stage=start_tmux tmux=%s elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, time.Since(tmuxStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 	return session, true, nil
 }
 
@@ -3811,6 +3837,10 @@ func (c *CodexCLIAdapter) GetStatusLine(ctx context.Context, sessionID string) (
 
 func streamCodexTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
 	streamCodexStatusLine(ctx, sessionName, streamChan)
+	return streamCodexTerminalPaneSnapshot(ctx, sessionName, streamChan, lastTerminalSnapshot)
+}
+
+func streamCodexTerminalPaneSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
 	snapshot, err := captureCodexPaneForDisplay(ctx, sessionName)
 	if err != nil {
 		return false
