@@ -66,6 +66,10 @@ type cursorEventUsage struct {
 type cursorStructuredToolCall struct {
 	Name string
 	Args string
+	// Result is only present on the "completed" event. Cursor sends the call's
+	// arguments on "started" and its result on "completed", in separate
+	// payloads — so a completed envelope generally carries a result and no args.
+	Result string
 }
 
 // cursorStructuredToolCallDetails translates Cursor's stream-json tool_call
@@ -124,9 +128,35 @@ func cursorStructuredToolCallDetails(raw json.RawMessage) cursorStructuredToolCa
 		if len(argValue) == 0 && args != nil {
 			argValue, _ = json.Marshal(args)
 		}
-		return cursorStructuredToolCall{Name: name, Args: compactCursorStructuredJSON(argValue)}
+		return cursorStructuredToolCall{
+			Name:   name,
+			Args:   compactCursorStructuredJSON(argValue),
+			Result: cursorStructuredToolResult(call["result"]),
+		}
 	}
 	return cursorStructuredToolCall{}
+}
+
+// cursorStructuredToolResult renders a completed tool call's result for the
+// ToolResult stream field the UI shows under "Developer details". Cursor wraps
+// it differently per tool ({"content":"..."} for MCP calls, tool-shaped objects
+// for native ones), so unwrap the common single-string shapes and fall back to
+// compact JSON rather than guessing at every tool's schema.
+func cursorStructuredToolResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var direct string
+	if json.Unmarshal(raw, &direct) == nil {
+		return strings.TrimSpace(direct)
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil {
+		if unwrapped := cursorStructuredToolString(object, "content", "output", "text", "stdout", "result"); unwrapped != "" {
+			return unwrapped
+		}
+	}
+	return compactCursorStructuredJSON(raw)
 }
 
 func cursorStructuredToolString(values map[string]json.RawMessage, keys ...string) string {
@@ -482,9 +512,13 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						ToolArgs:   details.Args,
 					})
 				case "completed":
+					// Name and args come from the "started" payload; the completed
+					// one carries the result and usually repeats neither, so parse
+					// it separately instead of overwriting the cached details.
+					completed := cursorStructuredToolCallDetails(event.ToolCall)
 					details := toolCalls[event.CallID]
 					if details.Name == "" {
-						details = cursorStructuredToolCallDetails(event.ToolCall)
+						details = completed
 					}
 					emitChunk(llmtypes.StreamChunk{
 						Type:         llmtypes.StreamChunkTypeToolCallEnd,
@@ -492,6 +526,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						ToolName:     details.Name,
 						ToolCallID:   event.CallID,
 						ToolArgs:     details.Args,
+						ToolResult:   completed.Result,
 						ToolDuration: toolclock.Elapsed(toolStartedAt, event.CallID),
 					})
 				}

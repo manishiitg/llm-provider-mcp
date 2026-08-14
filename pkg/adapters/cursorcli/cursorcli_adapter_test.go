@@ -129,6 +129,43 @@ func TestCursorStructuredToolCallDetails(t *testing.T) {
 	}
 }
 
+// The completed payload is where a tool's OUTPUT lives, and it was being
+// dropped: the adapter only read name/args, so ToolResult reached the UI empty
+// and the conversation showed a tool's input with no result — unlike
+// claude-code and codex, which both populate it.
+func TestCursorStructuredToolCallResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+	}{
+		{
+			name: "mcp result unwraps content",
+			raw:  `{"mcpToolCall":{"result":{"content":"ok"}}}`,
+			want: "ok",
+		},
+		{
+			name: "plain string result",
+			raw:  `{"shellToolCall":{"result":"hello\n"}}`,
+			want: "hello",
+		},
+		{
+			name: "structured result falls back to compact json",
+			raw:  `{"shellToolCall":{"result":{"exitCode":0,"durationMs":12}}}`,
+			want: `{"exitCode":0,"durationMs":12}`,
+		},
+		{
+			name: "started payload has no result",
+			raw:  `{"shellToolCall":{"args":{"command":"pwd"}}}`,
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cursorStructuredToolCallDetails(json.RawMessage(tc.raw)).Result; got != tc.want {
+				t.Fatalf("result = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCursorAuthPromptDetectionReturnsTypedError(t *testing.T) {
 	panes := []string{
 		"Cursor Agent\n\nYou are not logged in to Cursor.\nRun cursor-agent login to continue.\n",
