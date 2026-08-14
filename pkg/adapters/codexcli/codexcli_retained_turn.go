@@ -7,8 +7,10 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// ReadRetainedTurnMessages reconstructs one directly-injected turn from the
-// Codex rollout sidecar owned by an already-running interactive session.
+// ReadRetainedTurnMessages returns the committed final answer for one
+// directly-injected turn. Intermediate assistant commentary is deliberately
+// excluded: Codex can emit commentary before calling tools, and treating that
+// text as completion ends the retained turn while the CLI is still working.
 // It does not start, resume, or otherwise mutate the coding-agent process.
 func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
@@ -22,5 +24,11 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 	session.mu.Lock()
 	workingDir := session.workingDir
 	session.mu.Unlock()
-	return readCodexTranscriptMessages(turnStart, workingDir)
+	finalText, _ := readCodexTranscriptFinalAssistantText(turnStart, workingDir)
+	if strings.TrimSpace(finalText) == "" {
+		return nil
+	}
+	return []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeAI, finalText),
+	}
 }
