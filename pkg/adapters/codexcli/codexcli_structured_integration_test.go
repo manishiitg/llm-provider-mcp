@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -229,7 +230,9 @@ func TestCodexCLIStructuredMCPBridge(t *testing.T) {
 
 	starts := map[string]llmtypes.StreamChunk{}
 	ends := map[string]llmtypes.StreamChunk{}
+	var chunks []llmtypes.StreamChunk
 	for chunk := range stream {
+		chunks = append(chunks, chunk)
 		switch chunk.Type {
 		case llmtypes.StreamChunkTypeToolCallStart:
 			if strings.TrimSpace(chunk.ToolName) == "" {
@@ -273,6 +276,14 @@ func TestCodexCLIStructuredMCPBridge(t *testing.T) {
 	if !matched {
 		t.Fatalf("no named echo_contract start/end pair; starts=%+v ends=%+v", starts, ends)
 	}
+	testcontracts.AssertToolReceiptContract(t, testcontracts.ToolReceiptCase{
+		Provider:          "codex-cli structured",
+		Chunks:            chunks,
+		FinalAnswer:       content,
+		ArgumentSentinel:  bridgeToken,
+		ResultSentinel:    want,
+		ExpectedToolNames: []string{"echo_contract"},
+	})
 	t.Logf("MCP bridge: named echo_contract start/end pair preserved; content contains bridge result")
 }
 

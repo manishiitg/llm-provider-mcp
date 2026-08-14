@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -231,14 +232,9 @@ func TestPiCLIStructuredMCPBridge(t *testing.T) {
 		errCh <- err
 	}()
 
-	var hasToolStart, hasToolEnd bool
+	var chunks []llmtypes.StreamChunk
 	for chunk := range stream {
-		switch chunk.Type {
-		case llmtypes.StreamChunkTypeToolCallStart:
-			hasToolStart = true
-		case llmtypes.StreamChunkTypeToolCallEnd:
-			hasToolEnd = true
-		}
+		chunks = append(chunks, chunk)
 	}
 
 	if err := <-errCh; err != nil {
@@ -250,10 +246,14 @@ func TestPiCLIStructuredMCPBridge(t *testing.T) {
 	if !strings.Contains(content, want) {
 		t.Fatalf("content = %q, want bridge tool result %q", content, want)
 	}
-	if !hasToolStart || !hasToolEnd {
-		t.Logf("warning: expected tool start/end chunks, got start=%v end=%v", hasToolStart, hasToolEnd)
-	}
-	t.Logf("MCP bridge: tool_start=%v tool_end=%v content contains bridge result", hasToolStart, hasToolEnd)
+	testcontracts.AssertToolReceiptContract(t, testcontracts.ToolReceiptCase{
+		Provider:         "pi-cli structured",
+		Chunks:           chunks,
+		FinalAnswer:      content,
+		ArgumentSentinel: bridgeToken,
+		ResultSentinel:   want,
+	})
+	t.Logf("MCP bridge retained tool identity, arguments, result, and final content")
 }
 
 // TestPiCLIStructuredBridgeOnly proves the structured-transport counterpart to

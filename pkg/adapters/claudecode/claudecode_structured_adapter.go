@@ -71,7 +71,18 @@ func claudeToolResultText(raw json.RawMessage) string {
 		for _, blk := range blocks {
 			b.WriteString(blk.Text)
 		}
-		return b.String()
+		if b.Len() > 0 {
+			return b.String()
+		}
+		// ToolSearch and other deferred tools return typed blocks such as
+		// tool_reference rather than text. An empty string loses the entire
+		// successful result and makes the normalized receipt indistinguishable
+		// from a provider that never supplied one. Preserve the structured value
+		// when no text block exists.
+		var compact bytes.Buffer
+		if json.Compact(&compact, raw) == nil {
+			return compact.String()
+		}
 	}
 	return string(raw)
 }

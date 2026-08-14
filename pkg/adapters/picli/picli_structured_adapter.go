@@ -29,7 +29,60 @@ type piJSONEvent struct {
 	AssistantMessageEvt *piAssistantEvent `json:"assistantMessageEvent,omitempty"`
 	ToolCallID          string            `json:"toolCallId,omitempty"`
 	ToolName            string            `json:"toolName,omitempty"`
+	Args                json.RawMessage   `json:"args,omitempty"`
+	Result              json.RawMessage   `json:"result,omitempty"`
+	IsError             bool              `json:"isError,omitempty"`
 	Message             *piJSONMessage    `json:"message,omitempty"`
+}
+
+type piStructuredToolCall struct {
+	Name string
+	Args string
+}
+
+func compactPiStructuredJSON(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return ""
+	}
+	var direct string
+	if json.Unmarshal(raw, &direct) == nil {
+		return direct
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) == nil {
+		return compact.String()
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func piStructuredToolStartChunk(event piJSONEvent) (llmtypes.StreamChunk, piStructuredToolCall) {
+	call := piStructuredToolCall{
+		Name: strings.TrimSpace(event.ToolName),
+		Args: compactPiStructuredJSON(event.Args),
+	}
+	return llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeToolCallStart,
+		Content:    call.Name,
+		ToolName:   call.Name,
+		ToolCallID: event.ToolCallID,
+		ToolArgs:   call.Args,
+	}, call
+}
+
+func piStructuredToolEndChunk(event piJSONEvent, call piStructuredToolCall, duration time.Duration) llmtypes.StreamChunk {
+	name := strings.TrimSpace(event.ToolName)
+	if name == "" {
+		name = call.Name
+	}
+	return llmtypes.StreamChunk{
+		Type:         llmtypes.StreamChunkTypeToolCallEnd,
+		Content:      event.ToolCallID,
+		ToolName:     name,
+		ToolCallID:   event.ToolCallID,
+		ToolArgs:     call.Args,
+		ToolResult:   compactPiStructuredJSON(event.Result),
+		ToolDuration: duration,
+	}
 }
 
 type piAssistantEvent struct {
@@ -225,6 +278,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// timing summary's total_duration_ms. A turn then looked entirely
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
+	toolCalls := map[string]piStructuredToolCall{}
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -256,18 +310,16 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				}
 			case "tool_execution_start":
 				toolStartedAt[event.ToolCallID] = time.Now()
-				emitChunk(llmtypes.StreamChunk{
-					Type:       llmtypes.StreamChunkTypeToolCallStart,
-					Content:    event.ToolName,
-					ToolCallID: event.ToolCallID,
-				})
+				chunk, call := piStructuredToolStartChunk(event)
+				toolCalls[event.ToolCallID] = call
+				emitChunk(chunk)
 			case "tool_execution_end":
-				emitChunk(llmtypes.StreamChunk{
-					Type:         llmtypes.StreamChunkTypeToolCallEnd,
-					Content:      event.ToolCallID,
-					ToolCallID:   event.ToolCallID,
-					ToolDuration: toolclock.Elapsed(toolStartedAt, event.ToolCallID),
-				})
+				emitChunk(piStructuredToolEndChunk(
+					event,
+					toolCalls[event.ToolCallID],
+					toolclock.Elapsed(toolStartedAt, event.ToolCallID),
+				))
+				delete(toolCalls, event.ToolCallID)
 			case "turn_end":
 				// The LAST turn_end's accumulated text is the real final answer —
 				// a tool-use turn's turn_end has empty/no final text (the follow-up

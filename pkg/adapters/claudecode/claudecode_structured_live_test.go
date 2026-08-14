@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/testcontracts"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -92,6 +93,10 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+	bridgeToken := "CLAUDE_STRUCTURED_RECEIPT_" + randomHex(4)
+	want := "BRIDGE_TOOL_OK_" + bridgeToken
+	mcpServerPath := writeClaudeInteractiveContractMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)
 
 	streamChan := make(chan llmtypes.StreamChunk, 64)
 	var chunks []llmtypes.StreamChunk
@@ -103,12 +108,14 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 		}
 	}()
 
-	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use the Bash tool for every request. Do not answer without running a command."}}},
-		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Run: echo lifecycle_probe — then tell me what it printed."}}},
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Use only declared MCP tools. Keep the final answer concise."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Call the api-bridge echo_contract MCP tool with token %s. Then reply exactly with the tool result text.", bridgeToken)}}},
 	},
+		WithMCPConfig(mcpConfig),
 		WithClaudeStructuredTransport(true),
-		WithAllowedTools("Bash"),
+		WithClaudeCodeTools(""),
+		WithAllowedTools("mcp__api-bridge__echo_contract"),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	<-done
@@ -167,6 +174,18 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 	if !matched {
 		t.Errorf("no ToolCallStart/ToolCallEnd pair shared a matching ToolCallID: starts=%+v ends=%+v", starts, ends)
 	}
+	final := ""
+	if resp != nil && len(resp.Choices) == 1 {
+		final = strings.TrimSpace(resp.Choices[0].Content)
+	}
+	testcontracts.AssertToolReceiptContract(t, testcontracts.ToolReceiptCase{
+		Provider:          "claude-code structured",
+		Chunks:            chunks,
+		FinalAnswer:       final,
+		ArgumentSentinel:  bridgeToken,
+		ResultSentinel:    want,
+		ExpectedToolNames: []string{"mcp__api-bridge__echo_contract", "echo_contract"},
+	})
 	t.Logf("tool lifecycle verified: %d start(s), %d end(s), matched=%v, first end duration=%v", len(starts), len(ends), matched, ends[0].ToolDuration)
 }
 

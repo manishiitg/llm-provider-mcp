@@ -76,4 +76,3 @@ func runVertexStreamingCancellationTest(cmd *cobra.Command, args []string) {
 
 	shared.RunStreamingCancellationTest(llmInstance, modelID)
 }
-
