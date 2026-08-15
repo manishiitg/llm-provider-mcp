@@ -159,6 +159,22 @@ func applyPiJSONUsage(message *piJSONMessage, totalUsage *llmtypes.Usage, cacheW
 	*cacheWriteTokens = u.CacheWrite
 }
 
+// resolveStructuredProviderModel picks the provider/model a structured turn
+// will actually run, honoring the caller's provider override exactly as the
+// interactive path does.
+//
+// Extracted so a test can assert THIS decision rather than re-deriving it from
+// the same helpers the adapter uses -- a test that calls
+// resolvePiProviderModel itself passes whether or not the adapter bothers to
+// consult the override, which is how the bug survived review in the first
+// place.
+func (p *PiCLIAdapter) resolveStructuredProviderModel(opts *llmtypes.CallOptions) (string, string) {
+	// Hardcoding "" here ignored the override, starting the wrong provider AND
+	// -- because this same value selects the API-key variable names --
+	// injecting the wrong credentials for whatever ran.
+	return resolvePiProviderModel(p.GetModelID(), piProviderFromOptions(opts))
+}
+
 // generateContentStructured drives `pi --print --mode json` — per-turn,
 // one-shot, no tmux dependency. See MetadataKeyStructuredTransport doc comment
 // for when to use this instead of the tmux interactive transport (tmux stays
@@ -243,7 +259,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// (which model pi actually runs) and the API key env var names (which
 	// credential that provider expects). Deriving them separately is how they
 	// drift apart.
-	provider, model := resolvePiProviderModel(p.modelID, "")
+	provider, model := p.resolveStructuredProviderModel(opts)
 	args := buildPiStructuredArgs(provider, model, sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
 	if p.logger != nil {
 		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)
