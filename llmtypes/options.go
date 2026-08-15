@@ -281,6 +281,16 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 	return isScopedCodingAgentMCPEnvironmentKey(key)
 }
 
+// isScopedCredentialEnvironmentKey is the subset of the scoped namespace that
+// carries per-child credentials and configuration, as opposed to the MCP
+// transport routes. Only this subset is scrubbed when a scoped environment is
+// declared -- see MergeCodingAgentSecretEnvironment for why the routes are
+// deliberately excluded.
+func isScopedCredentialEnvironmentKey(key string) bool {
+	key = strings.TrimSpace(key)
+	return strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_")
+}
+
 func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
 	switch key {
 	case "MCP_API_URL", "MCP_API_TOKEN", "MCP_SESSION_ID", "MCP_MCP", "MCP_CUSTOM", "MCP_VIRTUAL", "MCP_AUTH":
@@ -306,6 +316,22 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
 // environment without mutating the caller's slice.
+//
+// When a scoped environment is declared it is AUTHORITATIVE for the credential
+// namespace: an ambient SECRET_*/VAR_* the caller did not declare for this
+// child is dropped rather than inherited. Overlaying alone made the isolation
+// guarantee untrue at the process boundary -- a child could still read whatever
+// credentials happened to be in the launcher's environment, which is exactly
+// what scoping is supposed to prevent.
+//
+// MCP_* transport routes are deliberately NOT scrubbed. They address the
+// bridge rather than granting access to anything, and this layer has already
+// been burned once by over-filtering them: a previous version admitted only
+// SECRET_*, silently dropped the routes, and the child simply never saw
+// MCP_CUSTOM with nothing erroring (see withCodingAgentSecretEnvironment in
+// mcpagent). Scrubbing an undeclared route would reintroduce that exact silent
+// failure for any caller that relies on the launcher to set them. Tighten this
+// only alongside a check that every caller declares its own routes.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
 	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
 	if len(secrets) == 0 {
@@ -315,6 +341,10 @@ func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []strin
 	for _, entry := range base {
 		key, _, found := strings.Cut(entry, "=")
 		if found && secrets[key] != "" {
+			continue
+		}
+		if found && isScopedCredentialEnvironmentKey(key) {
+			// Declared but absent from this child's scope => not for it.
 			continue
 		}
 		out = append(out, entry)
