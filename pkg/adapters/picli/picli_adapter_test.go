@@ -108,9 +108,10 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 		DefaultModelID,
 		ModelGemini35FlashLite,
 		ModelGemini31ProPreview,
-		ModelMiniMaxM27,
-		ModelGLM52,
-		ModelKimiK27Code,
+		ModelMiniMaxM3,
+		ModelGLM53,
+		ModelKimiK3,
+		ModelGrok46,
 	}
 	if len(models) != len(want) {
 		t.Fatalf("GetAllPiCLIModels() returned %d models, want %d", len(models), len(want))

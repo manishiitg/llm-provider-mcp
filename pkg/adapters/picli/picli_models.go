@@ -5,18 +5,20 @@ import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 const (
 	ModelGemini35FlashLite  = "google/gemini-3.5-flash-lite"
 	ModelGemini31ProPreview = "google/gemini-3.1-pro-preview"
-	ModelMiniMaxM27         = "minimax/MiniMax-M2.7"
-	ModelGLM52              = "zai/glm-5.2"
-	ModelKimiK27Code        = "moonshotai/kimi-k2.7-code"
+	ModelMiniMaxM3          = "minimax/MiniMax-M3"
+	ModelGLM53              = "zai/glm-5.3"
+	ModelKimiK3             = "moonshotai/kimi-k3"
+	ModelGrok46             = "xai/grok-4.6"
 )
 
 var knownPiCLIModels = []string{
 	DefaultModelID,
 	ModelGemini35FlashLite,
 	ModelGemini31ProPreview,
-	ModelMiniMaxM27,
-	ModelGLM52,
-	ModelKimiK27Code,
+	ModelMiniMaxM3,
+	ModelGLM53,
+	ModelKimiK3,
+	ModelGrok46,
 }
 
 // GetAllPiCLIModels returns the frontend-visible Pi CLI routed model selectors.
@@ -37,14 +39,18 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "Pi CLI (Gemini 3.5 Flash-Lite)"
 		case ModelGemini31ProPreview:
 			meta.ModelName = "Pi CLI (Gemini 3.1 Pro Preview)"
-		case ModelMiniMaxM27:
-			meta.ModelName = "Pi CLI (MiniMax M2.7)"
-			meta.ContextWindow = 204800
-		case ModelGLM52:
-			meta.ModelName = "Pi CLI (GLM 5.2)"
-		case ModelKimiK27Code:
-			meta.ModelName = "Pi CLI (Kimi K2.7 Code)"
-			meta.ContextWindow = 262144
+		case ModelMiniMaxM3:
+			// 1M-token context, same as the adapter default -- no override needed.
+			meta.ModelName = "Pi CLI (MiniMax M3)"
+		case ModelGLM53:
+			// 1M-token context, same as the adapter default -- no override needed.
+			meta.ModelName = "Pi CLI (GLM 5.3)"
+		case ModelKimiK3:
+			// 1M-token context, same as the adapter default -- no override needed.
+			meta.ModelName = "Pi CLI (Kimi K3)"
+		case ModelGrok46:
+			meta.ModelName = "Pi CLI (Grok 4.6)"
+			meta.ContextWindow = 500000
 		}
 		meta.ModelSelectionMode = "dynamic"
 
