@@ -610,7 +610,12 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	runtimeReadPaths = append(runtimeReadPaths, mcpRuntimePaths...)
 	c.logger.Debugf("codex interactive startup timing owner=%s stage=runtime_paths elapsed=%s total=%s", ownerSessionID, time.Since(runtimePathsStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 	tmuxStart := time.Now()
-	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths); err != nil {
+	// Codex was the one retained CLI outside the isolation contract: the
+	// structured path applies it, the other interactive adapters now do, and
+	// this launch did not.
+	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, opts)
+	scopedScrub := scopedLaunchScrub(nil, scopedEnv, opts)
+	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths, scopedEnv, unsetEnv, scopedScrub); err != nil {
 		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
@@ -1293,6 +1298,8 @@ func startCodexTmuxSession(
 	workingDir string,
 	policy *llmtypes.CLISecurityPolicy,
 	runtimeReadPaths []string,
+	scopedEnv, unsetEnv []string,
+	scrub *shelllaunch.ScopeScrub,
 ) error {
 	if workingDir != "" {
 		// Pre-trust workingDir in ~/.codex/config.toml so codex skips
@@ -1313,7 +1320,7 @@ func startCodexTmuxSession(
 			preTrustCodexWorkingDir(workingDir)
 		}
 	}
-	shellCommand, cleanupSandbox, err := clisandbox.PrepareCodexCommand(policy, args, workingDir, runtimeReadPaths)
+	shellCommand, cleanupSandbox, err := clisandbox.PrepareCodexCommandScoped(policy, args, workingDir, runtimeReadPaths, scopedEnv, unsetEnv, scrub)
 	if err != nil {
 		return fmt.Errorf("prepare Codex CLI security sandbox: %w", err)
 	}
