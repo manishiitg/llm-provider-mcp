@@ -226,3 +226,30 @@ func TestNoOptionAtAllRemainsPassthrough(t *testing.T) {
 		t.Fatalf("callers that never opted in must be unaffected: %v", got)
 	}
 }
+
+// The Go filter and the shell-matching policy are the same rule expressed
+// twice; if they drift, one boundary silently stops scrubbing something the
+// other still considers a credential.
+func TestScrubPolicyDataMatchesTheGoFilter(t *testing.T) {
+	for _, prefix := range ScopedCredentialPrefixes() {
+		if !isScopedCredentialEnvironmentKey(prefix + "ANYTHING") {
+			t.Fatalf("prefix %q is exported for shell scrubbing but the Go filter ignores it", prefix)
+		}
+	}
+	for _, name := range ScopedCredentialNames() {
+		if !isScopedCredentialEnvironmentKey(name) {
+			t.Fatalf("name %q is exported for shell scrubbing but the Go filter ignores it", name)
+		}
+	}
+	// Addresses must stay out of both.
+	for _, addr := range []string{"MCP_API_URL", "MCP_CUSTOM", "MCP_MCP", "MCP_VIRTUAL"} {
+		if isScopedCredentialEnvironmentKey(addr) {
+			t.Fatalf("%s is an address, not a credential", addr)
+		}
+		for _, name := range ScopedCredentialNames() {
+			if name == addr {
+				t.Fatalf("%s must not be in the shell scrub list", addr)
+			}
+		}
+	}
+}

@@ -1080,9 +1080,10 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux
 	// SERVER's environment, so it has to be executed here as export/unset too.
 	scopedEnv, scopedUnset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), finalEnv, opts)
+	scopedScrub := scopedLaunchScrub(finalEnv, scopedEnv, opts)
 	finalEnv = append(finalEnv, scopedEnv...)
 	unsetKeys := append(append([]string(nil), claudeAmbientAuthEnvKeys...), scopedUnset...)
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, unsetKeys)
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithScopedEnv(args, workingDir, finalEnv, unsetKeys, scopedScrub)
 	if err != nil {
 		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
 	}

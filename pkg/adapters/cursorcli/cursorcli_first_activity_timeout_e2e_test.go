@@ -34,7 +34,7 @@ func TestCursorInteractiveResponseFailsFastWhenNoActivityE2E(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := startCursorTmuxSession(ctx, sessionName, cmd, nil, nil, t.TempDir()); err != nil {
+	if err := startCursorTmuxSession(ctx, sessionName, cmd, nil, nil, nil, t.TempDir()); err != nil {
 		t.Fatalf("start static tmux session: %v", err)
 	}
 	t.Cleanup(func() {

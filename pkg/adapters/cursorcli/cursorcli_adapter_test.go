@@ -530,7 +530,7 @@ exit 0
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMUX_TEST_ARGS", argsPath)
 
-	if err := startCursorTmuxSession(context.Background(), "history-session", []string{"cursor-agent"}, nil, nil, t.TempDir()); err != nil {
+	if err := startCursorTmuxSession(context.Background(), "history-session", []string{"cursor-agent"}, nil, nil, nil, t.TempDir()); err != nil {
 		t.Fatalf("startCursorTmuxSession returned error: %v", err)
 	}
 	args, err := os.ReadFile(argsPath)

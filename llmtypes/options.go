@@ -401,6 +401,17 @@ func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOp
 	return export, unset
 }
 
+// ScopedCredentialPrefixes and ScopedCredentialNames expose the credential
+// namespace as data so a launch boundary can scrub it dynamically instead of
+// from a precomputed list. Keep them in step with
+// isScopedCredentialEnvironmentKey -- that function and these are the same
+// policy expressed for two consumers (Go filtering, and shell matching).
+func ScopedCredentialPrefixes() []string { return []string{"SECRET_", "VAR_"} }
+
+func ScopedCredentialNames() []string {
+	return []string{"MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID"}
+}
+
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
 // environment without mutating the caller's slice.
 //

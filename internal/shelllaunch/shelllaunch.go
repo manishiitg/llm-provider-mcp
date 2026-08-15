@@ -116,6 +116,13 @@ func CommandWithEnv(args []string, workingDir string, env []string) (string, fun
 // unsets ambient variables, installs the final values, removes the private
 // names, and execs the requested command.
 func CommandWithFinalEnv(args []string, workingDir string, env, unset []string) (string, func(), error) {
+	return CommandWithScopedEnv(args, workingDir, env, unset, nil)
+}
+
+// CommandWithScopedEnv is CommandWithFinalEnv plus a dynamic credential scrub
+// evaluated against the environment that actually exists at exec time. See
+// ScopeScrub for why an explicit unset list cannot cover tmux-server drift.
+func CommandWithScopedEnv(args []string, workingDir string, env, unset []string, scrub *ScopeScrub) (string, func(), error) {
 	entries, err := parseEnvEntries(env)
 	if err != nil {
 		return "", nil, err
@@ -124,7 +131,7 @@ func CommandWithFinalEnv(args []string, workingDir string, env, unset []string) 
 	if err != nil {
 		return "", nil, err
 	}
-	if len(entries) == 0 && len(unsetKeys) == 0 {
+	if len(entries) == 0 && len(unsetKeys) == 0 && scrub.empty() {
 		return Command(args, workingDir), func() {}, nil
 	}
 
@@ -133,7 +140,7 @@ func CommandWithFinalEnv(args []string, workingDir string, env, unset []string) 
 		workingDir = mustGetwd()
 	}
 
-	script := launchScriptWithFinalEnv(args, workingDir, entries, unsetKeys)
+	script := launchScriptWithFinalEnv(args, workingDir, entries, unsetKeys, scrub)
 	file, err := os.CreateTemp("", "mlp-coding-agent-launch-*.sh")
 	if err != nil {
 		return "", nil, fmt.Errorf("create launch script: %w", err)
@@ -284,7 +291,120 @@ func launchScript(args []string, workingDir string, entries []envEntry) string {
 	return b.String()
 }
 
-func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEntry, unsetKeys []string) string {
+// ScopeScrub describes a DYNAMIC credential scrub to run at the launch
+// boundary. It exists because an explicit unset list cannot be complete: the
+// caller enumerates keys from its own environment, while a tmux pane inherits
+// the long-lived tmux SERVER's environment. After a backend restart those sets
+// diverge, and precisely the drifted keys -- the ones the caller cannot see --
+// are the ones that leak. Matching by pattern against the environment that
+// actually exists at exec time removes the enumeration problem instead of
+// relocating it.
+//
+// Keep lists the names that must survive: the caller's declared scope plus any
+// credential the adapter derived itself. Everything else matching Prefixes or
+// Names is unset.
+type ScopeScrub struct {
+	Prefixes []string
+	Names    []string
+	Keep     []string
+}
+
+func (s *ScopeScrub) empty() bool {
+	return s == nil || (len(s.Prefixes) == 0 && len(s.Names) == 0)
+}
+
+// scrubScript emits POSIX sh that enumerates the REAL environment and unsets
+// every scoped credential outside Keep. awk's ENVIRON is used rather than
+// parsing `env` output, because a value containing a newline would otherwise
+// be misread as another variable name.
+func (s *ScopeScrub) scrubScript() string {
+	if s.empty() {
+		return ""
+	}
+	var patterns []string
+	for _, prefix := range s.Prefixes {
+		if prefix = strings.TrimSpace(prefix); prefix != "" {
+			patterns = append(patterns, prefix+"*")
+		}
+	}
+	for _, name := range s.Names {
+		if name = strings.TrimSpace(name); name != "" {
+			patterns = append(patterns, name)
+		}
+	}
+	if len(patterns) == 0 {
+		return ""
+	}
+	var keep []string
+	for _, name := range s.Keep {
+		if name = strings.TrimSpace(name); name != "" {
+			keep = append(keep, name)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("__mlp_keep=" + Quote(" "+strings.Join(keep, " ")+" ") + "; ")
+	b.WriteString("for __mlp_k in $(awk 'BEGIN{for (k in ENVIRON) print k}' </dev/null); do ")
+	b.WriteString("case \"$__mlp_k\" in ")
+	b.WriteString(strings.Join(patterns, "|"))
+	b.WriteString(") ")
+	b.WriteString("case \"$__mlp_keep\" in *\" $__mlp_k \"*) ;; *) unset \"$__mlp_k\" ;; esac ")
+	b.WriteString(";; esac; ")
+	b.WriteString("done; unset __mlp_k __mlp_keep; ")
+	return b.String()
+}
+
+// scrubScriptFish is the fish-shell form of scrubScript. fish has no `case`
+// and uses `set -e` rather than `unset`, so the same policy needs its own
+// rendering rather than a shared string.
+func (s *ScopeScrub) scrubScriptFish() string {
+	if s.empty() {
+		return ""
+	}
+	var patterns []string
+	for _, prefix := range s.Prefixes {
+		if prefix = strings.TrimSpace(prefix); prefix != "" {
+			patterns = append(patterns, prefix+"*")
+		}
+	}
+	for _, name := range s.Names {
+		if name = strings.TrimSpace(name); name != "" {
+			patterns = append(patterns, name)
+		}
+	}
+	if len(patterns) == 0 {
+		return ""
+	}
+	var keep []string
+	for _, name := range s.Keep {
+		if name = strings.TrimSpace(name); name != "" {
+			keep = append(keep, name)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("set -l __mlp_keep " + fishQuoteList(keep) + "; ")
+	b.WriteString("for __mlp_k in (set -n); ")
+	b.WriteString("if contains -- $__mlp_k $__mlp_keep; continue; end; ")
+	b.WriteString("switch $__mlp_k; case " + fishQuoteList(patterns) + "; set -e $__mlp_k; end; ")
+	b.WriteString("end; set -e __mlp_k __mlp_keep; ")
+	return b.String()
+}
+
+func fishQuoteList(values []string) string {
+	if len(values) == 0 {
+		// `contains -- $x` with an empty list is false, and an empty `case`
+		// matches nothing, which is the intended behavior for both uses.
+		return "''"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", `\'`)+"'")
+	}
+	return strings.Join(quoted, " ")
+}
+
+func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEntry, unsetKeys []string, scrub *ScopeScrub) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("rm -f \"$0\"\n")
@@ -305,6 +425,7 @@ func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEnt
 			var inner strings.Builder
 			switch kind {
 			case "fish":
+				inner.WriteString(scrub.scrubScriptFish())
 				for _, key := range unsetKeys {
 					inner.WriteString("set -e ")
 					inner.WriteString(key)
@@ -326,6 +447,7 @@ func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEnt
 				b.WriteString("\n")
 				return b.String()
 			default:
+				inner.WriteString(scrub.scrubScript())
 				for _, key := range unsetKeys {
 					inner.WriteString("unset ")
 					inner.WriteString(key)
@@ -349,6 +471,10 @@ func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEnt
 		}
 	}
 
+	if line := scrub.scrubScript(); line != "" {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	for _, key := range unsetKeys {
 		b.WriteString("unset ")
 		b.WriteString(key)

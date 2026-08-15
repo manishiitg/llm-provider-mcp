@@ -525,6 +525,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	// the launch script as export/unset. Without this, an interactive session
 	// silently ran with whatever credentials were ambient on the backend.
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
+	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
 	env = append(env, scopedEnv...)
 	launchScriptPath := filepath.Join(tempDir, "launch-pi.sh")
 	if err := writePiLaunchScript(launchScriptPath, args); err != nil {
@@ -535,7 +536,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	defer release()
-	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, unsetEnv, workingDir); err != nil {
+	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		return nil, err
 	}
 	tmuxinput.MarkStartingForOwner(sessionName, ownerSessionID)
@@ -1054,8 +1055,8 @@ func piSessionScopedMCPURL(apiURL, sessionID string) string {
 	return apiURL + "/s/" + strings.TrimSpace(sessionID)
 }
 
-func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env, unset []string, workingDir string) error {
-	tmuxArgs, cleanupLaunchScript, err := piTmuxNewSessionArgs(sessionName, args, env, unset, workingDir)
+func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env, unset []string, scrub *shelllaunch.ScopeScrub, workingDir string) error {
+	tmuxArgs, cleanupLaunchScript, err := piTmuxNewSessionArgs(sessionName, args, env, unset, scrub, workingDir)
 	if err != nil {
 		return err
 	}
@@ -1081,12 +1082,12 @@ func startPiTmuxSession(ctx context.Context, sessionName string, args []string, 
 	return nil
 }
 
-func piTmuxNewSessionArgs(sessionName string, args []string, env, unset []string, workingDir string) ([]string, func(), error) {
+func piTmuxNewSessionArgs(sessionName string, args []string, env, unset []string, scrub *shelllaunch.ScopeScrub, workingDir string) ([]string, func(), error) {
 	// CommandWithFinalEnv (not CommandWithEnv): the unset list must run inside
 	// the launch script, after shell startup files, so an ambient credential
 	// cannot be restored by a profile and cannot survive from the tmux server
 	// environment.
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, env, unset)
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithScopedEnv(args, workingDir, env, unset, scrub)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to prepare Pi launch environment: %w", err)
 	}
