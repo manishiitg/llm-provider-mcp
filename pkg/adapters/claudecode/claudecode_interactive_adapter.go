@@ -124,13 +124,17 @@ type claudeInteractivePersistentSession struct {
 	tmuxSessionName string
 	nativeSessionID string
 	authFingerprint string
-	workingDir      string
-	tempFiles       []string
-	idleTimer       *time.Timer
-	initErr         error
-	createdAt       time.Time
-	lastUsed        time.Time
-	mu              sync.Mutex
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with. A retained CLI applies its environment once, so without
+	// this a later turn's narrower scope never reaches the running process.
+	scopeFingerprint string
+	workingDir       string
+	tempFiles        []string
+	idleTimer        *time.Timer
+	initErr          error
+	createdAt        time.Time
+	lastUsed         time.Time
+	mu               sync.Mutex
 }
 
 var claudeInteractivePersistentRegistry = sessionregistry.NewOwnerRegistry[*claudeInteractivePersistentSession]()
@@ -3578,13 +3582,14 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	session, created, ok := claudeInteractivePersistentRegistry.GetOrCreate(ownerSessionID, func() *claudeInteractivePersistentSession {
 		sessionName := newTmuxSessionName()
 		session := &claudeInteractivePersistentSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: sessionName,
-			nativeSessionID: nativeSessionID,
-			authFingerprint: c.authFingerprint,
-			workingDir:      strings.TrimSpace(workingDir),
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:   ownerSessionID,
+			tmuxSessionName:  sessionName,
+			nativeSessionID:  nativeSessionID,
+			authFingerprint:  c.authFingerprint,
+			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
+			workingDir:       strings.TrimSpace(workingDir),
+			createdAt:        now,
+			lastUsed:         now,
 		}
 		session.mu.Lock()
 		return session
@@ -3601,6 +3606,15 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		if session.authFingerprint != c.authFingerprint {
 			session.mu.Unlock()
 			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential changed", c.logger)
+			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
+		}
+		// Same rule, applied to the caller's scope: the live process still
+		// holds the environment it launched with, so a changed (or removed)
+		// scope cannot take effect without replacing it. Reusing here is what
+		// made credential revocation impossible without killing the session.
+		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
+			session.mu.Unlock()
+			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential scope changed", c.logger)
 			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
 		}
 		if session.initErr != nil {

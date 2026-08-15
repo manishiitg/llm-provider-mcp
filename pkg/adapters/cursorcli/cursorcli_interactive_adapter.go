@@ -121,7 +121,11 @@ type cursorInteractiveSession struct {
 	initErr         error
 	createdAt       time.Time
 	lastUsed        time.Time
-	mu              sync.Mutex
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with, so a later turn's changed scope replaces it rather than
+	// silently reusing the old environment.
+	scopeFingerprint string
+	mu               sync.Mutex
 }
 
 var cursorInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
@@ -498,11 +502,12 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	now := time.Now()
 	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
 		session := &cursorInteractiveSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: newCursorTmuxSessionName(),
-			persistent:      persistent,
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:   ownerSessionID,
+			tmuxSessionName:  newCursorTmuxSessionName(),
+			persistent:       persistent,
+			createdAt:        now,
+			lastUsed:         now,
+			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
 		}
 		session.mu.Lock()
 		return session
@@ -515,6 +520,13 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		// lock after lookup so one busy Cursor turn does not block unrelated
 		// session acquisition.
 		session.mu.Lock()
+		// The live process holds the environment it launched with, so a
+		// changed (or removed) scope cannot take effect without replacing it.
+		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
+			session.mu.Unlock()
+			closeCursorPersistentSession(ownerSessionID, "Cursor credential scope changed", c.logger)
+			return c.acquireCursorInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
+		}
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()

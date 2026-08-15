@@ -253,3 +253,56 @@ func TestScrubPolicyDataMatchesTheGoFilter(t *testing.T) {
 		}
 	}
 }
+
+// A retained CLI applies its environment once, at launch. The fingerprint is
+// what lets an adapter notice that a live process is running under a stale
+// scope -- without it, turn 2 declaring a narrower scope silently kept turn
+// 1's credentials alive and revocation required killing the session by hand.
+func TestScopeFingerprintChangesWhenTheScopeChanges(t *testing.T) {
+	base := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_A": "1"}))
+
+	if same := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_A": "1"})); same != base {
+		t.Fatal("an unchanged scope must reuse the session, not churn it")
+	}
+	// A changed VALUE is as much a revocation as a changed key.
+	if rotated := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_A": "2"})); rotated == base {
+		t.Fatal("rotating a credential value must change the fingerprint")
+	}
+	if added := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_A": "1", "SECRET_B": "1"})); added == base {
+		t.Fatal("granting an additional credential must change the fingerprint")
+	}
+	// Removal is the case that matters most: narrowing must not be silent.
+	if removed := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{})); removed == base {
+		t.Fatal("removing every credential must change the fingerprint")
+	}
+
+	// The three "nothing granted" states are all distinct.
+	unscoped := CodingAgentScopeFingerprint(&CallOptions{})
+	empty := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{}))
+	if unscoped == empty {
+		t.Fatal("no scope and an explicitly empty scope must be distinguishable")
+	}
+	if unscoped == base || empty == base {
+		t.Fatal("an unscoped session must not look like a scoped one")
+	}
+}
+
+// Key/value boundaries must not collide: ("AB","C") and ("A","BC") are
+// different grants and have to fingerprint differently.
+func TestScopeFingerprintHasNoBoundaryCollisions(t *testing.T) {
+	a := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_AB": "C"}))
+	b := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_A": "BC"}))
+	if a == b {
+		t.Fatal("length-prefixing is missing: distinct scopes collided")
+	}
+}
+
+// The fingerprint is stored on session state; it must never carry the
+// credential itself.
+func TestScopeFingerprintDoesNotLeakCredentialValues(t *testing.T) {
+	const secret = "super-secret-token-value"
+	got := CodingAgentScopeFingerprint(scopedEnvOpts(map[string]string{"SECRET_MINE": secret}))
+	if strings.Contains(got, secret) || strings.Contains(got, "SECRET_MINE") {
+		t.Fatalf("fingerprint leaks scope contents: %q", got)
+	}
+}

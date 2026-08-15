@@ -1,6 +1,9 @@
 package llmtypes
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -410,6 +413,41 @@ func ScopedCredentialPrefixes() []string { return []string{"SECRET_", "VAR_"} }
 
 func ScopedCredentialNames() []string {
 	return []string{"MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID"}
+}
+
+// CodingAgentScopeFingerprint deterministically identifies the credential
+// scope selected for a call, so a RETAINED coding-agent process can be
+// detected as running under a stale one.
+//
+// A retained CLI applies its environment once, at launch. Without this, turn 2
+// declaring a different or narrower scope silently kept turn 1's credentials
+// alive in the live process, and revoking a credential was impossible without
+// killing the session by hand.
+//
+// Both keys and values are hashed: a changed VALUE for the same key is just as
+// much a scope change as a changed key set, and hashing keeps credentials out
+// of the session state and any log that prints it. The empty-but-declared
+// scope is deliberately distinct from no scope at all, matching
+// CodingAgentScopeDeclared.
+func CodingAgentScopeFingerprint(opts *CallOptions) string {
+	if !CodingAgentScopeDeclared(opts) {
+		return "unscoped"
+	}
+	declared := CodingAgentSecretEnvironmentFromOptions(opts)
+	if len(declared) == 0 {
+		return "scoped-empty"
+	}
+	keys := make([]string, 0, len(declared))
+	for key := range declared {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	hash := sha256.New()
+	for _, key := range keys {
+		// Length-prefixed so ("AB","C") and ("A","BC") cannot collide.
+		fmt.Fprintf(hash, "%d:%s=%d:%s\n", len(key), key, len(declared[key]), declared[key])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process

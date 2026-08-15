@@ -68,22 +68,26 @@ const (
 )
 
 type piInteractiveSession struct {
-	ownerSessionID    string
-	nativeSessionID   string
-	tmuxSessionName   string
-	workingDir        string
-	tempDir           string
-	extensionPath     string
-	markerPath        string
-	persistent        bool
-	idleTimer         *time.Timer
-	createdAt         time.Time
-	lastUsed          time.Time
-	modelID           string
-	provider          string
-	cleanupFiles      func()
-	releaseMCPLease   func()
-	mcpFingerprint    string
+	ownerSessionID  string
+	nativeSessionID string
+	tmuxSessionName string
+	workingDir      string
+	tempDir         string
+	extensionPath   string
+	markerPath      string
+	persistent      bool
+	idleTimer       *time.Timer
+	createdAt       time.Time
+	lastUsed        time.Time
+	modelID         string
+	provider        string
+	cleanupFiles    func()
+	releaseMCPLease func()
+	mcpFingerprint  string
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with, so a later turn's changed scope replaces it rather than
+	// silently reusing the old environment.
+	scopeFingerprint  string
 	bridgeOnlyTools   bool
 	mcpExtension      string
 	tokenUsageSource  string
@@ -402,7 +406,11 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 	if persistent {
 		piInteractiveRegistry.Lock()
 		if existing := piInteractiveRegistry.sessions[ownerSessionID]; existing != nil {
-			sameLaunch := existing.workingDir == workingDir &&
+			// The live process holds the environment it launched with, so a
+			// changed scope cannot take effect without replacing it.
+			scopeFingerprint := llmtypes.CodingAgentScopeFingerprint(opts)
+			sameLaunch := existing.scopeFingerprint == scopeFingerprint &&
+				existing.workingDir == workingDir &&
 				existing.modelID == modelID &&
 				existing.provider == provider &&
 				existing.mcpFingerprint == mcpFingerprint &&
@@ -486,21 +494,22 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	bridgeOnlyTools := piBridgeOnlyToolsFromOptions(opts)
 	mcpExtension := piMCPExtensionFromOptions(opts)
 	session := &piInteractiveSession{
-		ownerSessionID:  ownerSessionID,
-		nativeSessionID: nativeSessionID,
-		tmuxSessionName: sessionName,
-		workingDir:      workingDir,
-		tempDir:         tempDir,
-		extensionPath:   extensionPath,
-		markerPath:      markerPath,
-		persistent:      persistent,
-		createdAt:       time.Now(),
-		lastUsed:        time.Now(),
-		modelID:         provider + "/" + model,
-		provider:        provider,
-		mcpFingerprint:  piMCPConfigFingerprint(mcpConfig),
-		bridgeOnlyTools: bridgeOnlyTools,
-		mcpExtension:    mcpExtension,
+		ownerSessionID:   ownerSessionID,
+		nativeSessionID:  nativeSessionID,
+		tmuxSessionName:  sessionName,
+		workingDir:       workingDir,
+		tempDir:          tempDir,
+		extensionPath:    extensionPath,
+		markerPath:       markerPath,
+		persistent:       persistent,
+		createdAt:        time.Now(),
+		lastUsed:         time.Now(),
+		modelID:          provider + "/" + model,
+		provider:         provider,
+		mcpFingerprint:   piMCPConfigFingerprint(mcpConfig),
+		scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
+		bridgeOnlyTools:  bridgeOnlyTools,
+		mcpExtension:     mcpExtension,
 	}
 	releaseMCPLease, err = acquirePiWorkspaceMCPConfigLease(workingDir, mcpConfig, session)
 	if err != nil {
