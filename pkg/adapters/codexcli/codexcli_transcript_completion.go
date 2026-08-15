@@ -18,18 +18,34 @@ import (
 // scrollback, and some Codex releases omit the visible "Worked for ..."
 // footer even though the turn has ended.
 //
-// The rollout is selected by its session_meta.cwd. Interactive sessions use a
-// unique working directory, so this remains isolated when several Codex agents
-// run concurrently. Events older than turnStart are ignored for persistent
-// sessions that contain multiple turns.
+// The rollout is selected by its session_meta.cwd.
+//
+// KNOWN GAP (PLAT-108): the comment here previously claimed "interactive
+// sessions use a unique working directory, so this remains isolated when
+// several Codex agents run concurrently". That assumption is false — a
+// workflow's interactive Chat and its scheduled run share one directory, so
+// this tracker can latch onto the OTHER conversation's rollout and derive
+// completion from its task_complete. This constructor has no session identity
+// in scope; binding it requires threading the session through
+// waitForCodexInteractiveResponse. Deliberately not changed while PLAT-105
+// ("turn never settles") is open, since altering completion detection would
+// confound that investigation.
+//
+// Events older than turnStart are ignored for persistent sessions that contain
+// multiple turns.
 type codexTurnCompletionTracker struct {
 	turnStart          time.Time
 	expectedWorkingDir string
-	rolloutPath        string
-	offset             int64
-	pendingToolCalls   map[string]struct{}
-	sawTurnEvent       bool
-	sawFinalAnswer     bool
+	// resolveRollout, when set, returns THIS session's rollout. It is lock-free
+	// (see codexRolloutResolverForSession) because the tracker polls while the
+	// adapter holds session.mu. nil falls back to the unsafe directory lookup,
+	// which is only correct when no other Codex session shares the directory.
+	resolveRollout   func(time.Time) string
+	rolloutPath      string
+	offset           int64
+	pendingToolCalls map[string]struct{}
+	sawTurnEvent     bool
+	sawFinalAnswer   bool
 	// completedLatched makes completion sticky. Reading the rollout advances
 	// offset past each line before matching it, so task_complete is consumed by
 	// the poll that finds it and no later poll can rediscover it. Callers that
@@ -39,10 +55,11 @@ type codexTurnCompletionTracker struct {
 	completedLatched bool
 }
 
-func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string) *codexTurnCompletionTracker {
+func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string, resolveRollout func(time.Time) string) *codexTurnCompletionTracker {
 	return &codexTurnCompletionTracker{
 		turnStart:          turnStart,
 		expectedWorkingDir: strings.TrimSpace(expectedWorkingDir),
+		resolveRollout:     resolveRollout,
 		pendingToolCalls:   make(map[string]struct{}),
 	}
 }
@@ -55,7 +72,11 @@ func (t *codexTurnCompletionTracker) completed() bool {
 		return true
 	}
 	if t.rolloutPath == "" {
-		t.rolloutPath = findCodexRolloutForTurn(t.turnStart, t.expectedWorkingDir)
+		if t.resolveRollout != nil {
+			t.rolloutPath = t.resolveRollout(t.turnStart)
+		} else {
+			t.rolloutPath = findCodexRolloutByWorkingDirUnsafe(t.turnStart, t.expectedWorkingDir)
+		}
 		if t.rolloutPath == "" {
 			return false
 		}
@@ -144,7 +165,27 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 	return false
 }
 
-func findCodexRolloutForTurn(turnStart time.Time, expectedWorkingDir string) string {
+// findCodexRolloutByWorkingDirUnsafe resolves a rollout using ONLY working
+// directory + newest modification time.
+//
+// It is named "Unsafe" deliberately: working directory is not a conversation
+// identity, so this can return another session's transcript whenever two Codex
+// sessions share a directory — which a workflow's Chat and Schedule always do
+// (PLAT-106). Every remaining caller is a known gap tracked by PLAT-108. New
+// code must use resolveCodexRolloutPath, which binds to the session's thread.
+func findCodexRolloutByWorkingDirUnsafe(turnStart time.Time, expectedWorkingDir string) string {
+	return findCodexRolloutByWorkingDirExcluding(turnStart, expectedWorkingDir, nil)
+}
+
+// findCodexRolloutByWorkingDirExcluding resolves a rollout by working directory
+// and recency, skipping any path already claimed by another live session.
+//
+// Working directory alone is NOT an identity: a Chat and a Schedule for the same
+// workflow run in the same directory, so "newest rollout in this cwd" can return
+// the other conversation's transcript (PLAT-106). The exclusion set is the
+// disambiguator until the session learns its own thread ID, after which
+// findCodexRolloutForThread is exact and this path is not used.
+func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool) string {
 	root := codexSessionsRoot()
 	if root == "" {
 		return ""
@@ -159,6 +200,9 @@ func findCodexRolloutForTurn(turnStart time.Time, expectedWorkingDir string) str
 		if walkErr != nil || entry.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
+		if excluded[path] {
+			return nil
+		}
 		info, infoErr := entry.Info()
 		if infoErr == nil && !info.ModTime().Before(cutoff) {
 			candidates = append(candidates, candidate{path: path, mod: info.ModTime()})
@@ -169,6 +213,66 @@ func findCodexRolloutForTurn(turnStart time.Time, expectedWorkingDir string) str
 	for _, candidate := range candidates {
 		if sameCodexWorkingDir(readCodexRolloutWorkingDir(candidate.path), expectedWorkingDir) {
 			return candidate.path
+		}
+	}
+	return ""
+}
+
+// findCodexRolloutForThread resolves the rollout for an EXACT Codex thread ID.
+// Codex names each rollout `rollout-<timestamp>-<thread-id>.jsonl` and repeats
+// the same value in `session_meta.payload.id`, so the filename is a cheap
+// pre-filter and the payload is the authority.
+func findCodexRolloutForThread(threadID string) string {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ""
+	}
+	root := codexSessionsRoot()
+	if root == "" {
+		return ""
+	}
+	var match string
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || filepath.Ext(path) != ".jsonl" || match != "" {
+			return nil
+		}
+		if !strings.Contains(filepath.Base(path), threadID) {
+			return nil
+		}
+		if readCodexRolloutThreadID(path) == threadID {
+			match = path
+		}
+		return nil
+	})
+	return match
+}
+
+// readCodexRolloutThreadID returns `session_meta.payload.id` — Codex's thread
+// identity for the conversation recorded in this rollout.
+func readCodexRolloutThreadID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	type sessionMeta struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID string `json:"id"`
+		} `json:"payload"`
+	}
+	reader := bufio.NewReader(f)
+	for i := 0; i < 8; i++ {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			var event sessionMeta
+			if json.Unmarshal(line, &event) == nil && event.Type == "session_meta" {
+				return strings.TrimSpace(event.Payload.ID)
+			}
+		}
+		if readErr != nil {
+			break
 		}
 	}
 	return ""

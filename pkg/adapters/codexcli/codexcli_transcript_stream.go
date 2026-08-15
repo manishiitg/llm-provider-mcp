@@ -56,12 +56,17 @@ type codexTranscriptEvent struct {
 // before the adapter closes the StreamChan — so there is no send-on-closed-chan
 // race that a detached goroutine would risk.
 type codexTranscriptStreamState struct {
-	turnStart   time.Time
-	workingDir  string
-	path        string
-	offset      int64
-	seenTool    map[string]bool // defensive dedup of tool starts by call_id
-	seenContent map[string]bool // dedup assistant text (codex writes it as BOTH agent_message and response_item message)
+	turnStart  time.Time
+	workingDir string
+	// resolveRollout, when set, returns THIS session's rollout. Lock-free (see
+	// codexRolloutResolverForSession) because poll runs while the adapter holds
+	// session.mu. nil falls back to the unsafe directory lookup, which can tail
+	// another conversation's transcript when two sessions share a directory.
+	resolveRollout func(time.Time) string
+	path           string
+	offset         int64
+	seenTool       map[string]bool // defensive dedup of tool starts by call_id
+	seenContent    map[string]bool // dedup assistant text (codex writes it as BOTH agent_message and response_item message)
 	// pendingToolStarts carries each tool call's start timestamp across polls
 	// (begin and end rows, or a call and its output row, can land in
 	// different polls) so the matching end can compute a real duration
@@ -69,10 +74,11 @@ type codexTranscriptStreamState struct {
 	pendingToolStarts map[string]time.Time
 }
 
-func newCodexTranscriptStreamState(turnStart time.Time, workingDir string) *codexTranscriptStreamState {
+func newCodexTranscriptStreamState(turnStart time.Time, workingDir string, resolveRollout func(time.Time) string) *codexTranscriptStreamState {
 	return &codexTranscriptStreamState{
 		turnStart:         turnStart,
 		workingDir:        workingDir,
+		resolveRollout:    resolveRollout,
 		seenTool:          map[string]bool{},
 		seenContent:       map[string]bool{},
 		pendingToolStarts: map[string]time.Time{},
@@ -86,7 +92,11 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 		return
 	}
 	if s.path == "" {
-		s.path = findCodexRolloutForTurn(s.turnStart, s.workingDir)
+		if s.resolveRollout != nil {
+			s.path = s.resolveRollout(s.turnStart)
+		} else {
+			s.path = findCodexRolloutByWorkingDirUnsafe(s.turnStart, s.workingDir)
+		}
 		if s.path == "" {
 			return // rollout not created yet — try again next tick
 		}

@@ -324,7 +324,11 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// Requires a working dir: the rollout is matched by its session_meta.cwd.
 	if workingDir != "" {
 		go func() {
-			tracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+			// nil resolver: the structured transport is a one-shot `--json`
+			// process with no entry in the persistent session registry, so it
+			// has no thread identity to bind to. Remaining PLAT-108 gap — still
+			// exposed if two structured runs share a working directory.
+			tracker := newCodexTurnCompletionTracker(turnStart, workingDir, nil)
 			ticker := time.NewTicker(codexRolloutPollInterval)
 			defer ticker.Stop()
 			for {

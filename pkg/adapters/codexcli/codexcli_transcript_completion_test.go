@@ -42,7 +42,7 @@ func TestCodexTurnCompletionTrackerUsesMatchingRolloutTaskComplete(t *testing.T)
 		t.Fatalf("set other rollout mtime: %v", err)
 	}
 
-	tracker := newCodexTurnCompletionTracker(turnStart, wantedWorkingDir)
+	tracker := newCodexTurnCompletionTracker(turnStart, wantedWorkingDir, nil)
 	if !tracker.completed() {
 		t.Fatal("matching rollout task_complete event was not detected")
 	}
@@ -109,7 +109,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir, false, true)
+	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir, false, true, nil)
 	if err != nil {
 		t.Fatalf("native task_complete event did not release response wait: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCodexTurnCompletionTrackerIgnoresPriorTurn(t *testing.T) {
 		t.Fatalf("write rollout: %v", err)
 	}
 
-	tracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+	tracker := newCodexTurnCompletionTracker(turnStart, workingDir, nil)
 	if tracker.completed() {
 		t.Fatal("task_complete from a prior persistent-session turn was accepted")
 	}
@@ -169,7 +169,7 @@ func TestCodexTurnCompletionTrackerBlocksIdleComposerWhileMCPCallPending(t *test
 		t.Fatalf("write rollout: %v", err)
 	}
 
-	tracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+	tracker := newCodexTurnCompletionTracker(turnStart, workingDir, nil)
 	if tracker.completed() {
 		t.Fatal("pending MCP call was treated as task completion")
 	}
@@ -223,7 +223,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "", false, true)
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "", false, true, nil)
 	if err != nil {
 		t.Fatalf("stable idle-composer fallback did not release response wait: %v", err)
 	}
@@ -257,7 +257,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "", false, true)
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "", false, true, nil)
 	if err == nil {
 		t.Fatal("stable idle composer without STATUS: COMPLETED was incorrectly accepted")
 	}

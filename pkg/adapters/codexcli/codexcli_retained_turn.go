@@ -21,10 +21,16 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 	if !ok || session == nil {
 		return nil
 	}
-	session.mu.Lock()
-	workingDir := session.workingDir
-	session.mu.Unlock()
-	finalText, _ := readCodexTranscriptFinalAssistantText(turnStart, workingDir)
+	// PLAT-106: resolve THIS session's rollout, not the newest rollout that
+	// happens to share its working directory. A workflow's Chat and Schedule run
+	// in the same directory, so a directory match could return the other
+	// conversation's final answer — which the host then stamped with this
+	// session's IDs, making the leak invisible to every downstream consumer.
+	rolloutPath := resolveCodexRolloutPath(session, turnStart)
+	if rolloutPath == "" {
+		return nil
+	}
+	finalText, _ := readCodexRolloutFinalAssistantText(rolloutPath, turnStart)
 	if strings.TrimSpace(finalText) == "" {
 		return nil
 	}

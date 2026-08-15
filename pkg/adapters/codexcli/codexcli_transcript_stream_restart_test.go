@@ -48,7 +48,7 @@ func TestCodexTranscriptStreamDoesNotReplayHistoryOnFreshProcess(t *testing.T) {
 	// A brand-new state object, as a restarted process would build: offset 0,
 	// empty dedup maps. Path is pre-set so the test doesn't depend on
 	// findCodexRolloutForTurn's ~/.codex layout resolution.
-	state := newCodexTranscriptStreamState(turnStart, dir)
+	state := newCodexTranscriptStreamState(turnStart, dir, nil)
 	state.path = path
 
 	ch := make(chan llmtypes.StreamChunk, 64)

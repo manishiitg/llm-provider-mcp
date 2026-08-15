@@ -1957,7 +1957,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "", false, true)
+	captured, err := waitForCodexInteractiveResponse(ctx, "codex-v0144-completed", "Codex ready\n›", nil, time.Time{}, "", false, true, nil)
 	if err != nil {
 		t.Fatalf("completed Codex 0.144.1 pane did not satisfy the response contract: %v", err)
 	}

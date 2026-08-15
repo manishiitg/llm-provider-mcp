@@ -71,12 +71,19 @@ type codexInteractiveSession struct {
 	// flag wasn't enabled for this session.
 	projectInstructionCleanup func()
 	workingDir                string
-	cliSecurityFingerprint    string
-	idleTimer                 *time.Timer
-	initErr                   error
-	createdAt                 time.Time
-	lastUsed                  time.Time
-	mu                        sync.Mutex
+	// rolloutPath and threadID pin this session to its EXACT Codex rollout.
+	// Resolving a retained answer by working directory + newest mtime is
+	// ambiguous whenever two sessions share a directory — a Chat and a Schedule
+	// for the same workflow do — and would return the other conversation's
+	// final answer (PLAT-106). Once bound, every later lookup is exact.
+	rolloutPath            string
+	threadID               string
+	cliSecurityFingerprint string
+	idleTimer              *time.Timer
+	initErr                error
+	createdAt              time.Time
+	lastUsed               time.Time
+	mu                     sync.Mutex
 }
 
 var codexInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
@@ -293,7 +300,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts))
+	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session))
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
 		inspector.EmitError(err, map[string]interface{}{
@@ -334,8 +341,14 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// plan-step results and AUTO-NOTIFICATION messages contain full tool calls.
 	// Codex's task_complete event carries exactly the committed final message, so
 	// prefer it whenever the current-turn rollout is available.
+	// PLAT-106: resolve THIS session's rollout. Selecting by working directory
+	// alone returns the newest transcript in that directory, which is the other
+	// conversation's whenever a workflow's Chat and Schedule run concurrently.
+	// session.mu is held for this entire function (released by the deferred
+	// releaseCodexInteractiveSession), so the *Locked variant is required here.
+	sessionRolloutPath := resolveCodexRolloutPathLocked(session, promptSentAt.UTC())
 	finalExtractionSource := "tmux_pane"
-	if transcriptFinal, source := readCodexTranscriptFinalAssistantText(promptSentAt.UTC(), session.workingDir); strings.TrimSpace(transcriptFinal) != "" {
+	if transcriptFinal, source := readCodexRolloutFinalAssistantText(sessionRolloutPath, promptSentAt.UTC()); strings.TrimSpace(transcriptFinal) != "" {
 		content = transcriptFinal
 		finalExtractionSource = source
 	}
@@ -393,7 +406,15 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// records token_count event_msgs with per-turn token snapshots.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	handleModel := c.modelID
-	usage, effectiveModel, threadID := readCodexTranscriptUsage(turnStart, session.workingDir)
+	// Read usage from the SAME rollout the final answer came from. Re-scanning by
+	// working directory here would reintroduce the PLAT-106 ambiguity — and worse,
+	// the thread ID it returns is what pins this session's identity, so a wrong
+	// pick would bind the session permanently to another conversation.
+	var usage *llmtypes.GenerationInfo
+	var effectiveModel, threadID string
+	if sessionRolloutPath != "" {
+		usage, effectiveModel, threadID, _ = readCodexTranscriptUsageFile(sessionRolloutPath, turnStart)
+	}
 	if threadID != "" {
 		additional["codex_thread_id"] = threadID
 	}
@@ -1783,7 +1804,7 @@ func codexPaneHasEmptyComposer(captured string) bool {
 	return false
 }
 
-func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool) (string, error) {
+func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool, resolveRollout func(time.Time) string) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
@@ -1806,14 +1827,14 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	// in a "not ready" branch can never suppress it.
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
-	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir)
+	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir, resolveRollout)
 	// Opt-in structured streaming: tail the rollout JSONL mid-turn so a
 	// design-first UI gets assistant text + tool-call starts without the pane.
 	// Additive; nil when disabled. Runs inside this loop (which returns before
 	// the adapter closes streamChan), so there is no send-on-closed-chan race.
 	var transcriptStream *codexTranscriptStreamState
 	if streamChan != nil && streamTranscript {
-		transcriptStream = newCodexTranscriptStreamState(turnStart, workingDir)
+		transcriptStream = newCodexTranscriptStreamState(turnStart, workingDir, resolveRollout)
 	}
 	for {
 		select {

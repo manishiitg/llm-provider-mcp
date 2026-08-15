@@ -96,8 +96,20 @@ func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string)
 // the workflow result is what caused MCP calls to leak into plan-step completion
 // summaries and automatic parent notifications.
 func readCodexTranscriptFinalAssistantText(turnStart time.Time, expectedWorkingDir string) (string, string) {
-	path := findCodexRolloutForTurn(turnStart, expectedWorkingDir)
+	path := findCodexRolloutByWorkingDirUnsafe(turnStart, expectedWorkingDir)
 	if path == "" {
+		return "", ""
+	}
+	return readCodexRolloutFinalAssistantText(path, turnStart)
+}
+
+// readCodexRolloutFinalAssistantText reads the committed final answer from ONE
+// known rollout file. Callers that can identify the exact conversation (see
+// resolveCodexRolloutPath) use this directly so no directory/recency guess is
+// involved in choosing whose answer is returned. Returns the text and the
+// payload shape it came from.
+func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (string, string) {
+	if strings.TrimSpace(path) == "" {
 		return "", ""
 	}
 
