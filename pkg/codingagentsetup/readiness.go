@@ -310,9 +310,10 @@ func recommendedPiModel(models []piModel) piModel {
 		"google/gemini-3.6-flash",
 		"google/gemini-3.5-flash-lite",
 		"google/gemini-3.1-pro-preview",
-		"minimax/MiniMax-M2.7",
-		"zai/glm-5.2",
-		"moonshotai/kimi-k2.7-code",
+		"minimax/MiniMax-M3",
+		"zai/glm-5.3",
+		"moonshotai/kimi-k3",
+		"xai/grok-4.6",
 	}
 	for _, selector := range preferred {
 		for _, model := range models {

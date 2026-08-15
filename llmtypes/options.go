@@ -1,6 +1,9 @@
 package llmtypes
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -233,9 +236,13 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 		}
 	}
 	return func(opts *CallOptions) {
-		if len(copy) == 0 {
-			return
-		}
+		// Deliberately records the scope even when it is EMPTY. Returning early
+		// here made "this child gets zero scoped credentials" impossible to
+		// express: an empty map looked identical to never calling the option,
+		// so both fell through to legacy passthrough and the child kept every
+		// ambient credential -- the exact opposite of what the caller asked
+		// for. Presence of the key means "a scope was declared"; its contents
+		// are what was granted.
 		if opts.Metadata == nil {
 			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
 		}
@@ -281,6 +288,30 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 	return isScopedCodingAgentMCPEnvironmentKey(key)
 }
 
+// isScopedCredentialEnvironmentKey is the subset of the scoped namespace that
+// carries per-child credentials and configuration, as opposed to the MCP
+// transport routes. Only this subset is scrubbed when a scoped environment is
+// declared -- see MergeCodingAgentSecretEnvironment for why the routes are
+// deliberately excluded.
+func isScopedCredentialEnvironmentKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_") {
+		return true
+	}
+	// MCP_* splits in two, and treating the whole prefix as "routing metadata"
+	// was wrong: MCP_API_TOKEN and MCP_AUTH are bearer credentials and
+	// MCP_SESSION_ID is the session binding. Inheriting an ambient one lets a
+	// child act with another session's API authority and identity, which is
+	// the same class of leak as an inherited SECRET_*. Only the address-style
+	// routes below are safe to inherit.
+	switch key {
+	case "MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID":
+		return true
+	default:
+		return false
+	}
+}
+
 func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
 	switch key {
 	case "MCP_API_URL", "MCP_API_TOKEN", "MCP_SESSION_ID", "MCP_MCP", "MCP_CUSTOM", "MCP_VIRTUAL", "MCP_AUTH":
@@ -288,6 +319,18 @@ func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+// CodingAgentScopeDeclared reports whether the caller supplied a scope at all,
+// independent of whether that scope granted anything. This is the distinction
+// between "no isolation requested" (legacy passthrough) and "isolation
+// requested, granting nothing" (scrub everything).
+func CodingAgentScopeDeclared(opts *CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	_, declared := opts.Metadata.Custom[CodingAgentSecretEnvironmentMetadataKey]
+	return declared
 }
 
 func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]string {
@@ -304,17 +347,148 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 	return copy
 }
 
+// ScopedCodingAgentEnvironmentPlan is the interactive/tmux counterpart of
+// MergeCodingAgentSecretEnvironment. A structured launch can hand the child a
+// fully-built environment; a tmux launch cannot, because the pane inherits the
+// tmux SERVER's environment rather than this process's, so there is no slice to
+// filter. The equivalent has to be expressed as "export these, unset those" and
+// executed inside the launch script, where the unset applies no matter which
+// layer the variable arrived from.
+//
+// Returns the declared entries to export, and the scoped credential keys that
+// are present ambiently but were NOT declared for this child. alreadySet lists
+// entries the adapter is exporting itself (its own provider API key, the MCP
+// bridge routes it derived from the caller's config); those are never unset,
+// or the launch would strip the credentials it just built.
+//
+// With nothing declared, both results are empty: a caller that never opted into
+// scoping keeps exactly the behavior it had.
+func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOptions) (export, unset []string) {
+	if !CodingAgentScopeDeclared(opts) {
+		return nil, nil
+	}
+	declared := CodingAgentSecretEnvironmentFromOptions(opts)
+
+	keys := make([]string, 0, len(declared))
+	for key := range declared {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		export = append(export, key+"="+declared[key])
+	}
+
+	protected := make(map[string]bool, len(alreadySet))
+	for _, entry := range alreadySet {
+		if key, _, found := strings.Cut(entry, "="); found {
+			protected[key] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	for _, entry := range ambient {
+		key, _, found := strings.Cut(entry, "=")
+		if !found || seen[key] || protected[key] {
+			continue
+		}
+		if _, isDeclared := declared[key]; isDeclared {
+			continue
+		}
+		if !isScopedCredentialEnvironmentKey(key) {
+			continue
+		}
+		seen[key] = true
+		unset = append(unset, key)
+	}
+	sort.Strings(unset)
+	return export, unset
+}
+
+// ScopedCredentialPrefixes and ScopedCredentialNames expose the credential
+// namespace as data so a launch boundary can scrub it dynamically instead of
+// from a precomputed list. Keep them in step with
+// isScopedCredentialEnvironmentKey -- that function and these are the same
+// policy expressed for two consumers (Go filtering, and shell matching).
+func ScopedCredentialPrefixes() []string { return []string{"SECRET_", "VAR_"} }
+
+func ScopedCredentialNames() []string {
+	return []string{"MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID"}
+}
+
+// CodingAgentScopeFingerprint deterministically identifies the credential
+// scope selected for a call, so a RETAINED coding-agent process can be
+// detected as running under a stale one.
+//
+// A retained CLI applies its environment once, at launch. Without this, turn 2
+// declaring a different or narrower scope silently kept turn 1's credentials
+// alive in the live process, and revoking a credential was impossible without
+// killing the session by hand.
+//
+// Both keys and values are hashed: a changed VALUE for the same key is just as
+// much a scope change as a changed key set, and hashing keeps credentials out
+// of the session state and any log that prints it. The empty-but-declared
+// scope is deliberately distinct from no scope at all, matching
+// CodingAgentScopeDeclared.
+func CodingAgentScopeFingerprint(opts *CallOptions) string {
+	if !CodingAgentScopeDeclared(opts) {
+		return "unscoped"
+	}
+	declared := CodingAgentSecretEnvironmentFromOptions(opts)
+	if len(declared) == 0 {
+		return "scoped-empty"
+	}
+	keys := make([]string, 0, len(declared))
+	for key := range declared {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	hash := sha256.New()
+	for _, key := range keys {
+		// Length-prefixed so ("AB","C") and ("A","BC") cannot collide.
+		fmt.Fprintf(hash, "%d:%s=%d:%s\n", len(key), key, len(declared[key]), declared[key])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
 // environment without mutating the caller's slice.
+//
+// When a scoped environment is declared it is AUTHORITATIVE for the credential
+// namespace: an ambient SECRET_*/VAR_* the caller did not declare for this
+// child is dropped rather than inherited. Overlaying alone made the isolation
+// guarantee untrue at the process boundary -- a child could still read whatever
+// credentials happened to be in the launcher's environment, which is exactly
+// what scoping is supposed to prevent.
+//
+// The MCP_* prefix splits in two and must not be treated as one thing:
+//
+//	MCP_API_TOKEN / MCP_AUTH / MCP_SESSION_ID  credentials + session identity
+//	MCP_API_URL / MCP_CUSTOM / MCP_MCP / MCP_VIRTUAL  addresses
+//
+// The first group is scrubbed with the rest of the credential namespace:
+// inheriting an ambient bearer token or session id lets a child act with
+// another session's authority, which is the same leak as an inherited
+// SECRET_*, not harmless routing metadata.
+//
+// The address routes are still inherited, because this layer has been burned
+// once by over-filtering them: a previous version admitted only SECRET_*,
+// silently dropped the routes, and the child never saw MCP_CUSTOM with nothing
+// erroring (see withCodingAgentSecretEnvironment in mcpagent). Dropping an
+// address a caller relies on the launcher to set reproduces that silent
+// failure, and an address grants nothing without the credentials above.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
-	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
-	if len(secrets) == 0 {
+	if !CodingAgentScopeDeclared(opts) {
 		return append([]string(nil), base...)
 	}
+	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
 	out := make([]string, 0, len(base)+len(secrets))
 	for _, entry := range base {
 		key, _, found := strings.Cut(entry, "=")
 		if found && secrets[key] != "" {
+			continue
+		}
+		if found && isScopedCredentialEnvironmentKey(key) {
+			// Declared but absent from this child's scope => not for it.
 			continue
 		}
 		out = append(out, entry)

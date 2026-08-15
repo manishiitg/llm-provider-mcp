@@ -121,7 +121,11 @@ type cursorInteractiveSession struct {
 	initErr         error
 	createdAt       time.Time
 	lastUsed        time.Time
-	mu              sync.Mutex
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with, so a later turn's changed scope replaces it rather than
+	// silently reusing the old environment.
+	scopeFingerprint string
+	mu               sync.Mutex
 }
 
 var cursorInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
@@ -498,11 +502,12 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	now := time.Now()
 	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
 		session := &cursorInteractiveSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: newCursorTmuxSessionName(),
-			persistent:      persistent,
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:   ownerSessionID,
+			tmuxSessionName:  newCursorTmuxSessionName(),
+			persistent:       persistent,
+			createdAt:        now,
+			lastUsed:         now,
+			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
 		}
 		session.mu.Lock()
 		return session
@@ -515,6 +520,13 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		// lock after lookup so one busy Cursor turn does not block unrelated
 		// session acquisition.
 		session.mu.Lock()
+		// The live process holds the environment it launched with, so a
+		// changed (or removed) scope cannot take effect without replacing it.
+		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
+			session.mu.Unlock()
+			closeCursorPersistentSession(ownerSessionID, "Cursor credential scope changed", c.logger)
+			return c.acquireCursorInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
+		}
 		if session.initErr != nil {
 			err := session.initErr
 			session.mu.Unlock()
@@ -538,7 +550,16 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	session.workingDir = workingDir
 	session.cleanupFiles = cleanupFiles
 
-	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, workingDir); err != nil {
+	// The structured path applies the caller's scoped environment when it
+	// builds cmd.Env; a tmux pane has no such slice -- it inherits the tmux
+	// SERVER's environment -- so the same contract has to be executed inside
+	// the launch script as export/unset. Without this, an interactive session
+	// silently ran with whatever credentials were ambient on the backend.
+	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
+	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
+	env = append(env, scopedEnv...)
+
+	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		session.initErr = err
 		if cleanupFiles != nil {
 			cleanupFiles()
@@ -1271,15 +1292,19 @@ func cursorAutoApproveWebSearchFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-func startCursorTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
+func startCursorTmuxSession(ctx context.Context, sessionName string, args []string, env, unset []string, scrub *shelllaunch.ScopeScrub, workingDir string) error {
 	if workingDir == "" {
 		workingDir = cursorMustGetwd()
 	}
 	shellCommand := "cd " + cursorShellQuote(workingDir) + " && exec " + cursorShellJoin(args)
 	var cleanupLaunchScript func()
-	if len(env) > 0 {
+	if len(env) > 0 || len(unset) > 0 || scrub != nil {
 		var err error
-		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithEnv(args, workingDir, env)
+		// CommandWithFinalEnv (not CommandWithEnv): the unset list must run
+		// inside the launch script, after shell startup files, so an ambient
+		// credential cannot be restored by a profile and cannot survive from
+		// the tmux server environment.
+		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithScopedEnv(args, workingDir, env, unset, scrub)
 		if err != nil {
 			return fmt.Errorf("failed to prepare Cursor launch environment: %w", err)
 		}

@@ -14,9 +14,10 @@ func TestListPiIncludesCurrentCuratedModelsAndDynamicHint(t *testing.T) {
 		"google/gemini-3.7-flash":       false,
 		"google/gemini-3.5-flash-lite":  false,
 		"google/gemini-3.1-pro-preview": false,
-		"minimax/MiniMax-M2.7":          false,
-		"zai/glm-5.2":                   false,
-		"moonshotai/kimi-k2.7-code":     false,
+		"minimax/MiniMax-M3":            false,
+		"zai/glm-5.3":                   false,
+		"moonshotai/kimi-k3":            false,
+		"xai/grok-4.6":                  false,
 	}
 	for _, model := range catalog.Models {
 		if _, ok := want[model.ID]; ok {

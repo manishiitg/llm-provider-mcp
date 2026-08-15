@@ -124,13 +124,17 @@ type claudeInteractivePersistentSession struct {
 	tmuxSessionName string
 	nativeSessionID string
 	authFingerprint string
-	workingDir      string
-	tempFiles       []string
-	idleTimer       *time.Timer
-	initErr         error
-	createdAt       time.Time
-	lastUsed        time.Time
-	mu              sync.Mutex
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with. A retained CLI applies its environment once, so without
+	// this a later turn's narrower scope never reaches the running process.
+	scopeFingerprint string
+	workingDir       string
+	tempFiles        []string
+	idleTimer        *time.Timer
+	initErr          error
+	createdAt        time.Time
+	lastUsed         time.Time
+	mu               sync.Mutex
 }
 
 var claudeInteractivePersistentRegistry = sessionregistry.NewOwnerRegistry[*claudeInteractivePersistentSession]()
@@ -405,7 +409,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 		defer removeFiles(tempFiles)
 
-		if err := c.startSession(callCtx, sessionName, args, workingDir); err != nil {
+		if err := c.startSession(callCtx, sessionName, args, workingDir, opts); err != nil {
 			return nil, err
 		}
 		registerClaudeInteractiveSession(sessionName)
@@ -1067,7 +1071,7 @@ func (c *ClaudeCodeInteractiveAdapter) shouldPassModelFlag() bool {
 	return modelID != "" && modelID != "claude-code"
 }
 
-func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string, opts *llmtypes.CallOptions) error {
 	if workingDir != "" {
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
@@ -1075,7 +1079,15 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		preTrustClaudeWorkingDir(workingDir)
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, claudeAmbientAuthEnvKeys)
+	// This already scrubs Claude's own ambient auth keys. The caller's scoped
+	// environment is a separate contract that the structured path applies when
+	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux
+	// SERVER's environment, so it has to be executed here as export/unset too.
+	scopedEnv, scopedUnset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), finalEnv, opts)
+	scopedScrub := scopedLaunchScrub(finalEnv, scopedEnv, opts)
+	finalEnv = append(finalEnv, scopedEnv...)
+	unsetKeys := append(append([]string(nil), claudeAmbientAuthEnvKeys...), scopedUnset...)
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithScopedEnv(args, workingDir, finalEnv, unsetKeys, scopedScrub)
 	if err != nil {
 		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
 	}
@@ -3570,13 +3582,14 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	session, created, ok := claudeInteractivePersistentRegistry.GetOrCreate(ownerSessionID, func() *claudeInteractivePersistentSession {
 		sessionName := newTmuxSessionName()
 		session := &claudeInteractivePersistentSession{
-			ownerSessionID:  ownerSessionID,
-			tmuxSessionName: sessionName,
-			nativeSessionID: nativeSessionID,
-			authFingerprint: c.authFingerprint,
-			workingDir:      strings.TrimSpace(workingDir),
-			createdAt:       now,
-			lastUsed:        now,
+			ownerSessionID:   ownerSessionID,
+			tmuxSessionName:  sessionName,
+			nativeSessionID:  nativeSessionID,
+			authFingerprint:  c.authFingerprint,
+			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
+			workingDir:       strings.TrimSpace(workingDir),
+			createdAt:        now,
+			lastUsed:         now,
 		}
 		session.mu.Lock()
 		return session
@@ -3593,6 +3606,15 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		if session.authFingerprint != c.authFingerprint {
 			session.mu.Unlock()
 			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential changed", c.logger)
+			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
+		}
+		// Same rule, applied to the caller's scope: the live process still
+		// holds the environment it launched with, so a changed (or removed)
+		// scope cannot take effect without replacing it. Reusing here is what
+		// made credential revocation impossible without killing the session.
+		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
+			session.mu.Unlock()
+			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential scope changed", c.logger)
 			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
 		}
 		if session.initErr != nil {
@@ -3617,7 +3639,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	}
 	session.tempFiles = tempFiles
 
-	if err := c.startSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
+	if err := c.startSession(ctx, session.tmuxSessionName, args, workingDir, opts); err != nil {
 		session.initErr = err
 		session.mu.Unlock()
 		removeClaudePersistentInteractiveSession(ownerSessionID, session)

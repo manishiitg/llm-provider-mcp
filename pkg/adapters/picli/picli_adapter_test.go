@@ -108,9 +108,10 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 		DefaultModelID,
 		ModelGemini35FlashLite,
 		ModelGemini31ProPreview,
-		ModelMiniMaxM27,
-		ModelGLM52,
-		ModelKimiK27Code,
+		ModelMiniMaxM3,
+		ModelGLM53,
+		ModelKimiK3,
+		ModelGrok46,
 	}
 	if len(models) != len(want) {
 		t.Fatalf("GetAllPiCLIModels() returned %d models, want %d", len(models), len(want))
@@ -489,7 +490,7 @@ func TestWritePiLaunchScriptKeepsTmuxCommandShort(t *testing.T) {
 }
 
 func TestPiTmuxLaunchEnablesExtendedKeysBeforeNewSession(t *testing.T) {
-	newSessionArgs, cleanup, err := piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, "/tmp/work")
+	newSessionArgs, cleanup, err := piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, nil, nil, "/tmp/work")
 	if err != nil {
 		t.Fatalf("piTmuxNewSessionArgs error = %v", err)
 	}

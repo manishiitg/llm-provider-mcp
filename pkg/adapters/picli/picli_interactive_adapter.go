@@ -68,22 +68,26 @@ const (
 )
 
 type piInteractiveSession struct {
-	ownerSessionID    string
-	nativeSessionID   string
-	tmuxSessionName   string
-	workingDir        string
-	tempDir           string
-	extensionPath     string
-	markerPath        string
-	persistent        bool
-	idleTimer         *time.Timer
-	createdAt         time.Time
-	lastUsed          time.Time
-	modelID           string
-	provider          string
-	cleanupFiles      func()
-	releaseMCPLease   func()
-	mcpFingerprint    string
+	ownerSessionID  string
+	nativeSessionID string
+	tmuxSessionName string
+	workingDir      string
+	tempDir         string
+	extensionPath   string
+	markerPath      string
+	persistent      bool
+	idleTimer       *time.Timer
+	createdAt       time.Time
+	lastUsed        time.Time
+	modelID         string
+	provider        string
+	cleanupFiles    func()
+	releaseMCPLease func()
+	mcpFingerprint  string
+	// scopeFingerprint identifies the credential scope this live process was
+	// LAUNCHED with, so a later turn's changed scope replaces it rather than
+	// silently reusing the old environment.
+	scopeFingerprint  string
 	bridgeOnlyTools   bool
 	mcpExtension      string
 	tokenUsageSource  string
@@ -402,7 +406,11 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 	if persistent {
 		piInteractiveRegistry.Lock()
 		if existing := piInteractiveRegistry.sessions[ownerSessionID]; existing != nil {
-			sameLaunch := existing.workingDir == workingDir &&
+			// The live process holds the environment it launched with, so a
+			// changed scope cannot take effect without replacing it.
+			scopeFingerprint := llmtypes.CodingAgentScopeFingerprint(opts)
+			sameLaunch := existing.scopeFingerprint == scopeFingerprint &&
+				existing.workingDir == workingDir &&
 				existing.modelID == modelID &&
 				existing.provider == provider &&
 				existing.mcpFingerprint == mcpFingerprint &&
@@ -486,21 +494,22 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	bridgeOnlyTools := piBridgeOnlyToolsFromOptions(opts)
 	mcpExtension := piMCPExtensionFromOptions(opts)
 	session := &piInteractiveSession{
-		ownerSessionID:  ownerSessionID,
-		nativeSessionID: nativeSessionID,
-		tmuxSessionName: sessionName,
-		workingDir:      workingDir,
-		tempDir:         tempDir,
-		extensionPath:   extensionPath,
-		markerPath:      markerPath,
-		persistent:      persistent,
-		createdAt:       time.Now(),
-		lastUsed:        time.Now(),
-		modelID:         provider + "/" + model,
-		provider:        provider,
-		mcpFingerprint:  piMCPConfigFingerprint(mcpConfig),
-		bridgeOnlyTools: bridgeOnlyTools,
-		mcpExtension:    mcpExtension,
+		ownerSessionID:   ownerSessionID,
+		nativeSessionID:  nativeSessionID,
+		tmuxSessionName:  sessionName,
+		workingDir:       workingDir,
+		tempDir:          tempDir,
+		extensionPath:    extensionPath,
+		markerPath:       markerPath,
+		persistent:       persistent,
+		createdAt:        time.Now(),
+		lastUsed:         time.Now(),
+		modelID:          provider + "/" + model,
+		provider:         provider,
+		mcpFingerprint:   piMCPConfigFingerprint(mcpConfig),
+		scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
+		bridgeOnlyTools:  bridgeOnlyTools,
+		mcpExtension:     mcpExtension,
 	}
 	releaseMCPLease, err = acquirePiWorkspaceMCPConfigLease(workingDir, mcpConfig, session)
 	if err != nil {
@@ -519,6 +528,14 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	if err != nil {
 		return nil, err
 	}
+	// The structured path applies the caller's scoped environment when it
+	// builds cmd.Env; a tmux pane has no such slice -- it inherits the tmux
+	// SERVER's environment -- so the same contract has to be executed inside
+	// the launch script as export/unset. Without this, an interactive session
+	// silently ran with whatever credentials were ambient on the backend.
+	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
+	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
+	env = append(env, scopedEnv...)
 	launchScriptPath := filepath.Join(tempDir, "launch-pi.sh")
 	if err := writePiLaunchScript(launchScriptPath, args); err != nil {
 		return nil, err
@@ -528,7 +545,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	defer release()
-	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, workingDir); err != nil {
+	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		return nil, err
 	}
 	tmuxinput.MarkStartingForOwner(sessionName, ownerSessionID)
@@ -1047,8 +1064,8 @@ func piSessionScopedMCPURL(apiURL, sessionID string) string {
 	return apiURL + "/s/" + strings.TrimSpace(sessionID)
 }
 
-func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
-	tmuxArgs, cleanupLaunchScript, err := piTmuxNewSessionArgs(sessionName, args, env, workingDir)
+func startPiTmuxSession(ctx context.Context, sessionName string, args []string, env, unset []string, scrub *shelllaunch.ScopeScrub, workingDir string) error {
+	tmuxArgs, cleanupLaunchScript, err := piTmuxNewSessionArgs(sessionName, args, env, unset, scrub, workingDir)
 	if err != nil {
 		return err
 	}
@@ -1074,8 +1091,12 @@ func startPiTmuxSession(ctx context.Context, sessionName string, args []string, 
 	return nil
 }
 
-func piTmuxNewSessionArgs(sessionName string, args []string, env []string, workingDir string) ([]string, func(), error) {
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithEnv(args, workingDir, env)
+func piTmuxNewSessionArgs(sessionName string, args []string, env, unset []string, scrub *shelllaunch.ScopeScrub, workingDir string) ([]string, func(), error) {
+	// CommandWithFinalEnv (not CommandWithEnv): the unset list must run inside
+	// the launch script, after shell startup files, so an ambient credential
+	// cannot be restored by a profile and cannot survive from the tmux server
+	// environment.
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithScopedEnv(args, workingDir, env, unset, scrub)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to prepare Pi launch environment: %w", err)
 	}

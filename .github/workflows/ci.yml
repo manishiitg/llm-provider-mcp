@@ -175,7 +175,7 @@ jobs:
           --workspace "$PWD" \
           --non-interactive
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" models pi-cli --json \
-          | grep -q 'moonshotai/kimi-k2.7-code'
+          | grep -q 'moonshotai/kimi-k3'
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" setup --help >/dev/null
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" doctor --help >/dev/null
         "$RUNNER_TEMP/llm-provider-mcp-bin/llm-provider-mcp" uninstall --help >/dev/null

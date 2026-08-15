@@ -23,8 +23,27 @@ var ErrUnsupported = errors.New("CLI security policy is not supported on this ru
 // This placement is load-bearing: wrapping the tmux client would not sandbox a
 // pane created by an already-running tmux server.
 func PrepareCodexCommand(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths []string) (string, func(), error) {
+	return PrepareCodexCommandScoped(policy, args, workingDir, runtimeReadPaths, nil, nil, nil)
+}
+
+// PrepareCodexCommandScoped is PrepareCodexCommand plus the caller's scoped
+// credential environment.
+//
+// Codex was outside the isolation guarantee entirely. Compatibility mode --
+// the default -- handed the child a plain command with full ambient
+// inheritance, so it read whatever credentials were on the backend. The
+// sandboxed modes were already stronger than the other providers (env -i with
+// an explicit allowlist), but neither mode ever INJECTED the scope the caller
+// declared, so a child could not receive its own credentials either.
+//
+// scopedEnv is applied in both modes; scrub only matters in compatibility mode,
+// since env -i has already discarded everything the allowlist did not name.
+func PrepareCodexCommandScoped(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths []string, scopedEnv, unset []string, scrub *shelllaunch.ScopeScrub) (string, func(), error) {
 	if policy == nil || llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeCompatibility {
-		return shelllaunch.Command(args, workingDir), func() {}, nil
+		if len(scopedEnv) == 0 && len(unset) == 0 && scrub == nil {
+			return shelllaunch.Command(args, workingDir), func() {}, nil
+		}
+		return shelllaunch.CommandWithScopedEnv(args, workingDir, scopedEnv, unset, scrub)
 	}
 	if runtime.GOOS != "darwin" {
 		return "", nil, fmt.Errorf("%w: %s requires macOS sandbox-exec", ErrUnsupported, policy.Mode)
@@ -109,6 +128,9 @@ func PrepareCodexCommand(policy *llmtypes.CLISecurityPolicy, args []string, work
 			envArgs = append(envArgs, key+"="+value)
 		}
 	}
+	// The declared scope is appended last so it wins over anything the
+	// allowlist above pulled in from the ambient environment.
+	envArgs = append(envArgs, scopedEnv...)
 	resolvedArgs = append(envArgs, resolvedArgs...)
 	direct := shelllaunch.DirectCommand(resolvedArgs, workingDir)
 	command := shelllaunch.Join([]string{"/usr/bin/sandbox-exec", "-f", profilePath, "/bin/sh", "-c", direct})
