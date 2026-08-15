@@ -247,6 +247,22 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		cmd.Dir = workingDir
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
+	// p.apiKey is the resolved key initializePiCLI already picked (workspace-
+	// scoped, then shared, then local pi auth) -- but until now nothing here
+	// ever turned it into an env var, so the subprocess only ever saw whatever
+	// happened to already be in the backend's own ambient environment. Strip
+	// any ambient value for the same key names first so a stale/wrong ambient
+	// key can never silently win over the one that was actually resolved.
+	if p.apiKey != "" {
+		provider, _ := resolvePiProviderModel(p.modelID, "")
+		keyEnv := piAPIKeyEnv(provider, p.apiKey)
+		cmd.Env = piOverrideEnv(cmd.Env, keyEnv)
+		if p.logger != nil {
+			p.logger.Infof("Pi CLI structured: injected %d API key env var(s) for provider %s", len(keyEnv), provider)
+		}
+	} else if p.logger != nil {
+		p.logger.Infof("Pi CLI structured: no resolved API key -- relying on ambient environment / local pi auth")
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -300,6 +316,15 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 			// remain valid and a legitimate final usage record is never dropped.
 			applyPiJSONUsage(event.Message, &totalUsage, &cacheWriteTokens)
 
+			// IsError is a structured signal pi already sends, but nothing read
+			// it: a real failure (bad key, quota, unknown model) could arrive as
+			// exactly this and still leave finalContent empty with zero trace of
+			// why -- "pi run returned no text output" without even the type of
+			// the one event that actually explained it.
+			if event.IsError && p.logger != nil {
+				p.logger.Errorf("pi: received error event type=%q: %s", event.Type, truncatePiEventLine(line))
+			}
+
 			switch event.Type {
 			case "message_update":
 				if event.AssistantMessageEvt == nil {
@@ -332,6 +357,17 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 			case "agent_settled":
 				sawTerminal = true
 				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
+			default:
+				// Every other type (agent_start, turn_start, message_start,
+				// message_end, agent_end, session, and anything a newer pi
+				// version adds) is intentionally ignored for content -- but
+				// silently, so an unexpected/renamed event that actually
+				// carried the answer or the failure reason left no trace at
+				// all. Debug-log the type so that trace exists without
+				// changing behavior for the types already handled above.
+				if p.logger != nil {
+					p.logger.Debugf("pi: unhandled event type=%q", event.Type)
+				}
 			}
 		}
 	}()
@@ -349,6 +385,14 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		return nil, fmt.Errorf("pi run failed: %w", waitErr)
 	}
 	if content == "" {
+		// pi can exit 0 with nothing on stdout when it rejected the run for a
+		// reason it only wrote to stderr (bad key, quota, unknown model) --
+		// that stderr was being captured and then silently discarded here,
+		// which is exactly what turned "invalid Gemini key" into an opaque
+		// "no text output" with nothing to trace it back to.
+		if stderrStr := strings.TrimSpace(stderr.String()); stderrStr != "" {
+			return nil, fmt.Errorf("pi run returned no text output: %s", stderrStr)
+		}
 		return nil, fmt.Errorf("pi run returned no text output")
 	}
 
@@ -431,4 +475,40 @@ func intPtrIfNonZeroPi(v int) *int {
 		return nil
 	}
 	return &v
+}
+
+// truncatePiEventLine bounds a raw JSONL event line for logging -- an error
+// event is rare enough that seeing it matters far more than keeping the log
+// terse, but an event carrying a large tool result should not flood it.
+func truncatePiEventLine(line []byte) string {
+	const maxLen = 2000
+	s := strings.TrimSpace(string(line))
+	if len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	return s
+}
+
+// piOverrideEnv returns base with any existing entry for a key present in
+// overrides removed, then overrides appended. Filtering first rather than
+// relying on "last assignment wins" keeps this correct regardless of
+// platform-specific duplicate-env-var behavior in exec.
+func piOverrideEnv(base, overrides []string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	blocked := make(map[string]bool, len(overrides))
+	for _, entry := range overrides {
+		key, _, _ := strings.Cut(entry, "=")
+		blocked[key] = true
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if blocked[key] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, overrides...)
 }
