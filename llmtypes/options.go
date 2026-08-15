@@ -233,9 +233,13 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 		}
 	}
 	return func(opts *CallOptions) {
-		if len(copy) == 0 {
-			return
-		}
+		// Deliberately records the scope even when it is EMPTY. Returning early
+		// here made "this child gets zero scoped credentials" impossible to
+		// express: an empty map looked identical to never calling the option,
+		// so both fell through to legacy passthrough and the child kept every
+		// ambient credential -- the exact opposite of what the caller asked
+		// for. Presence of the key means "a scope was declared"; its contents
+		// are what was granted.
 		if opts.Metadata == nil {
 			opts.Metadata = &Metadata{Custom: make(map[string]interface{})}
 		}
@@ -314,6 +318,18 @@ func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
 	}
 }
 
+// CodingAgentScopeDeclared reports whether the caller supplied a scope at all,
+// independent of whether that scope granted anything. This is the distinction
+// between "no isolation requested" (legacy passthrough) and "isolation
+// requested, granting nothing" (scrub everything).
+func CodingAgentScopeDeclared(opts *CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	_, declared := opts.Metadata.Custom[CodingAgentSecretEnvironmentMetadataKey]
+	return declared
+}
+
 func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]string {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return nil
@@ -345,10 +361,10 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 // With nothing declared, both results are empty: a caller that never opted into
 // scoping keeps exactly the behavior it had.
 func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOptions) (export, unset []string) {
-	declared := CodingAgentSecretEnvironmentFromOptions(opts)
-	if len(declared) == 0 {
+	if !CodingAgentScopeDeclared(opts) {
 		return nil, nil
 	}
+	declared := CodingAgentSecretEnvironmentFromOptions(opts)
 
 	keys := make([]string, 0, len(declared))
 	for key := range declared {
@@ -412,10 +428,10 @@ func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOp
 // address a caller relies on the launcher to set reproduces that silent
 // failure, and an address grants nothing without the credentials above.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
-	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
-	if len(secrets) == 0 {
+	if !CodingAgentScopeDeclared(opts) {
 		return append([]string(nil), base...)
 	}
+	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
 	out := make([]string, 0, len(base)+len(secrets))
 	for _, entry := range base {
 		key, _, found := strings.Cut(entry, "=")

@@ -40,12 +40,12 @@ Gemini Flash and Pro tracks:
 - `google/gemini-3.7-flash`
 - `google/gemini-3.5-flash-lite`
 - `google/gemini-3.1-pro-preview`
-- `minimax/MiniMax-M2.7`
-- `zai/glm-5.2`
-- `moonshotai/kimi-k2.7-code`
+- `minimax/MiniMax-M3`
+- `zai/glm-5.3`
+- `moonshotai/kimi-k3`
 
 Pi also accepts dynamic OpenRouter selectors such as
-`openrouter/moonshotai/kimi-k2.7-code`. Use `openrouter/openrouter/free` to let
+`openrouter/moonshotai/kimi-k3`. Use `openrouter/openrouter/free` to let
 OpenRouter select an available free model. Dynamic OpenRouter models are not
 hardcoded because that catalog changes independently.
 

@@ -174,3 +174,55 @@ func TestScopedPlanIsInertWithoutADeclaredScope(t *testing.T) {
 		t.Fatalf("plan must be inert without a declared scope: export=%v unset=%v", export, unset)
 	}
 }
+
+// "Grant this child nothing" is a real policy and used to be unexpressible:
+// an explicitly empty map wrote no metadata, so it was indistinguishable from
+// never calling the option, and both fell through to passthrough -- the child
+// kept every ambient credential, the exact opposite of the request.
+func TestExplicitlyEmptyScopeScrubsEverything(t *testing.T) {
+	ambient := []string{
+		"PATH=/usr/bin",
+		"SECRET_ANY=leaked",
+		"VAR_ANY=leaked",
+		"MCP_API_TOKEN=another-sessions-token",
+	}
+	opts := scopedEnvOpts(map[string]string{})
+
+	if !CodingAgentScopeDeclared(opts) {
+		t.Fatal("an explicitly empty scope must still count as declared")
+	}
+
+	got := envMap(MergeCodingAgentSecretEnvironment(ambient, opts))
+	for _, key := range []string{"SECRET_ANY", "VAR_ANY", "MCP_API_TOKEN"} {
+		if _, leaked := got[key]; leaked {
+			t.Fatalf("empty scope still let %s through: %v", key, got)
+		}
+	}
+	if got["PATH"] != "/usr/bin" {
+		t.Fatalf("empty scope must not touch unrelated variables: %v", got)
+	}
+
+	_, unset := ScopedCodingAgentEnvironmentPlan(ambient, nil, opts)
+	unsetSet := map[string]bool{}
+	for _, key := range unset {
+		unsetSet[key] = true
+	}
+	for _, key := range []string{"SECRET_ANY", "VAR_ANY", "MCP_API_TOKEN"} {
+		if !unsetSet[key] {
+			t.Fatalf("empty scope did not schedule %s for unset in the tmux plan: %v", key, unset)
+		}
+	}
+}
+
+// The counterpart that must keep working: a caller that never supplied the
+// option at all is legacy passthrough, not "scrub everything".
+func TestNoOptionAtAllRemainsPassthrough(t *testing.T) {
+	opts := &CallOptions{}
+	if CodingAgentScopeDeclared(opts) {
+		t.Fatal("no option must not count as a declared scope")
+	}
+	got := envMap(MergeCodingAgentSecretEnvironment([]string{"SECRET_AMBIENT=kept"}, opts))
+	if got["SECRET_AMBIENT"] != "kept" {
+		t.Fatalf("callers that never opted in must be unaffected: %v", got)
+	}
+}
