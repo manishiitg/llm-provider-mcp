@@ -344,8 +344,14 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 			// exactly this and still leave finalContent empty with zero trace of
 			// why -- "pi run returned no text output" without even the type of
 			// the one event that actually explained it.
+			//
+			// Only the TYPE and the tool name are logged. The raw event body is
+			// deliberately not, because an error event carries the failing
+			// tool's output, which can contain file contents or a credential
+			// the tool was handed. The type is what makes the failure
+			// traceable; the payload is what makes it a disclosure.
 			if event.IsError && p.logger != nil {
-				p.logger.Errorf("pi: received error event type=%q: %s", event.Type, truncatePiEventLine(line))
+				p.logger.Errorf("pi: received error event type=%q tool=%q", event.Type, event.ToolName)
 			}
 
 			switch event.Type {
@@ -498,18 +504,6 @@ func intPtrIfNonZeroPi(v int) *int {
 		return nil
 	}
 	return &v
-}
-
-// truncatePiEventLine bounds a raw JSONL event line for logging -- an error
-// event is rare enough that seeing it matters far more than keeping the log
-// terse, but an event carrying a large tool result should not flood it.
-func truncatePiEventLine(line []byte) string {
-	const maxLen = 2000
-	s := strings.TrimSpace(string(line))
-	if len(s) > maxLen {
-		return s[:maxLen] + "...(truncated)"
-	}
-	return s
 }
 
 // piOverrideEnv returns base with any existing entry for a key present in
