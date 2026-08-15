@@ -288,7 +288,21 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 // deliberately excluded.
 func isScopedCredentialEnvironmentKey(key string) bool {
 	key = strings.TrimSpace(key)
-	return strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_")
+	if strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_") {
+		return true
+	}
+	// MCP_* splits in two, and treating the whole prefix as "routing metadata"
+	// was wrong: MCP_API_TOKEN and MCP_AUTH are bearer credentials and
+	// MCP_SESSION_ID is the session binding. Inheriting an ambient one lets a
+	// child act with another session's API authority and identity, which is
+	// the same class of leak as an inherited SECRET_*. Only the address-style
+	// routes below are safe to inherit.
+	switch key {
+	case "MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID":
+		return true
+	default:
+		return false
+	}
 }
 
 func isScopedCodingAgentMCPEnvironmentKey(key string) bool {
@@ -324,14 +338,22 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 // credentials happened to be in the launcher's environment, which is exactly
 // what scoping is supposed to prevent.
 //
-// MCP_* transport routes are deliberately NOT scrubbed. They address the
-// bridge rather than granting access to anything, and this layer has already
-// been burned once by over-filtering them: a previous version admitted only
-// SECRET_*, silently dropped the routes, and the child simply never saw
-// MCP_CUSTOM with nothing erroring (see withCodingAgentSecretEnvironment in
-// mcpagent). Scrubbing an undeclared route would reintroduce that exact silent
-// failure for any caller that relies on the launcher to set them. Tighten this
-// only alongside a check that every caller declares its own routes.
+// The MCP_* prefix splits in two and must not be treated as one thing:
+//
+//	MCP_API_TOKEN / MCP_AUTH / MCP_SESSION_ID  credentials + session identity
+//	MCP_API_URL / MCP_CUSTOM / MCP_MCP / MCP_VIRTUAL  addresses
+//
+// The first group is scrubbed with the rest of the credential namespace:
+// inheriting an ambient bearer token or session id lets a child act with
+// another session's authority, which is the same leak as an inherited
+// SECRET_*, not harmless routing metadata.
+//
+// The address routes are still inherited, because this layer has been burned
+// once by over-filtering them: a previous version admitted only SECRET_*,
+// silently dropped the routes, and the child never saw MCP_CUSTOM with nothing
+// erroring (see withCodingAgentSecretEnvironment in mcpagent). Dropping an
+// address a caller relies on the launcher to set reproduces that silent
+// failure, and an address grants nothing without the credentials above.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
 	secrets := CodingAgentSecretEnvironmentFromOptions(opts)
 	if len(secrets) == 0 {

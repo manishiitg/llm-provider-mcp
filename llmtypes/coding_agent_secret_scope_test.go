@@ -50,18 +50,61 @@ func TestMergeDropsUndeclaredAmbientCredentials(t *testing.T) {
 	}
 }
 
-// MCP_* are transport routes, not per-child credentials, and over-filtering
-// them previously produced a silent failure where the child never saw
-// MCP_CUSTOM and nothing errored. They must survive a declared scope that
-// does not mention them.
-func TestMergeKeepsAmbientMCPRoutes(t *testing.T) {
-	ambient := []string{"MCP_API_URL=http://bridge.local", "MCP_CUSTOM=http://bridge.local/custom"}
+// Address-style MCP routes are still inherited: over-filtering them previously
+// produced a silent failure where the child never saw MCP_CUSTOM and nothing
+// errored, and an address grants nothing on its own.
+func TestMergeKeepsAmbientMCPAddressRoutes(t *testing.T) {
+	ambient := []string{
+		"MCP_API_URL=http://bridge.local",
+		"MCP_CUSTOM=http://bridge.local/custom",
+		"MCP_MCP=http://bridge.local/mcp",
+		"MCP_VIRTUAL=http://bridge.local/virtual",
+	}
 	opts := scopedEnvOpts(map[string]string{"SECRET_MINE": "v"})
 
 	got := envMap(MergeCodingAgentSecretEnvironment(ambient, opts))
 
-	if got["MCP_API_URL"] != "http://bridge.local" || got["MCP_CUSTOM"] != "http://bridge.local/custom" {
-		t.Fatalf("transport routes were scrubbed, which silently breaks the bridge: %v", got)
+	for _, key := range []string{"MCP_API_URL", "MCP_CUSTOM", "MCP_MCP", "MCP_VIRTUAL"} {
+		if got[key] == "" {
+			t.Fatalf("address route %s was scrubbed, which silently breaks the bridge: %v", key, got)
+		}
+	}
+}
+
+// The credential half of the MCP_* prefix is NOT routing metadata: an ambient
+// bearer token or session id lets a child act with another session's authority
+// and binding. Treating the whole prefix as inheritable was the gap.
+func TestMergeDropsAmbientMCPCredentialsAndSessionIdentity(t *testing.T) {
+	ambient := []string{
+		"MCP_API_URL=http://bridge.local",
+		"MCP_API_TOKEN=another-sessions-token",
+		"MCP_AUTH=Bearer another-sessions-token",
+		"MCP_SESSION_ID=another-session",
+	}
+	opts := scopedEnvOpts(map[string]string{"SECRET_MINE": "v"})
+
+	got := envMap(MergeCodingAgentSecretEnvironment(ambient, opts))
+
+	for _, key := range []string{"MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID"} {
+		if _, leaked := got[key]; leaked {
+			t.Fatalf("child inherited another session's %s: %v", key, got)
+		}
+	}
+	if got["MCP_API_URL"] != "http://bridge.local" {
+		t.Fatalf("scrubbing credentials must not take the address route with it: %v", got)
+	}
+}
+
+// A caller that DOES declare its own session credentials must get exactly
+// those, not the ambient ones.
+func TestMergeDeclaredMCPCredentialsWinOverAmbient(t *testing.T) {
+	ambient := []string{"MCP_API_TOKEN=another-sessions-token", "MCP_SESSION_ID=another-session"}
+	opts := scopedEnvOpts(map[string]string{"MCP_API_TOKEN": "my-token", "MCP_SESSION_ID": "my-session"})
+
+	got := envMap(MergeCodingAgentSecretEnvironment(ambient, opts))
+
+	if got["MCP_API_TOKEN"] != "my-token" || got["MCP_SESSION_ID"] != "my-session" {
+		t.Fatalf("declared session credentials did not win: %v", got)
 	}
 }
 
