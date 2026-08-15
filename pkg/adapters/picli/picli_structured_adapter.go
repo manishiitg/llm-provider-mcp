@@ -239,7 +239,15 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		}
 		skillDir = piProjectedSkillsPath(workingDir)
 	}
-	args := buildPiStructuredArgs(sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
+	// Resolve once: the same provider/model pair drives BOTH the argv flags
+	// (which model pi actually runs) and the API key env var names (which
+	// credential that provider expects). Deriving them separately is how they
+	// drift apart.
+	provider, model := resolvePiProviderModel(p.modelID, "")
+	args := buildPiStructuredArgs(provider, model, sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
+	if p.logger != nil {
+		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)
+	}
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -254,7 +262,6 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// any ambient value for the same key names first so a stale/wrong ambient
 	// key can never silently win over the one that was actually resolved.
 	if p.apiKey != "" {
-		provider, _ := resolvePiProviderModel(p.modelID, "")
 		keyEnv := piAPIKeyEnv(provider, p.apiKey)
 		cmd.Env = piOverrideEnv(cmd.Env, keyEnv)
 		if p.logger != nil {

@@ -20,9 +20,10 @@ func has(args []string, want string) bool {
 // lets turn 2 recall turn 1 instead of starting a blank session.
 func TestBuildPiStructuredArgs(t *testing.T) {
 	t.Run("full bridge-only turn with skills", func(t *testing.T) {
-		got := buildPiStructuredArgs("sess-1", true, true, "mcp-ext", true, "/work/.pi/skills")
+		got := buildPiStructuredArgs("google", "gemini-3.7-flash", "sess-1", true, true, "mcp-ext", true, "/work/.pi/skills")
 		want := []string{
 			"--print", "--mode", "json",
+			"--provider", "google", "--model", "gemini-3.7-flash",
 			"--session-id", "sess-1",
 			"--no-builtin-tools",
 			"-e", "mcp-ext",
@@ -34,9 +35,25 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 		}
 	})
 
+	// Without these, pi silently runs whatever provider/model its own local
+	// settings last used -- a resolved google/gemini-3.7-flash turn actually
+	// executed against amazon-bedrock/claude-opus-4-6 on a machine where pi
+	// had been used with Bedrock before.
+	t.Run("provider and model are always passed", func(t *testing.T) {
+		got := buildPiStructuredArgs("zai", "glm-5.3", "s", false, false, "", false, "")
+		provIdx := indexOfPi(got, "--provider")
+		if provIdx == -1 || got[provIdx+1] != "zai" {
+			t.Fatalf("expected --provider zai, got %v", got)
+		}
+		modelIdx := indexOfPi(got, "--model")
+		if modelIdx == -1 || got[modelIdx+1] != "glm-5.3" {
+			t.Fatalf("expected --model glm-5.3, got %v", got)
+		}
+	})
+
 	t.Run("fresh and resume both carry --session-id (symmetry)", func(t *testing.T) {
-		fresh := buildPiStructuredArgs("minted-id", false, false, "", false, "")
-		resume := buildPiStructuredArgs("prior-id", false, false, "", false, "")
+		fresh := buildPiStructuredArgs("google", "gemini-3.7-flash", "minted-id", false, false, "", false, "")
+		resume := buildPiStructuredArgs("google", "gemini-3.7-flash", "prior-id", false, false, "", false, "")
 		for _, tc := range []struct {
 			name string
 			args []string
@@ -50,7 +67,7 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("bridge-only without mcp config: --no-builtin-tools but no -e", func(t *testing.T) {
-		got := buildPiStructuredArgs("s", true, false, "", true, "")
+		got := buildPiStructuredArgs("google", "gemini-3.7-flash", "s", true, false, "", true, "")
 		if !has(got, "--no-builtin-tools") {
 			t.Errorf("expected --no-builtin-tools, got %v", got)
 		}
@@ -60,7 +77,7 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("no working dir, no skills: no --approve, no --skill", func(t *testing.T) {
-		got := buildPiStructuredArgs("s", false, false, "", false, "")
+		got := buildPiStructuredArgs("google", "gemini-3.7-flash", "s", false, false, "", false, "")
 		if has(got, "--approve") || has(got, "--skill") {
 			t.Errorf("expected neither --approve nor --skill, got %v", got)
 		}
