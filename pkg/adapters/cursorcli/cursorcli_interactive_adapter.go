@@ -538,7 +538,15 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	session.workingDir = workingDir
 	session.cleanupFiles = cleanupFiles
 
-	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, workingDir); err != nil {
+	// The structured path applies the caller's scoped environment when it
+	// builds cmd.Env; a tmux pane has no such slice -- it inherits the tmux
+	// SERVER's environment -- so the same contract has to be executed inside
+	// the launch script as export/unset. Without this, an interactive session
+	// silently ran with whatever credentials were ambient on the backend.
+	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
+	env = append(env, scopedEnv...)
+
+	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, unsetEnv, workingDir); err != nil {
 		session.initErr = err
 		if cleanupFiles != nil {
 			cleanupFiles()
@@ -1271,15 +1279,19 @@ func cursorAutoApproveWebSearchFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-func startCursorTmuxSession(ctx context.Context, sessionName string, args []string, env []string, workingDir string) error {
+func startCursorTmuxSession(ctx context.Context, sessionName string, args []string, env, unset []string, workingDir string) error {
 	if workingDir == "" {
 		workingDir = cursorMustGetwd()
 	}
 	shellCommand := "cd " + cursorShellQuote(workingDir) + " && exec " + cursorShellJoin(args)
 	var cleanupLaunchScript func()
-	if len(env) > 0 {
+	if len(env) > 0 || len(unset) > 0 {
 		var err error
-		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithEnv(args, workingDir, env)
+		// CommandWithFinalEnv (not CommandWithEnv): the unset list must run
+		// inside the launch script, after shell startup files, so an ambient
+		// credential cannot be restored by a profile and cannot survive from
+		// the tmux server environment.
+		shellCommand, cleanupLaunchScript, err = shelllaunch.CommandWithFinalEnv(args, workingDir, env, unset)
 		if err != nil {
 			return fmt.Errorf("failed to prepare Cursor launch environment: %w", err)
 		}

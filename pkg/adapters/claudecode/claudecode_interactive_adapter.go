@@ -405,7 +405,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 		defer removeFiles(tempFiles)
 
-		if err := c.startSession(callCtx, sessionName, args, workingDir); err != nil {
+		if err := c.startSession(callCtx, sessionName, args, workingDir, opts); err != nil {
 			return nil, err
 		}
 		registerClaudeInteractiveSession(sessionName)
@@ -1067,7 +1067,7 @@ func (c *ClaudeCodeInteractiveAdapter) shouldPassModelFlag() bool {
 	return modelID != "" && modelID != "claude-code"
 }
 
-func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string) error {
+func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, sessionName string, args []string, workingDir string, opts *llmtypes.CallOptions) error {
 	if workingDir != "" {
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
@@ -1075,7 +1075,14 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		preTrustClaudeWorkingDir(workingDir)
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
-	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, claudeAmbientAuthEnvKeys)
+	// This already scrubs Claude's own ambient auth keys. The caller's scoped
+	// environment is a separate contract that the structured path applies when
+	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux
+	// SERVER's environment, so it has to be executed here as export/unset too.
+	scopedEnv, scopedUnset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), finalEnv, opts)
+	finalEnv = append(finalEnv, scopedEnv...)
+	unsetKeys := append(append([]string(nil), claudeAmbientAuthEnvKeys...), scopedUnset...)
+	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithFinalEnv(args, workingDir, finalEnv, unsetKeys)
 	if err != nil {
 		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
 	}
@@ -3617,7 +3624,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	}
 	session.tempFiles = tempFiles
 
-	if err := c.startSession(ctx, session.tmuxSessionName, args, workingDir); err != nil {
+	if err := c.startSession(ctx, session.tmuxSessionName, args, workingDir, opts); err != nil {
 		session.initErr = err
 		session.mu.Unlock()
 		removeClaudePersistentInteractiveSession(ownerSessionID, session)

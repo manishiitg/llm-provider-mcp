@@ -490,7 +490,7 @@ func TestWritePiLaunchScriptKeepsTmuxCommandShort(t *testing.T) {
 }
 
 func TestPiTmuxLaunchEnablesExtendedKeysBeforeNewSession(t *testing.T) {
-	newSessionArgs, cleanup, err := piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, "/tmp/work")
+	newSessionArgs, cleanup, err := piTmuxNewSessionArgs("mlp-pi-test", []string{"/tmp/launch-pi.sh"}, []string{"PI_API_KEY=secret", " "}, nil, "/tmp/work")
 	if err != nil {
 		t.Fatalf("piTmuxNewSessionArgs error = %v", err)
 	}

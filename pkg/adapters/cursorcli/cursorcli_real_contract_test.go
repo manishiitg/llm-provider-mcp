@@ -174,7 +174,7 @@ func TestCursorCLIRealAuthPromptSurfacedBeforePromptContract(t *testing.T) {
 	sessionName := newCursorTmuxSessionName()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, nil, workingDir); err != nil {
 		t.Fatalf("start auth prompt tmux session: %v", err)
 	}
 	t.Cleanup(func() {
@@ -234,7 +234,7 @@ func TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract(t *testing.T) {
 	sessionName := newCursorTmuxSessionName()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, nil, workingDir); err != nil {
 		t.Fatalf("start fresh trust tmux session: %v", err)
 	}
 	t.Cleanup(func() {
@@ -354,7 +354,7 @@ func TestCursorCLIRealVisibleMultilineDraftContract(t *testing.T) {
 	sessionName := newCursorTmuxSessionName()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := startCursorTmuxSession(ctx, sessionName, args, env, workingDir); err != nil {
+	if err := startCursorTmuxSession(ctx, sessionName, args, env, nil, workingDir); err != nil {
 		t.Fatalf("start visible draft tmux session: %v", err)
 	}
 	t.Cleanup(func() {

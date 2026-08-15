@@ -328,6 +328,63 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 	return copy
 }
 
+// ScopedCodingAgentEnvironmentPlan is the interactive/tmux counterpart of
+// MergeCodingAgentSecretEnvironment. A structured launch can hand the child a
+// fully-built environment; a tmux launch cannot, because the pane inherits the
+// tmux SERVER's environment rather than this process's, so there is no slice to
+// filter. The equivalent has to be expressed as "export these, unset those" and
+// executed inside the launch script, where the unset applies no matter which
+// layer the variable arrived from.
+//
+// Returns the declared entries to export, and the scoped credential keys that
+// are present ambiently but were NOT declared for this child. alreadySet lists
+// entries the adapter is exporting itself (its own provider API key, the MCP
+// bridge routes it derived from the caller's config); those are never unset,
+// or the launch would strip the credentials it just built.
+//
+// With nothing declared, both results are empty: a caller that never opted into
+// scoping keeps exactly the behavior it had.
+func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOptions) (export, unset []string) {
+	declared := CodingAgentSecretEnvironmentFromOptions(opts)
+	if len(declared) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, 0, len(declared))
+	for key := range declared {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		export = append(export, key+"="+declared[key])
+	}
+
+	protected := make(map[string]bool, len(alreadySet))
+	for _, entry := range alreadySet {
+		if key, _, found := strings.Cut(entry, "="); found {
+			protected[key] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	for _, entry := range ambient {
+		key, _, found := strings.Cut(entry, "=")
+		if !found || seen[key] || protected[key] {
+			continue
+		}
+		if _, isDeclared := declared[key]; isDeclared {
+			continue
+		}
+		if !isScopedCredentialEnvironmentKey(key) {
+			continue
+		}
+		seen[key] = true
+		unset = append(unset, key)
+	}
+	sort.Strings(unset)
+	return export, unset
+}
+
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
 // environment without mutating the caller's slice.
 //

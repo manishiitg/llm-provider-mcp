@@ -114,7 +114,7 @@ exit 0
 
 	const token = "workflow-oauth-secret"
 	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken("claude-code", token, nil)
-	if err := adapter.startSession(context.Background(), "oauth-session", []string{"claude"}, ""); err != nil {
+	if err := adapter.startSession(context.Background(), "oauth-session", []string{"claude"}, "", nil); err != nil {
 		t.Fatalf("startSession returned error: %v", err)
 	}
 	args, err := os.ReadFile(argsPath)
@@ -250,7 +250,7 @@ exit 0
 	t.Setenv("TMUX_TEST_ARGS", argsPath)
 
 	adapter := NewClaudeCodeInteractiveAdapter("claude-code", nil)
-	if err := adapter.startSession(context.Background(), "history-session", []string{"claude"}, ""); err != nil {
+	if err := adapter.startSession(context.Background(), "history-session", []string{"claude"}, "", nil); err != nil {
 		t.Fatalf("startSession returned error: %v", err)
 	}
 	args, err := os.ReadFile(argsPath)

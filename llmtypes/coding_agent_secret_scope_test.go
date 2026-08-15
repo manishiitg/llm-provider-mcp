@@ -118,3 +118,59 @@ func TestMergeWithoutADeclaredScopeIsPassthrough(t *testing.T) {
 		t.Fatalf("passthrough changed the environment: %v", got)
 	}
 }
+
+// A tmux pane inherits the tmux SERVER's environment, so there is no slice to
+// filter the way a structured launch filters cmd.Env. The equivalent has to be
+// expressed as export/unset and executed inside the launch script -- these pin
+// that plan.
+func TestScopedPlanExportsDeclaredAndUnsetsUndeclared(t *testing.T) {
+	ambient := []string{
+		"PATH=/usr/bin",
+		"SECRET_OTHER_TENANT=leaked",
+		"VAR_NOT_MINE=leaked",
+		"MCP_API_TOKEN=another-sessions-token",
+		"MCP_API_URL=http://bridge.local",
+	}
+	adapterOwned := []string{"MCP_API_TOKEN=my-own-derived-token"}
+	opts := scopedEnvOpts(map[string]string{"SECRET_MINE": "v"})
+
+	export, unset := ScopedCodingAgentEnvironmentPlan(ambient, adapterOwned, opts)
+
+	if len(export) != 1 || export[0] != "SECRET_MINE=v" {
+		t.Fatalf("export = %v, want the declared entry", export)
+	}
+	unsetSet := map[string]bool{}
+	for _, key := range unset {
+		unsetSet[key] = true
+	}
+	for _, want := range []string{"SECRET_OTHER_TENANT", "VAR_NOT_MINE"} {
+		if !unsetSet[want] {
+			t.Fatalf("undeclared %s was not scheduled for unset: %v", want, unset)
+		}
+	}
+	// The adapter derived this one itself from the caller's config. Unsetting
+	// it would strip the credential the launch just built.
+	if unsetSet["MCP_API_TOKEN"] {
+		t.Fatalf("adapter-owned credential was scheduled for unset: %v", unset)
+	}
+	// An address grants nothing and dropping it silently breaks the bridge.
+	if unsetSet["MCP_API_URL"] {
+		t.Fatalf("address route was scheduled for unset: %v", unset)
+	}
+	if unsetSet["PATH"] {
+		t.Fatalf("unrelated variable was scheduled for unset: %v", unset)
+	}
+}
+
+// Without a declared scope the caller never opted in, so an interactive launch
+// must be byte-identical to what it was before -- no exports, no unsets.
+func TestScopedPlanIsInertWithoutADeclaredScope(t *testing.T) {
+	export, unset := ScopedCodingAgentEnvironmentPlan(
+		[]string{"SECRET_AMBIENT=kept", "PATH=/usr/bin"},
+		nil,
+		&CallOptions{},
+	)
+	if len(export) != 0 || len(unset) != 0 {
+		t.Fatalf("plan must be inert without a declared scope: export=%v unset=%v", export, unset)
+	}
+}
