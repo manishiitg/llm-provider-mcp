@@ -113,6 +113,15 @@ const (
 	// This is distinct from CertCancellation, which only proves the
 	// interrupt is RECEIVED — not that state survives it.
 	CertCtrlCStatePreserved CodingAgentCertificationID = "ctrl_c_state_preserved"
+	// CertStalledTurnDiagnosis proves DiagnoseTurnCompletion (PLAT-116) can
+	// independently rediscover a REAL, already-finished turn's completion
+	// with no turn in flight — the post-hoc read path the platform falls
+	// back to when its own live bridge from a completed turn to its caller
+	// stalls. This is distinct from CertDoneDetection, which proves the
+	// adapter's own live polling loop notices completion; this proves a
+	// SEPARATE, later consumer can still find that same evidence after the
+	// fact if the live path's own signal never reached its caller.
+	CertStalledTurnDiagnosis CodingAgentCertificationID = "stalled_turn_diagnosis"
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
@@ -220,10 +229,18 @@ var codingAgentCapabilityCertifications = []struct {
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
 	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}},
+	{"stalled turn diagnosis", func(c CodingAgentProviderContract) bool { return c.SupportsStalledTurnDiagnosis }, []CodingAgentCertificationID{CertStalledTurnDiagnosis}},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderClaudeCode: {
+		{
+			ID:          CertStalledTurnDiagnosis,
+			TestFile:    "pkg/adapters/claudecode/claudecode_stalled_turn_diagnosis_live_test.go",
+			TestName:    "TestClaudeCodeTmuxIntegrationStalledTurnDiagnosisContract",
+			Description: "runs a real Claude Code turn to completion, then independently rediscovers it via DiagnoseTurnCompletion with no turn in flight",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredMultiTurn,
 			TestFile:    "pkg/adapters/claudecode/claudecode_structured_live_test.go",
@@ -466,6 +483,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{
+			ID:          CertStalledTurnDiagnosis,
+			TestFile:    "pkg/adapters/codexcli/codexcli_stalled_turn_diagnosis_live_test.go",
+			TestName:    "TestCodexCLIRealInteractiveStalledTurnDiagnosisContract",
+			Description: "runs a real Codex CLI turn to completion, then independently rediscovers it via DiagnoseTurnCompletion with no turn in flight",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredMultiTurn,
 			TestFile:    "pkg/adapters/codexcli/codexcli_structured_integration_test.go",
@@ -1251,6 +1275,12 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 	if id == CertStructuredStreaming || id == CertStructuredMultiTurn {
 		return CodingAgentCertificationPriorityP0
 	}
+	// A false "made no progress" timeout on a turn that actually succeeded
+	// (PLAT-116) is release-blocking wherever the diagnostic is claimed, not
+	// a nice-to-have — same reasoning as streaming above.
+	if id == CertStalledTurnDiagnosis {
+		return CodingAgentCertificationPriorityP0
+	}
 	return CodingAgentCertificationPriorityP1
 }
 
@@ -1274,6 +1304,12 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// certification exercises a different lifecycle and is not a substitute.
 	if contract.UsesPersistentSession && contract.SupportsNativeResume {
 		ids = append(ids, CertStructuredMultiTurn)
+	}
+	// A provider claiming DiagnoseTurnCompletion (PLAT-116) must prove it
+	// works against a real turn, the same way structured streaming above
+	// must prove itself for providers that claim it.
+	if contract.SupportsStalledTurnDiagnosis {
+		ids = append(ids, CertStalledTurnDiagnosis)
 	}
 	return ids
 }

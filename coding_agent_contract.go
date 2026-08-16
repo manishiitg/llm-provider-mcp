@@ -201,6 +201,26 @@ type CodingAgentProviderContract struct {
 	// of this CLI (e.g. "~/.codex/config.toml", "~/.gemini/settings.json").
 	// DOCUMENTATION ONLY — the orchestrator does not write here.
 	UserMCPConfigFile string
+
+	// SupportsStalledTurnDiagnosis reports whether the adapter exposes a
+	// DiagnoseTurnCompletion(..., since) function that can be asked,
+	// independently of any live turn, whether the provider's own completion
+	// signal shows a turn already finished after a given time (PLAT-116: the
+	// platform's own bridge from that live signal back to its caller can
+	// silently stall — a real incident reproduced live on Codex — and
+	// without this, nothing distinguishes "still working" from "finished,
+	// but the platform never found out" once that happens). Only Codex and
+	// Claude Code have this today; Pi CLI's marker file lives in a
+	// per-session temp directory with no OS-standard path an external
+	// caller can read without a registry export first, and Cursor's default
+	// (structured) transport never reaches the interactive completion path
+	// this diagnoses.
+	//
+	// Pairs with CertStalledTurnDiagnosis, promoted to P0 wherever true
+	// (RequiredP0CodingAgentCertificationIDs): a false "made no progress"
+	// timeout on a turn that actually succeeded is a release-blocking
+	// defect, not a nice-to-have.
+	SupportsStalledTurnDiagnosis bool
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
@@ -236,11 +256,12 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RestoreAsksInteractivePrompts: true,
 		// Claude Code authentication is its saved login or a process-scoped
 		// workflow OAuth token. Ambient API-key variables are explicitly ignored.
-		APIKeyEnvVars:             []string{},
-		WorkingDirInstructionFile: "CLAUDE.md",
-		UserInstructionFile:       "~/.claude/CLAUDE.md",
-		WorkingDirMCPConfigFile:   ".mcp.json",
-		UserMCPConfigFile:         "~/.claude/settings.json",
+		APIKeyEnvVars:                []string{},
+		WorkingDirInstructionFile:    "CLAUDE.md",
+		UserInstructionFile:          "~/.claude/CLAUDE.md",
+		WorkingDirMCPConfigFile:      ".mcp.json",
+		UserMCPConfigFile:            "~/.claude/settings.json",
+		SupportsStalledTurnDiagnosis: true,
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -261,27 +282,28 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// it back via `case "codex-cli":` (server.go:6270). Contract used to
 		// say false; the drift test in coding_agent_contract_test.go now
 		// enforces this matches the actual wiring.
-		SupportsNativeResume:        true,
-		UsesMCPBridge:               true,
-		RequiresMCPBridgeConfig:     true,
-		SupportsBridgeOnlyTools:     true,
-		UsesNativeSystemPrompt:      true,
-		LaunchesViaLoginShell:       true,
-		ProcessScopedCleanup:        true,
-		HandlesTmuxSessionLoss:      true,
-		StructuredFallback:          false,
-		ImageInputInteractive:       true,
-		SurfacesTokenUsage:          true,
-		TokenUsageSource:            "transcript-file",
-		AdapterReadsTranscript:      true,
-		TranscriptPathTemplate:      "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
-		SupportsStructuredStreaming: true,
-		RequiresWorkspaceTrust:      true,
-		APIKeyEnvVars:               []string{"CODEX_API_KEY"},
-		WorkingDirInstructionFile:   "AGENTS.md",
-		UserInstructionFile:         "~/.codex/AGENTS.md",
-		WorkingDirMCPConfigFile:     "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
-		UserMCPConfigFile:           "~/.codex/config.toml",
+		SupportsNativeResume:         true,
+		UsesMCPBridge:                true,
+		RequiresMCPBridgeConfig:      true,
+		SupportsBridgeOnlyTools:      true,
+		UsesNativeSystemPrompt:       true,
+		LaunchesViaLoginShell:        true,
+		ProcessScopedCleanup:         true,
+		HandlesTmuxSessionLoss:       true,
+		StructuredFallback:           false,
+		ImageInputInteractive:        true,
+		SurfacesTokenUsage:           true,
+		TokenUsageSource:             "transcript-file",
+		AdapterReadsTranscript:       true,
+		TranscriptPathTemplate:       "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
+		SupportsStructuredStreaming:  true,
+		RequiresWorkspaceTrust:       true,
+		APIKeyEnvVars:                []string{"CODEX_API_KEY"},
+		WorkingDirInstructionFile:    "AGENTS.md",
+		UserInstructionFile:          "~/.codex/AGENTS.md",
+		WorkingDirMCPConfigFile:      "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
+		UserMCPConfigFile:            "~/.codex/config.toml",
+		SupportsStalledTurnDiagnosis: true,
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
