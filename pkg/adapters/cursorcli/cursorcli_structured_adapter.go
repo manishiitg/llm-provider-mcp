@@ -401,6 +401,9 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	}
 
 	var finalContent string
+	// True once this span emitted token-level deltas, so the assembled repeat
+	// that follows can be dropped instead of duplicating the text.
+	var streamedDeltasThisSpan bool
 	// segments accumulates one completed text block per assistant "reply span"
 	// — a run of text bounded by tool calls. Cursor's own end-of-turn "result"
 	// field re-joins those spans WITHOUT a separator when a tool call sits
@@ -481,11 +484,48 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				if event.Message != nil {
 					text := cursorEventMessageText(event.Message)
 					if text != "" {
+						// Cursor streams a span TWICE: first as token-level
+						// fragments (subtype "delta", which can split mid-word —
+						// "Reading" / " the" / " build"), then once more as the
+						// assembled span. Emitting both duplicated every sentence
+						// in the output, and emitting the fragments WITHOUT the
+						// delta marker made a reassembler "\n"-join them, so a
+						// streamed markdown table arrived as a column of single
+						// pipes. Verified on real cursor-agent output.
+						//
+						// So: forward the fragments marked as deltas (the
+						// progressive signal a UI wants), and drop the assembled
+						// repeat — finalContent still tracks it for the return
+						// value, which is what the non-streaming path uses.
+						// Evidence + the full provider/transport matrix this came
+						// from: coding-agent-loop docs/design/
+						// product_api_transport_for_coding_agents.md ("Measured matrix").
+						//
+						// Verified against real cursor-agent output: under
+						// --stream-partial-output every "assistant" event carries a
+						// FRAGMENT and has NO subtype at all (7 events for a single
+						// sentence: "Reading" / " the" / " build" ...). The assembled
+						// text arrives separately on the "result" event, so these are
+						// unconditionally token-level deltas. Checking for
+						// subtype=="delta" here matched nothing and left them
+						// unmarked, which is what made a reassembler "\n"-join them
+						// and render a streamed table as a column of bare pipes.
+						isDelta := event.Subtype == "" || event.Subtype == "delta"
+						if !isDelta && streamedDeltasThisSpan {
+							finalContent = text
+							streamedDeltasThisSpan = false
+							continue
+						}
 						finalContent = text
-						emitChunk(llmtypes.StreamChunk{
+						chunk := llmtypes.StreamChunk{
 							Type:    llmtypes.StreamChunkTypeContent,
 							Content: text,
-						})
+						}
+						if isDelta {
+							streamedDeltasThisSpan = true
+							chunk.Metadata = map[string]interface{}{llmtypes.ContentDeltaMetadataKey: true}
+						}
+						emitChunk(chunk)
 					}
 				}
 
