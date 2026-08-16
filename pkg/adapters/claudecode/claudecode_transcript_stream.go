@@ -40,6 +40,12 @@ type claudeTranscriptEvent struct {
 	Reasoning  string
 	ToolName   string
 	ToolCallID string
+	// ToolArgs is the call's arguments, carried onto the START chunk (the only
+	// chunk with a field for them — ToolCallEnd has none). Without this the
+	// mcpagent layer receives a tool call with an empty body, so a product can
+	// render only the bare tool name and an agentic reviewer cannot tell a
+	// bridge-routed call from raw native shell use.
+	ToolArgs string
 	// IsToolEnd distinguishes a tool_result row from a tool_use row; both
 	// carry ToolCallID, so this is the only way to tell them apart once
 	// mapped onto the shared event shape.
@@ -214,6 +220,7 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 			Type:       llmtypes.StreamChunkTypeToolCallStart,
 			ToolName:   e.ToolName,
 			ToolCallID: e.ToolCallID,
+			ToolArgs:   e.ToolArgs,
 			Metadata:   meta,
 		}
 	}
@@ -311,11 +318,12 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 						events = append(events, claudeTranscriptEvent{Text: v.Text})
 					}
 				case llmtypes.ToolCall:
-					name := ""
+					name, args := "", ""
 					if v.FunctionCall != nil {
 						name = v.FunctionCall.Name
+						args = v.FunctionCall.Arguments
 					}
-					events = append(events, claudeTranscriptEvent{ToolName: name, ToolCallID: v.ID})
+					events = append(events, claudeTranscriptEvent{ToolName: name, ToolCallID: v.ID, ToolArgs: args})
 					// Recorded even when rowTime is zero (missing/unparseable
 					// timestamp): the matching tool_result below treats a
 					// zero start as "not measured" and reports 0 rather than

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -213,8 +214,28 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		// response_item: function_call / custom_tool_call
 		Name   string `json:"name"`
 		CallID string `json:"call_id"`
+		// Arguments for the call. function_call carries "arguments"; the newer
+		// custom_tool_call shape carries the invocation body as "input" instead
+		// (for codex's code-mode `exec`, that body is the actual script — which
+		// is where a bridge call like
+		// `tools.mcp__api_bridge__execute_shell_command({...})` appears). Reading
+		// only "arguments" left every custom_tool_call with empty ToolArgs, so
+		// the UI had no detail to render for the call.
+		Arguments json.RawMessage `json:"arguments"`
+		Input     json.RawMessage `json:"input"`
 		// response_item: function_call_output / custom_tool_call_output
-		Output string `json:"output"`
+		//
+		// See coding-agent-loop docs/design/
+		// product_api_transport_for_coding_agents.md ("Measured matrix") for the
+		// live evidence behind this shape.
+		//
+		// Deliberately json.RawMessage, NOT string: function_call_output sends a
+		// bare string, but custom_tool_call_output sends an ARRAY of content
+		// blocks ([{"type":"input_text","text":"..."}]). Declaring this `string`
+		// made json.Unmarshal fail for the WHOLE row, so the row was skipped and
+		// no ToolCallEnd was ever emitted — every codex code-mode tool call
+		// stayed open and its UI chip spun forever.
+		Output json.RawMessage `json:"output"`
 		// event_msg: agent_message
 		Message string `json:"message"`
 		// event_msg: mcp_tool_call_begin / _end
@@ -307,7 +328,16 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 					events = append(events, codexTranscriptEvent{Text: b.Text, Key: e.Timestamp})
 				}
 			case "function_call", "custom_tool_call":
-				events = append(events, codexTranscriptEvent{ToolName: e.Payload.Name, ToolCallID: e.Payload.CallID})
+				// Carry the call body through as ToolArgs so the UI has something
+				// to show for the call. function_call uses "arguments";
+				// custom_tool_call uses "input" — for codex's code-mode `exec`
+				// that body is the script, which is also the only place a nested
+				// bridge call (tools.mcp__api_bridge__*) is visible.
+				args := codexRolloutText(e.Payload.Arguments)
+				if args == "" {
+					args = codexRolloutText(e.Payload.Input)
+				}
+				events = append(events, codexTranscriptEvent{ToolName: e.Payload.Name, ToolCallID: e.Payload.CallID, ToolArgs: args})
 				if pendingToolStarts != nil && e.Payload.CallID != "" {
 					pendingToolStarts[e.Payload.CallID] = rowTime
 				}
@@ -316,7 +346,7 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 					events = append(events, codexTranscriptEvent{
 						IsToolEnd:    true,
 						ToolCallID:   e.Payload.CallID,
-						ToolResult:   e.Payload.Output,
+						ToolResult:   codexRolloutText(e.Payload.Output),
 						ToolDuration: consumeCodexPendingStart(pendingToolStarts, e.Payload.CallID, rowTime),
 					})
 				}
@@ -343,4 +373,41 @@ func consumeCodexPendingStart(pendingToolStarts map[string]time.Time, callID str
 		return 0
 	}
 	return endTime.Sub(start)
+}
+
+// codexRolloutText renders a rollout field that codex sends in more than one
+// shape into display text.
+//
+// Codex uses a bare JSON string for function_call_output, and an array of
+// content blocks ([{"type":"input_text","text":"..."}]) for the newer
+// custom_tool_call_output. Both must decode, and neither may abort the row: an
+// unparsed completion row means no ToolCallEnd, which is indistinguishable in
+// the UI from a tool that never finished.
+func codexRolloutText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var b strings.Builder
+		for _, blk := range blocks {
+			if blk.Text == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(blk.Text)
+		}
+		return b.String()
+	}
+	// An unrecognised shape is still better surfaced verbatim than dropped.
+	return string(raw)
 }
