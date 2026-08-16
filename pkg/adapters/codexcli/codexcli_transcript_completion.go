@@ -18,18 +18,17 @@ import (
 // scrollback, and some Codex releases omit the visible "Worked for ..."
 // footer even though the turn has ended.
 //
-// The rollout is selected by its session_meta.cwd.
+// The rollout is resolved through resolveRollout when the caller supplies one
+// (PLAT-108), which binds this tracker to its own session's conversation.
 //
-// KNOWN GAP (PLAT-108): the comment here previously claimed "interactive
-// sessions use a unique working directory, so this remains isolated when
-// several Codex agents run concurrently". That assumption is false — a
-// workflow's interactive Chat and its scheduled run share one directory, so
-// this tracker can latch onto the OTHER conversation's rollout and derive
-// completion from its task_complete. This constructor has no session identity
-// in scope; binding it requires threading the session through
-// waitForCodexInteractiveResponse. Deliberately not changed while PLAT-105
-// ("turn never settles") is open, since altering completion detection would
-// confound that investigation.
+// This used to select purely by session_meta.cwd, justified by a comment
+// claiming "interactive sessions use a unique working directory, so this
+// remains isolated when several Codex agents run concurrently". That assumption
+// is false: a workflow's interactive Chat and its scheduled run share one
+// directory, so the tracker could latch onto the OTHER conversation's rollout
+// and end this turn on its task_complete. The interactive adapter now always
+// passes a bound resolver; only the structured transport still passes nil,
+// because a one-shot `--json` process has no session identity to bind.
 //
 // Events older than turnStart are ignored for persistent sessions that contain
 // multiple turns.
