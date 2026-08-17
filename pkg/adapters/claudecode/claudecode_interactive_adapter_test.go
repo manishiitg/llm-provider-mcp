@@ -2030,6 +2030,23 @@ func TestIsClaudeBlockingChoiceMenu(t *testing.T) {
 	}
 }
 
+func TestIsClaudeThemeSelectionPrompt(t *testing.T) {
+	theme := `Welcome to Claude Code v2.1.233
+
+Choose the text style that looks best with your terminal
+To change this later, run /theme
+
+  1. Auto (match terminal)
+❯ 2. Dark mode
+  3. Light mode`
+	if !isClaudeThemeSelectionPrompt(theme) {
+		t.Fatal("Claude Code theme picker should be detected")
+	}
+	if isClaudeThemeSelectionPrompt("❯ ready prompt") {
+		t.Fatal("normal input prompt must not be treated as a theme picker")
+	}
+}
+
 // TestEmptyPromptBeforeRenderIsNotProofOfSubmit reproduces the production defect
 // behind "I sent a message to the tmux terminal and it never went". Live send
 // order is: clear the prompt draft, paste, press Enter, verify. The verifier's

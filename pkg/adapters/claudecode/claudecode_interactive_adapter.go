@@ -1482,6 +1482,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	defer ticker.Stop()
 	resumePromptHandled := false
 	trustPromptHandled := false
+	themePromptHandled := false
 	featurePromptsDismissed := 0
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
@@ -1528,6 +1529,20 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				trustPromptHandled = true
 				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "1", "C-m"); err != nil {
 					return fmt.Errorf("failed to accept Claude Code trust-folder prompt: %w", err)
+				}
+				lastActivityAt = time.Now()
+				continue
+			}
+			// Claude Code v2.1.233 opens a one-time terminal-theme picker before
+			// it creates the ordinary input prompt. It is not authentication, and
+			// it has no "Enter to confirm" footer, so the generic numbered-menu
+			// handler below intentionally does not match it. Keep its highlighted
+			// default (Dark mode) by submitting Enter once; without this a freshly
+			// provisioned server accepts no prompts at all.
+			if !themePromptHandled && isClaudeThemeSelectionPrompt(captured) {
+				themePromptHandled = true
+				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
+					return fmt.Errorf("failed to accept Claude Code theme selection: %w", err)
 				}
 				lastActivityAt = time.Now()
 				continue
@@ -1607,6 +1622,17 @@ func isClaudeDismissableFeaturePrompt(captured string) bool {
 		strings.Contains(c, "keep browser tools off") || strings.Contains(c, "no thanks") ||
 		strings.Contains(c, "no, keep")
 	return hasMenu && hasDecline
+}
+
+// isClaudeThemeSelectionPrompt identifies the initial appearance chooser
+// introduced by Claude Code 2.1.233. Match its distinctive wording instead of
+// treating every numbered menu as safe to accept: security and resume prompts
+// have different required choices and are handled separately above.
+func isClaudeThemeSelectionPrompt(captured string) bool {
+	c := strings.ToLower(captured)
+	return strings.Contains(c, "choose the text style that looks best with your terminal") &&
+		strings.Contains(c, "to change this later, run /theme") &&
+		strings.Contains(c, "dark mode")
 }
 
 // isClaudeBlockingChoiceMenu is the generic catch-all for a numbered selection
