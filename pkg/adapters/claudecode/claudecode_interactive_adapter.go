@@ -1076,7 +1076,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
-		preTrustClaudeWorkingDir(workingDir)
+		prepareClaudeUserConfig(workingDir, c.oauthToken)
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
@@ -1135,6 +1135,17 @@ var preTrustClaudeMu sync.Mutex
 // resolved paths. Errors are silently ignored — the session will still launch
 // and the adapter will time out on the trust prompt rather than failing here.
 func preTrustClaudeWorkingDir(workingDir string) {
+	prepareClaudeUserConfig(workingDir, "")
+}
+
+// prepareClaudeUserConfig applies the non-sensitive first-run configuration
+// needed for a non-interactive tmux session. Claude Code currently ignores a
+// valid CLAUDE_CODE_OAUTH_TOKEN during its OAuth onboarding screen (upstream
+// issue #46259), even though the same token works for a normal -p invocation.
+// Mark onboarding complete only when this adapter already holds an explicit
+// token; sessions that rely on an interactive saved login retain Claude's
+// normal onboarding flow.
+func prepareClaudeUserConfig(workingDir, oauthToken string) {
 	paths := []string{workingDir}
 	if resolved, err := os.Readlink(workingDir); err == nil && resolved != workingDir {
 		paths = append(paths, resolved)
@@ -1169,6 +1180,9 @@ func preTrustClaudeWorkingDir(workingDir string) {
 	}
 	if config == nil {
 		config = map[string]interface{}{}
+	}
+	if strings.TrimSpace(oauthToken) != "" {
+		config["hasCompletedOnboarding"] = true
 	}
 
 	projects, _ := config["projects"].(map[string]interface{})

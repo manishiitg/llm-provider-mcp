@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -2044,6 +2045,39 @@ To change this later, run /theme
 	}
 	if isClaudeThemeSelectionPrompt("❯ ready prompt") {
 		t.Fatal("normal input prompt must not be treated as a theme picker")
+	}
+}
+
+func TestPrepareClaudeUserConfigCompletesOnboardingOnlyForExplicitToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := t.TempDir()
+
+	prepareClaudeUserConfig(workDir, "")
+	configPath := filepath.Join(home, ".claude.json")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after trust setup: %v", err)
+	}
+	var withoutToken map[string]interface{}
+	if err := json.Unmarshal(raw, &withoutToken); err != nil {
+		t.Fatalf("parse config without token: %v", err)
+	}
+	if _, found := withoutToken["hasCompletedOnboarding"]; found {
+		t.Fatal("saved-login session must retain Claude's normal onboarding flow")
+	}
+
+	prepareClaudeUserConfig(workDir, "setup-token")
+	raw, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after token setup: %v", err)
+	}
+	var withToken map[string]interface{}
+	if err := json.Unmarshal(raw, &withToken); err != nil {
+		t.Fatalf("parse config with token: %v", err)
+	}
+	if completed, _ := withToken["hasCompletedOnboarding"].(bool); !completed {
+		t.Fatalf("hasCompletedOnboarding = %#v, want true", withToken["hasCompletedOnboarding"])
 	}
 }
 
