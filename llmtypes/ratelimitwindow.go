@@ -106,3 +106,40 @@ func (s *StatusLine) RateLimitWindows() []RateLimitWindow {
 	}
 	return out
 }
+
+// MostConstrainedReset returns the reset instant of the window closest to its
+// limit, and that window's name.
+//
+// This is the companion to EarliestReset, and the two answer different
+// questions on purpose. EarliestReset asks "several windows are exhausted —
+// which one unblocks me first?" and therefore only considers windows already
+// at 100%. That is the right question after a request was rejected because
+// every blocking window is, by definition, at its limit.
+//
+// It is the wrong question when a caller already knows it hit a wall from
+// another signal (PLAT-101: the CLI printed a usage-limit line) and needs the
+// reset instant to suspend on. The statusline that carries the percentages is
+// written asynchronously, so at the moment of the wall it routinely reads 99.x
+// rather than a clean 100 — and EarliestReset would return nothing at all,
+// silently demoting an exact provider-stated instant to a parsed-from-text
+// guess. Ranking by fullness instead answers "which window is blocking me",
+// which is what the caller actually asked.
+//
+// Windows without a future reset are skipped: a reset already in the past
+// describes a window that has since reopened and cannot be what is blocking
+// the caller now. Returns the zero time when nothing qualifies — never a
+// guess.
+func MostConstrainedReset(windows []RateLimitWindow, now time.Time) (time.Time, string) {
+	var best time.Time
+	var name string
+	var highest float64 = -1
+	for _, w := range windows {
+		if w.ResetsAt.IsZero() || !w.ResetsAt.After(now) {
+			continue
+		}
+		if w.UsedPercent > highest {
+			best, name, highest = w.ResetsAt, w.Name, w.UsedPercent
+		}
+	}
+	return best, name
+}

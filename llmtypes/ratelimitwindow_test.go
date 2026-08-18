@@ -86,3 +86,65 @@ func TestEarliestResetReturnsZeroWhenNoReliableTime(t *testing.T) {
 		t.Errorf("EarliestReset = (%v, %q), want zero time and empty name", at, name)
 	}
 }
+
+// TestMostConstrainedResetAnswersFromANearlyFullWindow is the case that
+// motivated the function. The statusline sidecar is written asynchronously, so
+// at the instant the CLI prints a usage-limit line the percentages routinely
+// read 99.x rather than a clean 100. EarliestReset only looks at windows at
+// 100, so it returns nothing here — and the caller silently falls back to
+// reconstructing a timestamp from pane text, which is the exact demotion
+// PLAT-101 exists to prevent.
+func TestMostConstrainedResetAnswersFromANearlyFullWindow(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	fiveHourReset := now.Add(2 * time.Hour)
+	windows := []RateLimitWindow{
+		{Name: "five_hour", UsedPercent: 99.6, ResetsAt: fiveHourReset},
+		{Name: "seven_day", UsedPercent: 31, ResetsAt: now.Add(72 * time.Hour)},
+	}
+
+	if got, _ := EarliestReset(windows, now); !got.IsZero() {
+		t.Fatalf("EarliestReset should still ignore a window under 100%%, got %v", got)
+	}
+
+	got, name := MostConstrainedReset(windows, now)
+	if !got.Equal(fiveHourReset) {
+		t.Errorf("reset = %v, want the fullest window's reset %v", got, fiveHourReset)
+	}
+	if name != "five_hour" {
+		t.Errorf("window = %q, want five_hour", name)
+	}
+}
+
+// TestMostConstrainedResetIgnoresWindowsThatAlreadyReopened pins the one
+// exclusion. A reset in the past describes a window that has since reopened,
+// so it cannot be what is blocking the caller now — returning it would suspend
+// a run until an instant that has already passed, which resumes immediately
+// into the same wall.
+func TestMostConstrainedResetIgnoresWindowsThatAlreadyReopened(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	future := now.Add(90 * time.Minute)
+	windows := []RateLimitWindow{
+		{Name: "five_hour", UsedPercent: 100, ResetsAt: now.Add(-10 * time.Minute)},
+		{Name: "seven_day", UsedPercent: 40, ResetsAt: future},
+	}
+
+	got, name := MostConstrainedReset(windows, now)
+	if !got.Equal(future) {
+		t.Errorf("reset = %v, want the only window still blocking %v", got, future)
+	}
+	if name != "seven_day" {
+		t.Errorf("window = %q, want seven_day", name)
+	}
+}
+
+// TestMostConstrainedResetReturnsNothingRatherThanGuess: no stated reset means
+// unknown. PLAT-101 requires an explicit unknown-capacity state over a
+// fabricated instant, because a wrong instant schedules a resume that fails.
+func TestMostConstrainedResetReturnsNothingRatherThanGuess(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	windows := []RateLimitWindow{{Name: "five_hour", UsedPercent: 100}}
+
+	if got, name := MostConstrainedReset(windows, now); !got.IsZero() || name != "" {
+		t.Errorf("got (%v, %q), want the zero time and no window", got, name)
+	}
+}

@@ -2780,7 +2780,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				// skip retries that cannot succeed and lets a workflow suspend
 				// on the stated reset instead of losing the run (PLAT-101).
 				if IsClaudeUsageLimitText(captured) {
-					return "", NewClaudeUsageLimitError("claudecode", "", captured, time.Now())
+					return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, captured, time.Now())
 				}
 				return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 			}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // PLAT-101. Claude states a reached subscription limit in several wordings,
@@ -147,11 +148,38 @@ func ClaudeUsageLimitResetAt(text string, now time.Time) time.Time {
 // carries no instant. Quota exhaustion is not throttling; it does not clear in
 // seconds and same-model retries cannot succeed.
 func NewClaudeUsageLimitError(provider, model, paneText string, now time.Time) error {
+	return newClaudeUsageLimitError(provider, model, ClaudeUsageLimitResetAt(paneText, now), "")
+}
+
+// NewClaudeUsageLimitErrorForSession is the same failure built for a live tmux
+// session, which can do better on the reset instant than the pane text alone.
+//
+// It applies the PLAT-101 source ranking: the CLI's own structured
+// rate_limits.<window>.resets_at from the statusline sidecar first, the clock
+// time printed in the pane only as a fallback. The structured form is an exact
+// epoch and names its window; the printed form is a bare wall clock with no
+// date, reconstructed from the local zone, and yields nothing at all when the
+// wording omits a reset. Preferring it is not a refinement — a run suspended
+// on a reconstructed time can wake into the same wall.
+//
+// Both sources can decline to answer, and an unknown reset stays unknown. A
+// fabricated timestamp schedules a resume that fails again, which is strictly
+// worse than a run that says it does not know when capacity returns.
+func NewClaudeUsageLimitErrorForSession(provider, model, sessionName, paneText string, now time.Time) error {
+	resetAt, window := llmtypes.MostConstrainedReset(claudeStatuslineRateLimitWindows(sessionName), now)
+	if resetAt.IsZero() {
+		return newClaudeUsageLimitError(provider, model, ClaudeUsageLimitResetAt(paneText, now), "")
+	}
+	return newClaudeUsageLimitError(provider, model, resetAt, window)
+}
+
+func newClaudeUsageLimitError(provider, model string, retryAt time.Time, window string) error {
 	return &llmerrors.Error{
 		Kind:     llmerrors.KindQuotaExhausted,
 		Provider: provider,
 		Model:    model,
-		RetryAt:  ClaudeUsageLimitResetAt(paneText, now),
+		RetryAt:  retryAt,
+		Window:   window,
 		Err:      errors.New("claude code usage limit reached"),
 	}
 }
