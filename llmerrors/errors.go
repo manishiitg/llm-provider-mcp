@@ -58,7 +58,42 @@ type Error struct {
 	Model      string
 	Status     int           // HTTP status when known, else 0
 	RetryAfter time.Duration // provider-suggested wait when known, else 0
-	Err        error         // underlying error, always non-nil
+
+	// RetryAt is the absolute wall-clock time the exhausted window reopens,
+	// when the provider states it. Distinct from RetryAfter on purpose: a
+	// duration is only meaningful relative to the instant it was computed, so
+	// it cannot survive being persisted and reloaded. A consumer that must
+	// suspend work now and resume it after a restart needs the absolute
+	// instant (PLAT-101). Zero when the provider gave no reliable time —
+	// never a guess.
+	RetryAt time.Time
+	// Window names the exhausted quota window when known ("five_hour",
+	// "seven_day", ...), so a consumer can report which limit was hit rather
+	// than only that some limit was.
+	Window string
+
+	Err error // underlying error, always non-nil
+}
+
+// RetryAtOrZero returns the absolute reopen time carried by an error chain,
+// or the zero time when none is known. Prefer this over reading .RetryAt
+// directly so callers handle a plain (unclassified) error identically.
+func RetryAtOrZero(err error) time.Time {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.RetryAt
+	}
+	return time.Time{}
+}
+
+// QuotaWindow returns the exhausted window name carried by an error chain, or
+// "" when unknown.
+func QuotaWindow(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Window
+	}
+	return ""
 }
 
 func (e *Error) Error() string {
@@ -78,6 +113,12 @@ func KindOf(err error) Kind {
 
 // IsRateLimit reports transient throttling (NOT permanent quota exhaustion).
 func IsRateLimit(err error) bool { return KindOf(err) == KindRateLimit }
+
+// IsQuotaExhausted reports a usage/subscription window being spent, as opposed
+// to transient throttling. The distinction decides behaviour: throttling is
+// waited out in seconds, quota exhaustion must skip same-model retries and go
+// to a fallback or a suspension keyed on RetryAtOrZero (PLAT-101).
+func IsQuotaExhausted(err error) bool { return KindOf(err) == KindQuotaExhausted }
 
 // IsAuth reports credential/permission failures.
 func IsAuth(err error) bool { return KindOf(err) == KindAuth }

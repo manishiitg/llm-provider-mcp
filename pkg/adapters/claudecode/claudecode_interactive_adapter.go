@@ -2902,7 +2902,7 @@ func equalStringSlices(a, b []string) bool {
 
 func detectTmuxFatalStatus(captured string) string {
 	switch {
-	case strings.Contains(captured, "You've hit your limit"):
+	case IsClaudeUsageLimitText(captured):
 		return "rate limit reached"
 	case strings.Contains(captured, "Not logged in"):
 		return "not logged in"
@@ -2962,7 +2962,7 @@ func isClaudeToolProgressLine(trimmed string) bool {
 }
 
 func isClaudeFatalProgressLine(trimmed string) bool {
-	return strings.Contains(trimmed, "You've hit your limit") ||
+	return IsClaudeUsageLimitText(trimmed) ||
 		strings.Contains(trimmed, "Not logged in") ||
 		strings.Contains(trimmed, "Pane is dead")
 }
@@ -4269,6 +4269,10 @@ func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.Statu
 		// statusline extras so UIs can render them next to cost without knowing
 		// Claude Code's schema.
 		status.SetStatusExtras(claudeStatusExtras(rawMap))
+		// The same windows, unformatted. Extras are display text; a runtime
+		// deciding whether to suspend a workflow and when to resume it needs
+		// the actual reset instant, which formatting destroys (PLAT-101).
+		status.SetRateLimitWindows(claudeRateLimitWindows(rawMap))
 	}
 
 	// "claude-code"/"claudecode" are placeholder ids equal to the provider name;
@@ -4311,6 +4315,44 @@ func claudeIntFromAny(v interface{}) int {
 //	"rate_limits":    {"five_hour": {"used_percentage": 24.0}, "seven_day": {"used_percentage": 41.0}}
 //	"context_window": {"used_percentage": 4}
 //	"effort":         {"level": "xhigh"}
+//
+// claudeRateLimitWindows extracts the same rate-limit windows claudeStatusExtras
+// renders, but as structured values with the reset instant intact.
+//
+// Both readers exist on purpose: one produces text for a UI, this one produces
+// state for the runtime. Keeping them separate means a change to how a window
+// is displayed cannot alter what the runtime decides, and vice versa.
+//
+// A window with no usable reset time is still returned (with a zero ResetsAt)
+// when it is exhausted, because "exhausted, reset time unknown" is a real and
+// materially different state from "not exhausted" — PLAT-101 requires the
+// caller to distinguish them rather than invent a timestamp.
+func claudeRateLimitWindows(rawMap map[string]interface{}) []llmtypes.RateLimitWindow {
+	rl, ok := rawMap["rate_limits"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var windows []llmtypes.RateLimitWindow
+	for _, name := range []string{"five_hour", "seven_day"} {
+		win, ok := rl[name].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, present := win["used_percentage"]; !present {
+			continue
+		}
+		window := llmtypes.RateLimitWindow{
+			Name:        name,
+			UsedPercent: claudeFloatFromAny(win["used_percentage"]),
+		}
+		if epoch := int64(claudeFloatFromAny(win["resets_at"])); epoch > 0 {
+			window.ResetsAt = time.Unix(epoch, 0).UTC()
+		}
+		windows = append(windows, window)
+	}
+	return windows
+}
+
 func claudeStatusExtras(rawMap map[string]interface{}) []string {
 	var extras []string
 	if rl, ok := rawMap["rate_limits"].(map[string]interface{}); ok {
