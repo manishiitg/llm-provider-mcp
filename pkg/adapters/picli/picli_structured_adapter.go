@@ -383,12 +383,34 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					finalContent = s
 				}
 				turnTextBuf.Reset()
-			case "agent_settled":
+			// Both are accepted, and that redundancy is the point. This adapter
+			// was verified against pi 0.80.10, whose stream ended
+			// `agent_end -> agent_settled`, and it took `agent_settled` as the
+			// sole teardown trigger. pi 0.84.2 does not emit `agent_settled` at
+			// all: measured across a full day of production logs it appeared 0
+			// times, while `agent_end` appeared 57. The only trigger was
+			// therefore dead code against the installed pi, and any run where pi
+			// did not exit on its own -- notably a continued native session,
+			// which stays alive between turns -- blocked forever on
+			// <-scannerDone, with no timeout anywhere in this path.
+			//
+			// Live incident (2026-08-18, ICICI-BANK-PARSING-v2 group manishiitg):
+			// the step finished its real work at 09:45 and emitted agent_end,
+			// then held its caller for 65 minutes until the stack was stopped by
+			// hand. Same shape as the codex hang its sibling adapter already
+			// fixed -- see codexcli_structured_adapter.go's teardown comment.
+			//
+			// agent_end is pi's genuine completion signal; the interactive
+			// adapter has always treated it as authoritative. Keeping
+			// agent_settled means an older pi still terminates on the event it
+			// does emit, so this tolerates drift in both directions instead of
+			// trading one hard version dependency for another.
+			case "agent_end", "agent_settled":
 				sawTerminal = true
 				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
 			default:
 				// Every other type (agent_start, turn_start, message_start,
-				// message_end, agent_end, session, and anything a newer pi
+				// message_end, session, and anything a newer pi
 				// version adds) is intentionally ignored for content -- but
 				// silently, so an unexpected/renamed event that actually
 				// carried the answer or the failure reason left no trace at
@@ -401,10 +423,22 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		}
 	}()
 	<-scannerDone
-	_ = sawTerminal
 
 	waitErr := cmd.Wait()
 	content := strings.TrimSpace(finalContent)
+
+	// sawTerminal used to be `_ = sawTerminal` -- computed and thrown away, so
+	// "pi told us it finished" and "pi's stdout happened to close" were
+	// indistinguishable here. They are not the same thing: stdout closing
+	// without a terminal event is how a killed, crashed, or truncated run
+	// looks, and reporting that as a clean answer is what makes a partial
+	// result silently pass for a complete one. Content still wins when we have
+	// it -- this only adds a trace for the case that used to be invisible.
+	if !sawTerminal && p.logger != nil {
+		p.logger.Infof("pi: stdout closed without a terminal event (agent_end/agent_settled); "+
+			"treating the run as finished, but the result may be truncated (content_len=%d, wait_err=%v)",
+			len(content), waitErr)
+	}
 
 	if waitErr != nil && content == "" {
 		stderrStr := strings.TrimSpace(stderr.String())
