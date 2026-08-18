@@ -4056,6 +4056,11 @@ func claudeStatuslinePath(sessionName string) string {
 }
 
 func (c *ClaudeCodeInteractiveAdapter) prepareStatusLineSettings(opts *llmtypes.CallOptions, sessionName string) (string, []string, error) {
+	// The statusline this configures is where the account's remaining quota
+	// arrives. Pair the session with its credential now, while the credential is
+	// in scope, so later readers can attribute what they see to an account
+	// (PLAT-101).
+	rememberClaudeSessionAccount(sessionName, c.oauthToken)
 	outputPath := claudeStatuslinePath(sessionName)
 	// Create helper script that cat's stdin to outputPath
 	scriptContent := fmt.Sprintf("#!/bin/sh\ncat > %s\n", outputPath)
@@ -4141,6 +4146,11 @@ func streamClaudeStatusLine(ctx context.Context, sessionName string, streamChan 
 		status.Metadata = map[string]interface{}{}
 	}
 	status.Metadata["tmux_session"] = sessionName
+
+	// Publish the quota reading to the account this session runs under. Every
+	// session on that subscription draws from the same pool, so one session's
+	// observation is every session's best available answer (PLAT-101).
+	recordClaudeSessionRateLimitWindows(sessionName, status.RateLimitWindows(), time.Now().UTC())
 
 	select {
 	case streamChan <- llmtypes.StreamChunk{
@@ -4434,6 +4444,7 @@ func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessio
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse statusline payload: %w", err)
 	}
+	recordClaudeSessionRateLimitWindows(tmuxSessionName, status.RateLimitWindows(), time.Now().UTC())
 
 	return status, nil
 }

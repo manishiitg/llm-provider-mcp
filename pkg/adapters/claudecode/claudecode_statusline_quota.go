@@ -3,6 +3,8 @@ package claudecode
 import (
 	"encoding/json"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -35,4 +37,46 @@ func claudeStatuslineRateLimitWindows(sessionName string) []llmtypes.RateLimitWi
 		return nil
 	}
 	return claudeRateLimitWindows(rawMap)
+}
+
+// claudeSessionAccountKeys maps a tmux session to the hashed identity of the
+// credential it runs under.
+//
+// The account is what a quota belongs to, but the code that reads the
+// statusline sidecar only ever knows a session name — the credential lives on
+// the adapter. Registering the pairing when the session's statusline is
+// configured lets those readers attribute an observation to the right account
+// without the credential travelling any further than it already does.
+var (
+	claudeSessionAccountMu   sync.RWMutex
+	claudeSessionAccountKeys = map[string]string{}
+)
+
+func rememberClaudeSessionAccount(sessionName, credential string) {
+	key := llmtypes.AccountRateLimitKey(credential)
+	if sessionName == "" || key == "" {
+		return
+	}
+	claudeSessionAccountMu.Lock()
+	claudeSessionAccountKeys[sessionName] = key
+	claudeSessionAccountMu.Unlock()
+}
+
+func claudeSessionAccountKey(sessionName string) string {
+	if sessionName == "" {
+		return ""
+	}
+	claudeSessionAccountMu.RLock()
+	defer claudeSessionAccountMu.RUnlock()
+	return claudeSessionAccountKeys[sessionName]
+}
+
+// recordClaudeSessionRateLimitWindows publishes a session's observation to its
+// account, so every other session on the same subscription can read it.
+//
+// Silently does nothing for a session with no registered credential. An
+// unidentified observation cannot be attributed, and attributing it to a shared
+// default bucket would let one account's exhaustion gate another's work.
+func recordClaudeSessionRateLimitWindows(sessionName string, windows []llmtypes.RateLimitWindow, observedAt time.Time) {
+	llmtypes.RecordAccountRateLimitWindows(claudeSessionAccountKey(sessionName), windows, observedAt)
 }
