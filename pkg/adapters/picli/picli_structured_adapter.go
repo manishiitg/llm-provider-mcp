@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
@@ -292,8 +291,47 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	if err != nil {
 		return nil, fmt.Errorf("pi stdout pipe: %w", err)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// NOT `cmd.Stderr = &bytes.Buffer{}`. That form makes os/exec create its
+	// OWN internal pipe that we never see or control, and -- critically --
+	// cmd.Wait() blocks until THAT pipe's internal copy goroutine also
+	// reaches EOF, not just until the process exits. Live incident,
+	// 2026-08-18, ICICI-BANK-PARSING check-form-26as-xspaces: pi's own
+	// process was confirmed gone (no PID, no zombie) and stdout had already
+	// closed cleanly (<-scannerDone had already unblocked), yet cmd.Wait()
+	// itself stayed blocked for 51 minutes. A goroutine dump caught the exact
+	// cause: os/exec's internal stderr-copy goroutine
+	// (writerDescriptor.func1, an io.Copy off a pipe WE never had a handle
+	// to) still parked in a read() syscall. This is stdout's own
+	// "cmd.Wait() hangs on a pipe held open past the process's own exit"
+	// failure, applying to stderr instead -- a symmetric failure mode nothing
+	// here had ever considered, because stderr never went through
+	// cmd.StdoutPipe()-shaped code that anyone reasoned about.
+	//
+	// Using cmd.StderrPipe() instead makes us the owner of that pipe, exactly
+	// like stdout: os/exec auto-closes our read end the instant the tracked
+	// process itself exits (proven empirically for stdout; the mechanism is
+	// identical for stderr), regardless of what else may still hold the
+	// write end. Read into our own buffer instead of accepting whatever text
+	// showed up before the drain-or-force-close below settles.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("pi stderr pipe: %w", err)
+	}
+	var stderr strings.Builder
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		buf := make([]byte, 4096)
+		for {
+			n, rErr := stderrPipe.Read(buf)
+			if n > 0 {
+				stderr.Write(buf[:n])
+			}
+			if rErr != nil {
+				return
+			}
+		}
+	}()
 
 	if p.logger != nil {
 		p.logger.Infof("Executing Pi CLI structured: pi --print --mode json")
@@ -306,7 +344,6 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	var turnTextBuf strings.Builder
 	var totalUsage llmtypes.Usage
 	var cacheWriteTokens int
-	sawTerminal := false
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -383,27 +420,112 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					finalContent = s
 				}
 				turnTextBuf.Reset()
-			case "agent_settled":
-				sawTerminal = true
-				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
 			default:
 				// Every other type (agent_start, turn_start, message_start,
-				// message_end, agent_end, session, and anything a newer pi
-				// version adds) is intentionally ignored for content -- but
-				// silently, so an unexpected/renamed event that actually
-				// carried the answer or the failure reason left no trace at
-				// all. Debug-log the type so that trace exists without
-				// changing behavior for the types already handled above.
+				// message_end, agent_end, session, agent_settled, and
+				// anything a newer pi version adds) is intentionally ignored
+				// for content -- but silently, so an unexpected/renamed event
+				// that actually carried the answer or the failure reason left
+				// no trace at all. Debug-log the type so that trace exists
+				// without changing behavior for the types already handled
+				// above.
+				//
+				// None of these types drive process teardown -- completion is
+				// determined by process exit alone (below), never by parsing
+				// a specific event. agent_end was tried as a terminal-event
+				// trigger and reverted: verified live it fires per model
+				// turn/response, not once per run (up to 3x in a single
+				// group's run), so treating it as terminal SIGTERM'd a
+				// process that was still doing real work. agent_settled DOES
+				// reliably fire as the true once-per-run terminal event
+				// (verified live, 2026-08-18, real key + real MCP server: it
+				// is the last event of every run, and pi exits on its own
+				// within ~5s) -- an earlier version of this comment claimed
+				// otherwise based on a logging artifact (agent_settled was
+				// silently handled and so never logged; only the unhandled
+				// agent_end was). Not used as a trigger regardless: a correct
+				// event still cannot substitute for process exit as the
+				// authority, since a hang can happen after the terminal
+				// event fires (see below) or on a run where a bounded
+				// backstop has to fire, and building a switch statement to
+				// distinguish those cases is more fragile than not needing
+				// to.
 				if p.logger != nil {
 					p.logger.Debugf("pi: unhandled event type=%q", event.Type)
 				}
 			}
 		}
 	}()
-	<-scannerDone
-	_ = sawTerminal
 
-	waitErr := cmd.Wait()
+	// Completion is driven by the process itself exiting, never by a parsed
+	// event -- pi has no event that reliably means "the run is over" (see the
+	// comment above). Blocking on <-scannerDone first, as this used to, waits
+	// for stdout's write end to see EOF from every holder; pi can spawn a
+	// persistent child (e.g. its MCP bridge) that inherits the fd and keeps
+	// it open long after pi's own turn is done, so EOF never arrives and the
+	// call hangs forever with no timeout -- this is what caused a Pulse step
+	// to hold its caller's HTTP response open for 65 minutes after its real
+	// work had already finished.
+	//
+	// Running cmd.Wait() concurrently instead sidesteps this: os/exec closes
+	// the StdoutPipe read end itself the moment the tracked process (not its
+	// descendants) exits, which unblocks the scanner even if a lingering
+	// child still holds its own dup of the write end. Verified empirically
+	// (10 runs, with and without a lingering grandchild holding the pipe,
+	// success and non-zero exit): already-written output is preserved intact
+	// and cmd.Wait() returns in single-digit milliseconds once pi itself
+	// exits, regardless of any child.
+	//
+	// cmd.Wait() itself is not guaranteed bounded -- see the StderrPipe
+	// comment above for the live incident where it hung for 51 minutes with
+	// pi's own process already gone. Rather than guess whether the next hang
+	// is that same shape, an unrelated one, or pi genuinely still running
+	// (this workflow's tools are allowed up to 90 minutes, so an aggressive
+	// timeout here would kill legitimate work), this only makes an abnormal
+	// wait IMPOSSIBLE TO MISS: a clear, periodic error-level log instead of
+	// requiring a goroutine dump to even notice it's happening.
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	var waitErr error
+	waitStart := time.Now()
+	stallTicker := time.NewTicker(30 * time.Second)
+	defer stallTicker.Stop()
+waitLoop:
+	for {
+		select {
+		case waitErr = <-waitDone:
+			break waitLoop
+		case <-stallTicker.C:
+			if p.logger != nil {
+				p.logger.Errorf("pi: cmd.Wait() has not returned after %s -- pi's own process may still be running, or something (e.g. a lingering child) is still holding stdout/stderr open past its exit; see picli_structured_adapter.go's stderr-pipe comment for the 2026-08-18 incident this class of hang matches",
+					time.Since(waitStart).Round(time.Second))
+			}
+		}
+	}
+
+	select {
+	case <-scannerDone:
+	case <-time.After(5 * time.Second):
+		// Should be unreachable given the empirical behavior above. If it
+		// ever fires, os/exec's close-on-Wait somehow didn't unblock the
+		// reader -- force it rather than hang, since pi's own process is
+		// already confirmed exited at this point.
+		if p.logger != nil {
+			p.logger.Errorf("pi: stdout scanner did not drain within 5s of process exit -- forcing stdout closed")
+		}
+		stdout.Close()
+		<-scannerDone
+	}
+	select {
+	case <-stderrDone:
+	case <-time.After(5 * time.Second):
+		if p.logger != nil {
+			p.logger.Errorf("pi: stderr reader did not drain within 5s of process exit -- forcing stderr closed")
+		}
+		stderrPipe.Close()
+		<-stderrDone
+	}
+
 	content := strings.TrimSpace(finalContent)
 
 	if waitErr != nil && content == "" {
