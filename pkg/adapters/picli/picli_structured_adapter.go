@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
@@ -420,6 +421,35 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					finalContent = s
 				}
 				turnTextBuf.Reset()
+			case "agent_settled":
+				// pi's true once-per-run terminal event, verified live against
+				// the real CLI and in pi's own source: emitted from a `finally`
+				// block in _runAgentPrompt, so it cannot be skipped on success,
+				// error, or abort, and only AFTER the
+				// `while (_handlePostAgentRun())` loop that drives multi-step
+				// tool use and retries has fully drained. (agent_end fires
+				// INSIDE that loop, many times per run, which is why treating
+				// IT as terminal killed still-working processes and was
+				// reverted.)
+				//
+				// Seeing it does not end the turn here -- the process exiting
+				// does. It arms a bounded teardown, because pi finishing its
+				// work does not guarantee pi EXITS: print mode returns without
+				// process.exit() and relies on Node's event loop draining, and
+				// pi's own source warns that extensions can keep a one-shot
+				// command alive. The MCP extension spawns mcpbridge as a child,
+				// whose live process handle keeps that loop from draining,
+				// while mcpbridge itself sits waiting on a stdin pi never
+				// closes -- a deadlock neither side breaks.
+				//
+				// Measured live 2026-08-19 with this teardown missing: two pi
+				// processes idle for 28 and 65 minutes, each with a live
+				// mcpbridge child, neither holding any network socket, both
+				// with cmd.Wait() blocked in syscall.Wait4 because the child
+				// genuinely was still alive. GracefulAfterNaturalExit gives pi
+				// 3s to exit on its own first, so a normal run (which does exit
+				// in ~5s) is never signalled.
+				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
 			default:
 				// Every other type (agent_start, turn_start, message_start,
 				// message_end, agent_end, session, agent_settled, and
