@@ -181,10 +181,51 @@ func (p *PiCLIAdapter) resolveStructuredProviderModel(opts *llmtypes.CallOptions
 const piStallPollInterval = 30 * time.Second
 
 // piStallSilenceThreshold is how long pi's stream must be completely silent
-// before an unfinished run is worth reporting. A step is allowed to take a long
-// time -- this workflow permits 90m tool executions -- so duration alone means
-// nothing; only silence does.
+// before an unfinished run is worth reporting. Duration alone means nothing --
+// a step legitimately making many tool calls can run long -- only silence
+// does. (An earlier version of this comment claimed "this workflow permits
+// 90m tool executions"; that was never verified and was wrong -- see
+// piMaxTurnDuration below for what actually bounds a turn, and why nothing
+// did until it was added.)
 const piStallSilenceThreshold = 5 * time.Minute
+
+// piMaxTurnDuration is the hard ceiling on one structured pi CLI turn.
+//
+// Before this, nothing bounded it. TOOL_EXECUTION_TIMEOUT
+// (agent_go/cmd/server/agent_tuning.go) only wraps each individual tool call
+// pi makes through the bridge -- and in this deployment was not even set,
+// leaving the actual per-tool default at 5 minutes, not the 90 minutes
+// earlier assumed without checking. Neither that setting nor anything else
+// placed a deadline on the ctx passed into generateContentStructured itself;
+// a pi process that got internally wedged -- not blocked on any one tool
+// call, just stopped making progress -- could run until the server itself
+// restarted.
+//
+// This is pi's own documented failure mode, not speculation: pi-coding-agent
+// upstream (github.com/earendil-works/pi#8004) reports two real sessions
+// frozen 5.5 and 8.7 hours by exactly this shape (a spawned/nested process
+// that completed its actual work but never exited, keeping Node's event loop
+// alive with nothing for `pi --print` to wait on), and states plainly there is
+// "no general tool-call timeout" and "no abort handle" once a call is running.
+// Confirmed live 2026-08-19: a form-26as step's pi process sat with a
+// completely idle Node event loop (main thread parked in uv__io_poll/kevent,
+// every worker blocked on uv_cond_wait, no thread in any syscall) for over an
+// hour, its last actual tool call having finished in 28ms with nothing after.
+//
+// 45 minutes: comfortably above every turn duration observed in this
+// deployment today (healthy multi-tool-call turns finished in single-digit
+// minutes), while still turning an unbounded, hours-long wedge into a bounded
+// one. Configurable via PI_STRUCTURED_MAX_TURN_DURATION because 45m is a
+// reasoned default, not a measured one -- no turn-duration history exists yet
+// to derive it from.
+func piMaxTurnDuration() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("PI_STRUCTURED_MAX_TURN_DURATION")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 45 * time.Minute
+}
 
 // piMaxStallReportInterval caps the doubling backoff, so a genuinely stuck run
 // keeps a heartbeat without flooding.
@@ -317,8 +358,37 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, args...)
+	// Bound the whole turn, independent of whatever deadline (if any) the
+	// caller's ctx already carries -- see piMaxTurnDuration's doc comment for
+	// why nothing did before this and what it costs when nothing does.
+	turnCtx, cancelTurn := context.WithTimeout(ctx, piMaxTurnDuration())
+	defer cancelTurn()
+
+	cmd := exec.CommandContext(turnCtx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// exec.CommandContext's DEFAULT cancellation is cmd.Process.Kill() -- the
+	// single tracked pid only. Setpgid above exists so a killer CAN target the
+	// whole group, but the default kill does not do that, so a grandchild pi
+	// forks off (a shell tail-command that was not exec-replaced, an MCP
+	// bridge, anything) survives as an orphan even though the tracked process
+	// died. Measured directly while testing this: a fake pi script's own
+	// recorded pid died correctly, and three separate test runs each still
+	// leaked a live, reparented (ppid=1) grandchild.
+	//
+	// procshutdown.GracefulAfterNaturalExit already gets this right, via
+	// syscall.Kill(-pid, ...) -- the negative pid form targets the whole
+	// process group. cmd.Cancel overrides CommandContext's default with the
+	// same primitive, so cancellation for ANY reason (this ceiling, or the
+	// caller's own ctx) reaps the whole group, not just the leader.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
+		return nil
+	}
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
