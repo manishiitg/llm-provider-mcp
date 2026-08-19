@@ -189,6 +189,37 @@ const piStallPollInterval = 30 * time.Second
 // did until it was added.)
 const piStallSilenceThreshold = 5 * time.Minute
 
+// piWedgeSilenceThreshold is how long pi's stream may be COMPLETELY silent,
+// with no tool call in flight, before the turn is treated as wedged and killed.
+//
+// This is the fast path out of the failure PLAT-153 documents, and it exists
+// because piMaxTurnDuration alone is too blunt to be the only recovery: a
+// wedged turn burned the full 45m ceiling before anything reclaimed it, and a
+// workflow with several such steps pays that repeatedly.
+//
+// It is safe to be this aggressive ONLY because of the outstanding-tool guard.
+// A tool call may legitimately run up to
+// codingtimeout.LongRunningMCPToolTimeout (90m default), during which pi emits
+// nothing at all -- killing on silence alone would murder healthy long tool
+// calls. With zero tools in flight, the only legitimate reason for silence is
+// waiting on the model to start responding, and once it starts, pi streams
+// chunks continuously.
+//
+// 10 minutes: comfortably above every no-tool-in-flight gap observed in this
+// deployment (the slowest full model turns measured were 2m19s and 1m9s,
+// streaming throughout), and far below the 26+ minutes of dead silence the
+// real wedge produced. Configurable via PI_STRUCTURED_WEDGE_SILENCE because,
+// like the ceiling, this is reasoned from a day of observation rather than a
+// long baseline.
+func piWedgeSilenceThreshold() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("PI_STRUCTURED_WEDGE_SILENCE")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 10 * time.Minute
+}
+
 // piMaxTurnDuration is the hard ceiling on one structured pi CLI turn.
 //
 // Before this, nothing bounded it. TOOL_EXECUTION_TIMEOUT
@@ -489,6 +520,23 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// that made the TOOL_ERROR_SUSPECT channel unreadable.
 	var lastEventUnixNano atomic.Int64
 	lastEventUnixNano.Store(time.Now().UnixNano())
+	// How many tool calls pi currently has in flight, from its OWN events.
+	// This is what separates "wedged" from "legitimately slow": a tool call may
+	// run up to codingtimeout.LongRunningMCPToolTimeout (90m by default), and pi
+	// is silent for that whole time by design. With nothing in flight, the only
+	// legitimate reason for silence is waiting on the model, which is bounded in
+	// practice by the provider's own timeouts.
+	//
+	// KNOWN LIMITATION, recorded rather than papered over: this trusts pi to
+	// emit a tool_execution_end for every tool_execution_start. Ends really do
+	// go missing on other providers -- agent_go's PLAT-141 settleOpenToolCalls
+	// exists precisely because of it, and was observed closing 14 of 14
+	// unreported tool calls in a live Codex chat session on 2026-08-19. If that
+	// ever happens on the pi structured path, this counter never returns to
+	// zero and the fast wedge path below silently stops firing. That degrades
+	// to the piMaxTurnDuration ceiling -- slower, but still bounded, and never
+	// a false kill -- which is the safe direction for this to fail in.
+	var outstandingTools atomic.Int32
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -539,11 +587,13 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: d})
 				}
 			case "tool_execution_start":
+				outstandingTools.Add(1)
 				toolStartedAt[event.ToolCallID] = time.Now()
 				chunk, call := piStructuredToolStartChunk(event)
 				toolCalls[event.ToolCallID] = call
 				emitChunk(chunk)
 			case "tool_execution_end":
+				outstandingTools.Add(-1)
 				emitChunk(piStructuredToolEndChunk(
 					event,
 					toolCalls[event.ToolCallID],
@@ -679,6 +729,25 @@ waitLoop:
 		case <-stallTicker.C:
 			silence := time.Since(time.Unix(0, lastEventUnixNano.Load()))
 			terminal := sawTerminal.Load()
+
+			// Wedged: pi has gone completely silent with nothing in flight to
+			// explain it. Cut it loose now rather than letting it burn the full
+			// piMaxTurnDuration ceiling -- cancelTurn triggers cmd.Cancel's
+			// group kill, cmd.Wait() returns, and the caller gets a failed turn
+			// it can retry, which is what actually recovers the workflow.
+			if !terminal && outstandingTools.Load() == 0 && silence >= piWedgeSilenceThreshold() {
+				if p.logger != nil {
+					pid := -1
+					if cmd.Process != nil {
+						pid = cmd.Process.Pid
+					}
+					p.logger.Errorf("pi: no event for %s with no tool call in flight (pid=%d) -- treating as wedged and killing it now rather than waiting out the %s ceiling; the turn fails and the caller can retry (PLAT-153)",
+						silence.Round(time.Second), pid, piMaxTurnDuration())
+				}
+				cancelTurn()
+				continue
+			}
+
 			if !stall.shouldReport(terminal, silence, time.Now()) {
 				continue
 			}
