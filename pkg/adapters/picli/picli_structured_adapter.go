@@ -176,6 +176,57 @@ func (p *PiCLIAdapter) resolveStructuredProviderModel(opts *llmtypes.CallOptions
 	return resolvePiProviderModel(p.GetModelID(), piProviderFromOptions(opts))
 }
 
+// piStallPollInterval is how often the wait loop checks; it is NOT how often it
+// logs. See piStallReporter.
+const piStallPollInterval = 30 * time.Second
+
+// piStallSilenceThreshold is how long pi's stream must be completely silent
+// before an unfinished run is worth reporting. A step is allowed to take a long
+// time -- this workflow permits 90m tool executions -- so duration alone means
+// nothing; only silence does.
+const piStallSilenceThreshold = 5 * time.Minute
+
+// piMaxStallReportInterval caps the doubling backoff, so a genuinely stuck run
+// keeps a heartbeat without flooding.
+const piMaxStallReportInterval = 16 * time.Minute
+
+// piStallReporter decides WHEN an outstanding cmd.Wait() is worth a log line.
+//
+// Extracted from the wait loop so this decision is testable: the first version
+// of this logging reported purely on elapsed run time and produced ~34
+// error-level lines for a perfectly healthy 17-minute step (measured live
+// 2026-08-19), which is the same alert-fatigue failure that made the
+// TOOL_ERROR_SUSPECT channel unreadable at 929 lines. A predicate that is only
+// exercised through a real subprocess is a predicate nobody checks.
+type piStallReporter struct {
+	lastReportedAt time.Time
+	nextInterval   time.Duration
+}
+
+// shouldReport reports whether to emit a stall line now.
+//
+//   - terminal (pi said it finished but has not exited) is the deadlock: it
+//     never resolves on its own, so report it on the very first check.
+//   - otherwise, stay silent until pi's stream has been quiet for
+//     piStallSilenceThreshold. Events still flowing means it is working.
+//   - after any report, back off by doubling so a stuck run leaves a readable
+//     trail rather than hundreds of identical lines.
+func (r *piStallReporter) shouldReport(terminal bool, silence time.Duration, now time.Time) bool {
+	if !terminal && silence < piStallSilenceThreshold {
+		return false
+	}
+	if !r.lastReportedAt.IsZero() && now.Sub(r.lastReportedAt) < r.nextInterval {
+		return false
+	}
+	r.lastReportedAt = now
+	if r.nextInterval == 0 {
+		r.nextInterval = piStallPollInterval
+	} else if r.nextInterval < piMaxStallReportInterval {
+		r.nextInterval *= 2
+	}
+	return true
+}
+
 // generateContentStructured drives `pi --print --mode json` — per-turn,
 // one-shot, no tmux dependency. See MetadataKeyStructuredTransport doc comment
 // for when to use this instead of the tmux interactive transport (tmux stays
@@ -357,9 +408,17 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
 	toolCalls := map[string]piStructuredToolCall{}
-	// Set by the scanner goroutine, read by the wait loop's stall logger, so it
-	// must be race-safe.
+	// Both are set by the scanner goroutine and read by the wait loop's stall
+	// logger, so they must be race-safe.
 	var sawTerminal atomic.Bool
+	// UnixNano of the last event pi emitted. This -- not total run time -- is
+	// what says whether pi is stalled: a step that legitimately runs 20 minutes
+	// while emitting tool events every few seconds is healthy, and the first
+	// version of this logging called it a stall anyway, producing ~34
+	// error-level lines per healthy run. That is the same alert-fatigue failure
+	// that made the TOOL_ERROR_SUSPECT channel unreadable.
+	var lastEventUnixNano atomic.Int64
+	lastEventUnixNano.Store(time.Now().UnixNano())
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -375,6 +434,11 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				}
 				continue
 			}
+			// Any parsed event is proof of life, whatever its type -- including
+			// ones this adapter ignores for content. Recorded before the switch
+			// so the stall check measures silence on pi's stream rather than
+			// how long the step has been running.
+			lastEventUnixNano.Store(time.Now().UnixNano())
 			// Pi 0.84 reports final non-zero usage on message_end/turn_end.
 			// Earlier versions also exposed it on message_update. Accept every
 			// message-bearing event with last-seen-wins semantics so both shapes
@@ -511,26 +575,43 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// and cmd.Wait() returns in single-digit milliseconds once pi itself
 	// exits, regardless of any child.
 	//
-	// cmd.Wait() itself is not guaranteed bounded -- see the StderrPipe
-	// comment above for the live incident where it hung for 51 minutes with
-	// pi's own process already gone. Rather than guess whether the next hang
-	// is that same shape, an unrelated one, or pi genuinely still running
-	// (this workflow's tools are allowed up to 90 minutes, so an aggressive
-	// timeout here would kill legitimate work), this only makes an abnormal
-	// wait IMPOSSIBLE TO MISS: a clear, periodic error-level log instead of
-	// requiring a goroutine dump to even notice it's happening.
+	// cmd.Wait() itself is not guaranteed bounded. Rather than guess whether
+	// the next hang is a pipe problem, an exit deadlock, or pi genuinely still
+	// working (this workflow's tools are allowed up to 90 minutes, so an
+	// aggressive timeout here would kill legitimate work), this does not kill
+	// anything -- it only makes an abnormal wait visible without needing a
+	// goroutine dump to notice it.
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 	var waitErr error
 	waitStart := time.Now()
-	stallTicker := time.NewTicker(30 * time.Second)
+	// Poll frequently, but only LOG when something is actually wrong. The two
+	// cases below have opposite urgency, and treating them the same is what
+	// made the first version of this useless:
+	//
+	//   sawTerminal -> pi said it finished and has not exited. That is the
+	//     deadlock, it never resolves on its own, and the teardown that should
+	//     be killing it has evidently not worked. Report it immediately.
+	//   otherwise   -> pi has not finished. Long is not the same as stuck: this
+	//     workflow allows 90m tool executions, and a healthy step emits events
+	//     throughout. Only genuine SILENCE on pi's stream is suspicious.
+	//
+	// The interval also doubles after each report (capped), so a genuinely
+	// stuck run leaves a readable trail instead of hundreds of identical lines.
+	stallTicker := time.NewTicker(piStallPollInterval)
 	defer stallTicker.Stop()
+	stall := piStallReporter{}
 waitLoop:
 	for {
 		select {
 		case waitErr = <-waitDone:
 			break waitLoop
 		case <-stallTicker.C:
+			silence := time.Since(time.Unix(0, lastEventUnixNano.Load()))
+			terminal := sawTerminal.Load()
+			if !stall.shouldReport(terminal, silence, time.Now()) {
+				continue
+			}
 			if p.logger != nil {
 				// Log the pid and whether pi's terminal event was seen, because
 				// those two facts are what actually distinguish the cases -- and
@@ -549,16 +630,22 @@ waitLoop:
 				//   terminal_event_seen=false -> pi is most likely still doing
 				//     real work (a long tool call; this workflow allows 90m).
 				//     Confirm with `ps -p <pid>` before assuming a hang.
-				state := "pi still running (verify: ps -p PID)"
-				if sawTerminal.Load() {
-					state = "pi ALREADY emitted agent_settled -- work is done, it is failing to EXIT"
+				state := fmt.Sprintf("no event on pi's stream for %s -- pi has NOT reported finishing, so it may still be mid-tool-call (this workflow allows 90m); confirm with `ps -p %d`",
+					silence.Round(time.Second), func() int {
+						if cmd.Process != nil {
+							return cmd.Process.Pid
+						}
+						return -1
+					}())
+				if terminal {
+					state = "pi ALREADY emitted agent_settled -- its work is DONE and it is failing to EXIT. This does not resolve on its own: the agent_settled teardown should have signalled it, so that teardown is not working. Killing the pid unblocks the held run."
 				}
 				pid := -1
 				if cmd.Process != nil {
 					pid = cmd.Process.Pid
 				}
-				p.logger.Errorf("pi: cmd.Wait() has not returned after %s (pid=%d, terminal_event_seen=%t): %s",
-					time.Since(waitStart).Round(time.Second), pid, sawTerminal.Load(), state)
+				p.logger.Errorf("pi: cmd.Wait() has not returned after %s (pid=%d, terminal_event_seen=%t, stream_silent_for=%s): %s",
+					time.Since(waitStart).Round(time.Second), pid, terminal, silence.Round(time.Second), state)
 			}
 		}
 	}
