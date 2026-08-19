@@ -52,6 +52,17 @@ type codexTurnCompletionTracker struct {
 	// in the interactive adapter — would otherwise see false forever and hang
 	// the turn even though it finished.
 	completedLatched bool
+	// diagnostics is deliberately callback-only: it records identity and
+	// lifecycle boundaries without retaining prompt, tool, or response content.
+	// PLAT-116 needs this to distinguish "the provider never completed" from
+	// "the adapter followed the wrong rollout" and "completion was observed but
+	// not forwarded" on a live reproduction.
+	diagnostics *codexCompletionDiagnosticHooks
+}
+
+type codexCompletionDiagnosticHooks struct {
+	rolloutSelected func(path, threadID string)
+	taskComplete    func(path, threadID, turnID string, completedAt time.Time, offset int64)
 }
 
 func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string, resolveRollout func(time.Time) string) *codexTurnCompletionTracker {
@@ -60,6 +71,12 @@ func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir strin
 		expectedWorkingDir: strings.TrimSpace(expectedWorkingDir),
 		resolveRollout:     resolveRollout,
 		pendingToolCalls:   make(map[string]struct{}),
+	}
+}
+
+func (t *codexTurnCompletionTracker) setDiagnosticHooks(hooks *codexCompletionDiagnosticHooks) {
+	if t != nil {
+		t.diagnostics = hooks
 	}
 }
 
@@ -78,6 +95,9 @@ func (t *codexTurnCompletionTracker) completed() bool {
 		}
 		if t.rolloutPath == "" {
 			return false
+		}
+		if t.diagnostics != nil && t.diagnostics.rolloutSelected != nil {
+			t.diagnostics.rolloutSelected(t.rolloutPath, readCodexRolloutThreadID(t.rolloutPath))
 		}
 	}
 
@@ -131,6 +151,7 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 			Type   string `json:"type"`
 			Phase  string `json:"phase"`
 			CallID string `json:"call_id"`
+			TurnID string `json:"turn_id"`
 		} `json:"payload"`
 	}
 	var event rolloutEvent
@@ -144,6 +165,15 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 	t.sawTurnEvent = true
 
 	if event.Type == "event_msg" && event.Payload.Type == "task_complete" {
+		if t.diagnostics != nil && t.diagnostics.taskComplete != nil {
+			t.diagnostics.taskComplete(
+				t.rolloutPath,
+				readCodexRolloutThreadID(t.rolloutPath),
+				event.Payload.TurnID,
+				timestamp,
+				t.offset,
+			)
+		}
 		return true
 	}
 	if event.Type != "response_item" {

@@ -51,6 +51,61 @@ func TestCodexTurnCompletionTrackerUsesMatchingRolloutTaskComplete(t *testing.T)
 	}
 }
 
+func TestCodexTurnCompletionTrackerReportsBoundRolloutAndNativeCompletion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	workingDir := filepath.Join(t.TempDir(), "diagnostic-session")
+	dayDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	turnStart := time.Now().UTC().Add(-time.Second)
+	completedAt := turnStart.Add(500 * time.Millisecond)
+	rollout := filepath.Join(dayDir, "rollout-2026-08-19T12-00-00-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl")
+	transcript := strings.Join([]string{
+		fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"cwd":%q}}`, "thread-123", workingDir),
+		fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"task_complete","turn_id":%q}}`, completedAt.Format(time.RFC3339Nano), "turn-456"),
+	}, "\n") + "\n"
+	if err := os.WriteFile(rollout, []byte(transcript), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	var selectedPath, selectedThread string
+	var completedPath, completedThread, completedTurn string
+	var observedAt time.Time
+	var observedOffset int64
+	tracker := newCodexTurnCompletionTracker(turnStart, workingDir, nil)
+	tracker.setDiagnosticHooks(&codexCompletionDiagnosticHooks{
+		rolloutSelected: func(path, threadID string) {
+			selectedPath, selectedThread = path, threadID
+		},
+		taskComplete: func(path, threadID, turnID string, at time.Time, offset int64) {
+			completedPath, completedThread, completedTurn = path, threadID, turnID
+			observedAt, observedOffset = at, offset
+		},
+	})
+
+	if !tracker.completed() {
+		t.Fatal("task_complete event was not detected")
+	}
+	if selectedPath != rollout || completedPath != rollout {
+		t.Fatalf("diagnostic rollout paths = selected %q completed %q, want %q", selectedPath, completedPath, rollout)
+	}
+	if selectedThread != "thread-123" || completedThread != "thread-123" {
+		t.Fatalf("diagnostic thread IDs = selected %q completed %q", selectedThread, completedThread)
+	}
+	if completedTurn != "turn-456" {
+		t.Fatalf("diagnostic turn ID = %q, want turn-456", completedTurn)
+	}
+	if !observedAt.Equal(completedAt) {
+		t.Fatalf("diagnostic completion time = %s, want %s", observedAt, completedAt)
+	}
+	if observedOffset <= 0 {
+		t.Fatalf("diagnostic offset = %d, want positive", observedOffset)
+	}
+}
+
 func TestWaitForCodexInteractiveResponseUsesTaskCompleteWhenFooterIsMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -109,7 +164,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir, false, true, nil)
+	captured, err := waitForCodexInteractiveResponse(ctx, "missing-footer-session", "Codex ready\n›", nil, turnStart, workingDir, false, true, nil, nil)
 	if err != nil {
 		t.Fatalf("native task_complete event did not release response wait: %v", err)
 	}
@@ -223,7 +278,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "", false, true, nil)
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-idle-composer", "Codex ready\n›", nil, time.Time{}, "", false, true, nil, nil)
 	if err != nil {
 		t.Fatalf("stable idle-composer fallback did not release response wait: %v", err)
 	}
@@ -257,7 +312,7 @@ fi
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "", false, true, nil)
+	_, err := waitForCodexInteractiveResponse(ctx, "stable-composer-no-completed-marker", "Codex ready\n›", nil, time.Time{}, "", false, true, nil, nil)
 	if err == nil {
 		t.Fatal("stable idle composer without STATUS: COMPLETED was incorrectly accepted")
 	}

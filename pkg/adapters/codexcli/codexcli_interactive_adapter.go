@@ -300,9 +300,27 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session))
+	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_started owner=%q tmux=%q thread=%q rollout=%q turn_started_at=%s", ownerSessionID, session.tmuxSessionName, session.threadID, session.rolloutPath, promptSentAt.UTC().Format(time.RFC3339Nano))
+	completionDiagnostics := &codexCompletionDiagnosticHooks{
+		rolloutSelected: func(path, threadID string) {
+			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_rollout_selected owner=%q tmux=%q thread=%q rollout=%q", ownerSessionID, session.tmuxSessionName, threadID, path)
+		},
+		taskComplete: func(path, threadID, turnID string, completedAt time.Time, offset int64) {
+			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_task_complete_observed owner=%q tmux=%q thread=%q native_turn=%q rollout=%q completed_at=%s offset=%d", ownerSessionID, session.tmuxSessionName, threadID, turnID, path, completedAt.UTC().Format(time.RFC3339Nano), offset)
+		},
+	}
+	closeStream := func(reason string) {
+		if opts.StreamChan == nil {
+			return
+		}
+		c.logger.Debugf("[COMPLETION_TRACE] stage=codex_stream_closing owner=%q tmux=%q reason=%s", ownerSessionID, session.tmuxSessionName, reason)
+		close(opts.StreamChan)
+		c.logger.Debugf("[COMPLETION_TRACE] stage=codex_stream_closed owner=%q tmux=%q reason=%s", ownerSessionID, session.tmuxSessionName, reason)
+	}
+	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session), completionDiagnostics)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
+		c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_returned owner=%q tmux=%q outcome=error elapsed=%s error=%q", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond), err.Error())
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_wait_response",
 			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
@@ -310,19 +328,16 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		if ctx.Err() != nil {
 			interruptCodexInteractiveSession(session.tmuxSessionName, c.logger)
 		}
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		closeStream("wait_error")
 		return nil, err
 	}
+	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_returned owner=%q tmux=%q outcome=completed elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond))
 	if err := codexPolicyInvalidPromptError(captured); err != nil {
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_wait_response",
 			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
 		})
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		closeStream("captured_policy_error")
 		return nil, err
 	}
 	inspector.EmitEvent("tmux_response_captured", map[string]interface{}{
@@ -357,9 +372,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			"phase":      "tmux_parse_response",
 			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
 		})
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
+		closeStream("final_policy_error")
 		return nil, err
 	}
 	// A bounded session is about to be torn down, so retain the grace window
@@ -383,9 +396,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	} else {
 		c.logger.Debugf("codex interactive trailing capture skipped owner=%s tmux=%s reason=persistent_session", ownerSessionID, session.tmuxSessionName)
 	}
-	if opts.StreamChan != nil {
-		close(opts.StreamChan)
-	}
+	closeStream("completed")
 
 	additional := map[string]interface{}{
 		"provider":                      "codex-cli",
@@ -1811,7 +1822,7 @@ func codexPaneHasEmptyComposer(captured string) bool {
 	return false
 }
 
-func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool, resolveRollout func(time.Time) string) (string, error) {
+func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool, resolveRollout func(time.Time) string, diagnostics *codexCompletionDiagnosticHooks) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
@@ -1835,6 +1846,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
 	completionTracker := newCodexTurnCompletionTracker(turnStart, workingDir, resolveRollout)
+	completionTracker.setDiagnosticHooks(diagnostics)
 	// Opt-in structured streaming: tail the rollout JSONL mid-turn so a
 	// design-first UI gets assistant text + tool-call starts without the pane.
 	// Additive; nil when disabled. Runs inside this loop (which returns before
