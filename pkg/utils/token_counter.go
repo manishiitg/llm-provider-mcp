@@ -1,12 +1,20 @@
 package utils
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/pkoukk/tiktoken-go"
 )
+
+// errEncodingLoadInBackoff marks a getCachedEncoding failure as "known to
+// be failing recently", so callers/tests can distinguish it from a genuinely
+// new, unexpected error via errors.Is.
+var errEncodingLoadInBackoff = errors.New("encoding load recently failed")
 
 // TokenCounter provides provider/model-aware token counting using tiktoken
 type TokenCounter struct {
@@ -15,7 +23,30 @@ type TokenCounter struct {
 var (
 	encodingCache   sync.Map
 	encodingCacheMu sync.Mutex
+	// encodingFailureCache remembers a RECENT failure to load an encoding
+	// (encodingName -> time.Time of that failure), so a persistent problem
+	// costs one bounded wait, not one per call.
+	//
+	// Without this, a failing tiktoken.GetEncoding was retried on every single
+	// call with no memory of the prior failure, each attempt serialized behind
+	// encodingCacheMu (held for the full attempt). Measured live 2026-08-19: a
+	// single agent turn calls CountTokensForModel repeatedly (once per content
+	// string being sized -- user message, tool description, tool result, ...),
+	// and with the network unable to reach tiktoken-go's CDN, each of those
+	// calls queued up and paid its own ~10s bounded timeout (see
+	// token_counter_bpe_loader.go) in series, compounding well past what any
+	// single call's timeout suggests. The graceful len(content)/4 fallback this
+	// package already has was reached every time, correctly -- it was just
+	// reached slowly, over and over.
+	encodingFailureCache sync.Map
 )
+
+// encodingFailureBackoff bounds how long a remembered failure is trusted
+// before the next call is allowed to try the network again. Short enough that
+// a transient blip does not degrade token counting to the char/4 approximation
+// for the rest of a long session; long enough that a real outage costs one
+// timeout per window, not one per call.
+const encodingFailureBackoff = 60 * time.Second
 
 // NewTokenCounter creates a new token counter instance
 func NewTokenCounter() *TokenCounter {
@@ -165,6 +196,15 @@ func getCachedEncoding(encodingName string) (*tiktoken.Tiktoken, error) {
 		}
 	}
 
+	// Fast path, no lock: a remembered recent failure short-circuits straight
+	// to an error (and the caller's char/4 fallback) instead of queuing behind
+	// encodingCacheMu for another full network attempt.
+	if val, exists := encodingFailureCache.Load(encodingName); exists {
+		if failedAt, ok := val.(time.Time); ok && time.Since(failedAt) < encodingFailureBackoff {
+			return nil, fmt.Errorf("encoding %q failed recently (%s ago) and is in backoff: %w", encodingName, time.Since(failedAt).Round(time.Second), errEncodingLoadInBackoff)
+		}
+	}
+
 	encodingCacheMu.Lock()
 	defer encodingCacheMu.Unlock()
 
@@ -173,12 +213,21 @@ func getCachedEncoding(encodingName string) (*tiktoken.Tiktoken, error) {
 			return enc, nil
 		}
 	}
+	// Re-check backoff under the lock too: a concurrent caller may have just
+	// recorded the failure this goroutine was about to attempt itself.
+	if val, exists := encodingFailureCache.Load(encodingName); exists {
+		if failedAt, ok := val.(time.Time); ok && time.Since(failedAt) < encodingFailureBackoff {
+			return nil, fmt.Errorf("encoding %q failed recently (%s ago) and is in backoff: %w", encodingName, time.Since(failedAt).Round(time.Second), errEncodingLoadInBackoff)
+		}
+	}
 
 	encoding, err := tiktoken.GetEncoding(encodingName)
 	if err != nil {
+		encodingFailureCache.Store(encodingName, time.Now())
 		return nil, err
 	}
 	encodingCache.Store(encodingName, encoding)
+	encodingFailureCache.Delete(encodingName)
 	return encoding, nil
 }
 
