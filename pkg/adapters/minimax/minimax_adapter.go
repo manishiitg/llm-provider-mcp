@@ -130,6 +130,12 @@ func (m *MiniMaxAdapter) GenerateContent(ctx context.Context, messages []llmtype
 		MessageCount: len(messages),
 		Messages:     messages,
 		HeaderLine:   fmt.Sprintf("minimax.messages model=%s msgs=%d tools=%d", modelID, len(messages), len(opts.Tools)),
+		// Not yet reachable from AgentWorks workflow steps, but the CLI
+		// adapters already declare "tmux" / "structured_cli" here so their
+		// transport-class chip renders correctly; this is the same
+		// declaration for a direct API call, so the label is correct the
+		// day this adapter IS wired in.
+		RequestMetaExtra: map[string]interface{}{"transport": "api"},
 	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
 		_ = sink
 		resp, err := m.generateContentInner(ctx, opts, modelID, messages)

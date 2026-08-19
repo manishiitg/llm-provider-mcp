@@ -76,6 +76,12 @@ func (a *AnthropicAdapter) GenerateContent(ctx context.Context, messages []llmty
 				meta[k] = v
 			}
 		},
+		// Not yet reachable from AgentWorks workflow steps, but the CLI
+		// adapters already declare "tmux" / "structured_cli" here so
+		// their transport-class chip renders correctly; this is the
+		// same declaration for a direct API call, so the label is
+		// correct the day this adapter IS wired in.
+		RequestMetaExtra: map[string]interface{}{"transport": "api"},
 	}, func(sink *llmtypes.StreamSink) (*llmtypes.ContentResponse, error) {
 		return a.generateContentInner(ctx, opts, modelID, messages, sink.Term, sink.Inspector, &anthropicCompletionExtras)
 	})
