@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -356,6 +357,9 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
 	toolCalls := map[string]piStructuredToolCall{}
+	// Set by the scanner goroutine, read by the wait loop's stall logger, so it
+	// must be race-safe.
+	var sawTerminal atomic.Bool
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
@@ -449,6 +453,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 				// genuinely was still alive. GracefulAfterNaturalExit gives pi
 				// 3s to exit on its own first, so a normal run (which does exit
 				// in ~5s) is never signalled.
+				sawTerminal.Store(true)
 				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, 3*time.Second, p.logger)
 			default:
 				// Every other type (agent_start, turn_start, message_start,
@@ -527,8 +532,33 @@ waitLoop:
 			break waitLoop
 		case <-stallTicker.C:
 			if p.logger != nil {
-				p.logger.Errorf("pi: cmd.Wait() has not returned after %s -- pi's own process may still be running, or something (e.g. a lingering child) is still holding stdout/stderr open past its exit; see picli_structured_adapter.go's stderr-pipe comment for the 2026-08-18 incident this class of hang matches",
-					time.Since(waitStart).Round(time.Second))
+				// Log the pid and whether pi's terminal event was seen, because
+				// those two facts are what actually distinguish the cases -- and
+				// the previous version of this message, which named both
+				// possibilities without saying which, cost a live investigation
+				// on 2026-08-19: it read "may still be running, or something is
+				// holding stdout/stderr open", the pid was checked with a wrong
+				// `ps` pattern (pi runs as COMM=pi, not as a node process), and
+				// the wrong branch was concluded.
+				//
+				//   terminal_event_seen=true  -> pi finished its work and is not
+				//     exiting. Its MCP child keeps Node's event loop alive while
+				//     waiting on a stdin pi never closes. The agent_settled
+				//     teardown should already be signalling it; if this line
+				//     keeps printing, that teardown is not firing.
+				//   terminal_event_seen=false -> pi is most likely still doing
+				//     real work (a long tool call; this workflow allows 90m).
+				//     Confirm with `ps -p <pid>` before assuming a hang.
+				state := "pi still running (verify: ps -p PID)"
+				if sawTerminal.Load() {
+					state = "pi ALREADY emitted agent_settled -- work is done, it is failing to EXIT"
+				}
+				pid := -1
+				if cmd.Process != nil {
+					pid = cmd.Process.Pid
+				}
+				p.logger.Errorf("pi: cmd.Wait() has not returned after %s (pid=%d, terminal_event_seen=%t): %s",
+					time.Since(waitStart).Round(time.Second), pid, sawTerminal.Load(), state)
 			}
 		}
 	}
