@@ -1866,6 +1866,17 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	for {
 		select {
 		case <-ctx.Done():
+			// PLAT-160: a tool call's rollout row written in the gap between
+			// the last tick and cancellation (normal completion, timeout, or
+			// Stop) used to be lost entirely -- this branch returned without
+			// ever polling again. context.Background() here matches
+			// cursorcli's transcript tailer, which already does a final
+			// flush this way: poll's own streamChan send also selects on its
+			// context, so using the now-cancelled ctx here would race that
+			// same cancellation and could drop the send.
+			if transcriptStream != nil {
+				transcriptStream.poll(context.Background(), streamChan)
+			}
 			captured, _ := captureCodexPane(context.Background(), sessionName)
 			return captured, ctx.Err()
 		case <-ticker.C:

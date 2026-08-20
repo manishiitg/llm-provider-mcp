@@ -1,12 +1,15 @@
 package codexcli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 func appendLine(t *testing.T, path, s string) {
@@ -361,5 +364,35 @@ func TestReadCodexTranscriptEventsToolEndSpansPolls(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("poll 2: pending map did not drain: %+v", pending)
+	}
+}
+
+// TestCodexTranscriptStreamStatePollWorksWithBackgroundContext (PLAT-160).
+//
+// waitForCodexInteractiveResponse's ctx.Done() branch now calls poll once
+// more with context.Background() before returning, mirroring cursorcli's
+// transcript tailer, so a tool call's rollout row written in the gap between
+// the last tick and cancellation is not lost. This proves that final call
+// actually delivers content on a channel, using the exact context shape it
+// runs with (a background context, not the already-cancelled turn ctx).
+func TestCodexTranscriptStreamStatePollWorksWithBackgroundContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	// Written before poll is ever called, standing in for a tool call whose
+	// row landed on disk right as the turn's context was being cancelled.
+	appendLine(t, path, codexMCPCallBegin(ts, "echo_contract", "c1"))
+
+	state := newCodexTranscriptStreamState(turnStart, "", func(time.Time) string { return path })
+	ch := make(chan llmtypes.StreamChunk, 8)
+	state.poll(context.Background(), ch)
+
+	select {
+	case c := <-ch:
+		if c.Type != llmtypes.StreamChunkTypeToolCallStart || c.ToolName != "echo_contract" {
+			t.Fatalf("chunk = %+v, want ToolCallStart echo_contract", c)
+		}
+	default:
+		t.Fatal("poll with context.Background() did not deliver the tool-call chunk already on disk")
 	}
 }

@@ -80,22 +80,34 @@ func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, t
 	// timestamp across polls so the matching end can compute a real duration
 	// instead of reporting zero.
 	pendingToolStarts := map[string]time.Time{}
-	for {
+	// PLAT-160: a tool call that completes and is written to the transcript
+	// in the gap between one poll and the next used to be lost entirely if
+	// ctx was cancelled (normal completion, timeout, or Stop) before the next
+	// tick — the loop returned without ever reading that final write. poll
+	// takes its own context for the streamChan send so the final call below
+	// can use context.Background() instead of the already-cancelled ctx,
+	// matching cursorcli's transcript tailer, which already does this.
+	poll := func(sendCtx context.Context) {
 		events, err := tailer.Read(time.Now(), turnStart, pendingToolStarts)
-		if err == nil {
-			for _, e := range events {
-				chunk := transcriptEventToChunk(sessionID, e)
-				select {
-				case streamChan <- chunk:
-				case <-ctx.Done():
-					return
-				}
+		if err != nil {
+			return
+		}
+		for _, e := range events {
+			chunk := transcriptEventToChunk(sessionID, e)
+			select {
+			case streamChan <- chunk:
+			case <-sendCtx.Done():
+				return
 			}
 		}
+	}
+	for {
 		select {
 		case <-ctx.Done():
+			poll(context.Background()) // final read, catches a completion written right at turn-end
 			return
 		case <-ticker.C:
+			poll(ctx)
 		}
 	}
 }

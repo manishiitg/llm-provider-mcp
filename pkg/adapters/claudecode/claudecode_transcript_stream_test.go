@@ -258,3 +258,50 @@ func TestStreamClaudeTranscriptEmitsChunks(t *testing.T) {
 		t.Fatalf("missing stream-source metadata: %+v", c.Metadata)
 	}
 }
+
+// TestStreamClaudeTranscriptReadsOnceMoreBeforeReturningOnCancel (PLAT-160).
+//
+// A tool call written to the transcript in the gap between the last poll and
+// the next tick used to be lost entirely if the turn's context was cancelled
+// (normal completion, timeout, or Stop) before that next tick — the loop
+// returned immediately, never reading the write that was already sitting in
+// the file. Cancelling the context almost immediately after starting the
+// tailer, before its first poll interval elapses, reproduces exactly that
+// race deterministically: content already on disk when the tailer starts
+// must still be delivered.
+func TestStreamClaudeTranscriptReadsOnceMoreBeforeReturningOnCancel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-fake")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	// Written BEFORE the tailer ever starts, standing in for a tool result
+	// that lands on disk right before the turn ends.
+	appendLine(t, path,
+		`{"type":"assistant","timestamp":"`+ts+`","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Write","input":{}}]}}`+"\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan llmtypes.StreamChunk, 8)
+	go streamClaudeTranscript(ctx, sessionID, "/tmp/fake", turnStart, ch)
+	// Well under claudeTranscriptStreamPollInterval (250ms): the goroutine's
+	// own ticker cannot have fired yet, so without a final read on cancel,
+	// nothing would ever be read.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case c := <-ch:
+		if c.Type != llmtypes.StreamChunkTypeToolCallStart || c.ToolName != "Write" {
+			t.Fatalf("chunk = %+v, want ToolCallStart Write", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the tool-call chunk written before the tailer even started; the final read on cancel did not happen")
+	}
+}
