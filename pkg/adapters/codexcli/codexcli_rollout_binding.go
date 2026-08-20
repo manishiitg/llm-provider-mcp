@@ -34,14 +34,23 @@ func boundCodexRolloutPaths(exclude *codexInteractiveSession) map[string]bool {
 		if session == nil || session == exclude {
 			continue
 		}
-		session.mu.Lock()
+		session.rolloutMu.RLock()
 		path := session.rolloutPath
-		session.mu.Unlock()
+		session.rolloutMu.RUnlock()
 		if strings.TrimSpace(path) != "" {
 			claimed[path] = true
 		}
 	}
 	return claimed
+}
+
+func codexRolloutIdentity(session *codexInteractiveSession) (path, threadID string) {
+	if session == nil {
+		return "", ""
+	}
+	session.rolloutMu.RLock()
+	defer session.rolloutMu.RUnlock()
+	return session.rolloutPath, session.threadID
 }
 
 // resolveCodexRolloutPath returns the rollout file for this session, binding it
@@ -69,30 +78,44 @@ func resolveCodexRolloutPathLocked(session *codexInteractiveSession, turnStart t
 		return ""
 	}
 
+	session.rolloutMu.Lock()
 	// A pinned thread ID is authoritative. Re-resolving from it (rather than
 	// trusting a cached path) survives Codex rotating or compacting the file.
 	if session.threadID != "" {
 		if path := findCodexRolloutForThread(session.threadID); path != "" {
 			session.rolloutPath = path
+			session.rolloutMu.Unlock()
 			return path
 		}
 		// The thread is known but its file is momentarily unreadable. Returning
 		// the last known path is still correct for THIS conversation; falling
 		// back to a directory scan would risk another session's transcript.
-		return session.rolloutPath
+		path := session.rolloutPath
+		session.rolloutMu.Unlock()
+		return path
 	}
 
 	if session.rolloutPath != "" {
-		return session.rolloutPath
+		path := session.rolloutPath
+		session.rolloutMu.Unlock()
+		return path
 	}
+	workingDir := session.workingDir
+	session.rolloutMu.Unlock()
 
-	// boundCodexRolloutPaths locks OTHER sessions' mutexes and skips this one,
-	// so it is safe to call while holding ours.
-	path := findCodexRolloutByWorkingDirExcluding(turnStart, session.workingDir, boundCodexRolloutPaths(session))
+	// Never hold this session's rollout lock while reading other sessions. That
+	// keeps the claim scan free of cross-session lock ordering requirements.
+	path := findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, boundCodexRolloutPaths(session))
 	if path == "" {
 		return ""
 	}
 
+	session.rolloutMu.Lock()
+	defer session.rolloutMu.Unlock()
+	// A concurrent exact binding wins over this directory-scan candidate.
+	if session.threadID != "" || session.rolloutPath != "" {
+		return session.rolloutPath
+	}
 	session.rolloutPath = path
 	if threadID := readCodexRolloutThreadID(path); threadID != "" {
 		session.threadID = threadID
@@ -112,8 +135,7 @@ func codexRolloutResolverForSession(session *codexInteractiveSession) func(time.
 	if session == nil {
 		return nil
 	}
-	threadID := session.threadID
-	knownPath := session.rolloutPath
+	knownPath, threadID := codexRolloutIdentity(session)
 	workingDir := session.workingDir
 	claimed := boundCodexRolloutPaths(session)
 

@@ -84,6 +84,13 @@ type codexInteractiveSession struct {
 	createdAt              time.Time
 	lastUsed               time.Time
 	mu                     sync.Mutex
+	// rolloutMu protects only the lightweight transcript identity. A Codex
+	// turn holds mu for its full lifetime, so using mu while enumerating other
+	// sessions creates a cross-session lock inversion when two turns finish
+	// together: A holds A.mu and waits for B.mu while B holds B.mu and waits for
+	// A.mu. Keep rollout identity independently readable so completion/final
+	// extraction never waits on another session's whole-turn lock (PLAT-116).
+	rolloutMu sync.RWMutex
 }
 
 var codexInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
@@ -300,7 +307,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"submitted_at_launch": initialPromptAtLaunch,
 	})
 
-	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_started owner=%q tmux=%q thread=%q rollout=%q turn_started_at=%s", ownerSessionID, session.tmuxSessionName, session.threadID, session.rolloutPath, promptSentAt.UTC().Format(time.RFC3339Nano))
+	initialRolloutPath, initialThreadID := codexRolloutIdentity(session)
+	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_started owner=%q tmux=%q thread=%q rollout=%q turn_started_at=%s", ownerSessionID, session.tmuxSessionName, initialThreadID, initialRolloutPath, promptSentAt.UTC().Format(time.RFC3339Nano))
 	completionDiagnostics := &codexCompletionDiagnosticHooks{
 		rolloutSelected: func(path, threadID string) {
 			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_rollout_selected owner=%q tmux=%q thread=%q rollout=%q", ownerSessionID, session.tmuxSessionName, threadID, path)
