@@ -1807,13 +1807,20 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 	}
 
 	var lastErr error
+	// Preserve draft-observation evidence across every initial-submit retry, just
+	// like live steering does. Claude can accept a prompt and clear the input box
+	// before its spinner/assistant output appears; requiring activity within the
+	// three-second window misclassifies that accepted prompt as an auth/startup
+	// failure and then presses Enter repeatedly on an already-empty box.
+	verifier := &claudeSubmitVerifier{message: prompt}
 	for attempt := 1; attempt <= 3; attempt++ {
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
+		_ = verifier.submitted(preSubmitPane) // arm sawDraft when the paste is visible
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
-		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, prompt); err == nil {
+		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, verifier); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2486,7 +2493,7 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 	}
 }
 
-func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prompt string) error {
+func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane string, verifier *claudeSubmitVerifier) error {
 	deadline, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -2509,22 +2516,13 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane, prom
 				}
 				continue
 			}
-			// A pasted prompt whose Enter did not actually submit stays visible
-			// in the ❯ input box (as the draft text or a "[Pasted text …]" chip).
-			// hasClaudeActivity alone false-positives when Claude was already
-			// busy from earlier work — the screen still shows the old spinner —
-			// so the submit loop would declare success while our text sits
-			// unsent in the box. Require the draft to have cleared first, the
-			// same check the live-steering path uses.
-			draft, ok := latestClaudePromptDraft(captured)
-			if !ok {
-				// Missing ❯ line is a transient repaint, not proof of submission
-				// (same false-success that left auto-notifications stuck as
-				// unsubmitted drafts). Keep polling rather than falling through
-				// to the hasClaudeActivity shortcut below.
-				continue
+			// The stateful verifier requires positive evidence that this draft was
+			// visible before an empty prompt can count as accepted. It also keeps a
+			// missing prompt row inconclusive during transient TUI repaints.
+			if verifier != nil && verifier.submitted(captured) {
+				return nil
 			}
-			if claudePromptDraftStillMatchesMessage(draft, prompt) {
+			if _, ok := latestClaudePromptDraft(captured); !ok {
 				continue
 			}
 			if hasClaudeActivity(captured) {
