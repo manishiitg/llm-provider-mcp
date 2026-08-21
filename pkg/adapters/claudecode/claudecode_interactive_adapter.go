@@ -493,9 +493,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// stops when this function returns. The completed JSONL end_turn below is the
 	// authoritative final response; the pane remains the completion/display rail.
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
-		streamCtx, stopTranscriptStream := context.WithCancel(callCtx)
+		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan)
+		// streamClaudeTranscript performs one final transcript flush after its
+		// context is cancelled. It must finish that flush before this body
+		// returns: WithObservability owns (and immediately closes) StreamChan
+		// after GenerateContent returns. Without the join, the detached tailer
+		// can send into that closed channel and crash the whole server.
 		defer stopTranscriptStream()
-		go streamClaudeTranscript(streamCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan)
 	}
 
 	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))

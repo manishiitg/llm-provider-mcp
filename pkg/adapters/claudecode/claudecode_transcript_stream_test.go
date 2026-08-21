@@ -305,3 +305,40 @@ func TestStreamClaudeTranscriptReadsOnceMoreBeforeReturningOnCancel(t *testing.T
 		t.Fatal("timed out waiting for the tool-call chunk written before the tailer even started; the final read on cancel did not happen")
 	}
 }
+
+// TestClaudeTranscriptStreamStopFlushesBeforeCallerClosesStream exercises the
+// ownership boundary used by the interactive adapter. A turn-ending final
+// transcript poll is intentional, but it must complete before the outer
+// WithObservability wrapper closes its stream channel; otherwise a late send
+// panics the server.
+func TestClaudeTranscriptStreamStopFlushesBeforeCallerClosesStream(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "cccccccc-dddd-eeee-ffff-000000000000"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-fake")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+	turnStart := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	appendLine(t, path, `{"type":"assistant","timestamp":"`+ts+`","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Write","input":{}}]}}`+"\n")
+
+	ch := make(chan llmtypes.StreamChunk, 8)
+	stop := startClaudeTranscriptStream(context.Background(), sessionID, "/tmp/fake", turnStart, ch)
+	stop() // waits for the transcript's final flush
+
+	select {
+	case chunk := <-ch:
+		if chunk.Type != llmtypes.StreamChunkTypeToolCallStart || chunk.ToolName != "Write" {
+			t.Fatalf("chunk = %+v, want ToolCallStart Write", chunk)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("final transcript flush did not finish before stop returned")
+	}
+
+	// This is the outer wrapper's operation. It is safe only because stop
+	// joined the goroutine above; a delayed transcript send would panic here.
+	close(ch)
+}

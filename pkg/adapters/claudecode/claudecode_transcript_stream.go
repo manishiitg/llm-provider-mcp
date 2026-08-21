@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -109,6 +110,27 @@ func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, t
 		case <-ticker.C:
 			poll(ctx)
 		}
+	}
+}
+
+// startClaudeTranscriptStream starts the additive structured-stream tailer and
+// returns a stop function that waits for its final flush. The caller MUST call
+// that function before closing streamChan: streamClaudeTranscript intentionally
+// polls once more after cancellation so a just-written tool receipt is not lost.
+func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk) func() {
+	streamCtx, cancel := context.WithCancel(parentCtx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		streamClaudeTranscript(streamCtx, sessionID, workingDir, turnStart, streamChan)
+	}()
+
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			cancel()
+			<-done
+		})
 	}
 }
 
