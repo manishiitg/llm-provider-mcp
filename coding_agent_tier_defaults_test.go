@@ -51,69 +51,6 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 	}
 }
 
-func TestCodingAgentDefaultTierModelsAutoImproveDefaults(t *testing.T) {
-	tests := []struct {
-		name            string
-		provider        Provider
-		wantModelID     string
-		wantSameAsHigh  bool
-		wantReasoning   string
-		wantProviderSet bool
-	}{
-		{
-			name:            "claude code uses opus 5 medium for maintenance",
-			provider:        ProviderClaudeCode,
-			wantModelID:     "claude-opus-5",
-			wantReasoning:   "medium",
-			wantProviderSet: true,
-		},
-		{
-			name:            "codex uses gpt 5.6 sol high",
-			provider:        ProviderCodexCLI,
-			wantModelID:     "gpt-5.6-sol",
-			wantReasoning:   "high",
-			wantProviderSet: true,
-		},
-		{
-			name:            "cursor uses grok 4.6",
-			provider:        ProviderCursorCLI,
-			wantModelID:     "grok-4.6",
-			wantReasoning:   "high",
-			wantProviderSet: true,
-		},
-		{
-			name:            "pi follows high",
-			provider:        ProviderPiCLI,
-			wantSameAsHigh:  true,
-			wantReasoning:   "high",
-			wantProviderSet: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
-			if !ok {
-				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
-			}
-			if tt.wantProviderSet && defaults.Maintenance.Provider != string(tt.provider) {
-				t.Fatalf("maintenance provider = %q, want %q", defaults.Maintenance.Provider, tt.provider)
-			}
-			if tt.wantSameAsHigh {
-				if defaults.Maintenance.Provider != defaults.High.Provider ||
-					defaults.Maintenance.ModelID != defaults.High.ModelID {
-					t.Fatalf("maintenance = %+v, want same provider/model as high %+v", defaults.Maintenance, defaults.High)
-				}
-			} else if defaults.Maintenance.ModelID != tt.wantModelID {
-				t.Fatalf("maintenance model_id = %q, want %q", defaults.Maintenance.ModelID, tt.wantModelID)
-			}
-			if got := defaults.Maintenance.Options["reasoning_effort"]; got != tt.wantReasoning {
-				t.Fatalf("maintenance reasoning_effort = %#v, want %q", got, tt.wantReasoning)
-			}
-		})
-	}
-}
-
 func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderClaudeCode)
 	if !ok {
@@ -140,16 +77,16 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:          "claude code uses sonnet 5 high",
+			name:          "claude code uses opus 5 high",
 			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-sonnet-5",
+			wantModelID:   "claude-opus-5",
 			wantReasoning: "high",
 		},
 		{
-			name:          "codex uses gpt 5.6 terra xhigh",
+			name:          "codex uses gpt 5.6 terra high",
 			provider:      ProviderCodexCLI,
 			wantModelID:   "gpt-5.6-terra",
-			wantReasoning: "xhigh",
+			wantReasoning: "high",
 		},
 		{
 			name:          "cursor uses grok 4.6 high",
@@ -189,93 +126,26 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 	}
 }
 
-func TestCodingAgentDefaultTierModelsClaudeBuilderAndMaintenanceDefaults(t *testing.T) {
+func TestCodingAgentDefaultTierModelsClaudeBuilderDefault(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderClaudeCode)
 	if !ok {
 		t.Fatal("GetCodingAgentDefaultTierModels(claude-code) ok = false")
 	}
 
-	for name, got := range map[string]CodingAgentTierModelRef{
-		"builder":     defaults.Builder,
-		"maintenance": defaults.Maintenance,
-	} {
-		if got.Provider != string(ProviderClaudeCode) {
-			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderClaudeCode)
-		}
-		if got.ModelID != "claude-opus-5" {
-			t.Fatalf("%s model_id = %q, want claude-opus-5", name, got.ModelID)
-		}
-		if got.Options["reasoning_effort"] != "medium" {
-			t.Fatalf("%s reasoning_effort = %#v, want medium", name, got.Options["reasoning_effort"])
-		}
+	if defaults.Builder.Provider != string(ProviderClaudeCode) || defaults.Builder.ModelID != "claude-sonnet-5" {
+		t.Fatalf("builder = %+v, want claude-code/claude-sonnet-5", defaults.Builder)
 	}
-
+	if defaults.Builder.Options["reasoning_effort"] != "high" {
+		t.Fatalf("builder reasoning_effort = %#v, want high", defaults.Builder.Options["reasoning_effort"])
+	}
 	if defaults.Pulse.Provider != string(ProviderClaudeCode) {
 		t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, ProviderClaudeCode)
 	}
-	if defaults.Pulse.ModelID != "claude-sonnet-5" {
-		t.Fatalf("pulse model_id = %q, want claude-sonnet-5", defaults.Pulse.ModelID)
+	if defaults.Pulse.ModelID != "claude-opus-5" {
+		t.Fatalf("pulse model_id = %q, want claude-opus-5", defaults.Pulse.ModelID)
 	}
 	if defaults.Pulse.Options["reasoning_effort"] != "high" {
 		t.Fatalf("pulse reasoning_effort = %#v, want high", defaults.Pulse.Options["reasoning_effort"])
-	}
-}
-
-func TestCodingAgentDefaultTierModelsChiefOfStaffDefaults(t *testing.T) {
-	tests := []struct {
-		name           string
-		provider       Provider
-		wantModelID    string
-		wantSameAsHigh bool
-		wantReasoning  string
-	}{
-		{
-			name:          "claude code uses opus 5 medium for chief of staff",
-			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-opus-5",
-			wantReasoning: "medium",
-		},
-		{
-			name:          "codex uses chief sol high",
-			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-5.6-sol",
-			wantReasoning: "high",
-		},
-		{
-			name:           "cursor follows grok 4.6 high",
-			provider:       ProviderCursorCLI,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
-		},
-		{
-			name:           "pi follows high",
-			provider:       ProviderPiCLI,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
-			if !ok {
-				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
-			}
-			if defaults.ChiefOfStaff.Provider != string(tt.provider) {
-				t.Fatalf("chief_of_staff provider = %q, want %q", defaults.ChiefOfStaff.Provider, tt.provider)
-			}
-			if tt.wantSameAsHigh {
-				if defaults.ChiefOfStaff.Provider != defaults.High.Provider ||
-					defaults.ChiefOfStaff.ModelID != defaults.High.ModelID {
-					t.Fatalf("chief_of_staff = %+v, want same provider/model as high %+v", defaults.ChiefOfStaff, defaults.High)
-				}
-			} else if defaults.ChiefOfStaff.ModelID != tt.wantModelID {
-				t.Fatalf("chief_of_staff model_id = %q, want %q", defaults.ChiefOfStaff.ModelID, tt.wantModelID)
-			}
-			if got := defaults.ChiefOfStaff.Options["reasoning_effort"]; got != tt.wantReasoning {
-				t.Fatalf("chief_of_staff reasoning_effort = %#v, want %q", got, tt.wantReasoning)
-			}
-		})
 	}
 }
 
@@ -290,13 +160,11 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		model  string
 		effort string
 	}{
-		"builder":     {ref: defaults.Builder, model: "gpt-5.6-sol", effort: "high"},
-		"high":        {ref: defaults.High, model: "gpt-5.6-terra", effort: "medium"},
-		"medium":      {ref: defaults.Medium, model: "gpt-5.6-luna", effort: "high"},
-		"low":         {ref: defaults.Low, model: "gpt-5.6-luna", effort: "low"},
-		"maintenance": {ref: defaults.Maintenance, model: "gpt-5.6-sol", effort: "high"},
-		"pulse":       {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "xhigh"},
-		"chief":       {ref: defaults.ChiefOfStaff, model: "gpt-5.6-sol", effort: "high"},
+		"builder": {ref: defaults.Builder, model: "gpt-5.6-sol", effort: "high"},
+		"high":    {ref: defaults.High, model: "gpt-5.6-terra", effort: "medium"},
+		"medium":  {ref: defaults.Medium, model: "gpt-5.6-luna", effort: "high"},
+		"low":     {ref: defaults.Low, model: "gpt-5.6-luna", effort: "medium"},
+		"pulse":   {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "high"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
 			t.Fatalf("%s = %+v, want model %s effort %s", name, check.ref, check.model, check.effort)
@@ -326,8 +194,6 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 	check("low", defaults.Low, "auto")
 	check("builder", defaults.Builder, "grok-4.6")
 	check("pulse", defaults.Pulse, "grok-4.6")
-	check("maintenance", defaults.Maintenance, "grok-4.6")
-	check("chief_of_staff", defaults.ChiefOfStaff, "grok-4.6")
 }
 
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
@@ -376,12 +242,10 @@ func codingAgentPublishedModelMetadata() []*llmtypes.ModelMetadata {
 
 func codingAgentDefaultTierModelRefs(defaults *CodingAgentDefaultTierModels) map[string]CodingAgentTierModelRef {
 	return map[string]CodingAgentTierModelRef{
-		"builder":        defaults.Builder,
-		"high":           defaults.High,
-		"medium":         defaults.Medium,
-		"low":            defaults.Low,
-		"maintenance":    defaults.Maintenance,
-		"pulse":          defaults.Pulse,
-		"chief_of_staff": defaults.ChiefOfStaff,
+		"builder": defaults.Builder,
+		"high":    defaults.High,
+		"medium":  defaults.Medium,
+		"low":     defaults.Low,
+		"pulse":   defaults.Pulse,
 	}
 }

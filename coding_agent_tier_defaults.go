@@ -9,17 +9,15 @@ type CodingAgentTierModelRef struct {
 	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
-// CodingAgentDefaultTierModels describes the builder/high/medium/low,
-// maintenance, pulse, and Chief of Staff defaults a coding-agent profile exposes
-// to downstream workflow UIs.
+// CodingAgentDefaultTierModels describes the builder/high/medium/low and pulse
+// defaults a coding-agent profile exposes to downstream
+// workflow UIs.
 type CodingAgentDefaultTierModels struct {
-	Builder      CodingAgentTierModelRef `json:"builder"`
-	High         CodingAgentTierModelRef `json:"high"`
-	Medium       CodingAgentTierModelRef `json:"medium"`
-	Low          CodingAgentTierModelRef `json:"low"`
-	Maintenance  CodingAgentTierModelRef `json:"maintenance"`
-	Pulse        CodingAgentTierModelRef `json:"pulse"`
-	ChiefOfStaff CodingAgentTierModelRef `json:"chief_of_staff"`
+	Builder CodingAgentTierModelRef `json:"builder"`
+	High    CodingAgentTierModelRef `json:"high"`
+	Medium  CodingAgentTierModelRef `json:"medium"`
+	Low     CodingAgentTierModelRef `json:"low"`
+	Pulse   CodingAgentTierModelRef `json:"pulse"`
 }
 
 func codingAgentHighReasoningRef(provider, modelID string) CodingAgentTierModelRef {
@@ -49,58 +47,48 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
 		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
-		maintenance := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
 		builder := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
-		pulse := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "xhigh")
+		pulse := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "high")
 		medium := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "high")
-		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "low")
+		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "medium")
 		return &CodingAgentDefaultTierModels{
-			Builder:      builder,
-			High:         high,
-			Medium:       medium,
-			Low:          low,
-			Maintenance:  maintenance,
-			Pulse:        pulse,
-			ChiefOfStaff: maintenance,
+			Builder: builder,
+			High:    high,
+			Medium:  medium,
+			Low:     low,
+			Pulse:   pulse,
 		}, true
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		maintenance := codingAgentReasoningRef(providerID, "claude-opus-5", "medium")
-		pulse := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
-		builder := maintenance
+		pulse := codingAgentHighReasoningRef(providerID, "claude-opus-5")
+		builder := high
 		return &CodingAgentDefaultTierModels{
-			Builder:      builder,
-			High:         high,
-			Medium:       medium,
-			Low:          codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
-			Maintenance:  maintenance,
-			Pulse:        pulse,
-			ChiefOfStaff: maintenance,
+			Builder: builder,
+			High:    high,
+			Medium:  medium,
+			Low:     codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
+			Pulse:   pulse,
 		}, true
 	case ProviderCursorCLI:
 		high := codingAgentHighReasoningRef(providerID, "grok-4.6")
 		medium := codingAgentHighReasoningRef(providerID, DefaultCursorCLIModel)
 		low := codingAgentHighReasoningRef(providerID, "auto")
 		return &CodingAgentDefaultTierModels{
-			Builder:      high,
-			High:         high,
-			Medium:       medium,
-			Low:          low,
-			Maintenance:  high,
-			Pulse:        high,
-			ChiefOfStaff: high,
+			Builder: high,
+			High:    high,
+			Medium:  medium,
+			Low:     low,
+			Pulse:   high,
 		}, true
 	case ProviderPiCLI:
 		high := codingAgentHighReasoningRef(providerID, "google/gemini-3.7-flash")
 		return &CodingAgentDefaultTierModels{
-			Builder:      high,
-			High:         high,
-			Medium:       codingAgentHighReasoningRef(providerID, "google/gemini-3.7-flash"),
-			Low:          codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash-lite"),
-			Maintenance:  high,
-			Pulse:        high,
-			ChiefOfStaff: high,
+			Builder: high,
+			High:    high,
+			Medium:  codingAgentHighReasoningRef(providerID, "google/gemini-3.7-flash"),
+			Low:     codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash-lite"),
+			Pulse:   high,
 		}, true
 	}
 
