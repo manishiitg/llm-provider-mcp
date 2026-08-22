@@ -4,14 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
-
-const claudeTranscriptCommitGrace = 2 * time.Second
 
 // readClaudeTranscriptMessages reconstructs the assistant's internal
 // tool-use loop from the same sidecar JSONL that readClaudeTranscriptUsage
@@ -256,32 +255,54 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	return result
 }
 
-// waitForCompletedAssistantResponseFromTranscript gives Claude Code a short
-// grace window to append the final text block after its TUI has already
-// returned to the prompt. In practice the prompt can become visible a few
-// hundred milliseconds before the JSONL writer commits the end_turn row.
-// Without this wait, a valid response is occasionally misclassified as an
-// interrupted turn.
+// waitForCompletedAssistantResponseFromTranscript waits for Claude Code's
+// authoritative end_turn record after its TUI appears to have returned to the
+// prompt. Pane readiness is only a display/transport hint: Claude may render
+// assistant narration and briefly expose a prompt while it is still processing
+// a tool result and starting the next model round. A fixed post-pane grace
+// period can therefore terminate a healthy tool loop before its final response
+// is committed. The owning turn context is the only timeout/cancellation
+// authority here.
 func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time) claudeCompletedTranscriptResponse {
 	response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
 	if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
 		return response
 	}
 
-	timer := time.NewTimer(claudeTranscriptCommitGrace)
-	defer timer.Stop()
-	ticker := time.NewTicker(50 * time.Millisecond)
+	// Transcripts can grow to several megabytes. Once one has been found, avoid
+	// rescanning the entire JSONL on every poll while Claude is still thinking.
+	// An append changes size and mtime; transient stat/read failures retain the
+	// already-observed Found state rather than falling back to pane text.
+	transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true)
+	var lastSize int64 = -1
+	var lastModTime time.Time
+	if info, err := os.Stat(transcriptPath); err == nil {
+		lastSize = info.Size()
+		lastModTime = info.ModTime()
+	}
+
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return response
-		case <-timer.C:
-			return response
 		case <-ticker.C:
-			response = completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
-			if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
+			if transcriptPath != "" {
+				info, err := os.Stat(transcriptPath)
+				if err != nil || (info.Size() == lastSize && info.ModTime().Equal(lastModTime)) {
+					continue
+				}
+				lastSize = info.Size()
+				lastModTime = info.ModTime()
+			}
+			candidate := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
+			if !candidate.Found {
+				continue
+			}
+			response = candidate
+			if response.Completed && strings.TrimSpace(response.Text) != "" {
 				return response
 			}
 		}

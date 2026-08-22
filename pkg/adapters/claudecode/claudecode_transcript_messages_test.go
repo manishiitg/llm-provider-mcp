@@ -238,8 +238,11 @@ func TestWaitForCompletedAssistantResponseFromTranscriptAllowsDelayedCommit(t *t
 		t.Fatalf("write transcript: %v", err)
 	}
 
+	// This deliberately exceeds the adapter's former fixed two-second grace.
+	// The pane becoming ready is not authoritative while the transcript still
+	// contains only an in-progress tool_use response.
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(2100 * time.Millisecond)
 		committed := `{"type":"assistant","timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","message":{"id":"final","stop_reason":"end_turn","content":[{"type":"text","text":"Hello from Video Studio."}]}}` + "\n"
 		f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -249,8 +252,38 @@ func TestWaitForCompletedAssistantResponseFromTranscriptAllowsDelayedCommit(t *t
 		_, _ = f.WriteString(committed)
 	}()
 
-	got := waitForCompletedAssistantResponseFromTranscript(context.Background(), sessionID, "", turnStart)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	got := waitForCompletedAssistantResponseFromTranscript(ctx, sessionID, "", turnStart)
 	if !got.Found || !got.Completed || got.Text != "Hello from Video Studio." {
 		t.Fatalf("completed response = %+v, want delayed committed final text", got)
+	}
+}
+
+func TestWaitForCompletedAssistantResponseFromTranscriptStopsOnTurnCancellation(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const sessionID = "21262e97-79a8-4d35-bd4c-faf1cb6acdd7"
+	projectDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+	turnStart := time.Now().UTC().Add(-time.Second)
+	active := `{"type":"assistant","timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","message":{"id":"active","stop_reason":"tool_use","content":[{"type":"text","text":"Generating the references now."}]}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(active), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 125*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	got := waitForCompletedAssistantResponseFromTranscript(ctx, sessionID, "", turnStart)
+	if !got.Found || got.Completed || got.Text != "" {
+		t.Fatalf("cancelled response = %+v, want found but incomplete", got)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("wait ignored turn cancellation; elapsed=%v", elapsed)
 	}
 }

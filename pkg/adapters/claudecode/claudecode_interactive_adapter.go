@@ -538,6 +538,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart)
 	if transcriptResponse.Found {
 		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
+			if ctxErr := callCtx.Err(); ctxErr != nil {
+				discardPersistentSession(ctxErr)
+				return nil, ctxErr
+			}
 			transcriptErr := errors.New("Claude Code transcript exists but the current turn has no completed end_turn response")
 			discardPersistentSession(transcriptErr)
 			return nil, transcriptErr
