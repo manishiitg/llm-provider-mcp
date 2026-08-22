@@ -99,3 +99,40 @@ func TestLastPiAssistantTextUsesFinalAssistantMessage(t *testing.T) {
 		t.Fatalf("lastPiAssistantText() = %q, want FINAL ANSWER", got)
 	}
 }
+
+// PLAT-179. A message combining intermediate commentary with the tool call
+// it introduces -- {"type":"text",...},{"type":"toolCall",...} in the SAME
+// content array -- must preserve the tool call as a real llmtypes.ToolCall,
+// not silently drop it down to text-only. That preserved ToolCall is what
+// lets mcpagent's shared retainedturn.finalResponse recognize this message
+// as not-yet-final; before this fix, pi's own reader threw the toolCall
+// block away here, and by the time the message reached finalResponse there
+// was nothing left distinguishing it from a genuinely finished reply.
+func TestPiTranscriptPartsPreservesAToolCallAlongsideText(t *testing.T) {
+	content := []piTranscriptContent{
+		{Type: "text", Text: "progress update, not the final answer"},
+		{Type: "toolCall", ID: "call_1", Name: "mcp"},
+	}
+	parts := piTranscriptParts(content)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %d, want 2 (text + toolCall): %#v", len(parts), parts)
+	}
+	text, ok := parts[0].(llmtypes.TextContent)
+	if !ok || text.Text != "progress update, not the final answer" {
+		t.Fatalf("parts[0] = %#v, want the text content first", parts[0])
+	}
+	call, ok := parts[1].(llmtypes.ToolCall)
+	if !ok || call.ID != "call_1" {
+		t.Fatalf("parts[1] = %#v, want a preserved ToolCall with ID call_1", parts[1])
+	}
+}
+
+func TestPiTranscriptPartsTextOnlyMessageHasNoToolCall(t *testing.T) {
+	parts := piTranscriptParts([]piTranscriptContent{{Type: "text", Text: "the real final answer"}})
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want 1 (text only): %#v", len(parts), parts)
+	}
+	if _, ok := parts[0].(llmtypes.TextContent); !ok {
+		t.Fatalf("parts[0] = %#v, want TextContent", parts[0])
+	}
+}

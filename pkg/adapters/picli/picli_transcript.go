@@ -131,8 +131,8 @@ func readPiTranscriptSummaryFile(path string, turnStart time.Time) *piTranscript
 		if !ok {
 			continue
 		}
-		if text := strings.TrimSpace(piTranscriptText(ev.Message.Content)); text != "" {
-			summary.Messages = append(summary.Messages, llmtypes.TextPart(role, text))
+		if parts := piTranscriptParts(ev.Message.Content); len(parts) > 0 {
+			summary.Messages = append(summary.Messages, llmtypes.MessageContent{Role: role, Parts: parts})
 		}
 		if role != llmtypes.ChatMessageTypeAI || ev.Message.Usage == nil {
 			continue
@@ -193,6 +193,12 @@ type piTranscriptMessage struct {
 type piTranscriptContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// ID/Name are only present on a "toolCall" content block. Captured so a
+	// message can be recognized as still having a pending tool call attached
+	// (PLAT-179) -- Arguments are deliberately not parsed here; nothing in
+	// this reader needs to replay the call, only to know one exists.
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type piTranscriptUsage struct {
@@ -236,17 +242,44 @@ func piTranscriptRole(role string) (llmtypes.ChatMessageType, bool) {
 	}
 }
 
-func piTranscriptText(parts []piTranscriptContent) string {
-	texts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if strings.TrimSpace(part.Type) != "" && part.Type != "text" {
-			continue
-		}
-		if strings.TrimSpace(part.Text) != "" {
-			texts = append(texts, part.Text)
+// piTranscriptParts converts one message's raw content blocks into
+// llmtypes parts, preserving a "toolCall" block as a real llmtypes.ToolCall
+// rather than silently dropping it the way pure text extraction used to.
+//
+// PLAT-179. mcpagent's shared retainedturn.finalResponse skips any AI
+// message that has a ToolCall part alongside its text -- that is what
+// correctly excludes intermediate commentary sent right before a tool call
+// from being read as the turn's final answer. Before this, pi's own
+// transcript reader threw the toolCall block away here and kept only the
+// text, so by the time the message reached finalResponse there was nothing
+// left to signal "this one still has a pending tool call" -- confirmed live:
+// a message combining {"type":"text","text":"<progress update>"} and
+// {"type":"toolCall",...} in the SAME content array came out as a
+// text-only MessageContent, indistinguishable from a genuinely finished
+// reply.
+func piTranscriptParts(content []piTranscriptContent) []llmtypes.ContentPart {
+	var texts []string
+	var parts []llmtypes.ContentPart
+	for _, part := range content {
+		switch strings.TrimSpace(part.Type) {
+		case "", "text":
+			if strings.TrimSpace(part.Text) != "" {
+				texts = append(texts, part.Text)
+			}
+		case "toolCall":
+			parts = append(parts, llmtypes.ToolCall{
+				ID:           part.ID,
+				Type:         "function",
+				FunctionCall: &llmtypes.FunctionCall{Name: part.Name},
+			})
 		}
 	}
-	return strings.Join(texts, "\n")
+	if text := strings.TrimSpace(strings.Join(texts, "\n")); text != "" {
+		// Text first, matching the order it appeared in the raw content
+		// array in every observed transcript (commentary, then the call).
+		parts = append([]llmtypes.ContentPart{llmtypes.TextContent{Text: text}}, parts...)
+	}
+	return parts
 }
 
 func lastPiAssistantText(messages []llmtypes.MessageContent) string {
