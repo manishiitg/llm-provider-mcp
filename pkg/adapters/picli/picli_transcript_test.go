@@ -127,6 +127,45 @@ func TestPiTranscriptPartsPreservesAToolCallAlongsideText(t *testing.T) {
 	}
 }
 
+// Confirmed live against a real session transcript (Workflow/trading, 50 of
+// 50 toolCall blocks named "mcp"): a bridge-routed tool call's transcript
+// entry looks like {"type":"toolCall","name":"mcp","arguments":{"tool":
+// "api_bridge_execute_shell_command","args":"..."}}. Before this fix, the
+// reconstructed ToolCall's FunctionCall.Name stayed the generic "mcp" label
+// pi reports, since Arguments was never even parsed into the Go struct.
+func TestPiTranscriptPartsRecoversRealToolNameFromBridgeWrapper(t *testing.T) {
+	content := []piTranscriptContent{
+		{
+			Type:      "toolCall",
+			ID:        "call_1",
+			Name:      "mcp",
+			Arguments: []byte(`{"tool":"api_bridge_execute_shell_command","args":"{\"command\":\"ls\"}"}`),
+		},
+	}
+	parts := piTranscriptParts(content)
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want 1: %#v", len(parts), parts)
+	}
+	call, ok := parts[0].(llmtypes.ToolCall)
+	if !ok || call.FunctionCall == nil {
+		t.Fatalf("parts[0] = %#v, want a ToolCall with a FunctionCall", parts[0])
+	}
+	if call.FunctionCall.Name != "api_bridge_execute_shell_command" {
+		t.Fatalf("FunctionCall.Name = %q, want the recovered real tool name, not the generic \"mcp\" wrapper", call.FunctionCall.Name)
+	}
+}
+
+// A non-bridge tool call (a real, specific name already) must pass through
+// unchanged -- piGenericBridgeToolName's detection must not be over-eager.
+func TestPiTranscriptPartsLeavesASpecificToolNameUnchanged(t *testing.T) {
+	content := []piTranscriptContent{{Type: "toolCall", ID: "call_1", Name: "read_file"}}
+	parts := piTranscriptParts(content)
+	call, ok := parts[0].(llmtypes.ToolCall)
+	if !ok || call.FunctionCall.Name != "read_file" {
+		t.Fatalf("parts[0] = %#v, want FunctionCall.Name unchanged as read_file", parts[0])
+	}
+}
+
 func TestPiTranscriptPartsTextOnlyMessageHasNoToolCall(t *testing.T) {
 	parts := piTranscriptParts([]piTranscriptContent{{Type: "text", Text: "the real final answer"}})
 	if len(parts) != 1 {

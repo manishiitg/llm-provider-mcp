@@ -195,10 +195,18 @@ type piTranscriptContent struct {
 	Text string `json:"text"`
 	// ID/Name are only present on a "toolCall" content block. Captured so a
 	// message can be recognized as still having a pending tool call attached
-	// (PLAT-179) -- Arguments are deliberately not parsed here; nothing in
-	// this reader needs to replay the call, only to know one exists.
+	// (PLAT-179).
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Arguments is the raw arguments object pi's own transcript records for
+	// the tool call. Not replayed -- captured only so piTranscriptParts can
+	// recover the real tool name when Name is pi's generic MCP-bridge
+	// wrapper label ("mcp"): confirmed live against a real session
+	// transcript, a bridge-routed call's arguments look like
+	// {"tool": "api_bridge_execute_shell_command", "args": "{...}"}, the
+	// same shape piGenericBridgeToolName/piRealToolNameFromBridgeArgs
+	// already handle for the live marker-stream path.
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type piTranscriptUsage struct {
@@ -267,10 +275,16 @@ func piTranscriptParts(content []piTranscriptContent) []llmtypes.ContentPart {
 				texts = append(texts, part.Text)
 			}
 		case "toolCall":
+			name := part.Name
+			if piGenericBridgeToolName(name) {
+				if real := piRealToolNameFromBridgeArgs(part.Arguments); real != "" {
+					name = real
+				}
+			}
 			parts = append(parts, llmtypes.ToolCall{
 				ID:           part.ID,
 				Type:         "function",
-				FunctionCall: &llmtypes.FunctionCall{Name: part.Name},
+				FunctionCall: &llmtypes.FunctionCall{Name: name},
 			})
 		}
 	}

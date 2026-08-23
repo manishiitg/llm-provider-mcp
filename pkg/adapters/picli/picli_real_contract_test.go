@@ -224,6 +224,94 @@ func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	t.Logf("verified Pi MCP tool result: %s", want)
 }
 
+// TestPiCLIRealMCPBridgeToolCallReportsRealToolName is a permanent P0
+// contract, live against a real pi process and a real MCP server (not
+// mocked): confirmed live earlier (a real session transcript, 50 of 50
+// toolCall blocks) that pi's own event/transcript API reports every
+// bridge-routed tool call under the bare generic label "mcp", both on the
+// live tool_execution_start/end stream (waitForPiInteractiveResponse) and in
+// pi's own transcript file (piTranscriptParts) -- with the real target tool
+// recoverable from the wrapper call's own arguments
+// ({"tool":"api_bridge_...","args":"..."}). Regression-guards BOTH recovery
+// points in one live run so a future change to either can't silently regress
+// back to the generic label without this failing.
+func TestPiCLIRealMCPBridgeToolCallReportsRealToolName(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	adapter := newRealPiCLIAdapter(t)
+	ownerSessionID := "pi-real-toolname-" + piRandomHex(4)
+	workDir := t.TempDir()
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiReportCWDMCPServer(t))
+
+	stream := make(chan llmtypes.StreamChunk, 4096)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Reply exactly with tool results."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text. If direct api_bridge_report_cwd is unavailable, use mcp({ search: \"report_cwd\" }) and mcp({ tool: \"api_bridge_report_cwd\", args: \"{}\" })."),
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithMCPConfig(mcpConfig),
+		llmtypes.WithStreamingChan(stream),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent MCP bridge tool-name error = %v", err)
+	}
+	wantDir := workDir
+	if physical, err := filepath.EvalSymlinks(workDir); err == nil {
+		wantDir = physical
+	}
+	if got := strings.TrimSpace(resp.Choices[0].Content); !strings.Contains(got, "PI_MCP_CWD:"+wantDir) {
+		t.Fatalf("content = %q, want MCP cwd result", got)
+	}
+
+	// (1) Live marker stream: no tool_call_start/end chunk should report the
+	// bare "mcp" wrapper label once a real name was recoverable.
+	toolCallSeen := false
+	for chunk := range stream {
+		if chunk.Type != llmtypes.StreamChunkTypeToolCallStart && chunk.Type != llmtypes.StreamChunkTypeToolCallEnd {
+			continue
+		}
+		toolCallSeen = true
+		if chunk.ToolName == "mcp" {
+			t.Fatalf("live stream chunk %v reported the generic wrapper tool name \"mcp\" instead of the real tool", chunk.Type)
+		}
+	}
+	if !toolCallSeen {
+		t.Fatal("expected at least one tool_call_start/end chunk on the live stream for an MCP-bridge-routed turn")
+	}
+
+	// (2) Transcript-reconstructed messages (same data used to build chat
+	// history / saved conversation logs): same requirement.
+	gi := resp.Choices[0].GenerationInfo
+	if gi == nil {
+		t.Fatal("missing Pi GenerationInfo")
+	}
+	intermediate, ok := llmtypes.ExtractCodingProviderIntermediateMessages(gi)
+	if !ok {
+		t.Fatal("expected Pi transcript conversation messages")
+	}
+	toolCallInHistory := false
+	for _, msg := range intermediate.Messages {
+		for _, part := range msg.Parts {
+			call, ok := part.(llmtypes.ToolCall)
+			if !ok || call.FunctionCall == nil {
+				continue
+			}
+			toolCallInHistory = true
+			if call.FunctionCall.Name == "mcp" {
+				t.Fatalf("reconstructed history ToolCall %#v reported the generic wrapper tool name \"mcp\" instead of the real tool", call)
+			}
+		}
+	}
+	if !toolCallInHistory {
+		t.Fatal("expected at least one ToolCall in the reconstructed transcript messages for an MCP-bridge-routed turn")
+	}
+}
+
 func TestPiCLIRealPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
 	requireRealPiCLIContractE2E(t)
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })

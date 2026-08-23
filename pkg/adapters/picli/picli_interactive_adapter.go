@@ -1339,17 +1339,118 @@ func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) er
 }
 
 type piMarker struct {
-	Type       string `json:"type"`
-	TS         int64  `json:"ts"`
-	Reason     string `json:"reason,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Role       string `json:"role,omitempty"`
-	Text       string `json:"text,omitempty"`
-	UpdateType string `json:"updateType,omitempty"`
-	Delta      string `json:"delta,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	IsError    *bool  `json:"isError,omitempty"`
+	Type       string          `json:"type"`
+	TS         int64           `json:"ts"`
+	Reason     string          `json:"reason,omitempty"`
+	Mode       string          `json:"mode,omitempty"`
+	Role       string          `json:"role,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	UpdateType string          `json:"updateType,omitempty"`
+	Delta      string          `json:"delta,omitempty"`
+	ToolCallID string          `json:"toolCallId,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
+	IsError    *bool           `json:"isError,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+}
+
+// piGenericBridgeToolName reports whether name is pi's own generic wrapper
+// label for an MCP-bridge-routed tool call (e.g. "mcp"), instead of the real
+// underlying tool. Mirrors the detection this file's embedded output-guard
+// extension already uses (looksLikeMcpResult, piMCPOutputGuardExtensionSource
+// below) -- kept in sync deliberately, not shared, since one is Go and the
+// other TypeScript embedded as a string.
+func piGenericBridgeToolName(name string) bool {
+	return name == "mcp" ||
+		strings.HasPrefix(name, "mcp_") ||
+		strings.HasPrefix(name, "api_bridge_") ||
+		strings.Contains(name, "_mcp_")
+}
+
+// piMarkerTruncatedPayload matches compactForMarker's wrapper shape in the
+// embedded TS marker extension (piMarkerExtensionSource below), applied when
+// a tool call's real args/result exceeds MAX_MARKER_PAYLOAD_CHARS there --
+// most likely for a large tool result, but a large tool argument (e.g.
+// writing a big file through the bridge) can trigger it too.
+type piMarkerTruncatedPayload struct {
+	Truncated bool   `json:"mlpMarkerTruncated"`
+	Preview   string `json:"preview"`
+}
+
+// piRealToolNameFromBridgeArgs recovers the real tool pi's MCP bridge wrapper
+// actually called, from the wrapper call's own arguments. Confirmed live
+// against a real session transcript: a bridge-routed tool call's arguments
+// look like {"tool": "api_bridge_execute_shell_command", "args": "{...}"},
+// because pi's own bridge exposes one generic "mcp" tool to the model whose
+// arguments name the real target -- the model's tool-call decision always
+// names a specific tool, it just isn't the top-level "toolName" field pi
+// reports on tool_execution_start/end.
+func piRealToolNameFromBridgeArgs(args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var payload struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal(args, &payload); err == nil && strings.TrimSpace(payload.Tool) != "" {
+		return strings.TrimSpace(payload.Tool)
+	}
+	// The wrapper's own args object was large enough to get truncated before
+	// the "tool" field could round-trip normally -- pi's bridge puts "tool"
+	// first, so it usually survives inside the truncated preview string even
+	// when the (much larger) nested args string doesn't. The preview is a
+	// truncated JSON PREFIX, not complete/parseable JSON on its own, so
+	// recover "tool" with a plain substring search rather than a JSON parse.
+	var truncated piMarkerTruncatedPayload
+	if err := json.Unmarshal(args, &truncated); err != nil || !truncated.Truncated {
+		return ""
+	}
+	return piExtractStringField(truncated.Preview, "tool")
+}
+
+// piExtractStringField finds `"<field>":"<value>"` inside text that may be a
+// truncated (incomplete) JSON prefix, where json.Unmarshal would fail. Not a
+// general JSON parser -- only handles a plain, unescaped string value, which
+// is all a tool name ever is.
+func piExtractStringField(text, field string) string {
+	needle := `"` + field + `"`
+	idx := strings.Index(text, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(needle):]
+	colon := strings.IndexByte(rest, ':')
+	if colon < 0 {
+		return ""
+	}
+	rest = strings.TrimSpace(rest[colon+1:])
+	if !strings.HasPrefix(rest, `"`) {
+		return ""
+	}
+	rest = rest[1:]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
+// piResultTextFromMarker renders a tool_execution_end marker's real result
+// (pi's own `result: any` event field, forwarded verbatim by the marker
+// extension) as display text, instead of the hardcoded "ok"/"error"
+// placeholder this adapter used before the real field was even read. A bare
+// JSON string unmarshals into text directly; anything else is displayed as
+// compact JSON so at least the real shape is visible.
+func piResultTextFromMarker(result json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(result))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(result, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+	return trimmed
 }
 
 func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSession, offset int64, streamChan chan<- llmtypes.StreamChunk) (string, error) {
@@ -1363,6 +1464,11 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	currentOffset := offset
 	var lastTerminal string
 	toolStart := map[string]time.Time{}
+	// Recovered real tool name, keyed by ToolCallID -- resolved once at
+	// tool_execution_start (the only marker carrying the bridge wrapper's
+	// arguments) and reused at tool_execution_end, which only ever repeats
+	// the generic wrapper name in its own ToolName field.
+	toolRealName := map[string]string{}
 	// Tracks whether the CURRENT assistant message streamed any text_delta chunks,
 	// so at message_end we can insert a clean boundary between messages (deltas
 	// alone run consecutive messages together) or, for models that expose only the
@@ -1406,9 +1512,16 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			case "tool_execution_start":
 				toolStart[marker.ToolCallID] = time.Now()
 				toolCallSincePrevAssistantMsg = true
+				toolName := marker.ToolName
+				if piGenericBridgeToolName(toolName) {
+					if real := piRealToolNameFromBridgeArgs(marker.Args); real != "" {
+						toolName = real
+					}
+				}
+				toolRealName[marker.ToolCallID] = toolName
 				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
 					Type:       llmtypes.StreamChunkTypeToolCallStart,
-					ToolName:   marker.ToolName,
+					ToolName:   toolName,
 					ToolCallID: marker.ToolCallID,
 					Metadata:   piChunkMetadata(session),
 				})
@@ -1417,13 +1530,20 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				if start, ok := toolStart[marker.ToolCallID]; ok {
 					duration = time.Since(start)
 				}
+				toolName := marker.ToolName
+				if real, ok := toolRealName[marker.ToolCallID]; ok && real != "" {
+					toolName = real
+				}
 				result := "ok"
 				if marker.IsError != nil && *marker.IsError {
 					result = "error"
 				}
+				if realResult := piResultTextFromMarker(marker.Result); realResult != "" {
+					result = realResult
+				}
 				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
 					Type:         llmtypes.StreamChunkTypeToolCallEnd,
-					ToolName:     marker.ToolName,
+					ToolName:     toolName,
 					ToolCallID:   marker.ToolCallID,
 					ToolResult:   result,
 					ToolDuration: duration,
@@ -2459,6 +2579,30 @@ function text(message: unknown): string | undefined {
 	return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
+// MAX_MARKER_PAYLOAD_CHARS bounds tool_execution_start/end's real args/result
+// before they're written to the marker file. Neither claude-code nor
+// codex-cli cap a tool result's displayed text at all (they read it whole
+// from a transcript/rollout file the CLI already wrote) -- this should match
+// that in practice for realistically-sized output, not undercut it. The cap
+// exists only as a safety net against a genuinely pathological single
+// result (many MB), because unlike those two, this is a synchronous
+// appendFileSync from INSIDE pi's own live process on every tool call, polled
+// concurrently by readPiMarkersSince -- an IPC-stability concern the other
+// two providers don't share, not a "keep it short for display" one.
+const MAX_MARKER_PAYLOAD_CHARS = 200_000;
+
+function compactForMarker(value: unknown): unknown {
+	if (value === undefined || value === null) return undefined;
+	let json: string;
+	try {
+		json = JSON.stringify(value);
+	} catch {
+		return undefined;
+	}
+	if (json === undefined || json.length <= MAX_MARKER_PAYLOAD_CHARS) return value;
+	return { mlpMarkerTruncated: true, preview: json.slice(0, MAX_MARKER_PAYLOAD_CHARS) };
+}
+
 export default function mlpMarkerExtension(pi: any) {
 	emit("extension_loaded");
 	pi.on("session_start", async (event: any, ctx: any) => {
@@ -2479,7 +2623,11 @@ export default function mlpMarkerExtension(pi: any) {
 		text: text(event?.message)
 	}));
 	pi.on("tool_execution_start", async (event: any) => {
-		emit("tool_execution_start", { toolCallId: event?.toolCallId, toolName: event?.toolName });
+		emit("tool_execution_start", {
+			toolCallId: event?.toolCallId,
+			toolName: event?.toolName,
+			args: compactForMarker(event?.args)
+		});
 	});
 	pi.on("tool_execution_update", async (event: any) => {
 		emit("tool_execution_update", { toolCallId: event?.toolCallId, toolName: event?.toolName });
@@ -2488,7 +2636,8 @@ export default function mlpMarkerExtension(pi: any) {
 		emit("tool_execution_end", {
 			toolCallId: event?.toolCallId,
 			toolName: event?.toolName,
-			isError: event?.isError
+			isError: event?.isError,
+			result: compactForMarker(event?.result)
 		});
 	});
 	pi.on("turn_end", async (event: any) => emit("turn_end", { role: role(event?.message) }));
