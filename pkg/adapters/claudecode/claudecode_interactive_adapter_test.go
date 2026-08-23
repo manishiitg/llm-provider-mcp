@@ -1512,6 +1512,60 @@ func TestHasReadyInputPromptAcceptsCompletedStatusAfterBackgroundAgents(t *testi
 	}
 }
 
+// TestHasReadyInputPromptAcceptsIdlePromptBelowFinishedToolCallSummary
+// reproduces a live production stall: a session's resumed pane always
+// redraws with a completed, collapsed tool-call summary
+// ("Called ... (ctrl+o to expand)") sitting just above an otherwise
+// genuinely idle empty prompt. hasReadyInputPrompt previously matched that
+// past-tense "Called" line via isClaudeToolProgressLine and treated it as
+// still-running, so the prompt was never judged ready, waitForTmuxPrompt hit
+// its 5-minute inactivity timeout, and the tmux session self-discarded --
+// deterministically, since a relaunch redraws the identical pane tail.
+func TestHasReadyInputPromptAcceptsIdlePromptBelowFinishedToolCallSummary(t *testing.T) {
+	pane := `
+✻ Crunched for 1h 40m 28s
+
+❯ yes check
+
+  Called api-bridge 7 times (ctrl+o to expand)
+
+⏺ Let me actually render this template with real data and look at it directly, rather
+  than guess from CSS.
+
+  Called api-bridge 2 times (ctrl+o to expand)
+
+─────────────────────────────────────────────────── mcp-agent-20260822-173432 ─
+❯
+────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false for an idle prompt sitting below a finished, collapsed tool-call summary")
+	}
+}
+
+// TestIsClaudeToolInProgressLineDistinguishesLiveFromFinishedCalls guards the
+// exact discriminator the fix above depends on: "Calling" is a live,
+// still-in-flight call and must gate readiness; "Called ... (ctrl+o to
+// expand)" is already-finished chrome and must never gate it, regardless of
+// how many times the pane redraws the same line.
+func TestIsClaudeToolInProgressLineDistinguishesLiveFromFinishedCalls(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"Calling api-bridge…", true},
+		{"Called api-bridge 2 times (ctrl+o to expand)", false},
+		{"Called api-bridge (ctrl+o to expand)", false},
+		{"Called api-bridge", false},
+	}
+	for _, tc := range cases {
+		if got := isClaudeToolInProgressLine(tc.line); got != tc.want {
+			t.Errorf("isClaudeToolInProgressLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
 func TestHasClaudeActivityIgnoresCompletedAssistantOutput(t *testing.T) {
 	pane := `
 ⏺ Final answer

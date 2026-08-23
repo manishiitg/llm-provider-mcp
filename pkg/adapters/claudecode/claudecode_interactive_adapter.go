@@ -2337,12 +2337,33 @@ func hasReadyInputPrompt(captured string) bool {
 		cleaned := cleanClaudeTerminalProgressLine(trimmed)
 		if isClaudeRunningProgressLine(trimmed) ||
 			isClaudeRunningProgressLine(cleaned) ||
-			isClaudeToolProgressLine(cleaned) {
+			isClaudeToolInProgressLine(trimmed) {
 			return false
 		}
 		break
 	}
 	return true
+}
+
+// isClaudeToolInProgressLine reports whether a terminal line is a LIVE,
+// currently-running tool call -- unlike isClaudeToolProgressLine, it does not
+// match past-tense "Called X" lines, including the collapsed
+// "Called X (ctrl+o to expand)" summary Claude Code leaves as idle chrome
+// above the prompt once a tool call has already finished. Past tense never
+// means "still running"; the "(ctrl+o to expand)" hint additionally proves
+// it, since a call only becomes expandable once it has already finished and
+// its summary is collapsed -- a still-running call has nothing to expand
+// yet. Using isClaudeToolProgressLine directly for readiness gating treated
+// finished-call chrome as permanently in-progress, since it never leaves the
+// pane once printed: the prompt was never judged ready and the session
+// self-discarded after 5 minutes of what looked like inactivity but was a
+// normal idle prompt sitting below a completed tool-call summary.
+func isClaudeToolInProgressLine(trimmed string) bool {
+	if strings.Contains(trimmed, "(ctrl+o to expand)") {
+		return false
+	}
+	return strings.Contains(trimmed, "Calling ") ||
+		(strings.Contains(trimmed, " - ") && strings.Contains(trimmed, "(MCP)"))
 }
 
 func isIgnorableClaudePromptFooterLine(trimmed string) bool {
