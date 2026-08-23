@@ -498,6 +498,17 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	var turnTextBuf strings.Builder
 	var totalUsage llmtypes.Usage
 	var cacheWriteTokens int
+	// PLAT-185-adjacent. IsError events were already logged server-side (type +
+	// tool name only -- see the comment at the switch below for why the payload
+	// itself is withheld) but never reached the caller: a run that hit six real
+	// "mcp" tool_execution_end errors over its lifetime still surfaced to the
+	// workflow/operator as a bare "pi run returned no text output" with nothing
+	// but the process's own startup banner in stderr -- the actual diagnostic
+	// sat in server_debug.log, invisible without direct log access. Accumulate a
+	// count and the last event's type/tool here so it can ride along in the
+	// final error instead of only ever reaching the local logger.
+	var errorEventCount int
+	var lastErrorEventType, lastErrorEventTool string
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -574,8 +585,13 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 			// tool's output, which can contain file contents or a credential
 			// the tool was handed. The type is what makes the failure
 			// traceable; the payload is what makes it a disclosure.
-			if event.IsError && p.logger != nil {
-				p.logger.Errorf("pi: received error event type=%q tool=%q", event.Type, event.ToolName)
+			if event.IsError {
+				errorEventCount++
+				lastErrorEventType = event.Type
+				lastErrorEventTool = event.ToolName
+				if p.logger != nil {
+					p.logger.Errorf("pi: received error event type=%q tool=%q", event.Type, event.ToolName)
+				}
 			}
 
 			switch event.Type {
@@ -827,10 +843,26 @@ waitLoop:
 		// that stderr was being captured and then silently discarded here,
 		// which is exactly what turned "invalid Gemini key" into an opaque
 		// "no text output" with nothing to trace it back to.
-		if stderrStr := strings.TrimSpace(stderr.String()); stderrStr != "" {
-			return nil, fmt.Errorf("pi run returned no text output: %s", stderrStr)
+		//
+		// A live incident on the confida-login workflow (2026-08-23) showed the
+		// other half of the same gap: the run DID hit six real IsError events
+		// (type=tool_execution_end, tool=mcp) over its ~3.3 minute lifetime --
+		// already logged server-side above -- but the error returned here, and
+		// therefore everything downstream (the workflow's own auto-notification,
+		// the operator reading it) carried none of that. It read as a bare "no
+		// text output" with only pi's own startup banner in stderr, giving no
+		// hint that real tool errors happened during the run. Surface the count
+		// and the last event's type/tool here too, so this diagnostic reaches
+		// whoever actually needs it without requiring direct server-log access.
+		errorEventNote := ""
+		if errorEventCount > 0 {
+			errorEventNote = fmt.Sprintf(" (%d pi error event(s) during the run; last: type=%q tool=%q)",
+				errorEventCount, lastErrorEventType, lastErrorEventTool)
 		}
-		return nil, fmt.Errorf("pi run returned no text output")
+		if stderrStr := strings.TrimSpace(stderr.String()); stderrStr != "" {
+			return nil, fmt.Errorf("pi run returned no text output%s: %s", errorEventNote, stderrStr)
+		}
+		return nil, fmt.Errorf("pi run returned no text output%s", errorEventNote)
 	}
 
 	additional := map[string]any{

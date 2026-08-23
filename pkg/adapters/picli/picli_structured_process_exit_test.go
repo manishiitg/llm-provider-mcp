@@ -160,6 +160,43 @@ func TestPiStructuredTerminatesRegardlessOfFinalEventName(t *testing.T) {
 	}
 }
 
+// Live incident, confida-login workflow, 2026-08-23: a structured pi run hit
+// six real IsError tool_execution_end events (tool="mcp", the generic
+// MCP-bridge wrapper), then exited 0 with no turn_end ever carrying content.
+// The IsError events were already logged server-side (type + tool name), but
+// that diagnostic never reached the returned error -- the workflow's own
+// failure notification read as a bare "pi run returned no text output" with
+// nothing but pi's own startup banner in stderr, giving no hint that six real
+// tool errors happened during the run. Reproduces that exact shape and
+// asserts the error now carries the count and the last event's type/tool.
+//
+// Fails before the fix (error message has no event count/type/tool);
+// passes after.
+func TestPiStructuredNoTextOutputErrorSurfacesIsErrorEventDiagnostic(t *testing.T) {
+	body := "printf '%s\\n' '{\"type\":\"agent_start\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"tool_execution_start\",\"toolCallId\":\"c1\",\"toolName\":\"mcp\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"tool_execution_end\",\"toolCallId\":\"c1\",\"toolName\":\"mcp\",\"isError\":true}'\n" +
+		"printf '%s\\n' '{\"type\":\"tool_execution_start\",\"toolCallId\":\"c2\",\"toolName\":\"mcp\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"tool_execution_end\",\"toolCallId\":\"c2\",\"toolName\":\"mcp\",\"isError\":true}'\n" +
+		"printf '%s\\n' 'Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.' >&2\n" +
+		"exit 0\n"
+
+	_, _, err := runFakePiScriptTurn(t, body, 8*time.Second)
+	if err == nil {
+		t.Fatal("expected an error for a run with no final content")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no text output") {
+		t.Fatalf("error = %q, want it to still mention \"no text output\"", msg)
+	}
+	if !strings.Contains(msg, "2 pi error event") {
+		t.Fatalf("error = %q, want it to mention the 2 IsError events that actually occurred during the run", msg)
+	}
+	if !strings.Contains(msg, `type="tool_execution_end"`) || !strings.Contains(msg, `tool="mcp"`) {
+		t.Fatalf("error = %q, want the last IsError event's type/tool to be named", msg)
+	}
+}
+
 // Sanity check for the common case: no lingering child at all, pi exits
 // cleanly on its own and stdout closes naturally. Must keep working exactly
 // as before -- this is the path essentially every real run takes.
