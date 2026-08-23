@@ -1678,7 +1678,7 @@ func isClaudeBlockingChoiceMenu(captured string) bool {
 
 func claudeResumeCompressionPromptSubmitKeys(captured string) []string {
 	if isClaudeResumeSummaryMenu(captured) {
-		return []string{"C-m"}
+		return claudeResumeSummaryMenuKeys(captured)
 	}
 	// Check TUI selection menu before the older text-based format \u2014 both may
 	// contain "compact"+"continue", but the TUI menu needs arrow keys, not typing.
@@ -1698,6 +1698,59 @@ func isClaudeResumeSummaryMenu(captured string) bool {
 		(strings.Contains(normalized, "resume full session") ||
 			strings.Contains(normalized, "usage limits") ||
 			strings.Contains(normalized, "substantial portion"))
+}
+
+// claudeResumeSummaryMenuKeys returns the tmux key sequence to choose "Resume
+// full session as-is" from the resume-from-summary TUI menu (options:
+// "Resume from summary (recommended)" / "Resume full session as-is" /
+// "Don't ask me again"), regardless of which option the \u276f cursor currently
+// sits on.
+//
+// Previously this always sent a bare Enter, accepting whatever was
+// pre-selected -- which per Claude Code's own default is "Resume from
+// summary (recommended)", the option that discards full conversation detail
+// in favor of a compressed summary. That silently chose compression on every
+// resume of a long conversation, the opposite of what a caller asking to
+// preserve full context wants. Navigate to "Resume full session as-is"
+// explicitly instead, the same way claudeResumeSelectMenuKeys already does
+// for the separate compact-vs-continue menu.
+func claudeResumeSummaryMenuKeys(captured string) []string {
+	lines := strings.Split(strings.ReplaceAll(captured, "\u00a0", " "), "\n")
+	cursorIdx, targetIdx := -1, -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if cursorIdx == -1 && strings.Contains(trimmed, "\u276f") {
+			cursorIdx = i
+		}
+		if targetIdx == -1 {
+			// "as-is"/"as is" is specific to the menu OPTION text ("Resume
+			// full session as-is"). A bare "full session" check also matches
+			// the descriptive paragraph above the menu ("Resuming the full
+			// session will consume a substantial portion..."), which sits on
+			// an earlier line than the real option and pointed navigation at
+			// the wrong target entirely.
+			lower := strings.ToLower(trimmed)
+			if strings.Contains(lower, "as-is") || strings.Contains(lower, "as is") {
+				targetIdx = i
+			}
+		}
+	}
+	if cursorIdx == -1 || targetIdx == -1 || cursorIdx == targetIdx {
+		// Cursor already on the target, or either line couldn't be found --
+		// accept whatever is selected rather than risk navigating blind.
+		return []string{"C-m"}
+	}
+	key := "Down"
+	steps := targetIdx - cursorIdx
+	if steps < 0 {
+		key = "Up"
+		steps = -steps
+	}
+	keys := make([]string, 0, steps+1)
+	for i := 0; i < steps; i++ {
+		keys = append(keys, key)
+	}
+	return append(keys, "C-m")
 }
 
 // isClaudeResumeSelectMenu detects the interactive TUI selection menu Claude Code

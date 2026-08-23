@@ -1030,7 +1030,14 @@ Would you like to compact the conversation or continue without compacting?
 	}
 }
 
-func TestClaudeResumeSummaryMenuSubmitsDefaultChoice(t *testing.T) {
+// Previously this asserted a bare Enter, accepting Claude Code's own default
+// selection -- "Resume from summary (recommended)", which discards full
+// conversation detail in favor of a compressed summary. That silently chose
+// compression on every resume of a long conversation, the opposite of what a
+// caller resuming to preserve full context wants. Fixed to navigate to
+// "Resume full session as-is" instead, the same way the sibling
+// compact-vs-continue menu already does.
+func TestClaudeResumeSummaryMenuNavigatesAwayFromCompressedDefault(t *testing.T) {
 	pane := `
 ────────────────────────────────────────────────────────────────────────────────────────────────── mcp-agent ──
 
@@ -1049,9 +1056,9 @@ func TestClaudeResumeSummaryMenuSubmitsDefaultChoice(t *testing.T) {
 		t.Fatal("isClaudeResumeSummaryMenu = false, want true")
 	}
 	got := claudeResumeCompressionPromptSubmitKeys(pane)
-	want := []string{"C-m"}
+	want := []string{"Down", "C-m"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v -- must navigate to \"Resume full session as-is\", not accept the compressed-summary default", got, want)
 	}
 }
 
@@ -1142,6 +1149,30 @@ func TestIsClaudeResumeSelectMenuDoesNotMatchNormalPrompt(t *testing.T) {
 `
 	if isClaudeResumeSelectMenu(pane) {
 		t.Fatal("isClaudeResumeSelectMenu = true for normal ready prompt")
+	}
+}
+
+// The cursor may already be on "Resume full session as-is" (e.g. the user
+// had manually navigated, or a prior poll already moved it) -- Enter alone
+// must be enough, no extra navigation.
+func TestClaudeResumeSummaryMenuAcceptsWhenCursorAlreadyOnFullSession(t *testing.T) {
+	pane := `
+────────────────────────────────────────────────────────────────────────────────────────────────── mcp-agent ──
+
+  This session is 2h 17m old and 167.9k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
+
+    1. Resume from summary (recommended)
+  ❯ 2. Resume full session as-is
+    3. Don't ask me again
+
+  Enter to confirm · Esc to cancel
+`
+	got := claudeResumeCompressionPromptSubmitKeys(pane)
+	want := []string{"C-m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudeResumeCompressionPromptSubmitKeys = %#v, want %#v", got, want)
 	}
 }
 
