@@ -1469,6 +1469,12 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// arguments) and reused at tool_execution_end, which only ever repeats
 	// the generic wrapper name in its own ToolName field.
 	toolRealName := map[string]string{}
+	// PLAT-186. Raw args as pi itself reported them at tool_execution_start,
+	// keyed by ToolCallID and reused at tool_execution_end (which carries no
+	// args of its own) -- same shape as toolRealName above, for the same
+	// reason: tool_execution_end never repeats what tool_execution_start
+	// already gave us.
+	toolRawArgs := map[string]string{}
 	// Tracks whether the CURRENT assistant message streamed any text_delta chunks,
 	// so at message_end we can insert a clean boundary between messages (deltas
 	// alone run consecutive messages together) or, for models that expose only the
@@ -1519,11 +1525,25 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					}
 				}
 				toolRealName[marker.ToolCallID] = toolName
+				rawArgs := compactPiStructuredJSON(marker.Args)
+				toolRawArgs[marker.ToolCallID] = rawArgs
 				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
 					Type:       llmtypes.StreamChunkTypeToolCallStart,
 					ToolName:   toolName,
 					ToolCallID: marker.ToolCallID,
-					Metadata:   piChunkMetadata(session),
+					// PLAT-186. Every other adapter (claude-code, codex-cli, cursor-cli,
+					// and pi's own structured adapter) populates ToolArgs with the raw,
+					// pre-recovery args on this chunk type -- pi's interactive adapter was
+					// the one gap. Populating it here, with marker.Args as pi itself
+					// reported it (BEFORE any name recovery above), is what makes it
+					// possible to tell a genuinely native/direct MCP tool call apart from
+					// the generic "mcp" wrapper successfully renamed by recovery: a native
+					// call's raw args are the tool's own parameters directly, while a
+					// wrapper call's raw args always carry the {"tool":...,"args":...}
+					// shape -- something ToolName alone can never distinguish once
+					// recovery has already normalized it to a real-looking name either way.
+					ToolArgs: rawArgs,
+					Metadata: piChunkMetadata(session),
 				})
 			case "tool_execution_end":
 				duration := time.Duration(0)
@@ -1545,6 +1565,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					Type:         llmtypes.StreamChunkTypeToolCallEnd,
 					ToolName:     toolName,
 					ToolCallID:   marker.ToolCallID,
+					ToolArgs:     toolRawArgs[marker.ToolCallID],
 					ToolResult:   result,
 					ToolDuration: duration,
 					Metadata:     piChunkMetadata(session),

@@ -62,6 +62,104 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
 	}
 }
 
+// PLAT-186. pi-mcp-adapter (the third-party MCP extension pi-cli loads)
+// only registers "directTools" -- native, individually-typed tools -- when
+// its on-disk metadata cache is valid for the CURRENT launch's server
+// config, judged by a hash of that config's entire declared shape,
+// including env (confirmed by reading pi-mcp-adapter@2.27.0's
+// computeServerHash/resolveDirectTools source directly). When that hash
+// doesn't match, every tool call is forced through the generic,
+// double-JSON-encoded "mcp(tool, args)" proxy wrapper instead -- fragile
+// enough that a live incident happened from a model malforming that
+// encoding. This proves the other half: that pi-mcp-adapter actually DOES
+// activate direct tools when given a stable config across two real,
+// separate launches -- not just that our own config stays byte-identical
+// (that half is covered in mcpagent's
+// TestBuildBridgeMCPConfigReadyFileIsStableAcrossRepeatedCallsForTheSameIdentity).
+//
+// The distinguishing signal has to be the RAW, pre-recovery tool args, not
+// the tool name: PLAT-179's own recovery logic renames a successfully-
+// recovered proxy call to look exactly like a real tool name, so a native
+// direct call and a recovered proxy call are indistinguishable by name
+// alone once recovery has run. A proxy call's raw args always carry the
+// wrapper shape {"tool":"...","args":"..."}; a native call's raw args are
+// the tool's own parameters directly. ToolArgs on tool_execution_start/end
+// now carries those raw, pre-recovery args (this fix's own addition --
+// every other adapter already populated it, pi's interactive adapter was
+// the one gap) specifically so this can be checked from outside.
+func TestPiCLIRealDirectToolsActivateOnRepeatedStableConfig(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	workDir := t.TempDir()
+	serverPath := writePiReportCWDMCPServer(t)
+	mcpConfig := fmt.Sprintf(`{
+  "mcpServers": {
+    "api-bridge": {
+      "command": "node",
+      "args": [%q],
+      "lifecycle": "keep-alive",
+      "directTools": true
+    }
+  }
+}`, serverPath)
+
+	prompt := "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text. If direct api_bridge_report_cwd is unavailable, use mcp({ search: \"report_cwd\" }) and mcp({ tool: \"api_bridge_report_cwd\", args: \"{}\" })."
+
+	runOnce := func(label string) []llmtypes.StreamChunk {
+		adapter := newRealPiCLIAdapter(t)
+		ownerSessionID := "pi-directtools-" + label + "-" + piRandomHex(6)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		stream := make(chan llmtypes.StreamChunk, 4096)
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, prompt),
+		}, WithWorkingDir(workDir), WithInteractiveSessionID(ownerSessionID), WithPersistentInteractiveSession(true), WithMCPConfig(mcpConfig), llmtypes.WithStreamingChan(stream))
+		if err != nil {
+			t.Fatalf("GenerateContent() [%s] error = %v", label, err)
+		}
+		ClosePiCLIInteractiveSessionForOwner(ownerSessionID, "test cleanup")
+		var chunks []llmtypes.StreamChunk
+		for chunk := range stream {
+			chunks = append(chunks, chunk)
+		}
+		return chunks
+	}
+
+	// First launch: cold cache for this config, if pi-mcp-adapter has never
+	// seen it before on this machine. Not asserted on -- this call's only
+	// job is to let the cache populate for the second call to build on.
+	runOnce("warm")
+
+	// Second launch: identical config (same command/args/directTools, and
+	// critically no env changing between calls, matching what the mcpagent
+	// fix now guarantees for a real workflow launch). If pi-mcp-adapter's
+	// cache is honoring that stability, this call's report_cwd invocation
+	// must be a native direct call, not a proxy call that recovery merely
+	// renamed to look like one.
+	chunks := runOnce("verify")
+
+	sawReportCWDCall := false
+	for _, chunk := range chunks {
+		if chunk.Type != llmtypes.StreamChunkTypeToolCallStart {
+			continue
+		}
+		if !strings.Contains(chunk.ToolName, "report_cwd") {
+			continue
+		}
+		sawReportCWDCall = true
+		args := strings.TrimSpace(chunk.ToolArgs)
+		if strings.Contains(args, `"tool"`) && strings.Contains(args, `"args"`) {
+			t.Fatalf("report_cwd's raw tool_execution_start args still carry the generic proxy wrapper shape "+
+				"({\"tool\":...,\"args\":...}) on the SECOND launch with an identical, stable config: %s -- "+
+				"directTools never actually activated despite the config being stable across launches", args)
+		}
+	}
+	if !sawReportCWDCall {
+		t.Fatal("expected a report_cwd tool_execution_start chunk on the second (cache-warm) launch")
+	}
+}
+
 func TestPiCLIRealMCPOutputGuardCompactsLongSingleLineResult(t *testing.T) {
 	if os.Getenv("RUN_PI_CLI_MCP_BRIDGE_E2E") != "1" {
 		t.Skip("set RUN_PI_CLI_MCP_BRIDGE_E2E=1 to run real Pi CLI MCP bridge test")
