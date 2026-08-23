@@ -50,6 +50,63 @@ Read/Edit/Write/Shell tools for ordinary project work while retaining MCP for
 application capabilities. `native_only` is mainly diagnostic because it cannot
 use application capabilities exposed only through MCP.
 
+### Design direction under consideration: preserve the provider harness
+
+This section records architectural reasoning, not an implemented policy change.
+The current workflow-step defaults and fail-closed behavior described below
+remain in force until the security and provider-contract work is complete.
+
+An end user does not care whether a result was produced by a provider-native
+tool or an MCP tool. The user-visible contract is that input is accepted
+promptly, progress streams continuously, the agent performs the task well, and
+exactly one clear final response arrives. Tool transport is an implementation
+detail and should be selected according to how reliably it satisfies that
+contract.
+
+Codex, Claude Code, Cursor, and similar products are not only model endpoints.
+Their harnesses contribute tool selection and sequencing, file search and
+editing, context management, compaction, failure recovery, and provider-aware
+interpretation of tool results. Disabling most native tools and recreating the
+same operations through an MCP bridge can reduce the capability of the complete
+agent even when the underlying model is unchanged. It can also introduce extra
+tool discovery, larger schemas and receipts in context, additional process
+round trips, provider-to-bridge translation failures, and repeated discovery
+that the native harness would otherwise retain or handle directly.
+
+Conversely, MCP remains the correct boundary for AgentWorks-owned and
+privileged capabilities: workflow control, durable platform state, human
+decisions, notifications, secrets, external actions, and dynamic product APIs.
+Those capabilities need stable authorization, auditability, and provider-neutral
+contracts. A product may expose dynamic capabilities through `get_api_spec`, or
+stable capabilities as direct MCP tools; neither choice requires ordinary file
+and project work to use MCP as well.
+
+The longer-term direction to evaluate is therefore:
+
+1. Preserve the provider's native harness and native tools for ordinary
+   workspace reasoning, search, editing, and local verification.
+2. Add AgentWorks capabilities through MCP or a discovered product API surface.
+3. Normalize provider output in mcpagent into one user-facing lifecycle:
+   accepted input, streaming text and tool activity, one final assistant
+   response, and one terminal turn-completion event.
+4. Enforce security around the entire coding-agent process and independently at
+   each privileged AgentWorks capability, rather than relying on disabling the
+   provider harness as the primary boundary.
+5. Retain `mcp_only` as a safe fallback for providers or environments where
+   whole-process isolation has not been verified.
+
+This makes `hybrid` the intended capability model once its process boundary is
+certified, while avoiding an architectural-purity requirement that every
+operation cross MCP. It also keeps skill exposure explicit: approved skills
+must be projected into the session or served by a managed skill reader. Hybrid
+mode is not justification for granting broad access to user configuration roots
+such as `~/.codex` or `~/.claude`.
+
+Before changing defaults, this direction needs live cross-provider evidence for
+streaming continuity, final-response delivery, session reuse, task quality,
+latency, cost, and sandbox escape prevention. Until then, this is a recorded
+design hypothesis rather than a rollout decision.
+
 ### Product API transport for hybrid profiles
 
 A product exposing custom capabilities through `get_api_spec` needs a way to
