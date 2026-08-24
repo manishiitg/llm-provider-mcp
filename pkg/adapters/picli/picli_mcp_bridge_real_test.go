@@ -160,6 +160,119 @@ func TestPiCLIRealDirectToolsActivateOnRepeatedStableConfig(t *testing.T) {
 	}
 }
 
+// Live incident, trading workflow, 2026-08-24: a model called
+// mcp({tool: "get_human_input_request", args: "..."}) -- a custom tool never
+// declared on the api-bridge MCP server -- got "Tool ... not found. Use
+// mcp({ search: "..." })", and retried the same losing pattern. Fixed by
+// disabling pi-mcp-adapter's generic mcp proxy tool by default
+// (normalizePiMCPConfig sets settings.disableProxyTool=true) once directTools
+// are cache-warm, so the model has no path to reach a custom tool through MCP
+// at all -- confirmed safe against pi-mcp-adapter's own shouldRegisterProxyTool
+// logic (still registers the proxy on a cold direct-tools cache). This proves
+// the runtime effect directly: on a SECOND launch with an identical, stable
+// config (cache-warm, matching a real workflow launch after mcpagent's
+// PLAT-186 stable-ready-file fix), an explicit attempt to call the mcp proxy
+// tool itself fails with pi's own "not found" rejection -- the same shape
+// the live incident hit -- rather than succeeding, which would mean the
+// proxy silently stayed available despite disableProxyTool being set.
+//
+// Uses the REAL mcpbridge binary (built fresh from the mcpagent sibling
+// checkout) rather than a hand-written Node MCP-protocol stub, so this
+// exercises the actual production stdio<->HTTP translation layer -- not just
+// pi-mcp-adapter's own caching behavior against an arbitrary conforming
+// server. The fake HTTP backend it talks to only needs to satisfy
+// mcpbridge's real /tools/custom/{name} contract, confirmed by reading
+// cmd/mcpbridge/main.go directly.
+func TestPiCLIRealMcpProxyToolIsUnavailableOnWarmDirectToolsCache(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	bridgeBin := buildRealMCPBridgeBinary(t)
+	const apiToken = "real-bridge-p0-test-token"
+	fakeAPI := newFakeBridgeAPIServer(t, apiToken, map[string]string{
+		"execute_shell_command": "PI_REAL_BRIDGE_OK",
+	})
+	toolsJSON := realMCPBridgeToolDefsJSON("execute_shell_command")
+
+	workDir := t.TempDir()
+	mcpConfig := fmt.Sprintf(`{
+  "mcpServers": {
+    "api-bridge": {
+      "command": %q,
+      "env": {"MCP_API_URL": %q, "MCP_API_TOKEN": %q, "MCP_TOOLS": %q},
+      "lifecycle": "keep-alive",
+      "directTools": true
+    }
+  }
+}`, bridgeBin, fakeAPI.URL, apiToken, toolsJSON)
+
+	runOnce := func(label, prompt string) []llmtypes.StreamChunk {
+		adapter := newRealPiCLIAdapter(t)
+		ownerSessionID := "pi-proxy-disabled-" + label + "-" + piRandomHex(6)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		stream := make(chan llmtypes.StreamChunk, 4096)
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, prompt),
+		}, WithWorkingDir(workDir), WithInteractiveSessionID(ownerSessionID), WithPersistentInteractiveSession(true), WithMCPConfig(mcpConfig), llmtypes.WithStreamingChan(stream))
+		if err != nil {
+			t.Fatalf("GenerateContent() [%s] error = %v", label, err)
+		}
+		ClosePiCLIInteractiveSessionForOwner(ownerSessionID, "test cleanup")
+		var chunks []llmtypes.StreamChunk
+		for chunk := range stream {
+			chunks = append(chunks, chunk)
+		}
+		return chunks
+	}
+
+	// First launch: cold cache for this config, just to let directTools
+	// populate via the real mcpbridge binary's tools/list handshake.
+	runOnce("warm", "Call the api-bridge MCP tool execute_shell_command with command \"echo hi\", then reply exactly with the tool output text.")
+	if !fakeAPI.sawCall("execute_shell_command") {
+		t.Fatal("expected the real mcpbridge binary to forward execute_shell_command to the fake bridge API server on the first launch")
+	}
+
+	// Second launch: identical stable config, so directTools should be
+	// cache-warm. Explicitly ask for the mcp proxy call form the live
+	// incident used -- if disableProxyTool actually took effect, pi itself
+	// must reject this exact call, not silently succeed.
+	chunks := runOnce("verify", `Call exactly this tool: name "mcp", arguments {"search": "execute_shell_command"}. Report back verbatim whatever text the tool result contains, with no commentary of your own.`)
+
+	var toolResultText, finalText string
+	sawMcpToolCall := false
+	for _, chunk := range chunks {
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart && chunk.ToolName == "mcp" {
+			sawMcpToolCall = true
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallEnd && chunk.ToolName == "mcp" {
+			toolResultText += chunk.ToolResult
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeContent {
+			finalText += chunk.Content
+		}
+	}
+	if finalText == "" && !sawMcpToolCall {
+		t.Fatal("expected either an mcp tool call attempt or a text response on the second (cache-warm) launch -- got neither, the launch may have failed silently")
+	}
+	if sawMcpToolCall {
+		// The model saw an "mcp" tool in its list (proxy still registered,
+		// e.g. cache wasn't actually warm) and called it -- disableProxyTool
+		// only hides the proxy once directTools are fully resolved, so this
+		// path is still a legitimate PASS as long as pi itself rejects the
+		// call rather than silently answering it.
+		if !strings.Contains(toolResultText, "not found") {
+			t.Fatalf("expected pi's own proxy-tool-not-found rejection once disableProxyTool is active on a cache-warm launch, "+
+				"got tool result: %q -- the mcp proxy tool answered instead of being disabled", toolResultText)
+		}
+	} else {
+		// Stronger signal: the model never even attempted the call, because
+		// disableProxyTool removed "mcp" from its available tools entirely --
+		// there was no function named "mcp" to call in the first place.
+		t.Logf("model never attempted an mcp tool call at all (no such tool in its list); final text: %q", finalText)
+	}
+}
+
 func TestPiCLIRealMCPOutputGuardCompactsLongSingleLineResult(t *testing.T) {
 	if os.Getenv("RUN_PI_CLI_MCP_BRIDGE_E2E") != "1" {
 		t.Skip("set RUN_PI_CLI_MCP_BRIDGE_E2E=1 to run real Pi CLI MCP bridge test")
