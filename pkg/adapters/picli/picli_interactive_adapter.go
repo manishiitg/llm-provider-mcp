@@ -777,6 +777,27 @@ func normalizePiMCPConfig(configJSON string) ([]byte, error) {
 			bridge["lifecycle"] = "keep-alive"
 		}
 	}
+	// disableProxyTool hides pi-mcp-adapter's generic "mcp" proxy tool once
+	// directTools are fully resolved from cache -- confirmed safe by reading
+	// pi-mcp-adapter's own index.ts: shouldRegisterProxyTool still registers
+	// the proxy whenever directSpecs is empty or a configured server's direct
+	// tools are still missing from cache, so a cold cache (first launch,
+	// stale hash) still gets the proxy as a bootstrap path. Warm, it hides a
+	// tool the model has no legitimate use for: our only MCP server is
+	// api-bridge with directTools already covering its whole (small, fixed)
+	// tool set, and every other tool this platform exposes is a curl-only
+	// custom tool the proxy could never reach anyway (confirmed live: a
+	// model tried mcp({tool: "get_human_input_request", ...}) and got an
+	// instant "not found" -- pi-mcp-adapter had never even attempted a
+	// connection). Removing the option entirely removes the temptation.
+	settings, ok := config["settings"].(map[string]interface{})
+	if !ok {
+		settings = map[string]interface{}{}
+		config["settings"] = settings
+	}
+	if _, exists := settings["disableProxyTool"]; !exists {
+		settings["disableProxyTool"] = true
+	}
 	body, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode Pi MCP config: %w", err)
