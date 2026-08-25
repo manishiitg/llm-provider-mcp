@@ -34,6 +34,17 @@ var claudeUsageLimitPattern = regexp.MustCompile(
 	`(?i)\b(?:hit|reached|exceeded)\s+(?:your|the)\s+(?:[a-z0-9-]+\s+){0,3}limit\b`,
 )
 
+// claudeConditionalLimitPrefixPattern matches an "if" shortly before a
+// claudeUsageLimitPattern match, which makes the statement hypothetical
+// rather than a report of the account's current state — for example Claude
+// Code's own promotional banner for a model rollout: "If you hit your
+// limit, you can continue on Fable 5 with usage credits." That banner
+// prints on every fresh session start, so matching claudeUsageLimitPattern
+// unconditionally misreported a normal new chat as an exhausted account
+// every single time. Go's RE2 engine has no lookbehind, so this is checked
+// separately against the text immediately preceding a match.
+var claudeConditionalLimitPrefixPattern = regexp.MustCompile(`(?i)\bif\s+(?:\S+\s+){0,2}$`)
+
 // claudeUsageLimitAlternatives are limit statements whose phrasing does not
 // fit the verb+possessive shape above.
 var claudeUsageLimitAlternatives = []string{
@@ -46,18 +57,32 @@ var claudeUsageLimitAlternatives = []string{
 // IsClaudeUsageLimitText reports whether text states that a Claude
 // subscription/usage limit has been reached. It is intentionally tolerant of
 // wording variants and case, and intentionally NOT tolerant of unrelated prose
-// that merely contains the word "limit".
+// that merely contains the word "limit" or conditionally mentions one (see
+// claudeConditionalLimitPrefixPattern).
 func IsClaudeUsageLimitText(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return false
 	}
-	if claudeUsageLimitPattern.MatchString(trimmed) {
+	if hasGenuineClaudeUsageLimitMatch(trimmed) {
 		return true
 	}
 	lowered := strings.ToLower(trimmed)
 	for _, phrase := range claudeUsageLimitAlternatives {
 		if strings.Contains(lowered, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGenuineClaudeUsageLimitMatch reports whether trimmed contains a
+// claudeUsageLimitPattern match not immediately preceded by a conditional
+// "if" — i.e. a statement that a limit has actually been reached, not a
+// hypothetical mention of one.
+func hasGenuineClaudeUsageLimitMatch(trimmed string) bool {
+	for _, loc := range claudeUsageLimitPattern.FindAllStringIndex(trimmed, -1) {
+		if !claudeConditionalLimitPrefixPattern.MatchString(trimmed[:loc[0]]) {
 			return true
 		}
 	}

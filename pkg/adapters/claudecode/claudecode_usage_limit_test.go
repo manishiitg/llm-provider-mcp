@@ -42,10 +42,28 @@ func TestClaudeUsageLimitTextIgnoresUnrelatedProse(t *testing.T) {
 		"limit",
 		"Checking whether we hit any limits during this run",
 		"Set LIMIT 10 in the SQL statement",
+		// Claude Code's own promotional banner for the Fable 5 rollout, printed
+		// on every fresh session start. Its conditional framing ("if you hit")
+		// is not a report that the account's limit has actually been reached —
+		// unconditionally matching it misreported every brand-new chat as an
+		// exhausted account, including on accounts nowhere near any limit.
+		"Fable 5 is now a standard part of your Max plan\nYou can use up to 50% of your weekly usage limit on Fable 5. If you hit your limit, you can continue on Fable 5 with usage credits. Fable 5 draws down usage faster than Opus 5.",
+		"If you hit your limit, you can continue on Fable 5 with usage credits.",
+		"If you exceed the weekly limit, billing switches to pay-as-you-go.",
 	} {
 		if IsClaudeUsageLimitText(text) {
 			t.Errorf("IsClaudeUsageLimitText(%q) = true, want false", text)
 		}
+	}
+}
+
+// A conditional mention earlier in the pane must not mask a genuine limit
+// wall reported later in the same text -- the two are independent
+// statements and the tolerant matcher must still catch the real one.
+func TestClaudeUsageLimitTextStillCatchesRealWallAfterAnUnrelatedConditionalMention(t *testing.T) {
+	text := "If you hit your limit, you can continue on Fable 5 with usage credits.\n\nYou've hit your weekly limit · resets 11:30pm (Asia/Calcutta)"
+	if !IsClaudeUsageLimitText(text) {
+		t.Fatalf("IsClaudeUsageLimitText(%q) = false, want true -- a real limit wall later in the pane must still be detected", text)
 	}
 }
 
