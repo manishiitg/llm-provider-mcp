@@ -1373,6 +1373,7 @@ type piMarker struct {
 	IsError    *bool           `json:"isError,omitempty"`
 	Args       json.RawMessage `json:"args,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
+	Status     int             `json:"status,omitempty"`
 }
 
 // piGenericBridgeToolName reports whether name is pi's own generic wrapper
@@ -1511,6 +1512,15 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// more narration) — never between two chunks of what pi itself is streaming
 	// as one uninterrupted reply, or it corrupts the reassembled text.
 	toolCallSincePrevAssistantMsg := false
+	// lastProviderErrorStatus records the most recent non-2xx HTTP status pi's
+	// own after_provider_response hook observed this turn (see
+	// piMarkerExtensionSource's "provider_error" marker). A provider error
+	// (rate limit, upstream outage, auth failure) still lets pi's agent_end
+	// fire normally -- from Pi's perspective the low-level run simply ended.
+	// Only surfaced as a Go error if the turn produced neither content nor a
+	// tool call; if pi's own auto-retry recovered and produced real output
+	// afterward, that output wins and this is never consulted.
+	lastProviderErrorStatus := 0
 
 	for {
 		markers, nextOffset, err := readPiMarkersSince(session.markerPath, currentOffset)
@@ -1632,11 +1642,17 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					toolCallSincePrevAssistantMsg = false
 				}
 				streamedDeltaThisMessage = false
+			case "provider_error":
+				lastProviderErrorStatus = marker.Status
 			case "agent_end":
 				if finalAssistantText != "" {
 					return finalAssistantText, nil
 				}
-				return strings.TrimSpace(content.String()), nil
+				trimmed := strings.TrimSpace(content.String())
+				if trimmed == "" && len(toolStart) == 0 && lastProviderErrorStatus != 0 {
+					return "", fmt.Errorf("pi-cli provider request failed: HTTP %d", lastProviderErrorStatus)
+				}
+				return trimmed, nil
 			}
 		}
 
@@ -2684,6 +2700,17 @@ export default function mlpMarkerExtension(pi: any) {
 	});
 	pi.on("turn_end", async (event: any) => emit("turn_end", { role: role(event?.message) }));
 	pi.on("agent_end", async () => emit("agent_end"));
+	// A non-2xx provider response (rate limit, upstream outage, auth failure)
+	// shows up in pi's own TUI pane as colored error text, but pi's agent_end
+	// still fires normally -- from Pi's perspective the low-level run simply
+	// ended, whether that was because of a real completion or a swallowed
+	// upstream error. Without this marker, a 429 produces an empty-content,
+	// zero-tool-call turn indistinguishable from a genuinely quiet success.
+	pi.on("after_provider_response", async (event: any) => {
+		if (typeof event?.status === "number" && event.status >= 400) {
+			emit("provider_error", { status: event.status });
+		}
+	});
 }
 `
 }

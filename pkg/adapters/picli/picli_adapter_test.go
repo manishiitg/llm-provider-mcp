@@ -170,6 +170,70 @@ func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 	}
 }
 
+// Live incident, trading workflow, 2026-08-25: three consecutive Pulse turns
+// each showed "LLM Generation End... 0 tool calls... No content generated" in
+// the UI, with no indication of why -- the raw pi pane showed a real
+// OpenRouter 429 ("stealth/ox-alpha is temporarily rate-limited upstream")
+// each time. pi's agent_end still fires normally on a provider error (from
+// Pi's own perspective the low-level run simply ended), so an empty-content,
+// zero-tool-call turn was indistinguishable from a genuinely quiet success.
+func TestPiMarkerParserSurfacesProviderErrorAsFailureWhenTurnProducedNothing(t *testing.T) {
+	dir := t.TempDir()
+	markerPath := dir + "/markers.jsonl"
+	body := strings.Join([]string{
+		`{"type":"provider_error","status":429}`,
+		`{"type":"agent_end"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &piInteractiveSession{
+		tmuxSessionName: "missing-session",
+		markerPath:      markerPath,
+		modelID:         "openrouter/stealth/ox-alpha",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := waitForPiInteractiveResponse(ctx, session, 0, nil)
+	if err == nil {
+		t.Fatal("waitForPiInteractiveResponse() error = nil, want a provider-error failure for an empty turn")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %q, want it to name the HTTP status", err.Error())
+	}
+}
+
+// A provider error pi's own auto-retry recovered from must not be reported
+// as a failure once real content/tool activity actually followed it.
+func TestPiMarkerParserIgnoresProviderErrorOnceTurnProducedRealContent(t *testing.T) {
+	dir := t.TempDir()
+	markerPath := dir + "/markers.jsonl"
+	body := strings.Join([]string{
+		`{"type":"provider_error","status":429}`,
+		`{"type":"message_update","updateType":"text_delta","delta":"recovered after retry"}`,
+		`{"type":"agent_end"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &piInteractiveSession{
+		tmuxSessionName: "missing-session",
+		markerPath:      markerPath,
+		modelID:         "openrouter/stealth/ox-alpha",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	content, err := waitForPiInteractiveResponse(ctx, session, 0, nil)
+	if err != nil {
+		t.Fatalf("waitForPiInteractiveResponse() error = %v, want nil once real content followed the transient error", err)
+	}
+	if content != "recovered after retry" {
+		t.Fatalf("content = %q, want %q", content, "recovered after retry")
+	}
+}
+
 func TestPiMarkerParserUsesCompletedAssistantMessageWithoutDeltas(t *testing.T) {
 	dir := t.TempDir()
 	markerPath := dir + "/markers.jsonl"
