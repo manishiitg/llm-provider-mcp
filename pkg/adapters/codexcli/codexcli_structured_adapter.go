@@ -46,7 +46,7 @@ type codexExecEvent struct {
 
 type codexExecItem struct {
 	ID               string `json:"id"`
-	Type             string `json:"type"` // "agent_message" | "command_execution" | "mcp_tool_call"
+	Type             string `json:"type"` // "agent_message" | "command_execution" | "mcp_tool_call" | "web_search"
 	Text             string `json:"text,omitempty"`
 	Command          string `json:"command,omitempty"`
 	AggregatedOutput string `json:"aggregated_output,omitempty"`
@@ -58,19 +58,30 @@ type codexExecItem struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`
 	Error     json.RawMessage `json:"error,omitempty"`
+	// web_search field — verified live: item.started carries an empty query,
+	// item.completed carries the real one (codex fills it in once the search
+	// actually runs).
+	Query string `json:"query,omitempty"`
 }
 
 // isCodexToolItem reports whether an item type represents a real tool
 // invocation worth streaming as ToolCallStart/ToolCallEnd — native shell
-// (command_execution) and MCP bridge calls (mcp_tool_call) both count.
+// (command_execution), MCP bridge calls (mcp_tool_call), and codex's native
+// web_search all count. web_search was missing here entirely until PLAT-247's
+// live SearchWeb verification caught it: content streamed correctly (codex's
+// final agent_message still fires normally) but no tool-call signal ever
+// reached callers relying on the stream to know a search happened.
 func isCodexToolItem(itemType string) bool {
-	return itemType == "command_execution" || itemType == "mcp_tool_call"
+	return itemType == "command_execution" || itemType == "mcp_tool_call" || itemType == "web_search"
 }
 
 // codexToolItemLabel renders a human-readable label for a tool-call chunk.
 func codexToolItemLabel(item *codexExecItem) string {
 	if item.Type == "mcp_tool_call" {
 		return item.Server + "." + item.Tool
+	}
+	if item.Type == "web_search" {
+		return item.Query
 	}
 	return item.Command
 }
@@ -89,6 +100,9 @@ func codexToolItemName(item *codexExecItem) string {
 	if item.Type == "command_execution" {
 		return "exec_command"
 	}
+	if item.Type == "web_search" {
+		return "web_search"
+	}
 	return ""
 }
 
@@ -101,6 +115,12 @@ func codexToolItemArgs(item *codexExecItem) string {
 	}
 	if item.Type == "command_execution" && item.Command != "" {
 		args, err := json.Marshal(map[string]string{"command": item.Command})
+		if err == nil {
+			return string(args)
+		}
+	}
+	if item.Type == "web_search" && item.Query != "" {
+		args, err := json.Marshal(map[string]string{"query": item.Query})
 		if err == nil {
 			return string(args)
 		}

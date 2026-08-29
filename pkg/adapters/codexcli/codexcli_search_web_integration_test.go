@@ -36,6 +36,36 @@ func TestCodexCLIRealSearchWeb(t *testing.T) {
 	}
 }
 
+// TestCodexCLIRealSearchWebStructured is the structured/JSON-transport
+// counterpart to TestCodexCLIRealSearchWeb (which only ever exercised tmux --
+// SearchWeb's own GenerateContent call defaults to the tmux transport, and no
+// prior test covered `codex exec --json` for native web search at all).
+func TestCodexCLIRealSearchWebStructured(t *testing.T) {
+	requireRealCodexCLISearchWebE2E(t)
+
+	adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, quietCodexStreamLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	captureDone := collectCodexStream(streamChan)
+	result, err := adapter.SearchWeb(ctx,
+		"What is the capital of France? Use web search and reply with the city and country only.",
+		WithReasoningEffort("low"),
+		WithCodexStructuredTransport(true),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if !strings.Contains(strings.ToLower(result), "paris") {
+		t.Fatalf("expected result to mention Paris, got %q", result)
+	}
+	if capture := <-captureDone; capture.toolStarts == 0 {
+		t.Fatalf("expected structured-transport SearchWeb to emit a native web-search tool call, streamed content=%q", capture.content)
+	}
+}
+
 func TestCodexCLIRealSearchWebLiveData(t *testing.T) {
 	requireRealCodexCLISearchWebE2E(t)
 
