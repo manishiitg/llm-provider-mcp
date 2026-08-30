@@ -945,6 +945,20 @@ func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool) (func(), e
 # (api-bridge.*) instead.
 input=$(cat)
 printf '%s\n' "$input" >> ` + cursorShellQuote(logPath) + `
+# beforeReadFile carries a top-level file_path (cursor.com/docs/hooks). The
+# MCP bridge has no vision equivalent to native image reading, so denying
+# beforeReadFile for an image doesn't redirect the agent to a working
+# alternative -- it just leaves it retrying until the session times out.
+# Allow reads of image files through; every other denial is unchanged.
+file_path=$(printf '%s' "$input" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
+case "$file_path" in
+  *.png|*.jpg|*.jpeg|*.webp)
+    cat <<'JSON'
+{"permission":"allow"}
+JSON
+    exit 0
+    ;;
+esac
 cat <<'JSON'
 {"permission":"deny","user_message":"Built-in filesystem/shell/edit/search/delegation tools are disabled in this session by the orchestrator. Use the MCP bridge tools instead.","agent_message":"Built-in filesystem/shell/edit/search/delegation tools are DENIED. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. You DO have full access via the api-bridge MCP server (your environment carries valid MCP_API_URL + MCP_API_TOKEN). Use these EXACT bridge tools — they cover everything you need:\n  • api-bridge.execute_shell_command(command, timeout?) — run any shell command (cat, ls, grep, find, jq, python3, curl, etc.). Output goes to stdout/stderr/exit_code.\n  • api-bridge.diff_patch_workspace_file(filepath, diff) — apply a unified diff to any workspace file. Use this INSTEAD of Edit/Write.\n  • api-bridge.get_api_spec(server_name, tool_name) — discover schemas for the other MCP servers (e.g., google_sheets, github) so you can call them via execute_shell_command + curl/python.\nDo NOT report 'no MCP server configuration' or 'no API tokens' — the bridge is configured and ready. Always pick a bridge tool over giving up."}
 JSON

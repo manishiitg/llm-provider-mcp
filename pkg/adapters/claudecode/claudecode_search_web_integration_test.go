@@ -35,6 +35,36 @@ func TestClaudeCodeRealSearchWeb(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeRealSearchWebStructured is the structured/JSON-transport
+// counterpart to TestClaudeCodeRealSearchWeb (which only ever exercised tmux
+// -- the public adapter's GenerateContent always delegates to
+// ClaudeCodeInteractiveAdapter, and no prior test opted into
+// WithClaudeStructuredTransport for native web search).
+func TestClaudeCodeRealSearchWebStructured(t *testing.T) {
+	requireRealClaudeCodeSearchWebE2E(t)
+
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	streamChan := make(chan llmtypes.StreamChunk, 128)
+	captureDone := collectClaudeSearchStream(streamChan)
+	result, err := adapter.SearchWeb(ctx,
+		"What is the capital of France? Use WebSearch and reply with the city and country only.",
+		WithClaudeStructuredTransport(true),
+		llmtypes.WithStreamingChan(streamChan),
+	)
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if !strings.Contains(strings.ToLower(result), "paris") {
+		t.Fatalf("expected result to mention Paris, got %q", result)
+	}
+	if capture := <-captureDone; capture.toolStarts == 0 {
+		t.Fatalf("expected structured-transport SearchWeb to emit a native WebSearch tool call, streamed content=%q", capture.content)
+	}
+}
+
 func requireRealClaudeCodeSearchWebE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_CLAUDE_CODE_SEARCH_WEB_E2E") == "" {

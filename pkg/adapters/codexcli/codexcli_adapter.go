@@ -101,6 +101,18 @@ func (c *CodexCLIAdapter) SearchWeb(ctx context.Context, query string, options .
 	}
 
 	searchPrompt := "Use web search to answer the following query.\n\n" + query
+	// Transcript-based tool-call/content streaming defaults OFF
+	// (codexInteractiveStreamTranscriptEnabled) unless a caller opts in --
+	// SearchWeb never did, so a caller passing a stream channel saw an empty
+	// stream (toolStarts=0, content="") even on a genuine, successful native
+	// web search: the final answer came back fine through the rollout/pane
+	// parse path, which does not depend on this flag, while the stream simply
+	// never got told what the search tool call actually did. Confirmed live:
+	// codex answers web searches by running a custom_tool_call (name "exec",
+	// invoking tools.web__run) under this transport, an event type the
+	// transcript reader already recognizes -- it just wasn't being read.
+	searchOptions := append([]llmtypes.CallOption{}, options...)
+	searchOptions = append(searchOptions, WithStreamTranscript(true))
 	resp, err := c.GenerateContent(ctx, []llmtypes.MessageContent{
 		{
 			Role: llmtypes.ChatMessageTypeHuman,
@@ -108,7 +120,7 @@ func (c *CodexCLIAdapter) SearchWeb(ctx context.Context, query string, options .
 				llmtypes.TextContent{Text: searchPrompt},
 			},
 		},
-	}, options...)
+	}, searchOptions...)
 	if err != nil {
 		return "", err
 	}

@@ -123,11 +123,27 @@ func (a *CodexCLIImageAdapter) GenerateImages(ctx context.Context, prompt string
 }
 
 func (a *CodexCLIImageAdapter) runSingleImageCommand(ctx context.Context, workdir, prompt, outputPath, lastMessagePath, inputImagePath string, opts *llmtypes.ImageGenerationOptions, index int) error {
+	// --ask-for-approval is a GLOBAL flag and must precede "exec" (same
+	// ordering constraint as buildCodexStructuredArgs). "never" replaces the
+	// former --dangerously-bypass-approvals-and-sandbox: verified live that
+	// codex's built-in image_gen tool needs no approval prompt at all, so
+	// full bypass bought nothing here except an unnecessarily wide blast
+	// radius (danger-full-access instead of workspace-write).
 	args := []string{
+		"--ask-for-approval", "never",
 		"exec",
 		"--ephemeral",
 		"--skip-git-repo-check",
-		"--dangerously-bypass-approvals-and-sandbox",
+		// workspace-write, not the former full-bypass sandbox: codex's
+		// image_gen skill writes the generated file under
+		// $CODEX_HOME/generated_images/ (outside any sandbox, since that's
+		// its own built-in tool storage) then shells out to `cp` it into
+		// outputPath -- verified live that a workspace-write sandbox still
+		// permits that copy because outputPath is inside workdir. Do NOT
+		// also disable shell_tool (codexBridgeOnlyDisabledFeatures) here:
+		// disabling it would leave the generated file stranded outside the
+		// workspace with no way for codex to relocate it.
+		"--sandbox", "workspace-write",
 		"-C", workdir,
 		"-o", lastMessagePath,
 	}
@@ -138,7 +154,16 @@ func (a *CodexCLIImageAdapter) runSingleImageCommand(ctx context.Context, workdi
 		args = append(args, "--model", modelToUse)
 	}
 	if inputImagePath != "" {
-		args = append(args, "--image", inputImagePath)
+		// Must be a single "--image=<path>" token, not two argv entries:
+		// codex's --image flag is clap-variadic (<FILE>...) and greedily
+		// swallows the very next positional-looking argument too -- which
+		// was the prompt string, appended right after this in the pre-fix
+		// code. That left codex with an empty PROMPT positional, so it fell
+		// back to reading stdin, found nothing, and exited 1
+		// ("No prompt provided via stdin") on every image_edit call.
+		// Verified live: this exact two-arg form reproduced that failure;
+		// the "=" form here does not.
+		args = append(args, "--image="+inputImagePath)
 	}
 	args = append(args, buildCodexImagePrompt(prompt, outputPath, opts, index, inputImagePath != ""))
 

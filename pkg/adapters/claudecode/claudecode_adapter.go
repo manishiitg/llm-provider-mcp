@@ -333,6 +333,13 @@ func (c *ClaudeCodeAdapter) SearchWeb(ctx context.Context, query string, options
 	searchOptions := append([]llmtypes.CallOption{}, options...)
 	searchOptions = append(searchOptions, WithClaudeCodeTools("WebSearch"))
 	searchOptions = append(searchOptions, WithAllowedTools("WebSearch"))
+	// Transcript streaming defaults OFF (claudeInteractiveStreamTranscriptEnabled)
+	// unless a caller opts in -- SearchWeb never did, so a caller passing a
+	// stream channel saw an empty stream (no ToolCallStart, no content) even on
+	// a genuine, successful WebSearch: the final answer comes back through a
+	// path that doesn't depend on this flag, while the stream itself never got
+	// told the search happened. Same root cause as codexcli's SearchWeb fix.
+	searchOptions = append(searchOptions, WithStreamTranscript(true))
 
 	resp, err := c.GenerateContent(ctx, []llmtypes.MessageContent{
 		{
