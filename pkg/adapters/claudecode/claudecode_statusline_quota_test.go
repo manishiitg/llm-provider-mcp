@@ -90,6 +90,26 @@ func TestUsageLimitErrorFallsBackToThePaneWhenNoStatuslineExists(t *testing.T) {
 	}
 }
 
+func TestUsageLimitPaneIsRejectedWhenStatuslineShowsCapacity(t *testing.T) {
+	now := time.Date(2026, 8, 30, 16, 30, 0, 0, time.UTC)
+	sessionName := fmt.Sprintf("plat101-capacity-%d", now.UnixNano())
+	writeTestStatusline(t, sessionName, 11, now.Add(5*time.Hour))
+
+	if shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, "usage limit reached", now) {
+		t.Fatal("a usage-limit phrase over a statusline reporting 11% must not become quota_exhausted")
+	}
+}
+
+func TestUsageLimitPaneAcceptsNearExhaustedStatusline(t *testing.T) {
+	now := time.Date(2026, 8, 30, 16, 30, 0, 0, time.UTC)
+	sessionName := fmt.Sprintf("plat101-exhausted-%d", now.UnixNano())
+	writeTestStatusline(t, sessionName, 99.6, now.Add(5*time.Hour))
+
+	if !shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, "You've hit your 5-hour limit", now) {
+		t.Fatal("a 99.x statusline together with a provider wall must remain quota_exhausted")
+	}
+}
+
 // TestUsageLimitErrorStaysUnknownWhenNeitherSourceStatesATime: an unknown
 // reset must stay unknown. A fabricated instant schedules a resume that fails
 // again, which is strictly worse than a run reporting it does not know.

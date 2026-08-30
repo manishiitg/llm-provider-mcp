@@ -24,19 +24,22 @@ import (
 // blocking a failing turn for fifteen seconds to sharpen a timestamp is a bad
 // trade. A missing, empty, or unparseable sidecar yields no windows and the
 // caller falls back to the next source.
-func claudeStatuslineRateLimitWindows(sessionName string) []llmtypes.RateLimitWindow {
+func readClaudeStatuslineRateLimitWindows(sessionName string) ([]llmtypes.RateLimitWindow, bool) {
 	if sessionName == "" {
-		return nil
+		return nil, false
 	}
 	raw, err := os.ReadFile(claudeStatuslinePath(sessionName))
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(raw, &rawMap); err != nil {
-		return nil
+		return nil, false
 	}
-	return claudeRateLimitWindows(rawMap)
+	if _, ok := rawMap["rate_limits"].(map[string]interface{}); !ok {
+		return nil, false
+	}
+	return claudeRateLimitWindows(rawMap), true
 }
 
 // claudeSessionAccountKeys maps a tmux session to the hashed identity of the

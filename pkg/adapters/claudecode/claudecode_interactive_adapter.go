@@ -2865,16 +2865,22 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				return "", err
 			}
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
-			if errText := detectTmuxFatalStatus(captured); errText != "" {
+			if errText := detectTmuxFatalStatus(delta); errText != "" {
 				// A usage-limit wall is not the same failure as a dead pane or a
 				// logged-out CLI: it is expected, temporary, and carries a time
 				// at which work can continue. Returning it typed lets the stack
 				// skip retries that cannot succeed and lets a workflow suspend
 				// on the stated reset instead of losing the run (PLAT-101).
-				if IsClaudeUsageLimitText(captured) {
-					return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, captured, time.Now())
+				if IsClaudeUsageLimitText(delta) {
+					if shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, delta, time.Now()) {
+						return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, captured, time.Now())
+					}
+					// A pane phrase contradicted by the current structured statusline is
+					// stale transcript text, not a provider wall. Keep waiting for the
+					// actual turn outcome.
+				} else {
+					return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 				}
-				return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 			}
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
 				return captured, tmuxcontrol.ErrForceComplete

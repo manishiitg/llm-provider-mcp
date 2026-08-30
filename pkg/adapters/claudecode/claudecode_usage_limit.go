@@ -54,6 +54,11 @@ var claudeUsageLimitAlternatives = []string{
 	"upgrade to increase your usage limit",
 }
 
+// claudeUsageLimitStatuslineThreshold accepts the slightly stale 99.x status
+// Claude commonly writes at the instant it rejects a request, while rejecting
+// ordinary usage readings such as 11% or 22%.
+const claudeUsageLimitStatuslineThreshold = 99
+
 // IsClaudeUsageLimitText reports whether text states that a Claude
 // subscription/usage limit has been reached. It is intentionally tolerant of
 // wording variants and case, and intentionally NOT tolerant of unrelated prose
@@ -191,11 +196,45 @@ func NewClaudeUsageLimitError(provider, model, paneText string, now time.Time) e
 // fabricated timestamp schedules a resume that fails again, which is strictly
 // worse than a run that says it does not know when capacity returns.
 func NewClaudeUsageLimitErrorForSession(provider, model, sessionName, paneText string, now time.Time) error {
-	resetAt, window := llmtypes.MostConstrainedReset(claudeStatuslineRateLimitWindows(sessionName), now)
-	if resetAt.IsZero() {
+	_, exhausted, resetAt, window := claudeStatuslineUsageLimitState(sessionName, now)
+	if !exhausted || resetAt.IsZero() {
 		return newClaudeUsageLimitError(provider, model, ClaudeUsageLimitResetAt(paneText, now), "")
 	}
 	return newClaudeUsageLimitError(provider, model, resetAt, window)
+}
+
+// claudeStatuslineUsageLimitState makes Claude's structured statusline the
+// authority for whether its subscription is exhausted. A pane message is still
+// retained as a fallback before the first statusline write, but it must not
+// override an available statusline that says all windows are below the limit.
+func claudeStatuslineUsageLimitState(sessionName string, now time.Time) (known, exhausted bool, resetAt time.Time, window string) {
+	windows, known := readClaudeStatuslineRateLimitWindows(sessionName)
+	if !known {
+		return false, false, time.Time{}, ""
+	}
+	for _, candidate := range windows {
+		if candidate.UsedPercent >= claudeUsageLimitStatuslineThreshold {
+			exhausted = true
+			break
+		}
+	}
+	if !exhausted {
+		return true, false, time.Time{}, ""
+	}
+	resetAt, window = llmtypes.MostConstrainedReset(windows, now)
+	return true, true, resetAt, window
+}
+
+// shouldTreatClaudeUsageLimitPaneAsFatal prevents stale terminal text from
+// turning a healthy account into a quota error. If no structured statusline is
+// available yet, retain the pane fallback for a wall that occurs before the
+// first statusline render.
+func shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, paneText string, now time.Time) bool {
+	if !IsClaudeUsageLimitText(paneText) {
+		return false
+	}
+	known, exhausted, _, _ := claudeStatuslineUsageLimitState(sessionName, now)
+	return !known || exhausted
 }
 
 func newClaudeUsageLimitError(provider, model string, retryAt time.Time, window string) error {
