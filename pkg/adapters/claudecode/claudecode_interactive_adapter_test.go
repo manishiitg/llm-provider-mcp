@@ -1422,6 +1422,33 @@ func TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice(t *testing.T) {
 	}
 }
 
+// TestHasReadyInputPromptAcceptsIdlePromptWithAutoUpdateFailureNotice pins
+// a fix for a real production hang, the same failure shape as the upgrade-
+// notice case above: confirmed live on the Dominion Hetzner deployment
+// 2026-08-30, where an unwritable npm prefix (fixed separately — see
+// deploy/dedicated-vm/dominion-hetzner.md) made Claude Code print a
+// "✘ Auto-update failed: ..." footer at the very bottom of the pane, below
+// the actual idle ❯ prompt. hasReadyInputPrompt walked up from the last
+// line, hit this footer BEFORE finding ❯, and returned false — the CLI
+// itself answered in 8 seconds, but the wait loop stayed wedged for over 3
+// hours until manually canceled, since it has no default timeout.
+func TestHasReadyInputPromptAcceptsIdlePromptWithAutoUpdateFailureNotice(t *testing.T) {
+	pane := `
+⏺ Sorry for the jargon — let me put that simply.
+
+✻ Churned for 7s
+
+──────────────────────────────────────────── mcp-agent-20260828-200914 ──
+❯
+────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
+                                           ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false when CLI shows the auto-update-failure notice — wait loop will hang indefinitely")
+	}
+}
+
 func TestHasReadyInputPromptAcceptsClaudeSuggestionWithTrailingBlankFill(t *testing.T) {
 	pane := `
  ▐▛███▜▌   Claude Code v2.1.141

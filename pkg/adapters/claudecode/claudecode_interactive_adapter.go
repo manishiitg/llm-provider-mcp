@@ -2431,7 +2431,19 @@ func isIgnorableClaudePromptFooterLine(trimmed string) bool {
 		// false — so the wait loop never sees the agent as ready and
 		// the adapter hangs indefinitely on every turn until the user
 		// upgrades the CLI.
-		(strings.Contains(trimmed, "current:") && strings.Contains(trimmed, "latest:"))
+		(strings.Contains(trimmed, "current:") && strings.Contains(trimmed, "latest:")) ||
+		// Claude Code CLI's self-update-failure footer, e.g. "✘ Auto-update
+		// failed: no write permission to npm prefix · Run claude doctor".
+		// Same failure shape as the upgrade-notice case above (confirmed
+		// live on the Dominion Hetzner deployment 2026-08-30, where it
+		// wedged a foreground turn's completion detection for 3+ hours
+		// despite the CLI itself answering in 8 seconds): parked at the
+		// bottom of the pane below the actual idle ❯ prompt, so the scan
+		// hits it first and returns false. Matched on "Auto-update failed"
+		// alone, not the specific reason after it, since npm can fail this
+		// same self-update for other reasons (network, disk) and the
+		// pane-boundary problem is identical either way.
+		strings.Contains(trimmed, "Auto-update failed")
 }
 
 func hasClaudeActivity(captured string) bool {
