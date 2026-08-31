@@ -313,6 +313,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
+		err = tmuxexec.WithFailureDiagnostic(err, "cursor-cli", session.tmuxSessionName)
 		if isCursorTmuxSessionLostError(err) {
 			markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 			releaseSession = false

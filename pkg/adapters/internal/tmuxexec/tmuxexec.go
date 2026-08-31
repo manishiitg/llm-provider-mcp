@@ -16,10 +16,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// EnvDiagnosticsDir is an opt-in directory for terminal-pane snapshots saved
+// when a tmux-backed provider fails. Panes may contain user content.
+const EnvDiagnosticsDir = "TMUX_DIAGNOSTICS_DIR"
 
 const (
 	// DefaultScrollbackLines is the provider-side pane capture window for
@@ -78,6 +85,38 @@ func CapturePane(ctx context.Context, sessionName string, scrollbackLines int) (
 // captured text keeps its SGR color codes.
 func CapturePaneANSI(ctx context.Context, sessionName string, scrollbackLines int) (string, error) {
 	return capturePane(ctx, sessionName, scrollbackLines, true)
+}
+
+// WithFailureDiagnostic captures a provider's tmux pane before it is cleaned
+// up and appends the artifact path to the original error. Error identity is
+// retained via %w so callers can still use errors.Is/As.
+func WithFailureDiagnostic(err error, provider, sessionName string) error {
+	if err == nil || strings.TrimSpace(os.Getenv(EnvDiagnosticsDir)) == "" || strings.TrimSpace(sessionName) == "" {
+		return err
+	}
+	pane, captureErr := CapturePane(context.Background(), sessionName, DefaultScrollbackLines)
+	if captureErr != nil || strings.TrimSpace(pane) == "" {
+		return err
+	}
+	dir := strings.TrimSpace(os.Getenv(EnvDiagnosticsDir))
+	if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
+		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, mkdirErr)
+	}
+	file := fmt.Sprintf("%s-tmux-failure-%s-%d.txt", safeFilePart(provider), safeFilePart(sessionName), time.Now().UnixNano())
+	path := filepath.Join(dir, file)
+	if writeErr := os.WriteFile(path, []byte(pane), 0o600); writeErr != nil {
+		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, writeErr)
+	}
+	return fmt.Errorf("%w; full tmux pane saved to %s", err, path)
+}
+
+func safeFilePart(value string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '-'
+	}, strings.TrimSpace(value))
 }
 
 func capturePane(ctx context.Context, sessionName string, scrollbackLines int, preserveEscapes bool) (string, error) {

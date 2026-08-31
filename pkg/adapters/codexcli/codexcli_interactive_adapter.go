@@ -328,6 +328,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session), completionDiagnostics)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
+		err = tmuxexec.WithFailureDiagnostic(err, "codex-cli", session.tmuxSessionName)
 		c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_returned owner=%q tmux=%q outcome=error elapsed=%s error=%q", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond), err.Error())
 		inspector.EmitError(err, map[string]interface{}{
 			"phase":      "tmux_wait_response",

@@ -269,6 +269,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	content, err := waitForPiInteractiveResponse(ctx, session, startOffset, opts.StreamChan)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
+		err = tmuxexec.WithFailureDiagnostic(err, "pi-cli", session.tmuxSessionName)
 		if isPiTmuxSessionLostError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			releaseSession = false
 			session.mu.Unlock()
