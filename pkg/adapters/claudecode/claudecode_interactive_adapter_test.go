@@ -1396,6 +1396,23 @@ func TestHasReadyInputPromptAcceptsIdlePromptWithEscFooter(t *testing.T) {
 	}
 }
 
+// TestHasReadyInputPromptAcceptsIdlePromptWithRemoteControlFooter locks in
+// Claude Code 2.1.251's Remote Control marker. It appears below the ordinary
+// composer as a right-aligned "/rc" line, which must not be treated as a
+// typed command or prevent the adapter from finding the ready ❯ prompt.
+func TestHasReadyInputPromptAcceptsIdlePromptWithRemoteControlFooter(t *testing.T) {
+	pane := `
+─────────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────
+                                                                                                             /rc
+  ⏵⏵ don't ask on (shift+tab to cycle) · PR #187 · ← for agents
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false when CLI shows the Remote Control footer")
+	}
+}
+
 // TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice locks in
 // a fix for a real production hang. Claude Code CLI shows an upgrade
 // notice line at the very bottom of the TUI when a newer release is

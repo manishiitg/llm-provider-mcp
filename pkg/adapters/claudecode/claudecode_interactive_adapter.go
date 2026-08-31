@@ -2421,6 +2421,11 @@ func isClaudeToolInProgressLine(trimmed string) bool {
 
 func isIgnorableClaudePromptFooterLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "⏵") ||
+		// Claude Code 2.1.251 adds a right-aligned "/rc" Remote Control
+		// indicator below the composer. It is UI chrome, not a typed slash
+		// command. If we do not skip it, the readiness scan stops before it
+		// reaches the otherwise-idle ❯ prompt and the first turn times out.
+		trimmed == "/rc" ||
 		strings.Contains(trimmed, "tmux focus-events") ||
 		strings.Contains(trimmed, "set -g focus-events") ||
 		// Claude Code CLI's upgrade-notice footer: "current: X · latest: Y".
