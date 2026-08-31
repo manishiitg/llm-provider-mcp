@@ -2392,6 +2392,11 @@ func hasReadyInputPrompt(captured string) bool {
 	if start < 0 {
 		start = 0
 	}
+	// Claude's bottom status area is intentionally extensible (updates,
+	// Remote Control, context pills, and future indicators). Do not require a
+	// whitelist of every line it can render. Find the most recent composer in
+	// the recent pane, then determine whether it is busy from the activity
+	// adjacent to that composer.
 	promptIndex := -1
 	for i := len(lines) - 1; i >= start; i-- {
 		trimmed := strings.TrimSpace(lines[i])
@@ -2399,10 +2404,6 @@ func hasReadyInputPrompt(captured string) bool {
 			promptIndex = i
 			break
 		}
-		if trimmed == "" || isIgnorableClaudePromptFooterLine(trimmed) || isClaudeTUIBoundaryLine(trimmed) {
-			continue
-		}
-		return false
 	}
 	if promptIndex < 0 {
 		return false
