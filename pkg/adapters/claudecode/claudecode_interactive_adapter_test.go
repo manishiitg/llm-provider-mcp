@@ -1413,6 +1413,27 @@ func TestHasReadyInputPromptAcceptsIdlePromptWithRemoteControlFooter(t *testing.
 	}
 }
 
+func TestSaveClaudeTmuxPromptDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvClaudeTmuxDiagnosticsDir, dir)
+
+	note := saveClaudeTmuxPromptDiagnostic("mlp-claude-code:test", "❯ hello\n")
+	if !strings.Contains(note, "full tmux pane saved to") {
+		t.Fatalf("diagnostic note = %q", note)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("diagnostic entries = %v, err = %v; want one file", entries, err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read diagnostic: %v", err)
+	}
+	if string(content) != "❯ hello\n" {
+		t.Fatalf("diagnostic content = %q", content)
+	}
+}
+
 // TestHasReadyInputPromptAcceptsIdlePromptWithUpgradeNotice locks in
 // a fix for a real production hang. Claude Code CLI shows an upgrade
 // notice line at the very bottom of the TUI when a newer release is

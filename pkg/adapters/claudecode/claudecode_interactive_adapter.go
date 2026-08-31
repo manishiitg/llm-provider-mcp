@@ -79,6 +79,10 @@ const (
 	// is a sliding inactivity window; this is the absolute backstop.
 	EnvClaudeTmuxPromptMaxWaitSeconds = "CLAUDE_CODE_TMUX_PROMPT_MAX_WAIT_SECONDS"
 	EnvClaudeTmuxIdleTimeoutSeconds   = "CLAUDE_CODE_TMUX_IDLE_TIMEOUT_SECONDS"
+	// EnvClaudeTmuxDiagnosticsDir, when set, receives a full tmux-pane text
+	// snapshot whenever the adapter times out waiting for the initial prompt.
+	// This is intentionally opt-in because panes can contain user content.
+	EnvClaudeTmuxDiagnosticsDir = "CLAUDE_CODE_TMUX_DIAGNOSTICS_DIR"
 	// EnvClaudeInteractiveStalePaneBackstopSeconds bounds how long the
 	// assistant-response loop will keep waiting on a pane that produced activity
 	// and then went byte-identical without ever reaching a ready prompt. Set to
@@ -1515,7 +1519,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 		case <-deadline.Done():
 			captured, _ := captureTmuxPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out after %s waiting for Claude Code prompt; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				return claudePromptTimeoutError(fmt.Sprintf("timed out after %s waiting for Claude Code prompt", maxWait), sessionName, captured)
 			}
 			return fmt.Errorf("timed out after %s waiting for Claude Code prompt", maxWait)
 		case <-ticker.C:
@@ -1611,12 +1615,33 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			if time.Since(lastActivityAt) >= promptWait {
 				captured, _ := captureTmuxPane(context.Background(), sessionName)
 				if strings.TrimSpace(captured) != "" {
-					return fmt.Errorf("timed out after %s of inactivity waiting for Claude Code prompt; %s", promptWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+					return claudePromptTimeoutError(fmt.Sprintf("timed out after %s of inactivity waiting for Claude Code prompt", promptWait), sessionName, captured)
 				}
 				return fmt.Errorf("timed out after %s of inactivity waiting for Claude Code prompt", promptWait)
 			}
 		}
 	}
+}
+
+func claudePromptTimeoutError(message, sessionName, captured string) error {
+	diagnosticNote := saveClaudeTmuxPromptDiagnostic(sessionName, captured)
+	return fmt.Errorf("%s; %s%s", message, llmtypes.CompactTerminalPaneForError(sessionName, captured), diagnosticNote)
+}
+
+func saveClaudeTmuxPromptDiagnostic(sessionName, captured string) string {
+	dir := strings.TrimSpace(os.Getenv(EnvClaudeTmuxDiagnosticsDir))
+	if dir == "" || strings.TrimSpace(captured) == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Sprintf("; could not save tmux diagnostic: %v", err)
+	}
+	name := fmt.Sprintf("claude-tmux-timeout-%s-%d.txt", sanitizeTmuxSessionName(sessionName), time.Now().UnixNano())
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(captured), 0o600); err != nil {
+		return fmt.Sprintf("; could not save tmux diagnostic: %v", err)
+	}
+	return fmt.Sprintf("; full tmux pane saved to %s", path)
 }
 
 // isClaudeTrustFolderPrompt detects Claude Code's first-launch "Is this a
