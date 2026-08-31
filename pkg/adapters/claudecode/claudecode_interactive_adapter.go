@@ -2451,6 +2451,10 @@ func isIgnorableClaudePromptFooterLine(trimmed string) bool {
 		// command. If we do not skip it, the readiness scan stops before it
 		// reaches the otherwise-idle ❯ prompt and the first turn times out.
 		trimmed == "/rc" ||
+		// In the wider 2.1.251 layout, Remote Control is appended to a
+		// right-aligned context pill such as "In go.mod · /rc" rather than
+		// occupying its own line. It is still footer chrome below the composer.
+		strings.Contains(trimmed, "· /rc") ||
 		strings.Contains(trimmed, "tmux focus-events") ||
 		strings.Contains(trimmed, "set -g focus-events") ||
 		// Claude Code CLI's upgrade-notice footer: "current: X · latest: Y".

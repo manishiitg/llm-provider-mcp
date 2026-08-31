@@ -1413,6 +1413,22 @@ func TestHasReadyInputPromptAcceptsIdlePromptWithRemoteControlFooter(t *testing.
 	}
 }
 
+func TestHasReadyInputPromptAcceptsRemoteControlContextPill(t *testing.T) {
+	pane := `
+ ▐▛███▜▌   Claude Code v2.1.251
+ Sonnet 5 with high effort · Claude Pro
+
+────────────────────────────────────────────── mcp-agent ──
+❯
+────────────────────────────────────────────────────────────────
+  │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   In go.mod · /rc
+  ⏵⏵ don't ask on (shift+tab to cycle) · PR #187 · ← for agents
+`
+	if !hasReadyInputPrompt(pane) {
+		t.Fatal("hasReadyInputPrompt = false when Claude shows the Remote Control context pill")
+	}
+}
+
 func TestSaveClaudeTmuxPromptDiagnostic(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnvClaudeTmuxDiagnosticsDir, dir)
