@@ -713,11 +713,11 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 	}
 
 	switch modelID {
-	case "claude-fable-5":
+	case "claude-fable-5-1":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
 			Provider:              "claude-code",
-			ModelName:             "Claude Fable 5",
+			ModelName:             "Claude Fable 5.1",
 			ContextWindow:         1000000,
 			InputCostPer1MTokens:  10.00,
 			OutputCostPer1MTokens: 50.00,
@@ -2443,42 +2443,6 @@ func isClaudeToolInProgressLine(trimmed string) bool {
 	}
 	return strings.Contains(trimmed, "Calling ") ||
 		(strings.Contains(trimmed, " - ") && strings.Contains(trimmed, "(MCP)"))
-}
-
-func isIgnorableClaudePromptFooterLine(trimmed string) bool {
-	return strings.HasPrefix(trimmed, "⏵") ||
-		// Claude Code 2.1.251 adds a right-aligned "/rc" Remote Control
-		// indicator below the composer. It is UI chrome, not a typed slash
-		// command. If we do not skip it, the readiness scan stops before it
-		// reaches the otherwise-idle ❯ prompt and the first turn times out.
-		trimmed == "/rc" ||
-		// In the wider 2.1.251 layout, Remote Control is appended to a
-		// right-aligned context pill such as "In go.mod · /rc" rather than
-		// occupying its own line. It is still footer chrome below the composer.
-		strings.Contains(trimmed, "· /rc") ||
-		strings.Contains(trimmed, "tmux focus-events") ||
-		strings.Contains(trimmed, "set -g focus-events") ||
-		// Claude Code CLI's upgrade-notice footer: "current: X · latest: Y".
-		// When a new release is available the TUI parks this line at the
-		// very bottom of the pane, between the input box and end of screen.
-		// Without recognizing it, hasReadyInputPrompt walks up from the
-		// end, hits this non-prompt line before finding ❯, and returns
-		// false — so the wait loop never sees the agent as ready and
-		// the adapter hangs indefinitely on every turn until the user
-		// upgrades the CLI.
-		(strings.Contains(trimmed, "current:") && strings.Contains(trimmed, "latest:")) ||
-		// Claude Code CLI's self-update-failure footer, e.g. "✘ Auto-update
-		// failed: no write permission to npm prefix · Run claude doctor".
-		// Same failure shape as the upgrade-notice case above (confirmed
-		// live on the Dominion Hetzner deployment 2026-08-30, where it
-		// wedged a foreground turn's completion detection for 3+ hours
-		// despite the CLI itself answering in 8 seconds): parked at the
-		// bottom of the pane below the actual idle ❯ prompt, so the scan
-		// hits it first and returns false. Matched on "Auto-update failed"
-		// alone, not the specific reason after it, since npm can fail this
-		// same self-update for other reasons (network, disk) and the
-		// pane-boundary problem is identical either way.
-		strings.Contains(trimmed, "Auto-update failed")
 }
 
 func hasClaudeActivity(captured string) bool {
