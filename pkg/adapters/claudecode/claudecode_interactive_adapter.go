@@ -1548,16 +1548,22 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				}
 			}
 			// Claude Code shows a one-time "Is this a project you trust?" folder
-			// safety prompt on first launch in a fresh workspace (the per-run temp
-			// dir is always new), which blocks the input prompt and eventually times
-			// out. Auto-accept it ("1. Yes, I trust this folder").
-			if !trustPromptHandled && isClaudeTrustFolderPrompt(captured) {
-				trustPromptHandled = true
-				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "1", "C-m"); err != nil {
-					return fmt.Errorf("failed to accept Claude Code trust-folder prompt: %w", err)
+			// safety prompt on first launch in a fresh workspace. Its UI has changed
+			// from a numbered menu to an arrow-selected menu whose initial selection
+			// is "No, exit". Select the affirmative option by its visible text; never
+			// assume that a key such as "1" maps to the desired row.
+			if !trustPromptHandled {
+				if keys := claudeTrustFolderPromptAcceptKeys(captured); len(keys) > 0 {
+					args := append([]string{"send-keys", "-t", sessionName}, keys...)
+					if err := runCommand(deadline, nil, "tmux", args...); err != nil {
+						return fmt.Errorf("failed to select Claude Code trust-folder acceptance: %w", err)
+					}
+					// Only Enter accepts the choice. Directional navigation must be
+					// observed on the next pane poll before confirmation.
+					trustPromptHandled = len(keys) == 1 && keys[0] == "Enter"
+					lastActivityAt = time.Now()
+					continue
 				}
-				lastActivityAt = time.Now()
-				continue
 			}
 			// Claude Code v2.1.233 opens a one-time terminal-theme picker before
 			// it creates the ordinary input prompt. It is not authentication, and
@@ -1645,12 +1651,93 @@ func saveClaudeTmuxPromptDiagnostic(sessionName, captured string) string {
 }
 
 // isClaudeTrustFolderPrompt detects Claude Code's first-launch "Is this a
-// project you created or one you trust?" folder-trust dialog so the caller can
-// auto-accept it instead of hanging until the inactivity timeout.
+// project you created or one you trust?" folder-trust dialog.
 func isClaudeTrustFolderPrompt(captured string) bool {
-	c := strings.ToLower(captured)
-	return strings.Contains(c, "yes, i trust this folder") ||
-		(strings.Contains(c, "trust this folder") && strings.Contains(c, "no, exit"))
+	for _, rawLine := range strings.Split(captured, "\n") {
+		if isClaudeTrustAcceptanceOption(rawLine) {
+			return true
+		}
+	}
+	return false
+}
+
+func isClaudeTrustAcceptanceOption(rawLine string) bool {
+	line := strings.ToLower(strings.TrimSpace(rawLine))
+	return strings.Contains(line, "yes") && strings.Contains(line, "trust") &&
+		(strings.Contains(line, "folder") || strings.Contains(line, "project"))
+}
+
+// claudeTrustFolderPromptAcceptKeys selects the affirmative trust choice using
+// the visible option text. Claude Code has used both numbered and arrow-menu
+// variants; in the latter, the initial selection is commonly "No, exit".
+//
+// It deliberately navigates first and presses Enter only after a later pane
+// capture shows that the affirmative row is selected. That makes a changed menu
+// layout fail closed instead of accidentally declining the trust dialog.
+func claudeTrustFolderPromptAcceptKeys(captured string) []string {
+	if !isClaudeTrustFolderPrompt(captured) {
+		return nil
+	}
+
+	type option struct {
+		target   bool
+		selected bool
+	}
+	var options []option
+	for _, rawLine := range strings.Split(captured, "\n") {
+		line := strings.ToLower(strings.TrimSpace(rawLine))
+		target := isClaudeTrustAcceptanceOption(rawLine)
+		decline := strings.Contains(line, "no, exit")
+		if !target && !decline {
+			continue
+		}
+		options = append(options, option{
+			target:   target,
+			selected: strings.Contains(rawLine, "❯"),
+		})
+	}
+
+	targetIndex, selectedIndex := -1, -1
+	for i, candidate := range options {
+		if candidate.target {
+			targetIndex = i
+		}
+		if candidate.selected {
+			selectedIndex = i
+		}
+	}
+	if targetIndex < 0 {
+		return nil
+	}
+	if selectedIndex == targetIndex {
+		return []string{"Enter"}
+	}
+	if selectedIndex < 0 {
+		// No visible selected marker: reset to the first option, then navigate to
+		// the row identified by the affirmative text. Do not press Enter yet.
+		keys := []string{"Home"}
+		for i := 0; i < targetIndex; i++ {
+			keys = append(keys, "Down")
+		}
+		return keys
+	}
+
+	keys := make([]string, 0, absInt(targetIndex-selectedIndex))
+	key := "Down"
+	if targetIndex < selectedIndex {
+		key = "Up"
+	}
+	for i := 0; i < absInt(targetIndex-selectedIndex); i++ {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // isClaudeDismissableFeaturePrompt detects claude's optional startup onboarding /

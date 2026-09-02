@@ -1598,6 +1598,72 @@ exit 0
 	}
 }
 
+func TestClaudeTrustFolderPromptAcceptKeysSelectsAffirmativeText(t *testing.T) {
+	tests := []struct {
+		name string
+		pane string
+		want []string
+	}{
+		{
+			name: "current arrow menu starts on decline",
+			pane: `
+Quick safety check: Is this a project you created or one you trust?
+
+❯ No, exit
+  Yes, I trust this folder
+
+Enter to confirm · Esc to cancel`,
+			want: []string{"Down"},
+		},
+		{
+			name: "arrow menu confirms only after affirmative row is selected",
+			pane: `
+Quick safety check: Is this a project you created or one you trust?
+
+  No, exit
+❯ Yes, I trust this folder
+
+Enter to confirm · Esc to cancel`,
+			want: []string{"Enter"},
+		},
+		{
+			name: "numbered variant does not rely on number key",
+			pane: `
+Quick safety check: Is this a project you created or one you trust?
+
+❯ 1. No, exit
+  2. Yes, I trust this folder
+
+Enter to confirm`,
+			want: []string{"Down"},
+		},
+		{
+			name: "punctuation and folder wording can vary",
+			pane: `
+Quick safety check
+❯ No, exit
+  Yes - I trust this project
+Enter to confirm`,
+			want: []string{"Down"},
+		},
+		{
+			name: "unrelated pane is ignored",
+			pane: `
+❯ Write a test for the payment form
+  ⏵⏵ don't ask on`,
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := claudeTrustFolderPromptAcceptKeys(tt.pane); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("claudeTrustFolderPromptAcceptKeys() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasReadyInputPromptAcceptsCompletedStatusAfterBackgroundAgents(t *testing.T) {
 	pane := `
 ⏺ Both agents running in parallel now:

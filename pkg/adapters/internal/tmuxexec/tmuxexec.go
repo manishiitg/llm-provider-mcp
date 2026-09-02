@@ -100,12 +100,12 @@ func WithFailureDiagnostic(err error, provider, sessionName string) error {
 	}
 	dir := strings.TrimSpace(os.Getenv(EnvDiagnosticsDir))
 	if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
-		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, mkdirErr)
+		return fmt.Errorf("%w; could not save tmux diagnostic: %w", err, mkdirErr)
 	}
 	file := fmt.Sprintf("%s-tmux-failure-%s-%d.txt", safeFilePart(provider), safeFilePart(sessionName), time.Now().UnixNano())
 	path := filepath.Join(dir, file)
 	if writeErr := os.WriteFile(path, []byte(pane), 0o600); writeErr != nil {
-		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, writeErr)
+		return fmt.Errorf("%w; could not save tmux diagnostic: %w", err, writeErr)
 	}
 	return fmt.Errorf("%w; full tmux pane saved to %s", err, path)
 }
