@@ -100,12 +100,15 @@ func WithFailureDiagnostic(err error, provider, sessionName string) error {
 	}
 	dir := strings.TrimSpace(os.Getenv(EnvDiagnosticsDir))
 	if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
-		return fmt.Errorf("%w; could not save tmux diagnostic: %w", err, mkdirErr)
+		// Only err is wrapped (%w) so callers can errors.Is/As on it; mkdirErr
+		// is secondary diagnostic context, not part of the error chain.
+		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, mkdirErr) //nolint:errorlint
 	}
 	file := fmt.Sprintf("%s-tmux-failure-%s-%d.txt", safeFilePart(provider), safeFilePart(sessionName), time.Now().UnixNano())
 	path := filepath.Join(dir, file)
 	if writeErr := os.WriteFile(path, []byte(pane), 0o600); writeErr != nil {
-		return fmt.Errorf("%w; could not save tmux diagnostic: %w", err, writeErr)
+		// Same rationale: err stays the wrapped identity, writeErr is context only.
+		return fmt.Errorf("%w; could not save tmux diagnostic: %v", err, writeErr) //nolint:errorlint
 	}
 	return fmt.Errorf("%w; full tmux pane saved to %s", err, path)
 }

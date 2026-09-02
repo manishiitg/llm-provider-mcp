@@ -13,7 +13,7 @@ import (
 // merely imprecise -- it can understate the real spend by more than the
 // entire reported amount, and it always errs low.
 var claudeCodeCachePricedModels = []string{
-	"claude-fable-5",
+	"claude-fable-5-1",
 	"claude-opus-5",
 	"claude-opus-4-8",
 	"claude-opus-4-7",

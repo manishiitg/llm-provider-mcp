@@ -713,11 +713,11 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 	}
 
 	switch modelID {
-	case "claude-fable-5":
+	case "claude-fable-5-1":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
 			Provider:              "claude-code",
-			ModelName:             "Claude Fable 5",
+			ModelName:             "Claude Fable 5.1",
 			ContextWindow:         1000000,
 			InputCostPer1MTokens:  10.00,
 			OutputCostPer1MTokens: 50.00,

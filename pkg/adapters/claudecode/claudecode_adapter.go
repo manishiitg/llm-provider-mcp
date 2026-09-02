@@ -383,11 +383,11 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	// The actual context window is reported per-call in modelUsage and used
 	// to update the agent's context window tracking dynamically.
 	switch modelID {
-	case "claude-fable-5":
+	case "claude-fable-5-1":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
 			Provider:              providerName,
-			ModelName:             "Claude Fable 5",
+			ModelName:             "Claude Fable 5.1",
 			ContextWindow:         1000000,
 			InputCostPer1MTokens:  10.00,
 			OutputCostPer1MTokens: 50.00,

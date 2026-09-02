@@ -38,7 +38,7 @@ var claudeUsageLimitPattern = regexp.MustCompile(
 // claudeUsageLimitPattern match, which makes the statement hypothetical
 // rather than a report of the account's current state — for example Claude
 // Code's own promotional banner for a model rollout: "If you hit your
-// limit, you can continue on Fable 5 with usage credits." That banner
+// limit, you can continue on Fable 5.1 with usage credits." That banner
 // prints on every fresh session start, so matching claudeUsageLimitPattern
 // unconditionally misreported a normal new chat as an exhausted account
 // every single time. Go's RE2 engine has no lookbehind, so this is checked
