@@ -110,6 +110,7 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 		ModelGemini31ProPreview,
 		ModelMiniMaxM3,
 		ModelGLM53,
+		ModelGLM53Flash,
 		ModelKimiK3,
 		ModelGrok46,
 	}

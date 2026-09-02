@@ -7,6 +7,7 @@ const (
 	ModelGemini31ProPreview = "google/gemini-3.1-pro-preview"
 	ModelMiniMaxM3          = "minimax/MiniMax-M3"
 	ModelGLM53              = "zai/glm-5.3"
+	ModelGLM53Flash         = "zai/glm-5.3-flash"
 	ModelKimiK3             = "moonshotai/kimi-k3"
 	ModelGrok46             = "xai/grok-4.6"
 )
@@ -17,6 +18,7 @@ var knownPiCLIModels = []string{
 	ModelGemini31ProPreview,
 	ModelMiniMaxM3,
 	ModelGLM53,
+	ModelGLM53Flash,
 	ModelKimiK3,
 	ModelGrok46,
 }
@@ -45,6 +47,8 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 		case ModelGLM53:
 			// 1M-token context, same as the adapter default -- no override needed.
 			meta.ModelName = "Pi CLI (GLM 5.3)"
+		case ModelGLM53Flash:
+			meta.ModelName = "Pi CLI (GLM 5.3 Flash)"
 		case ModelKimiK3:
 			// 1M-token context, same as the adapter default -- no override needed.
 			meta.ModelName = "Pi CLI (Kimi K3)"
