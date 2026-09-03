@@ -474,9 +474,14 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						// Cursor exposes a user-safe progress/thinking stream separately
 						// from assistant content. Preserve that distinction so product
 						// UIs render it in their Thinking surface instead of prepending
-						// it to the final answer.
-						Type:    llmtypes.StreamChunkTypeReasoning,
-						Content: event.Text,
+						// it to the final answer. These are token-level fragments of one
+						// thinking span ("Reading" / " soul.md" / " first."), so they
+						// carry the same delta marker the assistant fragments do -- a
+						// consumer that treated each as its own block rendered a
+						// column of one-line "Thinking" cards (RTS, 2026-09-03).
+						Type:     llmtypes.StreamChunkTypeReasoning,
+						Content:  event.Text,
+						Metadata: map[string]interface{}{llmtypes.ContentDeltaMetadataKey: true},
 					})
 				}
 
