@@ -65,6 +65,14 @@ const (
 	piInteractiveTerminalScrollbackLine = 10000
 	piPromptPasteVisibleWait            = 1500 * time.Millisecond
 	piPromptSubmitSettleWait            = 1500 * time.Millisecond
+	// piPromptSubmitMarkerWait is the longer settle budget used when Pi's own
+	// marker stream is available to acknowledge the send. The pane heuristics
+	// alone misread a 700K-token session (status still "idle" until the first
+	// model event, the just-submitted text echoed right above the status line)
+	// as "still in the prompt" and failed at 1.5s while Pi had already accepted
+	// the message; a marker acknowledgement is deterministic, so it is worth
+	// waiting a little longer for it before declaring the send failed.
+	piPromptSubmitMarkerWait = 6 * time.Second
 )
 
 type piInteractiveSession struct {
@@ -254,7 +262,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	startOffset, _ := piMarkerFileSize(session.markerPath)
 	p.logInfof("Executing Pi CLI tmux session: %s", session.tmuxSessionName)
 	turnStart := time.Now().Add(-1 * time.Second)
-	if err := sendPiInitialPromptToTmux(ctx, session.tmuxSessionName, prompt); err != nil {
+	if err := sendPiInitialPromptToTmux(ctx, session.tmuxSessionName, session.markerPath, prompt); err != nil {
 		releaseSession = false
 		session.mu.Unlock()
 		cleanupPiInteractiveSession(session)
@@ -1148,29 +1156,40 @@ func isTmuxUnknownExtendedKeysOption(err error) bool {
 			strings.Contains(msg, "not a valid option"))
 }
 
-func sendPiInputToTmux(ctx context.Context, sessionName, message string) error {
-	return sendPiInputToTmuxWithReadiness(ctx, sessionName, message, false)
+// sendPiInputToTmux delivers one message to a live Pi pane. markerPath is the
+// session's marker JSONL (may be empty for panes without one); when set, the
+// send is confirmed from Pi's own message_end acknowledgement rather than only
+// from what the pane looks like.
+func sendPiInputToTmux(ctx context.Context, sessionName, markerPath, message string) error {
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, false)
 }
 
-func sendPiInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
-	return sendPiInputToTmuxWithReadiness(ctx, sessionName, message, true)
+func sendPiInitialPromptToTmux(ctx context.Context, sessionName, markerPath, message string) error {
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, true)
 }
 
-func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
+func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, markerPath, message string, initialPrompt bool) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
 		SessionID:       sessionName,
 		Source:          "pi-cli",
 		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
-		return sendPiInputToTmuxUnserialized(ctx, sessionName, message)
+		return sendPiInputToTmuxUnserialized(ctx, sessionName, markerPath, message)
 	})
 	return err
 }
 
-func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath, message string) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Pi interactive input is empty")
+	}
+	// Snapshot the marker offset before anything is typed so only an
+	// acknowledgement produced by THIS send counts (an identical earlier
+	// message already in the stream must not confirm a new one).
+	var markerOffset int64
+	if markerPath != "" {
+		markerOffset, _ = piMarkerFileSize(markerPath)
 	}
 	bufferName := "mlp-pi-input-" + piRandomHex(6)
 	tmp, err := os.CreateTemp("", "pi-tmux-input-*.txt")
@@ -1200,7 +1219,12 @@ func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, message str
 	if err := submitPiInputInTmux(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Pi interactive session: %w", err)
 	}
-	return ensurePiInputSubmitted(ctx, sessionName, message)
+	return ensurePiInputSubmittedWith(ctx, message, piSubmitProbes{
+		capture:      func(ctx context.Context) (string, error) { return capturePiPaneANSI(ctx, sessionName) },
+		submit:       func(ctx context.Context) error { return submitPiInputInTmux(ctx, sessionName) },
+		markerPath:   markerPath,
+		markerOffset: markerOffset,
+	})
 }
 
 func submitPiInputInTmux(ctx context.Context, sessionName string) error {
@@ -1321,34 +1345,98 @@ func piPaneEditorPromptMatchCount(captured, prompt string) int {
 // editor. A tmux paste can race the submit key, or Pi can consume the first
 // key while leaving the draft visible; if the same draft is still active in
 // the bottom editor region, send one more Enter.
+// ensurePiInputSubmitted is the pane-only form kept for callers (and tests)
+// that have no marker stream; live sessions go through ensurePiInputSubmittedWith
+// so Pi's own acknowledgement can confirm the send.
 func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) error {
-	deadline, cancel := context.WithTimeout(ctx, piPromptSubmitSettleWait)
+	return ensurePiInputSubmittedWith(ctx, message, piSubmitProbes{
+		capture: func(ctx context.Context) (string, error) { return capturePiPaneANSI(ctx, sessionName) },
+		submit:  func(ctx context.Context) error { return submitPiInputInTmux(ctx, sessionName) },
+	})
+}
+
+// piSubmitProbes are the inputs ensurePiInputSubmittedWith confirms a send
+// with. capture/submit are the pane probes (tmux capture-pane and a recovery
+// Enter); markerPath/markerOffset point at the session's marker JSONL and the
+// offset it had before this message was typed. wait overrides the settle
+// budget (tests); zero selects the marker or pane default.
+type piSubmitProbes struct {
+	capture      func(ctx context.Context) (string, error)
+	submit       func(ctx context.Context) error
+	markerPath   string
+	markerOffset int64
+	wait         time.Duration
+}
+
+// ensurePiInputSubmittedWith confirms that a message typed into Pi's editor
+// was actually accepted, or returns an error so the caller can treat the send
+// as failed.
+//
+// Two sources of truth, checked every 50ms until the budget runs out:
+//
+//  1. Pi's marker stream (authoritative when available). The bundled
+//     extension emits message_end{role:"user",text} the moment Pi takes the
+//     message — whether it starts a new turn or is queued/steered into a
+//     running one. Nothing about the pane can contradict that.
+//  2. The pane heuristics: the draft left the editor, or the status line is
+//     busy. These stay for panes without a marker file and as the fast path.
+//
+// The pane check alone produced a live false negative (confida-login,
+// 2026-09-03): on a ~735K-token session the status line still read "idle"
+// (Pi shows no working indicator until the first model event, which takes
+// seconds at that size) and the just-submitted message was echoed inside the
+// 24 lines above the status line that piPromptEditorRegion treats as the
+// editor, so "draft still visible + idle" held for the whole 1.5s and the
+// send was reported failed. Every retry layer above then re-sent the same
+// text — Pi received it four times per attempt and answered, while the user
+// was shown a 409. With the marker acknowledgement checked first, the same
+// pane state confirms within one poll.
+//
+// Verify-then-recover is unchanged: if the draft is still visible after a
+// short grace, one recovery Enter is sent (harmless on an already-empty
+// editor) and verification continues until the deadline.
+func ensurePiInputSubmittedWith(ctx context.Context, message string, probes piSubmitProbes) error {
+	wait := probes.wait
+	if wait <= 0 {
+		wait = piPromptSubmitSettleWait
+		if probes.markerPath != "" {
+			wait = piPromptSubmitMarkerWait
+		}
+	}
+	deadline, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	// Verify-then-recover: return as soon as the draft leaves the editor
-	// (checked immediately, then every 50ms — the old single 150ms-delayed probe
-	// added a fixed 150ms to every send). If the same draft is still active
-	// after a grace period, send one recovery Enter and keep verifying until it
-	// clears, the turn visibly starts, or the deadline hits.
 	const recoveryGrace = 250 * time.Millisecond
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	started := time.Now()
 	recovered := false
+	markerOffset := probes.markerOffset
 	for {
-		captured, err := capturePiPaneANSI(deadline, sessionName)
-		if err == nil {
-			if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
-				return nil
+		if probes.markerPath != "" {
+			markers, nextOffset, err := readPiMarkersSince(probes.markerPath, markerOffset)
+			if err == nil {
+				markerOffset = nextOffset
+				if piMarkersAcknowledgeUserMessage(markers, message) {
+					return nil
+				}
 			}
-			draftVisible := piPaneShowsPromptDraft(captured, message) ||
-				(piPaneLooksIdle(captured) && piPaneEditorContainsPrompt(captured, message))
-			if !draftVisible {
-				return nil
-			}
-			if !recovered && time.Since(started) >= recoveryGrace {
-				recovered = true
-				if err := submitPiInputInTmux(deadline, sessionName); err != nil {
-					return fmt.Errorf("failed to retry Pi input submission: %w", err)
+		}
+		if probes.capture != nil {
+			captured, err := probes.capture(deadline)
+			if err == nil {
+				if piPaneHasStatusLine(captured) && !piPaneLooksIdle(captured) {
+					return nil
+				}
+				draftVisible := piPaneShowsPromptDraft(captured, message) ||
+					(piPaneLooksIdle(captured) && piPaneEditorContainsPrompt(captured, message))
+				if !draftVisible {
+					return nil
+				}
+				if !recovered && time.Since(started) >= recoveryGrace && probes.submit != nil {
+					recovered = true
+					if err := probes.submit(deadline); err != nil {
+						return fmt.Errorf("failed to retry Pi input submission: %w", err)
+					}
 				}
 			}
 		}
@@ -1358,6 +1446,34 @@ func ensurePiInputSubmitted(ctx context.Context, sessionName, message string) er
 		case <-ticker.C:
 		}
 	}
+}
+
+// piMarkersAcknowledgeUserMessage reports whether Pi recorded message as a
+// user message. Whitespace is ignored on both sides (the editor re-wraps
+// pasted text); a long message matches on a shared prefix because the pane
+// paste path may normalize trailing content.
+func piMarkersAcknowledgeUserMessage(markers []piMarker, message string) bool {
+	want := piCompactDraftText(message)
+	if want == "" {
+		return false
+	}
+	const longMessageRunes = 64
+	for _, marker := range markers {
+		if marker.Type != "message_end" || marker.Role != "user" {
+			continue
+		}
+		got := piCompactDraftText(marker.Text)
+		if got == "" {
+			continue
+		}
+		if got == want {
+			return true
+		}
+		if len([]rune(want)) >= longMessageRunes && (strings.HasPrefix(got, want) || strings.HasPrefix(want, got)) {
+			return true
+		}
+	}
+	return false
 }
 
 type piMarker struct {
@@ -2208,7 +2324,7 @@ func SendPiInteractiveInput(ctx context.Context, ownerSessionID, message string)
 	if !ok {
 		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
 	}
-	return sendPiInputToTmux(ctx, session.tmuxSessionName, message)
+	return sendPiInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
 }
 
 // GetStatusLine retrieves the latest Pi statusline snapshot for an active
