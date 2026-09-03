@@ -82,13 +82,12 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   high,
 		}, true
 	case ProviderPiCLI:
-		high := codingAgentHighReasoningRef(providerID, "google/gemini-3.7-flash")
 		return &CodingAgentDefaultTierModels{
-			Builder: high,
-			High:    high,
-			Medium:  codingAgentHighReasoningRef(providerID, "google/gemini-3.7-flash"),
-			Low:     codingAgentHighReasoningRef(providerID, "google/gemini-3.5-flash-lite"),
-			Pulse:   high,
+			Builder: codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
+			High:    codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
+			Medium:  codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "medium"),
+			Low:     codingAgentReasoningRef(providerID, "google/gemini-3.5-flash-lite", "low"),
+			Pulse:   codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
 		}, true
 	}
 

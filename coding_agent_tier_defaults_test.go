@@ -196,6 +196,30 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 	check("pulse", defaults.Pulse, "grok-4.6")
 }
 
+func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
+	defaults, ok := GetCodingAgentDefaultTierModels(ProviderPiCLI)
+	if !ok {
+		t.Fatal("GetCodingAgentDefaultTierModels(pi-cli) ok = false")
+	}
+	check := func(name string, got CodingAgentTierModelRef, wantModel, wantEffort string) {
+		t.Helper()
+		if got.Provider != string(ProviderPiCLI) {
+			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderPiCLI)
+		}
+		if got.ModelID != wantModel {
+			t.Fatalf("%s model_id = %q, want %q", name, got.ModelID, wantModel)
+		}
+		if got.Options["reasoning_effort"] != wantEffort {
+			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
+		}
+	}
+	check("builder", defaults.Builder, "google/gemini-3.8-flash", "high")
+	check("high", defaults.High, "google/gemini-3.8-flash", "high")
+	check("medium", defaults.Medium, "google/gemini-3.8-flash", "medium")
+	check("low", defaults.Low, "google/gemini-3.5-flash-lite", "low")
+	check("pulse", defaults.Pulse, "google/gemini-3.8-flash", "high")
+}
+
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
 	published := map[string]map[string]bool{}
 	for _, meta := range codingAgentPublishedModelMetadata() {
