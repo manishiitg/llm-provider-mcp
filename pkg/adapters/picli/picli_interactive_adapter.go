@@ -56,7 +56,7 @@ const (
 	defaultPiNodeMaxOldSpaceMB          = "4096"
 	defaultPiInteractiveNpxPackage      = "@earendil-works/pi-coding-agent"
 	defaultPiProvider                   = "google"
-	defaultPiModel                      = "gemini-3.7-flash"
+	defaultPiModel                      = "gemini-3.8-flash"
 	piInteractiveMarkerExtensionFile    = "mlp-marker.ts"
 	piInteractiveMCPOutputGuardFile     = "mlp-mcp-output-guard.ts"
 	piInteractiveMarkerJSONLFile        = "markers.jsonl"

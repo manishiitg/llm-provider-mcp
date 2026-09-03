@@ -43,11 +43,11 @@ func TestResolvePiProviderModel(t *testing.T) {
 		wantProvider     string
 		wantModel        string
 	}{
-		{name: "default", wantProvider: "google", wantModel: "gemini-3.7-flash"},
+		{name: "default", wantProvider: "google", wantModel: "gemini-3.8-flash"},
 		{name: "provider model", modelID: "google/gemini-3.5-flash", wantProvider: "google", wantModel: "gemini-3.5-flash"},
 		{name: "openrouter nested model", modelID: "openrouter/minimax/minimax-m3-20260531", wantProvider: "openrouter", wantModel: "minimax/minimax-m3-20260531"},
 		{name: "override", modelID: "gemini-3.5-flash", providerOverride: "google-vertex", wantProvider: "google-vertex", wantModel: "gemini-3.5-flash"},
-		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.7-flash"},
+		{name: "pi cli alias", modelID: "pi-cli", wantProvider: "google", wantModel: "gemini-3.8-flash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

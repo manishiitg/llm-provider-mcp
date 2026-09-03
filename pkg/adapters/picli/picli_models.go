@@ -36,7 +36,7 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 
 		switch modelID {
 		case DefaultModelID:
-			meta.ModelName = "Pi CLI (Gemini 3.7 Flash)"
+			meta.ModelName = "Pi CLI (Gemini 3.8 Flash)"
 		case ModelGemini35FlashLite:
 			meta.ModelName = "Pi CLI (Gemini 3.5 Flash-Lite)"
 		case ModelGemini31ProPreview:
