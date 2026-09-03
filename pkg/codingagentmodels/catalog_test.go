@@ -11,7 +11,7 @@ func TestListPiIncludesCurrentCuratedModelsAndDynamicHint(t *testing.T) {
 		t.Fatalf("catalog = %#v", catalog)
 	}
 	want := map[string]bool{
-		"google/gemini-3.7-flash":       false,
+		"google/gemini-3.8-flash":       false,
 		"google/gemini-3.5-flash-lite":  false,
 		"google/gemini-3.1-pro-preview": false,
 		"minimax/MiniMax-M3":            false,
