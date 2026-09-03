@@ -89,9 +89,9 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:          "cursor uses grok 4.6 high",
+			name:          "cursor uses auto high",
 			provider:      ProviderCursorCLI,
-			wantModelID:   "grok-4.6",
+			wantModelID:   "auto",
 			wantReasoning: "high",
 		},
 		{
@@ -189,11 +189,11 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
 		}
 	}
-	check("high", defaults.High, "grok-4.6")
+	check("high", defaults.High, "auto")
 	check("medium", defaults.Medium, "auto")
 	check("low", defaults.Low, "auto")
-	check("builder", defaults.Builder, "grok-4.6")
-	check("pulse", defaults.Pulse, "grok-4.6")
+	check("builder", defaults.Builder, "auto")
+	check("pulse", defaults.Pulse, "auto")
 }
 
 func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {

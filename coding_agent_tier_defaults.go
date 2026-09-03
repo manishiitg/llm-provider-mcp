@@ -71,18 +71,18 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   pulse,
 		}, true
 	case ProviderCursorCLI:
-		// Builder, High and Pulse on grok-4.6; Medium and Low on Cursor's auto
-		// routing (product decision 2026-09-03: only the high-reasoning roles
-		// pin a model, the rest let Cursor choose).
-		high := codingAgentHighReasoningRef(providerID, "grok-4.6")
-		medium := codingAgentHighReasoningRef(providerID, "auto")
-		low := codingAgentHighReasoningRef(providerID, "auto")
+		// All tiers on Cursor's auto routing (product decision 2026-09-03,
+		// reversing the earlier grok-4.6 pin for Builder/High/Pulse: a live
+		// RTS run hit "quota_exhausted" on grok-4.6 with no fallback, so pick
+		// a model that always has capacity rather than pinning one that can
+		// run out).
+		auto := codingAgentHighReasoningRef(providerID, "auto")
 		return &CodingAgentDefaultTierModels{
-			Builder: high,
-			High:    high,
-			Medium:  medium,
-			Low:     low,
-			Pulse:   high,
+			Builder: auto,
+			High:    auto,
+			Medium:  auto,
+			Low:     auto,
+			Pulse:   auto,
 		}, true
 	case ProviderPiCLI:
 		return &CodingAgentDefaultTierModels{
