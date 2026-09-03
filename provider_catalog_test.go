@@ -6,10 +6,10 @@ import (
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 )
 
-func TestVertexDefaultModelUsesGemini36Flash(t *testing.T) {
+func TestVertexDefaultModelUsesGemini38Flash(t *testing.T) {
 	t.Setenv("VERTEX_PRIMARY_MODEL", "")
-	if got := GetDefaultModel(ProviderVertex); got != vertexadapter.ModelGemini36Flash {
-		t.Fatalf("GetDefaultModel(ProviderVertex) = %q, want %q", got, vertexadapter.ModelGemini36Flash)
+	if got := GetDefaultModel(ProviderVertex); got != vertexadapter.ModelGemini38Flash {
+		t.Fatalf("GetDefaultModel(ProviderVertex) = %q, want %q", got, vertexadapter.ModelGemini38Flash)
 	}
 }
 

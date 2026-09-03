@@ -597,11 +597,12 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 	}
 
 	baseModelID := normalizeToBaseModel(modelID)
-	usesLatestSamplingRules := baseModelID == ModelGemini36Flash || baseModelID == ModelGemini35FlashLite
+	usesLatestSamplingRules := baseModelID == ModelGemini37Flash || baseModelID == ModelGemini38Flash || baseModelID == ModelGemini35FlashLite
 
-	// Gemini 3.6 Flash and 3.5 Flash-Lite deprecate temperature, top_p,
-	// and top_k. Do not send those fields even when callers configured
-	// legacy sampling options; the models use their server-side defaults.
+	// Gemini 3.7 Flash, Gemini 3.8 Flash, and 3.5 Flash-Lite deprecate
+	// temperature, top_p, and top_k. Do not send those fields even when
+	// callers configured legacy sampling options; the models use their
+	// server-side defaults.
 	if opts.Temperature > 0 && !usesLatestSamplingRules {
 		temp := float32(opts.Temperature)
 		config.Temperature = &temp
@@ -644,8 +645,9 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 	}
 
 	// Optional sampling controls — forward them for older Gemini models
-	// only. Gemini 3.6 Flash and 3.5 Flash-Lite require server-managed
-	// sampling, so their callers' legacy values are intentionally omitted.
+	// only. Gemini 3.7 Flash, Gemini 3.8 Flash, and 3.5 Flash-Lite require
+	// server-managed sampling, so their callers' legacy values are
+	// intentionally omitted.
 	if opts.TopP > 0 && !usesLatestSamplingRules {
 		v := float32(opts.TopP)
 		config.TopP = &v
@@ -685,13 +687,22 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 	// Handle thinking level for supported Gemini 3 variants.
 	if opts.ThinkingLevel != "" {
 		// Validate thinking_level against the selected model's documented values.
-		if baseModelID == ModelGemini36Flash {
+		if baseModelID == ModelGemini37Flash {
 			switch opts.ThinkingLevel {
 			case "medium", "high":
 				config.ThinkingConfig = &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel)}
 			default:
 				if g.logger != nil {
 					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"medium\" and \"high\". Ignoring.", opts.ThinkingLevel, modelID)
+				}
+			}
+		} else if baseModelID == ModelGemini38Flash {
+			switch opts.ThinkingLevel {
+			case "low", "medium", "high":
+				config.ThinkingConfig = &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel)}
+			default:
+				if g.logger != nil {
+					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"low\", \"medium\", and \"high\". Ignoring.", opts.ThinkingLevel, modelID)
 				}
 			}
 		} else if baseModelID == ModelGemini35FlashLite {

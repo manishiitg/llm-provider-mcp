@@ -152,7 +152,7 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 	// For Vertex, show a menu with model options
 	if provider == llmproviders.ProviderVertex {
 		fmt.Println("\nSelect Vertex AI Model:")
-		fmt.Println("1. gemini-3.6-flash (Gemini 3.6 Flash — GA default)")
+		fmt.Println("1. gemini-3.8-flash (Gemini 3.8 Flash — GA default)")
 		fmt.Println("2. gemini-3.5-flash-lite (Gemini 3.5 Flash-Lite — GA)")
 		fmt.Println("3. gemini-3.1-pro-preview (Gemini 3.1 Pro Preview)")
 		fmt.Print("\nEnter choice (1-3): ")
@@ -166,7 +166,7 @@ func SelectModel(provider llmproviders.Provider) (string, error) {
 		input = strings.TrimSpace(input)
 		switch input {
 		case "1":
-			return vertexadapter.ModelGemini36Flash, nil
+			return vertexadapter.ModelGemini38Flash, nil
 		case "2":
 			return vertexadapter.ModelGemini35FlashLite, nil
 		case "3":

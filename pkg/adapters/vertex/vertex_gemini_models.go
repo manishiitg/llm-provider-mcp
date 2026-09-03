@@ -17,11 +17,13 @@ const (
 	ModelGemini31FlashLitePreview = "gemini-3.1-flash-lite-preview"
 
 	// Gemini 3.5 Series (GA, launched 2026-05-19)
-	ModelGemini35Flash     = "gemini-3.5-flash"
 	ModelGemini35FlashLite = "gemini-3.5-flash-lite"
 
-	// Gemini 3.6 Series (GA, launched 2026-07-21)
-	ModelGemini36Flash = "gemini-3.6-flash"
+	// Gemini 3.7 Series (GA, launched 2026-08-13)
+	ModelGemini37Flash = "gemini-3.7-flash"
+
+	// Gemini 3.8 Series (GA, launched 2026-09-02)
+	ModelGemini38Flash = "gemini-3.8-flash"
 )
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
@@ -104,44 +106,49 @@ func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
 			ThinkingLevels:          nil,
 			SupportsReasoningEffort: false,
 		},
-		// Gemini 3.5 Flash - GA, launched 2026-05-19. New default Vertex model.
-		// Pricing: https://simonwillison.net/2026/May/19/gemini-35-flash/
-		// 3× the price of gemini-3-flash-preview ($0.50/$3.00) — Google
-		// positioned it as the new general-purpose default.
-		ModelGemini35Flash: {
-			ModelID:                    ModelGemini35Flash,
-			ModelName:                  "Gemini 3.5 Flash",
-			ContextWindow:              1000000, // 1M tokens (1,048,576)
-			InputCostPer1MTokens:       1.50,
-			OutputCostPer1MTokens:      9.00,
-			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.15,
-			Provider:                   "vertex",
-			// Capabilities
-			SupportsToolCalls: true,
-			SupportsJSONMode:  true,
-			// Dynamic thinking is enabled by default server-side; the
-			// Vertex API does not currently expose a thinkingLevel /
-			// thinkingBudget knob for this model. Flip to true here if
-			// Google later exposes one.
-			SupportsThinkingLevel:   false,
-			ThinkingLevels:          nil,
-			SupportsReasoningEffort: false,
-		},
-		// Gemini 3.6 Flash - GA, launched 2026-07-21. Default Vertex model.
-		ModelGemini36Flash: {
-			ModelID:                    ModelGemini36Flash,
-			ModelName:                  "Gemini 3.6 Flash",
+		// Gemini 3.7 Flash - GA, launched 2026-08-13. Successor to Gemini
+		// 3.6 Flash, built for coding and agentic workloads.
+		// Pricing verified via ai.google.dev/gemini-api/docs/pricing
+		// (2026-09-03): introductory rate through 2026-12-31, rising to
+		// $1.50/$7.50 input/output (cached $0.15) on 2027-01-01 — revisit
+		// this entry before that date.
+		// Thinking levels assumed unchanged from Gemini 3.6 Flash (medium,
+		// high); not separately confirmed for 3.7 — verify if it turns out
+		// 3.7 also gained "low" like 3.8 did.
+		ModelGemini37Flash: {
+			ModelID:                    ModelGemini37Flash,
+			ModelName:                  "Gemini 3.7 Flash",
 			ContextWindow:              1048576,
-			InputCostPer1MTokens:       1.50,
-			OutputCostPer1MTokens:      7.50,
+			InputCostPer1MTokens:       0.75,
+			OutputCostPer1MTokens:      3.75,
 			ReasoningCostPer1MTokens:   0.0,
-			CachedInputCostPer1MTokens: 0.15,
+			CachedInputCostPer1MTokens: 0.075,
 			Provider:                   "vertex",
 			SupportsToolCalls:          true,
 			SupportsJSONMode:           true,
 			SupportsThinkingLevel:      true,
 			ThinkingLevels:             []string{"medium", "high"},
+			SupportsReasoningEffort:    false,
+		},
+		// Gemini 3.8 Flash - GA, launched 2026-09-02. Google's most
+		// intelligent Flash model at launch; default Vertex model.
+		// Pricing verified via ai.google.dev/gemini-api/docs/pricing
+		// (2026-09-03): introductory rate through 2026-12-31, rising to
+		// $1.50/$7.50 input/output (cached $0.15) on 2027-01-01 — revisit
+		// this entry before that date.
+		ModelGemini38Flash: {
+			ModelID:                    ModelGemini38Flash,
+			ModelName:                  "Gemini 3.8 Flash",
+			ContextWindow:              1048576,
+			InputCostPer1MTokens:       0.75,
+			OutputCostPer1MTokens:      3.75,
+			ReasoningCostPer1MTokens:   0.0,
+			CachedInputCostPer1MTokens: 0.075,
+			Provider:                   "vertex",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsThinkingLevel:      true,
+			ThinkingLevels:             []string{"low", "medium", "high"},
 			SupportsReasoningEffort:    false,
 		},
 		// Gemini 3.5 Flash-Lite - GA, launched 2026-07-21.

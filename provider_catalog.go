@@ -41,7 +41,7 @@ func GetDefaultModel(provider Provider) string {
 		if primaryModel := os.Getenv("VERTEX_PRIMARY_MODEL"); primaryModel != "" {
 			return primaryModel
 		}
-		return vertexadapter.ModelGemini36Flash
+		return vertexadapter.ModelGemini38Flash
 	case ProviderAzure:
 		// Get primary model from environment variable
 		if primaryModel := os.Getenv("AZURE_PRIMARY_MODEL"); primaryModel != "" {

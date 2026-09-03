@@ -65,7 +65,7 @@ func runTypeConversionTest(cmd *cobra.Command, args []string) {
 	case "vertex":
 		provider = llmproviders.ProviderVertex
 		if modelID == "" {
-			modelID = "gemini-3.6-flash"
+			modelID = "gemini-3.8-flash"
 		}
 	case "openai":
 		provider = llmproviders.ProviderOpenAI

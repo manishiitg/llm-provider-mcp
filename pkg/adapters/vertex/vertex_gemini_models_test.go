@@ -11,7 +11,8 @@ func TestLatestGeminiModelMetadata(t *testing.T) {
 		cachedCost  float64
 		thinkingLen int
 	}{
-		{ModelGemini36Flash, "Gemini 3.6 Flash", 1.50, 7.50, 0.15, 2},
+		{ModelGemini37Flash, "Gemini 3.7 Flash", 0.75, 3.75, 0.075, 2},
+		{ModelGemini38Flash, "Gemini 3.8 Flash", 0.75, 3.75, 0.075, 3},
 		{ModelGemini35FlashLite, "Gemini 3.5 Flash-Lite", 0.30, 2.50, 0.03, 3},
 	}
 
@@ -35,11 +36,11 @@ func TestLatestGeminiModelMetadata(t *testing.T) {
 }
 
 func TestLatestGeminiVersionSuffixNormalization(t *testing.T) {
-	metadata, err := GetVertexGeminiModelMetadata(ModelGemini36Flash + "-001")
+	metadata, err := GetVertexGeminiModelMetadata(ModelGemini38Flash + "-001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metadata.ModelID != ModelGemini36Flash+"-001" {
+	if metadata.ModelID != ModelGemini38Flash+"-001" {
 		t.Fatalf("ModelID = %q, want versioned ID preserved", metadata.ModelID)
 	}
 }
