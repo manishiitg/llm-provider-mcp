@@ -198,6 +198,12 @@ func TestCompletedAssistantResponseFromTranscriptUsesOnlyCommittedEndTurn(t *tes
 	if !got.Found || !got.Completed || got.Text != want {
 		t.Fatalf("completed response = %+v, want found completed text %q", got, want)
 	}
+	// The narration Claude wrote before its tool call is part of the turn as a
+	// reader sees it, and must not include the previous turn.
+	wantTurn := "Running deeper technical checks now.\n\n" + want
+	if got.TurnText != wantTurn {
+		t.Fatalf("turn text = %q, want %q", got.TurnText, wantTurn)
+	}
 }
 
 func TestCompletedAssistantResponseFromTranscriptRejectsInterruptedTurn(t *testing.T) {

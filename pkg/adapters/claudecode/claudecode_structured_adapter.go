@@ -408,6 +408,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		"claude_code_session_id":     sessionID, // surfaced so mcpagent captures a.ClaudeCodeSessionID and can --resume next turn
 		"context_window_usage_known": false,
 	}
+	// Same contract as the interactive adapter: every assistant text block of
+	// the turn, for surfaces that show the conversation rather than a result.
+	if turnText := strings.TrimSpace(finalText.String()); turnText != "" && turnText != content {
+		additional["assistant_turn_text"] = turnText
+	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZeroClaude(totalUsage.InputTokens),
 		OutputTokens: intPtrIfNonZeroClaude(totalUsage.OutputTokens),

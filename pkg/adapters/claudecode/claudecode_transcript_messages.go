@@ -169,7 +169,13 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 // transcript means the turn was interrupted and must never fall back to a pane
 // scrape, while a genuinely unavailable transcript retains legacy compatibility.
 type claudeCompletedTranscriptResponse struct {
-	Text      string
+	// Text is the committed end_turn message: the turn's answer, and what
+	// callers treat as the final result.
+	Text string
+	// TurnText is every assistant text block of the turn in transcript order,
+	// narration before tool calls included, ending with Text. Chat surfaces
+	// show this; Claude Code's own UI does the same. Empty until Completed.
+	TurnText  string
 	Found     bool
 	Completed bool
 }
@@ -249,6 +255,13 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		g := groups[order[i]]
 		if g.completed && len(g.text) > 0 {
 			result.Text = strings.TrimSpace(strings.Join(g.text, "\n\n"))
+			parts := make([]string, 0, len(order))
+			for _, id := range order[:i+1] {
+				if t := strings.TrimSpace(strings.Join(groups[id].text, "\n\n")); t != "" {
+					parts = append(parts, t)
+				}
+			}
+			result.TurnText = strings.Join(parts, "\n\n")
 			return result
 		}
 	}

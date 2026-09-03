@@ -71,8 +71,11 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   pulse,
 		}, true
 	case ProviderCursorCLI:
+		// Builder, High and Pulse on grok-4.6; Medium and Low on Cursor's auto
+		// routing (product decision 2026-09-03: only the high-reasoning roles
+		// pin a model, the rest let Cursor choose).
 		high := codingAgentHighReasoningRef(providerID, "grok-4.6")
-		medium := codingAgentHighReasoningRef(providerID, DefaultCursorCLIModel)
+		medium := codingAgentHighReasoningRef(providerID, "auto")
 		low := codingAgentHighReasoningRef(providerID, "auto")
 		return &CodingAgentDefaultTierModels{
 			Builder: high,

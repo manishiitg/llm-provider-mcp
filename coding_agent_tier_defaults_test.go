@@ -190,7 +190,7 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 		}
 	}
 	check("high", defaults.High, "grok-4.6")
-	check("medium", defaults.Medium, "composer-2.5")
+	check("medium", defaults.Medium, "auto")
 	check("low", defaults.Low, "auto")
 	check("builder", defaults.Builder, "grok-4.6")
 	check("pulse", defaults.Pulse, "grok-4.6")

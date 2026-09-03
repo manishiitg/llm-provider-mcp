@@ -539,6 +539,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		return nil, ctxErr
 	}
 	finalExtractionSource := "tmux_pane"
+	turnText := ""
 	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart)
 	if transcriptResponse.Found {
 		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
@@ -552,6 +553,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 		content = transcriptResponse.Text
 		finalExtractionSource = "jsonl_end_turn"
+		turnText = transcriptResponse.TurnText
 	}
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	// Skip for persistent interactive sessions: they live past the call
@@ -679,6 +681,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// parsing only as a compatibility fallback for CLI versions/environments in
 	// which the transcript cannot be read.
 	additional["claude_code_final_extraction_source"] = finalExtractionSource
+	// Chat surfaces want the whole turn (narration before tool calls too), not
+	// only the committed end_turn answer that final_result keeps for workflows.
+	if turnText != "" && turnText != content {
+		additional["assistant_turn_text"] = turnText
+	}
 
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{

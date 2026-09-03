@@ -288,8 +288,8 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertResumeCompactionStartup,
 			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_adapter_test.go",
-			TestName:    "TestClaudeResumeSummaryMenuSubmitsDefaultChoice",
-			Description: "resume/compaction startup prompts are detected and submitted through the global prompt-wait path",
+			TestName:    "TestClaudeResumeSummaryMenuNavigatesAwayFromCompressedDefault",
+			Description: "resume/compaction startup prompts are detected and resolved through the global prompt-wait path, choosing the full session over the compressed summary",
 		},
 		{
 			ID:          CertStartupTerminalVisibility,
