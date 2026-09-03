@@ -31,6 +31,10 @@ type cursorEvent struct {
 
 	// text/thinking deltas
 	Text string `json:"text,omitempty"`
+	// Present on every streamed fragment (assistant + thinking deltas), absent
+	// on the assembled per-span "assistant" repeat -- the only field that tells
+	// the two apart since neither carries a subtype (cursor-agent 2026.09.02).
+	TimestampMS *int64 `json:"timestamp_ms,omitempty"`
 
 	// assistant / user message
 	Message *cursorEventMessage `json:"message,omitempty"`
@@ -442,6 +446,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	// description) sailed through as a "successful" StopReason:"stop"
 	// response — the same bug class fixed live for Claude this session.
 	var resultIsError bool
+	spanFragments := "" // concatenation of the current span's streamed fragments
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -535,12 +540,25 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						// unmarked, which is what made a reassembler "\n"-join them
 						// and render a streamed table as a column of bare pipes.
 						isDelta := event.Subtype == "" || event.Subtype == "delta"
-						if !isDelta && streamedDeltasThisSpan {
+						// cursor-agent 2026.09.02 sends the assembled span as an
+						// "assistant" event with NO subtype either, so the subtype
+						// check alone let it through as one more delta and every
+						// sentence rendered twice (RTS, 2026-09-03). Fragments carry
+						// timestamp_ms and the assembled repeat does not; as a
+						// belt-and-braces check, an event whose text equals what the
+						// fragments already added up to is that repeat as well.
+						assembledRepeat := streamedDeltasThisSpan &&
+							(!isDelta || event.TimestampMS == nil || text == spanFragments)
+						if assembledRepeat {
 							finalContent = text
 							streamedDeltasThisSpan = false
+							spanFragments = ""
 							continue
 						}
 						finalContent = text
+						if isDelta {
+							spanFragments += text
+						}
 						chunk := llmtypes.StreamChunk{
 							Type:    llmtypes.StreamChunkTypeContent,
 							Content: text,
@@ -565,6 +583,9 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 						segments = append(segments, trimmed)
 						finalContent = ""
 					}
+					// The span is over; the next assistant text starts a new one.
+					streamedDeltasThisSpan = false
+					spanFragments = ""
 					toolStartedAt[event.CallID] = time.Now()
 					details := cursorStructuredToolCallDetails(event.ToolCall)
 					toolCalls[event.CallID] = details
