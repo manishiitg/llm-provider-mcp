@@ -1,5 +1,7 @@
 package cursorcli
 
+import "strings"
+
 // buildCursorStructuredArgs constructs the argv for a `cursor-agent --print`
 // structured (stream-json) turn. Extracted from the adapter so the containment
 // (--mode) and resume flag SHAPE can be regression-tested without launching the
@@ -48,4 +50,17 @@ func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, app
 	}
 	args = append(args, prompt)
 	return args
+}
+
+// cursorStructuredCLIConfig decides what .cursor/cli.json a structured launch
+// projects next to the injected mcp.json: the caller's own project config when
+// it supplied one (MetadataKeyProjectConfig), otherwise an allowlist that
+// pre-approves every tool of every injected MCP server (Mcp(<server>:*)) --
+// the same file the tmux path writes, so bridge tools run unattended in
+// --print mode. ok is false when there is nothing to write.
+func cursorStructuredCLIConfig(mcpJSON, projectConfigJSON string) (string, bool, error) {
+	if strings.TrimSpace(projectConfigJSON) != "" {
+		return projectConfigJSON, true, nil
+	}
+	return cursorMCPAllowlistCLIConfig(mcpJSON)
 }

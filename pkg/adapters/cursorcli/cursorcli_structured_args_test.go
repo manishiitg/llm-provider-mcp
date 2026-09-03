@@ -2,6 +2,7 @@ package cursorcli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +158,34 @@ func TestStructuredArgsAutoReviewKeepsNativeToolsWithoutForce(t *testing.T) {
 	}
 	if has(got, "--force") {
 		t.Fatalf("provider auto must not pass --force: %v", got)
+	}
+}
+
+func TestCursorStructuredCLIConfigPreapprovesInjectedMCPServers(t *testing.T) {
+	mcpJSON := `{"mcpServers":{"api-bridge":{"command":"mlp-bridge"},"github":{"url":"https://example.invalid/mcp"}}}`
+
+	out, ok, err := cursorStructuredCLIConfig(mcpJSON, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected an allowlist config for an mcp.json with servers")
+	}
+	for _, want := range []string{`"Mcp(api-bridge:*)"`, `"Mcp(github:*)"`, `"deny":[]`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("allowlist config missing %s: %s", want, out)
+		}
+	}
+
+	// A caller-supplied project config wins verbatim, as in the tmux path.
+	custom := `{"permissions":{"allow":["Mcp(api-bridge:execute_shell_command)"]}}`
+	out, ok, err = cursorStructuredCLIConfig(mcpJSON, custom)
+	if err != nil || !ok || out != custom {
+		t.Fatalf("caller config not honoured: ok=%v err=%v out=%s", ok, err, out)
+	}
+
+	// Nothing to write for an mcp.json without servers.
+	if _, ok, err := cursorStructuredCLIConfig(`{"mcpServers":{}}`, ""); err != nil || ok {
+		t.Fatalf("expected no config for an empty server list: ok=%v err=%v", ok, err)
 	}
 }

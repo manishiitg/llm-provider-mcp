@@ -347,6 +347,25 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 				return nil, fmt.Errorf("cursor MCP config: %w", werr)
 			}
 			configCleanups = append(configCleanups, cleanup)
+			// Pre-approve the injected servers' tools, exactly as the tmux path
+			// does. Without this, a headless --print launch that withholds
+			// --force (it must, or the deny-builtin hooks are inert) has nobody
+			// to answer cursor's per-tool prompt for a non-read-only MCP tool,
+			// and cursor-agent fails the call with
+			// {"rejected":{"reason":"User rejected MCP: api-bridge-execute_shell_command"}}
+			// -- every bridge write/shell step was dead on arrival (RTS, 2026-09-03).
+			projectCfg, _ := opts.Metadata.Custom[MetadataKeyProjectConfig].(string)
+			cliJSON, ok, cerr := cursorStructuredCLIConfig(mcpJSON, projectCfg)
+			if cerr != nil {
+				return nil, fmt.Errorf("cursor CLI permissions config: %w", cerr)
+			}
+			if ok {
+				cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(cliJSON), true)
+				if werr != nil {
+					return nil, fmt.Errorf("cursor CLI permissions config: %w", werr)
+				}
+				configCleanups = append(configCleanups, cleanup)
+			}
 		}
 		if denyBuiltins {
 			// Same hooks the tmux path installs, in the same place. They deny
