@@ -277,54 +277,10 @@ func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.
 	}
 	defer db.Close()
 
-	// meta.value affinity varies across cursor versions: some writes
-	// store raw JSON bytes (BLOB), some store hex-encoded JSON (TEXT).
-	// Scan as any and normalize.
 	ctx := context.Background()
-	var metaRaw any
-	if err := db.QueryRowContext(ctx, `SELECT value FROM meta LIMIT 1`).Scan(&metaRaw); err != nil {
-		return nil
-	}
-	var metaBytes []byte
-	switch v := metaRaw.(type) {
-	case []byte:
-		// Could be raw JSON bytes OR hex bytes-as-text. Try JSON first.
-		if len(v) > 0 && (v[0] == '{' || v[0] == '[') {
-			metaBytes = v
-		} else if decoded, err := hex.DecodeString(string(v)); err == nil {
-			metaBytes = decoded
-		} else {
-			metaBytes = v
-		}
-	case string:
-		if len(v) > 0 && (v[0] == '{' || v[0] == '[') {
-			metaBytes = []byte(v)
-		} else if decoded, err := hex.DecodeString(v); err == nil {
-			metaBytes = decoded
-		} else {
-			metaBytes = []byte(v)
-		}
-	default:
-		return nil
-	}
-	var meta struct {
-		LatestRootBlobID string `json:"latestRootBlobId"`
-	}
-	if err := json.Unmarshal(metaBytes, &meta); err != nil || meta.LatestRootBlobID == "" {
-		return nil
-	}
-
-	// Fetch the root blob; rows are stored as BLOB but the cursor
-	// CLI stores them hex-encoded as TEXT — handle both.
-	rootData := readCursorBlob(ctx, db, meta.LatestRootBlobID)
-	if len(rootData) == 0 || rootData[0] != 0x0a {
-		// Not a protobuf root we know how to parse.
-		return nil
-	}
-
 	// Pull field-1 (length-delimited, 32-byte) refs in source order.
-	refs := extractCursorRootChildRefs(rootData)
-	if len(refs) == 0 {
+	refs, err := cursorStoreLatestRootRefs(ctx, db)
+	if err != nil || len(refs) == 0 {
 		return nil
 	}
 
