@@ -77,16 +77,16 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:           "claude code follows high (sonnet 5)",
-			provider:       ProviderClaudeCode,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
+			name:          "claude code uses fable 5.1 medium",
+			provider:      ProviderClaudeCode,
+			wantModelID:   "claude-fable-5-1",
+			wantReasoning: "medium",
 		},
 		{
-			name:          "codex uses gpt 5.6 terra high",
+			name:          "codex uses gpt 6 astra medium",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-5.6-terra",
-			wantReasoning: "high",
+			wantModelID:   "gpt-6-astra",
+			wantReasoning: "medium",
 		},
 		{
 			name:          "cursor uses auto high",
@@ -141,14 +141,17 @@ func TestCodingAgentDefaultTierModelsClaudeBuilderDefault(t *testing.T) {
 	if defaults.Pulse.Provider != string(ProviderClaudeCode) {
 		t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, ProviderClaudeCode)
 	}
-	if defaults.Pulse.ModelID != "claude-sonnet-5" {
-		t.Fatalf("pulse model_id = %q, want claude-sonnet-5", defaults.Pulse.ModelID)
+	if defaults.Pulse.ModelID != "claude-fable-5-1" {
+		t.Fatalf("pulse model_id = %q, want claude-fable-5-1", defaults.Pulse.ModelID)
 	}
-	if defaults.Pulse.Options["reasoning_effort"] != "high" {
-		t.Fatalf("pulse reasoning_effort = %#v, want high", defaults.Pulse.Options["reasoning_effort"])
+	if defaults.Pulse.Options["reasoning_effort"] != "medium" {
+		t.Fatalf("pulse reasoning_effort = %#v, want medium", defaults.Pulse.Options["reasoning_effort"])
 	}
 }
 
+// TestCodingAgentDefaultTierModelsCodexGPT56Family covers the execution tiers,
+// which stayed on the GPT-5.6 family. Pulse moved to GPT-6 Astra (see
+// TestCodingAgentDefaultTierModelsPulseDefaults) and is not part of this family.
 func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderCodexCLI)
 	if !ok {
@@ -164,7 +167,6 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		"high":    {ref: defaults.High, model: "gpt-5.6-terra", effort: "medium"},
 		"medium":  {ref: defaults.Medium, model: "gpt-5.6-luna", effort: "high"},
 		"low":     {ref: defaults.Low, model: "gpt-5.6-luna", effort: "medium"},
-		"pulse":   {ref: defaults.Pulse, model: "gpt-5.6-terra", effort: "high"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
 			t.Fatalf("%s = %+v, want model %s effort %s", name, check.ref, check.model, check.effort)

@@ -48,7 +48,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderCodexCLI:
 		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
 		builder := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
-		pulse := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "high")
+		pulse := codingAgentReasoningRef(providerID, "gpt-6-astra", "medium")
 		medium := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "high")
 		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "medium")
 		return &CodingAgentDefaultTierModels{
@@ -61,7 +61,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		pulse := high
+		pulse := codingAgentReasoningRef(providerID, "claude-fable-5-1", "medium")
 		builder := high
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,

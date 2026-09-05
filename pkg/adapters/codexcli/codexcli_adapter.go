@@ -154,6 +154,21 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 
 	// Known model metadata
 	switch {
+	case strings.Contains(modelID, "gpt-6-astra"):
+		return &llmtypes.ModelMetadata{
+			ModelID:                    metadataModelID,
+			Provider:                   "codex-cli",
+			ModelName:                  "GPT-6 Astra",
+			ContextWindow:              1050000,
+			InputCostPer1MTokens:       10.00,
+			OutputCostPer1MTokens:      50.00,
+			CachedInputCostPer1MTokens: 1.00,
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"none", "low", "medium", "high", "xhigh"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-5.6-sol"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                         metadataModelID,
