@@ -77,10 +77,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:          "claude code uses opus 5 high",
-			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-opus-5",
-			wantReasoning: "high",
+			name:           "claude code follows high (sonnet 5)",
+			provider:       ProviderClaudeCode,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
 		},
 		{
 			name:          "codex uses gpt 5.6 terra high",
@@ -141,8 +141,8 @@ func TestCodingAgentDefaultTierModelsClaudeBuilderDefault(t *testing.T) {
 	if defaults.Pulse.Provider != string(ProviderClaudeCode) {
 		t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, ProviderClaudeCode)
 	}
-	if defaults.Pulse.ModelID != "claude-opus-5" {
-		t.Fatalf("pulse model_id = %q, want claude-opus-5", defaults.Pulse.ModelID)
+	if defaults.Pulse.ModelID != "claude-sonnet-5" {
+		t.Fatalf("pulse model_id = %q, want claude-sonnet-5", defaults.Pulse.ModelID)
 	}
 	if defaults.Pulse.Options["reasoning_effort"] != "high" {
 		t.Fatalf("pulse reasoning_effort = %#v, want high", defaults.Pulse.Options["reasoning_effort"])
