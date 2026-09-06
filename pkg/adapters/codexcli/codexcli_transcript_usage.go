@@ -292,6 +292,24 @@ func codexThreadIDFromRolloutPath(path string) string {
 func intRef(v int) *int { return &v }
 
 func sameCodexWorkingDir(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	// Compare the filesystem objects before comparing their textual paths.
+	// On the default macOS filesystem the same directory can be opened with a
+	// different case spelling. Codex records the physical cwd spelling in its
+	// rollout, while a host may persist the configured spelling (for example
+	// `Application Support/agentworks` versus `Application Support/AgentWorks`).
+	// A string comparison then loses the rollout binding and forces the
+	// interactive adapter to reconstruct the answer from the tmux pane, leaking
+	// tool calls and results into assistant text.
+	if aInfo, aErr := os.Stat(a); aErr == nil {
+		if bInfo, bErr := os.Stat(b); bErr == nil && os.SameFile(aInfo, bInfo) {
+			return true
+		}
+	}
 	a = canonicalCodexWorkingDir(a)
 	b = canonicalCodexWorkingDir(b)
 	return a != "" && b != "" && a == b

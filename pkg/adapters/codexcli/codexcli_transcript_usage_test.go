@@ -110,6 +110,29 @@ func TestReadCodexTranscriptUsageReturnsNilWhenMissing(t *testing.T) {
 	}
 }
 
+func TestSameCodexWorkingDirUsesFilesystemIdentity(t *testing.T) {
+	dir := t.TempDir()
+	physical := filepath.Join(dir, "agentworks")
+	configured := filepath.Join(dir, "AgentWorks")
+	if err := os.WriteFile(physical, []byte("same inode"), 0o600); err != nil {
+		t.Fatalf("write physical path: %v", err)
+	}
+	// A case-insensitive filesystem already exposes configured as the same
+	// object. On a case-sensitive filesystem, use a hard link to exercise the
+	// same filesystem-identity contract portably.
+	if _, err := os.Stat(configured); os.IsNotExist(err) {
+		if err := os.Link(physical, configured); err != nil {
+			t.Fatalf("link configured spelling: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("stat configured spelling: %v", err)
+	}
+
+	if !sameCodexWorkingDir(configured, physical) {
+		t.Fatalf("filesystem aliases %q and %q must identify the same Codex working directory", configured, physical)
+	}
+}
+
 func TestReadCodexTranscriptUsageFiltersByWorkingDir(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

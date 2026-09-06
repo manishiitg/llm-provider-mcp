@@ -1213,6 +1213,26 @@ Now I will run the workflow step.`
 	}
 }
 
+func TestExtractCodexVisibleAssistantTextDropsExecuteStepReplay(t *testing.T) {
+	visible := `The prior attempt is no longer running. I’m starting the authenticated preflight again.
+Called
+└ api-bridge.execute_shell_command({"command":"payload='{\"step_id\":\"step-0-cdp-test\",\"group_name\":\"default\"}'; curl --fail-with-body -sS --json \"$payload\" -H \"$MCP_AUTH\" \"$MCP_CUSTOM/execute_step\"","timeout":30})
+{"stdout": "Step \"step-0-cdp-test\" started in background.\nexecution_id: \"exec-step-0-cdp-test-1788695510778315000\"\nrun_folder: \"iteration-0/default\"\nYou will be automatically notified when it completes. End the current agent turn now instead of polling. Use query_step(step_id=\"step-0-cdp-test\") only if the user explicitly requests a live status check.", "stderr": "", "exit_code": 0, "execution_time_ms": 31}
+The authenticated X connection test is running now for default.
+Execution ID: exec-step-0-cdp-test-1788695510778315000
+It performs no public X actions. I’ll report the result when it completes.`
+
+	got := extractCodexVisibleAssistantText(visible)
+	want := `The prior attempt is no longer running. I’m starting the authenticated preflight again.
+The authenticated X connection test is running now for default.
+Execution ID: exec-step-0-cdp-test-1788695510778315000
+It performs no public X actions. I’ll report the result when it completes.`
+	if got != want {
+		t.Fatalf("visible assistant text = %q, want %q", got, want)
+	}
+	assertCodexNoInternalStatus(t, got)
+}
+
 func TestExtractCodexVisibleAssistantTextDropsFlattenedToolStatusReplay(t *testing.T) {
 	visible := `Hi! 👋 What would you like me to do for the workflow today? Called codex.list_mcp_resources({}) └ {"resources": []} Updated Plan └ Need confirm target group and step before running. □ Gather available groups and step IDs. □ Request step/group details from user. Called codex.list_mcp_resource_templates({}) └ {"resourceTemplates": []} Called └ workflow.read_mcp_resource({"server":"workflow","uri":"planning/plan.json"}) Error: resources/read failed: unknown MCP server 'workflow' Updated Plan └ Fetching available context before running requested step. ✔ Gather available groups and step IDs. □ Request step/group details from user. Updated Plan └ Need to identify valid groups and steps before execution. ✔ Gather available groups and step IDs. ✔ Request step/group details from user.`
 
