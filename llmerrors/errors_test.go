@@ -23,6 +23,11 @@ func TestClassifyKinds(t *testing.T) {
 		{"gemini daily quota", errors.New("googleapi: Error 429: Quota exceeded for metric generate_requests_per_model_per_day"), KindQuotaExhausted},
 		{"openai quota", errors.New("429: You exceeded your current quota, please check your plan and billing details"), KindQuotaExhausted},
 		{"claude code usage", errors.New("you've hit your usage limit, resets at 3pm"), KindQuotaExhausted},
+		// Codex 0.153+ appends an OFFER to every reply ("You have N usage limit
+		// resets available"); an unrelated failure that embeds that pane must
+		// not read as quota exhaustion, while a real limit hit still does.
+		{"codex offer line is not a limit", errors.New("codex-cli turn failed: Codex input remained unconfirmed after 8s; latest pane tail: • You have 2 usage limit resets available. Run /usage to use one."), KindUnknown},
+		{"codex real limit with offer line", errors.New("you've hit your usage limit. You have 1 usage limit reset available. Run /usage to use one."), KindQuotaExhausted},
 		{"resource exhausted", errors.New("rpc error: code = ResourceExhausted desc = RESOURCE_EXHAUSTED"), KindQuotaExhausted},
 
 		// Rate limit

@@ -154,6 +154,10 @@ func Classify(provider, model string, err error) error {
 
 var statusCodeRe = regexp.MustCompile(`(?i)status(?:\s*code)?[:\s]+(\d{3})\b`)
 
+// usageLimitOfferRe matches Codex's informational "usage limit reset(s)
+// available" line, which must not read as a usage limit being hit.
+var usageLimitOfferRe = regexp.MustCompile(`(?i)\busage limit resets? (?:are |is )?available\b`)
+
 // extractStatusCode pulls an HTTP status out of error text when present
 // ("status code: 429", "StatusCode: 500", "status 503").
 func extractStatusCode(msg string) int {
@@ -191,6 +195,13 @@ func classifyKind(err error) Kind {
 	if containsAny(msg, "context canceled", "request canceled", "operation was canceled") {
 		return KindCanceled
 	}
+
+	// Codex 0.153+ appends "You have N usage limit resets available. Run
+	// /usage to use one." to every reply — an offer, not a limit being hit —
+	// and coding-CLI errors embed the pane they saw. Left in, that line made
+	// any unrelated Codex failure classify as permanent quota exhaustion, and
+	// the provider was then skipped for the rest of the session.
+	msg = usageLimitOfferRe.ReplaceAllString(msg, "")
 
 	// Permanent quota exhaustion — checked before rate limit because these
 	// messages frequently also mention 429/quota.

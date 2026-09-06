@@ -52,6 +52,14 @@ type codexTurnCompletionTracker struct {
 	// in the interactive adapter — would otherwise see false forever and hang
 	// the turn even though it finished.
 	completedLatched bool
+	// startedTurnID is the turn Codex began after turnStart. A task_complete
+	// carrying another turn_id belongs to a predecessor (an interrupted turn
+	// flushing late) and must not end this one.
+	startedTurnID string
+	// abortReason is set when Codex recorded turn_aborted for this turn (Esc in
+	// the TUI, a client interrupt). The turn is over without a task_complete,
+	// so waiting for one would hang until the adapter's deadline.
+	abortReason string
 	// diagnostics is deliberately callback-only: it records identity and
 	// lifecycle boundaries without retaining prompt, tool, or response content.
 	// PLAT-116 needs this to distinguish "the provider never completed" from
@@ -132,6 +140,15 @@ func (t *codexTurnCompletionTracker) completed() bool {
 	}
 }
 
+// aborted reports whether the turn ended with Codex's turn_aborted event and
+// the reason it recorded. Only meaningful once completed() returned true.
+func (t *codexTurnCompletionTracker) aborted() (bool, string) {
+	if t == nil || t.abortReason == "" {
+		return false, ""
+	}
+	return true, t.abortReason
+}
+
 // blocksTerminalFallback reports whether the native rollout proves that Codex
 // is still inside the turn. The TUI may show an idle composer while an MCP call
 // is pending, so a ready-looking pane is not a completion signal once the
@@ -152,6 +169,7 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 			Phase  string `json:"phase"`
 			CallID string `json:"call_id"`
 			TurnID string `json:"turn_id"`
+			Reason string `json:"reason"`
 		} `json:"payload"`
 	}
 	var event rolloutEvent
@@ -164,7 +182,26 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 	}
 	t.sawTurnEvent = true
 
+	if event.Type == "event_msg" && event.Payload.Type == "task_started" {
+		if t.startedTurnID == "" {
+			t.startedTurnID = strings.TrimSpace(event.Payload.TurnID)
+		}
+		return false
+	}
+	if event.Type == "event_msg" && event.Payload.Type == "turn_aborted" {
+		if !codexTaskCompleteBelongsToTurn(t.startedTurnID, event.Payload.TurnID) {
+			return false
+		}
+		t.abortReason = strings.TrimSpace(event.Payload.Reason)
+		if t.abortReason == "" {
+			t.abortReason = "aborted"
+		}
+		return true
+	}
 	if event.Type == "event_msg" && event.Payload.Type == "task_complete" {
+		if !codexTaskCompleteBelongsToTurn(t.startedTurnID, event.Payload.TurnID) {
+			return false
+		}
 		if t.diagnostics != nil && t.diagnostics.taskComplete != nil {
 			t.diagnostics.taskComplete(
 				t.rolloutPath,
@@ -192,6 +229,15 @@ func (t *codexTurnCompletionTracker) observe(line string) bool {
 		}
 	}
 	return false
+}
+
+// codexTaskCompleteBelongsToTurn accepts a task_complete for the turn that
+// started after turnStart. Rollouts without task_started (older fixtures) and
+// completions without a turn_id keep the timestamp-only behavior.
+func codexTaskCompleteBelongsToTurn(startedTurnID, completedTurnID string) bool {
+	started := strings.TrimSpace(startedTurnID)
+	completed := strings.TrimSpace(completedTurnID)
+	return started == "" || completed == "" || started == completed
 }
 
 // findCodexRolloutByWorkingDirUnsafe resolves a rollout using ONLY working

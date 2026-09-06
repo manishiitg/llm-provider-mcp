@@ -291,7 +291,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			return nil, err
 		}
 		c.logger.Debugf("codex interactive launch prompt accepted owner=%s tmux=%s elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond))
-	} else if err := sendCodexPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+	} else if err := sendCodexPromptToTmuxConfirmedBy(callCtx, session.tmuxSessionName, prompt, codexTurnStartOracle(session, promptSentAt)); err != nil {
 		inspector.EmitError(err, map[string]interface{}{"phase": "tmux_prompt_send"})
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
@@ -554,6 +554,12 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			cliSecurityFingerprint: securityFingerprint,
 			createdAt:              now,
 			lastUsed:               now,
+			// A resumed conversation already has its Codex thread; pinning it
+			// now (instead of after the first turn binds a rollout) gives the
+			// first submission after a relaunch an authoritative rollout to
+			// confirm against, rather than pane guesses over a TUI that may
+			// still be replaying history.
+			threadID: codexResumeSessionIDFromOptions(opts),
 		}
 		session.mu.Lock()
 		return session
@@ -624,6 +630,9 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// Best-effort.
 	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 && workingDir != "" {
 		_ = c.ProjectSkills(workingDir, attachedSkills)
+	}
+	if reaped := reapOrphanCodexTmuxSessions(ctx, ownerSessionID, session.tmuxSessionName, c.logger.Infof); len(reaped) > 0 {
+		c.logger.Infof("codex interactive reaped orphaned tmux session(s) %v for owner %s before launching a new one", reaped, ownerSessionID)
 	}
 	c.logger.Debugf("codex interactive starting tmux owner=%s tmux=%s", ownerSessionID, session.tmuxSessionName)
 	runtimeReadPaths := []string{systemPromptTempFile}
@@ -1676,26 +1685,26 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 	}
 }
 
-func sendCodexPromptToTmux(ctx context.Context, sessionName, prompt string) error {
-	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, prompt, true)
+func sendCodexPromptToTmuxConfirmedBy(ctx context.Context, sessionName, prompt string, oracle codexSubmissionOracle) error {
+	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, prompt, true, oracle)
 }
 
 func sendCodexInputToTmux(ctx context.Context, sessionName, message string) error {
-	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, message, false)
+	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, message, false, nil)
 }
 
-func sendCodexInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
+func sendCodexInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool, oracle codexSubmissionOracle) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
 		SessionID:       sessionName,
 		Source:          "codex-cli",
 		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
-		return sendCodexInputToTmuxUnserialized(ctx, sessionName, message)
+		return sendCodexInputToTmuxUnserialized(ctx, sessionName, message, oracle)
 	})
 	return err
 }
 
-func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message string, oracle codexSubmissionOracle) error {
 	// [LATENCY_DEBUG] timing: this whole function is "how long until Codex
 	// actually started working on this message" — pane reset + paste + Enter
 	// (pasted) is the mechanical delivery cost; the remaining time up to
@@ -1708,6 +1717,7 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Codex interactive input is empty")
 	}
+	waitForCodexPaneOutOfStartup(ctx, sessionName, codexStartupPasteWait, captureCodexPane)
 	// Clear any stale unsent draft inside the same broker transaction as paste +
 	// submit. The previous implementation cleared outside the transaction and
 	// then performed a second multi-second readiness wait on every turn.
@@ -1736,25 +1746,66 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	pasted := time.Since(start)
 	// Codex 0.142's TUI accepts tmux's literal Enter key here, while C-m can
 	// leave the pasted text sitting in the input buffer without starting a turn.
-	if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
-		return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
+	submit := func(ctx context.Context) error {
+		if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
+			return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
+		}
+		return nil
 	}
-	err = waitForCodexInputSubmitted(ctx, sessionName, message, baseline, 8*time.Second)
+	if err := submit(ctx); err != nil {
+		return err
+	}
+	err = waitForCodexInputSubmittedWith(ctx, sessionName, message, baseline, 8*time.Second, codexSubmissionWait{
+		oracle:   oracle,
+		resubmit: submit,
+	})
 	log.Printf("[LATENCY_DEBUG] codex tmux delivery | session=%s pasted=%dms confirmed=%dms err=%v",
 		sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), err)
 	return err
 }
 
 func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, baseline string, timeout time.Duration) error {
+	return waitForCodexInputSubmittedWith(ctx, sessionName, message, baseline, timeout, codexSubmissionWait{})
+}
+
+// waitForCodexInputSubmittedWith confirms that Enter started a turn. With an
+// authoritative oracle (the session's rollout) only the oracle can confirm;
+// the pane heuristics are the fallback for sessions whose rollout is not
+// bound yet. Either way, a prompt that is still an unsent draft after
+// resubmitAfter gets Enter again: Codex 0.153 spends the first Enter on
+// dismissing its "Conversation interrupted" notice.
+func waitForCodexInputSubmittedWith(ctx context.Context, sessionName, message, baseline string, timeout time.Duration, wait codexSubmissionWait) error {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	capture := wait.capture
+	if capture == nil {
+		capture = captureCodexPane
+	}
+	resubmitAfter := wait.resubmitAfter
+	if resubmitAfter <= 0 {
+		resubmitAfter = codexDefaultResubmitAfter
+	}
+	maxResubmits := wait.maxResubmits
+	if maxResubmits <= 0 {
+		maxResubmits = codexDefaultMaxResubmits
+	}
 	baselineSnapshot := codexPromptCandidateStabilitySnapshot(baseline)
 	var lastCapture string
 	var lastErr error
+	lastSubmit := time.Now()
+	resubmits := 0
 	for {
-		captured, err := captureCodexPane(deadline, sessionName)
+		strict := false
+		if wait.oracle != nil {
+			started, authoritative := wait.oracle()
+			if started {
+				return nil
+			}
+			strict = authoritative
+		}
+		captured, err := capture(deadline, sessionName)
 		if err == nil {
 			lastCapture = captured
 			transitioned := codexPromptCandidateStabilitySnapshot(captured) != baselineSnapshot
@@ -1769,7 +1820,7 @@ func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, basel
 			// transition after Enter before accepting activity as confirmation.
 			// Normalize rotating empty-composer hints so their animation alone
 			// cannot masquerade as a submitted turn.
-			if transitioned && (hasCodexActivity(captured) || hasCodexQueuedInput(captured)) {
+			if !strict && transitioned && (hasCodexActivity(captured) || hasCodexQueuedInput(captured)) {
 				return nil
 			}
 			// A very short turn can already be back at an empty composer before
@@ -1777,8 +1828,18 @@ func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, basel
 			// when older Working lines in scrollback make hasCodexReadyPrompt
 			// conservative. Do not scan submitted history as though it were the
 			// still-active editor draft.
-			if transitioned && codexPaneHasEmptyComposer(captured) && !codexPaneShowsPromptDraft(captured, message) {
+			if !strict && transitioned && codexPaneHasEmptyComposer(captured) && !codexPaneShowsPromptDraft(captured, message) {
 				return nil
+			}
+			if wait.resubmit != nil && resubmits < maxResubmits && time.Since(lastSubmit) >= resubmitAfter &&
+				codexPaneHoldsUnsentDraft(captured, message) {
+				log.Printf("[codex] input still an unsent draft after %s; pressing Enter again (session=%s attempt=%d)",
+					time.Since(lastSubmit).Round(time.Millisecond), sessionName, resubmits+1)
+				if err := wait.resubmit(deadline); err != nil {
+					return err
+				}
+				resubmits++
+				lastSubmit = time.Now()
 			}
 		} else {
 			lastErr = err
@@ -1826,6 +1887,9 @@ func codexPaneShowsPromptDraft(captured, message string) bool {
 
 func codexPaneHasEmptyComposer(captured string) bool {
 	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexAdditionalSafetyChecksModal(captured) || hasCodexQueuedInput(captured) {
+		return false
+	}
+	if codexPaneIsResuming(captured) {
 		return false
 	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
@@ -1945,6 +2009,13 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			// lines are retained in tmux scrollback and are therefore only a
 			// compatibility fallback, not the source of truth for liveness.
 			if completionTracker.completed() {
+				// Esc in the TUI (or a client interrupt) ends the turn with
+				// turn_aborted and no task_complete. Waiting on would hang until
+				// the deadline, and parsing the pane would hand back whatever
+				// older text is still visible as if it were the answer.
+				if aborted, reason := completionTracker.aborted(); aborted {
+					return captured, fmt.Errorf("codex-cli turn failed: %s", codexTurnAbortedMessage(reason))
+				}
 				if completionObservedAt.IsZero() {
 					completionObservedAt = time.Now()
 					continue
@@ -3271,6 +3342,9 @@ func hasCodexPromptCandidate(captured string) bool {
 	if hasCodexTrustPrompt(captured) || hasCodexHookTrustReviewPrompt(captured) || hasCodexRateLimitReminderModal(captured) || hasCodexAdditionalSafetyChecksModal(captured) || hasCodexQueuedInput(captured) {
 		return false
 	}
+	if codexPaneIsResuming(captured) {
+		return false
+	}
 	lines := strings.Split(stripCodexANSI(captured), "\n")
 	seenNonEmpty := 0
 	for i := len(lines) - 1; i >= 0 && seenNonEmpty < 12; i-- {
@@ -3357,6 +3431,12 @@ var codexGhostPlaceholders = map[string]struct{}{
 	"check recently modified functions for compatibility": {},
 	"how many files have been modified?":                  {},
 	"will this algorithm scale well?":                     {},
+	// codex 0.153: a single fixed placeholder replaced the rotation. Not
+	// knowing it made the empty composer read as typed input, which hid the
+	// "Working (… esc to interrupt)" line above it: every submission then
+	// timed out as "input remained unconfirmed" while Codex was in fact
+	// already answering.
+	"ask codex to do anything": {},
 }
 
 // isCodexGhostPlaceholderText reports whether body (the text after the "›"

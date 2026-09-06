@@ -132,11 +132,13 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 			Phase            string         `json:"phase"`
 			Content          []contentBlock `json:"content"`
 			LastAgentMessage string         `json:"last_agent_message"`
+			TurnID           string         `json:"turn_id"`
 		} `json:"payload"`
 	}
 
 	var lastAssistantMessage string
 	var lastCompletedMessage string
+	var startedTurnID string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
@@ -150,6 +152,10 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 				continue
 			}
 		}
+		if e.Type == "event_msg" && e.Payload.Type == "task_started" && startedTurnID == "" {
+			startedTurnID = strings.TrimSpace(e.Payload.TurnID)
+			continue
+		}
 		if e.Type == "response_item" && e.Payload.Type == "message" && e.Payload.Role == "assistant" &&
 			(e.Payload.Phase == "final_answer" || e.Payload.Phase == "final") {
 			var parts []string
@@ -162,7 +168,8 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 				lastAssistantMessage = strings.TrimSpace(strings.Join(parts, "\n"))
 			}
 		}
-		if e.Type == "event_msg" && e.Payload.Type == "task_complete" && strings.TrimSpace(e.Payload.LastAgentMessage) != "" {
+		if e.Type == "event_msg" && e.Payload.Type == "task_complete" && strings.TrimSpace(e.Payload.LastAgentMessage) != "" &&
+			codexTaskCompleteBelongsToTurn(startedTurnID, e.Payload.TurnID) {
 			lastCompletedMessage = normalizeCodexFinalAssistantText(e.Payload.LastAgentMessage)
 		}
 	}
@@ -203,9 +210,12 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 			Type             string          `json:"type"`
 			LastAgentMessage string          `json:"last_agent_message"`
 			Error            json.RawMessage `json:"error"`
+			TurnID           string          `json:"turn_id"`
+			Reason           string          `json:"reason"`
 		} `json:"payload"`
 	}
 	var last string
+	var startedTurnID string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
@@ -213,7 +223,12 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 		if json.Unmarshal(scanner.Bytes(), &e) != nil {
 			continue
 		}
-		if e.Type != "event_msg" || e.Payload.Type != "task_complete" {
+		if e.Type != "event_msg" {
+			continue
+		}
+		switch e.Payload.Type {
+		case "task_complete", "task_started", "turn_aborted":
+		default:
 			continue
 		}
 		if !turnStart.IsZero() {
@@ -221,6 +236,19 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 			if parseErr != nil || timestamp.Before(turnStart) {
 				continue
 			}
+		}
+		if e.Payload.Type == "task_started" {
+			if startedTurnID == "" {
+				startedTurnID = strings.TrimSpace(e.Payload.TurnID)
+			}
+			continue
+		}
+		if !codexTaskCompleteBelongsToTurn(startedTurnID, e.Payload.TurnID) {
+			continue
+		}
+		if e.Payload.Type == "turn_aborted" {
+			last = codexTurnAbortedMessage(e.Payload.Reason)
+			continue
 		}
 		// A later successful completion in the same window supersedes an
 		// earlier failure (Codex retried and the answer arrived).
@@ -231,6 +259,17 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 		last = codexTurnErrorMessage(e.Payload.Error)
 	}
 	return last
+}
+
+// codexTurnAbortedMessage is the failure reported for a turn Codex recorded as
+// turn_aborted: nothing was answered, and the turn must not be mistaken for
+// one still running or for whatever older text the pane still shows.
+func codexTurnAbortedMessage(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || reason == "interrupted" {
+		return "the turn was interrupted before Codex answered"
+	}
+	return "the turn was aborted before Codex answered (" + reason + ")"
 }
 
 // codexTurnErrorMessage flattens task_complete's error field, which Codex
