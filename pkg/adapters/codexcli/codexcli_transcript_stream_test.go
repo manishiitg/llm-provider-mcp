@@ -290,6 +290,33 @@ func TestReadCodexTranscriptEventsMCPCallEndOnlySynthesizesStart(t *testing.T) {
 	}
 }
 
+func TestReadCodexTranscriptEventsItemCompletedUsesSemanticMCPTool(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnStart := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	appendLine(t, path, `{"timestamp":"`+ts+`","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"exec-123","server":"workbench","tool":"write_file","arguments":{"name":"result.txt","content":"ZEBRA"},"status":"completed","result":{"content":[{"type":"text","text":"WROTE result.txt"}],"isError":false},"duration":{"secs":1,"nanos":250000000}}}}`+"\n")
+
+	events, _, err := readCodexTranscriptEventsFromFile(path, 0, turnStart, map[string]time.Time{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want semantic start plus end: %+v", len(events), events)
+	}
+	if events[0].IsToolEnd || events[0].ToolName != "write_file" || events[0].ToolCallID != "exec-123" {
+		t.Fatalf("start = %+v", events[0])
+	}
+	if events[0].ToolArgs != `{"name":"result.txt","content":"ZEBRA"}` {
+		t.Fatalf("start args = %q", events[0].ToolArgs)
+	}
+	if !events[1].IsToolEnd || events[1].ToolCallID != "exec-123" || events[1].ToolResult != "WROTE result.txt" {
+		t.Fatalf("end = %+v", events[1])
+	}
+	if events[1].ToolDuration != 1250*time.Millisecond {
+		t.Fatalf("duration = %v, want 1.25s", events[1].ToolDuration)
+	}
+}
+
 // TestReadCodexTranscriptEventsNativeToolCallHasEndWithResult proves the same
 // fix for codex's native tools (response_item function_call/custom_tool_call):
 // the _output row used to be silently dropped entirely, so a tmux-transport

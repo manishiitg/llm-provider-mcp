@@ -26,9 +26,9 @@ func codexInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 
 // codexTranscriptEvent is one structured item recovered from the rollout during
 // a turn: assistant text (Text set), the start of a tool call (ToolName set),
-// or a tool's completion (IsToolEnd set — from mcp_tool_call_end for MCP
-// bridge calls, or function_call_output/custom_tool_call_output for codex's
-// native tools).
+// or a tool's completion (IsToolEnd set — from mcp_tool_call_end or
+// item_completed for MCP bridge calls, or function_call_output /
+// custom_tool_call_output for Codex's native tools).
 type codexTranscriptEvent struct {
 	Text       string
 	ToolName   string
@@ -40,11 +40,8 @@ type codexTranscriptEvent struct {
 	Key      string // dedup key for content (row timestamp); tools dedup by ToolCallID
 	// IsToolEnd distinguishes a completion row from a start row; both carry
 	// ToolCallID, so this is the only way to tell them apart once mapped onto
-	// the shared event shape. ToolResult is only populated for native tools —
-	// codex's own event stream never includes an MCP call's result text, not
-	// even in the structured transport (see codexcli_structured_adapter.go's
-	// item.completed handling for mcp_tool_call, verified live against
-	// codex-cli 0.145.0), so this is a real constraint, not a gap.
+	// the shared event shape. Codex 0.153+ item_completed rows include MCP
+	// result text; older mcp_tool_call_end rows do not.
 	IsToolEnd    bool
 	ToolResult   string
 	ToolDuration time.Duration
@@ -170,7 +167,8 @@ func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {
 // Parses the same rollout schema as readCodexTranscriptMessagesFile:
 // response_item → message(assistant output_text) / function_call /
 // custom_tool_call / function_call_output / custom_tool_call_output, plus
-// event_msg → mcp_tool_call_begin/_end for MCP bridge calls. pendingToolStarts
+// event_msg → mcp_tool_call_begin/_end or item_completed for MCP bridge calls.
+// pendingToolStarts
 // carries each call's start timestamp across calls (a call and its
 // completion row can land in different polls) so a matching completion can
 // compute a real duration instead of reporting zero; pass the same map back
@@ -206,6 +204,19 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		Tool      string          `json:"tool"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
+	type itemDuration struct {
+		Seconds int64 `json:"secs"`
+		Nanos   int64 `json:"nanos"`
+	}
+	type completedItem struct {
+		Type      string          `json:"type"`
+		ID        string          `json:"id"`
+		Server    string          `json:"server"`
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+		Result    json.RawMessage `json:"result"`
+		Duration  itemDuration    `json:"duration"`
+	}
 	type rolloutPayload struct {
 		Type string `json:"type"`
 		// response_item: message
@@ -240,6 +251,10 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		Message string `json:"message"`
 		// event_msg: mcp_tool_call_begin / _end
 		Invocation *invocation `json:"invocation"`
+		// Codex 0.153+ records the semantic MCP call as an item_completed
+		// event. The surrounding response_item is only the generic JavaScript
+		// `exec` transport, so this item is the authoritative tool identity.
+		Item *completedItem `json:"item"`
 	}
 	type ev struct {
 		Type      string         `json:"type"` // "event_msg" | "response_item"
@@ -309,6 +324,25 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 						ToolDuration: consumeCodexPendingStart(pendingToolStarts, e.Payload.CallID, rowTime),
 					})
 				}
+			case "item_completed":
+				if item := e.Payload.Item; item != nil && item.Type == "McpToolCall" && item.ID != "" && item.Tool != "" {
+					// This shape has no separate start row. Emit an adjacent
+					// start/end pair so downstream consumers see the real MCP
+					// tool rather than only Codex's generic outer `exec` call.
+					events = append(events,
+						codexTranscriptEvent{
+							ToolName:   item.Tool,
+							ToolCallID: item.ID,
+							ToolArgs:   compactCodexJSON(item.Arguments),
+						},
+						codexTranscriptEvent{
+							IsToolEnd:    true,
+							ToolCallID:   item.ID,
+							ToolResult:   codexMCPItemResultText(item.Result),
+							ToolDuration: time.Duration(item.Duration.Seconds)*time.Second + time.Duration(item.Duration.Nanos),
+						},
+					)
+				}
 			}
 		case "response_item":
 			// Also handle the response_item form (older/other Codex builds, and
@@ -354,6 +388,27 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		}
 	}
 	return events, nextOffset, nil
+}
+
+func codexMCPItemResultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return codexRolloutText(raw)
+	}
+	var texts []string
+	for _, block := range result.Content {
+		if strings.TrimSpace(block.Text) != "" {
+			texts = append(texts, block.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 // consumeCodexPendingStart looks up and removes callID's recorded start time,
