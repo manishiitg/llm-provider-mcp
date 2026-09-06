@@ -364,8 +364,11 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 // With nothing declared, both results are empty: a caller that never opted into
 // scoping keeps exactly the behavior it had.
 func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOptions) (export, unset []string) {
+	if key := codingAgentReleaseSessionKey(opts); key != "" {
+		export = append(export, "AGENTWORKS_CLI_SESSION_KEY="+key)
+	}
 	if !CodingAgentScopeDeclared(opts) {
-		return nil, nil
+		return export, nil
 	}
 	declared := CodingAgentSecretEnvironmentFromOptions(opts)
 
@@ -477,6 +480,16 @@ func CodingAgentScopeFingerprint(opts *CallOptions) string {
 // address a caller relies on the launcher to set reproduces that silent
 // failure, and an address grants nothing without the credentials above.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
+	if key := codingAgentReleaseSessionKey(opts); key != "" {
+		// Runtime version selection does not declare or broaden credential scope.
+		filtered := make([]string, 0, len(base)+1)
+		for _, entry := range base {
+			if !strings.HasPrefix(entry, "AGENTWORKS_CLI_SESSION_KEY=") {
+				filtered = append(filtered, entry)
+			}
+		}
+		base = append(filtered, "AGENTWORKS_CLI_SESSION_KEY="+key)
+	}
 	if !CodingAgentScopeDeclared(opts) {
 		return append([]string(nil), base...)
 	}

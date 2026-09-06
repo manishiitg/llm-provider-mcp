@@ -35,6 +35,10 @@ import (
 // $$-only check.
 func TestPiStructuredEnforcesMaxTurnDurationOnAWedgedProcess(t *testing.T) {
 	t.Setenv("PI_STRUCTURED_MAX_TURN_DURATION", "700ms")
+	// This test deliberately installs a fake pi on PATH. A developer machine
+	// may opt into AgentWorks' managed CLI shims globally; keep that integration
+	// setting from replacing the fixture executable.
+	t.Setenv("AGENTWORKS_MANAGED_CLI_BIN", "")
 
 	pidFile := filepath.Join(t.TempDir(), "pi.pid")
 	childPidFile := filepath.Join(t.TempDir(), "pi.child.pid")

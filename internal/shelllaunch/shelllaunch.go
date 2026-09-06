@@ -21,6 +21,7 @@ const (
 // caller's login shell. This lets GUI/DMG-launched servers pick up the same
 // shell initialization a user expects when launching the CLI from Terminal.
 func Command(args []string, workingDir string) string {
+	args = managedCLIArgs(args)
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		workingDir = mustGetwd()
@@ -55,6 +56,7 @@ func Command(args []string, workingDir string) string {
 }
 
 func DirectCommand(args []string, workingDir string) string {
+	args = managedCLIArgs(args)
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		workingDir = mustGetwd()
@@ -243,6 +245,7 @@ func parseUnsetKeys(keys []string) ([]string, error) {
 }
 
 func launchScript(args []string, workingDir string, entries []envEntry) string {
+	args = managedCLIArgs(args)
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("rm -f \"$0\"\n")
@@ -405,6 +408,7 @@ func fishQuoteList(values []string) string {
 }
 
 func launchScriptWithFinalEnv(args []string, workingDir string, entries []envEntry, unsetKeys []string, scrub *ScopeScrub) string {
+	args = managedCLIArgs(args)
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("rm -f \"$0\"\n")
@@ -608,4 +612,29 @@ func mustGetwd() string {
 		return "."
 	}
 	return wd
+}
+
+// Resolve owned CLI shims before entering a login shell: shell rc files may
+// reset PATH, and a pre-existing tmux server has an older environment. Explicit
+// absolute paths (including PI_BIN) always retain the caller's selection.
+func managedCLIArgs(args []string) []string {
+	if len(args) == 0 || filepath.Base(args[0]) != args[0] {
+		return args
+	}
+	switch args[0] {
+	case "codex", "claude", "pi", "cursor-agent", "agent":
+	default:
+		return args
+	}
+	root := os.Getenv("AGENTWORKS_MANAGED_CLI_BIN")
+	if !filepath.IsAbs(root) {
+		return args
+	}
+	path := filepath.Join(root, args[0])
+	if !isExecutableAbsolutePath(path) {
+		return args
+	}
+	copy := append([]string(nil), args...)
+	copy[0] = path
+	return copy
 }
