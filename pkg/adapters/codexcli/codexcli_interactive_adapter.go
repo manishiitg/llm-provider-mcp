@@ -1424,9 +1424,22 @@ func preTrustCodexWorkingDirAtHome(workingDir, home string) {
 		return
 	}
 	paths := []string{workingDir}
-	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil && resolved != workingDir {
-		paths = append(paths, resolved)
+	// Codex compares the configured project key with the physical cwd text.
+	// On a case-insensitive filesystem those can differ only in spelling (for
+	// example AgentWorks versus agentworks), and filepath.EvalSymlinks preserves
+	// the caller's spelling. Record the directory-entry spelling as well so a
+	// generated workspace does not fall through to Codex's interactive trust
+	// screen even though both paths identify the same directory.
+	if physical := codexFilesystemPathSpelling(workingDir); physical != workingDir {
+		paths = append(paths, physical)
 	}
+	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
+		paths = append(paths, resolved)
+		if physical := codexFilesystemPathSpelling(resolved); physical != resolved {
+			paths = append(paths, physical)
+		}
+	}
+	paths = uniqueCodexPaths(paths)
 	configDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return
@@ -1466,6 +1479,64 @@ func preTrustCodexWorkingDirAtHome(workingDir, home string) {
 
 	updated := existingStr + toAppend.String()
 	_ = os.WriteFile(configPath, []byte(updated), 0o600)
+}
+
+func codexFilesystemPathSpelling(path string) string {
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) {
+		return cleaned
+	}
+	if _, err := os.Stat(cleaned); err != nil {
+		return cleaned
+	}
+
+	volume := filepath.VolumeName(cleaned)
+	root := volume + string(os.PathSeparator)
+	remainder := strings.TrimPrefix(cleaned, root)
+	current := root
+	for _, component := range strings.Split(remainder, string(os.PathSeparator)) {
+		if component == "" {
+			continue
+		}
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return cleaned
+		}
+		actual := component
+		foundExact := false
+		for _, entry := range entries {
+			if entry.Name() == component {
+				foundExact = true
+				break
+			}
+		}
+		if !foundExact {
+			for _, entry := range entries {
+				if strings.EqualFold(entry.Name(), component) {
+					actual = entry.Name()
+					break
+				}
+			}
+		}
+		current = filepath.Join(current, actual)
+	}
+	return current
+}
+
+func uniqueCodexPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		unique = append(unique, path)
+	}
+	return unique
 }
 
 func codexInteractiveShellCommand(args []string, workingDir string) string {

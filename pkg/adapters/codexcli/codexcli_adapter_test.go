@@ -866,6 +866,32 @@ func TestWriteCodexSessionMCPProfileUsesIsolatedHome(t *testing.T) {
 	}
 }
 
+func TestPreTrustCodexWorkingDirUsesFilesystemSpelling(t *testing.T) {
+	base := t.TempDir()
+	actual := filepath.Join(base, "AgentWorks", "runtime")
+	if err := os.MkdirAll(actual, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	requested := filepath.Join(base, "agentworks", "runtime")
+	if _, err := os.Stat(requested); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	home := t.TempDir()
+	preTrustCodexWorkingDirAtHome(requested, home)
+
+	config, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{requested, actual} {
+		marker := fmt.Sprintf("[projects.%q]", path)
+		if !strings.Contains(string(config), marker) {
+			t.Fatalf("Codex trust config missing %s:\n%s", marker, config)
+		}
+	}
+}
+
 func TestStrictCodexMCPRuntimePathsAllowsOnlyExecutableAPIBridge(t *testing.T) {
 	bridge := filepath.Join(t.TempDir(), "mcpbridge")
 	if err := os.WriteFile(bridge, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
