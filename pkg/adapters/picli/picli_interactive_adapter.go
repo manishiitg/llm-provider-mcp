@@ -30,6 +30,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -419,7 +420,7 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 			// changed scope cannot take effect without replacing it.
 			scopeFingerprint := llmtypes.CodingAgentScopeFingerprint(opts)
 			sameLaunch := existing.scopeFingerprint == scopeFingerprint &&
-				existing.workingDir == workingDir &&
+				pathidentity.Same(existing.workingDir, workingDir) &&
 				existing.modelID == modelID &&
 				existing.provider == provider &&
 				existing.mcpFingerprint == mcpFingerprint &&
@@ -878,12 +879,7 @@ func acquirePiWorkspaceMCPConfigLease(workingDir, mcpConfig string, session *piI
 	}, nil
 }
 
-func cleanPiWorkingDirKey(workingDir string) string {
-	if abs, err := filepath.Abs(strings.TrimSpace(workingDir)); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(strings.TrimSpace(workingDir))
-}
+func cleanPiWorkingDirKey(workingDir string) string { return pathidentity.Key(workingDir) }
 
 func piMCPConfigFingerprint(config string) string {
 	var decoded map[string]interface{}

@@ -30,6 +30,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -1165,23 +1166,7 @@ func preTrustClaudeWorkingDir(workingDir string) {
 // token; sessions that rely on an interactive saved login retain Claude's
 // normal onboarding flow.
 func prepareClaudeUserConfig(workingDir, oauthToken string) {
-	paths := []string{workingDir}
-	if resolved, err := os.Readlink(workingDir); err == nil && resolved != workingDir {
-		paths = append(paths, resolved)
-	}
-	// EvalSymlinks resolves the full chain (handles /var -> /private/var on macOS).
-	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
-		seen := false
-		for _, p := range paths {
-			if p == resolved {
-				seen = true
-				break
-			}
-		}
-		if !seen {
-			paths = append(paths, resolved)
-		}
-	}
+	paths := pathidentity.Candidates(workingDir)
 
 	home, err := os.UserHomeDir()
 	if err != nil {

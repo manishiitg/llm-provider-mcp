@@ -820,14 +820,9 @@ func TestBuildCursorInteractiveLaunchUsesAutoForTestHarness(t *testing.T) {
 	}
 }
 
-// TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup locks in the
-// new aggressive-cleanup contract: mid-session the orchestrator's
-// override config is visible, and on cleanup the entire .cursor/ tree
-// is removed — including the operator's original cli.json. The trade-off
-// (operator content destroyed) is intentional: .cursor/ is treated as a
-// session-scoped artifact area so orphans from a prior crashed session
-// don't leak across runs.
-func TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup(t *testing.T) {
+// TestPrepareCursorProjectFilesRemovesGeneratedFilesOnCleanup verifies that
+// the default non-restoring projection removes its generated artifacts.
+func TestPrepareCursorProjectFilesRemovesGeneratedFilesOnCleanup(t *testing.T) {
 	workDir := t.TempDir()
 	cursorDir := filepath.Join(workDir, ".cursor")
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
@@ -857,7 +852,7 @@ func TestPrepareCursorProjectFilesNukesCursorTreeOnCleanup(t *testing.T) {
 	cleanup()
 
 	if _, err := os.Stat(cursorDir); !os.IsNotExist(err) {
-		t.Fatalf("cleanup must remove the full .cursor/ tree (including the operator's pre-existing cli.json); stat err = %v", err)
+		t.Fatalf("cleanup must remove the empty generated .cursor/ directory; stat err = %v", err)
 	}
 }
 

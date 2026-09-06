@@ -38,8 +38,9 @@ func cursorInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 // adapter, so this runs as a goroutine that is stopped (with a final flush)
 // before any close.
 type cursorTranscriptStreamState struct {
-	workingDir string
-	streamKey  string
+	workingDir      string
+	nativeSessionID string
+	streamKey       string
 	// baseline is set when this turn actually starts (after session
 	// acquisition). Cursor spawns warmup "OK" readiness turns during acquisition,
 	// each with its own store.db; only store.db modified at/after baseline belong
@@ -53,14 +54,15 @@ type cursorTranscriptStreamState struct {
 	toolStartedAt map[string]time.Time
 }
 
-func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID string) *cursorTranscriptStreamState {
+func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID, nativeSessionID string) *cursorTranscriptStreamState {
 	_ = turnStart // baseline is "now" (real-turn start), tighter than turnStart which predates warmups
 	s := &cursorTranscriptStreamState{
-		workingDir:    workingDir,
-		streamKey:     ownerSessionID + "\x00transcript-stream",
-		baseline:      time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
-		seenTool:      map[string]bool{},
-		toolStartedAt: map[string]time.Time{},
+		workingDir:      workingDir,
+		nativeSessionID: strings.TrimSpace(nativeSessionID),
+		streamKey:       ownerSessionID + "\x00transcript-stream",
+		baseline:        time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
+		seenTool:        map[string]bool{},
+		toolStartedAt:   map[string]time.Time{},
 	}
 	s.primeSeenBlobs()
 	return s
@@ -92,7 +94,15 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 // suppressing. The pane-extraction path has always had the equivalent guard
 // (historicalAssistantTexts); this brings the store.db stream path in line.
 func (s *cursorTranscriptStreamState) primeSeenBlobs() {
-	for _, path := range allCursorStoreDBs(s.workingDir) {
+	paths := allCursorStoreDBs(s.workingDir)
+	if s.nativeSessionID != "" {
+		home, _ := os.UserHomeDir()
+		paths = nil
+		if path := cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID); path != "" {
+			paths = []string{path}
+		}
+	}
+	for _, path := range paths {
 		// Discards the messages: the point is the side effect of recording their
 		// blob IDs against s.streamKey inside cursorReturnedBlobs.
 		_ = readCursorStoreDBMessages(path, s.streamKey)
@@ -202,10 +212,18 @@ func (s *cursorTranscriptStreamState) run(ctx context.Context, streamChan chan<-
 }
 
 func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<- llmtypes.StreamChunk) {
-	// Re-resolve the freshest post-baseline store.db every poll so we follow the
-	// real turn's store.db instead of a warmup one. Dedup by streamKey means a
-	// blob is emitted once even if the resolved path changes between polls.
-	path := freshestCursorStoreDBSince(s.workingDir, s.baseline)
+	// Resumed turns stay bound to their exact native ID. First turns still
+	// discover the freshest post-baseline store until a native ID is known.
+	var path string
+	if s.nativeSessionID != "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		path = cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID)
+	} else {
+		path = freshestCursorStoreDBSince(s.workingDir, s.baseline)
+	}
 	if path == "" {
 		return
 	}

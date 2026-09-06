@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 // Claude stores transcripts below a project directory derived from the CLI's
@@ -87,13 +89,7 @@ func claudeTranscriptWorkingDirCandidates(home, workingDir, sessionID string) []
 		return nil
 	}
 
-	dirs := []string{workingDir}
-	if abs, err := filepath.Abs(workingDir); err == nil {
-		dirs = append(dirs, abs)
-	}
-	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
-		dirs = append(dirs, resolved)
-	}
+	dirs := pathidentity.Candidates(workingDir)
 
 	seen := make(map[string]struct{}, len(dirs))
 	paths := make([]string, 0, len(dirs))

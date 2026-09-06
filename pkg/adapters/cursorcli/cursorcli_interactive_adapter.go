@@ -33,6 +33,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -277,6 +278,12 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 			Choices: []*llmtypes.ContentChoice{{Content: "", GenerationInfo: gi}},
 		}, nil
 	}
+	// Prime history before submitting: a fast response must not be classified
+	// as pre-existing history by the streaming deduplicator.
+	var streamState *cursorTranscriptStreamState
+	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled(opts) {
+		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID)
+	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
 	if err := sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
@@ -298,8 +305,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// stopped — with a final flush — before any close(opts.StreamChan) below.
 	var cursorStreamStop context.CancelFunc
 	var cursorStreamDone chan struct{}
-	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled(opts) {
-		streamState := newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID)
+	if streamState != nil {
 		var streamCtx context.Context
 		streamCtx, cursorStreamStop = context.WithCancel(callCtx)
 		cursorStreamDone = make(chan struct{})
@@ -679,22 +685,27 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	// in the workflow folder so Cursor treats this folder as the project root.
 	// workspace-docs is gitignored upstream, and cleanup removes the marker on
 	// session end.
-	gitMarkerCreated := false
 	if !cursorWorkingDirIsGitRoot(workingDir) {
-		if mkErr := initCursorWorkspaceGitMarker(workingDir); mkErr == nil {
-			gitMarkerCreated = true
-			addCleanup(func() {
-				if gitMarkerCreated {
-					_ = os.RemoveAll(filepath.Join(workingDir, ".git"))
-				}
-			})
+		if err := initCursorWorkspaceGitMarker(workingDir); err != nil {
+			return nil, err
 		}
+		gitDir := filepath.Join(workingDir, ".git")
+		created, _ := os.Lstat(gitDir)
+		addCleanup(func() {
+			// Do not remove a replacement installed by another owner.
+			current, err := os.Lstat(gitDir)
+			if err == nil && created != nil && os.SameFile(created, current) {
+				_ = os.RemoveAll(gitDir)
+			}
+		})
 	}
 
 	cursorDir := filepath.Join(workingDir, ".cursor")
+	addCleanup(func() { _ = os.Remove(cursorDir) }) // Only remove when empty, after per-file cleanup.
 	if strings.TrimSpace(systemPrompt) != "" {
 		rulesDir := filepath.Join(cursorDir, "rules")
 		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+			cleanupAll()
 			return nil, fmt.Errorf("failed to create Cursor rules dir: %w", err)
 		}
 		// Fixed filename — only one cursor chat owns a workflow folder
@@ -704,14 +715,12 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		// session overwrites it cleanly.
 		rulePath := filepath.Join(rulesDir, "mlp-system.mdc")
 		content := "---\nalwaysApply: true\n---\n\n" + systemPrompt
-		if err := os.WriteFile(rulePath, []byte(content), 0o600); err != nil {
-			return nil, fmt.Errorf("failed to write Cursor system rule: %w", err)
+		cleanup, err := writeCursorRestoredFile(rulePath, []byte(content), cursorRestoreProjectFilesFromOptions(opts))
+		if err != nil {
+			cleanupAll()
+			return nil, err
 		}
-		addCleanup(func() {
-			_ = os.Remove(rulePath)
-			_ = os.Remove(rulesDir)
-			_ = os.Remove(cursorDir)
-		})
+		addCleanup(cleanup)
 	}
 
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -728,7 +737,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				return nil, err
 			}
 			addCleanup(cleanup)
-		} else if !callerSuppliedCLI {
+		} else if !callerSuppliedCLI && !cursorRestoreProjectFilesFromOptions(opts) {
 			// Older adapter versions generated a deny-only .cursor/cli.json.
 			// Cursor Agent treats that file as a broad permission wall and can
 			// hide the api-bridge MCP tools from the actual chat session even
@@ -774,17 +783,6 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		}
 	}
 
-	// Final teardown: nuke the whole .cursor/ tree. Registered LAST so it
-	// fires FIRST in LIFO order, making the earlier per-file restore
-	// callbacks no-ops on already-gone files. The intent is a clean wipe
-	// between sessions — orphaned hook scripts, denial logs, or cli.json
-	// from a prior session whose cleanup callback didn't fire (orchestrator
-	// killed before close) would otherwise leak. Trade-off: an operator's
-	// own pre-existing content under .cursor/ is destroyed.
-	if strings.TrimSpace(workingDir) != "" {
-		addCleanup(func() { _ = os.RemoveAll(cursorDir) })
-	}
-
 	return cleanupAll, nil
 }
 
@@ -800,27 +798,13 @@ func cursorWorkingDirIsGitRoot(workingDir string) bool {
 	if root == "" {
 		return false
 	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		absRoot = root
-	}
-	absWorkingDir, err := filepath.Abs(workingDir)
-	if err != nil {
-		absWorkingDir = workingDir
-	}
-	if resolvedRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
-		absRoot = resolvedRoot
-	}
-	if resolvedWorkingDir, err := filepath.EvalSymlinks(absWorkingDir); err == nil {
-		absWorkingDir = resolvedWorkingDir
-	}
-	return absRoot == absWorkingDir
+	return pathidentity.Same(root, workingDir)
 }
 
 func initCursorWorkspaceGitMarker(workingDir string) error {
 	gitDir := filepath.Join(workingDir, ".git")
-	if err := os.RemoveAll(gitDir); err != nil {
-		return fmt.Errorf("remove stale cursor git marker: %w", err)
+	if err := os.Mkdir(gitDir, 0700); err != nil {
+		return fmt.Errorf("refuse to replace existing cursor git marker: %w", err)
 	}
 	if _, err := exec.LookPath("git"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -31,6 +31,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -1482,45 +1483,10 @@ func preTrustCodexWorkingDirAtHome(workingDir, home string) {
 }
 
 func codexFilesystemPathSpelling(path string) string {
-	cleaned := filepath.Clean(path)
-	if !filepath.IsAbs(cleaned) {
-		return cleaned
+	if spelling, err := pathidentity.Spelling(path); err == nil {
+		return spelling
 	}
-	if _, err := os.Stat(cleaned); err != nil {
-		return cleaned
-	}
-
-	volume := filepath.VolumeName(cleaned)
-	root := volume + string(os.PathSeparator)
-	remainder := strings.TrimPrefix(cleaned, root)
-	current := root
-	for _, component := range strings.Split(remainder, string(os.PathSeparator)) {
-		if component == "" {
-			continue
-		}
-		entries, err := os.ReadDir(current)
-		if err != nil {
-			return cleaned
-		}
-		actual := component
-		foundExact := false
-		for _, entry := range entries {
-			if entry.Name() == component {
-				foundExact = true
-				break
-			}
-		}
-		if !foundExact {
-			for _, entry := range entries {
-				if strings.EqualFold(entry.Name(), component) {
-					actual = entry.Name()
-					break
-				}
-			}
-		}
-		current = filepath.Join(current, actual)
-	}
-	return current
+	return filepath.Clean(path)
 }
 
 func uniqueCodexPaths(paths []string) []string {

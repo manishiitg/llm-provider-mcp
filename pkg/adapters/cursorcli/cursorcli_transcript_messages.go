@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 // cursorReturnedBlobs tracks the set of message blob IDs already
@@ -107,23 +108,17 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 	if err != nil {
 		return nil, ""
 	}
-	hash := workingDirHashForCursor(workingDir)
-	if hash == "" {
-		return nil, ""
-	}
-	chatsDir := filepath.Join(home, ".cursor", "chats", hash)
-	info, err := os.Stat(chatsDir)
-	if err != nil || !info.IsDir() {
-		return nil, ""
-	}
-
 	var pickedPath string
+	// A persisted native ID is authoritative. Never fall back to a different
+	// chat merely because this transcript is missing or has not flushed yet.
 	if id := strings.TrimSpace(knownNativeSessionID); id != "" {
-		candidate := filepath.Join(chatsDir, id, "store.db")
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			pickedPath = candidate
+		pickedPath = cursorStoreDBForNativeSession(home, workingDir, id)
+		if pickedPath == "" {
+			return nil, ""
 		}
 	}
+	chatsDir := filepath.Join(home, ".cursor", "chats", workingDirHashForCursor(workingDir))
+
 	if pickedPath == "" {
 		// Cursor may keep multiple agent dirs per workspace; pick the
 		// store.db whose mtime is freshest at-or-after turnStart-30s. Only
@@ -255,7 +250,7 @@ func workingDirHashForCursor(workingDir string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	path = filepath.Clean(path)
+	path = pathidentity.Key(path)
 	sum := md5.Sum([]byte(path)) //nolint:gosec
 	return hex.EncodeToString(sum[:])
 }
@@ -576,4 +571,27 @@ func varintUint64(buf []byte) (uint64, int) {
 		shift += 7
 	}
 	return 0, 0
+}
+
+// cursorStoreDBForNativeSession keeps legacy cwd hashes readable without ever
+// searching for a different session ID or a different workspace.
+func cursorStoreDBForNativeSession(home, workingDir, id string) string {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) {
+		return ""
+	}
+	paths := append([]string{pathidentity.Key(workingDir)}, pathidentity.Candidates(workingDir)...)
+	seen := map[string]bool{}
+	for _, path := range paths {
+		sum := md5.Sum([]byte(filepath.Clean(path))) //nolint:gosec
+		hash := hex.EncodeToString(sum[:])
+		if seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		candidate := filepath.Join(home, ".cursor", "chats", hash, id, "store.db")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }

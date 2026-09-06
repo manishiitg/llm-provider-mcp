@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 // claudeProjectFileRestores is a process-wide registry of byte-restore
@@ -110,19 +112,7 @@ func preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON string) {
 		}
 	}
 
-	paths := []string{workingDir}
-	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
-		seen := false
-		for _, p := range paths {
-			if p == resolved {
-				seen = true
-				break
-			}
-		}
-		if !seen {
-			paths = append(paths, resolved)
-		}
-	}
+	paths := pathidentity.Candidates(workingDir)
 
 	home, err := os.UserHomeDir()
 	if err != nil {

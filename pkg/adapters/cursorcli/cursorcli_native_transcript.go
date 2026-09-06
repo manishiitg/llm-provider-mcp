@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,11 +48,10 @@ func ReadNativeTranscript(workingDir, nativeSessionID string) (transcript Native
 	if err != nil {
 		return NativeTranscript{}, false, err
 	}
-	hash := workingDirHashForCursor(workingDir)
-	if hash == "" {
+	dbPath := cursorStoreDBForNativeSession(home, workingDir, nativeSessionID)
+	if dbPath == "" {
 		return NativeTranscript{}, false, nil
 	}
-	dbPath := filepath.Join(home, ".cursor", "chats", hash, nativeSessionID, "store.db")
 	info, err := os.Stat(dbPath)
 	if err != nil || info.IsDir() {
 		return NativeTranscript{}, false, nil

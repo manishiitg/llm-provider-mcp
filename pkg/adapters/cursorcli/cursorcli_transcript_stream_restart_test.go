@@ -46,7 +46,7 @@ func TestCursorTranscriptStreamDoesNotReplayHistoryOnFreshProcess(t *testing.T) 
 	const ownerSessionID = "restart-regression-owner"
 	resetCursorReturnedBlobs(ownerSessionID + "\x00transcript-stream")
 
-	state := newCursorTranscriptStreamState(time.Now().Add(-time.Hour), workingDir, ownerSessionID)
+	state := newCursorTranscriptStreamState(time.Now().Add(-time.Hour), workingDir, ownerSessionID, "")
 
 	got := collectCursorStreamChunks(t, state)
 
@@ -76,7 +76,7 @@ func TestCursorTranscriptStreamEmitsGenuinelyNewText(t *testing.T) {
 	resetCursorReturnedBlobs(ownerSessionID + "\x00transcript-stream")
 
 	// Prime against history only...
-	state := newCursorTranscriptStreamState(time.Now().Add(-time.Hour), workingDir, ownerSessionID)
+	state := newCursorTranscriptStreamState(time.Now().Add(-time.Hour), workingDir, ownerSessionID, "")
 
 	// ...then the turn produces new output, exactly as cursor would commit it.
 	appendCursorHistory(t, workingDir, historical, fresh)
