@@ -175,6 +175,107 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 	return "", ""
 }
 
+// readCodexRolloutTurnError returns the error Codex recorded on this turn's
+// task_complete event, or "" when the turn ended normally. Codex reports a
+// failed turn (an unsupported model for the account, a 4xx from the API, a
+// refused request) exactly here: task_complete with last_agent_message null
+// and an error object — and then shows the ready prompt again, so every other
+// completion signal looks like success. Without reading it the adapter
+// returned an empty reply that the runtime accepted as a launch-only
+// response, and the family saw "No content generated" instead of the reason.
+//
+// The message is often a JSON-serialized API error; the nested
+// error.message is returned when it parses, the raw text otherwise.
+func readCodexRolloutTurnError(path string, turnStart time.Time) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	type event struct {
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Payload   struct {
+			Type             string          `json:"type"`
+			LastAgentMessage string          `json:"last_agent_message"`
+			Error            json.RawMessage `json:"error"`
+		} `json:"payload"`
+	}
+	var last string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	for scanner.Scan() {
+		var e event
+		if json.Unmarshal(scanner.Bytes(), &e) != nil {
+			continue
+		}
+		if e.Type != "event_msg" || e.Payload.Type != "task_complete" {
+			continue
+		}
+		if !turnStart.IsZero() {
+			timestamp, parseErr := time.Parse(time.RFC3339Nano, e.Timestamp)
+			if parseErr != nil || timestamp.Before(turnStart) {
+				continue
+			}
+		}
+		// A later successful completion in the same window supersedes an
+		// earlier failure (Codex retried and the answer arrived).
+		if strings.TrimSpace(e.Payload.LastAgentMessage) != "" {
+			last = ""
+			continue
+		}
+		last = codexTurnErrorMessage(e.Payload.Error)
+	}
+	return last
+}
+
+// codexTurnErrorMessage flattens task_complete's error field, which Codex
+// writes as {"message": "..."} (the message itself frequently being a
+// JSON-serialized API error), or occasionally as a bare string.
+func codexTurnErrorMessage(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return unwrapCodexAPIErrorMessage(asString)
+	}
+	var asObject struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &asObject) == nil && strings.TrimSpace(asObject.Message) != "" {
+		return unwrapCodexAPIErrorMessage(asObject.Message)
+	}
+	return trimmed
+}
+
+func unwrapCodexAPIErrorMessage(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if !strings.HasPrefix(trimmed, "{") {
+		return trimmed
+	}
+	var api struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(trimmed), &api) == nil {
+		if m := strings.TrimSpace(api.Error.Message); m != "" {
+			return m
+		}
+		if m := strings.TrimSpace(api.Message); m != "" {
+			return m
+		}
+	}
+	return trimmed
+}
+
 // normalizeCodexFinalAssistantText handles the two task_complete payload
 // shapes emitted by Codex releases: plain text and a JSON-serialized content
 // block array. The latter otherwise leaks transport JSON into workflow results
