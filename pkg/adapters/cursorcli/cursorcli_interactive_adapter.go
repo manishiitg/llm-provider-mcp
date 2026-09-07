@@ -242,6 +242,27 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// can rebind to this tmux session on subsequent turns instead of
 	// spawning yet another one.
 	if launchOnly {
+		// A resumed Cursor process briefly paints its generic welcome composer
+		// before it has loaded the native conversation. The generic startup wait
+		// deliberately accepts that banner after a grace period for brand-new
+		// sessions, but returning it as a restored session is unsafe: an immediate
+		// follow-up can be pasted into the transient composer and discarded. For a
+		// real resume, wait until the welcome banner has been replaced by the
+		// restored conversation's stable composer.
+		if resumeID != "" {
+			if err := waitForCursorRestoredPrompt(callCtx, session.tmuxSessionName, opts.StreamChan, cursorInteractiveStreamTmuxScreenEnabled(opts)); err != nil {
+				markCursorInteractiveSessionFailedLocked(session, err, c.logger)
+				releaseSession = false
+				failedSession := session
+				session.mu.Unlock()
+				session = nil
+				cleanupFailedCursorInteractiveSession(failedSession)
+				if opts.StreamChan != nil {
+					close(opts.StreamChan)
+				}
+				return nil, err
+			}
+		}
 		tmuxinput.MarkReady(session.tmuxSessionName)
 		var lastSnapshot string
 		streamCursorTerminalSnapshot(callCtx, session.tmuxSessionName, opts.StreamChan, &lastSnapshot)
@@ -1332,6 +1353,17 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 }
 
 func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, true)
+}
+
+// waitForCursorRestoredPrompt is stricter than the generic cold-start wait.
+// A native --resume must reach the restored conversation composer; the generic
+// welcome banner is only an intermediate state and cannot safely accept input.
+func waitForCursorRestoredPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, false)
+}
+
+func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, allowBootBanner bool) error {
 	deadline, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
 	defer cancel()
 
@@ -1407,6 +1439,10 @@ func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan cha
 			cleaned := strings.ToLower(stripCursorANSI(visible))
 			if cursorBootBannerAcceptableAfterGrace(cleaned) {
 				consecutiveReadyTicks = 0
+				if !allowBootBanner {
+					bootBannerReadySince = time.Time{}
+					continue
+				}
 				if bootBannerReadySince.IsZero() {
 					bootBannerReadySince = time.Now()
 					continue
