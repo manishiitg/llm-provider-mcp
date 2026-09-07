@@ -1585,8 +1585,18 @@ func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message str
 	if err := writeDraft(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
-	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 5*time.Second) {
+	draftVisible := waitForCursorInputDraftVisible(ctx, sessionName, message, 5*time.Second)
+	if !draftVisible && transport != "atomic-paste" {
 		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit (transport=%s runes=%d lines=%d)", transport, runeCount, lineCount)
+	}
+	if !draftVisible {
+		// Deep restored panes can retain enough scrollback that the active-editor
+		// scraper cannot identify the pasted draft, even though tmux accepted the
+		// atomic buffer and Cursor displays it. Atomic paste is a single,
+		// acknowledged tmux operation, so a missing visual receipt is not a reason
+		// to suppress Enter. Literal multi-command typing keeps the strict guard.
+		log.Printf("[LATENCY_DEBUG] cursor atomic paste has no visual draft receipt; submitting acknowledged buffer | session=%s runes=%d lines=%d",
+			sessionName, runeCount, lineCount)
 	}
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)

@@ -119,6 +119,43 @@ func TestSendCursorInputToTmuxTypedPathSkipsPasteBuffer(t *testing.T) {
 	}
 }
 
+// TestCursorAtomicPasteSubmitsWithoutVisualReceipt covers restored panes whose
+// scrollback prevents the active-editor scraper from seeing an acknowledged
+// atomic paste. The tmux operation is still authoritative and Enter must not be
+// suppressed merely because capture-pane cannot echo the draft.
+func TestCursorAtomicPasteSubmitsWithoutVisualReceipt(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available on this host")
+	}
+
+	logFile := filepath.Join(t.TempDir(), "atomic-enter.log")
+	sessionName := "mlp-cursor-test-atomic-hidden-" + cursorRandomHex(6)
+	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
+
+	loop := fmt.Sprintf(`stty -echo; while IFS= read -r -p '→ ' line; do printf '%%s\n' "$line" >> %s; done`, logFile)
+	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", loop).CombinedOutput(); err != nil {
+		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
+	}
+
+	message := "check"
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := typeCursorInputToTmuxWithMode(ctx, sessionName, message, true); err != nil {
+		t.Fatalf("atomic submit without visible draft: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		content, _ := os.ReadFile(logFile)
+		if strings.Contains(string(content), message) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	content, _ := os.ReadFile(logFile)
+	t.Fatalf("expected acknowledged atomic paste to be submitted; log=%q", string(content))
+}
+
 // TestWriteCursorVisibleDraftUsesCtrlJForMultilineInput exercises the transport
 // used for multiline Cursor drafts. In Cursor's TUI, Ctrl+J inserts a newline
 // without submitting; a shell read loop treats it as a record delimiter, which
