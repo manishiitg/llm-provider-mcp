@@ -26,27 +26,114 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Keep live-test tmux sessions out of the user's normal tmux server. The path is
+# deliberately stable: if a previous P0 run was killed too abruptly for its
+# EXIT trap to run, the next invocation can recover that abandoned server
+# before starting. A small lock prevents two P0 suites from sharing the server.
+P0_RUNTIME_ROOT="${TMPDIR:-/tmp}/multi-llm-provider-agentic-p0"
+P0_LOCK_DIR="${P0_RUNTIME_ROOT}.lock"
+P0_TMUX_ROOT="${P0_RUNTIME_ROOT}/tmux"
+P0_TEST_PID=""
+
+acquire_p0_runtime() {
+  if ! mkdir "$P0_LOCK_DIR" 2>/dev/null; then
+    prior_pid="$(cat "$P0_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ "$prior_pid" =~ ^[0-9]+$ ]] && kill -0 "$prior_pid" 2>/dev/null; then
+      echo ">> another agentic P0 suite is already running (pid $prior_pid)" >&2
+      exit 1
+    fi
+    rm -rf "$P0_LOCK_DIR"
+    mkdir "$P0_LOCK_DIR"
+  fi
+  printf '%s\n' "$$" > "$P0_LOCK_DIR/pid"
+
+  mkdir -p "$P0_TMUX_ROOT"
+  chmod 700 "$P0_TMUX_ROOT"
+
+  # This can only address the dedicated P0 server because TMUX_TMPDIR is scoped
+  # to P0_TMUX_ROOT. It cannot disturb AgentWorks or the user's tmux sessions.
+  TMUX_TMPDIR="$P0_TMUX_ROOT" tmux kill-server 2>/dev/null || true
+  export TMUX_TMPDIR="$P0_TMUX_ROOT"
+}
+
+collect_process_tree() {
+  local pid="$1" child
+  P0_PROCESS_TREE="$P0_PROCESS_TREE $pid"
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    collect_process_tree "$child"
+  done
+}
+
+cleanup_p0_runtime() {
+  local original_status=$? pane_pid pid cleanup_failed=0
+  trap - EXIT
+
+  # tmux kill-server alone may leave MCP grandchildren behind. Record each pane
+  # process tree while the relationship still exists, then terminate it before
+  # removing the dedicated server.
+  P0_PROCESS_TREE=""
+  if [[ "$P0_TEST_PID" =~ ^[0-9]+$ ]]; then
+    collect_process_tree "$P0_TEST_PID"
+  fi
+  while IFS= read -r pane_pid; do
+    [[ "$pane_pid" =~ ^[0-9]+$ ]] && collect_process_tree "$pane_pid"
+  done < <(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null || true)
+
+  for pid in $P0_PROCESS_TREE; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 0.5
+  for pid in $P0_PROCESS_TREE; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+
+  if tmux list-sessions >/dev/null 2>&1 && ! tmux kill-server; then
+    echo ">> warning: failed to stop the isolated agentic P0 tmux server" >&2
+    cleanup_failed=1
+  fi
+  rm -rf "$P0_RUNTIME_ROOT" "$P0_LOCK_DIR"
+
+  if (( original_status == 0 && cleanup_failed != 0 )); then
+    original_status=1
+  fi
+  exit "$original_status"
+}
+
+acquire_p0_runtime
+trap cleanup_p0_runtime EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Every coding-agent adapter whose contract sets SupportsStructuredStreaming must
 # have its live streaming P0 tests captured + agent-approved here. Add a provider
 # to STREAM_PKGS the moment it streams structured chunks + has a streaming E2E
 # (and its contract flag flips on) — see coding_agent_certification.go
 # CertStructuredStreaming. claude/codex/cursor stream by tailing the CLI
 # transcript; pi streams via its injected marker hook.
-STREAM_PKGS="./pkg/adapters/claudecode/ ./pkg/adapters/codexcli/ ./pkg/adapters/cursorcli/ ./pkg/adapters/picli/"
-PKGS="$STREAM_PKGS"
+STREAM_PKGS=(
+  ./pkg/adapters/claudecode/
+  ./pkg/adapters/codexcli/
+  ./pkg/adapters/cursorcli/
+  ./pkg/adapters/picli/
+)
+PKGS=("${STREAM_PKGS[@]}")
 # Matches every provider's streaming tests and structured two-turn resume proof.
 LIVE='(Transcript|Structured)Streaming|StructuredTwoTurnResume'
 
 capture() {
   echo ">> capture: running live agentic P0 tests; resetting reviews to pending ..."
-  MLP_AGENT_REVIEW_CAPTURE=1 go test $PKGS -run "$LIVE" -coding-cli-p0-live -count=1 -timeout 1200s
+  MLP_AGENT_REVIEW_CAPTURE=1 go test "${PKGS[@]}" -run "$LIVE" -coding-cli-p0-live -count=1 -timeout 1200s &
+  P0_TEST_PID=$!
+  wait "$P0_TEST_PID"
+  P0_TEST_PID=""
   echo ">> capture done. Records under pkg/adapters/*/testdata/agent-reviews/ now have verdict=\"\" (pending)."
   echo ">> An agent must review each record and set agent_review.verdict=\"good\", then run: $0 verify"
 }
 
 verify() {
   echo ">> verify: enforcing agent sign-off (cheap gate, no live CLI) ..."
-  go test $PKGS -run TestAgentReviewsApproved -count=1
+  go test "${PKGS[@]}" -run TestAgentReviewsApproved -count=1
   echo ">> verify passed: every recorded output is agent-approved for its current fingerprint."
 }
 
