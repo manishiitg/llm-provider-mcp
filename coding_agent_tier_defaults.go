@@ -47,8 +47,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
 		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
-		builder := codingAgentHighReasoningRef(providerID, "gpt-5.6-sol")
-		pulse := codingAgentReasoningRef(providerID, "gpt-6-astra", "medium")
+		builder := codingAgentReasoningRef(providerID, "gpt-6-astra", "medium")
 		medium := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "high")
 		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "medium")
 		return &CodingAgentDefaultTierModels{
@@ -56,19 +55,18 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			High:    high,
 			Medium:  medium,
 			Low:     low,
-			Pulse:   pulse,
+			Pulse:   builder,
 		}, true
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		pulse := codingAgentReasoningRef(providerID, "claude-fable-5-1", "medium")
-		builder := high
+		builder := codingAgentReasoningRef(providerID, "claude-fable-5-1", "medium")
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
 			High:    high,
 			Medium:  medium,
 			Low:     codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
-			Pulse:   pulse,
+			Pulse:   builder,
 		}, true
 	case ProviderCursorCLI:
 		// All tiers on Cursor's auto routing (product decision 2026-09-03,
