@@ -122,14 +122,16 @@ func allCursorStoreDBs(workingDir string) []string {
 		return nil
 	}
 	var out []string
-	_ = filepath.WalkDir(filepath.Join(home, ".cursor", "chats", hash),
-		func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
-				return nil
-			}
-			out = append(out, p)
+	walkStore := func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
 			return nil
-		})
+		}
+		out = append(out, p)
+		return nil
+	}
+	for _, root := range cursorChatsRoots(home) {
+		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
+	}
 	return out
 }
 
@@ -146,10 +148,9 @@ func freshestCursorStoreDBSince(workingDir string, since time.Time) string {
 	if hash == "" {
 		return ""
 	}
-	chatsDir := filepath.Join(home, ".cursor", "chats", hash)
 	var best string
 	var bestMod time.Time
-	_ = filepath.WalkDir(chatsDir, func(p string, d fs.DirEntry, err error) error {
+	walkStore := func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
 			return nil
 		}
@@ -172,7 +173,10 @@ func freshestCursorStoreDBSince(workingDir string, since time.Time) string {
 			best, bestMod = p, modTime
 		}
 		return nil
-	})
+	}
+	for _, root := range cursorChatsRoots(home) {
+		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
+	}
 	return best
 }
 

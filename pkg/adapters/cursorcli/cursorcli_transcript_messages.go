@@ -117,8 +117,6 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 			return nil, ""
 		}
 	}
-	chatsDir := filepath.Join(home, ".cursor", "chats", workingDirHashForCursor(workingDir))
-
 	if pickedPath == "" {
 		// Cursor may keep multiple agent dirs per workspace; pick the
 		// store.db whose mtime is freshest at-or-after turnStart-30s. Only
@@ -130,7 +128,7 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 			mod  time.Time
 		}
 		var cands []cand
-		_ = filepath.WalkDir(chatsDir, func(p string, d fs.DirEntry, err error) error {
+		walkCandidate := func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
@@ -150,7 +148,10 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 			}
 			cands = append(cands, cand{path: p, mod: modTime})
 			return nil
-		})
+		}
+		for _, root := range cursorChatsRoots(home) {
+			_ = filepath.WalkDir(filepath.Join(root, workingDirHashForCursor(workingDir)), walkCandidate)
+		}
 		if len(cands) == 0 {
 			return nil, ""
 		}
@@ -588,9 +589,11 @@ func cursorStoreDBForNativeSession(home, workingDir, id string) string {
 			continue
 		}
 		seen[hash] = true
-		candidate := filepath.Join(home, ".cursor", "chats", hash, id, "store.db")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
+		for _, root := range cursorChatsRoots(home) {
+			candidate := filepath.Join(root, hash, id, "store.db")
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
 		}
 	}
 	return ""
