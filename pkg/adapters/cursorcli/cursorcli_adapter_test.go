@@ -695,6 +695,21 @@ func TestCursorReadyPromptRejectsComposer25BootBanner(t *testing.T) {
 	}
 }
 
+func TestCursorReadyPromptRejectsBootBannerWithRotatingTip(t *testing.T) {
+	pane := `  Cursor Agent
+  v2026.09.02-c22c1a3
+  Tip: Use /plan to iterate on an implementation plan before code changes.
+
+  → Plan, search, build anything
+
+  Auto
+  /data/video-studio/docs/Workflow/automationtesting`
+
+	if hasCursorReadyPrompt(pane) {
+		t.Fatal("Cursor boot banner with a non-/skills tip must NOT be treated as ready")
+	}
+}
+
 // TestCursorReadyPromptAcceptsPostBannerComposerPane verifies the
 // banner guard does not regress the warm-session readiness signal.
 // Once cursor has scrolled past the boot banner (no more "Cursor
@@ -1369,7 +1384,7 @@ func TestHasCursorReadyPromptStates(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "initial ready state with arrow",
+			name: "initial boot banner with plan tip is not ready",
 			pane: `  Cursor Agent
   v2026.05.16-0338208
   Use /plan to iterate.
@@ -1380,7 +1395,7 @@ func TestHasCursorReadyPromptStates(t *testing.T) {
 
   Composer 2 Fast
   ~/workspace · main`,
-			want: true,
+			want: false,
 		},
 		{
 			name: "mid-generation with composing spinner",

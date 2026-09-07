@@ -2626,20 +2626,13 @@ func hasCursorQueuedFollowupsSendPrompt(captured string) bool {
 // the same "→" + "plan, search, build anything" tokens our ready
 // marker keys off, so without this guard `hasCursorReadyPrompt` would
 // fire prematurely and the first user prompt would land on a dead
-// input field. The banner is distinguished by the persistent header
-// trio "cursor agent" + version line + "/skills" tagline, which only
-// appear before any conversation has scrolled them off.
+// input field. Cursor rotates the tip text between launches (/skills,
+// /plan, and others), so the stable signature is the product header plus
+// the welcome placeholder; readiness must never depend on a particular tip.
 func hasCursorBootBanner(cleaned string) bool {
 	if !strings.Contains(cleaned, "cursor agent") {
 		return false
 	}
-	if !strings.Contains(cleaned, "use /skills") {
-		return false
-	}
-	// Composer 2.5 ships its version line right under the banner.
-	// Either the version line OR the "plan, search, build anything"
-	// placeholder confirms we're still on the welcome screen rather
-	// than a post-conversation "Add a follow-up" pane.
 	return strings.Contains(cleaned, "plan, search, build anything")
 }
 
