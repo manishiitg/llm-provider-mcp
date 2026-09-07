@@ -178,16 +178,18 @@ func TestCursorInputNeedsAtomicPaste(t *testing.T) {
 	tests := []struct {
 		name    string
 		message string
+		prefer  bool
 		want    bool
 	}{
 		{name: "short single line stays visible", message: "hello", want: false},
+		{name: "primary chat prompt is atomic", message: "hello", prefer: true, want: true},
 		{name: "small multiline stays visible", message: "one\ntwo\nthree", want: false},
 		{name: "long payload is atomic", message: strings.Repeat("x", cursorAtomicPasteMinRunes), want: true},
 		{name: "many lines are atomic", message: strings.Repeat("line\n", cursorAtomicPasteMinLines-1), want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cursorInputNeedsAtomicPaste(tt.message); got != tt.want {
+			if got := cursorInputNeedsAtomicPaste(tt.message, tt.prefer); got != tt.want {
 				t.Fatalf("cursorInputNeedsAtomicPaste() = %v, want %v", got, tt.want)
 			}
 		})

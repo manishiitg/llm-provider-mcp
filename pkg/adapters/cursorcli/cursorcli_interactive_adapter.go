@@ -1475,7 +1475,7 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 			}
 			return fmt.Errorf("Cursor was not ready to accept follow-up input: %w", err)
 		}
-		err := sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+		err := sendCursorInputToTmuxUnserialized(ctx, sessionName, message, initialPrompt)
 		if initialPrompt && isCursorMissingDraftError(err) {
 			// Cursor can paint its cold-start composer just before it begins
 			// accepting keystrokes. The first visible-draft check correctly
@@ -1486,7 +1486,7 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 			if readyErr := waitForCursorPrompt(ctx, sessionName, nil, false); readyErr != nil {
 				return fmt.Errorf("Cursor initial prompt was not ready after dropped input: %w", readyErr)
 			}
-			err = sendCursorInputToTmuxUnserialized(ctx, sessionName, message)
+			err = sendCursorInputToTmuxUnserialized(ctx, sessionName, message, initialPrompt)
 		}
 		return err
 	})
@@ -1497,7 +1497,7 @@ func isCursorMissingDraftError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "typed Cursor input did not appear in the prompt before submit")
 }
 
-func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string) error {
+func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string, preferAtomic bool) error {
 	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
 	// matters: how long delivery + submit-confirmation actually took, broken
 	// out from the model's own thinking time.
@@ -1506,7 +1506,7 @@ func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
 	}
-	err := typeCursorInputToTmux(ctx, sessionName, message)
+	err := typeCursorInputToTmuxWithMode(ctx, sessionName, message, preferAtomic)
 	log.Printf("[LATENCY_DEBUG] cursor tmux delivery | session=%s confirmed=%dms err=%v",
 		sessionName, time.Since(start).Milliseconds(), err)
 	return err
@@ -1517,9 +1517,13 @@ func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message
 // after the editor acknowledges the complete draft (literal tail or Cursor's
 // pasted-text marker).
 func typeCursorInputToTmux(ctx context.Context, sessionName, message string) error {
+	return typeCursorInputToTmuxWithMode(ctx, sessionName, message, false)
+}
+
+func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message string, preferAtomic bool) error {
 	transport := "literal"
 	writeDraft := writeCursorVisibleDraftToTmux
-	if cursorInputNeedsAtomicPaste(message) {
+	if cursorInputNeedsAtomicPaste(message, preferAtomic) {
 		transport = "atomic-paste"
 		writeDraft = pasteCursorDraftToTmux
 	}
@@ -1539,8 +1543,8 @@ func typeCursorInputToTmux(ctx context.Context, sessionName, message string) err
 	return ensureCursorInputSubmitted(ctx, sessionName, message)
 }
 
-func cursorInputNeedsAtomicPaste(message string) bool {
-	return utf8.RuneCountInString(message) >= cursorAtomicPasteMinRunes ||
+func cursorInputNeedsAtomicPaste(message string, preferAtomic bool) bool {
+	return preferAtomic || utf8.RuneCountInString(message) >= cursorAtomicPasteMinRunes ||
 		strings.Count(message, "\n")+1 >= cursorAtomicPasteMinLines
 }
 

@@ -117,6 +117,65 @@ func TestCursorCLIRealCrossRestartResume(t *testing.T) {
 	}
 }
 
+// TestCursorCLIRealLaunchOnlyResumeThenImmediateShortPromptP0Contract mirrors
+// browser chat restoration: launch a fresh tmux pane with --resume but no
+// message, return that pane to the UI, then immediately send a tiny user turn
+// through the reused pane. Cursor can paint the restored composer before it
+// accepts simulated literal keys, so primary turns must use atomic paste even
+// when the message itself is short.
+func TestCursorCLIRealLaunchOnlyResumeThenImmediateShortPromptP0Contract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	workingDir := t.TempDir()
+	sentinel := "LAUNCH_ONLY_RESUME_" + cursorRandomHex(5)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	seed, err := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{{
+		Role:  llmtypes.ChatMessageTypeHuman,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Remember this exact token: " + sentinel + ". Reply only ACK."}},
+	}}, WithInteractiveSessionID("cursor-launch-only-seed-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(workingDir))
+	if err != nil {
+		t.Fatalf("seed turn: %v", err)
+	}
+	additional := seed.Choices[0].GenerationInfo.Additional
+	nativeSessionID, _ := additional["cursor_session_id"].(string)
+	if strings.TrimSpace(nativeSessionID) == "" {
+		t.Fatalf("seed turn did not publish cursor_session_id; additional=%v", additional)
+	}
+	if err := CleanupCursorCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("remove seed tmux session: %v", err)
+	}
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-launch-only-restored-" + cursorRandomHex(4)
+	launch, err := adapter.GenerateContent(ctx, nil,
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workingDir),
+		WithResumeSessionID(nativeSessionID),
+		llmtypes.WithCodingProviderLaunchOnly(),
+	)
+	if err != nil {
+		t.Fatalf("launch-only resume: %v", err)
+	}
+	if launch == nil || len(launch.Choices) == 0 || launch.Choices[0].Content != "" {
+		t.Fatalf("launch-only response = %#v, want empty content plus session handle", launch)
+	}
+
+	response, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{
+		Role:  llmtypes.ChatMessageTypeHuman,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "check"}},
+	}}, WithInteractiveSessionID(ownerSessionID), WithPersistentInteractiveSession(true), WithWorkingDir(workingDir), WithResumeSessionID(nativeSessionID))
+	if err != nil {
+		t.Fatalf("immediate short turn after launch-only resume: %v", err)
+	}
+	if strings.TrimSpace(response.Choices[0].Content) == "" {
+		t.Fatal("immediate short turn returned no final answer")
+	}
+}
+
 // TestCursorCLIRealCrossRestartResumeWithMCPBridge is the combined contract
 // missing from the separate resume-only and MCP-only E2Es: the real tmux
 // startup handshake should approve MCP from Cursor's own pane, the first turn

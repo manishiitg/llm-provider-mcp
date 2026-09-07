@@ -120,7 +120,7 @@ func TestCursorCLIRealInteractiveLargeMultilinePromptP0Contract(t *testing.T) {
 	}
 	lines[len(lines)-1] = "Reply exactly: " + token
 	prompt := strings.Join(lines, "\n")
-	if !cursorInputNeedsAtomicPaste(prompt) || len(prompt) < 6900 {
+	if !cursorInputNeedsAtomicPaste(prompt, false) || len(prompt) < 6900 {
 		t.Fatalf("P0 fixture no longer exercises large atomic input: bytes=%d lines=%d", len(prompt), len(lines))
 	}
 
