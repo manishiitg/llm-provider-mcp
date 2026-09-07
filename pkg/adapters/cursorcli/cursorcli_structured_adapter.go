@@ -259,16 +259,6 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		return nil, fmt.Errorf("cursor-agent not found in PATH: %w", err)
 	}
 
-	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
-	prompt := buildCursorPrompt(conversationMessages, false)
-	if strings.TrimSpace(prompt) == "" {
-		return nil, fmt.Errorf("cursor-cli prompt is empty")
-	}
-
-	if strings.TrimSpace(systemPrompt) != "" {
-		prompt = "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
-	}
-
 	// Decide the argv-affecting values here; the SHAPE is assembled by the
 	// unit-tested builder below (buildCursorStructuredArgs). Disk side-effects
 	// (.cursor/mcp.json, skill projection) stay in this function.
@@ -318,6 +308,17 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		if rid, ok := opts.Metadata.Custom[MetadataKeyResumeSessionID].(string); ok && strings.TrimSpace(rid) != "" {
 			resumeID = strings.TrimSpace(rid)
 		}
+	}
+
+	// Cursor's native --resume owns the existing conversation, including the
+	// original system instructions. A resumed launch must therefore receive
+	// only the newest human message. Replaying the full UI history here both
+	// duplicates context and can exceed Linux's per-argument size limit before
+	// cursor-agent even starts (observed on a 50-message Builder conversation).
+	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
+	prompt := buildCursorStructuredPrompt(systemPrompt, conversationMessages, resumeID)
+	if strings.TrimSpace(prompt) == "" {
+		return nil, fmt.Errorf("cursor-cli prompt is empty")
 	}
 
 	var configCleanups []func()

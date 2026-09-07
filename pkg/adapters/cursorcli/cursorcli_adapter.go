@@ -246,6 +246,19 @@ func buildCursorPrompt(messages []llmtypes.MessageContent, resume bool) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildCursorStructuredPrompt applies Cursor's native-continuation contract
+// to the structured transport. On a fresh chat the system instructions and
+// supplied history bootstrap Cursor. On --resume, Cursor already has both, so
+// only the newest human message belongs in the new process invocation.
+func buildCursorStructuredPrompt(systemPrompt string, messages []llmtypes.MessageContent, resumeID string) string {
+	resume := strings.TrimSpace(resumeID) != ""
+	prompt := buildCursorPrompt(messages, resume)
+	if !resume && strings.TrimSpace(systemPrompt) != "" {
+		return "[System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
+	}
+	return prompt
+}
+
 func latestCursorHumanMessage(messages []llmtypes.MessageContent) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == llmtypes.ChatMessageTypeHuman {
