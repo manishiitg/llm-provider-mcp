@@ -49,6 +49,7 @@ const (
 	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: The previous tool sequence returned without a final response. If the requested work is incomplete, continue it now and use tools as needed. Otherwise reply only with the requested final answer. Do not repeat side effects that already completed."
 	cursorBootBannerPromptGrace         = 2 * time.Second
 	cursorRestoredBootBannerPromptGrace = 8 * time.Second
+	cursorRestoredSessionMinReadyAge    = 10 * time.Second
 	// Cursor keeps the normal composer painted underneath its workspace-trust
 	// overlay. Immediately after we choose "Trust this workspace", that composer
 	// can therefore look ready while Cursor is still applying trust. Typing the
@@ -188,6 +189,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, fmt.Errorf("cursor-cli prompt is empty")
 	}
 
+	transportLaunchStartedAt := time.Now()
 	session, created, err := c.acquireCursorInteractiveSession(callCtx, ownerSessionID, persistent, opts, systemPrompt)
 	if err != nil {
 		if opts.StreamChan != nil {
@@ -263,6 +265,21 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 					close(opts.StreamChan)
 				}
 				return nil, err
+			}
+			// Cursor can paint a normal-looking composer while the resumed TUI is
+			// still replacing its internal editor. That transient state has no
+			// unique text marker once the header scrolls out of a shorter pane.
+			// Enforce a bounded minimum launch age as the final readiness signal;
+			// this is paid only when rebuilding a missing tmux transport, not on
+			// ordinary follow-up turns.
+			if remaining := time.Until(transportLaunchStartedAt.Add(cursorRestoredSessionMinReadyAge)); remaining > 0 {
+				timer := time.NewTimer(remaining)
+				select {
+				case <-callCtx.Done():
+					timer.Stop()
+					return nil, callCtx.Err()
+				case <-timer.C:
+				}
 			}
 		}
 		tmuxinput.MarkReady(session.tmuxSessionName)
