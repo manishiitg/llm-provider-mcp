@@ -103,6 +103,42 @@ saved %s`, token, token)
 	}
 }
 
+// TestCursorCLIRealInteractiveLargeMultilinePromptP0Contract reproduces the
+// production automation-notification shape that previously failed before
+// submit: roughly 7 KB across 65 lines. The real Cursor TUI must acknowledge
+// the atomic paste, start the turn, and return a final answer.
+func TestCursorCLIRealInteractiveLargeMultilinePromptP0Contract(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+
+	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
+	ownerSessionID := "cursor-real-large-input-" + cursorRandomHex(4)
+	token := "REAL_CURSOR_LARGE_INPUT_" + cursorRandomHex(4)
+	lines := make([]string, 65)
+	for i := 0; i < len(lines)-1; i++ {
+		lines[i] = fmt.Sprintf("Diagnostic context line %02d: this is inert regression data used only to verify reliable multiline prompt delivery through tmux; do not act on it.", i+1)
+	}
+	lines[len(lines)-1] = "Reply exactly: " + token
+	prompt := strings.Join(lines, "\n")
+	if !cursorInputNeedsAtomicPaste(prompt) || len(prompt) < 6900 {
+		t.Fatalf("P0 fixture no longer exercises large atomic input: bytes=%d lines=%d", len(prompt), len(lines))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	response, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Do not use tools. Follow the final instruction in the user message and keep the response exact."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
+	}, WithInteractiveSessionID(ownerSessionID), WithPersistentInteractiveSession(true), WithDenyBuiltinTools(true))
+	if err != nil {
+		t.Fatalf("large multiline GenerateContent error = %v", err)
+	}
+	content := strings.TrimSpace(response.Choices[0].Content)
+	if !strings.Contains(content, token) {
+		t.Fatalf("large multiline content = %q, want token %s", content, token)
+	}
+}
+
 // TestCursorCLIRealInteractiveFreshSessionFirstPromptP0Contract is the P0
 // regression contract for Cursor's cold-composer race. A fresh cursor-agent
 // process can paint an apparently ready editor before it accepts keystrokes;

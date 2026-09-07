@@ -174,6 +174,75 @@ func TestWriteCursorVisibleDraftUsesCtrlJForMultilineInput(t *testing.T) {
 	}
 }
 
+func TestCursorInputNeedsAtomicPaste(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{name: "short single line stays visible", message: "hello", want: false},
+		{name: "small multiline stays visible", message: "one\ntwo\nthree", want: false},
+		{name: "long payload is atomic", message: strings.Repeat("x", cursorAtomicPasteMinRunes), want: true},
+		{name: "many lines are atomic", message: strings.Repeat("line\n", cursorAtomicPasteMinLines-1), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cursorInputNeedsAtomicPaste(tt.message); got != tt.want {
+				t.Fatalf("cursorInputNeedsAtomicPaste() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A large prompt must be transferred through a named tmux buffer instead of
+// dozens of send-keys calls. A raw PTY reader proves every byte arrives and
+// the temporary buffer is removed.
+func TestSendCursorInputToTmuxLargePayloadUsesAtomicPaste(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available on this host")
+	}
+
+	sessionName := "mlp-cursor-test-atomic-" + cursorRandomHex(6)
+	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", sessionName).Run() })
+
+	token := "MLP_ATOMIC_" + cursorRandomHex(4)
+	large := strings.Repeat("payload ", 300) + "\nfinal " + token
+	receivedFile := filepath.Join(t.TempDir(), "atomic-paste.bin")
+	reader := fmt.Sprintf("stty raw -echo; dd bs=1 count=%d of=%s status=none; sleep 10", len(large), receivedFile)
+	if out, err := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", sessionName, "-x", "120", "-y", "30", "bash", "-c", reader).CombinedOutput(); err != nil {
+		t.Fatalf("failed to start tmux session: %v; output=%s", err, string(out))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := pasteCursorDraftToTmux(ctx, sessionName, large); err != nil {
+		t.Fatalf("pasteCursorDraftToTmux: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		received, _ := os.ReadFile(receivedFile)
+		if len(received) == len(large) {
+			break
+		}
+		time.Sleep(75 * time.Millisecond)
+	}
+	received, _ := os.ReadFile(receivedFile)
+	if string(received) != large {
+		t.Fatalf("atomic prompt mismatch: got %d bytes, want %d; tail token present=%v", len(received), len(large), strings.Contains(string(received), token))
+	}
+
+	out, err := exec.CommandContext(context.Background(), "tmux", "list-buffers", "-F", "#{buffer_name}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux list-buffers: %v; output=%s", err, string(out))
+	}
+	for _, name := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(name), "mlp-cursor-input-") {
+			t.Fatalf("atomic input leaked tmux buffer %q", name)
+		}
+	}
+}
+
 // TestEnsureCursorInputSubmittedSkipsWhenDraftAbsent guards against the
 // recovery probe firing a spurious Enter when the first Enter actually did
 // submit and the draft is no longer visible — that would inject a blank line

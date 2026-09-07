@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
@@ -31,9 +32,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -1438,6 +1439,16 @@ func cursorWorkspaceTrustReadyGraceElapsed(submittedAt, now time.Time) bool {
 // newlines into Cursor's editor without submitting the draft.
 const cursorVisibleInputChunkRunes = 160
 
+const (
+	// Cursor's editor can drop part of a large burst made from many independent
+	// tmux send-keys calls. Keep ordinary prompts literal and readable, but use
+	// one bracketed tmux paste when the payload would require enough calls to
+	// become unreliable. Cursor renders that payload as a single pasted-text
+	// marker and expands it when the turn is submitted.
+	cursorAtomicPasteMinRunes = 2048
+	cursorAtomicPasteMinLines = 16
+)
+
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
 	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false)
 }
@@ -1501,21 +1512,55 @@ func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message
 	return err
 }
 
-// typeCursorInputToTmux delivers every message as visible editor input. Literal
-// chunks avoid Cursor's opaque pasted-text marker; Ctrl+J represents embedded
-// newlines without triggering submission. Enter is sent only after the entire
-// draft is visible.
+// typeCursorInputToTmux keeps normal messages visible in Cursor's editor and
+// atomically pastes large or heavily multiline messages. Enter is sent only
+// after the editor acknowledges the complete draft (literal tail or Cursor's
+// pasted-text marker).
 func typeCursorInputToTmux(ctx context.Context, sessionName, message string) error {
-	if err := writeCursorVisibleDraftToTmux(ctx, sessionName, message); err != nil {
+	transport := "literal"
+	writeDraft := writeCursorVisibleDraftToTmux
+	if cursorInputNeedsAtomicPaste(message) {
+		transport = "atomic-paste"
+		writeDraft = pasteCursorDraftToTmux
+	}
+	lineCount := strings.Count(message, "\n") + 1
+	runeCount := utf8.RuneCountInString(message)
+	log.Printf("[LATENCY_DEBUG] cursor tmux input start | session=%s transport=%s runes=%d lines=%d",
+		sessionName, transport, runeCount, lineCount)
+	if err := writeDraft(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
 	if !waitForCursorInputDraftVisible(ctx, sessionName, message, 5*time.Second) {
-		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit")
+		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit (transport=%s runes=%d lines=%d)", transport, runeCount, lineCount)
 	}
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
 	return ensureCursorInputSubmitted(ctx, sessionName, message)
+}
+
+func cursorInputNeedsAtomicPaste(message string) bool {
+	return utf8.RuneCountInString(message) >= cursorAtomicPasteMinRunes ||
+		strings.Count(message, "\n")+1 >= cursorAtomicPasteMinLines
+}
+
+// pasteCursorDraftToTmux transfers a large prompt through stdin rather than
+// argv, then asks tmux to emit it as one bracketed paste. This avoids both OS
+// argument-size limits and partial delivery from dozens of rapid send-keys
+// subprocesses. The named buffer is deleted on success and best-effort cleaned
+// up on every error path.
+func pasteCursorDraftToTmux(ctx context.Context, sessionName, message string) error {
+	bufferName := "mlp-cursor-input-" + cursorRandomHex(6)
+	if err := runCursorCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
+		return fmt.Errorf("failed to load Cursor input into tmux buffer: %w", err)
+	}
+	defer func() {
+		_ = runCursorCommand(context.Background(), nil, "tmux", "delete-buffer", "-b", bufferName)
+	}()
+	if err := runCursorCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+		return fmt.Errorf("failed to paste Cursor input into interactive session: %w", err)
+	}
+	return nil
 }
 
 func writeCursorVisibleDraftToTmux(ctx context.Context, sessionName, message string) error {
