@@ -48,6 +48,7 @@ const (
 	cursorFinalAnswerRecoveryDelay      = 3 * time.Second
 	cursorFinalAnswerRecoveryPrompt     = "FINAL_ANSWER_RECOVERY: The previous tool sequence returned without a final response. If the requested work is incomplete, continue it now and use tools as needed. Otherwise reply only with the requested final answer. Do not repeat side effects that already completed."
 	cursorBootBannerPromptGrace         = 2 * time.Second
+	cursorRestoredBootBannerPromptGrace = 8 * time.Second
 	// Cursor keeps the normal composer painted underneath its workspace-trust
 	// overlay. Immediately after we choose "Trust this workspace", that composer
 	// can therefore look ready while Cursor is still applying trust. Typing the
@@ -247,8 +248,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		// deliberately accepts that banner after a grace period for brand-new
 		// sessions, but returning it as a restored session is unsafe: an immediate
 		// follow-up can be pasted into the transient composer and discarded. For a
-		// real resume, wait until the welcome banner has been replaced by the
-		// restored conversation's stable composer.
+		// real resume, give the restored conversation time to replace it. Older
+		// native sessions can remain on the welcome composer; that fallback is
+		// accepted only after the longer restored-session settling window.
 		if resumeID != "" {
 			if err := waitForCursorRestoredPrompt(callCtx, session.tmuxSessionName, opts.StreamChan, cursorInteractiveStreamTmuxScreenEnabled(opts)); err != nil {
 				markCursorInteractiveSessionFailedLocked(session, err, c.logger)
@@ -1353,17 +1355,17 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 }
 
 func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
-	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, true)
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorBootBannerPromptGrace)
 }
 
 // waitForCursorRestoredPrompt is stricter than the generic cold-start wait.
-// A native --resume must reach the restored conversation composer; the generic
-// welcome banner is only an intermediate state and cannot safely accept input.
+// A native --resume gets a longer settling window before a remaining welcome
+// composer is accepted, because that same composer is transient during restore.
 func waitForCursorRestoredPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
-	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, false)
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorRestoredBootBannerPromptGrace)
 }
 
-func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, allowBootBanner bool) error {
+func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, bootBannerGrace time.Duration) error {
 	deadline, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
 	defer cancel()
 
@@ -1439,15 +1441,11 @@ func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, 
 			cleaned := strings.ToLower(stripCursorANSI(visible))
 			if cursorBootBannerAcceptableAfterGrace(cleaned) {
 				consecutiveReadyTicks = 0
-				if !allowBootBanner {
-					bootBannerReadySince = time.Time{}
-					continue
-				}
 				if bootBannerReadySince.IsZero() {
 					bootBannerReadySince = time.Now()
 					continue
 				}
-				if time.Since(bootBannerReadySince) >= cursorBootBannerPromptGrace {
+				if time.Since(bootBannerReadySince) >= bootBannerGrace {
 					return nil
 				}
 				continue
