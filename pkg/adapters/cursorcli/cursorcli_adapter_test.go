@@ -300,6 +300,47 @@ api-bridge execute_shell_command
 	}
 }
 
+func TestCursorBusyFollowupPromptIsSteerableButNotIdle(t *testing.T) {
+	pane := `
+  api-bridge execute_shell_command
+
+  Investigating the current request.
+
+  ⠘⠤ Working
+
+  → Add a follow-up                                      ctrl+c to stop
+
+  Auto · 22.9%`
+	if hasCursorReadyPrompt(pane) {
+		t.Fatal("busy follow-up composer must not be classified as an idle prompt")
+	}
+	if !hasCursorBusyFollowupPrompt(pane) {
+		t.Fatal("busy Add a follow-up composer must accept live steering")
+	}
+
+	draft := "also retain only the latest video per case"
+	typedPane := strings.Replace(pane, "Add a follow-up", draft, 1)
+	if cursorPaneShowsPromptDraft(typedPane, draft) {
+		t.Fatal("normal turn submission must not mistake active-turn text for an idle draft")
+	}
+	if !cursorPaneShowsPromptDraftWithMode(typedPane, draft, true) {
+		t.Fatal("live-input submission must verify its draft in the active follow-up composer")
+	}
+}
+
+func TestCursorBusyFollowupPromptRejectsApprovalOverlay(t *testing.T) {
+	pane := `
+  Run this MCP tool?
+  → Run (once)
+  Allowlist MCP Tool (tab)
+
+  ⠘ Working
+  → Add a follow-up                                      ctrl+c to stop`
+	if hasCursorBusyFollowupPrompt(pane) {
+		t.Fatal("approval overlay must not be treated as Cursor's live-input composer")
+	}
+}
+
 func TestCursorQueuedFollowupsSendControlRechecksOverlayInsideBroker(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "send-keys.log")

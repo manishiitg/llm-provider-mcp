@@ -1281,7 +1281,7 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	if !ok {
 		return fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
 	}
-	return sendCursorInputToTmux(ctx, sessionName, message)
+	return sendCursorLiveInputToTmux(ctx, sessionName, message)
 }
 
 func cursorInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
@@ -1372,17 +1372,25 @@ func startCursorTmuxSession(ctx context.Context, sessionName string, args []stri
 }
 
 func waitForCursorPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
-	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorBootBannerPromptGrace)
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorBootBannerPromptGrace, false)
+}
+
+// waitForCursorLiveInputPrompt accepts both Cursor's idle composer and its
+// active-turn "Add a follow-up" composer. Initial/new-turn delivery must keep
+// using waitForCursorPrompt: sending a full turn into an active composer would
+// silently change it into a follow-up.
+func waitForCursorLiveInputPrompt(ctx context.Context, sessionName string) error {
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, nil, false, cursorBootBannerPromptGrace, true)
 }
 
 // waitForCursorRestoredPrompt is stricter than the generic cold-start wait.
 // A native --resume gets a longer settling window before a remaining welcome
 // composer is accepted, because that same composer is transient during restore.
 func waitForCursorRestoredPrompt(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) error {
-	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorRestoredBootBannerPromptGrace)
+	return waitForCursorPromptWithBootBanner(ctx, sessionName, streamChan, streamTerminalScreen, cursorRestoredBootBannerPromptGrace, false)
 }
 
-func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, bootBannerGrace time.Duration) error {
+func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, bootBannerGrace time.Duration, allowBusyFollowup bool) error {
 	deadline, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
 	defer cancel()
 
@@ -1455,6 +1463,9 @@ func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, 
 				bootBannerReadySince = time.Time{}
 				continue
 			}
+			if allowBusyFollowup && hasCursorBusyFollowupPrompt(visible) {
+				return nil
+			}
 			cleaned := strings.ToLower(stripCursorANSI(visible))
 			if cursorBootBannerAcceptableAfterGrace(cleaned) {
 				consecutiveReadyTicks = 0
@@ -1501,14 +1512,18 @@ const (
 )
 
 func sendCursorInputToTmux(ctx context.Context, sessionName, message string) error {
-	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false)
+	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false, false)
+}
+
+func sendCursorLiveInputToTmux(ctx context.Context, sessionName, message string) error {
+	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false, true)
 }
 
 func sendCursorInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
-	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, true)
+	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, true, false)
 }
 
-func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool) error {
+func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt, liveInput bool) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
 		SessionID:       sessionName,
 		Source:          "cursor-cli",
@@ -1520,13 +1535,19 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 		// after that check while the bridge is connecting. Re-check immediately
 		// before every delivery, including a cold session, so typed input cannot
 		// be sent into an overlay and silently dropped.
-		if err := waitForCursorPrompt(ctx, sessionName, nil, false); err != nil {
-			if initialPrompt {
-				return fmt.Errorf("Cursor was not ready to accept initial input: %w", err)
-			}
-			return fmt.Errorf("Cursor was not ready to accept follow-up input: %w", err)
+		var readyErr error
+		if liveInput {
+			readyErr = waitForCursorLiveInputPrompt(ctx, sessionName)
+		} else {
+			readyErr = waitForCursorPrompt(ctx, sessionName, nil, false)
 		}
-		err := sendCursorInputToTmuxUnserialized(ctx, sessionName, message, initialPrompt)
+		if readyErr != nil {
+			if initialPrompt {
+				return fmt.Errorf("Cursor was not ready to accept initial input: %w", readyErr)
+			}
+			return fmt.Errorf("Cursor was not ready to accept follow-up input: %w", readyErr)
+		}
+		err := sendCursorInputToTmuxUnserializedWithMode(ctx, sessionName, message, initialPrompt, liveInput)
 		if initialPrompt && isCursorMissingDraftError(err) {
 			// Cursor can paint its cold-start composer just before it begins
 			// accepting keystrokes. The first visible-draft check correctly
@@ -1537,7 +1558,7 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 			if readyErr := waitForCursorPrompt(ctx, sessionName, nil, false); readyErr != nil {
 				return fmt.Errorf("Cursor initial prompt was not ready after dropped input: %w", readyErr)
 			}
-			err = sendCursorInputToTmuxUnserialized(ctx, sessionName, message, initialPrompt)
+			err = sendCursorInputToTmuxUnserializedWithMode(ctx, sessionName, message, initialPrompt, liveInput)
 		}
 		return err
 	})
@@ -1549,6 +1570,10 @@ func isCursorMissingDraftError(err error) bool {
 }
 
 func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message string, preferAtomic bool) error {
+	return sendCursorInputToTmuxUnserializedWithMode(ctx, sessionName, message, preferAtomic, false)
+}
+
+func sendCursorInputToTmuxUnserializedWithMode(ctx context.Context, sessionName, message string, preferAtomic, liveInput bool) error {
 	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
 	// matters: how long delivery + submit-confirmation actually took, broken
 	// out from the model's own thinking time.
@@ -1557,7 +1582,7 @@ func sendCursorInputToTmuxUnserialized(ctx context.Context, sessionName, message
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Cursor interactive input is empty")
 	}
-	err := typeCursorInputToTmuxWithMode(ctx, sessionName, message, preferAtomic)
+	err := typeCursorInputToTmuxWithDeliveryMode(ctx, sessionName, message, preferAtomic, liveInput)
 	log.Printf("[LATENCY_DEBUG] cursor tmux delivery | session=%s confirmed=%dms err=%v",
 		sessionName, time.Since(start).Milliseconds(), err)
 	return err
@@ -1572,6 +1597,10 @@ func typeCursorInputToTmux(ctx context.Context, sessionName, message string) err
 }
 
 func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message string, preferAtomic bool) error {
+	return typeCursorInputToTmuxWithDeliveryMode(ctx, sessionName, message, preferAtomic, false)
+}
+
+func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, message string, preferAtomic, liveInput bool) error {
 	transport := "literal"
 	writeDraft := writeCursorVisibleDraftToTmux
 	if cursorInputNeedsAtomicPaste(message, preferAtomic) {
@@ -1585,7 +1614,7 @@ func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message str
 	if err := writeDraft(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
-	draftVisible := waitForCursorInputDraftVisible(ctx, sessionName, message, 5*time.Second)
+	draftVisible := waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, 5*time.Second, liveInput)
 	if !draftVisible && transport != "atomic-paste" {
 		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit (transport=%s runes=%d lines=%d)", transport, runeCount, lineCount)
 	}
@@ -1601,7 +1630,7 @@ func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message str
 	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
-	return ensureCursorInputSubmitted(ctx, sessionName, message)
+	return ensureCursorInputSubmittedWithMode(ctx, sessionName, message, liveInput)
 }
 
 func cursorInputNeedsAtomicPaste(message string, preferAtomic bool) bool {
@@ -1676,6 +1705,10 @@ func writeCursorVisibleDraftToTmux(ctx context.Context, sessionName, message str
 // this exact overlay is demonstrably unhandled on this specific path while
 // already handled on the sibling path, for the same reason it fails here.
 func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string) error {
+	return ensureCursorInputSubmittedWithMode(ctx, sessionName, message, false)
+}
+
+func ensureCursorInputSubmittedWithMode(ctx context.Context, sessionName, message string, liveInput bool) error {
 	// Cursor can finish painting a ready-looking composer before it is actually
 	// ready to consume Enter, especially after a cold tmux launch or overlay
 	// dismissal. Keep the same draft in place and retry submit over a bounded
@@ -1700,7 +1733,7 @@ func ensureCursorInputSubmitted(ctx context.Context, sessionName, message string
 	for {
 		captured, err := captureCursorPane(deadline, sessionName)
 		if err == nil {
-			if !cursorPaneShowsPromptDraft(captured, message) {
+			if !cursorPaneShowsPromptDraftWithMode(captured, message, liveInput) {
 				return nil
 			}
 			if hasCursorModeSwitchPrompt(captured) {
@@ -1771,6 +1804,10 @@ func sendCursorControlIfVisible(
 }
 
 func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message string, timeout time.Duration) bool {
+	return waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, timeout, false)
+}
+
+func waitForCursorInputDraftVisibleWithMode(ctx context.Context, sessionName, message string, timeout time.Duration, liveInput bool) bool {
 	if strings.TrimSpace(message) == "" {
 		return false
 	}
@@ -1780,7 +1817,7 @@ func waitForCursorInputDraftVisible(ctx context.Context, sessionName, message st
 	defer ticker.Stop()
 	for {
 		captured, err := captureCursorPane(deadline, sessionName)
-		if err == nil && cursorPaneShowsPromptDraft(captured, message) {
+		if err == nil && cursorPaneShowsPromptDraftWithMode(captured, message, liveInput) {
 			return true
 		}
 		select {
@@ -2499,12 +2536,16 @@ func nonEmptyCursorLines(text string) []string {
 }
 
 func cursorPaneShowsPromptDraft(captured, prompt string) bool {
+	return cursorPaneShowsPromptDraftWithMode(captured, prompt, false)
+}
+
+func cursorPaneShowsPromptDraftWithMode(captured, prompt string, allowActivity bool) bool {
 	// Cursor 2026.08 retains the submitted text next to its `→` marker while a
 	// turn is already running (for example: `→ hi` plus `⠘ Working`). That is
 	// response-state chrome, not an unsent composer draft. Treating it as a
 	// draft caused ensureCursorInputSubmitted to keep pressing Enter until it
 	// failed a healthy request.
-	if hasCursorActivity(captured) {
+	if hasCursorActivity(captured) && !allowActivity {
 		return false
 	}
 	visibleLines := strings.Split(strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured))), "\n")
@@ -2618,6 +2659,31 @@ func hasCursorReadyPrompt(captured string) bool {
 		return false
 	}
 	return true
+}
+
+// hasCursorBusyFollowupPrompt recognizes Cursor's actual steering surface. A
+// running turn deliberately fails hasCursorReadyPrompt, but the TUI still
+// exposes a safe, dedicated "Add a follow-up" editor. This must remain stricter
+// than a generic arrow check because approval dialogs also contain arrows.
+func hasCursorBusyFollowupPrompt(captured string) bool {
+	visible := cursorVisiblePaneText(captured)
+	if hasCursorQueuedFollowupsSendPrompt(visible) || hasCursorAuthPrompt(visible) ||
+		hasCursorTrustPrompt(visible) || hasCursorWebAccessApprovalPrompt(visible) ||
+		hasCursorMCPToolApprovalPrompt(visible) || hasCursorMCPServerApprovalPrompt(visible) ||
+		hasCursorModeSwitchPrompt(visible) {
+		return false
+	}
+	cleaned := strings.ToLower(stripCursorANSI(visible))
+	if !hasCursorLiveGenerationActivity(cleaned) && !hasCursorActivity(visible) {
+		return false
+	}
+	for _, rawLine := range strings.Split(cleaned, "\n") {
+		line := strings.Join(strings.Fields(rawLine), " ")
+		if strings.Contains(line, "→") && strings.Contains(line, "add a follow-up") {
+			return true
+		}
+	}
+	return false
 }
 
 // PaneReadyForInput reports whether Cursor CLI's current tmux screen is at its
