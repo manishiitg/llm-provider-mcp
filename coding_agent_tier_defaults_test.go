@@ -77,10 +77,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 		wantReasoning  string
 	}{
 		{
-			name:          "claude code uses fable 5.1 medium",
-			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-fable-5-1",
-			wantReasoning: "medium",
+			name:           "claude code follows high",
+			provider:       ProviderClaudeCode,
+			wantSameAsHigh: true,
+			wantReasoning:  "high",
 		},
 		{
 			name:          "codex uses gpt 6 astra medium",
@@ -132,7 +132,7 @@ func TestCodingAgentDefaultTierModelsBuilderAndPulseMatch(t *testing.T) {
 		model    string
 		effort   string
 	}{
-		{provider: ProviderClaudeCode, model: "claude-fable-5-1", effort: "medium"},
+		{provider: ProviderClaudeCode, model: "claude-sonnet-5", effort: "high"},
 		{provider: ProviderCodexCLI, model: "gpt-6-astra", effort: "medium"},
 	} {
 		t.Run(string(tt.provider), func(t *testing.T) {

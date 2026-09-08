@@ -60,7 +60,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		builder := codingAgentReasoningRef(providerID, "claude-fable-5-1", "medium")
+		builder := high
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
 			High:    high,
