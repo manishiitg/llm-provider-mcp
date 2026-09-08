@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1127,9 +1128,49 @@ func piTmuxNewSessionArgs(sessionName string, args []string, env, unset []string
 		return nil, nil, fmt.Errorf("failed to prepare Pi launch environment: %w", err)
 	}
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
-	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
+	tmuxArgs = append(tmuxArgs, piTmuxSizeArgs(workingDir)...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	return tmuxArgs, cleanupLaunchScript, nil
+}
+
+// piTmuxSizeArgs is tmuxsize.Args(), widened when needed so pi's own classic
+// statusline preset (PI_STATUSLINE_PRESET=classic, set unconditionally by
+// piStatuslinePresetEnv) doesn't truncate away its "idle" segment.
+// @narumitw/pi-statusline's renderClassicStatusline joins every segment
+// (brand, model, thinking, cwd, branch, tools/idle, context, tokens, cost,
+// time) into ONE line and truncates it to the pane width from the right --
+// there is no reordering or per-segment priority. cliruntime.Prepare names a
+// pi-cli working dir by its trailing path component: a fixed 64-hex-char
+// sha256 digest that must never shrink (existing saved chats resume by that
+// exact path). On the shared tmuxsize default/operator-preferred width, that
+// digest alone can consume the pane before "cwd" even finishes rendering, so
+// "branch"/"tools" (which is where the idle indicator lives) never appears.
+// piPaneLooksIdle then never matches, waitForPiPromptReady polls until its
+// 300s timeout, and every message to that session fails -- confirmed live:
+// captured pane text cut off mid-digest, and the readiness wait for it timed
+// out even though pi was genuinely sitting idle. Widening the pane (instead
+// of shortening the digest, off the table per the comment above) fixes this
+// without touching session identity/resumption at all.
+func piTmuxSizeArgs(workingDir string) []string {
+	columns, rows := tmuxsize.Size()
+	if needed := piStatuslineMinColumns(workingDir); needed > columns {
+		columns = needed
+	}
+	return []string{"-x", strconv.Itoa(columns), "-y", strconv.Itoa(rows)}
+}
+
+// piStatuslineMinColumns is a generous, deliberately-not-exact estimate: the
+// cwd basename's length plus fixed overhead for every other classic-preset
+// segment, its separators, and emoji double-width rendering. Clamped to
+// tmuxsize's own max (300) so this never fights that package's bound.
+func piStatuslineMinColumns(workingDir string) int {
+	const fixedOverhead = 160
+	const maxColumns = 300
+	needed := len(filepath.Base(workingDir)) + fixedOverhead
+	if needed > maxColumns {
+		needed = maxColumns
+	}
+	return needed
 }
 
 func piTmuxNewSessionWithExtendedKeysArgs(newSessionArgs []string) []string {
@@ -1653,8 +1694,24 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					// verbatim, never "\n"-join them into token-split garble.
 					deltaMeta := piChunkMetadata(session)
 					deltaMeta[llmtypes.ContentDeltaMetadataKey] = true
-					emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+					emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 						Type:     llmtypes.StreamChunkTypeContent,
+						Content:  marker.Delta,
+						Metadata: deltaMeta,
+					})
+				} else if marker.UpdateType == "thinking_delta" && marker.Delta != "" {
+					// pi's own AssistantMessageEvent protocol emits thinking_delta
+					// alongside text_delta (identical shape: contentIndex + delta),
+					// and piMarkerExtensionSource's message_update hook already
+					// forwards it verbatim -- this was previously the only marker
+					// type silently dropped by this switch. Route it to the
+					// reasoning stream (not content.String()) the same way
+					// cursor-cli's "thinking"/delta event does, so it renders in
+					// the product's Thinking surface instead of the final answer.
+					deltaMeta := piChunkMetadata(session)
+					deltaMeta[llmtypes.ContentDeltaMetadataKey] = true
+					emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
+						Type:     llmtypes.StreamChunkTypeReasoning,
 						Content:  marker.Delta,
 						Metadata: deltaMeta,
 					})
@@ -1671,7 +1728,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				toolRealName[marker.ToolCallID] = toolName
 				rawArgs := compactPiStructuredJSON(marker.Args)
 				toolRawArgs[marker.ToolCallID] = rawArgs
-				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+				emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 					Type:       llmtypes.StreamChunkTypeToolCallStart,
 					ToolName:   toolName,
 					ToolCallID: marker.ToolCallID,
@@ -1705,7 +1762,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				if realResult := piResultTextFromMarker(marker.Result); realResult != "" {
 					result = realResult
 				}
-				emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+				emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 					Type:         llmtypes.StreamChunkTypeToolCallEnd,
 					ToolName:     toolName,
 					ToolCallID:   marker.ToolCallID,
@@ -1730,7 +1787,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 						// run together in the reassembled text.
 						boundaryMeta := piChunkMetadata(session)
 						boundaryMeta[llmtypes.ContentDeltaMetadataKey] = true
-						emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+						emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 							Type:     llmtypes.StreamChunkTypeContent,
 							Content:  "\n",
 							Metadata: boundaryMeta,
@@ -1746,7 +1803,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 						// emit it as one clean BLOCK content chunk so a no-terminal
 						// UI still receives the assistant text.
 						content.WriteString(marker.Text)
-						emitPiChunk(ctx, streamChan, llmtypes.StreamChunk{
+						emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 							Type:     llmtypes.StreamChunkTypeContent,
 							Content:  strings.TrimSpace(marker.Text),
 							Metadata: piChunkMetadata(session),
@@ -2109,6 +2166,34 @@ func emitPiChunk(ctx context.Context, streamChan chan<- llmtypes.StreamChunk, ch
 	case streamChan <- chunk:
 	case <-ctx.Done():
 	default:
+	}
+}
+
+// emitPiChunkBlocking is emitPiChunk without the non-blocking default: branch.
+// emitPiChunk's other two callers (streamPiTerminalSnapshotChanged,
+// streamPiStatusLine) send refreshable UI state: dropping one under a
+// momentarily-full channel is harmless because the next refresh supersedes
+// it, exactly like cursor-cli's own terminal-snapshot sender
+// (cursorcli_interactive_adapter.go). Every marker-loop call site below is
+// actual conversation content -- text, reasoning, tool calls, message
+// boundaries -- with no later chunk that supersedes a dropped one, and every
+// sibling adapter's real content sender (cursorcli_structured_adapter.go,
+// codexcli_structured_adapter.go, claudecode_structured_adapter.go,
+// *_transcript_stream.go) blocks on exactly this same channel instead of
+// risking silent loss. This was pi-cli's only content path that didn't --
+// found while chasing an intermittent live report of thinking text visible
+// in pi's own terminal but missing from chat: text/tool markers reliably got
+// through (visible replies kept arriving) while reasoning is emitted in a
+// handful of large, bursty deltas per turn rather than pi's own many small
+// text_delta fragments, making it disproportionately likely to land exactly
+// when the shared channel was momentarily busy from other traffic.
+func emitPiChunkBlocking(ctx context.Context, streamChan chan<- llmtypes.StreamChunk, chunk llmtypes.StreamChunk) {
+	if streamChan == nil {
+		return
+	}
+	select {
+	case streamChan <- chunk:
+	case <-ctx.Done():
 	}
 }
 

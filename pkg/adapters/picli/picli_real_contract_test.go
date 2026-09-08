@@ -188,6 +188,54 @@ func TestPiCLIRealColdResumeWaitsForReadyPrompt(t *testing.T) {
 	}
 }
 
+// TestPiCLIRealLongWorkingDirNameStillReachesReadyPrompt is a permanent P0
+// regression contract. AgentWorks names every real pi-cli working directory
+// by a fixed 64-hex-char sha256 digest (cliruntime.Prepare) -- not a short
+// t.TempDir() path like every other contract test in this file uses, which
+// is exactly why none of them caught this live. Found live (2026-09-08):
+// @narumitw/pi-statusline's classic preset (PI_STATUSLINE_PRESET=classic,
+// set unconditionally by piStatuslinePresetEnv) joins every segment --
+// including the cwd basename -- into one line and truncates it to the pane
+// width from the right, with no per-segment priority. A real digest-length
+// basename pushed the "idle" segment (often part of the digest itself) off
+// the truncated line, so piPaneLooksIdle's " idle" substring check never
+// matched, and waitForPiPromptReady polled until its full 300s timeout even
+// though pi was genuinely idle and ready -- the exact failure behind
+// AgentWorks chat messages silently never sending. piTmuxSizeArgs widens the
+// pane to make room; this test's tight timeout fails fast if that regresses.
+func TestPiCLIRealLongWorkingDirNameStillReachesReadyPrompt(t *testing.T) {
+	requireRealPiCLIContractE2E(t)
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+
+	adapter := newRealPiCLIAdapter(t)
+	digest := piRandomHex(32) // 64 hex chars: matches cliruntime.Prepare's sha256 digest length exactly
+	workDir := filepath.Join(t.TempDir(), digest)
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatalf("mkdir digest-named working dir: %v", err)
+	}
+	ownerSessionID := "pi-real-long-cwd-" + piRandomHex(4)
+
+	// 90s, not the 4m used elsewhere in this file: the whole point is that the
+	// old code hung until piPromptWait's 300s ceiling. A generous-but-tight
+	// bound catches that regression by timing out long before 300s would.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Do not use tools."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply exactly with the single word: ACK"),
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent in a digest-named working dir error = %v (this is exactly the hang AgentWorks chat hit live)", err)
+	}
+	if got := strings.TrimSpace(resp.Choices[0].Content); !strings.Contains(strings.ToUpper(got), "ACK") {
+		t.Fatalf("content = %q, want ACK", got)
+	}
+}
+
 func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	requireRealPiCLIContractE2E(t)
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
