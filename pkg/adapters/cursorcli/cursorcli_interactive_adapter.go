@@ -198,6 +198,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, err
 	}
 	tmuxSessionName = session.tmuxSessionName
+	stopCursorRetainedControls(session.tmuxSessionName)
 	tmuxstartup.Publish(callCtx, opts.StreamChan, "cursor-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
 		"cursor_interactive_session": session.tmuxSessionName,
 	})
@@ -205,6 +206,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	defer func() {
 		if !releaseSession || session == nil {
 			return
+		}
+		if err == nil {
+			startCursorRetainedControls(session.tmuxSessionName, cursorAutoApproveWebSearchFromOptions(opts))
 		}
 		if persistent {
 			releaseCursorInteractiveSession(session, c.logger)
@@ -1267,6 +1271,7 @@ func registerCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
 }
 
 func unregisterCursorInteractiveSession(ownerSessionID, tmuxSessionName string) {
+	stopCursorRetainedControls(tmuxSessionName)
 	cursorInteractiveRegistry.DeleteIf(ownerSessionID, tmuxSessionName)
 	tmuxinput.RemoveReadiness(tmuxSessionName)
 }
@@ -1437,7 +1442,9 @@ func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, 
 				return cursorAuthPromptError(captured)
 			}
 			if hasCursorTrustPrompt(visible) && !trustSubmitted {
-				_ = runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorTrustPromptResponse(visible))
+				if err := sendCursorReadinessControl(deadline, sessionName, allowBusyFollowup, hasCursorTrustPrompt, cursorTrustPromptResponse(visible)); err != nil {
+					continue
+				}
 				trustSubmitted = true
 				trustSubmittedAt = time.Now()
 				consecutiveReadyTicks = 0
@@ -1446,7 +1453,7 @@ func waitForCursorPromptWithBootBanner(ctx context.Context, sessionName string, 
 			}
 			if hasCursorMCPServerApprovalPrompt(visible) {
 				if lastMCPServerApprovalAt.IsZero() || time.Since(lastMCPServerApprovalAt) >= time.Second {
-					if err := runCursorCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, cursorMCPServerApprovalResponse(visible)); err == nil {
+					if err := sendCursorReadinessControl(deadline, sessionName, allowBusyFollowup, hasCursorMCPServerApprovalPrompt, cursorMCPServerApprovalResponse(visible)); err == nil {
 						lastMCPServerApprovalAt = time.Now()
 					}
 				}
@@ -1495,6 +1502,15 @@ func cursorWorkspaceTrustReadyGraceElapsed(submittedAt, now time.Time) bool {
 	return !submittedAt.IsZero() && !now.Before(submittedAt.Add(cursorWorkspaceTrustReadyGrace))
 }
 
+func sendCursorReadinessControl(ctx context.Context, sessionName string, liveInput bool, visible func(string) bool, key string) error {
+	if liveInput {
+		_, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-readiness-control", visible, key)
+		return err
+	}
+	// Initial-prompt readiness already runs inside the broker transaction.
+	return runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, key)
+}
+
 // cursorVisibleInputChunkRunes bounds each literal tmux key injection. Cursor's
 // TUI collapses fast paste-buffer input into an opaque "[Pasted text #N]"
 // marker. Chunked literal input stays visible, while Ctrl+J inserts embedded
@@ -1516,7 +1532,23 @@ func sendCursorInputToTmux(ctx context.Context, sessionName, message string) err
 }
 
 func sendCursorLiveInputToTmux(ctx context.Context, sessionName, message string) error {
-	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false, true)
+	// Waiting inside the input broker prevents the approval handler from
+	// clearing the very modal we are waiting on. Recheck after acquiring the
+	// broker, and retry only when no input has been typed yet.
+	ctx, cancel := context.WithTimeout(ctx, cursorInteractivePromptWait())
+	defer cancel()
+	if err := tmuxinput.WaitUntilReady(ctx, sessionName); err != nil {
+		return err
+	}
+	for {
+		if err := waitForCursorLiveInputPrompt(ctx, sessionName); err != nil {
+			return err
+		}
+		err := sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, false, true)
+		if !errors.Is(err, errCursorComposerChanged) {
+			return err
+		}
+	}
 }
 
 func sendCursorInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
@@ -1537,7 +1569,18 @@ func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, messag
 		// be sent into an overlay and silently dropped.
 		var readyErr error
 		if liveInput {
-			readyErr = waitForCursorLiveInputPrompt(ctx, sessionName)
+			captured, err := captureCursorPane(ctx, sessionName)
+			if err != nil {
+				return err
+			}
+			if !hasCursorReadyPrompt(captured) && !hasCursorBusyFollowupPrompt(captured) &&
+				!(cursorBootBannerAcceptableAfterGrace(strings.ToLower(stripCursorANSI(cursorVisiblePaneText(captured)))) &&
+					!hasCursorAuthPrompt(captured) && !hasCursorTrustPrompt(captured) &&
+					!hasCursorWebAccessApprovalPrompt(captured) && !hasCursorMCPToolApprovalPrompt(captured) &&
+					!hasCursorMCPServerApprovalPrompt(captured) && !hasCursorModeSwitchPrompt(captured) &&
+					!hasCursorQueuedFollowupsSendPrompt(captured)) {
+				return errCursorComposerChanged
+			}
 		} else {
 			readyErr = waitForCursorPrompt(ctx, sessionName, nil, false)
 		}
@@ -1842,10 +1885,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastCaptured string
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
-	var lastWebSearchApprovalAt time.Time
-	var lastMCPToolApprovalAt time.Time
-	var lastModeSwitchRejectAt time.Time
-	var lastQueuedFollowupSubmitAt time.Time
+	controls := cursorRuntimeControls{autoApproveWebSearch: autoApproveWebSearch}
 	var finalAnswerRecoveryCount int
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. This is tracked at the top of every tick,
@@ -1894,67 +1934,8 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 					lastTerminalStreamedAt = time.Now()
 				}
 			}
-			// Newer Cursor builds hold messages typed during an active turn in a
-			// follow-ups overlay and require an explicit Enter ("send now"). The
-			// input transport has already accepted the draft at this point, so its
-			// normal post-submit verification cannot see that confirmation gate.
-			// Re-check under the shared tmux input broker before pressing Enter so
-			// a stale observation can never inject a blank message into the normal
-			// composer after the overlay disappears.
-			if hasCursorQueuedFollowupsSendPrompt(captured) {
-				if lastQueuedFollowupSubmitAt.IsZero() || time.Since(lastQueuedFollowupSubmitAt) >= time.Second {
-					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-followups-send-now", hasCursorQueuedFollowupsSendPrompt, "C-m"); err == nil && handled {
-						lastQueuedFollowupSubmitAt = time.Now()
-					}
-				}
+			if controls.handle(ctx, sessionName, captured) {
 				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			// Cursor can ask to switch into another agent mode when it tries
-			// nested delegation and finds the child session's built-in tools
-			// blocked. In bridge-only sessions, do not approve that transition:
-			// child Cursor agents do not reliably inherit our scoped MCP bridge
-			// config. Reject it so the parent session can continue or fail
-			// through the normal denied-tool path instead of hanging.
-			if hasCursorModeSwitchPrompt(captured) {
-				if lastModeSwitchRejectAt.IsZero() || time.Since(lastModeSwitchRejectAt) >= time.Second {
-					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-mode-switch-reject", hasCursorModeSwitchPrompt, "n"); err == nil && handled {
-						lastModeSwitchRejectAt = time.Now()
-					}
-				}
-				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			// Auto-allowlist MCP tool calls. Cursor gates each MCP tool call
-			// behind a "Run this MCP tool?" prompt, and --force/--approve-mcps do
-			// NOT reliably suppress it (see buildCursorInteractiveLaunch), so this
-			// pane-scrape is the only dependable way through. In an orchestrated
-			// bridge session the tools must run, so press Tab (Allowlist MCP Tool)
-			// — observed to clear the current gate; cursor re-prompts per call, so
-			// this fires again on each reappearance (rate-limited). Without it the
-			// turn stalls here forever, and the "→ Run (once)" line otherwise looks
-			// like a ready prompt, so the loop could even report a bogus completion.
-			if hasCursorMCPToolApprovalPrompt(captured) {
-				if lastMCPToolApprovalAt.IsZero() || time.Since(lastMCPToolApprovalAt) >= time.Second {
-					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-mcp-approval", hasCursorMCPToolApprovalPrompt, "Tab"); err == nil && handled {
-						lastMCPToolApprovalAt = time.Now()
-					}
-				}
-				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			if autoApproveWebSearch && hasCursorWebAccessApprovalPrompt(captured) {
-				if lastWebSearchApprovalAt.IsZero() || time.Since(lastWebSearchApprovalAt) >= 2*time.Second {
-					if handled, err := sendCursorControlIfVisible(ctx, sessionName, "cursor-web-approval", hasCursorWebAccessApprovalPrompt, "y"); err == nil && handled {
-						lastWebSearchApprovalAt = time.Now()
-					}
-				}
 				idleSince = time.Time{}
 				lastCaptured = captured
 				continue
