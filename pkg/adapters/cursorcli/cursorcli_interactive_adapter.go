@@ -116,6 +116,13 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool) string 
 }
 
 type cursorInteractiveSession struct {
+	// Independent of mu: live input is accepted while GenerateContent owns mu.
+	retainedMu         sync.Mutex
+	retainedStoreDB    string
+	retainedWorkingDir string
+	retainedNativeID   string
+	retainedInput      *cursorRetainedInput
+
 	ownerSessionID  string
 	tmuxSessionName string
 	workingDir      string
@@ -198,6 +205,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, err
 	}
 	tmuxSessionName = session.tmuxSessionName
+	session.setRetainedStore(resumeID)
 	stopCursorRetainedControls(session.tmuxSessionName)
 	tmuxstartup.Publish(callCtx, opts.StreamChan, "cursor-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
 		"cursor_interactive_session": session.tmuxSessionName,
@@ -309,6 +317,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		if nativeSessionID != "" {
 			additional["cursor_session_id"] = nativeSessionID
+			session.setRetainedStore(nativeSessionID)
 		}
 		gi := &llmtypes.GenerationInfo{Additional: additional}
 		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
@@ -500,6 +509,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 	if nativeSessionID != "" {
 		additional["cursor_session_id"] = nativeSessionID
+		session.setRetainedStore(nativeSessionID)
 	}
 	// Attach a SessionHandle so the orchestrator can reattach to this
 	// same tmux pane on future turns (rebind path), and so the
@@ -1286,7 +1296,26 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	if !ok {
 		return fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
 	}
-	return sendCursorLiveInputToTmux(ctx, sessionName, message)
+	session, retained := cursorPersistentRegistry.Get(ownerSessionID)
+	if !retained || session == nil {
+		return sendCursorLiveInputToTmux(ctx, sessionName, message)
+	}
+	// Install the boundary before typing; otherwise a fast reply can commit
+	// before the completion watcher starts. Restore it if delivery fails.
+	session.retainedMu.Lock()
+	previous := session.retainedInput
+	boundary := newCursorRetainedInput(session.resolveRetainedStoreLocked(), message)
+	session.retainedInput = boundary
+	session.retainedMu.Unlock()
+	if err := sendCursorLiveInputToTmux(ctx, sessionName, message); err != nil {
+		session.retainedMu.Lock()
+		if session.retainedInput == boundary {
+			session.retainedInput = previous
+		}
+		session.retainedMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func cursorInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
