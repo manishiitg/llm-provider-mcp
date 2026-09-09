@@ -85,6 +85,17 @@ var codexBridgeOnlyDisabledFeatures = []string{
 	"hooks",
 	"plugins",
 	"unavailable_dummy_tools",
+	// image_generation is codex's own built-in image_gen tool (see
+	// `codex features list`). Left enabled it competes with a caller's own
+	// MCP image_gen/image_edit tools and, worse, writes generated files
+	// under $CODEX_HOME/generated_images/ -- outside any bridge caller's
+	// workspace sandbox, with no relocation path once shell_tool above is
+	// also disabled. Bridge-only callers must go through their own
+	// MCP-exposed image tools instead. NOT applied to
+	// CodexCLIImageAdapter's own dedicated `codex exec` invocation
+	// (codexcli_image_adapter.go), which builds its args from scratch and
+	// legitimately depends on this same built-in tool to do the work.
+	"image_generation",
 }
 
 func appendCodexDisabledFeatureArgs(args []string, seen map[string]bool, features ...string) []string {

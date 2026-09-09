@@ -715,7 +715,7 @@ func TestCodexBridgeOnlyDisablesPluginAndDummyToolSurfaces(t *testing.T) {
 		t.Fatalf("systemPromptFile = %q, want empty", systemPromptFile)
 	}
 
-	for _, feature := range []string{"plugins", "unavailable_dummy_tools"} {
+	for _, feature := range []string{"plugins", "unavailable_dummy_tools", "image_generation"} {
 		if !codexArgsContainPair(args, "--disable", feature) {
 			t.Fatalf("args missing --disable %s: %v", feature, args)
 		}

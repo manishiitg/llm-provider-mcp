@@ -80,7 +80,8 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// codexBridgeOnlyDisabledFeatures (in options.go) — that list covers
 	// shell_tool, apply_patch via patch tool, unified_exec, tool_search,
 	// multi_agent, apps, browser_use, computer_use,
-	// workspace_dependencies, hooks, plugins, unavailable_dummy_tools.
+	// workspace_dependencies, hooks, plugins, unavailable_dummy_tools,
+	// image_generation.
 	// Passing those as flags is strictly cleaner than dropping a hook
 	// script: no SHA-keyed trust prompt to dismiss, no
 	// MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS gating, no per-session
