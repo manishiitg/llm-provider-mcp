@@ -29,9 +29,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -1228,7 +1228,6 @@ func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath,
 	if markerPath != "" {
 		markerOffset, _ = piMarkerFileSize(markerPath)
 	}
-	bufferName := "mlp-pi-input-" + piRandomHex(6)
 	tmp, err := os.CreateTemp("", "pi-tmux-input-*.txt")
 	if err != nil {
 		return fmt.Errorf("failed to create Pi tmux input temp file: %w", err)
@@ -1242,16 +1241,37 @@ func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath,
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to close Pi tmux input temp file: %w", err)
 	}
-	if err := runPiCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
-		return fmt.Errorf("failed to load Pi input into tmux buffer: %w", err)
+
+	// A tmux capture-pane (and Pi's own render) can stall past the
+	// paste-visible budget under host-level contention -- a noisy neighbor's
+	// CPU/IO load on a shared box, not anything wrong with this particular
+	// message. Retry the paste itself a few times, clearing the composer
+	// first each time, before giving up -- this does not touch (and cannot
+	// mask a real failure in) the visibility check itself, it only gives that
+	// same correct check more chances under a slow host.
+	const maxPasteAttempts = 3
+	var pasteErr error
+	for attempt := 1; attempt <= maxPasteAttempts; attempt++ {
+		bufferName := "mlp-pi-input-" + piRandomHex(6)
+		if err := runPiCommand(ctx, nil, "tmux", "load-buffer", "-b", bufferName, tmpPath); err != nil {
+			return fmt.Errorf("failed to load Pi input into tmux buffer: %w", err)
+		}
+		_ = runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
+		beforePaste, _ := capturePiPane(ctx, sessionName)
+		if err := runPiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+			return fmt.Errorf("failed to paste input into Pi interactive session: %w", err)
+		}
+		if waitForPiInputDraftVisible(ctx, sessionName, message, beforePaste, piPromptPasteVisibleWait) {
+			pasteErr = nil
+			break
+		}
+		pasteErr = fmt.Errorf("Pi input did not appear in the prompt before submit (attempt %d/%d)", attempt, maxPasteAttempts)
+		if ctx.Err() != nil {
+			break
+		}
 	}
-	_ = runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-u")
-	beforePaste, _ := capturePiPane(ctx, sessionName)
-	if err := runPiCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste input into Pi interactive session: %w", err)
-	}
-	if !waitForPiInputDraftVisible(ctx, sessionName, message, beforePaste, piPromptPasteVisibleWait) {
-		return fmt.Errorf("Pi input did not appear in the prompt before submit")
+	if pasteErr != nil {
+		return pasteErr
 	}
 	if err := submitPiInputInTmux(ctx, sessionName); err != nil {
 		return fmt.Errorf("failed to submit input to Pi interactive session: %w", err)
