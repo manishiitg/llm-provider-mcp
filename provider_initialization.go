@@ -1129,8 +1129,15 @@ func initializeMuseCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Initializing Muse adapter - model_id: %s", modelID)
 
-	apiKey := strings.TrimSpace(os.Getenv("META_API_KEY"))
+	// Explicit per-call key wins (mcpagent forwards its MuseCLI key through
+	// Config.APIKeys); otherwise META_API_KEY, otherwise the stored login.
+	apiKey := ""
+	if config.APIKeys != nil && config.APIKeys.MuseCLI != nil {
+		apiKey = strings.TrimSpace(*config.APIKeys.MuseCLI)
+	}
 	if apiKey != "" {
+		logger.Infof("Muse: using explicit API key (length=%d)", len(apiKey))
+	} else if apiKey = strings.TrimSpace(os.Getenv("META_API_KEY")); apiKey != "" {
 		logger.Infof("Muse: using API key from META_API_KEY env var (length=%d)", len(apiKey))
 	} else {
 		logger.Infof("Muse: no explicit API key, falling back to stored login")

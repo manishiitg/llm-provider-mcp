@@ -391,6 +391,13 @@ func WithMuseWorkingDir(dir string) llmtypes.CallOption {
 	return musecli.WithWorkingDir(dir)
 }
 
+// WithMuseMCPConfig merges the document's "mcpServers" entries into the
+// user-level muse settings.json for the duration of one exec run (merge,
+// don't clobber; restored afterwards). Same shape as WithCursorMCPConfig.
+func WithMuseMCPConfig(config string) llmtypes.CallOption {
+	return musecli.WithMCPConfig(config)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.

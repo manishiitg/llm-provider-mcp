@@ -293,12 +293,16 @@ type ProviderAPIKeys struct {
 	CodexCLI             *string
 	CursorCLI            *string
 	PiCLI                *string
-	MiniMax              *string
-	MiniMaxCodingPlan    *string
-	ElevenLabs           *string
-	Deepgram             *string
-	ZAI                  *string
-	Kimi                 *string
+	// MuseCLI is an explicit Meta API key for muse-cli. Empty (the common
+	// case) means stored `muse login` or META_API_KEY env, mirroring how
+	// the adapter resolves auth. Never a third-party key.
+	MuseCLI           *string
+	MiniMax           *string
+	MiniMaxCodingPlan *string
+	ElevenLabs        *string
+	Deepgram          *string
+	ZAI               *string
+	Kimi              *string
 	// PiProviderKeys stores Pi sub-provider API keys keyed by Pi provider id
 	// (for example "google", "zai", "zai-coding-cn", "deepseek").
 	PiProviderKeys map[string]string
