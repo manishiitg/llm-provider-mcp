@@ -92,6 +92,9 @@ func TestCursorRetainedReaderRequiresIdleAndDeliveryFailureRestoresBoundary(t *t
 		if got := ReadRetainedTurnMessages(t.Name(), time.Now()); len(got) != 0 {
 			t.Fatalf("busy pane returned final: %+v", got)
 		}
+		if got := ReadRetainedTurnProgressMessages(t.Name()); len(got) != 2 {
+			t.Fatalf("busy pane hid committed progress: %+v", got)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

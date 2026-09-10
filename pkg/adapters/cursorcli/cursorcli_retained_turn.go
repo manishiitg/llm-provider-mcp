@@ -72,6 +72,16 @@ func newCursorRetainedInput(storeDB, query string) *cursorRetainedInput {
 // The native store is pinned when the session starts/completes; nested image
 // or helper agents in the same directory must never supply its final answer.
 func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.MessageContent {
+	return readRetainedTurnMessages(ownerSessionID, true)
+}
+
+// ReadRetainedTurnProgressMessages includes committed commentary while Cursor
+// is busy. These messages are progress only; they must never settle a turn.
+func ReadRetainedTurnProgressMessages(ownerSessionID string) []llmtypes.MessageContent {
+	return readRetainedTurnMessages(ownerSessionID, false)
+}
+
+func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtypes.MessageContent {
 	session, ok := cursorPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
 	if !ok || session == nil {
 		return nil
@@ -89,11 +99,13 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	}
 	// Cursor can commit standalone commentary before a later tool-call blob.
 	// Its idle composer is required in addition to the query-bound transcript.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	pane, err := captureCursorPane(ctx, session.tmuxSessionName)
-	if err != nil || !PaneReadyForInput(pane) {
-		return nil
+	if requireIdle {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		pane, err := captureCursorPane(ctx, session.tmuxSessionName)
+		if err != nil || !PaneReadyForInput(pane) {
+			return nil
+		}
 	}
 	return readCursorRetainedInput(input)
 }

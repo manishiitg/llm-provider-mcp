@@ -216,6 +216,16 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 	}
 }
 
+// ReadCodingAgentRetainedTurnProgressMessages reads in-flight commentary without
+// asserting completion. Currently Cursor exposes this separate busy-safe reader;
+// providers without it return no progress and retain their completion behavior.
+func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSessionID string) []llmtypes.MessageContent {
+	if Provider(strings.ToLower(strings.TrimSpace(string(provider)))) == ProviderCursorCLI {
+		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)
+	}
+	return nil
+}
+
 // SendClaudeCodeControlKey injects a tmux control key (e.g. "Escape", "C-c")
 // into a registered Claude Code tmux session.
 func SendClaudeCodeControlKey(ctx context.Context, sessionID, key string) error {

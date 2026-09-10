@@ -58,6 +58,25 @@ func TestCursorRetainedControlsApproveWithoutResponseLoop(t *testing.T) {
 	t.Fatal("retained web approval was never accepted without an active response loop")
 }
 
+func TestCursorRetainedControlsSteerQueuedFollowups(t *testing.T) {
+	pane, log := retainedControlsFixture(t)
+	if err := os.WriteFile(pane, []byte("┌─ follow-ups ─┐\n○ Check the login\n+4 more lines · enter steer · ↑ select/edit · esc cancel\n└─────────────┘"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	startCursorRetainedControls(t.Name(), false)
+	t.Cleanup(func() { stopCursorRetainedControls(t.Name()) })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(log)
+		if strings.Contains(string(data), "send-keys -t "+t.Name()+" C-m") {
+			stopCursorRetainedControls(t.Name())
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("retained queued follow-ups were never steered")
+}
+
 func TestCursorRetainedApprovalDoesNotBlockLiveInput(t *testing.T) {
 	_, log := retainedControlsFixture(t)
 	startCursorRetainedControls(t.Name(), true)
