@@ -161,6 +161,33 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 	}
 }
 
+// TestMuseDiscoverSessionSinceMultilineSnippet pins the intake false
+// negative: session.jsonl stores newlines JSON-escaped, so a snippet holding
+// a literal newline must still match the log's backslash-n bytes. Every
+// multi-line builder prompt failed intake while single-line test prompts
+// always matched.
+func TestMuseDiscoverSessionSinceMultilineSnippet(t *testing.T) {
+	home := t.TempDir()
+	day := filepath.Join(home, "muse", "sessions", "2026", "09", "10")
+	dir := filepath.Join(day, "sess-multi")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Raw log bytes as the CLI writes them: JSON-escaped newlines.
+	content := `{"payload":{"record":{"text":"# Workflow Builder Agent\n\nYou design, run, monitor."}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Minute)
+	id, _, err := museDiscoverSessionSince(home, since, "# Workflow Builder Agent\n\nYou design")
+	if err != nil {
+		t.Fatalf("discover multiline snippet: %v", err)
+	}
+	if id != "sess-multi" {
+		t.Fatalf("session id = %q, want sess-multi", id)
+	}
+}
+
 // TestMusePromptNeedsAtomicPaste pins the prompt-size routing that avoids
 // tmux's "command too long" rejection: ordinary prompts type literally in
 // bounded chunks, while prompts at/above the cursor-mirrored thresholds go

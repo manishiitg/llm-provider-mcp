@@ -23,7 +23,39 @@ import (
 // ($XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl) and returns
 // the session id and log path. Pure filesystem work — unit-tested with
 // fixture trees, no CLI.
+// jsonEscapeLogSnippet escapes a plaintext snippet the way JSON string
+// encoding does, so it can be found in raw session.jsonl bytes with
+// strings.Contains. The discovery below compares against the raw file, not
+// decoded records; a snippet holding a literal newline can never match the
+// log's backslash-n bytes.
+func jsonEscapeLogSnippet(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
 func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet string) (sessionID, logPath string, err error) {
+	promptSnippet = jsonEscapeLogSnippet(promptSnippet)
 	root := filepath.Join(dataHome, "muse", "sessions")
 	var bestPath string
 	var bestMod time.Time
