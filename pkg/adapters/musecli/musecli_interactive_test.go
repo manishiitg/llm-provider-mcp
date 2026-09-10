@@ -588,3 +588,17 @@ func TestMuseDiscoverSessionSincePrefersWorkdir(t *testing.T) {
 		t.Fatal("expected error when no log records the workdir")
 	}
 }
+
+// TestSendMuseInteractiveInputNoSession pins the steer-path failure mode:
+// unknown owners fail loudly instead of typing into the void.
+func TestSendMuseInteractiveInputNoSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	owner := "mlp-nonexistent-" + museRandomSessionSuffix()
+	if err := SendMuseInteractiveInput(ctx, owner, "hello"); err == nil {
+		t.Fatal("expected error for unknown owner session")
+	}
+	if err := SendMuseInteractiveControlKey(ctx, owner, "Escape"); err == nil {
+		t.Fatal("expected error for unknown owner session")
+	}
+}

@@ -209,6 +209,18 @@ func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) e
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
 }
 
+// SendMuseCLIInteractiveInput sends user input to a live Muse CLI
+// interactive tmux session registered for the owning application session.
+func SendMuseCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return musecli.SendMuseInteractiveInput(ctx, sessionID, message)
+}
+
+// SendMuseCLIInteractiveControlKey injects a tmux control key into a registered
+// Muse CLI interactive session.
+func SendMuseCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return musecli.SendMuseInteractiveControlKey(ctx, sessionID, key)
+}
+
 // ReadCodingAgentRetainedTurnMessages reconstructs the structured messages for
 // a turn that was injected directly into an already-running coding CLI. It is a
 // read-only sidecar operation: it never starts or resumes an agent session.
