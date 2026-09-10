@@ -49,6 +49,27 @@ func (a *MuseCLIAdapter) museExecProvider() string {
 	return defaultMuseExecProvider
 }
 
+// museExecEffort validates the caller's reasoning-effort knob against the
+// levels `muse exec` accepts (see --reasoning-effort). Empty means "omit the
+// flag, take the CLI default". An unknown non-empty value is a caller bug
+// and fails fast rather than silently running at the wrong effort — this is
+// what the tier ladder (xhigh/high/medium) drives.
+func museExecEffort(opts *llmtypes.CallOptions) (string, error) {
+	if opts == nil {
+		return "", nil
+	}
+	effort := strings.ToLower(strings.TrimSpace(opts.ReasoningEffort))
+	if effort == "" {
+		return "", nil
+	}
+	for _, level := range museReasoningEffortLevels {
+		if effort == level {
+			return effort, nil
+		}
+	}
+	return "", fmt.Errorf("muse-cli exec lane: unknown reasoning effort %q (want one of %s)", opts.ReasoningEffort, strings.Join(museReasoningEffortLevels, "|"))
+}
+
 // museBuildExecPrompt folds messages into one exec prompt: system texts
 // become a header (exec has no system-prompt flag), the last human text is
 // the prompt. Non-text parts are rejected: pass image paths as text.
@@ -99,8 +120,9 @@ func museStderrTail(s string) string {
 // generateContentExec runs one headless turn via `muse exec --json` and
 // returns the terminal text (falling back to joined deltas). run.output.delta
 // chunks are forwarded to opts.StreamChan when set; the channel stays
-// caller-owned and is never closed here. Usage is nil: token counts come
-// from the session sidecar (transcript reader, later step), not the wire.
+// caller-owned and is never closed here. Token counts come from the session
+// sidecar (transcript reader), not the wire, and feed the shadow cost
+// estimate via museAttachTurnCost.
 func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -127,9 +149,15 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	if resumeID := strings.TrimSpace(museResumeSessionIDFromOptions(opts)); resumeID != "" {
 		argv = append(argv, "--session-id", resumeID)
 	}
+	if effort, err := museExecEffort(opts); err != nil {
+		return nil, err
+	} else if effort != "" {
+		argv = append(argv, "--reasoning-effort", effort)
+	}
 	// MCP servers reach muse through the user-level settings.json (there is
 	// no --mcp-config flag). Merge for the duration of this run only.
-	if mcpJSON := strings.TrimSpace(museMCPConfigFromOptions(opts)); mcpJSON != "" {
+	mcpJSON := strings.TrimSpace(museMCPConfigFromOptions(opts))
+	if mcpJSON != "" {
 		restoreMCP, err := museApplyMCPConfig(mcpJSON)
 		if err != nil {
 			return nil, err
@@ -137,10 +165,22 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		if restoreMCP != nil {
 			defer restoreMCP()
 		}
+		// MCP-server tools gate on approval while built-in shell tools do
+		// not: a mounted run with approvals on stalls forever waiting for a
+		// human (proven live 2026-09-10). Mounting a bridge is itself the
+		// explicit request for tool-capable execution, so this run only gets
+		// --disable-approval; unmounted runs keep the CLI default.
+		argv = append(argv, "--disable-approval")
 	}
 	argv = append(argv, prompt)
 
 	cmd := exec.CommandContext(ctx, "muse", argv...)
+	// The CLI treats the process cwd as the workspace root (skills, trust,
+	// transcript scoping), so pin it when the caller asks. Empty keeps the
+	// inherited cwd — the working_directory cert pins the explicit case.
+	if dir := strings.TrimSpace(museWorkingDirFromOptions(opts)); dir != "" {
+		cmd.Dir = dir
+	}
 	if a.apiKey != "" {
 		cmd.Stdin = strings.NewReader(a.apiKey)
 	} else {
@@ -202,6 +242,18 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 			} else if ev.Payload.Text != "" {
 				failedReason = ev.Payload.Text
 			}
+		case "tool.result":
+			if opts.StreamChan != nil {
+				if chunk := museToolEndChunk(line); chunk != nil {
+					opts.StreamChan <- *chunk
+				}
+			}
+		case "task.lifecycle.status":
+			if opts.StreamChan != nil {
+				if chunk := museStatusChunk(line); chunk != nil {
+					opts.StreamChan <- *chunk
+				}
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -236,6 +288,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	}}}
 	if hasTurnUsage {
 		resp.Usage = &turnUsage
+		museAttachTurnCost(gi, model, &turnUsage)
 	}
 	return resp, nil
 }

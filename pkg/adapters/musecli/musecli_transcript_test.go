@@ -49,6 +49,15 @@ func TestReadMuseTranscriptUsageFiltersRun(t *testing.T) {
 	}
 }
 
+func TestMuseTurnCommitsCountsAnswers(t *testing.T) {
+	if got := museTurnCommits(writeMuseSampleLog(t)); got != 1 {
+		t.Fatalf("commits = %d, want 1 (the single assistant_message_committed row)", got)
+	}
+	if got := museTurnCommits(filepath.Join(t.TempDir(), "missing.jsonl")); got != 0 {
+		t.Fatalf("unreadable log commits = %d, want 0, never an error", got)
+	}
+}
+
 func TestReadMuseTranscriptMessagesInOrder(t *testing.T) {
 	msgs, ok := readMuseTranscriptMessages(writeMuseSampleLog(t), "run-r1")
 	if !ok {

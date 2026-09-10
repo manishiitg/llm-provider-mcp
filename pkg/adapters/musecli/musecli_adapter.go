@@ -1,8 +1,8 @@
-// Package musecli is the Muse (Muse Code, `muse` CLI) adapter stub.
+// Package musecli is the Muse (Muse Code, `muse` CLI) adapter.
 //
 // Recon: multi-llm-provider-go/docs/MUSE_CLI_CODING_AGENT_CONTRACT.md.
-// GenerateContent runs the exec --json lane; the tmux lane arrives with
-// the interactive adapter (later step).
+// GenerateContent runs the exec --json lane by default and the interactive
+// tmux lane on explicit request (uncertified until fresh_launch goes green).
 package musecli
 
 import (
@@ -33,8 +33,16 @@ func (a *MuseCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 	return GetMuseModelMetadata(modelID)
 }
 
-// GenerateContent runs one headless turn through the exec --json lane.
-// The tmux lane arrives with the interactive adapter (later step).
+// GenerateContent runs one turn through the exec --json lane by default,
+// or the interactive tmux lane when explicitly requested via
+// WithTmuxTransport (uncertified until fresh_launch goes green live).
 func (a *MuseCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	opts := &llmtypes.CallOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+	if museTmuxTransportRequested(opts) {
+		return a.generateContentTmux(ctx, messages, opts)
+	}
 	return a.generateContentExec(ctx, messages, options...)
 }

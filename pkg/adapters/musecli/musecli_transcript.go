@@ -160,6 +160,86 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 	return usage, matched
 }
 
+func museIntPtr(v int) *int { return &v }
+
+// museTurnCommits counts assistant_message_committed run events in a native
+// session log: one per model answer, the turn-completion ground truth the
+// quiescence waiter anchors on. Unreadable logs count zero, never an error.
+func museTurnCommits(logPath string) int {
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		return 0
+	}
+	commits := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		payload, _ := rec["payload"].(map[string]any)
+		if payload == nil || museLogString(payload, "kind") != "run" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		if event != nil && museLogString(event, "kind") == "assistant_message_committed" {
+			commits++
+		}
+	}
+	return commits
+}
+
+// museAttachTurnCost maps sidecar usage onto GenerationInfo and attaches the
+// shadow USD estimate through the model rate card. Proven 2026-09-10 against
+// live goal_usage_attribution rows: input_tokens is the total prompt-side
+// footprint INCLUDING cached_tokens (a warm turn's cached count ~= the prior
+// turn's input), so the cache bucket is marked included to avoid
+// double-charging it as fresh input. Never fails: zero rates or missing
+// usage just leave the estimate off.
+func museAttachTurnCost(gi *llmtypes.GenerationInfo, model string, usage *llmtypes.Usage) {
+	if gi == nil || usage == nil {
+		return
+	}
+	if gi.Additional == nil {
+		gi.Additional = map[string]any{}
+	}
+	gi.Additional["provider"] = "muse-cli"
+	if usage.InputTokens > 0 {
+		gi.InputTokens = museIntPtr(usage.InputTokens)
+	}
+	if usage.OutputTokens > 0 {
+		gi.OutputTokens = museIntPtr(usage.OutputTokens)
+	}
+	if usage.TotalTokens > 0 {
+		gi.TotalTokens = museIntPtr(usage.TotalTokens)
+	}
+	if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+		r := *usage.ReasoningTokens
+		gi.ReasoningTokens = &r
+	}
+	cache := 0
+	if usage.CacheTokens != nil {
+		cache = *usage.CacheTokens
+	}
+	if cache > 0 {
+		gi.CachedContentTokens = museIntPtr(cache)
+		gi.Additional["cache_read_input_tokens"] = cache
+		gi.Additional["prompt_tokens_include_cache"] = true
+	}
+	if strings.TrimSpace(model) == "" {
+		model = DefaultModelID
+	}
+	if meta, err := GetMuseModelMetadata(model); err == nil && meta != nil {
+		if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
+			gi.Additional["cost_usd_estimated"] = cost
+			gi.Additional["cost_model_id"] = meta.ModelID
+		}
+	}
+}
+
 // readMuseTranscriptMessages maps one run's committed prompts and assistant
 // texts to message content (file order). System rows, non-run envelopes,
 // and empty texts are skipped. ok=false only when the log is unreadable.

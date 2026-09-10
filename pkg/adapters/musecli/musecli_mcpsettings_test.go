@@ -9,13 +9,12 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// redirectMuseConfigHome points os.UserConfigDir at a temp dir for the test.
+// redirectMuseConfigHome points XDG_CONFIG_HOME at a temp dir for the test.
 func redirectMuseConfigHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	// os.UserConfigDir caches on some platforms; on unix it reads the env
-	// each call, but fail loudly if the path escapes the temp dir.
+	// Fail loudly if the resolved path escapes the temp dir.
 	path, err := museSettingsPath()
 	if err != nil {
 		t.Fatalf("settings path: %v", err)

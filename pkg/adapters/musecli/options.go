@@ -69,6 +69,30 @@ func museMCPConfigFromOptions(opts *llmtypes.CallOptions) string {
 	return cfg
 }
 
+func museInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil {
+		return ""
+	}
+	id, _ := opts.Metadata.Custom[MetadataKeyMuseInteractiveSessionID].(string)
+	return id
+}
+
+func musePersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMusePersistentInteractive].(bool)
+	return enabled
+}
+
+func museWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil {
+		return ""
+	}
+	dir, _ := opts.Metadata.Custom[MetadataKeyMuseWorkingDir].(string)
+	return dir
+}
+
 // WithMuseInteractiveSessionID associates the tmux session with an owner
 // session id (mirrors WithCodexInteractiveSessionID).
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {

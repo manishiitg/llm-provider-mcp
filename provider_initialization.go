@@ -1103,7 +1103,7 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 
 // initializeMuseCLI creates and configures a Muse adapter instance.
 // Auth is the stored `muse login` or META_API_KEY; no third-party key is
-// ever forwarded. Stub: GenerateContent is not implemented yet.
+// ever forwarded.
 func initializeMuseCLI(config Config) (llmtypes.Model, error) {
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,

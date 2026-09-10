@@ -91,17 +91,16 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
 		}, true
 	case ProviderMuseCLI:
-		// Initial mapping from the on-disk catalog (2026-09-10): the
-		// default+current contributor build carries Builder/High/Pulse,
-		// 1.3 takes Medium, 1.2 takes Low. Effort calibration is TBD
-		// pending live runs.
-		contributor := codingAgentHighReasoningRef(providerID, "muse-spark-1.3-contributor")
+		// Single model for now (2026-09-10): every tier runs
+		// muse-spark-1.3-contributor, effort ladder xhigh (Builder,
+		// High, Pulse) / high (Medium) / medium (Low).
+		const museModel = "muse-spark-1.3-contributor"
 		return &CodingAgentDefaultTierModels{
-			Builder: contributor,
-			High:    contributor,
-			Medium:  codingAgentReasoningRef(providerID, "muse-spark-1.3", "medium"),
-			Low:     codingAgentReasoningRef(providerID, "muse-spark-1.2", "medium"),
-			Pulse:   contributor,
+			Builder: codingAgentReasoningRef(providerID, museModel, "xhigh"),
+			High:    codingAgentReasoningRef(providerID, museModel, "xhigh"),
+			Medium:  codingAgentReasoningRef(providerID, museModel, "high"),
+			Low:     codingAgentReasoningRef(providerID, museModel, "medium"),
+			Pulse:   codingAgentReasoningRef(providerID, museModel, "xhigh"),
 		}, true
 	}
 
