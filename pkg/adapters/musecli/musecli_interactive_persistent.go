@@ -255,10 +255,9 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 		if restore, err = museApplyMCPConfig(strings.TrimSpace(mcpJSON)); err != nil {
 			return nil, err
 		}
-		// MCP-server tools gate on approval while built-in shell tools do
-		// not; a mounted persistent TUI with approvals on stalls on its
-		// first bridge-tool call with nobody to click approve.
-		argv = append(argv, "--disable-approval")
+		// museTUIApprovalArgv covers mounted turns: MCP-server tools gate
+		// on approval while built-in shell tools do not.
+		argv = append(argv, museTUIApprovalArgv()...)
 	}
 	cli := append([]string{"muse"}, argv...)
 	if id := strings.TrimSpace(resumeNativeID); id != "" {

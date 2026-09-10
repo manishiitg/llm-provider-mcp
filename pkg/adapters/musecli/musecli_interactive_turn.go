@@ -257,10 +257,14 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 		prompt = museResolveTmuxPrompt(system, human, wantAgents, projected)
 		session = museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
-		if err := museLaunchTUI(ctx, workdir, session, a.museExecProvider()); err != nil {
+		restoreMCP, err := museLaunchTUI(ctx, workdir, session, a.museExecProvider(), strings.TrimSpace(museMCPConfigFromOptions(opts)))
+		if err != nil {
 			return nil, err
 		}
 		defer museKillTmuxSession(context.Background(), session)
+		if restoreMCP != nil {
+			defer restoreMCP()
+		}
 	}
 	if persistent && launchOnly {
 		// Acquire already waited for settle (+ MCP readiness on fresh

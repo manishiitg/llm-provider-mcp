@@ -527,3 +527,21 @@ func TestMuseTranscriptStreamStatePollsBySequence(t *testing.T) {
 		t.Fatalf("polled = %q, want only post-prime records in order", got)
 	}
 }
+
+// TestMuseTUIApprovalArgv pins the mounted-turn approval posture both launch
+// paths share: --approval-mode never must stay present — --disable-approval
+// alone lets MCP tools park in approval_wait and hang the turn (proven live).
+func TestMuseTUIApprovalArgv(t *testing.T) {
+	argv := museTUIApprovalArgv()
+	has := func(flag string) bool {
+		for _, a := range argv {
+			if a == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("--disable-approval") || !has("--approval-mode") || !has("never") {
+		t.Fatalf("approval argv = %q, want --disable-approval --approval-mode never", argv)
+	}
+}
