@@ -231,7 +231,7 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
 			return err
 		}
-	} else if err := writeMuseVisibleDraftToTmux(ctx, session, prompt); err != nil {
+	} else if err := writeVisibleDraftAndConfirm(ctx, session, prompt); err != nil {
 		return err
 	}
 	enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
@@ -239,6 +239,62 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		return fmt.Errorf("tmux send-keys Enter: %w\n%s", err, out)
 	}
 	return nil
+}
+
+// writeVisibleDraftAndConfirm types the prompt via writeMuseVisibleDraftToTmux
+// and waits for it to actually appear in the pane before returning, retyping
+// (after clearing the line) a bounded number of times if it doesn't.
+//
+// pasteMuseDraftToTmux (the large-prompt path) already waits for its own
+// collapse/visible markers before its caller submits; this plain-typed path
+// had no equivalent check, so a keystroke burst swallowed mid-render (the
+// same class of race documented on musePaneStable -- "an Enter sent right
+// after first render is swallowed") went straight to museSendPrompt's Enter
+// with an empty input box. museWaitIntake's retry loop only re-sends a bare
+// Enter, never retypes, so every retry kept submitting nothing for the full
+// 60s deadline: "muse TUI never took in the prompt after submit" no matter
+// how many Enters it resent. Observed live 2026-09-10 on a trivial one-word
+// prompt ("hi"), well under the atomic-paste threshold.
+func writeVisibleDraftAndConfirm(ctx context.Context, session, prompt string) error {
+	snippet := prompt
+	if idx := strings.Index(snippet, "\n"); idx >= 0 {
+		snippet = snippet[:idx]
+	}
+	snippet = strings.TrimSpace(snippet)
+	if len([]rune(snippet)) > 40 {
+		snippet = string([]rune(snippet)[:40])
+	}
+	const maxAttempts = 3
+	for attempt := 1; ; attempt++ {
+		if err := writeMuseVisibleDraftToTmux(ctx, session, prompt); err != nil {
+			return err
+		}
+		if snippet == "" {
+			return nil // nothing to verify (a genuinely empty prompt)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			pane, err := museTmuxCapturePane(ctx, session)
+			if err == nil && strings.Contains(pane, snippet) {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("muse type-and-confirm wait canceled: %w", ctx.Err())
+			case <-time.After(150 * time.Millisecond):
+			}
+		}
+		if attempt >= maxAttempts {
+			return fmt.Errorf("muse TUI did not show the typed prompt after %d attempts; the keystrokes may have been swallowed mid-render", maxAttempts)
+		}
+		clear := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u")
+		if out, err := clear.CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux clear input before retry: %w\n%s", err, out)
+		}
+	}
 }
 
 // musePromptNeedsAtomicPaste reports whether the prompt is large enough that

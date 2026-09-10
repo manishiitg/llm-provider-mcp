@@ -313,3 +313,57 @@ func TestProjectMuseAgentsForTurnFallback(t *testing.T) {
 		restore()
 	}
 }
+
+// TestMuseResolveTmuxPromptDefaultsToFold is the regression for a real bug:
+// museResolveTmuxPrompt previously started from `human` alone and only
+// widened to the inline fold on a fallback condition that never fires when
+// instruction-only mode is off (the default) -- silently dropping every
+// system message for every default-mode tmux call. No test exercised a
+// system message through the tmux lane with instructionOnly left unset
+// before this was caught. Every case here is the actual call-site
+// contract: wantAgents/agentsProjected reaching false is normal, expected
+// traffic (default mode, or a projection attempt that failed), not an edge
+// case.
+func TestMuseResolveTmuxPromptDefaultsToFold(t *testing.T) {
+	system := []string{"Be brief."}
+	const human = "say hi"
+	const folded = "Be brief.\n\nsay hi"
+
+	cases := []struct {
+		name            string
+		wantAgents      bool
+		agentsProjected bool
+		want            string
+	}{
+		{"default mode (instructionOnly off): must fold, not drop the system message", false, false, folded},
+		{"instructionOnly on but projection failed: falls back to folding", true, false, folded},
+		{"instructionOnly on and projection succeeded: bare human, AGENTS.md carries it", true, true, human},
+		// Not reachable from the real call site (wantAgents requires
+		// len(system) > 0 upstream, so it can't be false while projected is
+		// true) but pinned anyway: projected alone must not bypass the fold.
+		{"agentsProjected true but wantAgents false: still folds", false, true, folded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := museResolveTmuxPrompt(system, human, tc.wantAgents, tc.agentsProjected); got != tc.want {
+				t.Errorf("museResolveTmuxPrompt(%v, %q, %v, %v) = %q, want %q",
+					system, human, tc.wantAgents, tc.agentsProjected, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMuseResolveTmuxPromptNoSystemMessage confirms the trivial case is
+// unaffected by any of this: no system message means the prompt is always
+// just the human turn, regardless of the instruction-only flags.
+func TestMuseResolveTmuxPromptNoSystemMessage(t *testing.T) {
+	const human = "say hi"
+	for _, wantAgents := range []bool{false, true} {
+		for _, agentsProjected := range []bool{false, true} {
+			if got := museResolveTmuxPrompt(nil, human, wantAgents, agentsProjected); got != human {
+				t.Errorf("museResolveTmuxPrompt(nil, %q, %v, %v) = %q, want bare human %q",
+					human, wantAgents, agentsProjected, got, human)
+			}
+		}
+	}
+}

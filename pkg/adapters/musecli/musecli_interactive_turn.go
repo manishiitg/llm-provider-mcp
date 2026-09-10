@@ -188,6 +188,26 @@ func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout
 	}
 }
 
+// museResolveTmuxPrompt decides what gets typed into the tmux pane: the
+// legacy inline concatenation (system folded ahead of human) by default, or
+// the bare human turn ONLY once AGENTS.md is confirmed to actually carry the
+// system prompt (agentsProjected true).
+//
+// Defaulting to the fold, not to `human` alone, matters: wantAgents is false
+// whenever instruction-only mode is off (the default -- see
+// WithProjectInstructionOnly), so a caller that starts from `human` and only
+// widens to the fold when a fallback condition fires never runs that
+// fallback in the off-by-default case, silently dropping every system
+// message for every default-mode tmux call. Caught 2026-09-10: no test
+// exercised a system message through this lane with instructionOnly left
+// unset before this shape existed.
+func museResolveTmuxPrompt(system []string, human string, wantAgents, agentsProjected bool) string {
+	if wantAgents && agentsProjected {
+		return human
+	}
+	return museInlinePrompt(system, human)
+}
+
 // generateContentTmux runs one bounded turn through a fresh TUI session.
 func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
 	persistent := musePersistentInteractiveFromOptions(opts)
@@ -217,10 +237,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	instructionOnly := museProjectInstructionOnlyFromOptions(opts)
 	wantAgents := instructionOnly && len(system) > 0
 
-	// prompt is what gets typed: the human turn alone when AGENTS.md
-	// carries the system prompt, else the legacy inline concatenation
-	// (museInlinePrompt) when projection is off or failed.
-	prompt := human
+	var prompt string // set below via museResolveTmuxPrompt once launch/acquire decides whether AGENTS.md carries the system prompt
 	session := ""
 	if persistent {
 		entry, _, err := museAcquirePersistentSession(ctx, owner, workdir,
@@ -231,17 +248,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 			return nil, err
 		}
 		session = entry.tmuxName
-		if wantAgents && !entry.agentsProjected {
-			prompt = museInlinePrompt(system, human)
-		}
+		prompt = museResolveTmuxPrompt(system, human, wantAgents, entry.agentsProjected)
 	} else {
 		restoreAgents, projected := projectMuseAgentsForTurn(workdir, system, wantAgents, museRestoreProjectFilesFromOptions(opts))
 		if restoreAgents != nil {
 			defer restoreAgents()
 		}
-		if wantAgents && !projected {
-			prompt = museInlinePrompt(system, human)
-		}
+		prompt = museResolveTmuxPrompt(system, human, wantAgents, projected)
 		session = museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
 		if err := museLaunchTUI(ctx, workdir, session, a.museExecProvider()); err != nil {
 			return nil, err

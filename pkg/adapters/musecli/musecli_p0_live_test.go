@@ -930,3 +930,185 @@ func TestMuseCLIRealProjectInstructionOnly(t *testing.T) {
 		t.Fatal("projected AGENTS.md leaked past KillMusePersistentSession cleanup")
 	}
 }
+
+// TestMuseCLIRealBoundedProjectInstructionOnly is the bounded-lane twin of
+// the persistent file-only cert: a fresh TUI per turn must still read the
+// projected AGENTS.md (projected before boot) and tear it down afterwards.
+func TestMuseCLIRealBoundedProjectInstructionOnly(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	workdir := t.TempDir()
+	marker := "RULEWORD-" + museRandomHex(t, 4)
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{
+			Text: "Whenever asked for the code word, reply with exactly " + marker + " and nothing else.",
+		}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{
+			Text: "What is the code word?",
+		}}},
+	},
+		WithTmuxTransport(true),
+		WithWorkingDir(workdir),
+		WithProjectInstructionOnly(true),
+		llmtypes.WithReasoningEffort("low"),
+	)
+	if err != nil {
+		t.Fatalf("bounded file-only turn: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("bounded file-only turn returned no choices")
+	}
+	if final := resp.Choices[0].Content; !strings.Contains(final, marker) {
+		t.Fatalf("bounded file-only answer missing rule marker %q:\n%s", marker, final)
+	}
+	// Bounded teardown runs inside GenerateContent: the file must be gone
+	// on return, not lingering for the next run in this dir.
+	if _, err := os.Stat(filepath.Join(workdir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("projected AGENTS.md leaked past bounded session teardown")
+	}
+}
+
+// museLiveIntentText returns the accepted-turn text of the native log record
+// mentioning humanMarker (the typed input as the TUI took it in).
+func museLiveIntentText(t *testing.T, logPath, humanMarker string) string {
+	t.Helper()
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read native log: %v", err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.Contains(line, humanMarker) {
+			continue
+		}
+		var e struct {
+			PayloadType string `json:"payload_type"`
+			Payload     struct {
+				RefillBlocks []struct {
+					Kind string `json:"kind"`
+					Text string `json:"text"`
+				} `json:"refill_blocks"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		if e.PayloadType != "runtime.user_intent.accepted" {
+			continue
+		}
+		var sb strings.Builder
+		for _, b := range e.Payload.RefillBlocks {
+			if b.Kind == "text" {
+				sb.WriteString(b.Text)
+			}
+		}
+		if sb.Len() > 0 {
+			return sb.String()
+		}
+	}
+	t.Fatalf("no accepted intent mentioning %q in %s", humanMarker, logPath)
+	return ""
+}
+
+// TestMuseCLIRealProjectInstructionChange certifies two file-only behaviors
+// units cannot see. First, a changed system prompt takes effect on the live
+// pooled session (relaunch, never a stale read): turn 2 obeys rule B, and
+// AGENTS.md holds B. Second, the typed turn excludes the preamble: the
+// accepted intent record carries the human marker but not the system marker.
+func TestMuseCLIRealProjectInstructionChange(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	owner := "mlp-chg-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	workdir := t.TempDir()
+	base := []llmtypes.CallOption{
+		WithPersistentInteractiveSession(true),
+		WithInteractiveSessionID(owner),
+		WithWorkingDir(workdir),
+		WithProjectInstructionOnly(true),
+		llmtypes.WithReasoningEffort("low"),
+	}
+	turn := func(system, human string) string {
+		t.Helper()
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: system}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: human}}},
+		}, base...)
+		if err != nil {
+			t.Fatalf("file-only turn: %v", err)
+		}
+		if len(resp.Choices) == 0 {
+			t.Fatal("file-only turn returned no choices")
+		}
+		return resp.Choices[0].Content
+	}
+
+	markerA := "RULEWORD-A" + museRandomHex(t, 4)
+	if final := turn("Whenever asked for the code word, reply with exactly "+markerA+" and nothing else.", "What is the code word?"); !strings.Contains(final, markerA) {
+		t.Fatalf("turn 1 answer missing rule marker %q:\n%s", markerA, final)
+	}
+	startB := time.Now()
+	markerB := "RULEWORD-B" + museRandomHex(t, 4)
+	humanB := "What is the code word? PLEASE-" + museRandomHex(t, 4)
+	if final := turn("Whenever asked for the code word, reply with exactly "+markerB+" and nothing else.", humanB); !strings.Contains(final, markerB) {
+		t.Fatalf("turn 2 answer missing new rule marker %q:\n%s", markerB, final)
+	}
+	if raw, err := os.ReadFile(filepath.Join(workdir, "AGENTS.md")); err != nil {
+		t.Fatalf("read projected AGENTS.md mid-session: %v", err)
+	} else if !strings.Contains(string(raw), markerB) {
+		t.Fatalf("projected AGENTS.md missing turn-2 marker %q", markerB)
+	}
+
+	_, logPath, err := museDiscoverSessionSince(museXDGDataHome(), startB, humanB)
+	if err != nil {
+		t.Fatalf("discover turn-2 log: %v", err)
+	}
+	intent := museLiveIntentText(t, logPath, humanB)
+	if !strings.Contains(intent, humanB) {
+		t.Fatalf("accepted intent missing human text:\n%s", intent)
+	}
+	if strings.Contains(intent, markerB) {
+		t.Fatalf("accepted intent carries system marker %q — preamble was typed inline:\n%s", markerB, intent)
+	}
+}
+
+// TestMuseCLIRealInteractiveTmuxDefaultModeFoldsSystemPrompt closes the gap
+// TestMuseCLIRealProjectInstructionOnly leaves: that test only certifies the
+// opt-in WithProjectInstructionOnly(true) path. Nothing certified live that
+// a system message survives the DEFAULT tmux path (instructionOnly left
+// unset) -- the exact path that silently dropped every system message
+// before museResolveTmuxPrompt was fixed to default to the inline fold
+// instead of the bare human turn. TestMuseResolveTmuxPromptDefaultsToFold
+// proves the decision function; this proves the fold actually survives
+// typing into a real TUI and produces a rule-compliant reply.
+func TestMuseCLIRealInteractiveTmuxDefaultModeFoldsSystemPrompt(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	marker := "RULEWORD-" + museRandomHex(t, 4)
+	workdir := t.TempDir()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{
+			llmtypes.TextContent{Text: "Whenever asked for the code word, reply with exactly " + marker + " and nothing else."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
+			llmtypes.TextContent{Text: "What is the code word?"}}},
+	}, WithTmuxTransport(true), WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"))
+	// Deliberately no WithProjectInstructionOnly: this is the default path.
+	if err != nil {
+		t.Fatalf("default-mode tmux turn with a system message failed: %v", err)
+	}
+	if final := resp.Choices[0].Content; !strings.Contains(final, marker) {
+		t.Fatalf("final = %q, want the rule marker %q (system prompt was dropped, not folded)", final, marker)
+	}
+	// The default path types the fold; AGENTS.md must not exist (that file
+	// is exclusive to the opt-in project-instruction-only path).
+	if _, err := os.Stat(filepath.Join(workdir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("default mode must not project AGENTS.md")
+	}
+}
