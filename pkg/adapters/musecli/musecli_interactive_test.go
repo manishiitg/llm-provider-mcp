@@ -160,3 +160,30 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 		t.Fatal("expected error when no log mentions the prompt")
 	}
 }
+
+// TestMusePromptNeedsAtomicPaste pins the prompt-size routing that avoids
+// tmux's "command too long" rejection: ordinary prompts type literally in
+// bounded chunks, while prompts at/above the cursor-mirrored thresholds go
+// through one atomic buffer paste.
+func TestMusePromptNeedsAtomicPaste(t *testing.T) {
+	largeRunes := strings.Repeat("x", museAtomicPasteMinRunes)
+	manyLines := strings.Repeat("line\n", museAtomicPasteMinLines)
+	fewLines := strings.Repeat("line\n", museAtomicPasteMinLines-1)
+	for _, tc := range []struct {
+		name   string
+		prompt string
+		want   bool
+	}{
+		{"short prompt types literally", "hello", false},
+		{"multiline under threshold types literally", "a\nb\nc", false},
+		{"rune threshold pastes atomically", largeRunes, true},
+		{"line threshold pastes atomically", manyLines, true},
+		{"just under line threshold types literally", strings.TrimSuffix(fewLines, "\n"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := musePromptNeedsAtomicPaste(tc.prompt); got != tc.want {
+				t.Fatalf("musePromptNeedsAtomicPaste(%q...) = %v, want %v", tc.prompt[:min(20, len(tc.prompt))], got, tc.want)
+			}
+		})
+	}
+}

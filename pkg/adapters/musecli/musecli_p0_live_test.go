@@ -781,3 +781,61 @@ func TestMuseCLIRealMCPBridge(t *testing.T) {
 	}
 	t.Logf("bridge tool_call_end: tool=%q result=%q", toolEnds[0].ToolName, toolEnds[0].ToolResult)
 }
+
+// TestMuseCLIRealLargePromptDraftDelivery pins large-payload injection
+// against the real TUI (regression: builder-scale prompts failed with
+// tmux "command too long" when sent as one send-keys argument). Launch-only,
+// chunked-typed, and buffer-pasted drafts must all land visibly. No Enter is
+// sent, so no model turn runs; cleanup kills the session.
+func TestMuseCLIRealLargePromptDraftDelivery(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	owner := "mlp-draft-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	launch, err := adapter.GenerateContent(ctx, nil, []llmtypes.CallOption{
+		WithPersistentInteractiveSession(true),
+		WithInteractiveSessionID(owner),
+		WithWorkingDir(t.TempDir()),
+		llmtypes.WithCodingProviderLaunchOnly(),
+	}...)
+	if err != nil {
+		t.Fatalf("launch-only: %v", err)
+	}
+	tmuxName := launch.Choices[0].GenerationInfo.CodingProviderSessionHandle.TmuxSession
+	if tmuxName == "" {
+		t.Fatal("launch-only returned no tmux session")
+	}
+
+	chunkMarker := "CHUNKMARK-" + museRandomHex(t, 4)
+	if err := writeMuseVisibleDraftToTmux(ctx, tmuxName, "first line\n"+chunkMarker+"\nthird line"); err != nil {
+		t.Fatalf("chunked draft: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	pane, err := museTmuxCapturePane(ctx, tmuxName)
+	if err != nil {
+		t.Fatalf("capture after chunked draft: %v", err)
+	}
+	if !strings.Contains(pane, chunkMarker) {
+		t.Fatalf("chunked draft marker %q not visible in pane", chunkMarker)
+	}
+
+	pasteMarker := "PASTEMARK-" + museRandomHex(t, 4)
+	big := strings.Repeat("pasted filler line for volume. ", 100) + "\n" + pasteMarker + "\n" + strings.Repeat("trailing pasted filler. ", 40)
+	if !musePromptNeedsAtomicPaste(big) {
+		t.Fatal("draft prompt should route to atomic paste")
+	}
+	if err := pasteMuseDraftToTmux(ctx, tmuxName, big); err != nil {
+		t.Fatalf("atomic paste: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	pane2, err := museTmuxCapturePane(ctx, tmuxName)
+	if err != nil {
+		t.Fatalf("capture after paste: %v", err)
+	}
+	if n := strings.Count(pane2, pasteMarker); n != 1 {
+		t.Fatalf("pasted marker %q appears %d times, want exactly once", pasteMarker, n)
+	}
+}

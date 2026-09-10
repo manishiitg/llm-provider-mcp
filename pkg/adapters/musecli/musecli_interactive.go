@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -209,15 +210,136 @@ func musePaneStable(ctx context.Context, session, pane string) bool {
 	return err == nil && again == pane
 }
 
+// museVisibleInputChunkRunes bounds each literal tmux key injection. tmux
+// rejects a single oversized send-keys argument ("command too long",
+// reproduced live with a 100KB builder prompt), so prompts are typed in
+// bounded literal chunks with embedded newlines sent as Ctrl+J (newline
+// without submit).
+const museVisibleInputChunkRunes = 160
+
+const (
+	// Prompts at or above these sizes go through one atomic tmux buffer
+	// paste instead of dozens of rapid send-keys calls: same thresholds as
+	// cursor, whose editor demonstrably drops parts of large literal bursts.
+	museAtomicPasteMinRunes = 2048
+	museAtomicPasteMinLines = 16
+)
+
 // museSendPrompt types the prompt into the TUI pane and submits it.
 func museSendPrompt(ctx context.Context, session, prompt string) error {
-	send := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "-l", prompt)
-	if out, err := send.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys prompt: %w\n%s", err, out)
+	if musePromptNeedsAtomicPaste(prompt) {
+		if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
+			return err
+		}
+	} else if err := writeMuseVisibleDraftToTmux(ctx, session, prompt); err != nil {
+		return err
 	}
 	enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
 	if out, err := enter.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux send-keys Enter: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// musePromptNeedsAtomicPaste reports whether the prompt is large enough that
+// literal chunk typing would take enough tmux round-trips to become
+// unreliable.
+func musePromptNeedsAtomicPaste(prompt string) bool {
+	return utf8.RuneCountInString(prompt) >= museAtomicPasteMinRunes ||
+		strings.Count(prompt, "\n")+1 >= museAtomicPasteMinLines
+}
+
+// pasteMuseDraftToTmux transfers a large prompt through stdin rather than
+// argv, then asks tmux to emit it as one bracketed paste. This avoids both
+// tmux's command-size rejection and partial delivery from dozens of rapid
+// send-keys subprocesses. The deferred delete best-effort cleans the named
+// buffer on every path.
+//
+// Muse collapses a bracketed paste into a "[Pasted Content N chars]"
+// attachment whose own chrome instructs "paste again to expand for editing"
+// (proven live: a single paste leaves the payload collapsed, a second paste
+// expands it into visible text exactly once — never duplicated). So this
+// waits for the collapse marker and pastes the same buffer again; when the
+// prompt is already visible with no collapse, the second paste is skipped so
+// content can never double.
+func pasteMuseDraftToTmux(ctx context.Context, session, prompt string) error {
+	bufferName := "mlp-muse-input-" + museRandomSessionSuffix()
+	load := exec.CommandContext(ctx, "tmux", "load-buffer", "-b", bufferName, "-")
+	load.Stdin = strings.NewReader(prompt)
+	if out, err := load.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux load-buffer muse input: %w\n%s", err, out)
+	}
+	defer func() {
+		_ = exec.CommandContext(context.Background(), "tmux", "delete-buffer", "-b", bufferName).Run()
+	}()
+	paste := func(deleteAfter bool) error {
+		args := []string{"paste-buffer", "-p", "-r", "-b", bufferName, "-t", session}
+		if deleteAfter {
+			args = []string{"paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", session}
+		}
+		cmd := exec.CommandContext(ctx, "tmux", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux paste-buffer muse input: %w\n%s", err, out)
+		}
+		return nil
+	}
+	if err := paste(false); err != nil {
+		return err
+	}
+	snippet := prompt
+	if idx := strings.Index(snippet, "\n"); idx >= 0 {
+		snippet = snippet[:idx]
+	}
+	if len([]rune(snippet)) > 40 {
+		snippet = string([]rune(snippet)[:40])
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pane, err := museTmuxCapturePane(ctx, session)
+		if err != nil {
+			return fmt.Errorf("tmux capture after muse paste: %w", err)
+		}
+		if strings.Contains(pane, "Pasted Content") || strings.Contains(pane, "Paste again to expand") {
+			return paste(true)
+		}
+		if snippet != "" && strings.Contains(pane, snippet) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("muse TUI showed neither pasted-content collapse nor prompt text after atomic paste")
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("muse paste-expand wait canceled: %w", ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// writeMuseVisibleDraftToTmux types the prompt in bounded literal chunks so
+// no single tmux command approaches the size rejection. A "--" separator
+// keeps a chunk that starts with "-" from parsing as a flag.
+func writeMuseVisibleDraftToTmux(ctx context.Context, session, prompt string) error {
+	prompt = strings.ReplaceAll(prompt, "\r\n", "\n")
+	prompt = strings.ReplaceAll(prompt, "\r", "\n")
+	lines := strings.Split(prompt, "\n")
+	for lineIndex, line := range lines {
+		runes := []rune(line)
+		for len(runes) > 0 {
+			chunkSize := min(len(runes), museVisibleInputChunkRunes)
+			chunk := string(runes[:chunkSize])
+			send := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "-l", "--", chunk)
+			if out, err := send.CombinedOutput(); err != nil {
+				return fmt.Errorf("tmux send-keys prompt chunk: %w\n%s", err, out)
+			}
+			runes = runes[chunkSize:]
+		}
+		if lineIndex < len(lines)-1 {
+			nl := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-j")
+			if out, err := nl.CombinedOutput(); err != nil {
+				return fmt.Errorf("tmux send-keys newline: %w\n%s", err, out)
+			}
+		}
 	}
 	return nil
 }
