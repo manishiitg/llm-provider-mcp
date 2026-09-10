@@ -288,11 +288,20 @@ api-bridge execute_shell_command
 	if hasCursorReadyPrompt(exactOverlay) {
 		t.Fatal("queued follow-ups overlay must not be classified as a ready composer")
 	}
+	steerOverlay := strings.ReplaceAll(exactOverlay, "enter send now", "enter steer")
+	if !hasCursorQueuedFollowupsSendPrompt(steerOverlay) {
+		t.Fatal("Cursor follow-ups steer overlay was not detected")
+	}
+	if hasCursorReadyPrompt(steerOverlay) {
+		t.Fatal("queued steer overlay must not be classified as a ready composer")
+	}
 
 	for _, pane := range []string{
 		"The documentation discusses follow-ups and when to send now.",
 		"follow-ups\n→ Add a follow-up",
 		"enter send now · ↑ select/edit · esc cancel",
+		"enter steer · ↑ select/edit · esc cancel",
+		"The documentation discusses follow-ups and says enter steer.",
 	} {
 		if hasCursorQueuedFollowupsSendPrompt(pane) {
 			t.Fatalf("ordinary/incomplete pane was misclassified as follow-ups overlay:\n%s", pane)

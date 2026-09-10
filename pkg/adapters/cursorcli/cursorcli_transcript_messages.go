@@ -292,7 +292,10 @@ func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.
 			cursorReturnedBlobs[ownerSessionID] = seen
 		}
 		// Copy so we don't mutate while iterating refs above.
-		seenForSession = seen
+		seenForSession = make(map[string]struct{}, len(seen))
+		for ref := range seen {
+			seenForSession[ref] = struct{}{}
+		}
 		cursorReturnedBlobsMu.Unlock()
 	}
 

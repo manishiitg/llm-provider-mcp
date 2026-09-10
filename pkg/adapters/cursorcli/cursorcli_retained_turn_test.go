@@ -85,12 +85,15 @@ func TestCursorRetainedReaderRequiresIdleAndDeliveryFailureRestoresBoundary(t *t
 		cursorPersistentRegistry.Delete(t.Name())
 		unregisterCursorInteractiveSession(t.Name(), t.Name())
 	})
-	for _, busy := range []string{"Composing\nctrl+c to stop\n→ Add a follow-up\n", retainedWebApprovalPane} {
+	for i, busy := range []string{"Composing\nctrl+c to stop\n→ Add a follow-up\n", retainedWebApprovalPane} {
 		if err := os.WriteFile(pane, []byte(busy), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if got := ReadRetainedTurnMessages(t.Name(), time.Now()); len(got) != 0 {
 			t.Fatalf("busy pane returned final: %+v", got)
+		}
+		if got := ReadRetainedTurnProgressMessages(t.Name()); len(got) != 1-i {
+			t.Fatalf("busy pane hid committed progress: %+v", got)
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -114,5 +117,47 @@ func TestCursorRetainedReaderRequiresIdleAndDeliveryFailureRestoresBoundary(t *t
 	writeCursorStoreFixture(t, cwd, "helper", []string{`{"role":"assistant","content":"wrong reply"}`})
 	if got := ReadRetainedTurnMessages(t.Name(), time.Now()); len(got) != 0 {
 		t.Fatalf("helper reply leaked: %+v", got)
+	}
+}
+
+func TestRetainedProgressKeepsNarrationAcrossSteerAndNormalStream(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	old := `{"role":"assistant","content":"Old answer"}`
+	blobs := []string{old}
+	path := writeCursorStoreFixture(t, cwd, "owned", blobs)
+	session := &cursorInteractiveSession{workingDir: cwd}
+	session.setRetainedStore("owned")
+	cursorPersistentRegistry.Set(t.Name(), session)
+	t.Cleanup(func() { cursorPersistentRegistry.Delete(t.Name()) })
+	first := newCursorRetainedInput(path, "check Simulator")
+	primeCursorRetainedProgress(t.Name(), first)
+	// Both messages commit after a second user input was accepted. This used
+	// to discard the first narration because the reader matched only latest.
+	second := newCursorRetainedInput(path, "all 20 points")
+	primeCursorRetainedProgress(t.Name(), second)
+	session.retainedInput = second
+	blobs = append(blobs,
+		`{"role":"user","content":[{"type":"text","text":"<user_query>check Simulator</user_query>"}]}`,
+		`{"role":"assistant","content":"Checking which Simulator checks we already cover."}`,
+		`{"role":"user","content":[{"type":"text","text":"<user_query>all 20 points</user_query>"}]}`,
+		`{"role":"assistant","content":"Checking the remaining points."}`)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeCursorStoreFixture(t, cwd, "owned", blobs)
+	got := ReadRetainedTurnProgressMessages(t.Name())
+	if len(got) != 2 || got[0].Parts[0].(llmtypes.TextContent).Text != "Checking which Simulator checks we already cover." {
+		t.Fatalf("lost narration across steer: %+v", got)
+	}
+	if got := ReadRetainedTurnProgressMessages(t.Name()); len(got) != 0 {
+		t.Fatalf("replayed progress: %+v", got)
+	}
+	if got := readCursorStoreDBMessages(path, cursorTranscriptStreamKey(t.Name())); len(got) != 0 {
+		t.Fatalf("normal stream replayed retained narration: %+v", got)
+	}
+	// Final completion remains query-bound and repeatable.
+	if got := readCursorRetainedInput(second); len(got) != 2 || got[1].Parts[0].(llmtypes.TextContent).Text != "Checking the remaining points." {
+		t.Fatalf("final boundary changed: %+v", got)
 	}
 }

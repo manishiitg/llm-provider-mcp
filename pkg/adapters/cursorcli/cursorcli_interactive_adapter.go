@@ -1306,6 +1306,7 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	previous := session.retainedInput
 	boundary := newCursorRetainedInput(session.resolveRetainedStoreLocked(), message)
 	session.retainedInput = boundary
+	primeCursorRetainedProgress(ownerSessionID, boundary)
 	session.retainedMu.Unlock()
 	if err := sendCursorLiveInputToTmux(ctx, sessionName, message); err != nil {
 		session.retainedMu.Lock()
@@ -2715,7 +2716,9 @@ func hasCursorQueuedFollowupsSendPrompt(captured string) bool {
 		if strings.Contains(line, "follow-ups") {
 			hasHeader = true
 		}
-		if strings.Contains(line, "enter send now") && strings.Contains(line, "select/edit") {
+		// Cursor 2026.09 calls the same action "steer". Keep the structural
+		// header/footer checks so prose cannot submit a user's composer.
+		if (strings.Contains(line, "enter send now") || strings.Contains(line, "enter steer")) && strings.Contains(line, "select/edit") {
 			hasActionFooter = true
 		}
 	}

@@ -72,6 +72,46 @@ func newCursorRetainedInput(storeDB, query string) *cursorRetainedInput {
 // The native store is pinned when the session starts/completes; nested image
 // or helper agents in the same directory must never supply its final answer.
 func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.MessageContent {
+	return readRetainedTurnMessages(ownerSessionID, true)
+}
+
+// ReadRetainedTurnProgressMessages consumes newly committed messages using the
+// normal stream's blob cursor. Progress belongs to the native session, not just
+// its latest query: a steer can be submitted before earlier narration commits.
+// Callers must serialize this read with delivery and publication; a discarded
+// read would otherwise consume messages without publishing them.
+func ReadRetainedTurnProgressMessages(ownerSessionID string) []llmtypes.MessageContent {
+	session, ok := cursorPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return nil
+	}
+	session.retainedMu.Lock()
+	path := session.resolveRetainedStoreLocked()
+	session.retainedMu.Unlock()
+	if path == "" {
+		return nil
+	}
+	return readCursorStoreDBMessages(path, cursorTranscriptStreamKey(ownerSessionID))
+}
+
+// A restored runtime may accept a retained send before a normal stream has
+// started in this process. Prime only once, before delivery; never advance an
+// existing cursor, since it may still have unpublished previous-turn messages.
+func primeCursorRetainedProgress(ownerSessionID string, input *cursorRetainedInput) {
+	key := cursorTranscriptStreamKey(ownerSessionID)
+	cursorReturnedBlobsMu.Lock()
+	defer cursorReturnedBlobsMu.Unlock()
+	if _, exists := cursorReturnedBlobs[key]; exists {
+		return
+	}
+	seen := make(map[string]struct{}, len(input.baseline))
+	for ref := range input.baseline {
+		seen[ref] = struct{}{}
+	}
+	cursorReturnedBlobs[key] = seen
+}
+
+func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtypes.MessageContent {
 	session, ok := cursorPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
 	if !ok || session == nil {
 		return nil
@@ -89,11 +129,13 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	}
 	// Cursor can commit standalone commentary before a later tool-call blob.
 	// Its idle composer is required in addition to the query-bound transcript.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	pane, err := captureCursorPane(ctx, session.tmuxSessionName)
-	if err != nil || !PaneReadyForInput(pane) {
-		return nil
+	if requireIdle {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		pane, err := captureCursorPane(ctx, session.tmuxSessionName)
+		if err != nil || !PaneReadyForInput(pane) {
+			return nil
+		}
 	}
 	return readCursorRetainedInput(input)
 }
