@@ -175,16 +175,36 @@ func TestMuseCLIRealExecSlowTool(t *testing.T) {
 	if final := resp.Choices[0].Content; !strings.Contains(final, marker) {
 		t.Fatalf("final = %q, want the listed file %q", final, marker)
 	}
-	var toolEnds []llmtypes.StreamChunk
+	var toolStarts, toolEnds []llmtypes.StreamChunk
 	for _, c := range museDrainStream(streamChan) {
-		if c.Type == llmtypes.StreamChunkTypeToolCallEnd {
+		switch c.Type {
+		case llmtypes.StreamChunkTypeToolCallStart:
+			toolStarts = append(toolStarts, c)
+		case llmtypes.StreamChunkTypeToolCallEnd:
 			toolEnds = append(toolEnds, c)
 		}
 	}
 	if len(toolEnds) == 0 {
 		t.Fatal("tool turn completed but no tool_call_end chunk streamed")
 	}
-	t.Logf("tool_call_end: tool=%q call=%q args=%q", toolEnds[0].ToolName, toolEnds[0].ToolCallID, toolEnds[0].ToolArgs)
+	// The wire has no tool-started event, so the lane synthesizes the start
+	// immediately before its end: the pair must share id, name, and args or
+	// product rows render an orphan end.
+	end := toolEnds[0]
+	var start *llmtypes.StreamChunk
+	for i, c := range toolStarts {
+		if c.ToolCallID == end.ToolCallID {
+			start = &toolStarts[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("tool_call_end %q streamed with no matching synthetic start", end.ToolCallID)
+	}
+	if start.ToolName != end.ToolName || start.ToolArgs != end.ToolArgs {
+		t.Fatalf("pair mismatch: start (%q, %q) vs end (%q, %q)", start.ToolName, start.ToolArgs, end.ToolName, end.ToolArgs)
+	}
+	t.Logf("tool_call pair: tool=%q call=%q args=%q", end.ToolName, end.ToolCallID, end.ToolArgs)
 }
 
 // museLiveBootTUI launches a Meta TUI in workdir and waits for the settled

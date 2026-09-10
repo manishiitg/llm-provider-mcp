@@ -244,7 +244,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 			}
 		case "tool.result":
 			if opts.StreamChan != nil {
-				if chunk := museToolEndChunk(line); chunk != nil {
+				for _, chunk := range museToolStreamChunks(line) {
 					opts.StreamChan <- *chunk
 				}
 			}

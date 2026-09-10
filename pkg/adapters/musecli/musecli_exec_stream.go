@@ -33,6 +33,30 @@ type museToolChunkText struct {
 	Output      string `json:"output"`
 }
 
+// museToolStreamChunks maps one tool.result event to the start/end chunk
+// pair every other provider emits natively. The exec wire has NO
+// tool-started event — the tool runs opaquely inside the CLI run and only
+// tool.result surfaces — so the start is synthesized from the end's own
+// identity (same call id, name, args; no result, no duration). Without the
+// pair, product rows render an orphan end: no tool name in the batch
+// label, no arguments retained, and the detail card opens onto the
+// "did not retain" fallback. Emitted start-then-end in one step; a consumer
+// that only wants completions keeps using museToolEndChunk.
+func museToolStreamChunks(line json.RawMessage) []*llmtypes.StreamChunk {
+	end := museToolEndChunk(line)
+	if end == nil {
+		return nil
+	}
+	start := &llmtypes.StreamChunk{
+		Type:       llmtypes.StreamChunkTypeToolCallStart,
+		ToolName:   end.ToolName,
+		ToolCallID: end.ToolCallID,
+		ToolArgs:   end.ToolArgs,
+		Metadata:   map[string]interface{}{"synthetic": true, "outcome": end.Metadata["outcome"]},
+	}
+	return []*llmtypes.StreamChunk{start, end}
+}
+
 // museToolEndChunk maps one tool.result event to a tool_call_end chunk.
 // Nil when the event carries nothing mappable (never fail a turn on
 // telemetry shape drift).
@@ -77,10 +101,26 @@ type museTaskStatusPayload struct {
 	} `json:"event"`
 }
 
+// museStreamPlumbing reports whether a lifecycle status message describes
+// transport retry plumbing rather than model progress — "opening meta
+// model stream attempt 1/10" / "completed meta model stream attempt 1/10"
+// are the only shapes observed live. Rendered as Thinking, they read as
+// operator spam with no thinking attached, so they never become chunks.
+// Matched by shape (open/complete + stream + attempt counter), not by
+// exact string, so future retry counts stay filtered while genuine
+// progress messages ("running tools…") still pass.
+func museStreamPlumbing(message string) bool {
+	lower := strings.ToLower(message)
+	if !strings.Contains(lower, "attempt") || !strings.Contains(lower, "stream") {
+		return false
+	}
+	return strings.Contains(lower, "opening") || strings.Contains(lower, "completed")
+}
+
 // museStatusChunk maps one lifecycle status event to a reasoning chunk so
-// product UIs can render it as a progress card (immediate assessment).
-// Transport chatter is kept: attempt counts are exactly what an operator
-// watches during a slow turn. Nil on shape drift.
+// product UIs can render real progress as Thinking. Transport plumbing
+// (stream open/complete attempt counters) is dropped, never surfaced.
+// Nil on shape drift.
 func museStatusChunk(line json.RawMessage) *llmtypes.StreamChunk {
 	var envelope struct {
 		Payload museTaskStatusPayload `json:"payload"`
@@ -88,12 +128,12 @@ func museStatusChunk(line json.RawMessage) *llmtypes.StreamChunk {
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		return nil
 	}
-	payload := envelope.Payload
-	if strings.TrimSpace(payload.Event.Message) == "" {
+	message := strings.TrimSpace(envelope.Payload.Event.Message)
+	if message == "" || museStreamPlumbing(message) {
 		return nil
 	}
 	return &llmtypes.StreamChunk{
 		Type:    llmtypes.StreamChunkTypeReasoning,
-		Content: strings.TrimSpace(payload.Event.Message),
+		Content: message,
 	}
 }
