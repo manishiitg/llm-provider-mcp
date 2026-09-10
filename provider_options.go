@@ -413,6 +413,13 @@ func WithMuseProjectInstructionOnly(enabled bool) llmtypes.CallOption {
 	return musecli.WithProjectInstructionOnly(enabled)
 }
 
+// WithMuseStreamTranscript opts tmux turns into transcript streaming
+// (assistant text, tool starts/ends, reasoning from session.jsonl). OFF by
+// default — the orchestrator sets it exactly when it streams.
+func WithMuseStreamTranscript(enabled bool) llmtypes.CallOption {
+	return musecli.WithStreamTranscript(enabled)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.

@@ -243,7 +243,8 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		entry, _, err := museAcquirePersistentSession(ctx, owner, workdir,
 			a.museExecProvider(), strings.TrimSpace(a.modelID),
 			strings.TrimSpace(museMCPConfigFromOptions(opts)), musePersistentReadyFile(opts),
-			strings.Join(system, "\n\n"), wantAgents, museRestoreProjectFilesFromOptions(opts))
+			strings.Join(system, "\n\n"), wantAgents, museRestoreProjectFilesFromOptions(opts),
+			museResumeSessionIDFromOptions(opts))
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +294,30 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	if err != nil {
 		return nil, err
 	}
+	// Opt-in transcript streaming: tail the intake-discovered session.jsonl
+	// so assistant text + tool starts/ends stream while the turn runs.
+	// Started here (not pre-submit) because the log path is only known once
+	// intake finds it; primed to the intake-time max sequence so nothing
+	// committed before this point replays. Stopped synchronously below —
+	// the final flush lands before return, and the adapter never closes
+	// StreamChan itself (caller-owned, exec-lane precedent).
+	var museStreamState *museTranscriptStreamState
+	var museStreamCancel context.CancelFunc
+	if opts.StreamChan != nil && museInteractiveStreamTranscriptEnabled(opts) {
+		streamCtx, cancel := context.WithCancel(ctx)
+		museStreamCancel = cancel
+		museStreamState = newMuseTranscriptStreamState(logPath)
+		go museStreamState.run(streamCtx, opts.StreamChan)
+	}
+	stopMuseStream := func() {
+		if museStreamCancel != nil {
+			museStreamCancel()
+			<-museStreamState.done
+			museStreamCancel = nil
+		}
+	}
 	after, err := museWaitTurnQuiescent(ctx, session, logPath, 5*time.Minute)
+	stopMuseStream()
 	if err != nil {
 		return nil, err
 	}

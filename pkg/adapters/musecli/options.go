@@ -190,3 +190,26 @@ func museRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
 	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseRestoreProjectFiles].(bool)
 	return enabled
 }
+
+// MetadataKeyMuseStreamTranscript opts into streaming structured content
+// (assistant text, tool starts/ends, reasoning) from the native
+// session.jsonl while a tmux turn runs. OFF by default — the tmux lane
+// stays silent unless the orchestrator asks (enableStreaming), same as
+// cursor's MetadataKeyStreamTranscript.
+const MetadataKeyMuseStreamTranscript = "muse_stream_transcript"
+
+// WithStreamTranscript opts into transcript streaming for tmux turns.
+func WithStreamTranscript(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStreamTranscript] = enabled
+	}
+}
+
+func museInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStreamTranscript].(bool)
+	return enabled
+}

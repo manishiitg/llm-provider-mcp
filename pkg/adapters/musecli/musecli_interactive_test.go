@@ -1,8 +1,10 @@
 package musecli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -420,5 +422,108 @@ func TestCloseMuseCLIInteractiveSessionForOwner(t *testing.T) {
 	musePersistentPool.Unlock()
 	if stillPooled {
 		t.Fatal("expected the pool entry to be removed")
+	}
+}
+
+// TestMuseTranscriptLineToChunks pins the tmux event synthesis the layer-2
+// streaming certs depend on: assistant commits -> Content, tool commits ->
+// paired ToolCallStart, result batches -> ToolCallEnd with real text,
+// reasoning deltas -> Reasoning (plumbing noise dropped), effect records as
+// start fallback / end backstop, unknown lines ignored.
+func TestMuseTranscriptLineToChunks(t *testing.T) {
+	seen, ended, started := map[string]bool{}, map[string]bool{}, map[string]time.Time{}
+	lines := []string{
+		`not json at all`,
+		`{"sequence":1,"payload_type":"runtime.session","payload":{"event":{"kind":"status","message":"opening meta model stream attempt 1/10"}}}`,
+		`{"sequence":2,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"The build ID is X."}}}`,
+		`{"sequence":3,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_tool_calls_committed","tool_calls":[{"call_id":"call_1","name":"read","args":"{\"path\":\"f\"}"}]}}}`,
+		`{"sequence":4,"payload_type":"tool_batch_effect","payload":{"record":{"kind":"started","call_id":"call_1","tool_name":"read"}}}`,
+		`{"sequence":5,"payload_type":"runtime.session","payload":{"event":{"kind":"reasoning_summary_delta","text":"Checking the file."}}}`,
+		`{"sequence":6,"payload_type":"runtime.session","payload":{"event":{"kind":"reasoning_summary_delta","text":"opening stream attempt 3 completed"}}}`,
+		`{"sequence":7,"payload_type":"runtime.session","payload":{"event":{"kind":"tool_result_batch_committed","results":[{"tool_call_id":"call_1","text":"file-bytes"}]}}}`,
+		`{"sequence":8,"payload_type":"tool_batch_effect","payload":{"record":{"kind":"terminal","call_id":"call_1"}}}`,
+		`{"sequence":9,"payload_type":"tool_batch_effect","payload":{"record":{"kind":"started","call_id":"call_2","tool_name":"shell"}}}`,
+		`{"sequence":10,"payload_type":"tool_batch_effect","payload":{"record":{"kind":"terminal","call_id":"call_2"}}}`,
+		`{"sequence":11,"payload_type":"runtime.session","payload":{"event":{"kind":"mystery_future_kind","text":"ignore me"}}}`,
+	}
+	var got []llmtypes.StreamChunk
+	for _, l := range lines {
+		got = append(got, museTranscriptLineToChunks(l, seen, ended, started)...)
+	}
+	var content, starts, ends, reasoning int
+	var startIDs, endIDs []string
+	for _, c := range got {
+		switch c.Type {
+		case llmtypes.StreamChunkTypeContent:
+			content++
+			if !strings.Contains(c.Content, "build ID") {
+				t.Fatalf("content = %q, want committed text", c.Content)
+			}
+		case llmtypes.StreamChunkTypeToolCallStart:
+			starts++
+			startIDs = append(startIDs, c.ToolCallID+":"+c.ToolName)
+		case llmtypes.StreamChunkTypeToolCallEnd:
+			ends++
+			endIDs = append(endIDs, c.ToolCallID)
+		case llmtypes.StreamChunkTypeReasoning:
+			reasoning++
+			if !strings.Contains(c.Content, "Checking") {
+				t.Fatalf("reasoning = %q, want delta text", c.Content)
+			}
+		default:
+			t.Fatalf("unexpected chunk type %q", c.Type)
+		}
+	}
+	if content != 1 || reasoning != 1 {
+		t.Fatalf("content=%d reasoning=%d, want 1 and 1 (noise + dupes dropped)", content, reasoning)
+	}
+	if strings.Join(startIDs, ",") != "call_1:read,call_2:shell" {
+		t.Fatalf("starts = %q, want committed-first dedup + effect fallback", startIDs)
+	}
+	if strings.Join(endIDs, ",") != "call_1,call_2" {
+		t.Fatalf("ends = %q, want exactly one end per start", endIDs)
+	}
+	for _, c := range got {
+		if c.Type == llmtypes.StreamChunkTypeToolCallEnd && c.ToolCallID == "call_1" && c.ToolResult != "file-bytes" {
+			t.Fatalf("call_1 result = %q, want real result text", c.ToolResult)
+		}
+	}
+}
+
+// TestMuseTranscriptStreamStatePollsBySequence pins the no-replay tailing:
+// records at/below the primed max never emit, newer ones emit once in order.
+func TestMuseTranscriptStreamStatePollsBySequence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	write := func(lines ...string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := func(seq int, text string) string {
+		return `{"sequence":` + strconv.Itoa(seq) + `,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"` + text + `"}}}`
+	}
+	write(line(1, "history"))
+	st := newMuseTranscriptStreamState(path)
+	if st.lastSeq != 1 {
+		t.Fatalf("primed lastSeq = %d, want 1", st.lastSeq)
+	}
+	ch := make(chan llmtypes.StreamChunk, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.poll(ctx, ch)
+	if len(ch) != 0 {
+		t.Fatal("primed history must not emit")
+	}
+	write(line(1, "history"), line(2, "fresh-two"), line(3, "fresh-three"))
+	st.poll(ctx, ch)
+	close(ch)
+	var got []string
+	for c := range ch {
+		got = append(got, c.Content)
+	}
+	if strings.Join(got, "|") != "fresh-two|fresh-three" {
+		t.Fatalf("polled = %q, want only post-prime records in order", got)
 	}
 }

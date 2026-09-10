@@ -158,7 +158,7 @@ func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 // reports whether AGENTS.md was projected for THIS turn — only then may the
 // caller skip typing the preamble inline. A projection failure is
 // best-effort (the turn falls back to inline), never a session-killer.
-func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON, readyFile, systemPrompt string, projectAgents, restoreAgentsFile bool) (*musePersistentSession, bool, error) {
+func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON, readyFile, systemPrompt string, projectAgents, restoreAgentsFile bool, resumeNativeID string) (*musePersistentSession, bool, error) {
 	key, err := musePersistentKey(owner)
 	if err != nil {
 		return nil, false, err
@@ -202,7 +202,10 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		}
 	}
 	tmuxName := musePersistentTmuxName(owner)
-	restore, err := museLaunchPersistentTUI(ctx, tmuxName, workdir, provider, modelID, mcpJSON, "")
+	// A dead entry relaunches here (reuse returned early above), so a
+	// caller-supplied native id resumes the conversation instead of
+	// starting cold — this is the continuity-after-loss path.
+	restore, err := museLaunchPersistentTUI(ctx, tmuxName, workdir, provider, modelID, mcpJSON, strings.TrimSpace(resumeNativeID))
 	if err != nil {
 		if restoreAgents != nil {
 			restoreAgents()
