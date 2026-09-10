@@ -505,7 +505,7 @@ func TestMuseTranscriptStreamStatePollsBySequence(t *testing.T) {
 		return `{"sequence":` + strconv.Itoa(seq) + `,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"` + text + `"}}}`
 	}
 	write(line(1, "history"))
-	st := newMuseTranscriptStreamState(path)
+	st := newMuseTranscriptStreamState(path, "", true, false)
 	if st.lastSeq != 1 {
 		t.Fatalf("primed lastSeq = %d, want 1", st.lastSeq)
 	}

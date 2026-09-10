@@ -28,6 +28,10 @@ import (
 // one end, joined on call_id.
 const museTranscriptStreamPollInterval = 400 * time.Millisecond
 
+// museScreenStreamPollInterval paces raw pane snapshots. Snapshots are
+// lossy by nature (only changes emit), so a coarse ticker is fine.
+const museScreenStreamPollInterval = 2 * time.Second
+
 // museTranscriptStreamMeta marks chunks synthesized from the native log so
 // consumers can tell them apart from live wire chunks.
 var museTranscriptStreamMeta = map[string]interface{}{"muse_cli_stream_source": "transcript"}
@@ -139,19 +143,29 @@ func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool
 
 // museTranscriptStreamState tails one turn's session.jsonl by sequence and
 // emits new records as chunks. lastSeq primes to the file's current max at
-// construction so prior turns' history never replays.
+// construction so prior turns' history never replays. When screenEnabled it
+// also snapshots the live pane on a coarse ticker, emitting Terminal chunks
+// only on change (the mode1 raw-terminal view) — same split as cursor's
+// transcript + tmux-screen flags.
 type museTranscriptStreamState struct {
-	logPath       string
-	lastSeq       int64
-	seenTool      map[string]bool
-	endedTool     map[string]bool
-	toolStartedAt map[string]time.Time
-	done          chan struct{}
+	logPath           string
+	tmuxName          string
+	transcriptEnabled bool
+	screenEnabled     bool
+	lastSeq           int64
+	seenTool          map[string]bool
+	endedTool         map[string]bool
+	toolStartedAt     map[string]time.Time
+	lastScreen        string
+	screenPrimed      bool
+	done              chan struct{}
 }
 
-func newMuseTranscriptStreamState(logPath string) *museTranscriptStreamState {
+func newMuseTranscriptStreamState(logPath, tmuxName string, transcriptEnabled, screenEnabled bool) *museTranscriptStreamState {
 	s := &museTranscriptStreamState{
-		logPath: logPath, seenTool: map[string]bool{},
+		logPath: logPath, tmuxName: tmuxName,
+		transcriptEnabled: transcriptEnabled, screenEnabled: screenEnabled,
+		seenTool: map[string]bool{},
 		endedTool: map[string]bool{}, toolStartedAt: map[string]time.Time{},
 		done: make(chan struct{}),
 	}
@@ -190,15 +204,60 @@ func (s *museTranscriptStreamState) run(ctx context.Context, streamChan chan<- l
 	}
 	ticker := time.NewTicker(museTranscriptStreamPollInterval)
 	defer ticker.Stop()
+	screenTicker := time.NewTicker(museScreenStreamPollInterval)
+	defer screenTicker.Stop()
 	defer close(s.done)
 	for {
 		select {
 		case <-ctx.Done():
-			s.poll(context.Background(), streamChan) // final flush (single-threaded now)
+			if s.transcriptEnabled {
+				s.poll(context.Background(), streamChan) // final flush (single-threaded now)
+			}
 			return
 		case <-ticker.C:
-			s.poll(ctx, streamChan)
+			if s.transcriptEnabled {
+				s.poll(ctx, streamChan)
+			}
+		case <-screenTicker.C:
+			s.pollScreen(streamChan)
 		}
+	}
+}
+
+// pollScreen captures the live pane and emits it as a Terminal chunk when
+// changed since the last snapshot. Dropped on backpressure (snapshots are
+// lossy) and silent on capture errors — screen streaming must never fail a
+// turn. First snapshot primes without emitting (avoids replaying the
+// pre-turn pane as new output).
+func (s *museTranscriptStreamState) pollScreen(streamChan chan<- llmtypes.StreamChunk) {
+	if !s.screenEnabled || strings.TrimSpace(s.tmuxName) == "" || streamChan == nil {
+		return
+	}
+	pane, err := museTmuxCapturePane(context.Background(), s.tmuxName)
+	if err != nil {
+		return
+	}
+	snapshot := strings.TrimRight(pane, "\n")
+	if !s.screenPrimed {
+		s.screenPrimed = true
+		s.lastScreen = snapshot
+		return
+	}
+	if strings.TrimSpace(snapshot) == "" || snapshot == s.lastScreen {
+		return
+	}
+	s.lastScreen = snapshot
+	select {
+	case streamChan <- llmtypes.StreamChunk{
+		Type:    llmtypes.StreamChunkTypeTerminal,
+		Content: snapshot,
+		Metadata: map[string]interface{}{
+			"tmux_session":               s.tmuxName,
+			"muse_cli_stream_source":     "tmux-screen",
+			"muse_interactive_session":   s.tmuxName,
+		},
+	}:
+	default:
 	}
 }
 

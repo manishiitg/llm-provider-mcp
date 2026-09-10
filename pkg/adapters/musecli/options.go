@@ -213,3 +213,25 @@ func museInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStreamTranscript].(bool)
 	return enabled
 }
+
+// MetadataKeyMuseStreamTmuxScreen controls whether raw tmux-pane snapshots
+// stream as Terminal chunks during a turn (the mode1 raw-terminal view).
+// Separate from the transcript flag, same split as cursor — there is no
+// environment-variable backdoor.
+const MetadataKeyMuseStreamTmuxScreen = "muse_stream_tmux_screen"
+
+// WithStreamTmuxScreen opts into raw pane snapshots during tmux turns.
+func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStreamTmuxScreen] = enabled
+	}
+}
+
+func museInteractiveStreamTmuxScreenEnabled(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStreamTmuxScreen].(bool)
+	return enabled
+}

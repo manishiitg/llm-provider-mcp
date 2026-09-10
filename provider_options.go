@@ -420,6 +420,13 @@ func WithMuseStreamTranscript(enabled bool) llmtypes.CallOption {
 	return musecli.WithStreamTranscript(enabled)
 }
 
+// WithMuseStreamTmuxScreen opts tmux turns into raw pane snapshots
+// (Terminal chunks, the mode1 view). OFF by default — separate from the
+// transcript flag, same split as cursor.
+func WithMuseStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return musecli.WithStreamTmuxScreen(enabled)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.

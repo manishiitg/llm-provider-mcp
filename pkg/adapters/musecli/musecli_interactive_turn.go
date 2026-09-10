@@ -334,10 +334,11 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// StreamChan itself (caller-owned, exec-lane precedent).
 	var museStreamState *museTranscriptStreamState
 	var museStreamCancel context.CancelFunc
-	if opts.StreamChan != nil && museInteractiveStreamTranscriptEnabled(opts) {
+	if opts.StreamChan != nil && (museInteractiveStreamTranscriptEnabled(opts) || museInteractiveStreamTmuxScreenEnabled(opts)) {
 		streamCtx, cancel := context.WithCancel(ctx)
 		museStreamCancel = cancel
-		museStreamState = newMuseTranscriptStreamState(logPath)
+		museStreamState = newMuseTranscriptStreamState(logPath, session,
+			museInteractiveStreamTranscriptEnabled(opts), museInteractiveStreamTmuxScreenEnabled(opts))
 		go museStreamState.run(streamCtx, opts.StreamChan)
 	}
 	stopMuseStream := func() {
