@@ -217,7 +217,9 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 }
 
 // ReadCodingAgentRetainedTurnProgressMessages reads in-flight commentary without
-// asserting completion. Currently Cursor exposes this separate busy-safe reader;
+// asserting completion. This consumes the normal stream cursor: callers must
+// serialize reads with delivery/publication and must not discard returned text.
+// Currently Cursor exposes this separate busy-safe reader;
 // providers without it return no progress and retain their completion behavior.
 func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSessionID string) []llmtypes.MessageContent {
 	if Provider(strings.ToLower(strings.TrimSpace(string(provider)))) == ProviderCursorCLI {

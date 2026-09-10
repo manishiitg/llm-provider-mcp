@@ -75,10 +75,40 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	return readRetainedTurnMessages(ownerSessionID, true)
 }
 
-// ReadRetainedTurnProgressMessages includes committed commentary while Cursor
-// is busy. These messages are progress only; they must never settle a turn.
+// ReadRetainedTurnProgressMessages consumes newly committed messages using the
+// normal stream's blob cursor. Progress belongs to the native session, not just
+// its latest query: a steer can be submitted before earlier narration commits.
+// Callers must serialize this read with delivery and publication; a discarded
+// read would otherwise consume messages without publishing them.
 func ReadRetainedTurnProgressMessages(ownerSessionID string) []llmtypes.MessageContent {
-	return readRetainedTurnMessages(ownerSessionID, false)
+	session, ok := cursorPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return nil
+	}
+	session.retainedMu.Lock()
+	path := session.resolveRetainedStoreLocked()
+	session.retainedMu.Unlock()
+	if path == "" {
+		return nil
+	}
+	return readCursorStoreDBMessages(path, cursorTranscriptStreamKey(ownerSessionID))
+}
+
+// A restored runtime may accept a retained send before a normal stream has
+// started in this process. Prime only once, before delivery; never advance an
+// existing cursor, since it may still have unpublished previous-turn messages.
+func primeCursorRetainedProgress(ownerSessionID string, input *cursorRetainedInput) {
+	key := cursorTranscriptStreamKey(ownerSessionID)
+	cursorReturnedBlobsMu.Lock()
+	defer cursorReturnedBlobsMu.Unlock()
+	if _, exists := cursorReturnedBlobs[key]; exists {
+		return
+	}
+	seen := make(map[string]struct{}, len(input.baseline))
+	for ref := range input.baseline {
+		seen[ref] = struct{}{}
+	}
+	cursorReturnedBlobs[key] = seen
 }
 
 func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtypes.MessageContent {

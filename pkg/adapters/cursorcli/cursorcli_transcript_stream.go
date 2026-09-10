@@ -54,12 +54,16 @@ type cursorTranscriptStreamState struct {
 	toolStartedAt map[string]time.Time
 }
 
+func cursorTranscriptStreamKey(ownerSessionID string) string {
+	return ownerSessionID + "\x00transcript-stream"
+}
+
 func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID, nativeSessionID string) *cursorTranscriptStreamState {
 	_ = turnStart // baseline is "now" (real-turn start), tighter than turnStart which predates warmups
 	s := &cursorTranscriptStreamState{
 		workingDir:      workingDir,
 		nativeSessionID: strings.TrimSpace(nativeSessionID),
-		streamKey:       ownerSessionID + "\x00transcript-stream",
+		streamKey:       cursorTranscriptStreamKey(ownerSessionID),
 		baseline:        time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
 		seenTool:        map[string]bool{},
 		toolStartedAt:   map[string]time.Time{},

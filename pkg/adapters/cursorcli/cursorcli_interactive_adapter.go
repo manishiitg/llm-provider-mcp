@@ -1306,6 +1306,7 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	previous := session.retainedInput
 	boundary := newCursorRetainedInput(session.resolveRetainedStoreLocked(), message)
 	session.retainedInput = boundary
+	primeCursorRetainedProgress(ownerSessionID, boundary)
 	session.retainedMu.Unlock()
 	if err := sendCursorLiveInputToTmux(ctx, sessionName, message); err != nil {
 		session.retainedMu.Lock()
