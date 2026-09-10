@@ -3,6 +3,7 @@ package musecli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -422,6 +423,39 @@ func TestCloseMuseCLIInteractiveSessionForOwner(t *testing.T) {
 	musePersistentPool.Unlock()
 	if stillPooled {
 		t.Fatal("expected the pool entry to be removed")
+	}
+}
+
+// TestCleanupMuseCLIInteractiveSessions pins the bulk sweep the workflow P0
+// harness calls between matrix providers: every pooled entry is removed and
+// its retained restores run, so no live pane (or settings/AGENTS.md mount)
+// leaks across providers.
+func TestCleanupMuseCLIInteractiveSessions(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux required: without it the sweep correctly no-ops")
+	}
+	mcpRestored, agentsRestored := false, false
+	musePersistentPool.Lock()
+	musePersistentPool.m["owner-sweep-a"] = &musePersistentSession{
+		tmuxName:      "mlp-muse-sweep-a",
+		restoreMCP:    func() { mcpRestored = true },
+		restoreAgents: func() { agentsRestored = true },
+	}
+	musePersistentPool.m["owner-sweep-b"] = &musePersistentSession{tmuxName: "mlp-muse-sweep-b"}
+	musePersistentPool.Unlock()
+
+	if err := CleanupMuseCLIInteractiveSessions(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	musePersistentPool.Lock()
+	remaining := len(musePersistentPool.m)
+	musePersistentPool.Unlock()
+	if remaining != 0 {
+		t.Fatalf("pool still holds %d entries after sweep", remaining)
+	}
+	if !mcpRestored || !agentsRestored {
+		t.Fatal("expected both retained restores to run as part of the sweep")
 	}
 }
 

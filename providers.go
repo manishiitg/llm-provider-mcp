@@ -103,6 +103,12 @@ func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
 	return picli.CleanupPiCLIInteractiveSessions(ctx)
 }
 
+// CleanupMuseCLIInteractiveSessions removes Muse CLI tmux sessions registered
+// by this process.
+func CleanupMuseCLIInteractiveSessions(ctx context.Context) error {
+	return musecli.CleanupMuseCLIInteractiveSessions(ctx)
+}
+
 // interactiveSessionPrefixes are the tmux session-name prefixes used by every
 // coding-agent CLI transport. Kept in sync with each adapter's
 // <provider>InteractiveSessionPrefix() default.
@@ -111,6 +117,7 @@ var interactiveSessionPrefixes = []string{
 	"mlp-codex-cli-int",
 	"mlp-cursor-cli-int",
 	"mlp-claude-code",
+	"mlp-muse-",
 }
 
 // SweepOrphanedInteractiveTmuxSessions reaps and kills every coding-agent tmux

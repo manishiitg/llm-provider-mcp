@@ -50,12 +50,19 @@ func musePersistentKey(owner string) (string, error) {
 	return owner, nil
 }
 
+// museInteractiveSessionPrefix is the tmux session-name prefix for pooled
+// muse TUIs, matching the <provider>InteractiveSessionPrefix convention the
+// root package's orphan sweep keeps in sync.
+func museInteractiveSessionPrefix() string {
+	return "mlp-muse-"
+}
+
 // musePersistentTmuxName derives a stable, tmux-safe session name from the
 // owner so the terminal tab and diagnostics can find the pane
 // deterministically.
 func musePersistentTmuxName(owner string) string {
 	var b strings.Builder
-	b.WriteString("mlp-muse-")
+	b.WriteString(museInteractiveSessionPrefix())
 	for _, r := range strings.ToLower(owner) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
@@ -99,6 +106,29 @@ func KillMusePersistentSession(owner string) {
 	entry := musePersistentPool.m[key]
 	delete(musePersistentPool.m, key)
 	museKillPersistentLocked(context.Background(), entry)
+}
+
+// CleanupMuseCLIInteractiveSessions tears down every pooled muse TUI
+// registered by this process, running each entry's retained settings and
+// AGENTS.md restores. Same bulk-sweep shape as codex/cursor/pi/claude's
+// Cleanup*InteractiveSessions; the workflow P0 harness calls it between
+// providers so no live pane leaks across matrix entries. No tmux binary is
+// a no-op (returns nil), never an error.
+func CleanupMuseCLIInteractiveSessions(ctx context.Context) error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil
+	}
+	musePersistentPool.Lock()
+	entries := make([]*musePersistentSession, 0, len(musePersistentPool.m))
+	for _, entry := range musePersistentPool.m {
+		entries = append(entries, entry)
+	}
+	musePersistentPool.m = make(map[string]*musePersistentSession)
+	musePersistentPool.Unlock()
+	for _, entry := range entries {
+		museKillPersistentLocked(ctx, entry)
+	}
+	return nil
 }
 
 // CloseMuseCLIInteractiveSessionForOwner is KillMusePersistentSession under
