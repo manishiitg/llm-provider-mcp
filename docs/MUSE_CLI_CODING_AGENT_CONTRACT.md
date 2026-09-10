@@ -69,6 +69,16 @@ with tmux as the default product path:
   `<ws>/.mcp.json`, `<ws>/.agents/mcp.json`, `<ws>/.muse/settings.json`
   are all ignored (trusted or not). Adapter implication: the bridge
   writes user-level `settings.json` (merge, don't clobber).
+* Mount mechanism implemented + verified live 2026-09-10
+  (`musecli.WithMCPConfig`, merge/restore in `musecli_mcpsettings.go`):
+  the CLI reads the merged `api-bridge` entry and attempts startup init.
+  An unreachable server fails the WHOLE run: `run.terminal.failed` with
+  reason "invalid run configuration: Required MCP server `api-bridge`
+  failed during startup: initialization failed." — the exec lane now
+  surfaces that reason in the returned error (previously only exit
+  status). Consequence: the mount is proven, but the success path needs
+  a real reachable bridge URL (mcpagent sidecar); that is the live
+  `mcp_bridge` P0. Restore runs on success and failure alike.
 * Bridge-only containment (deny native tools) is **TBD** — no
   `--disallowedTools` equivalent in help. Candidates: `--permission-profile
   <ID>` (mechanism unknown, likely settings-defined), or partial denial via

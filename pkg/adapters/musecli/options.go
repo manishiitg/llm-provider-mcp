@@ -44,6 +44,31 @@ const (
 	MetadataKeyMuseWorkingDir            = "muse_working_dir"
 )
 
+// MetadataKeyMuseMCPConfig carries a bridge MCP config document (a JSON
+// object with an "mcpServers" map, same shape as cursor's MetadataKeyMCPConfig)
+// for the exec lane to merge into the user's muse settings.json.
+const MetadataKeyMuseMCPConfig = "muse_mcp_config"
+
+// WithMCPConfig mounts MCP servers for one exec run by merging the document's
+// "mcpServers" entries into $XDG_CONFIG_HOME/muse/settings.json (merge, don't
+// clobber) for the duration of the run; the previous settings are restored
+// afterwards. Empty or whitespace-only documents are stored as-is and ignored
+// by the lane.
+func WithMCPConfig(configJSON string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseMCPConfig] = configJSON
+	}
+}
+
+func museMCPConfigFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil {
+		return ""
+	}
+	cfg, _ := opts.Metadata.Custom[MetadataKeyMuseMCPConfig].(string)
+	return cfg
+}
+
 // WithMuseInteractiveSessionID associates the tmux session with an owner
 // session id (mirrors WithCodexInteractiveSessionID).
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {

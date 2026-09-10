@@ -39,6 +39,7 @@ type museWirePayload struct {
 	CommandID string `json:"command_id"`
 	Text      string `json:"text"`
 	Terminal  string `json:"terminal"`
+	Reason    string `json:"reason"`
 }
 
 func (a *MuseCLIAdapter) museExecProvider() string {
@@ -126,6 +127,17 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	if resumeID := strings.TrimSpace(museResumeSessionIDFromOptions(opts)); resumeID != "" {
 		argv = append(argv, "--session-id", resumeID)
 	}
+	// MCP servers reach muse through the user-level settings.json (there is
+	// no --mcp-config flag). Merge for the duration of this run only.
+	if mcpJSON := strings.TrimSpace(museMCPConfigFromOptions(opts)); mcpJSON != "" {
+		restoreMCP, err := museApplyMCPConfig(mcpJSON)
+		if err != nil {
+			return nil, err
+		}
+		if restoreMCP != nil {
+			defer restoreMCP()
+		}
+	}
 	argv = append(argv, prompt)
 
 	cmd := exec.CommandContext(ctx, "muse", argv...)
@@ -148,6 +160,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	}
 	var deltas strings.Builder
 	terminalText := ""
+	failedReason := ""
 	sessionID := ""
 	commandID := ""
 	unparsed := 0
@@ -183,6 +196,12 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 			if ev.Payload.Text != "" {
 				terminalText = ev.Payload.Text
 			}
+		case "run.terminal.failed":
+			if ev.Payload.Reason != "" {
+				failedReason = ev.Payload.Reason
+			} else if ev.Payload.Text != "" {
+				failedReason = ev.Payload.Text
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -190,6 +209,9 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("read muse exec stream: %w (stderr: %s)", err, museStderrTail(stderr.String()))
 	}
 	if err := cmd.Wait(); err != nil {
+		if failedReason != "" {
+			return nil, fmt.Errorf("muse exec failed: %s: %w (stderr: %s)", failedReason, err, museStderrTail(stderr.String()))
+		}
 		return nil, fmt.Errorf("muse exec failed: %w (stderr: %s)", err, museStderrTail(stderr.String()))
 	}
 	final := terminalText
