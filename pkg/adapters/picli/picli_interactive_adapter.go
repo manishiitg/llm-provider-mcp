@@ -66,7 +66,19 @@ const (
 	piInteractiveTerminalPollInterval   = 750 * time.Millisecond
 	piInteractiveTerminalScrollbackLine = 10000
 	piPromptPasteVisibleWait            = 1500 * time.Millisecond
-	piPromptSubmitSettleWait            = 1500 * time.Millisecond
+	// piSendReadyWait bounds how long a steady-state send (anything other
+	// than the initial prompt right after launch) will wait for Pi's
+	// composer to actually be idle before ever attempting to paste. The
+	// one-time tmuxinput readiness gate only fires once, at launch, and
+	// never re-checks that Pi is idle *now* -- so a message arriving while
+	// the pane is still mid-generation, mid-redraw, or mid-recovery (e.g.
+	// "no active Pi interactive session registered ... trying
+	// retained-terminal recovery") previously skipped straight to pasting
+	// and failed identically, fast, on every retry. 30s rides out a normal
+	// busy/recovering window without making a genuinely stuck session hang
+	// as long as a cold launch (piPromptWait, up to 300s) would.
+	piSendReadyWait          = 30 * time.Second
+	piPromptSubmitSettleWait = 1500 * time.Millisecond
 	// piPromptSubmitMarkerWait is the longer settle budget used when Pi's own
 	// marker stream is available to acknowledge the send. The pane heuristics
 	// alone misread a 700K-token session (status still "idle" until the first
@@ -1211,15 +1223,28 @@ func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, markerPath
 		Source:          "pi-cli",
 		BypassReadiness: initialPrompt,
 	}, func(ctx context.Context) error {
-		return sendPiInputToTmuxUnserialized(ctx, sessionName, markerPath, message)
+		return sendPiInputToTmuxUnserialized(ctx, sessionName, markerPath, message, initialPrompt)
 	})
 	return err
 }
 
-func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath, message string) error {
+func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath, message string, initialPrompt bool) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Pi interactive input is empty")
+	}
+	// The initial prompt right after launch already waited out Pi's full
+	// cold-start budget (Call -> waitForPiPromptReady, up to piPromptWait())
+	// before ever reaching here. Every other send -- including a "retained
+	// terminal recovery" resend after the in-process session registry lost
+	// track of an idle/reconnecting session -- has never actually confirmed
+	// Pi is idle *right now*; only that it was, once, at launch. Confirm it
+	// before pasting instead of finding out via 3 fast, identical paste
+	// failures.
+	if !initialPrompt {
+		if err := waitForPiPromptReady(ctx, sessionName, piSendReadyWait); err != nil {
+			return fmt.Errorf("Pi session was not idle/ready to receive input: %w", err)
+		}
 	}
 	// Snapshot the marker offset before anything is typed so only an
 	// acknowledgement produced by THIS send counts (an identical earlier
