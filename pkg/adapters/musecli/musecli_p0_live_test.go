@@ -233,7 +233,7 @@ func museLiveSubmitTurn(t *testing.T, ctx context.Context, session, prompt strin
 	if err := museSendPrompt(ctx, session, prompt); err != nil {
 		t.Fatalf("send prompt: %v", err)
 	}
-	_, path, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt))
+	_, path, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), "")
 	if err != nil {
 		t.Fatalf("prompt never taken in: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestMuseCLIRealTmuxLiveInput(t *testing.T) {
 	if err := museSendPrompt(ctx, session, essay); err != nil {
 		t.Fatalf("send long turn: %v", err)
 	}
-	if _, _, err := museWaitIntake(ctx, session, essayStart, promptSnippet(essay)); err != nil {
+	if _, _, err := museWaitIntake(ctx, session, essayStart, promptSnippet(essay), ""); err != nil {
 		t.Fatalf("long turn never taken in: %v", err)
 	}
 	time.Sleep(8 * time.Second)
@@ -446,7 +446,7 @@ func TestMuseCLIRealTmuxLiveInput(t *testing.T) {
 	if err := museSendPrompt(ctx, session, "Reply with exactly "+token+" and nothing else."); err != nil {
 		t.Fatalf("send queued follow-up: %v", err)
 	}
-	_, logPath, err := museWaitIntake(ctx, session, queueStart, token)
+	_, logPath, err := museWaitIntake(ctx, session, queueStart, token, "")
 	if err != nil {
 		t.Fatalf("queued follow-up never taken in: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestMuseCLIRealTmuxCancellation(t *testing.T) {
 	if err := museSendPrompt(ctx, session, "Write a 600-word essay on glass manufacturing history with extensive detail."); err != nil {
 		t.Fatalf("send long turn: %v", err)
 	}
-	if _, _, err := museWaitIntake(ctx, session, essayStart, "glass manufacturing"); err != nil {
+	if _, _, err := museWaitIntake(ctx, session, essayStart, "glass manufacturing", ""); err != nil {
 		t.Fatalf("long turn never taken in: %v", err)
 	}
 	// Prove the model is mid-answer before interrupting: the "◆" answer
@@ -575,11 +575,11 @@ func TestMuseCLIRealTmuxParallelIsolation(t *testing.T) {
 	if err := museSendPrompt(ctx, sessB, "Reply with exactly "+tokenB+" and nothing else."); err != nil {
 		t.Fatalf("send B: %v", err)
 	}
-	_, logA, err := museWaitIntake(ctx, sessA, startA, tokenA)
+	_, logA, err := museWaitIntake(ctx, sessA, startA, tokenA, "")
 	if err != nil {
 		t.Fatalf("A prompt never taken in: %v", err)
 	}
-	_, logB, err := museWaitIntake(ctx, sessB, startB, tokenB)
+	_, logB, err := museWaitIntake(ctx, sessB, startB, tokenB, "")
 	if err != nil {
 		t.Fatalf("B prompt never taken in: %v", err)
 	}
@@ -1063,7 +1063,7 @@ func TestMuseCLIRealProjectInstructionChange(t *testing.T) {
 		t.Fatalf("projected AGENTS.md missing turn-2 marker %q", markerB)
 	}
 
-	_, logPath, err := museDiscoverSessionSince(museXDGDataHome(), startB, humanB)
+	_, logPath, err := museDiscoverSessionSince(museXDGDataHome(), startB, humanB, "")
 	if err != nil {
 		t.Fatalf("discover turn-2 log: %v", err)
 	}

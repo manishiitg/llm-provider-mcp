@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func jsonEscapeLogSnippet(s string) string {
 	return b.String()
 }
 
-func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet string) (sessionID, logPath string, err error) {
+func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, workdir string) (sessionID, logPath string, err error) {
 	promptSnippet = jsonEscapeLogSnippet(promptSnippet)
 	root := filepath.Join(dataHome, "muse", "sessions")
 	var bestPath string
@@ -74,6 +75,15 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet st
 		if promptSnippet != "" && !strings.Contains(string(raw), promptSnippet) {
 			return nil
 		}
+		// Concurrent turns (two pooled TUIs, same dataHome) can send
+		// byte-identical prompts: snippet+mtime alone then misattributes
+		// one worker's turn to the other's log (proven live: worker 1
+		// answered with worker 0's build id). The native log records its
+		// TUI's workspace_root in runtime.session.metadata, and pooled
+		// workdirs are unique per owner — filter on it when known.
+		if workdir != "" && !museLogMatchesWorkspace(raw, workdir) {
+			return nil
+		}
 		if info.ModTime().After(bestMod) {
 			bestMod = info.ModTime()
 			bestPath = path
@@ -87,6 +97,23 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet st
 		return "", "", fmt.Errorf("no muse session log modified since %s mentions the prompt", since.Format(time.RFC3339))
 	}
 	return filepath.Base(filepath.Dir(bestPath)), bestPath, nil
+}
+
+// museLogMatchesWorkspace reports whether raw session.jsonl bytes record
+// the given workdir as their TUI's workspace_root. Both sides resolve
+// symlinks first (/var vs /private/var on darwin) and compare JSON-escaped,
+// the encoding the log actually stores.
+func museLogMatchesWorkspace(raw []byte, workdir string) bool {
+	dir := strings.TrimSpace(workdir)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	needle := `"workspace_root":` + strconv.Quote(dir)
+	if strings.Contains(string(raw), needle) {
+		return true
+	}
+	// Fall back to the unresolved path (logs on some platforms store it).
+	return strings.Contains(string(raw), `"workspace_root":`+strconv.Quote(strings.TrimSpace(workdir)))
 }
 
 // museLastAssistantText returns the last AI message text in order.
@@ -117,11 +144,11 @@ func museLastAssistantText(messages []llmtypes.MessageContent) string {
 // session log must show the turn after submit. The TUI can swallow an early
 // Enter (observed live), so Enter is re-sent a bounded number of times until
 // the log proves intake or the deadline passes.
-func museWaitIntake(ctx context.Context, session string, turnStart time.Time, snippet string) (nativeSessionID, logPath string, err error) {
+func museWaitIntake(ctx context.Context, session string, turnStart time.Time, snippet, workdir string) (nativeSessionID, logPath string, err error) {
 	dataHome := museXDGDataHome()
 	intakeDeadline := time.Now().Add(60 * time.Second)
 	for attempt := 0; ; attempt++ {
-		id, path, findErr := museDiscoverSessionSince(dataHome, turnStart, snippet)
+		id, path, findErr := museDiscoverSessionSince(dataHome, turnStart, snippet, workdir)
 		if findErr == nil {
 			return id, path, nil
 		}
@@ -294,7 +321,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	if err := museSendPrompt(ctx, session, prompt); err != nil {
 		return nil, err
 	}
-	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt))
+	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
 		return nil, err
 	}

@@ -148,7 +148,7 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 	}
 
 	since := time.Now().Add(-time.Minute)
-	id, path, err := museDiscoverSessionSince(home, since, "pineapple")
+	id, path, err := museDiscoverSessionSince(home, since, "pineapple", "")
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 	if path != filepath.Join(newDir, "session.jsonl") {
 		t.Fatalf("log path = %q", path)
 	}
-	if _, _, err := museDiscoverSessionSince(home, since, "mango"); err == nil {
+	if _, _, err := museDiscoverSessionSince(home, since, "mango", ""); err == nil {
 		t.Fatal("expected error when no log mentions the prompt")
 	}
 }
@@ -181,7 +181,7 @@ func TestMuseDiscoverSessionSinceMultilineSnippet(t *testing.T) {
 		t.Fatal(err)
 	}
 	since := time.Now().Add(-time.Minute)
-	id, _, err := museDiscoverSessionSince(home, since, "# Workflow Builder Agent\n\nYou design")
+	id, _, err := museDiscoverSessionSince(home, since, "# Workflow Builder Agent\n\nYou design", "")
 	if err != nil {
 		t.Fatalf("discover multiline snippet: %v", err)
 	}
@@ -543,5 +543,48 @@ func TestMuseTUIApprovalArgv(t *testing.T) {
 	}
 	if !has("--disable-approval") || !has("--approval-mode") || !has("never") {
 		t.Fatalf("approval argv = %q, want --disable-approval --approval-mode never", argv)
+	}
+}
+
+// TestMuseDiscoverSessionSincePrefersWorkdir pins concurrent-turn isolation:
+// two fresh logs mentioning the identical prompt must resolve to the one
+// whose workspace_root matches the caller's workdir — otherwise worker 1's
+// turn attributes worker 0's log (proven live: worker 1 answered with
+// worker 0's build id).
+func TestMuseDiscoverSessionSincePrefersWorkdir(t *testing.T) {
+	home := t.TempDir()
+	day := filepath.Join(home, "muse", "sessions", "2026", "09", "10")
+	mklog := func(sess, root, snippet string) {
+		t.Helper()
+		dir := filepath.Join(day, sess)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := `{"sequence":9,"payload_type":"runtime.session.metadata","payload":{"record":{"workspace_root":` + strconv.Quote(root) + `}}}` + "\n" +
+			`{"sequence":10,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":` + strconv.Quote(snippet) + `}}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workA := filepath.Join(t.TempDir(), "workA")
+	workB := filepath.Join(t.TempDir(), "workB")
+	mklog("sess-a", workA, "Reply ONLY with the build id.")
+	mklog("sess-b", workB, "Reply ONLY with the build id.")
+	// Make the wrong log strictly fresher: only the workdir filter may
+	// still resolve sess-b.
+	fresh := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(day, "sess-a", "session.jsonl"), fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Minute)
+	id, _, err := museDiscoverSessionSince(home, since, "Reply ONLY with the build id.", workB)
+	if err != nil {
+		t.Fatalf("discover with workdir: %v", err)
+	}
+	if id != "sess-b" {
+		t.Fatalf("session id = %q, want sess-b (workdir match beats freshness ties)", id)
+	}
+	if _, _, err := museDiscoverSessionSince(home, since, "Reply ONLY with the build id.", filepath.Join(t.TempDir(), "workC")); err == nil {
+		t.Fatal("expected error when no log records the workdir")
 	}
 }
