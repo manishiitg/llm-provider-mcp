@@ -401,6 +401,41 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	ProviderCodexCLI: {
 		CertStreamNoHistoryReplay,
 	},
+	// Muse is mid-onboarding (2026-09-10): fresh_launch and
+	// structured_multi_turn are registered; everything below awaits its
+	// proof. Covers the P0 red list plus the capability-derived set
+	// (AdapterReadsTranscript satisfies reply_formatting_fidelity, so it
+	// is deliberately absent). Remove IDs as proofs land — the staleness
+	// guard fails the suite otherwise.
+	ProviderMuseCLI: {
+		CertRuntimeContext,
+		CertWorkingDirectory,
+		CertTrustAuthPrompts,
+		CertMCPBridge,
+		CertSlowToolFalseIdle,
+		CertDoneDetection,
+		CertFinalExtraction,
+		CertMultiTurn,
+		CertLiveInput,
+		CertBusyLiveInput,
+		CertCancellation,
+		CertParallelIsolation,
+		CertBoundedRetention,
+		CertBridgeOnlyTools,
+		CertCleanup,
+		CertLifecyclePolicy,
+		CertNativeSystemPrompt,
+		CertParallelStartupQueue,
+		CertPersistentCancelReuse,
+		CertPromptPaste,
+		CertResumeCompactionStartup,
+		CertSessionLoss,
+		CertSessionLossRecovery,
+		CertSharedWorkdirMCPIsolation,
+		CertSlowToolLiveInput,
+		CertStaleDraftCleanup,
+		CertStartupTerminalVisibility,
+	},
 }
 
 // TestStreamNoHistoryReplayIsRealE2EOnly enforces that stream_no_history_replay

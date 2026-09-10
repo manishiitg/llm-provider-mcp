@@ -10,6 +10,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -48,6 +49,9 @@ func List(provider string) (Catalog, error) {
 		catalog.LiveListCommand = "pi --list-models"
 		catalog.AcceptsCustomID = true
 		catalog.Note = "Pi also accepts provider/model selectors, including openrouter/<model-id>."
+	case llmproviders.ProviderMuseCLI:
+		metadata = musecli.GetAllMuseCLIModels()
+		catalog.AcceptsCustomID = true
 	default:
 		return Catalog{}, fmt.Errorf("unsupported coding-agent provider %q", provider)
 	}
@@ -72,6 +76,7 @@ func ListAll() []Catalog {
 		string(llmproviders.ProviderCodexCLI),
 		string(llmproviders.ProviderCursorCLI),
 		string(llmproviders.ProviderPiCLI),
+		string(llmproviders.ProviderMuseCLI),
 	}
 	catalogs := make([]Catalog, 0, len(providers))
 	for _, provider := range providers {

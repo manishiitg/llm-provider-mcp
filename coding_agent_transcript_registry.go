@@ -36,6 +36,9 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	ProviderPiCLI: {
 		PathTemplate: "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
 	},
+	ProviderMuseCLI: {
+		PathTemplate: "$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl",
+	},
 }
 
 // TranscriptReaderFor returns the transcript reader metadata for a provider,

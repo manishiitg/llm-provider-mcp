@@ -39,6 +39,7 @@ const (
 	ProviderCodexCLI          Provider = "codex-cli"
 	ProviderCursorCLI         Provider = "cursor-cli"
 	ProviderPiCLI             Provider = "pi-cli"
+	ProviderMuseCLI           Provider = "muse-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
@@ -47,6 +48,7 @@ const (
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "composer-2.5"
 	DefaultPiCLIModel     = picli.DefaultModelID
+	DefaultMuseCLIModel   = "muse-cli"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported normal value: "tmux" for Claude Code TUI mode.
@@ -392,6 +394,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializeCursorCLI(config)
 	case ProviderPiCLI:
 		llm, err = initializePiCLI(config)
+	case ProviderMuseCLI:
+		llm, err = initializeMuseCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:

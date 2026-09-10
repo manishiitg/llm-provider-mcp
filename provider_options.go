@@ -5,6 +5,7 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -363,6 +364,31 @@ func WithPiPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 // WithPiResumeSessionID resumes a Pi native session created with --session-id.
 func WithPiResumeSessionID(sessionID string) llmtypes.CallOption {
 	return picli.WithResumeSessionID(sessionID)
+}
+
+// --- Muse CLI Wrapper Functions ---
+
+// WithMuseResumeSessionID resumes a native muse session created by an
+// earlier turn (exec --session-id, surfaced as stream.id).
+func WithMuseResumeSessionID(sessionID string) llmtypes.CallOption {
+	return musecli.WithResumeSessionID(sessionID)
+}
+
+// WithMuseInteractiveSessionID associates the tmux session with an owner
+// session id (consumed by the interactive adapter when it lands).
+func WithMuseInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return musecli.WithInteractiveSessionID(sessionID)
+}
+
+// WithMusePersistentInteractiveSession keeps the tmux session alive after
+// turn completion.
+func WithMusePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return musecli.WithPersistentInteractiveSession(enabled)
+}
+
+// WithMuseWorkingDir pins the tmux session working directory.
+func WithMuseWorkingDir(dir string) llmtypes.CallOption {
+	return musecli.WithWorkingDir(dir)
 }
 
 // WithPiProvider overrides Pi's provider routing while keeping model selection

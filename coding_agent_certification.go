@@ -233,6 +233,22 @@ var codingAgentCapabilityCertifications = []struct {
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
+	ProviderMuseCLI: {
+		{
+			ID:          CertFreshLaunch,
+			TestFile:    "pkg/adapters/musecli/musecli_real_contract_test.go",
+			TestName:    "TestMuseCLIRealInteractiveTmuxFullContract",
+			Description: "boots the muse TUI in tmux in a scratch workspace, reaches a settled idle pane with no trust/auth gate, and cleans up the session",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/musecli/musecli_exec_test.go",
+			TestName:    "TestMuseExecLaneStructuredMultiTurn",
+			Description: "runs two echo exec turns with --session-id and proves both prompts accumulated in one on-disk session",
+			RealE2E:     true,
+		},
+	},
 	ProviderClaudeCode: {
 		{
 			ID:          CertStalledTurnDiagnosis,

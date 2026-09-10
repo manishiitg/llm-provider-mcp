@@ -16,6 +16,7 @@ import (
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	kimiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/kimi"
 	minimaxadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/minimax"
+	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 	openaiadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/openai"
 	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 	vertexadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
@@ -1098,6 +1099,58 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	}
+}
+
+// initializeMuseCLI creates and configures a Muse adapter instance.
+// Auth is the stored `muse login` or META_API_KEY; no third-party key is
+// ever forwarded. Stub: GenerateContent is not implemented yet.
+func initializeMuseCLI(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "muse_user",
+		CustomFields: map[string]string{
+			"provider":  "muse-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = DefaultMuseCLIModel
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Muse adapter - model_id: %s", modelID)
+
+	apiKey := strings.TrimSpace(os.Getenv("META_API_KEY"))
+	if apiKey != "" {
+		logger.Infof("Muse: using API key from META_API_KEY env var (length=%d)", len(apiKey))
+	} else {
+		logger.Infof("Muse: no explicit API key, falling back to stored login")
+	}
+
+	llm := musecli.NewMuseCLIAdapter(apiKey, modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "muse_user",
+		CustomFields: map[string]string{
+			"provider":     "muse-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Muse adapter (stub) - model_id: %s", modelID)
+	return llm, nil
 }
 
 // initializeKimi creates and configures the Kimi API provider.

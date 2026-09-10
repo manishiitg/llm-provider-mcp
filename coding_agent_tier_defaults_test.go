@@ -8,6 +8,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -268,6 +269,7 @@ func codingAgentPublishedModelMetadata() []*llmtypes.ModelMetadata {
 	out = append(out, codexcli.GetAllCodexCLIModels()...)
 	out = append(out, cursorcli.GetAllCursorCLIModels()...)
 	out = append(out, picli.GetAllPiCLIModels()...)
+	out = append(out, musecli.GetAllMuseCLIModels()...)
 	return out
 }
 

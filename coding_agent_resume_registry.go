@@ -25,6 +25,7 @@ var nativeResumeRegistry = map[Provider]func(sessionID string) llmtypes.CallOpti
 	ProviderCodexCLI:   WithCodexResumeSessionID,
 	ProviderCursorCLI:  WithCursorResumeSessionID,
 	ProviderPiCLI:      WithPiResumeSessionID,
+	ProviderMuseCLI:    WithMuseResumeSessionID,
 }
 
 // NativeResumeOption returns the CallOption that resumes sessionID for the
