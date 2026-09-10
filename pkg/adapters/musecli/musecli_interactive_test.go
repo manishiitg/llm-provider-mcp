@@ -45,6 +45,54 @@ func TestMuseTmuxTransportRequestedDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestMuseStructuredTransportRequestedDefaultsOff(t *testing.T) {
+	if museStructuredTransportRequested(nil) {
+		t.Fatal("nil options must not request structured")
+	}
+	opts := &llmtypes.CallOptions{}
+	if museStructuredTransportRequested(opts) {
+		t.Fatal("empty options must not request structured (tmux is the default)")
+	}
+	WithMuseStructuredTransport(true)(opts)
+	if !museStructuredTransportRequested(opts) {
+		t.Fatal("WithMuseStructuredTransport(true) not honored")
+	}
+	WithMuseStructuredTransport(false)(opts)
+	if museStructuredTransportRequested(opts) {
+		t.Fatal("WithMuseStructuredTransport(false) not honored")
+	}
+}
+
+// TestMusePersistentKeyAndName: pooling without an owner must fail fast
+// (two conversations must never share a TUI), and tmux names must be
+// stable, safe, and bounded.
+func TestMusePersistentKeyAndName(t *testing.T) {
+	if _, err := musePersistentKey(""); err == nil {
+		t.Fatal("empty owner must fail, not pool anonymously")
+	}
+	if _, err := musePersistentKey("  "); err == nil {
+		t.Fatal("blank owner must fail")
+	}
+	key, err := musePersistentKey("conv-123")
+	if err != nil || key != "conv-123" {
+		t.Fatalf("key = %q, %v", key, err)
+	}
+	a, b := musePersistentTmuxName("conv-123"), musePersistentTmuxName("conv-123")
+	if a != b || !strings.HasPrefix(a, "mlp-muse-") {
+		t.Fatalf("names not stable/prefixed: %q %q", a, b)
+	}
+	weird := musePersistentTmuxName("Conv 123/ABC!@#xyz")
+	for _, r := range weird {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			t.Fatalf("unsafe tmux name %q", weird)
+		}
+	}
+	if got := musePersistentTmuxName(strings.Repeat("x", 200)); len(got) > 48 {
+		t.Fatalf("name not bounded: %d chars", len(got))
+	}
+	KillMusePersistentSession("test-owner-that-never-existed")
+}
+
 func TestMuseLastAssistantTextPicksLatest(t *testing.T) {
 	text := func(s string) llmtypes.ContentPart { return llmtypes.TextContent{Text: s} }
 	messages := []llmtypes.MessageContent{

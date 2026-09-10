@@ -1,8 +1,9 @@
 // Package musecli is the Muse (Muse Code, `muse` CLI) adapter.
 //
 // Recon: multi-llm-provider-go/docs/MUSE_CLI_CODING_AGENT_CONTRACT.md.
-// GenerateContent runs the exec --json lane by default and the interactive
-// tmux lane on explicit request (uncertified until fresh_launch goes green).
+// GenerateContent runs the interactive tmux lane by default, like every
+// other coding provider; WithMuseStructuredTransport selects the exec
+// --json lane (per-turn process, no live pane).
 package musecli
 
 import (
@@ -33,16 +34,18 @@ func (a *MuseCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetada
 	return GetMuseModelMetadata(modelID)
 }
 
-// GenerateContent runs one turn through the exec --json lane by default,
-// or the interactive tmux lane when explicitly requested via
-// WithTmuxTransport (uncertified until fresh_launch goes green live).
+// GenerateContent runs one turn through the interactive tmux lane by
+// default (bounded TUI per turn, or a persistent pooled session when the
+// persistent option is set), or the exec --json lane when structured is
+// explicitly requested via WithMuseStructuredTransport. WithTmuxTransport
+// is retained as an explicit tmux pin for direct callers.
 func (a *MuseCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
 	}
-	if museTmuxTransportRequested(opts) {
-		return a.generateContentTmux(ctx, messages, opts)
+	if museStructuredTransportRequested(opts) {
+		return a.generateContentExec(ctx, messages, options...)
 	}
-	return a.generateContentExec(ctx, messages, options...)
+	return a.generateContentTmux(ctx, messages, opts)
 }

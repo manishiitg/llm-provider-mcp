@@ -398,6 +398,13 @@ func WithMuseMCPConfig(config string) llmtypes.CallOption {
 	return musecli.WithMCPConfig(config)
 }
 
+// WithMuseStructuredTransport selects the exec --json lane (per-turn
+// one-shot process) instead of the default tmux interactive lane. OFF by
+// default — see WithCodexStructuredTransport doc comment for the rationale.
+func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
+	return musecli.WithMuseStructuredTransport(enabled)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.

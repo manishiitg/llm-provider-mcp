@@ -40,7 +40,7 @@ func TestMuseExecLaneEchoFinalText(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	})
+	}, WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestMuseExecLaneEchoStreamsDeltas(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	}, llmtypes.WithStreamingChan(stream))
+	}, llmtypes.WithStreamingChan(stream), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestMuseExecLaneStructuredMultiTurn(t *testing.T) {
 			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}}},
 		}
 	}
-	first, err := adapter.GenerateContent(ctx, human("first turn turnips"))
+	first, err := adapter.GenerateContent(ctx, human("first turn turnips"), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestMuseExecLaneStructuredMultiTurn(t *testing.T) {
 	if sid == "" {
 		t.Fatal("first turn surfaced no native session id")
 	}
-	second, err := adapter.GenerateContent(ctx, human("second turn mangoes"), WithResumeSessionID(sid))
+	second, err := adapter.GenerateContent(ctx, human("second turn mangoes"), WithResumeSessionID(sid), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("second turn: %v", err)
 	}

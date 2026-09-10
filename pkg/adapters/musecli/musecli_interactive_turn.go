@@ -158,11 +158,20 @@ func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout
 
 // generateContentTmux runs one bounded turn through a fresh TUI session.
 func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
-	if musePersistentInteractiveFromOptions(opts) {
-		return nil, fmt.Errorf("muse-cli tmux lane does not support persistent sessions yet; run bounded turns")
+	persistent := musePersistentInteractiveFromOptions(opts)
+	owner := strings.TrimSpace(museInteractiveSessionIDFromOptions(opts))
+	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
+	if persistent && owner == "" {
+		return nil, fmt.Errorf("muse-cli persistent tmux requires an owner session id (WithMuseInteractiveSessionID)")
 	}
+	if launchOnly && !persistent {
+		return nil, fmt.Errorf("muse-cli launch-only requires the persistent option: a bounded session would die before reuse")
+	}
+	// Launch-only with an empty prompt is the transport-session handshake:
+	// boot (or rebind) the TUI and hand back its handle. Anything else
+	// needs a real prompt.
 	prompt, err := museBuildExecPrompt(messages)
-	if err != nil {
+	if err != nil && !launchOnly {
 		return nil, err
 	}
 	workdir := strings.TrimSpace(museWorkingDirFromOptions(opts))
@@ -173,13 +182,45 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 			return nil, fmt.Errorf("resolve working dir for muse tmux lane: %w", err)
 		}
 	}
-	session := museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
-	turnStart := time.Now()
-	if err := museLaunchTUI(ctx, workdir, session, a.museExecProvider()); err != nil {
-		return nil, err
-	}
-	defer museKillTmuxSession(context.Background(), session)
 
+	session := ""
+	if persistent {
+		entry, _, err := museAcquirePersistentSession(ctx, owner, workdir,
+			a.museExecProvider(), strings.TrimSpace(a.modelID),
+			strings.TrimSpace(museMCPConfigFromOptions(opts)), musePersistentReadyFile(opts))
+		if err != nil {
+			return nil, err
+		}
+		session = entry.tmuxName
+	} else {
+		session = museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
+		if err := museLaunchTUI(ctx, workdir, session, a.museExecProvider()); err != nil {
+			return nil, err
+		}
+		defer museKillTmuxSession(context.Background(), session)
+	}
+	if persistent && launchOnly {
+		// Acquire already waited for settle (+ MCP readiness on fresh
+		// launch). Return the handle so the orchestrator rebinds to this
+		// tmux session; the native id is unknown until the first turn.
+		gi := &llmtypes.GenerationInfo{}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:    "muse-cli",
+			Transport:   llmtypes.CodingProviderTransportTmux,
+			TmuxSession: session,
+			Model:       strings.TrimSpace(a.modelID),
+		})
+		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{
+			Content:        "",
+			StopReason:     "completed",
+			GenerationInfo: gi,
+		}}}, nil
+	}
+
+	// Bounded sessions boot above; persistent ones are already up but may be
+	// mid-turn (a queued follow-up): wait for the idle prompt so turns
+	// serialize instead of interleaving in one TUI.
+	turnStart := time.Now()
 	if _, err := museWaitSettled(ctx, session, 90*time.Second); err != nil {
 		return nil, err
 	}
@@ -208,12 +249,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		Provider:        "muse-cli",
 		Transport:       llmtypes.CodingProviderTransportTmux,
 		NativeSessionID: nativeSessionID,
+		TmuxSession:     session,
 		Model:           strings.TrimSpace(a.modelID),
 	})
 	// Keep the settled post-turn pane on the response: it is the wrapped
 	// screen the reply-formatting-fidelity cert compares the transcript
-	// extraction against, and the session is torn down below so no test can
-	// re-capture it afterwards.
+	// extraction against. Bounded sessions are torn down below, so no test
+	// can re-capture it afterwards; persistent ones stay live.
 	if gi.Additional == nil {
 		gi.Additional = map[string]any{}
 	}

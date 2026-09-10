@@ -42,6 +42,7 @@ const (
 	MetadataKeyMuseInteractiveSessionID  = "muse_interactive_session_id"
 	MetadataKeyMusePersistentInteractive = "muse_persistent_interactive"
 	MetadataKeyMuseWorkingDir            = "muse_working_dir"
+	MetadataKeyMuseStructuredTransport   = "muse_structured_transport"
 )
 
 // MetadataKeyMuseMCPConfig carries a bridge MCP config document (a JSON
@@ -117,4 +118,23 @@ func WithWorkingDir(dir string) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMuseWorkingDir] = dir
 	}
+}
+
+// WithMuseStructuredTransport selects the exec --json lane (per-turn
+// process, no live pane). Default is the tmux lane, like every other
+// coding provider: structured must be asked for explicitly, and the
+// orchestrator asks exactly when it wants structured (wantsStructured).
+func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStructuredTransport] = enabled
+	}
+}
+
+func museStructuredTransportRequested(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStructuredTransport].(bool)
+	return enabled
 }

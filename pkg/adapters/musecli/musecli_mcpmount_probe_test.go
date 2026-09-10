@@ -31,7 +31,7 @@ func TestMuseExecLaneMCPMountReachesCLIAndRestores(t *testing.T) {
 	defer cancel()
 	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	}, WithMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}}}`))
+	}, WithMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}}}`), WithMuseStructuredTransport(true))
 	if err == nil {
 		t.Fatal("expected failure: dummy bridge URL cannot initialize")
 	}

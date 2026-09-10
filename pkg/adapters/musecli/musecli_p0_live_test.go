@@ -87,7 +87,7 @@ func TestMuseCLIRealExecTurnContract(t *testing.T) {
 			llmtypes.TextContent{Text: "Do not use any tools. Answer directly with exactly what is asked."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
 			llmtypes.TextContent{Text: "Reply with exactly: PINEAPPLE-EXEC"}}},
-	}, llmtypes.WithReasoningEffort("low"), llmtypes.WithStreamingChan(streamChan))
+	}, llmtypes.WithReasoningEffort("low"), llmtypes.WithStreamingChan(streamChan), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestMuseCLIRealExecRuntimeContext(t *testing.T) {
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
 			llmtypes.TextContent{Text: "What is the canary word? Reply with exactly that word and nothing else."}}},
-	}, WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"))
+	}, WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestMuseCLIRealExecSlowTool(t *testing.T) {
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
 			llmtypes.TextContent{Text: "Use a shell command to list the .txt files in the current directory, then reply with exactly the file name you see."}}},
-	}, WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"), llmtypes.WithStreamingChan(streamChan))
+	}, WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"), llmtypes.WithStreamingChan(streamChan), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("tool turn failed (false-idle territory): %v", err)
 	}
@@ -251,6 +251,76 @@ func museLiveLogText(t *testing.T, logPath string) string {
 		t.Fatalf("read session log: %v", err)
 	}
 	return string(raw)
+}
+
+// TestMuseCLIRealPersistentSession proves the pooled lane the orchestrator
+// uses for terminal attach: launch-only boots one TUI and hands back its
+// tmux name, two turns run on that SAME live session (same tmux name, same
+// native session), and KillMusePersistentSession tears it down. Backs the
+// builder-tmux work (no new cert: continuity itself is covered by the
+// multi-turn cert; this pins ownership).
+func TestMuseCLIRealPersistentSession(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	owner := "mlp-persist-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	// One workdir for the whole test: the pool relaunches when it moves,
+	// so rotating temp dirs would defeat the reuse assertion below.
+	workdir := t.TempDir()
+	persistent := func(o ...llmtypes.CallOption) []llmtypes.CallOption {
+		return append([]llmtypes.CallOption{
+			WithPersistentInteractiveSession(true),
+			WithInteractiveSessionID(owner),
+			WithWorkingDir(workdir),
+			llmtypes.WithReasoningEffort("low"),
+		}, o...)
+	}
+
+	launch, err := adapter.GenerateContent(ctx, nil,
+		append(persistent(), llmtypes.WithCodingProviderLaunchOnly())...)
+	if err != nil {
+		t.Fatalf("launch-only: %v", err)
+	}
+	tmuxName := launch.Choices[0].GenerationInfo.CodingProviderSessionHandle.TmuxSession
+	if tmuxName == "" {
+		t.Fatal("launch-only returned no tmux session to attach the terminal to")
+	}
+	if !museTmuxSessionAlive(ctx, tmuxName) {
+		t.Fatalf("pooled TUI %q not alive after launch", tmuxName)
+	}
+
+	turn := func(word string) (string, string) {
+		t.Helper()
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply with exactly " + word + " and nothing else."}}},
+		}, persistent()...)
+		if err != nil {
+			t.Fatalf("persistent turn: %v", err)
+		}
+		h := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+		if h.TmuxSession != tmuxName {
+			t.Fatalf("turn ran on %q, want pooled %q", h.TmuxSession, tmuxName)
+		}
+		if !strings.Contains(resp.Choices[0].Content, word) {
+			t.Fatalf("answer = %q, want %q", resp.Choices[0].Content, word)
+		}
+		return h.NativeSessionID, resp.Choices[0].Content
+	}
+	token1 := "PERS1-" + museRandomHex(t, 3)
+	native1, _ := turn(token1)
+	token2 := "PERS2-" + museRandomHex(t, 3)
+	native2, _ := turn(token2)
+	if native1 == "" || native1 != native2 {
+		t.Fatalf("native sessions %q vs %q: pooled turns must share one native session", native1, native2)
+	}
+	KillMusePersistentSession(owner)
+	if museTmuxSessionAlive(ctx, tmuxName) {
+		t.Fatalf("pooled TUI %q still alive after kill", tmuxName)
+	}
 }
 
 // TestMuseCLIRealTmuxMultiTurn drives two turns through ONE TUI session:
@@ -689,7 +759,7 @@ func TestMuseCLIRealMCPBridge(t *testing.T) {
 			llmtypes.TextContent{Text: "You have an MCP tool called probe_echo. Call it with text " + token + ", then reply with ONLY the tool's raw output."}}},
 	}, WithMCPConfig(`{"mcpServers": {"probe-stub": {"url": "`+stub.URL+`/mcp"}}}`),
 		WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low"),
-		llmtypes.WithStreamingChan(streamChan))
+		llmtypes.WithStreamingChan(streamChan), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("bridge turn: %v", err)
 	}
