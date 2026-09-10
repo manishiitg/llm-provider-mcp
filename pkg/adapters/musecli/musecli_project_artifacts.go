@@ -65,7 +65,7 @@ func museInlinePrompt(system []string, human string) string {
 // the teardown restore and whether the file carries this turn; on any
 // failure both are nil/false and the caller types inline instead.
 func projectMuseAgentsForTurn(workdir string, system []string, wantAgents, restorePrior bool) (func(), bool) {
-	if !wantAgents || len(system) == 0 {
+	if !wantAgents || len(system) == 0 || strings.TrimSpace(workdir) == "" {
 		return nil, false
 	}
 	restore, err := writeMuseProjectAgentsFile(workdir, strings.Join(system, "\n\n"), restorePrior)

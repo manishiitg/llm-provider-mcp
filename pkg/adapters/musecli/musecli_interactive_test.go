@@ -291,3 +291,25 @@ func TestWriteMuseProjectAgentsFile(t *testing.T) {
 		t.Fatal("projected AGENTS.md not removed on cleanup without restorePrior")
 	}
 }
+
+// TestProjectMuseAgentsForTurnFallback pins the never-drop contract: when
+// the projection write fails, the caller gets (nil, false) and types the
+// preamble inline instead of losing it.
+func TestProjectMuseAgentsForTurnFallback(t *testing.T) {
+	if restore, projected := projectMuseAgentsForTurn("", []string{"sys"}, true, false); restore != nil || projected {
+		t.Fatal("empty workdir must not project")
+	}
+	// A file where the workdir should be makes MkdirAll/Write fail.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if restore, projected := projectMuseAgentsForTurn(filepath.Join(blocker, "sub"), []string{"sys"}, true, false); restore != nil || projected {
+		t.Fatal("unwritable workdir must fall back to inline, not claim projection")
+	}
+	if restore, projected := projectMuseAgentsForTurn(t.TempDir(), []string{"sys"}, true, true); restore == nil || !projected {
+		t.Fatal("writable workdir must project")
+	} else {
+		restore()
+	}
+}
