@@ -101,6 +101,48 @@ func KillMusePersistentSession(owner string) {
 	museKillPersistentLocked(context.Background(), entry)
 }
 
+// CloseMuseCLIInteractiveSessionForOwner is KillMusePersistentSession under
+// the naming convention the other tmux-backed providers use
+// (Close<Provider>InteractiveSessionForOwner), so the root package's
+// provider-agnostic re-export layer can call it the same way it calls
+// pi-cli/cursor-cli/codex-cli/claude-code's. reason is accepted for
+// interface parity; muse's teardown (tmux kill-session + settings/AGENTS.md
+// restore) doesn't vary by reason the way claude's exit-sequence choice does.
+func CloseMuseCLIInteractiveSessionForOwner(owner, reason string) {
+	_ = reason
+	KillMusePersistentSession(owner)
+}
+
+// CloseMuseCLIInteractiveSessionByTmux tears down a persistent muse session
+// by its tmux session name rather than owner key -- a teardown backstop when
+// the owning session ID is unknown or has drifted (e.g. workflow sub-agents
+// registered under a step-execution owner the caller can't reconstruct).
+// Falls back to a raw kill-session when no pooled entry matches the name, so
+// the tmux session never lingers regardless of whether the pool still knows
+// about it.
+func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	_ = reason
+	tmuxSessionName = strings.TrimSpace(tmuxSessionName)
+	if tmuxSessionName == "" {
+		return
+	}
+	musePersistentPool.Lock()
+	var entry *musePersistentSession
+	for owner, candidate := range musePersistentPool.m {
+		if candidate != nil && candidate.tmuxName == tmuxSessionName {
+			entry = candidate
+			delete(musePersistentPool.m, owner)
+			break
+		}
+	}
+	musePersistentPool.Unlock()
+	if entry != nil {
+		museKillPersistentLocked(context.Background(), entry)
+		return
+	}
+	_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", tmuxSessionName).Run()
+}
+
 // museAcquirePersistentSession returns the live pooled TUI for owner,
 // launching it when absent or dead. created reports a fresh launch (the
 // caller still waits for settle + MCP readiness on it). A retained entry

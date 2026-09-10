@@ -13,6 +13,7 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 	picli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
@@ -153,6 +154,10 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 	claudecodeadapter.CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
+func CloseMuseCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	musecli.CloseMuseCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
 // CloseXxxCLIInteractiveSessionByTmux variants tear down a tmux-backed coding
 // CLI session by its tmux session name rather than by owner key. They run the
 // same provider-specific graceful exit + cleanup as the owner-keyed closes,
@@ -174,6 +179,10 @@ func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 
 func CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	claudecodeadapter.CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	musecli.CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason)
 }
 
 // SendClaudeCodeInput sends user input to a live Claude Code tmux session

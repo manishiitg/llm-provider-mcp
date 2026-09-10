@@ -367,3 +367,58 @@ func TestMuseResolveTmuxPromptNoSystemMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestCloseMuseCLIInteractiveSessionByTmux is the muse-cli equivalent of the
+// pattern picli/cursorcli/codexcli/claudecode all already had:
+// Close<Provider>InteractiveSessionByTmux, a teardown-by-tmux-name backstop
+// used when the owning session ID is unknown or drifted (workflow
+// sub-agents registered under a step-execution owner). Muse had no
+// equivalent at all -- mcp-agent-builder-go's provider-agnostic cleanup
+// paths (isCodingAgentTmuxSessionName, gracefulCloseCodingCLITmuxByName,
+// closeAllCodingCLIInteractiveSessionsForOwner) silently skipped muse
+// sessions entirely, so a workshop-mode switch could leave a stale
+// persistent muse TUI running instead of relaunching it with fresh content.
+func TestCloseMuseCLIInteractiveSessionByTmux(t *testing.T) {
+	const tmuxName = "mlp-muse-test-close-by-tmux"
+	restored := false
+	musePersistentPool.Lock()
+	musePersistentPool.m["owner-under-test"] = &musePersistentSession{
+		tmuxName:      tmuxName,
+		restoreAgents: func() { restored = true },
+	}
+	musePersistentPool.Unlock()
+
+	CloseMuseCLIInteractiveSessionByTmux(tmuxName, "test")
+
+	musePersistentPool.Lock()
+	_, stillPooled := musePersistentPool.m["owner-under-test"]
+	musePersistentPool.Unlock()
+	if stillPooled {
+		t.Fatal("expected the pool entry to be removed")
+	}
+	if !restored {
+		t.Fatal("expected restoreAgents to run as part of teardown")
+	}
+
+	// A tmux name with no pooled entry must be a safe no-op, not a panic.
+	CloseMuseCLIInteractiveSessionByTmux("mlp-muse-no-such-session", "test")
+	CloseMuseCLIInteractiveSessionByTmux("", "test")
+}
+
+// TestCloseMuseCLIInteractiveSessionForOwner pins that the owner-keyed close
+// (the naming-convention wrapper other providers export) actually removes
+// the pooled entry, matching KillMusePersistentSession's contract.
+func TestCloseMuseCLIInteractiveSessionForOwner(t *testing.T) {
+	musePersistentPool.Lock()
+	musePersistentPool.m["owner-for-close-test"] = &musePersistentSession{tmuxName: "mlp-muse-owner-close-test"}
+	musePersistentPool.Unlock()
+
+	CloseMuseCLIInteractiveSessionForOwner("owner-for-close-test", "test")
+
+	musePersistentPool.Lock()
+	_, stillPooled := musePersistentPool.m["owner-for-close-test"]
+	musePersistentPool.Unlock()
+	if stillPooled {
+		t.Fatal("expected the pool entry to be removed")
+	}
+}
