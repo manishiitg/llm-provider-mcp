@@ -202,7 +202,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// Launch-only with an empty prompt is the transport-session handshake:
 	// boot (or rebind) the TUI and hand back its handle. Anything else
 	// needs a real prompt.
-	prompt, err := museBuildExecPrompt(messages)
+	system, human, err := museSplitPrompt(messages)
 	if err != nil && !launchOnly {
 		return nil, err
 	}
@@ -214,17 +214,34 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 			return nil, fmt.Errorf("resolve working dir for muse tmux lane: %w", err)
 		}
 	}
+	instructionOnly := museProjectInstructionOnlyFromOptions(opts)
+	wantAgents := instructionOnly && len(system) > 0
 
+	// prompt is what gets typed: the human turn alone when AGENTS.md
+	// carries the system prompt, else the legacy inline concatenation
+	// (museInlinePrompt) when projection is off or failed.
+	prompt := human
 	session := ""
 	if persistent {
 		entry, _, err := museAcquirePersistentSession(ctx, owner, workdir,
 			a.museExecProvider(), strings.TrimSpace(a.modelID),
-			strings.TrimSpace(museMCPConfigFromOptions(opts)), musePersistentReadyFile(opts))
+			strings.TrimSpace(museMCPConfigFromOptions(opts)), musePersistentReadyFile(opts),
+			strings.Join(system, "\n\n"), wantAgents, museRestoreProjectFilesFromOptions(opts))
 		if err != nil {
 			return nil, err
 		}
 		session = entry.tmuxName
+		if wantAgents && !entry.agentsProjected {
+			prompt = museInlinePrompt(system, human)
+		}
 	} else {
+		restoreAgents, projected := projectMuseAgentsForTurn(workdir, system, wantAgents, museRestoreProjectFilesFromOptions(opts))
+		if restoreAgents != nil {
+			defer restoreAgents()
+		}
+		if wantAgents && !projected {
+			prompt = museInlinePrompt(system, human)
+		}
 		session = museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
 		if err := museLaunchTUI(ctx, workdir, session, a.museExecProvider()); err != nil {
 			return nil, err

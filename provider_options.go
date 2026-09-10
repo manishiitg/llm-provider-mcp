@@ -405,6 +405,14 @@ func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
 	return musecli.WithMuseStructuredTransport(enabled)
 }
 
+// WithMuseProjectInstructionOnly carries the muse per-session system prompt
+// solely via the projected <workingDir>/AGENTS.md file, skipping the inline
+// preamble. The orchestrator opts in through
+// CodingAgentProjectInstructionOnlyOption so the prompt is carried once.
+func WithMuseProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return musecli.WithProjectInstructionOnly(enabled)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.

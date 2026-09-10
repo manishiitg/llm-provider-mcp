@@ -183,6 +183,9 @@ func TestProjectInstructionOnlyRegistryIsIntentional(t *testing.T) {
 	expected := map[Provider]bool{
 		ProviderClaudeCode: true,
 		ProviderCodexCLI:   true,
+		// Muse has no system-prompt flag, so AGENTS.md is its sole
+		// file-only channel (no doubled preamble typed into the TUI).
+		ProviderMuseCLI: true,
 	}
 	for provider := range expected {
 		if opt := CodingAgentProjectInstructionOnlyOption(provider, true); opt == nil {

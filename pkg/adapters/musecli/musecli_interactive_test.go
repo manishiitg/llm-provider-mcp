@@ -214,3 +214,80 @@ func TestMusePromptNeedsAtomicPaste(t *testing.T) {
 		})
 	}
 }
+
+// TestMuseSplitPrompt pins the file-only contract kernel for both lanes:
+// system-role texts separate from the human turn (tmux lane projects them
+// to AGENTS.md; the exec lane concatenates via museInlinePrompt). A missing
+// human turn is an error in both lanes.
+func TestMuseSplitPrompt(t *testing.T) {
+	msgs := func() []llmtypes.MessageContent {
+		return []llmtypes.MessageContent{
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "system-one"}}},
+			{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "system-two"}}},
+			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "hi"}}},
+		}
+	}
+	system, human, err := museSplitPrompt(msgs())
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+	if len(system) != 2 || system[0] != "system-one" || system[1] != "system-two" {
+		t.Fatalf("system = %q, want both system texts in order", system)
+	}
+	if human != "hi" {
+		t.Fatalf("human = %q, want hi", human)
+	}
+	// Exec-lane concatenation and the file-only fallback share museInlinePrompt.
+	if got := museInlinePrompt(system, human); got != "system-one\n\nsystem-two\n\nhi" {
+		t.Fatalf("inline = %q, want concatenated preamble + human", got)
+	}
+	if got := museInlinePrompt(nil, human); got != "hi" {
+		t.Fatalf("inline without system = %q, want bare human", got)
+	}
+	if _, _, err := museSplitPrompt([]llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "only system"}}},
+	}); err == nil {
+		t.Fatal("expected error when no human turn exists")
+	}
+}
+
+// TestWriteMuseProjectAgentsFile pins the codex-mirrored byte-restore
+// contract: a pre-existing operator AGENTS.md comes back byte-for-byte when
+// restorePrior is set, and a projected file is removed otherwise.
+func TestWriteMuseProjectAgentsFile(t *testing.T) {
+	workdir := t.TempDir()
+	path := filepath.Join(workdir, "AGENTS.md")
+	operator := "# operator rules\n"
+	if err := os.WriteFile(path, []byte(operator), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restore, err := writeMuseProjectAgentsFile(workdir, "session instructions", true)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read projected: %v", err)
+	}
+	if !strings.Contains(string(raw), "session instructions") || !strings.Contains(string(raw), "mlp-session-instructions") {
+		t.Fatalf("projected AGENTS.md missing marker or content:\n%s", raw)
+	}
+	restore()
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if string(raw) != operator {
+		t.Fatalf("restored = %q, want operator content byte-for-byte", raw)
+	}
+
+	plain := t.TempDir()
+	restore, err = writeMuseProjectAgentsFile(plain, "session instructions", false)
+	if err != nil {
+		t.Fatalf("write without restore: %v", err)
+	}
+	restore()
+	if _, err := os.Stat(filepath.Join(plain, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("projected AGENTS.md not removed on cleanup without restorePrior")
+	}
+}

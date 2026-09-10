@@ -74,8 +74,18 @@ func museExecEffort(opts *llmtypes.CallOptions) (string, error) {
 // become a header (exec has no system-prompt flag), the last human text is
 // the prompt. Non-text parts are rejected: pass image paths as text.
 func museBuildExecPrompt(messages []llmtypes.MessageContent) (string, error) {
-	var system []string
-	human := ""
+	system, human, err := museSplitPrompt(messages)
+	if err != nil {
+		return "", err
+	}
+	return museInlinePrompt(system, human), nil
+}
+
+// museSplitPrompt separates system-role texts from the human turn text so
+// the tmux lane can project the system prompt to AGENTS.md (file-only mode)
+// instead of typing it inline. The exec lane keeps concatenating via
+// museBuildExecPrompt above.
+func museSplitPrompt(messages []llmtypes.MessageContent) (system []string, human string, err error) {
 	for _, m := range messages {
 		var parts []string
 		for _, part := range m.Parts {
@@ -87,7 +97,7 @@ func museBuildExecPrompt(messages []llmtypes.MessageContent) (string, error) {
 					parts = append(parts, c.Text)
 				}
 			default:
-				return "", fmt.Errorf("muse-cli exec lane supports text only; got %T (pass image paths as text)", part)
+				return nil, "", fmt.Errorf("muse-cli exec lane supports text only; got %T (pass image paths as text)", part)
 			}
 		}
 		text := strings.Join(parts, "")
@@ -101,12 +111,9 @@ func museBuildExecPrompt(messages []llmtypes.MessageContent) (string, error) {
 		}
 	}
 	if strings.TrimSpace(human) == "" {
-		return "", fmt.Errorf("muse-cli exec lane needs a human prompt, got none")
+		return nil, "", fmt.Errorf("muse-cli exec lane needs a human prompt, got none")
 	}
-	if len(system) > 0 {
-		return strings.Join(system, "\n\n") + "\n\n" + human, nil
-	}
-	return human, nil
+	return system, human, nil
 }
 
 func museStderrTail(s string) string {

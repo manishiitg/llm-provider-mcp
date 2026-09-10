@@ -21,11 +21,18 @@ import (
 // musePersistentSession is one pooled live TUI. restoreMCP is the retained
 // settings-merge undo for the mount applied at launch; it runs on kill, so
 // a persistent mount never leaks into the user's settings.json.
+// restoreAgents/agentsContent/agentsProjected are the same retention for a
+// projected AGENTS.md system prompt: the file must exist before the TUI
+// boots (muse reads project rules at startup), so projection happens on the
+// fresh-launch path and the undo runs on kill.
 type musePersistentSession struct {
-	tmuxName   string
-	workdir    string
-	mcpJSON    string
-	restoreMCP func()
+	tmuxName        string
+	workdir         string
+	mcpJSON         string
+	restoreMCP      func()
+	agentsContent   string
+	restoreAgents   func()
+	agentsProjected bool
 }
 
 var musePersistentPool = struct {
@@ -74,6 +81,9 @@ func museKillPersistentLocked(ctx context.Context, entry *musePersistentSession)
 	if entry.restoreMCP != nil {
 		entry.restoreMCP()
 	}
+	if entry.restoreAgents != nil {
+		entry.restoreAgents()
+	}
 }
 
 // KillMusePersistentSession tears down one pooled TUI and restores the
@@ -96,12 +106,22 @@ func KillMusePersistentSession(owner string) {
 // caller still waits for settle + MCP readiness on it). A retained entry
 // whose workdir moved is relaunched; a retained mount that differs from
 // the requested one fails fast rather than running the turn with the
-// wrong tools mounted.
-func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON, readyFile string) (*musePersistentSession, bool, error) {
+// wrong tools mounted. A retained entry whose projected system prompt
+// differs is relaunched too: a running TUI may not re-read AGENTS.md, so
+// the file is projected fresh before every boot and never rewritten under
+// a live session.
+//
+// systemPrompt carries the file-only system text when the caller opted into
+// project-instruction-only mode; empty disables projection. projectAgents
+// reports whether AGENTS.md was projected for THIS turn — only then may the
+// caller skip typing the preamble inline. A projection failure is
+// best-effort (the turn falls back to inline), never a session-killer.
+func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON, readyFile, systemPrompt string, projectAgents, restoreAgentsFile bool) (*musePersistentSession, bool, error) {
 	key, err := musePersistentKey(owner)
 	if err != nil {
 		return nil, false, err
 	}
+	wantAgents := projectAgents && strings.TrimSpace(systemPrompt) != ""
 	musePersistentPool.Lock()
 	entry := musePersistentPool.m[key]
 	if entry != nil {
@@ -110,6 +130,10 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 			delete(musePersistentPool.m, key)
 			entry = nil
 		} else if !museTmuxSessionAlive(ctx, entry.tmuxName) {
+			museKillPersistentLocked(ctx, entry)
+			delete(musePersistentPool.m, key)
+			entry = nil
+		} else if wantAgents && entry.agentsContent != strings.TrimSpace(systemPrompt) {
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)
 			entry = nil
@@ -124,14 +148,35 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 	}
 	musePersistentPool.Unlock()
 
+	// Project AGENTS.md BEFORE boot: muse reads project rules at startup,
+	// so a file written after launch would miss the first turn.
+	var restoreAgents func()
+	projected := false
+	if wantAgents {
+		if restore, perr := writeMuseProjectAgentsFile(workdir, strings.TrimSpace(systemPrompt), restoreAgentsFile); perr != nil {
+			// Best-effort: fall back to inline typing below.
+		} else {
+			restoreAgents, projected = restore, true
+		}
+	}
 	tmuxName := musePersistentTmuxName(owner)
 	restore, err := museLaunchPersistentTUI(ctx, tmuxName, workdir, provider, modelID, mcpJSON, "")
 	if err != nil {
+		if restoreAgents != nil {
+			restoreAgents()
+		}
 		return nil, false, err
 	}
 	entry = &musePersistentSession{tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, restoreMCP: restore}
+	if projected {
+		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
+			restoreAgents, strings.TrimSpace(systemPrompt), true
+	}
 	if _, err := museWaitSettled(ctx, tmuxName, 90*time.Second); err != nil {
 		restore()
+		if restoreAgents != nil {
+			restoreAgents()
+		}
 		_ = exec.CommandContext(ctx, "tmux", "kill-session", "-t", tmuxName).Run()
 		return nil, false, err
 	}

@@ -839,3 +839,94 @@ func TestMuseCLIRealLargePromptDraftDelivery(t *testing.T) {
 		t.Fatalf("pasted marker %q appears %d times, want exactly once", pasteMarker, n)
 	}
 }
+
+// TestMuseCLIRealInteractiveTmuxShortPromptRoundTrip is the one real,
+// full-turn certification the interactive tmux lane was missing: every other
+// live test in this file either exercises WithTmuxTransport's plumbing in
+// isolation (draft typing alone, settle/gate detection via raw tmux) or goes
+// through the exec --json lane (WithMuseStructuredTransport). None combined
+// a live GenerateContent call with WithTmuxTransport(true) and let
+// museSendPrompt -> museWaitIntake -> museWaitTurnQuiescent run together as
+// one real turn -- which is exactly what silently swallowed a short prompt's
+// keystrokes in production (a bare "hi", well under the atomic-paste
+// threshold, submitted an empty input box for the full 60s intake deadline;
+// see writeVisibleDraftAndConfirm). A short, deterministic prompt here is
+// deliberate: it is the case a large-prompt-only cert would never catch.
+func TestMuseCLIRealInteractiveTmuxShortPromptRoundTrip(t *testing.T) {
+	requireRealMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
+			llmtypes.TextContent{Text: "hi, reply with exactly PINEAPPLE-TMUX and nothing else"}}},
+	}, WithTmuxTransport(true), WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("interactive tmux round trip failed (this is the case that silently ate a short prompt in production): %v", err)
+	}
+	final := strings.TrimSpace(resp.Choices[0].Content)
+	if !strings.Contains(final, "PINEAPPLE-TMUX") {
+		t.Fatalf("final = %q, want the PINEAPPLE-TMUX marker", final)
+	}
+	h := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if h.Provider != "muse-cli" || h.Transport != llmtypes.CodingProviderTransportTmux {
+		t.Fatalf("session handle = %+v, want provider=muse-cli transport=tmux", h)
+	}
+	if h.NativeSessionID == "" {
+		t.Fatal("expected a native session id from a completed tmux turn")
+	}
+}
+
+// TestMuseCLIRealProjectInstructionOnly certifies file-only mode end to
+// end: the system prompt travels solely via the projected AGENTS.md while
+// the typed turn is a bare human message. The marker rule proves the TUI
+// read the file (not the typed text, which never contains it).
+func TestMuseCLIRealProjectInstructionOnly(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	owner := "mlp-agents-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	workdir := t.TempDir()
+	marker := "RULEWORD-" + museRandomHex(t, 4)
+
+	systemMsg := llmtypes.MessageContent{
+		Role: llmtypes.ChatMessageTypeSystem,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{
+			Text: "Whenever asked for the code word, reply with exactly " + marker + " and nothing else.",
+		}},
+	}
+	humanMsg := llmtypes.MessageContent{
+		Role: llmtypes.ChatMessageTypeHuman,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{
+			Text: "What is the code word?",
+		}},
+	}
+	base := []llmtypes.CallOption{
+		WithPersistentInteractiveSession(true),
+		WithInteractiveSessionID(owner),
+		WithWorkingDir(workdir),
+		WithProjectInstructionOnly(true),
+		WithRestoreProjectFiles(true),
+		llmtypes.WithReasoningEffort("low"),
+	}
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{systemMsg, humanMsg}, base...)
+	if err != nil {
+		t.Fatalf("file-only turn: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("file-only turn returned no choices")
+	}
+	if final := resp.Choices[0].Content; !strings.Contains(final, marker) {
+		t.Fatalf("file-only turn answer missing rule marker %q:\n%s", marker, final)
+	}
+	// The projected file must live until teardown, then be restored away.
+	// Kill explicitly here (idempotent with the deferred cleanup) so the
+	// absence assertion below actually covers the restore path.
+	KillMusePersistentSession(owner)
+	if _, err := os.Stat(filepath.Join(workdir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("projected AGENTS.md leaked past KillMusePersistentSession cleanup")
+	}
+}
