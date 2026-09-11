@@ -34,7 +34,16 @@ import (
 // reparented (ppid=1) `sleep 999999` process behind, invisible to a
 // $$-only check.
 func TestPiStructuredEnforcesMaxTurnDurationOnAWedgedProcess(t *testing.T) {
-	t.Setenv("PI_STRUCTURED_MAX_TURN_DURATION", "700ms")
+	// 700ms flaked under a full `go test ./...` run (observed live
+	// 2026-09-11): "the pi script's own process never recorded its pid" --
+	// the fake shell hadn't even been scheduled to run its first `echo`
+	// before the ceiling fired and killed it, under heavy parallel-package
+	// CPU contention. Passed 3/3 in isolation and running this package
+	// alone; this is scheduling headroom, not the mechanism being tested.
+	// 2s leaves much more room for fork+exec to actually happen while still
+	// proving the ceiling bounds a wedged process well under the caller's
+	// 30s timeout below.
+	t.Setenv("PI_STRUCTURED_MAX_TURN_DURATION", "2s")
 	// This test deliberately installs a fake pi on PATH. A developer machine
 	// may opt into AgentWorks' managed CLI shims globally; keep that integration
 	// setting from replacing the fixture executable.
@@ -65,14 +74,14 @@ func TestPiStructuredEnforcesMaxTurnDurationOnAWedgedProcess(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error from a process that never produced a valid response")
 	}
-	// Generous upper bound: the ceiling itself is 700ms, this allows for
+	// Generous upper bound: the ceiling itself is 2s, this allows for
 	// process-teardown overhead without allowing the old unbounded behaviour
 	// (30s+, the caller's own timeout) to pass as a false negative.
-	if elapsed > 5*time.Second {
+	if elapsed > 8*time.Second {
 		t.Fatalf("GenerateContent took %s; piMaxTurnDuration did not bound a wedged process (would have run until the caller's own 30s timeout, or forever with a longer one)", elapsed)
 	}
-	if elapsed < 600*time.Millisecond {
-		t.Fatalf("GenerateContent took only %s, under the 700ms ceiling -- suspicious; check this did not resolve for an unrelated reason", elapsed)
+	if elapsed < 1900*time.Millisecond {
+		t.Fatalf("GenerateContent took only %s, under the 2s ceiling -- suspicious; check this did not resolve for an unrelated reason", elapsed)
 	}
 
 	assertPidIsDead(t, pidFile, "the pi script's own process")
