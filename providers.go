@@ -292,9 +292,7 @@ type Config struct {
 	// EventEmitter for emitting LLM events (replaces Tracers)
 	EventEmitter interfaces.EventEmitter
 	TraceID      interfaces.TraceID
-	// Fallback configuration for rate limiting
-	FallbackModels []string
-	MaxRetries     int
+	MaxRetries   int
 	// Logger for structured logging
 	Logger interfaces.Logger
 	// Context for LLM initialization (optional, uses background with timeout if not provided)
@@ -417,19 +415,19 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 
 	switch config.Provider {
 	case ProviderBedrock:
-		llm, err = initializeBedrockWithFallback(config)
+		llm, err = initializeBedrock(config)
 	case ProviderOpenAI:
-		llm, err = initializeOpenAIWithFallback(config)
+		llm, err = initializeOpenAI(config)
 	case ProviderAnthropic:
 		llm, err = initializeAnthropic(config)
 	case ProviderOpenRouter:
-		llm, err = initializeOpenRouterWithFallback(config)
+		llm, err = initializeOpenRouter(config)
 	case ProviderVertex:
-		llm, err = initializeVertexWithFallback(config)
+		llm, err = initializeVertex(config)
 	case ProviderAzure:
-		llm, err = initializeAzureWithFallback(config)
+		llm, err = initializeAzure(config)
 	case ProviderZAI:
-		llm, err = initializeZAIWithFallback(config)
+		llm, err = initializeZAI(config)
 	case ProviderKimi:
 		llm, err = initializeKimi(config)
 	case ProviderClaudeCode:

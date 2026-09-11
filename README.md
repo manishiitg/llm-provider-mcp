@@ -157,7 +157,7 @@ calls, custom logging, Bedrock, and Vertex AI.
 | `ModelID` | Selects a model; provider defaults apply when supported |
 | `Temperature` | Sets sampling temperature for providers that expose it |
 | `APIKeys` | Supplies credentials explicitly instead of using the environment |
-| `FallbackModels` / `MaxRetries` | Configures retry and fallback behavior |
+| `MaxRetries` | Configures retries on the selected model |
 | `Logger` / `EventEmitter` | Connects host logging, tracing, and model events |
 | `Context` | Controls initialization lifetime and cancellation |
 

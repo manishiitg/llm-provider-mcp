@@ -50,7 +50,7 @@ const (
 	// what lets callers distinguish "fix your key" from "retry later".
 	CertAPIAuthFailureClassified APIProviderCertificationID = "api_auth_failure_classified"
 	// CertAPIRateLimitClassified proves a 429/quota response is classified as
-	// rate limiting, which is what drives backoff and provider failover
+	// rate limiting, which is what drives same-model backoff
 	// instead of surfacing a hard failure to the user.
 	CertAPIRateLimitClassified APIProviderCertificationID = "api_rate_limit_classified"
 	// CertAPITransportLabel proves the adapter declares transport="api" on its
@@ -74,7 +74,7 @@ const (
 //   - UsageAccounting: cost/usage silently wrong, and wrong money is worse
 //     than missing money because nothing looks broken.
 //   - AuthFailureClassified / RateLimitClassified: the difference between
-//     correct failover and a hard user-facing failure.
+//     a retryable error and a hard user-facing failure.
 //   - TransportLabel: cheap, and the one property with a demonstrated history
 //     of silent regression.
 //

@@ -719,5 +719,3 @@ func initializeBedrockEmbedding(config Config) (llmtypes.EmbeddingModel, error) 
 	logger.Infof("Initialized Bedrock Embedding Model - model_id: %s", modelID)
 	return embeddingModel, nil
 }
-
-// initializeBedrockWithFallback creates a Bedrock LLM with fallback models for rate limiting

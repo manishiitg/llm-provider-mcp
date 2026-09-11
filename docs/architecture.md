@@ -9,7 +9,7 @@ coding-agent family.
 
 | Component | Package | Responsibility |
 |---|---|---|
-| Public provider API | root package | Configuration, initialization, fallbacks, shared behavior |
+| Public provider API | root package | Configuration, initialization, selected-model retries, shared behavior |
 | Model contracts | `llmtypes` | Messages, responses, tools, streams, metadata, call options |
 | Host interfaces | `interfaces` | Logging, events, trace and support contracts |
 | API/cloud adapters | `pkg/adapters/*` | Provider SDK/HTTP conversion and model behavior |

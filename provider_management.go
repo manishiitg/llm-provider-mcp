@@ -70,45 +70,6 @@ func GetLLMDefaults() LLMDefaultsResponse {
 		defaultModel = "x-ai/grok-code-fast-1" // fallback default
 	}
 
-	// Parse fallback models
-	fallbackStr := os.Getenv("OPENROUTER_FALLBACK_MODELS")
-	var fallbackModels []string
-	if fallbackStr != "" {
-		fallbackModels = strings.Split(fallbackStr, ",")
-		for i, model := range fallbackModels {
-			fallbackModels[i] = strings.TrimSpace(model)
-		}
-	} else {
-		fallbackModels = []string{} // No fallback defaults
-	}
-
-	// Parse cross-provider fallback
-	crossProvider := os.Getenv("OPENROUTER_CROSS_FALLBACK_PROVIDER")
-	if crossProvider == "" {
-		crossProvider = "openai" // Default fallback provider
-	}
-	crossModelsStr := os.Getenv("OPENROUTER_CROSS_FALLBACK_MODELS")
-	if crossModelsStr == "" {
-		crossModelsStr = os.Getenv("OPEN_ROUTER_CROSS_FALLBACK_MODELS") // Fallback to old naming
-	}
-	var crossModels []string
-	if crossModelsStr != "" {
-		crossModels = strings.Split(crossModelsStr, ",")
-		for i, model := range crossModels {
-			crossModels[i] = strings.TrimSpace(model)
-		}
-	} else {
-		crossModels = []string{} // No cross-provider fallback defaults
-	}
-
-	var crossProviderFallback *map[string]interface{}
-	if crossProvider != "" && len(crossModels) > 0 {
-		crossProviderFallback = &map[string]interface{}{
-			"provider": crossProvider,
-			"models":   crossModels,
-		}
-	}
-
 	// Get API keys from environment for prefilling
 	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
 	if openrouterAPIKey == "" {
@@ -125,46 +86,9 @@ func GetLLMDefaults() LLMDefaultsResponse {
 		bedrockModel = "us.anthropic.claude-sonnet-4-20250514-v1:0" // fallback default
 	}
 
-	bedrockFallbackStr := os.Getenv("BEDROCK_FALLBACK_MODELS")
-	var bedrockFallbacks []string
-	if bedrockFallbackStr != "" {
-		bedrockFallbacks = strings.Split(bedrockFallbackStr, ",")
-		for i, model := range bedrockFallbacks {
-			bedrockFallbacks[i] = strings.TrimSpace(model)
-		}
-	} else {
-		bedrockFallbacks = []string{} // No fallback defaults
-	}
-
 	bedrockRegion := os.Getenv("BEDROCK_REGION")
 	if bedrockRegion == "" {
 		bedrockRegion = "us-east-1" // fallback default
-	}
-
-	bedrockCrossProvider := os.Getenv("BEDROCK_CROSS_FALLBACK_PROVIDER")
-	if bedrockCrossProvider == "" {
-		bedrockCrossProvider = "openai" // Default fallback provider
-	}
-	bedrockCrossModelsStr := os.Getenv("BEDROCK_CROSS_FALLBACK_MODELS")
-	if bedrockCrossModelsStr == "" {
-		bedrockCrossModelsStr = os.Getenv("BEDROCK_OPENAI_FALLBACK_MODELS") // Fallback to old naming
-	}
-	var bedrockCrossModels []string
-	if bedrockCrossModelsStr != "" {
-		bedrockCrossModels = strings.Split(bedrockCrossModelsStr, ",")
-		for i, model := range bedrockCrossModels {
-			bedrockCrossModels[i] = strings.TrimSpace(model)
-		}
-	} else {
-		bedrockCrossModels = []string{} // No cross-provider fallback defaults
-	}
-
-	var bedrockCrossProviderFallback *map[string]interface{}
-	if bedrockCrossProvider != "" && len(bedrockCrossModels) > 0 {
-		bedrockCrossProviderFallback = &map[string]interface{}{
-			"provider": bedrockCrossProvider,
-			"models":   bedrockCrossModels,
-		}
 	}
 
 	// OpenAI configuration
@@ -174,43 +98,6 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	}
 	if openaiModel == "" {
 		openaiModel = "gpt-4o" // fallback default
-	}
-
-	openaiFallbackStr := os.Getenv("OPENAI_FALLBACK_MODELS")
-	var openaiFallbacks []string
-	if openaiFallbackStr != "" {
-		openaiFallbacks = strings.Split(openaiFallbackStr, ",")
-		for i, model := range openaiFallbacks {
-			openaiFallbacks[i] = strings.TrimSpace(model)
-		}
-	} else {
-		openaiFallbacks = []string{} // No fallback defaults
-	}
-
-	openaiCrossProvider := os.Getenv("OPENAI_CROSS_FALLBACK_PROVIDER")
-	if openaiCrossProvider == "" {
-		openaiCrossProvider = "bedrock" // Default fallback provider
-	}
-	openaiCrossModelsStr := os.Getenv("OPENAI_CROSS_FALLBACK_MODELS")
-	if openaiCrossModelsStr == "" {
-		openaiCrossModelsStr = os.Getenv("OPENAI_BEDROCK_FALLBACK_MODELS") // Fallback to old naming
-	}
-	var openaiCrossModels []string
-	if openaiCrossModelsStr != "" {
-		openaiCrossModels = strings.Split(openaiCrossModelsStr, ",")
-		for i, model := range openaiCrossModels {
-			openaiCrossModels[i] = strings.TrimSpace(model)
-		}
-	} else {
-		openaiCrossModels = []string{} // No cross-provider fallback defaults
-	}
-
-	var openaiCrossProviderFallback *map[string]interface{}
-	if openaiCrossProvider != "" && len(openaiCrossModels) > 0 {
-		openaiCrossProviderFallback = &map[string]interface{}{
-			"provider": openaiCrossProvider,
-			"models":   openaiCrossModels,
-		}
 	}
 
 	// Anthropic configuration
@@ -270,80 +157,64 @@ func GetLLMDefaults() LLMDefaultsResponse {
 	// Build response
 	return LLMDefaultsResponse{
 		PrimaryConfig: map[string]interface{}{
-			"provider":                defaultProvider,
-			"model_id":                defaultModel,
-			"fallback_models":         fallbackModels,
-			"cross_provider_fallback": crossProviderFallback,
+			"provider": defaultProvider,
+			"model_id": defaultModel,
 		},
 		OpenrouterConfig: map[string]interface{}{
-			"provider":                "openrouter",
-			"model_id":                defaultModel,
-			"fallback_models":         fallbackModels,
-			"cross_provider_fallback": crossProviderFallback,
-			"api_key":                 openrouterAPIKey,
+			"provider": "openrouter",
+			"model_id": defaultModel,
+			"api_key":  openrouterAPIKey,
 		},
 		BedrockConfig: map[string]interface{}{
-			"provider":                "bedrock",
-			"model_id":                bedrockModel,
-			"fallback_models":         bedrockFallbacks,
-			"cross_provider_fallback": bedrockCrossProviderFallback,
-			"region":                  bedrockRegion,
+			"provider": "bedrock",
+			"model_id": bedrockModel,
+			"region":   bedrockRegion,
 		},
 		OpenaiConfig: map[string]interface{}{
-			"provider":                "openai",
-			"model_id":                openaiModel,
-			"fallback_models":         openaiFallbacks,
-			"cross_provider_fallback": openaiCrossProviderFallback,
-			"api_key":                 openaiAPIKey,
+			"provider": "openai",
+			"model_id": openaiModel,
+			"api_key":  openaiAPIKey,
 		},
 		AnthropicConfig: map[string]interface{}{
-			"provider":        "anthropic",
-			"model_id":        anthropicModel,
-			"fallback_models": []string{},
-			"api_key":         anthropicAPIKey,
+			"provider": "anthropic",
+			"model_id": anthropicModel,
+			"api_key":  anthropicAPIKey,
 		},
 		AzureConfig: map[string]interface{}{
-			"provider":        "azure",
-			"model_id":        azureModel,
-			"fallback_models": []string{},
-			"api_key":         azureAPIKey,
-			"endpoint":        azureEndpoint,
+			"provider": "azure",
+			"model_id": azureModel,
+			"api_key":  azureAPIKey,
+			"endpoint": azureEndpoint,
 		},
 		ZAIConfig: map[string]interface{}{
-			"provider":        "z-ai",
-			"model_id":        zaiModel,
-			"fallback_models": []string{},
-			"api_key":         zaiAPIKey,
+			"provider": "z-ai",
+			"model_id": zaiModel,
+			"api_key":  zaiAPIKey,
 		},
 		KimiConfig: map[string]interface{}{
-			"provider":        "kimi",
-			"model_id":        kimiModel,
-			"fallback_models": []string{},
-			"api_key":         kimiAPIKey,
+			"provider": "kimi",
+			"model_id": kimiModel,
+			"api_key":  kimiAPIKey,
 		},
 		MinimaxConfig: map[string]interface{}{
-			"provider":        "minimax",
-			"model_id":        minimaxModel,
-			"fallback_models": []string{},
-			"api_key":         minimaxAPIKey,
+			"provider": "minimax",
+			"model_id": minimaxModel,
+			"api_key":  minimaxAPIKey,
 		},
 		MinimaxCodingPlanConfig: map[string]interface{}{
-			"provider":        "minimax-coding-plan",
-			"model_id":        minimaxCodingPlanModel,
-			"fallback_models": []string{},
-			"api_key":         minimaxCodingPlanAPIKey,
+			"provider": "minimax-coding-plan",
+			"model_id": minimaxCodingPlanModel,
+			"api_key":  minimaxCodingPlanAPIKey,
 		},
 		ElevenLabsConfig: map[string]interface{}{
-			"provider":        "elevenlabs",
-			"model_id":        elevenLabsModel,
-			"fallback_models": []string{},
-			"api_key":         elevenLabsAPIKey,
+			"provider": "elevenlabs",
+			"model_id": elevenLabsModel,
+			"api_key":  elevenLabsAPIKey,
 		},
 		DeepgramConfig: map[string]interface{}{
-			"provider":        "deepgram",
-			"model_id":        deepgramModel,
-			"fallback_models": []string{},
-			"api_key":         deepgramAPIKey,
+			"provider": "deepgram",
+			"model_id": deepgramModel,
+			"api_key":  deepgramAPIKey,
 		},
 		AvailableModels: map[string][]string{
 			"bedrock":             getBedrockAvailableModels(),
