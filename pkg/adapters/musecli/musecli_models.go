@@ -17,14 +17,26 @@ type knownMuseModel struct {
 	name    string
 	context int
 	output  int
+	// Per-1M-token USD rates (input, output, cached input). Contributor
+	// rows carry the data-sharing tier; standard rows the full API rate.
+	// Sources 2026-09-10: Vercel AI Gateway changelog + VentureBeat +
+	// DataCamp (contributor 0.10/0.20/0.002, standard 1.25/4.25/0.15;
+	// standard unchanged 1.2 -> 1.3).
+	input  float64
+	out    float64
+	cached float64
 }
 
 var knownMuseCLIModels = []knownMuseModel{
-	{id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", context: 1007997, output: 128000},
-	{id: "muse-spark-1.3", name: "Muse Spark 1.3", context: 1007997, output: 128000},
-	{id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", context: 1007997, output: 128000},
-	{id: "muse-spark-1.2", name: "Muse Spark 1.2", context: 1007997, output: 128000},
+	{id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", context: 1007997, output: 128000, input: 0.10, out: 0.20, cached: 0.002},
+	{id: "muse-spark-1.3", name: "Muse Spark 1.3", context: 1007997, output: 128000, input: 1.25, out: 4.25, cached: 0.15},
+	{id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", context: 1007997, output: 128000, input: 0.10, out: 0.20, cached: 0.002},
+	{id: "muse-spark-1.2", name: "Muse Spark 1.2", context: 1007997, output: 128000, input: 1.25, out: 4.25, cached: 0.15},
 }
+
+// museReasoningEffortLevels mirrors `muse exec --help`: Meta reasoning
+// effort none|minimal|low|medium|high|xhigh|max|ultra (default high).
+var museReasoningEffortLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
 // GetMuseModelMetadata returns catalog metadata for known ids. Unknown ids
 // pass through with the provider set (the CLI resolves them); context and
@@ -37,11 +49,17 @@ func GetMuseModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	for _, known := range knownMuseCLIModels {
 		if known.id == modelID {
 			return &llmtypes.ModelMetadata{
-				Provider:           "muse-cli",
-				ModelID:            known.id,
-				ModelName:          known.name,
-				ContextWindow:      known.context,
-				ModelSelectionMode: "dynamic",
+				Provider:                   "muse-cli",
+				ModelID:                    known.id,
+				ModelName:                  known.name,
+				ContextWindow:              known.context,
+				ModelSelectionMode:         "dynamic",
+				InputCostPer1MTokens:       known.input,
+				OutputCostPer1MTokens:      known.out,
+				CachedInputCostPer1MTokens: known.cached,
+				SupportsToolCalls:          true,
+				SupportsReasoningEffort:    true,
+				ReasoningEffortLevels:      append([]string(nil), museReasoningEffortLevels...),
 			}, nil
 		}
 	}

@@ -92,13 +92,16 @@ func CodingAgentProjectDirIDOption(provider Provider, projectDirID string) llmty
 var codingAgentProjectInstructionOnlyRegistry = map[Provider]func(bool) llmtypes.CallOption{
 	ProviderClaudeCode: WithClaudeCodeProjectInstructionOnly,
 	ProviderCodexCLI:   WithCodexProjectInstructionOnly,
+	ProviderMuseCLI:    WithMuseProjectInstructionOnly,
 }
 
 // CodingAgentProjectInstructionOnlyOption returns the provider option that
 // prevents duplicate prompt injection when the adapter projects the prompt into
 // a CLI-native project instruction file. Not every coding-agent provider needs
 // this: Cursor already uses its rules file as the single prompt channel,
-// and Pi uses an explicit append-system-prompt path.
+// and Pi uses an explicit append-system-prompt path. Muse needs it because it
+// has no system-prompt flag at all — without the file the whole preamble is
+// typed into the TUI on every turn.
 func CodingAgentProjectInstructionOnlyOption(provider Provider, enabled bool) llmtypes.CallOption {
 	if fn, ok := codingAgentProjectInstructionOnlyRegistry[normalizeCodingAgentProvider(provider)]; ok {
 		return fn(enabled)

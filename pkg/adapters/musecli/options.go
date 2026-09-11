@@ -42,6 +42,7 @@ const (
 	MetadataKeyMuseInteractiveSessionID  = "muse_interactive_session_id"
 	MetadataKeyMusePersistentInteractive = "muse_persistent_interactive"
 	MetadataKeyMuseWorkingDir            = "muse_working_dir"
+	MetadataKeyMuseStructuredTransport   = "muse_structured_transport"
 )
 
 // MetadataKeyMuseMCPConfig carries a bridge MCP config document (a JSON
@@ -69,6 +70,30 @@ func museMCPConfigFromOptions(opts *llmtypes.CallOptions) string {
 	return cfg
 }
 
+func museInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil {
+		return ""
+	}
+	id, _ := opts.Metadata.Custom[MetadataKeyMuseInteractiveSessionID].(string)
+	return id
+}
+
+func musePersistentInteractiveFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMusePersistentInteractive].(bool)
+	return enabled
+}
+
+func museWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil {
+		return ""
+	}
+	dir, _ := opts.Metadata.Custom[MetadataKeyMuseWorkingDir].(string)
+	return dir
+}
+
 // WithMuseInteractiveSessionID associates the tmux session with an owner
 // session id (mirrors WithCodexInteractiveSessionID).
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
@@ -93,4 +118,120 @@ func WithWorkingDir(dir string) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMuseWorkingDir] = dir
 	}
+}
+
+// WithMuseStructuredTransport selects the exec --json lane (per-turn
+// process, no live pane). Default is the tmux lane, like every other
+// coding provider: structured must be asked for explicitly, and the
+// orchestrator asks exactly when it wants structured (wantsStructured).
+func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStructuredTransport] = enabled
+	}
+}
+
+func museStructuredTransportRequested(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStructuredTransport].(bool)
+	return enabled
+}
+
+// MetadataKeyMuseProjectInstructionOnly carries the per-session system
+// prompt SOLELY via the projected <workingDir>/AGENTS.md file and skips
+// typing it inline. Muse has no --system-prompt flag, so without this the
+// whole preamble is typed into the TUI on every turn. Default off; inline
+// concatenation stays the primary path. When enabled, inline typing is
+// skipped only if the AGENTS.md projection actually succeeded — otherwise
+// the adapter falls back to inline so the prompt is never silently dropped.
+// Same shape as codex's MetadataKeyProjectInstructionOnly.
+const MetadataKeyMuseProjectInstructionOnly = "muse_project_instruction_only"
+
+// MetadataKeyMuseRestoreProjectFiles controls whether the projected
+// AGENTS.md preserves an operator's pre-existing content across the
+// session. Default off: the run writes a fresh artifact and deletes it on
+// cleanup. Pass WithRestoreProjectFiles(true) to byte-restore instead.
+// Same shape as codex's MetadataKeyRestoreProjectFiles.
+const MetadataKeyMuseRestoreProjectFiles = "muse_restore_project_files"
+
+// WithProjectInstructionOnly makes the adapter carry the per-session system
+// prompt solely via <workingDir>/AGENTS.md (which muse auto-loads as
+// project instructions in a trusted workspace).
+func WithProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseProjectInstructionOnly] = enabled
+	}
+}
+
+// WithRestoreProjectFiles opts back into byte-restoring a pre-existing
+// AGENTS.md on session teardown instead of deleting the projected file.
+func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseRestoreProjectFiles] = enabled
+	}
+}
+
+func museProjectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseProjectInstructionOnly].(bool)
+	return enabled
+}
+
+func museRestoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseRestoreProjectFiles].(bool)
+	return enabled
+}
+
+// MetadataKeyMuseStreamTranscript opts into streaming structured content
+// (assistant text, tool starts/ends, reasoning) from the native
+// session.jsonl while a tmux turn runs. OFF by default — the tmux lane
+// stays silent unless the orchestrator asks (enableStreaming), same as
+// cursor's MetadataKeyStreamTranscript.
+const MetadataKeyMuseStreamTranscript = "muse_stream_transcript"
+
+// WithStreamTranscript opts into transcript streaming for tmux turns.
+func WithStreamTranscript(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStreamTranscript] = enabled
+	}
+}
+
+func museInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStreamTranscript].(bool)
+	return enabled
+}
+
+// MetadataKeyMuseStreamTmuxScreen controls whether raw tmux-pane snapshots
+// stream as Terminal chunks during a turn (the mode1 raw-terminal view).
+// Separate from the transcript flag, same split as cursor — there is no
+// environment-variable backdoor.
+const MetadataKeyMuseStreamTmuxScreen = "muse_stream_tmux_screen"
+
+// WithStreamTmuxScreen opts into raw pane snapshots during tmux turns.
+func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseStreamTmuxScreen] = enabled
+	}
+}
+
+func museInteractiveStreamTmuxScreenEnabled(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyMuseStreamTmuxScreen].(bool)
+	return enabled
 }

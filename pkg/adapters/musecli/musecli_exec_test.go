@@ -40,7 +40,7 @@ func TestMuseExecLaneEchoFinalText(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	})
+	}, WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestMuseExecLaneEchoStreamsDeltas(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	}, llmtypes.WithStreamingChan(stream))
+	}, llmtypes.WithStreamingChan(stream), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
@@ -93,6 +93,31 @@ func TestMuseExecLaneEchoStreamsDeltas(t *testing.T) {
 drained:
 	if got := streamed.String(); !strings.Contains(got, "pineapple") {
 		t.Fatalf("streamed deltas = %q, want pineapple; final = %q", got, resp.Choices[0].Content)
+	}
+}
+
+// TestMuseExecLaneEchoSystemPrompt is the JSON-lane e2e for system handling:
+// a system message plus human turn must travel folded into the exec prompt.
+// The echo provider returns the prompt it received, so the assertion observes
+// real CLI delivery (not just the unit fold). No model cost, no Meta auth.
+func TestMuseExecLaneEchoSystemPrompt(t *testing.T) {
+	requireMuseBinary(t)
+	museEchoTestEnv(t)
+	adapter := NewMuseCLIAdapter("", "muse-cli", museTestLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Be brief."}}},
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
+	}, WithMuseStructuredTransport(true))
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	if got := resp.Choices[0].Content; !strings.Contains(got, "echo: Be brief.\n\nsay the word pineapple") {
+		t.Fatalf("content = %q, want folded system + human prompt echoed", got)
 	}
 }
 
@@ -125,7 +150,7 @@ func TestMuseExecLaneStructuredMultiTurn(t *testing.T) {
 			{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}}},
 		}
 	}
-	first, err := adapter.GenerateContent(ctx, human("first turn turnips"))
+	first, err := adapter.GenerateContent(ctx, human("first turn turnips"), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
@@ -133,7 +158,7 @@ func TestMuseExecLaneStructuredMultiTurn(t *testing.T) {
 	if sid == "" {
 		t.Fatal("first turn surfaced no native session id")
 	}
-	second, err := adapter.GenerateContent(ctx, human("second turn mangoes"), WithResumeSessionID(sid))
+	second, err := adapter.GenerateContent(ctx, human("second turn mangoes"), WithResumeSessionID(sid), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("second turn: %v", err)
 	}

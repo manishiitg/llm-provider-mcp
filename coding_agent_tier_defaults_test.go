@@ -228,6 +228,30 @@ func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
 	check("pulse", defaults.Pulse, "google/gemini-3.8-flash", "high")
 }
 
+func TestCodingAgentDefaultTierModelsMuseSingleModelEffortLadder(t *testing.T) {
+	defaults, ok := GetCodingAgentDefaultTierModels(ProviderMuseCLI)
+	if !ok {
+		t.Fatal("GetCodingAgentDefaultTierModels(muse-cli) ok = false")
+	}
+	check := func(name string, got CodingAgentTierModelRef, wantEffort string) {
+		t.Helper()
+		if got.Provider != string(ProviderMuseCLI) {
+			t.Fatalf("%s provider = %q, want %q", name, got.Provider, ProviderMuseCLI)
+		}
+		if got.ModelID != "muse-spark-1.3-contributor" {
+			t.Fatalf("%s model_id = %q, want muse-spark-1.3-contributor (single model for now)", name, got.ModelID)
+		}
+		if got.Options["reasoning_effort"] != wantEffort {
+			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
+		}
+	}
+	check("builder", defaults.Builder, "xhigh")
+	check("high", defaults.High, "xhigh")
+	check("medium", defaults.Medium, "high")
+	check("low", defaults.Low, "medium")
+	check("pulse", defaults.Pulse, "xhigh")
+}
+
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
 	published := map[string]map[string]bool{}
 	for _, meta := range codingAgentPublishedModelMetadata() {

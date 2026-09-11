@@ -9,13 +9,12 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// redirectMuseConfigHome points os.UserConfigDir at a temp dir for the test.
+// redirectMuseConfigHome points XDG_CONFIG_HOME at a temp dir for the test.
 func redirectMuseConfigHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	// os.UserConfigDir caches on some platforms; on unix it reads the env
-	// each call, but fail loudly if the path escapes the temp dir.
+	// Fail loudly if the resolved path escapes the temp dir.
 	path, err := museSettingsPath()
 	if err != nil {
 		t.Fatalf("settings path: %v", err)
@@ -123,10 +122,82 @@ func TestMuseApplyMCPConfigRejectsBadInput(t *testing.T) {
 			t.Fatalf("expected error for %q", bad)
 		}
 	}
-	// Empty server map: no-op, no restore, no file.
+	// Empty server map still applies the voice-off overlay, so it is no
+	// longer a true no-op: a real restore func always comes back.
 	restore, err := museApplyMCPConfig(`{"mcpServers": {}}`)
-	if err != nil || restore != nil {
-		t.Fatalf("empty config: restore=%v err=%v, want nil,nil", restore != nil, err)
+	if err != nil {
+		t.Fatalf("empty config: %v", err)
+	}
+	if restore == nil {
+		t.Fatal("expected a restore func even for an empty MCP config (voice-off overlay always applies)")
+	}
+	restore()
+}
+
+// TestMuseApplyMCPConfigForcesVoiceOff pins that voice input is disabled on
+// every launch regardless of whether an MCP config is mounted: muse has no
+// CLI flag for it (verified against `muse --help`), only the
+// settings.json "tui":{"voice_enabled":...} field, so this is the only
+// place that can guarantee it off. Other "tui" fields and other top-level
+// settings survive the round trip untouched.
+func TestMuseApplyMCPConfigForcesVoiceOff(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	before := `{"schema_version": 1, "theme": "dark", "tui": {"voice_enabled": true, "some_other_flag": true}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restore, err := museApplyMCPConfig("") // no MCP config mounted this run
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if restore == nil {
+		t.Fatal("expected a restore func: the voice-off overlay always writes")
+	}
+
+	var during struct {
+		TUI struct {
+			VoiceEnabled  bool `json:"voice_enabled"`
+			SomeOtherFlag bool `json:"some_other_flag"`
+		} `json:"tui"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read during: %v", err)
+	}
+	if err := json.Unmarshal(raw, &during); err != nil {
+		t.Fatalf("parse during: %v", err)
+	}
+	if during.TUI.VoiceEnabled {
+		t.Fatal("voice_enabled must be forced false while a turn is mounted")
+	}
+	if !during.TUI.SomeOtherFlag {
+		t.Fatal("unrelated tui field lost while forcing voice off")
+	}
+
+	restore()
+
+	var after struct {
+		Theme string `json:"theme"`
+		TUI   struct {
+			VoiceEnabled bool `json:"voice_enabled"`
+		} `json:"tui"`
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after restore: %v", err)
+	}
+	if err := json.Unmarshal(raw, &after); err != nil {
+		t.Fatalf("parse after restore: %v", err)
+	}
+	if after.Theme != "dark" {
+		t.Fatalf("unrelated top-level key lost: %s", raw)
+	}
+	if !after.TUI.VoiceEnabled {
+		t.Fatal("original voice_enabled=true not reinstated by restore")
 	}
 }
 

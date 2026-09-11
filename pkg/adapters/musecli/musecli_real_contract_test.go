@@ -33,52 +33,6 @@ func museRandomHex(t *testing.T, n int) string {
 	return hex.EncodeToString(b)
 }
 
-// musePaneShowsBlockingGate reports whether the pane is stuck on a trust,
-// auth, or login gate instead of the interactive TUI. Unit-covered by
-// TestMusePaneGateDetection; the live test fails through this with a pane
-// dump pointing at the trust_auth_prompts cert.
-func musePaneShowsBlockingGate(pane string) bool {
-	lower := strings.ToLower(pane)
-	for _, marker := range []string{
-		"do you trust",
-		"untrusted",
-		"muse login",
-		"log in to",
-		"approve this",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// museTUISufficientlySettled is the v1 readiness signal: the TUI rendered
-// real content and is not sitting on a gate. Follow-up after the first
-// live run: capture the exact ready prompt from the settled-pane log below
-// and pin it here (see CertReplyFormattingFidelity-style fidelity: assert
-// on the real marker, not line counts).
-func museTUISufficientlySettled(pane string) bool {
-	if musePaneShowsBlockingGate(pane) {
-		return false
-	}
-	lines := 0
-	for _, line := range strings.Split(pane, "\n") {
-		if strings.TrimSpace(line) != "" {
-			lines++
-		}
-	}
-	return lines >= 5
-}
-
-func museTmuxCapturePane(ctx context.Context, session string) (string, error) {
-	out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-p", "-t", session).Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
 func TestMuseCLIRealInteractiveTmuxFullContract(t *testing.T) {
 	requireRealMuseCLIE2E(t)
 
@@ -176,5 +130,24 @@ func TestMusePaneGateDetection(t *testing.T) {
 	}
 	if museTUISufficientlySettled("alpha\nbeta") {
 		t.Error("2-line pane must not count as settled")
+	}
+}
+
+// TestMuseTUIAtPromptSurvivesScroll: a completed long answer scrolls the
+// boot banner off, but the prompt glyph + status line still mark the idle
+// shape the turn-completion waiter needs. A gate is never "at prompt".
+func TestMuseTUIAtPromptSurvivesScroll(t *testing.T) {
+	scrolled := "◆ long answer line one\n  wrapped continuation\n\n── Voice input ──\n❯\n───\n  muse-spark-1.3-contributor · xhigh · /tmp/work\n"
+	if !museTUIAtPrompt(scrolled) {
+		t.Error("scrolled idle pane (no banner) must count as at-prompt")
+	}
+	if museTUISufficientlySettled(scrolled) {
+		t.Error("scrolled pane must NOT count as boot-settled (banner gone)")
+	}
+	if museTUIAtPrompt("Do you trust this workspace?\n> 1  Trust and continue") {
+		t.Error("trust gate must not count as at-prompt")
+	}
+	if museTUIAtPrompt("thinking...") {
+		t.Error("bare busy pane must not count as at-prompt")
 	}
 }

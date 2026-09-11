@@ -398,6 +398,35 @@ func WithMuseMCPConfig(config string) llmtypes.CallOption {
 	return musecli.WithMCPConfig(config)
 }
 
+// WithMuseStructuredTransport selects the exec --json lane (per-turn
+// one-shot process) instead of the default tmux interactive lane. OFF by
+// default — see WithCodexStructuredTransport doc comment for the rationale.
+func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
+	return musecli.WithMuseStructuredTransport(enabled)
+}
+
+// WithMuseProjectInstructionOnly carries the muse per-session system prompt
+// solely via the projected <workingDir>/AGENTS.md file, skipping the inline
+// preamble. The orchestrator opts in through
+// CodingAgentProjectInstructionOnlyOption so the prompt is carried once.
+func WithMuseProjectInstructionOnly(enabled bool) llmtypes.CallOption {
+	return musecli.WithProjectInstructionOnly(enabled)
+}
+
+// WithMuseStreamTranscript opts tmux turns into transcript streaming
+// (assistant text, tool starts/ends, reasoning from session.jsonl). OFF by
+// default — the orchestrator sets it exactly when it streams.
+func WithMuseStreamTranscript(enabled bool) llmtypes.CallOption {
+	return musecli.WithStreamTranscript(enabled)
+}
+
+// WithMuseStreamTmuxScreen opts tmux turns into raw pane snapshots
+// (Terminal chunks, the mode1 view). OFF by default — separate from the
+// transcript flag, same split as cursor.
+func WithMuseStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return musecli.WithStreamTmuxScreen(enabled)
+}
+
 // WithPiProvider overrides Pi's provider routing while keeping model selection
 // separate. Model IDs can also be provider-qualified, e.g.
 // google/gemini-3.5-flash.
