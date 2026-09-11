@@ -426,6 +426,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("read muse TUI transcript at %s", logPath)
 	}
 	final := museLastAssistantText(transcript)
+	if quotaErr := museUsageLimitError(strings.TrimSpace(a.modelID), time.Now(), final); quotaErr != nil {
+		return nil, quotaErr
+	}
 	if strings.TrimSpace(final) == "" {
 		return nil, fmt.Errorf("muse TUI turn produced no assistant text (session %s)", nativeSessionID)
 	}

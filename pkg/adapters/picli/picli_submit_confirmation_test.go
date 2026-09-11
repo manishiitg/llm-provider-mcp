@@ -48,6 +48,39 @@ func TestPiPaneLooksIdleIgnoresTranscriptCheckmark(t *testing.T) {
 	}
 }
 
+func TestPiPaneReadyForInputUsesSettledMarkerWhenViewerTruncatesStatus(t *testing.T) {
+	// This is the visible state from the Confida failure: the browser viewer
+	// resized the pane to 108 columns, leaving Pi's status line present but
+	// truncating away both the literal idle label and last-tool checkmark.
+	pane := "assistant response\n" +
+		"────────────────────────\n" +
+		"π • 🤖 gemini-3.8-flash • 🧠 high • 📁 93e658b848e4591d20666ff6f70c50d6eef35a2205f55444ef61e1bec6229bcb • 🌿\n" +
+		"🔌 🔌 MCP: 2 servers enabled (1 connected)\n"
+	if piPaneReadyForInput(pane) {
+		t.Fatal("truncated status fixture must reproduce the old false-busy verdict")
+	}
+	if !piPaneReadyForInputWithMarkerState(pane, true) {
+		t.Fatal("latest agent_end must recover readiness when the Pi status line is truncated")
+	}
+	if piPaneReadyForInputWithMarkerState(pane, false) {
+		t.Fatal("a truncated status line without a settled marker must remain not-ready")
+	}
+}
+
+func TestPiAgentSettledAfterMarkersTracksLatestLifecycleEvent(t *testing.T) {
+	settled := piAgentSettledAfterMarkers(false, []piMarker{
+		{Type: "agent_start"},
+		{Type: "turn_end"},
+		{Type: "agent_end"},
+	})
+	if !settled {
+		t.Fatal("agent_end must mark the Pi session settled")
+	}
+	if piAgentSettledAfterMarkers(settled, []piMarker{{Type: "agent_start"}}) {
+		t.Fatal("a later agent_start must mark the Pi session busy again")
+	}
+}
+
 func TestEnsurePiInputSubmittedTrustsMarkerAcknowledgement(t *testing.T) {
 	const message = "what does validate browser evidence do"
 	markerPath := filepath.Join(t.TempDir(), "markers.jsonl")

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -118,8 +119,10 @@ func museSplitPrompt(messages []llmtypes.MessageContent) (system []string, human
 
 func museStderrTail(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 2048 {
-		s = s[len(s)-2048:]
+	if len(s) > 4096 {
+		// Muse prints the decisive parse/configuration error before a long help
+		// page. Preserve both ends so the useful cause is not truncated away.
+		s = s[:1024] + "\n... stderr truncated ...\n" + s[len(s)-3072:]
 	}
 	return s
 }
@@ -268,13 +271,20 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	}
 	if err := scanner.Err(); err != nil {
 		_ = cmd.Wait()
+		if quotaErr := museUsageLimitError(model, time.Now(), failedReason, terminalText, deltas.String(), stderr.String()); quotaErr != nil {
+			return nil, quotaErr
+		}
 		return nil, fmt.Errorf("read muse exec stream: %w (stderr: %s)", err, museStderrTail(stderr.String()))
 	}
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	if quotaErr := museUsageLimitError(model, time.Now(), failedReason, terminalText, deltas.String(), stderr.String()); quotaErr != nil {
+		return nil, quotaErr
+	}
+	if waitErr != nil {
 		if failedReason != "" {
-			return nil, fmt.Errorf("muse exec failed: %s: %w (stderr: %s)", failedReason, err, museStderrTail(stderr.String()))
+			return nil, fmt.Errorf("muse exec failed: %s: %w (stderr: %s)", failedReason, waitErr, museStderrTail(stderr.String()))
 		}
-		return nil, fmt.Errorf("muse exec failed: %w (stderr: %s)", err, museStderrTail(stderr.String()))
+		return nil, fmt.Errorf("muse exec failed: %w (stderr: %s)", waitErr, museStderrTail(stderr.String()))
 	}
 	final := terminalText
 	if strings.TrimSpace(final) == "" {

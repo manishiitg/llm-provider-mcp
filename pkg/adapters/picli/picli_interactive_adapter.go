@@ -1242,7 +1242,7 @@ func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath,
 	// before pasting instead of finding out via 3 fast, identical paste
 	// failures.
 	if !initialPrompt {
-		if err := waitForPiPromptReady(ctx, sessionName, piSendReadyWait); err != nil {
+		if err := waitForPiPromptReadyWithMarkers(ctx, sessionName, markerPath, piSendReadyWait); err != nil {
 			return fmt.Errorf("Pi session was not idle/ready to receive input: %w", err)
 		}
 	}
@@ -1346,6 +1346,16 @@ func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, befor
 }
 
 func waitForPiPromptReady(ctx context.Context, sessionName string, timeout time.Duration) error {
+	return waitForPiPromptReadyWithMarkers(ctx, sessionName, "", timeout)
+}
+
+// waitForPiPromptReadyWithMarkers supplements the visible-pane readiness
+// check with Pi's own lifecycle markers. A browser terminal viewer can resize
+// a retained tmux pane after launch, truncating the right side of the classic
+// status line where the "idle" / last-tool segment normally appears. The
+// marker stream is not affected by terminal geometry: a latest agent_end means
+// the prior turn is settled, while a later agent_start makes it busy again.
+func waitForPiPromptReadyWithMarkers(ctx context.Context, sessionName, markerPath string, timeout time.Duration) error {
 	if timeout <= 0 {
 		return fmt.Errorf("Pi prompt wait must be positive")
 	}
@@ -1354,10 +1364,18 @@ func waitForPiPromptReady(ctx context.Context, sessionName string, timeout time.
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
+	var markerOffset int64
+	markerSettled := false
 	for {
+		if markerPath != "" {
+			if markers, nextOffset, err := readPiMarkersSince(markerPath, markerOffset); err == nil {
+				markerOffset = nextOffset
+				markerSettled = piAgentSettledAfterMarkers(markerSettled, markers)
+			}
+		}
 		captured, err := capturePiPaneANSI(waitCtx, sessionName)
 		if err == nil {
-			if piPaneReadyForInput(captured) {
+			if piPaneReadyForInputWithMarkerState(captured, markerSettled) {
 				return nil
 			}
 		} else {
@@ -1372,6 +1390,22 @@ func waitForPiPromptReady(ctx context.Context, sessionName string, timeout time.
 		case <-ticker.C:
 		}
 	}
+}
+
+func piAgentSettledAfterMarkers(settled bool, markers []piMarker) bool {
+	for _, marker := range markers {
+		switch marker.Type {
+		case "agent_start":
+			settled = false
+		case "agent_end":
+			settled = true
+		}
+	}
+	return settled
+}
+
+func piPaneReadyForInputWithMarkerState(captured string, markerSettled bool) bool {
+	return piPaneReadyForInput(captured) || (markerSettled && piPaneHasStatusLine(captured))
 }
 
 func piPaneReadyForInput(captured string) bool {
