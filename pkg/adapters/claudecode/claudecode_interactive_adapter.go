@@ -28,9 +28,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -2916,6 +2916,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 	// loop in a "not ready" branch can never suppress it.
 	var backstopPrevCapture string
 	var paneUnchangedSince time.Time
+	var loggedOutStatus claudeLoggedOutStatus
 
 	for {
 		select {
@@ -2943,7 +2944,9 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				return "", err
 			}
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
-			if errText := detectTmuxFatalStatus(delta); errText != "" {
+			errText := detectTmuxFatalStatus(delta)
+			authPending, authConfirmed := loggedOutStatus.observe(captured, errText == "not logged in", time.Now())
+			if errText != "" {
 				// A usage-limit wall is not the same failure as a dead pane or a
 				// logged-out CLI: it is expected, temporary, and carries a time
 				// at which work can continue. Returning it typed lets the stack
@@ -2956,7 +2959,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 					// A pane phrase contradicted by the current structured statusline is
 					// stale transcript text, not a provider wall. Keep waiting for the
 					// actual turn outcome.
-				} else {
+				} else if errText != "not logged in" || authConfirmed {
 					return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 				}
 			}
@@ -2984,6 +2987,13 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
 				}
+			}
+			if authPending {
+				// Do not mistake a transient footer repaint for a lost login, or
+				// finish the turn successfully while a real auth wall is settling.
+				idleSince = time.Time{}
+				lastCaptured = captured
+				continue
 			}
 			if hasClaudeActivity(captured) {
 				sawActivity = true
@@ -3084,11 +3094,52 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
+const claudeLoggedOutStableWindow = 2 * time.Second
+
+// Terminal text is not an authentication signal while the CLI is still working.
+// Require the same idle pane across polls before interrupting an accepted turn.
+type claudeLoggedOutStatus struct {
+	pane  string
+	since time.Time
+}
+
+func (s *claudeLoggedOutStatus) observe(captured string, candidate bool, now time.Time) (pending, confirmed bool) {
+	if !candidate || hasClaudeActivity(captured) {
+		*s = claudeLoggedOutStatus{}
+		return false, false
+	}
+	if s.since.IsZero() || captured != s.pane {
+		s.pane, s.since = captured, now
+	}
+	return true, now.Sub(s.since) >= claudeLoggedOutStableWindow
+}
+
+func isClaudeLoggedOutStatusLine(line string) bool {
+	line = strings.TrimSpace(strings.ReplaceAll(line, "\u00a0", " "))
+	// Do not match user prompts, quoted diagnostics, prose, or unrelated tool
+	// output merely containing these words. Bullet-prefixed auth errors must
+	// include the CLI's login instruction.
+	if line == "Not logged in" {
+		return true
+	}
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "⏺ "), "⎿ "))
+	return line == "Not logged in · Please run /login" || line == "Not logged in · /login"
+}
+
+func hasClaudeLoggedOutStatus(captured string) bool {
+	for _, line := range strings.Split(captured, "\n") {
+		if isClaudeLoggedOutStatusLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
 func detectTmuxFatalStatus(captured string) string {
 	switch {
 	case IsClaudeUsageLimitText(captured):
 		return "rate limit reached"
-	case strings.Contains(captured, "Not logged in"):
+	case hasClaudeLoggedOutStatus(captured):
 		return "not logged in"
 	case strings.Contains(captured, "Pane is dead"):
 		return "claude code process exited"
@@ -3147,7 +3198,7 @@ func isClaudeToolProgressLine(trimmed string) bool {
 
 func isClaudeFatalProgressLine(trimmed string) bool {
 	return IsClaudeUsageLimitText(trimmed) ||
-		strings.Contains(trimmed, "Not logged in") ||
+		isClaudeLoggedOutStatusLine(trimmed) ||
 		strings.Contains(trimmed, "Pane is dead")
 }
 
