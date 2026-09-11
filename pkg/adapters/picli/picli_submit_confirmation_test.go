@@ -30,6 +30,24 @@ func TestIdlePaneWithDraftFixtureReadsAsUnsubmitted(t *testing.T) {
 	}
 }
 
+func TestPiPaneLooksIdleAfterCompletedTool(t *testing.T) {
+	pane := "assistant response\n" +
+		"────────────────────────\n" +
+		"\x1b[1mπ\x1b[0m • 🤖 google/gemini-3.8-flash • ✅ api-bridge_execute_shell_command • 🪟 ctx 4%\n"
+	if !piPaneHasStatusLine(pane) || !piPaneLooksIdle(pane) {
+		t.Fatalf("completed-tool statusline must be input-ready: %q", stripPiANSI(pane))
+	}
+}
+
+func TestPiPaneLooksIdleIgnoresTranscriptCheckmark(t *testing.T) {
+	pane := "✅ api-bridge_execute_shell_command\n" +
+		"────────────────────────\n" +
+		"π • 🤖 google/gemini-3.8-flash • 💭 thinking • 🪟 ctx 4%\n"
+	if piPaneLooksIdle(pane) {
+		t.Fatalf("a completed-tool line in the transcript must not make a streaming pane input-ready: %q", pane)
+	}
+}
+
 func TestEnsurePiInputSubmittedTrustsMarkerAcknowledgement(t *testing.T) {
 	const message = "what does validate browser evidence do"
 	markerPath := filepath.Join(t.TempDir(), "markers.jsonl")

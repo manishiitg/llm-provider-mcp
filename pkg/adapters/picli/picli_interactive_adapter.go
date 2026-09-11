@@ -2180,7 +2180,25 @@ func piPaneHasStatusLine(captured string) bool {
 }
 
 func piPaneLooksIdle(captured string) bool {
-	return strings.Contains(strings.ToLower(stripPiANSI(captured)), " idle")
+	// @narumitw/pi-statusline's tools segment has two settled states: a fresh
+	// composer renders "💤 idle", while a composer that has completed at least
+	// one tool renders "✅ <last tool>" indefinitely. The latter is still an
+	// idle, input-ready Pi pane (runtime.isStreaming is false and there are no
+	// active tools); requiring the literal word "idle" makes every subsequent
+	// turn time out after a tool-using response.
+	//
+	// Inspect only the Pi status line so a checkmark or the word idle in the
+	// conversation transcript cannot produce a false-ready result.
+	for _, line := range strings.Split(strings.ReplaceAll(stripPiANSI(captured), "\u00a0", " "), "\n") {
+		if !strings.Contains(line, "π •") {
+			continue
+		}
+		normalized := strings.ToLower(line)
+		if strings.Contains(normalized, " idle") || strings.Contains(line, "✅ ") {
+			return true
+		}
+	}
+	return false
 }
 
 func stripPiANSI(s string) string {
