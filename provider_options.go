@@ -391,11 +391,17 @@ func WithMuseWorkingDir(dir string) llmtypes.CallOption {
 	return musecli.WithWorkingDir(dir)
 }
 
-// WithMuseMCPConfig merges the document's "mcpServers" entries into the
-// user-level muse settings.json for the duration of one exec run (merge,
-// don't clobber; restored afterwards). Same shape as WithCursorMCPConfig.
+// WithMuseMCPConfig mounts the document's mcpServers in a per-launch private
+// configuration directory, leaving shared Muse settings untouched.
 func WithMuseMCPConfig(config string) llmtypes.CallOption {
 	return musecli.WithMCPConfig(config)
+}
+
+// WithMuseToolAllowlist installs best-effort restrictions on unlisted native
+// calls reaching PreToolUse. Internal session controls may bypass that hook.
+// Separately mounted MCP tools remain available.
+func WithMuseToolAllowlist(toolNames []string) llmtypes.CallOption {
+	return musecli.WithToolAllowlist(toolNames)
 }
 
 // WithMuseStructuredTransport selects the exec --json lane (per-turn

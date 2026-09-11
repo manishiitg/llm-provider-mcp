@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,8 @@ import (
 // steering injects into. Bounded turns (the default) keep launching and
 // tearing down one TUI per turn and never touch this pool.
 
-// musePersistentSession is one pooled live TUI. restoreMCP is the retained
-// settings-merge undo for the mount applied at launch; it runs on kill, so
-// a persistent mount never leaks into the user's settings.json.
+// musePersistentSession is one pooled live TUI. restoreMCP removes the
+// session-private Muse configuration created at launch.
 // restoreAgents/agentsContent/agentsProjected are the same retention for a
 // projected AGENTS.md system prompt: the file must exist before the TUI
 // boots (muse reads project rules at startup), so projection happens on the
@@ -30,6 +30,7 @@ type musePersistentSession struct {
 	tmuxName        string
 	workdir         string
 	mcpJSON         string
+	toolAllowlist   []string
 	nativeSessionID string
 	logPath         string
 	// retainedBaselineSequence is the last durable Muse event that existed
@@ -217,7 +218,7 @@ func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 // reports whether AGENTS.md was projected for THIS turn — only then may the
 // caller skip typing the preamble inline. A projection failure is
 // best-effort (the turn falls back to inline), never a session-killer.
-func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON, readyFile, systemPrompt string, projectAgents, restoreAgentsFile bool, resumeNativeID string) (*musePersistentSession, bool, error) {
+func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider, modelID, mcpJSON string, toolAllowlist []string, readyFile, systemPrompt string, projectAgents, restoreAgentsFile bool, resumeNativeID string) (*musePersistentSession, bool, error) {
 	key, err := musePersistentKey(owner)
 	if err != nil {
 		return nil, false, err
@@ -241,6 +242,10 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		} else if mcpJSON != "" && entry.mcpJSON != "" && mcpJSON != entry.mcpJSON {
 			musePersistentPool.Unlock()
 			return nil, false, fmt.Errorf("muse-cli persistent session %q already mounted a different MCP config; kill it first", entry.tmuxName)
+		} else if (entry.toolAllowlist == nil) != (toolAllowlist == nil) || !slices.Equal(entry.toolAllowlist, toolAllowlist) {
+			museKillPersistentLocked(ctx, entry)
+			delete(musePersistentPool.m, key)
+			entry = nil
 		}
 	}
 	if entry != nil {
@@ -264,14 +269,14 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 	// A dead entry relaunches here (reuse returned early above), so a
 	// caller-supplied native id resumes the conversation instead of
 	// starting cold — this is the continuity-after-loss path.
-	restore, err := museLaunchPersistentTUI(ctx, tmuxName, workdir, provider, modelID, mcpJSON, strings.TrimSpace(resumeNativeID))
+	restore, err := museLaunchPersistentTUI(ctx, tmuxName, workdir, provider, modelID, mcpJSON, toolAllowlist, strings.TrimSpace(resumeNativeID))
 	if err != nil {
 		if restoreAgents != nil {
 			restoreAgents()
 		}
 		return nil, false, err
 	}
-	entry = &musePersistentSession{autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, restoreMCP: restore}
+	entry = &musePersistentSession{autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
 	if projected {
 		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
 			restoreAgents, strings.TrimSpace(systemPrompt), true
@@ -294,20 +299,17 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 }
 
 // museLaunchPersistentTUI boots one TUI for pool ownership and returns the
-// retained settings-merge undo (nil when unmounted). resumeNativeID
+// cleanup of the session-private configuration. resumeNativeID
 // relaunches into a previous native session after a backend restart
 // (`muse resume <uuid>`); empty starts fresh.
-func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, modelID, mcpJSON, resumeNativeID string) (func(), error) {
+func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, modelID, mcpJSON string, toolAllowlist []string, resumeNativeID string) (func(), error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; muse-cli tmux mode requires tmux: %w", err)
 	}
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	// Unconditional: museApplyMCPConfig also forces tui.voice_enabled off
-	// (settings.json is the only control muse exposes for it -- no CLI
-	// flag), which must apply to every launch, not just MCP-mounted ones.
-	restore, err := museApplyMCPConfig(strings.TrimSpace(mcpJSON))
+	configHome, restore, err := musePrepareIsolatedConfig(strings.TrimSpace(mcpJSON), toolAllowlist)
 	if err != nil {
 		return nil, err
 	}
@@ -320,9 +322,12 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 		// on approval while built-in shell tools do not.
 		argv = append(argv, museTUIApprovalArgv()...)
 	}
-	cli := append([]string{"muse"}, argv...)
+	if toolAllowlist != nil {
+		argv = append(argv, museNativeContainmentArgv()...)
+	}
+	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "muse"}, argv...)
 	if id := strings.TrimSpace(resumeNativeID); id != "" {
-		cli = []string{"muse", "resume", id}
+		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "muse", "resume", id}
 		cli = append(cli, argv...)
 	}
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workdir}, cli...)...)

@@ -604,6 +604,16 @@ func TestMuseTUIApprovalArgv(t *testing.T) {
 	}
 }
 
+func TestMuseNativeContainmentArgvHardDisablesShellAndWrites(t *testing.T) {
+	argv := museNativeContainmentArgv()
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{"--disable-shell", "--disable-write"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("containment argv = %q, missing %s", argv, want)
+		}
+	}
+}
+
 // TestMuseDiscoverSessionSincePrefersWorkdir pins concurrent-turn isolation:
 // two fresh logs mentioning the identical prompt must resolve to the one
 // whose workspace_root matches the caller's workdir — otherwise worker 1's

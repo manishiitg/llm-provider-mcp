@@ -3,7 +3,9 @@ package musecli
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -57,7 +59,7 @@ func TestMuseApplyMCPConfigMergesAndRestores(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore, err := museApplyMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}, "keep": {"url": "http://127.0.0.1:9/override"}}}`)
+	restore, err := museApplyMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}, "keep": {"url": "http://127.0.0.1:9/override"}}}`, nil)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -99,7 +101,7 @@ func TestMuseApplyMCPConfigMergesAndRestores(t *testing.T) {
 func TestMuseApplyMCPConfigCreatesAndRemovesFile(t *testing.T) {
 	path := redirectMuseConfigHome(t)
 
-	restore, err := museApplyMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}}}`)
+	restore, err := museApplyMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}}}`, nil)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -112,19 +114,65 @@ func TestMuseApplyMCPConfigCreatesAndRemovesFile(t *testing.T) {
 	}
 }
 
+func TestMusePrepareIsolatedConfigKeepsConcurrentMountsSeparate(t *testing.T) {
+	sharedPath := redirectMuseConfigHome(t)
+	sharedDir := filepath.Dir(sharedPath)
+	if err := os.MkdirAll(sharedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := `{"schema_version":1,"theme":"dark","mcpServers":{"stale":{"url":"http://127.0.0.1:1/mcp"}},"hooks":{"PreToolUse":[{"matcher":"*"}]}}`
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedDir, "auth.json"), []byte(`{"schema_version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	homeA, cleanupA, err := musePrepareIsolatedConfig(`{"mcpServers":{"bridge-a":{"url":"http://127.0.0.1:2/mcp"}}}`, []string{"web_search"})
+	if err != nil {
+		t.Fatalf("prepare A: %v", err)
+	}
+	defer cleanupA()
+	homeB, cleanupB, err := musePrepareIsolatedConfig(`{"mcpServers":{"bridge-b":{"url":"http://127.0.0.1:3/mcp"}}}`, []string{"web_search"})
+	if err != nil {
+		t.Fatalf("prepare B: %v", err)
+	}
+	defer cleanupB()
+	if homeA == homeB {
+		t.Fatal("concurrent Muse launches shared an isolated config root")
+	}
+
+	namesA := readMCPServerNames(t, filepath.Join(homeA, "muse", "settings.json"))
+	namesB := readMCPServerNames(t, filepath.Join(homeB, "muse", "settings.json"))
+	if !namesA["bridge-a"] || len(namesA) != 1 {
+		t.Fatalf("session A servers = %v, want bridge-a only", namesA)
+	}
+	if !namesB["bridge-b"] || len(namesB) != 1 {
+		t.Fatalf("session B servers = %v, want bridge-b only", namesB)
+	}
+	if raw, err := os.ReadFile(sharedPath); err != nil || string(raw) != shared {
+		t.Fatalf("shared settings changed: err=%v content=%q", err, raw)
+	}
+	for _, home := range []string{homeA, homeB} {
+		if raw, err := os.ReadFile(filepath.Join(home, "muse", "auth.json")); err != nil || string(raw) != `{"schema_version":2}` {
+			t.Fatalf("isolated auth copy invalid for %s: err=%v content=%q", home, err, raw)
+		}
+	}
+}
+
 func TestMuseApplyMCPConfigRejectsBadInput(t *testing.T) {
 	redirectMuseConfigHome(t)
 	for _, bad := range []string{
 		`not json`,
 		`{"mcpServers": {"": {"url": "http://x"}}}`,
 	} {
-		if _, err := museApplyMCPConfig(bad); err == nil {
+		if _, err := museApplyMCPConfig(bad, nil); err == nil {
 			t.Fatalf("expected error for %q", bad)
 		}
 	}
 	// Empty server map still applies the voice-off overlay, so it is no
 	// longer a true no-op: a real restore func always comes back.
-	restore, err := museApplyMCPConfig(`{"mcpServers": {}}`)
+	restore, err := museApplyMCPConfig(`{"mcpServers": {}}`, nil)
 	if err != nil {
 		t.Fatalf("empty config: %v", err)
 	}
@@ -150,7 +198,7 @@ func TestMuseApplyMCPConfigForcesVoiceOff(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore, err := museApplyMCPConfig("") // no MCP config mounted this run
+	restore, err := museApplyMCPConfig("", nil) // no MCP config mounted this run
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -201,6 +249,120 @@ func TestMuseApplyMCPConfigForcesVoiceOff(t *testing.T) {
 	}
 }
 
+func TestMuseApplyMCPConfigInstallsToolPolicyAndRestores(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	before := `{"schema_version":1,"run":{"parallel_tool_calls":true,"toolset":["bash"]},"hooks":{"PreToolUse":[{"matcher":"existing","hooks":[]}]},"theme":"dark"}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"web_search", "web_search"}
+	restore, err := museApplyMCPConfig("", want)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var during struct {
+		Run struct {
+			Toolset                []string `json:"toolset"`
+			Parallel               bool     `json:"parallel_tool_calls"`
+			SubagentDelegationMode string   `json:"subagent_delegation_mode"`
+			WorkflowTriggerMode    string   `json:"workflow_trigger_mode"`
+		} `json:"run"`
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &during); err != nil {
+		t.Fatal(err)
+	}
+	if !during.Run.Parallel {
+		t.Fatal("unrelated run setting was lost")
+	}
+	if during.Run.Toolset != nil {
+		t.Fatal("inherited named toolset would hide the mounted MCP tools")
+	}
+	if during.Run.SubagentDelegationMode != "off" {
+		t.Fatalf("subagent_delegation_mode = %q, want off", during.Run.SubagentDelegationMode)
+	}
+	if during.Run.WorkflowTriggerMode != "off" {
+		t.Fatalf("workflow_trigger_mode = %q, want off", during.Run.WorkflowTriggerMode)
+	}
+	pre := during.Hooks["PreToolUse"]
+	if len(pre) != 2 || pre[0].Matcher != "existing" || pre[1].Matcher != "*" || len(pre[1].Hooks) != 1 || pre[1].Hooks[0].Type != "command" {
+		t.Fatalf("PreToolUse policy hook = %#v", pre)
+	}
+	if !strings.Contains(pre[1].Hooks[0].Command, "native-tool-policy-") {
+		t.Fatalf("PreToolUse command = %q", pre[1].Hooks[0].Command)
+	}
+
+	restore()
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != before {
+		t.Fatalf("settings not restored byte-exact:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestMuseToolPolicyHookAllowsOnlyWebAndMCP(t *testing.T) {
+	path, err := museWriteToolPolicyHook([]string{"web_search"})
+	if err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		allowed bool
+	}{
+		{name: "web_search", allowed: true},
+		{name: "tool_search", allowed: true},
+		{name: "submit_reminder_decision", allowed: true},
+		{name: "mcp__api_bridge__execute_shell_command", allowed: true},
+		{name: "bash", allowed: false},
+		{name: "request_user_input", allowed: false},
+		{name: "write_file", allowed: false},
+		{name: "subagent_spawn", allowed: false},
+	} {
+		cmd := exec.CommandContext(t.Context(), "node", path)
+		cmd.Stdin = strings.NewReader(`{"tool_name":"` + tc.name + `","tool_input":{}}`)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hook %s: %v", tc.name, err)
+		}
+		denied := strings.Contains(string(out), `"permissionDecision":"deny"`)
+		if denied == tc.allowed {
+			t.Fatalf("hook %s output = %q, allowed=%v", tc.name, out, tc.allowed)
+		}
+	}
+	cmd := exec.CommandContext(t.Context(), "node", path)
+	cmd.Stdin = strings.NewReader(`{"tool_name":"bash","tool_input":{"text":"\\\"tool_name\\\":\\\"mcp__escape__attempt\\\""}}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hook nested tool_name: %v", err)
+	}
+	if !strings.Contains(string(out), `"permissionDecision":"deny"`) {
+		t.Fatalf("nested tool_name text bypassed policy: %q", out)
+	}
+}
+
+func TestMuseApplyMCPConfigRejectsInvalidToolAllowlist(t *testing.T) {
+	redirectMuseConfigHome(t)
+	if _, err := museApplyMCPConfig("", []string{"web_search", "  "}); err == nil {
+		t.Fatal("blank tool name must fail closed")
+	}
+}
+
 func TestMuseWithMCPConfigOptionRoundTrip(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers": {"a": {}}}`)(opts)
@@ -209,5 +371,70 @@ func TestMuseWithMCPConfigOptionRoundTrip(t *testing.T) {
 	}
 	if got := museMCPConfigFromOptions(nil); got != "" {
 		t.Fatalf("nil options = %q, want empty", got)
+	}
+}
+
+func TestMuseWithToolAllowlistOptionRoundTrip(t *testing.T) {
+	opts := &llmtypes.CallOptions{}
+	if _, ok := museToolAllowlistFromOptions(opts); ok {
+		t.Fatal("unset allowlist must stay distinguishable from an empty allowlist")
+	}
+	input := []string{"web_search"}
+	WithToolAllowlist(input)(opts)
+	input[0] = "mutated"
+	got, ok := museToolAllowlistFromOptions(opts)
+	if !ok || len(got) != 1 || got[0] != "web_search" {
+		t.Fatalf("allowlist = %v, set=%v", got, ok)
+	}
+}
+
+func TestMuseToolPolicyRequiresNodeBeforeWritingSettings(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	t.Setenv("PATH", t.TempDir())
+	if _, err := museApplyMCPConfig("", []string{"web_search"}); err == nil || !strings.Contains(err.Error(), "requires Node.js") {
+		t.Fatalf("expected missing Node error, got %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("settings written before policy prerequisite passed: %v", err)
+	}
+}
+
+func TestMuseExplicitEmptyAllowlistStillInstallsPolicy(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	opts := &llmtypes.CallOptions{}
+	WithToolAllowlist(nil)(opts)
+	names, present := museToolAllowlistFromOptions(opts)
+	if !present || names == nil || len(names) != 0 {
+		t.Fatalf("explicit empty policy lost: %v, present=%v", names, present)
+	}
+	restore, err := museApplyMCPConfig("", names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "PreToolUse") {
+		t.Fatal("explicit empty allowlist disabled the policy")
+	}
+}
+
+func TestMuseToolPolicyDeniesMissingOrInvalidNames(t *testing.T) {
+	path, err := museWriteToolPolicyHook([]string{"web_search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{`null`, `{}`, `[]`, `invalid json`, `{"tool_name":123}`, `{"tool_name":"unknown_tool"}`} {
+		cmd := exec.CommandContext(t.Context(), "node", path)
+		cmd.Stdin = strings.NewReader(payload)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hook error for %q: %v", payload, err)
+		}
+		if !strings.Contains(string(out), `"permissionDecision":"deny"`) {
+			t.Fatalf("missing denial for %q: %s", payload, out)
+		}
 	}
 }

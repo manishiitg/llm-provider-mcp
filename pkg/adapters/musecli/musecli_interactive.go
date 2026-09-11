@@ -175,37 +175,42 @@ func museTUIApprovalArgv() []string {
 	return []string{"--disable-approval", "--approval-mode", "never"}
 }
 
-// museLaunchTUI boots one bounded (one-turn) TUI and returns the MCP
-// settings-merge undo (nil when unmounted). mcpJSON mirrors the persistent
-// lane: a mounted turn merges the bridge config and carries
+// museNativeContainmentArgv is defense in depth for bridge-routed turns.
+// The PreToolUse hook is the primary execution allowlist; these first-class
+// switches keep native shell and filesystem writes unavailable even if hook
+// loading or matching ever regresses.
+func museNativeContainmentArgv() []string {
+	return []string{"--disable-shell", "--disable-write"}
+}
+
+// museLaunchTUI boots one bounded (one-turn) TUI and returns its isolated
+// config cleanup. mcpJSON mirrors the persistent lane: a mounted turn carries
 // museTUIApprovalArgv. Unmounted turns boot bare.
-func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON string) (func(), error) {
+func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON string, toolAllowlist []string) (func(), error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux not found in PATH; muse-cli tmux mode requires tmux: %w", err)
 	}
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	// Unconditional: museApplyMCPConfig also forces tui.voice_enabled off
-	// (settings.json is the only control muse exposes for it -- no CLI
-	// flag), which must apply to every launch, not just MCP-mounted ones.
-	restore, err := museApplyMCPConfig(strings.TrimSpace(mcpJSON))
+	configHome, cleanup, err := musePrepareIsolatedConfig(strings.TrimSpace(mcpJSON), toolAllowlist)
 	if err != nil {
 		return nil, err
 	}
-	argv := []string{"muse", "--trust-workspace", "--provider", provider}
+	argv := []string{"env", "XDG_CONFIG_HOME=" + configHome, "muse", "--trust-workspace", "--provider", provider}
 	if strings.TrimSpace(mcpJSON) != "" {
 		argv = append(argv, museTUIApprovalArgv()...)
+	}
+	if toolAllowlist != nil {
+		argv = append(argv, museNativeContainmentArgv()...)
 	}
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", session,
 		"-x", "200", "-y", "50", "-c", workdir}, argv...)...)
 	if out, err := launch.CombinedOutput(); err != nil {
-		if restore != nil {
-			restore()
-		}
+		cleanup()
 		return nil, fmt.Errorf("tmux new-session: %w\n%s", err, out)
 	}
-	return restore, nil
+	return cleanup, nil
 }
 
 // museWaitSettled polls a freshly launched pane until the TUI settles, a

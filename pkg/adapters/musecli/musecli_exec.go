@@ -170,13 +170,15 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	// (settings.json is the only control muse exposes for it), applied to
 	// every run so it can't be left on by whichever lane last restored it.
 	mcpJSON := strings.TrimSpace(museMCPConfigFromOptions(opts))
-	restoreMCP, err := museApplyMCPConfig(mcpJSON)
+	toolAllowlist, toolAllowlistSet := museToolAllowlistFromOptions(opts)
+	if !toolAllowlistSet {
+		toolAllowlist = nil
+	}
+	configHome, cleanupConfig, err := musePrepareIsolatedConfig(mcpJSON, toolAllowlist)
 	if err != nil {
 		return nil, err
 	}
-	if restoreMCP != nil {
-		defer restoreMCP()
-	}
+	defer cleanupConfig()
 	if mcpJSON != "" {
 		// MCP-server tools gate on approval while built-in shell tools do
 		// not: a mounted run with approvals on stalls forever waiting for a
@@ -185,9 +187,13 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		// --disable-approval; unmounted runs keep the CLI default.
 		argv = append(argv, "--disable-approval")
 	}
+	if toolAllowlistSet {
+		argv = append(argv, museNativeContainmentArgv()...)
+	}
 	argv = append(argv, prompt)
 
 	cmd := exec.CommandContext(ctx, "muse", argv...)
+	cmd.Env = museEnvironmentWithConfigHome(configHome)
 	// The CLI treats the process cwd as the workspace root (skills, trust,
 	// transcript scoping), so pin it when the caller asks. Empty keeps the
 	// inherited cwd — the working_directory cert pins the explicit case.

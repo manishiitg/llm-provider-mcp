@@ -187,6 +187,40 @@ func TestCodingAgentMCPBridgeIsRequiredWhenUsed(t *testing.T) {
 		if contract.RequiresMCPBridgeConfig && !contract.UsesMCPBridge {
 			t.Errorf("%s requires bridge config but does not declare UsesMCPBridge", contract.Provider)
 		}
+		if !contract.Deprecated && contract.UsesMCPBridge && !contract.SupportsBridgeOnlyTools && !acceptsBestEffortToolRestrictions(contract) {
+			t.Errorf("%s is an active MCP-bridge provider but does not support the platform's default mcp_only containment mode", contract.Provider)
+		}
+	}
+}
+
+func TestToolRestrictionsRequireP0WithExplicitMuseException(t *testing.T) {
+	if priority := CodingAgentCertificationPriorityForID(CertBridgeOnlyTools); priority != CodingAgentCertificationPriorityP0 {
+		t.Fatalf("%s priority = %q, want P0", CertBridgeOnlyTools, priority)
+	}
+
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Deprecated || contract.Transport != CodingAgentTransportTmux {
+			continue
+		}
+		// Prove the requirement is platform-owned rather than capability-claim
+		// driven: even a provider that incorrectly clears its self-declared flag
+		// must still hit the P0 containment gate.
+		contract.SupportsBridgeOnlyTools = false
+		required := RequiredP0CodingAgentCertificationIDs(contract)
+		want := CertBridgeOnlyTools
+		if acceptsBestEffortToolRestrictions(contract) {
+			want = CertBestEffortToolRestrictions
+		}
+		found := false
+		for _, id := range required {
+			if id == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s P0 requirements omitted %s when SupportsBridgeOnlyTools=false: %v", contract.Provider, want, required)
+		}
 	}
 }
 
@@ -422,7 +456,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// as proofs land — the staleness guard fails the suite otherwise.
 	ProviderMuseCLI: {
 		CertBoundedRetention,
-		CertBridgeOnlyTools,
 		CertCleanup,
 		CertLifecyclePolicy,
 		CertNativeSystemPrompt,
@@ -437,6 +470,16 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertStaleDraftCleanup,
 		CertStartupTerminalVisibility,
 	},
+}
+
+func TestKnownCertificationGapsCannotWaiveP0(t *testing.T) {
+	for provider, gaps := range knownCertificationGaps {
+		for _, id := range gaps {
+			if CodingAgentCertificationPriorityForID(id) == CodingAgentCertificationPriorityP0 {
+				t.Errorf("%s knownCertificationGaps contains release-blocking %s; P0 gaps cannot be waived", provider, id)
+			}
+		}
+	}
 }
 
 // TestStreamNoHistoryReplayIsRealE2EOnly enforces that stream_no_history_replay
@@ -667,5 +710,42 @@ func TestClaudeAndCodexSessionLossRecoveryCertificationUsesRealE2E(t *testing.T)
 		if !hasEnv {
 			t.Fatalf("%s %s missing env guard %q: %#v", provider, CertSessionLossRecovery, wantEnv, found.Env)
 		}
+	}
+}
+
+func TestBestEffortToolRestrictionsRequireExplicitMuseGaps(t *testing.T) {
+	muse := codingAgentProviderContracts[ProviderMuseCLI]
+	if muse.SupportsBridgeOnlyTools || !acceptsBestEffortToolRestrictions(muse) {
+		t.Fatal("Muse must explicitly document best-effort gaps without claiming strict containment")
+	}
+	if CodingAgentCertificationPriorityForID(CertBestEffortToolRestrictions) != CodingAgentCertificationPriorityP0 {
+		t.Fatal("best-effort restrictions must still have a P0 proof")
+	}
+	for _, tc := range []struct {
+		name     string
+		contract CodingAgentProviderContract
+	}{
+		{"missing gap documentation", func() CodingAgentProviderContract { c := muse; c.ToolRestrictionGaps = nil; return c }()},
+		{"another provider", func() CodingAgentProviderContract { c := muse; c.Provider = ProviderCursorCLI; return c }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if acceptsBestEffortToolRestrictions(tc.contract) {
+				t.Fatal("unexpected exception")
+			}
+			for _, required := range [][]CodingAgentCertificationID{RequiredP0CodingAgentCertificationIDs(tc.contract), RequiredCodingAgentCertificationIDs(tc.contract)} {
+				found := false
+				for _, id := range required {
+					if id == CertBridgeOnlyTools {
+						found = true
+					}
+					if id == CertBestEffortToolRestrictions {
+						t.Fatal("unexpected best-effort requirement")
+					}
+				}
+				if !found {
+					t.Fatal("strict proof requirement disappeared")
+				}
+			}
+		})
 	}
 }

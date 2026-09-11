@@ -1,9 +1,8 @@
 # Muse Coding Agent Contract Specification
 
 Recon date: 2026-09-10. CLI: `muse` (Muse Code) `1.1.1`, `~/.local/bin/muse`.
-Status: recon only — no adapter exists yet. Every claim below is marked
-**verified** (observed live, echo provider, zero API spend) or **TBD**
-(needs a Meta-provider run or code you have not written yet).
+Status: adapter implemented. Claims below are marked **verified** when backed
+by a local or live test and **TBD** where a provider run is still required.
 
 > Name warning: `copilot` on PATH is AWS ECS Copilot, not this agent.
 > Provider id: `muse-cli`. CLIName: `muse`.
@@ -15,9 +14,9 @@ Status: recon only — no adapter exists yet. Every claim below is marked
 Like Codex, Muse ships both transports, so the adapter should plan for both
 with tmux as the default product path:
 
-1. **Stateful tmux transport (default path, TBD).** Bare `muse [PROMPT]`
+1. **Stateful tmux transport (default path, verified).** Bare `muse [PROMPT]`
    runs the interactive TUI; no subcommand means interactive mode. Tmux
-   smoke test not yet run — first P0 proof to write (`fresh_launch`).
+   is wrapped in tmux for builder sessions and transcript streaming.
 2. **Structured transport (`muse exec --json`, verified).**
    `muse exec --provider echo --json "say the word pineapple"` exits 0 and
    streams MSP wire-schema JSONL: `run.output.delta` (`payload.text`) while
@@ -61,29 +60,72 @@ with tmux as the default product path:
 
 ## MCP Bridge & System Prompt
 
-* MCP servers come from user `settings.json` (**verified** 2026-09-10):
-  `$XDG_CONFIG_HOME/muse/settings.json` with `{"schema_version": 1,
-  "mcpServers": {"<name>": {"url": "<streamable-http>"}}}` — accepted
-  (login proceeds to OAuth; sandbox loopback bind is the only failure).
-  No workspace-level equivalent found: `<ws>/mcp.json`,
-  `<ws>/.mcp.json`, `<ws>/.agents/mcp.json`, `<ws>/.muse/settings.json`
-  are all ignored (trusted or not). Adapter implication: the bridge
-  writes user-level `settings.json` (merge, don't clobber).
-* Mount mechanism implemented + verified live 2026-09-10
-  (`musecli.WithMCPConfig`, merge/restore in `musecli_mcpsettings.go`):
-  the CLI reads the merged `api-bridge` entry and attempts startup init.
-  An unreachable server fails the WHOLE run: `run.terminal.failed` with
-  reason "invalid run configuration: Required MCP server `api-bridge`
-  failed during startup: initialization failed." — the exec lane now
-  surfaces that reason in the returned error (previously only exit
-  status). Consequence: the mount is proven, but the success path needs
-  a real reachable bridge URL (mcpagent sidecar); that is the live
-  `mcp_bridge` P0. Restore runs on success and failure alike.
-* Bridge-only containment (deny native tools) is **TBD** — no
-  `--disallowedTools` equivalent in help. Candidates: `--permission-profile
-  <ID>` (mechanism unknown, likely settings-defined), or partial denial via
-  `--disable-shell` / `--disable-write` / `--disable-web-tools`. Needs a
-  live bridge+model run to settle; release-blocking for `bridge_only_tools`.
+* MCP servers are read from `$XDG_CONFIG_HOME/muse/settings.json` with
+  `{"schema_version":1,"mcpServers":{"<name>":{"url":"<streamable-http>"}}}`.
+  Each adapter launch now uses its own private configuration directory. It
+  copies login/trust files and user preferences, replaces inherited MCP servers
+  and `PreToolUse` hooks with the exact launch configuration, and removes the
+  private directory on cleanup. Concurrent sessions do not modify shared user
+  settings or inherit stale bridge URLs. Both transports use this isolation.
+  An unavailable required MCP server still fails startup explicitly.
+* **Accepted best-effort restrictions (2026-09-11, Muse Code
+  1.1.1-R2514.1):** AgentWorks configures a native allowlist of `web_search`,
+  adds `--disable-shell --disable-write`, and disables automatic native subagent
+  delegation and workflow triggering. A Node.js `PreToolUse` hook denies
+  unlisted calls that enter it. Missing Node.js fails launch before the policy
+  is installed. MCP tools, `tool_search` discovery, and the internal
+  `submit_reminder_decision` verdict sink remain allowed; blocking that sink
+  caused observer retries. The routing prompt directs questions and task work
+  to platform tools. These controls reduce native-tool use but do not form a
+  complete security boundary.
+* **Verified protections:** the live P0 test attempts native file reads and a
+  shell write against disposable files, then requires an actual MCP round trip.
+  The final successful live run returned explicit hook denials for both
+  `read_file` and `bash` in both transports, and no shell file was created.
+  Earlier tmux runs declined the shell attempt; those observations establish
+  absence of the write, not an exercised shell-hook denial. The test inspects actual
+  call/result pairs in native transcripts, not tool names mentioned in prompts.
+* **Confirmed gaps:** native tool definitions remain visible to the model.
+  `write_todos` executed successfully without a `PreToolUse` event in both
+  transports; later runs sometimes declined to call it. Other internal
+  session controls have not been fully certified. File/shell protection does
+  not establish that every memory, goal, cron, reminder, workflow, or session
+  operation is blocked. Hook execution failures and behavior after future Muse
+  upgrades are also not certified. No removal of all native tools is claimed.
+* A named `run.toolset=["web_search"]` removes mounted MCP tools as well and
+  still adds `write_todos`; concrete MCP tool names are rejected as unknown
+  native names. The adapter therefore removes an inherited named toolset when
+  installing this policy, keeping MCP discoverable and gating native execution
+  with the hook instead.
+* Native question widgets may still appear. The existing tmux recovery silently
+  chooses an explicitly recommended answer and handles multi-page review;
+  unsupported or ambiguous questions still require user input. Restriction
+  changes do not add automatic-selection announcements to the UI.
+* `SupportsBridgeOnlyTools` remains **false**. `ToolRestrictionGaps` explicitly
+  records the accepted Muse exception, which requires the P0
+  `best_effort_tool_restrictions` live certification. It does not certify strict
+  `bridge_only_tools` containment. Other providers retain the strict P0
+  requirement; clearing a capability flag cannot waive it.
+* `TestMuseCLIRealMCPBridge` remains a reachability proof.
+  `TestMuseCLIRealBestEffortToolRestrictions` is the separate restriction proof.
+  A skipped live test is not evidence of certification. To rerun with a logged-in
+  Muse CLI, Node.js, and tmux available:
+
+  ```sh
+  go test ./pkg/adapters/musecli -run '^TestMuseCLIRealBestEffortToolRestrictions$' \
+    -v -count=1 -timeout=11m -args -coding-cli-p0-live
+  ```
+
+  Unit coverage checks hook decisions, nested JSON arguments, the Node.js
+  prerequisite, explicit empty policies, isolated concurrent bridge mounts,
+  inherited toolset removal, and restriction flags. Model refusal to attempt
+  `write_todos` is logged as untested in that run; successful execution is
+  reported as the known gap, not mislabeled as strict containment.
+* Platform image inspection is not a Muse-native exception to that policy.
+  Host applications may project their registered `read_image` executor as an
+  additional MCP bridge tool. Muse calls that mounted tool directly while its
+  native allowlist remains `web_search` only; the platform tool independently
+  selects a supported image-analysis backend (for example Codex CLI).
 * No `--system-prompt` / `--append-system-prompt` / `--instruction` flags
   exist (grep over `muse --help` + `muse exec --help` is empty).
 * System prompt goes through project rules: `muse init [--dry-run] [--force]`
@@ -103,8 +145,6 @@ with tmux as the default product path:
   untrusted workspaces skip project skills entirely with diagnostic
   `project-skills-untrusted`. Adapter projection target:
   `<workdir>/.agents/skills/<name>/SKILL.md`.
-* Bridge-only containment flag (deny native tools, the `--disallowedTools`
-  equivalent) is **TBD** — release-blocking question for `bridge_only_tools`.
 * `UsesNativeSystemPrompt` **TBD**.
 
 ## Trust & Approval Gates

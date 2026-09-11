@@ -65,12 +65,15 @@ type CodingAgentProviderContract struct {
 	// mode when the bridge is unavailable.
 	RequiresMCPBridgeConfig bool
 	SupportsBridgeOnlyTools bool
-	UsesNativeSystemPrompt  bool
-	LaunchesViaLoginShell   bool
-	ProcessScopedCleanup    bool
-	HandlesTmuxSessionLoss  bool
-	StructuredFallback      bool
-	ImageInputInteractive   bool
+	// ToolRestrictionGaps records accepted limits of a best-effort policy.
+	// Non-empty notes never constitute a strict bridge-only guarantee.
+	ToolRestrictionGaps    []string
+	UsesNativeSystemPrompt bool
+	LaunchesViaLoginShell  bool
+	ProcessScopedCleanup   bool
+	HandlesTmuxSessionLoss bool
+	StructuredFallback     bool
+	ImageInputInteractive  bool
 
 	// SurfacesTokenUsage reports whether the adapter consumes input/output/cache
 	// token counts from the CLI's output (stream-json events, transcript files,
@@ -388,21 +391,26 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserMCPConfigFile:         "~/.pi/agent/mcp.json",
 	},
 	ProviderMuseCLI: {
-		Provider:                    ProviderMuseCLI,
-		DisplayName:                 "Muse",
-		CLIName:                     "muse",
-		Transport:                   CodingAgentTransportTmux,
-		RequiresWorkingDir:          true,
-		RequiresOwnerSessionID:      true,
-		UsesPersistentSession:       true,
-		SupportsLiveInput:           true,
-		SupportsInterrupt:           true,
-		SupportsTerminalStream:      true,
-		SupportsFinalExtraction:     true,
-		SupportsNativeResume:        true,
-		UsesMCPBridge:               true,
-		RequiresMCPBridgeConfig:     true,
-		SupportsBridgeOnlyTools:     false,
+		Provider:                ProviderMuseCLI,
+		DisplayName:             "Muse",
+		CLIName:                 "muse",
+		Transport:               CodingAgentTransportTmux,
+		RequiresWorkingDir:      true,
+		RequiresOwnerSessionID:  true,
+		UsesPersistentSession:   true,
+		SupportsLiveInput:       true,
+		SupportsInterrupt:       true,
+		SupportsTerminalStream:  true,
+		SupportsFinalExtraction: true,
+		SupportsNativeResume:    true,
+		UsesMCPBridge:           true,
+		RequiresMCPBridgeConfig: true,
+		SupportsBridgeOnlyTools: false,
+		ToolRestrictionGaps: []string{
+			"Native tools remain model-visible; the PreToolUse hook gates execution only.",
+			"Muse 1.1.1 write_todos can bypass PreToolUse; internal session controls are not fully contained.",
+			"Native questions may still appear; recommended-answer handling remains the recovery path.",
+		},
 		UsesNativeSystemPrompt:      false,
 		LaunchesViaLoginShell:       true,
 		ProcessScopedCleanup:        true,

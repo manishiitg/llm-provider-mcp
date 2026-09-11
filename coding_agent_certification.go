@@ -21,21 +21,22 @@ const (
 )
 
 const (
-	CertFreshLaunch               CodingAgentCertificationID = "fresh_launch"
-	CertRuntimeContext            CodingAgentCertificationID = "runtime_context"
-	CertResumeCompactionStartup   CodingAgentCertificationID = "resume_compaction_startup"
-	CertStartupTerminalVisibility CodingAgentCertificationID = "startup_terminal_visibility"
-	CertWorkingDirectory          CodingAgentCertificationID = "working_directory"
-	CertTrustAuthPrompts          CodingAgentCertificationID = "trust_auth_prompts"
-	CertNativeSystemPrompt        CodingAgentCertificationID = "native_system_prompt"
-	CertPromptPaste               CodingAgentCertificationID = "prompt_paste"
-	CertMCPBridge                 CodingAgentCertificationID = "mcp_bridge"
-	CertBridgeOnlyTools           CodingAgentCertificationID = "bridge_only_tools"
-	CertSlowToolLiveInput         CodingAgentCertificationID = "slow_tool_live_input"
-	CertSlowToolFalseIdle         CodingAgentCertificationID = "slow_tool_false_idle"
-	CertDoneDetection             CodingAgentCertificationID = "done_detection"
-	CertFinalExtraction           CodingAgentCertificationID = "final_extraction"
-	CertStatusLine                CodingAgentCertificationID = "statusline"
+	CertFreshLaunch                CodingAgentCertificationID = "fresh_launch"
+	CertRuntimeContext             CodingAgentCertificationID = "runtime_context"
+	CertResumeCompactionStartup    CodingAgentCertificationID = "resume_compaction_startup"
+	CertStartupTerminalVisibility  CodingAgentCertificationID = "startup_terminal_visibility"
+	CertWorkingDirectory           CodingAgentCertificationID = "working_directory"
+	CertTrustAuthPrompts           CodingAgentCertificationID = "trust_auth_prompts"
+	CertNativeSystemPrompt         CodingAgentCertificationID = "native_system_prompt"
+	CertPromptPaste                CodingAgentCertificationID = "prompt_paste"
+	CertMCPBridge                  CodingAgentCertificationID = "mcp_bridge"
+	CertBridgeOnlyTools            CodingAgentCertificationID = "bridge_only_tools"
+	CertBestEffortToolRestrictions CodingAgentCertificationID = "best_effort_tool_restrictions"
+	CertSlowToolLiveInput          CodingAgentCertificationID = "slow_tool_live_input"
+	CertSlowToolFalseIdle          CodingAgentCertificationID = "slow_tool_false_idle"
+	CertDoneDetection              CodingAgentCertificationID = "done_detection"
+	CertFinalExtraction            CodingAgentCertificationID = "final_extraction"
+	CertStatusLine                 CodingAgentCertificationID = "statusline"
 	// CertMultiTurn proves continuity in the persistent tmux transport.
 	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
 	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
@@ -172,6 +173,13 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertWorkingDirectory,
 	CertTrustAuthPrompts,
 	CertMCPBridge,
+	// AgentWorks' default coding-agent tool mode is mcp_only. Mounting the MCP
+	// bridge proves reachability; it does not prove native shell/file/workflow
+	// tools are contained. Require the negative containment proof for every
+	// active provider independently of SupportsBridgeOnlyTools, otherwise a new
+	// provider can evade the gate merely by leaving that capability bool false.
+	// Muse has an explicit documented best-effort replacement below.
+	CertBridgeOnlyTools,
 	CertSlowToolFalseIdle,
 	CertDoneDetection,
 	CertFinalExtraction,
@@ -234,6 +242,13 @@ var codingAgentCapabilityCertifications = []struct {
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderMuseCLI: {
+		{
+			ID:          CertBestEffortToolRestrictions,
+			TestFile:    "pkg/adapters/musecli/musecli_tool_restrictions_live_test.go",
+			TestName:    "TestMuseCLIRealBestEffortToolRestrictions",
+			Description: "proves native reads are denied and MCP works in both transports, plus structured shell denial; reports internal-tool gaps without claiming strict containment",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertFreshLaunch,
 			TestFile:    "pkg/adapters/musecli/musecli_real_contract_test.go",
@@ -1337,6 +1352,10 @@ func RequiredCodingAgentCertificationIDs(contract CodingAgentProviderContract) [
 		}
 	}
 
+	if acceptsBestEffortToolRestrictions(contract) {
+		delete(seen, CertBridgeOnlyTools)
+		seen[CertBestEffortToolRestrictions] = struct{}{}
+	}
 	out := make([]CodingAgentCertificationID, 0, len(seen))
 	for id := range seen {
 		out = append(out, id)
@@ -1379,7 +1398,7 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 	// Streaming is P0 wherever it is required (capability-gated per provider via
 	// RequiredP0CodingAgentCertificationIDs), so its registered cert must carry P0
 	// priority + the live gate rather than defaulting to P1.
-	if id == CertStructuredStreaming || id == CertStructuredMultiTurn {
+	if id == CertStructuredStreaming || id == CertStructuredMultiTurn || id == CertBestEffortToolRestrictions {
 		return CodingAgentCertificationPriorityP0
 	}
 	// A false "made no progress" timeout on a turn that actually succeeded
@@ -1392,12 +1411,22 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 }
 
 // RequiredP0CodingAgentCertificationIDs returns the non-negotiable runtime
-// proofs for active tmux coding-agent providers.
+// proofs for active tmux coding-agent providers. The base list deliberately
+// includes bridge-only containment without consulting SupportsBridgeOnlyTools:
+// provider self-description cannot weaken the platform's mcp_only release bar.
+// Muse's documented best-effort exception has its own required live P0 proof.
 func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
 	if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
 		return nil
 	}
 	ids := append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
+	if acceptsBestEffortToolRestrictions(contract) {
+		for i, id := range ids {
+			if id == CertBridgeOnlyTools {
+				ids[i] = CertBestEffortToolRestrictions
+			}
+		}
+	}
 	// Streaming is release-blocking only for providers that actually stream
 	// structured transcript chunks. A provider that merely reads a transcript for
 	// a final-answer summary (pi today) is not required to certify streaming —
@@ -1449,4 +1478,10 @@ func MissingCodingAgentCertifications(contract CodingAgentProviderContract) []Co
 		}
 	}
 	return missing
+}
+
+// Muse is the explicitly accepted best-effort exception (2026-09-11).
+// Other providers retain the strict requirement even if they clear a flag.
+func acceptsBestEffortToolRestrictions(c CodingAgentProviderContract) bool {
+	return c.Provider == ProviderMuseCLI && !c.SupportsBridgeOnlyTools && len(c.ToolRestrictionGaps) > 0
 }

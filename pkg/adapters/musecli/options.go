@@ -47,14 +47,18 @@ const (
 
 // MetadataKeyMuseMCPConfig carries a bridge MCP config document (a JSON
 // object with an "mcpServers" map, same shape as cursor's MetadataKeyMCPConfig)
-// for the exec lane to merge into the user's muse settings.json.
+// for the launch's isolated Muse settings.json.
 const MetadataKeyMuseMCPConfig = "muse_mcp_config"
 
-// WithMCPConfig mounts MCP servers for one exec run by merging the document's
-// "mcpServers" entries into $XDG_CONFIG_HOME/muse/settings.json (merge, don't
-// clobber) for the duration of the run; the previous settings are restored
-// afterwards. Empty or whitespace-only documents are stored as-is and ignored
-// by the lane.
+// MetadataKeyMuseToolAllowlist carries the Muse-native tools permitted to
+// execute during one run. A present empty slice is intentional and differs
+// from an unset option: unset preserves Muse's default behavior, while empty
+// denies unlisted native tools that enter PreToolUse. Internal controls may
+// bypass that hook. Mounted MCP tools remain available.
+const MetadataKeyMuseToolAllowlist = "muse_tool_allowlist"
+
+// WithMCPConfig mounts the document's mcpServers in a private configuration
+// root for the launch. Shared user settings are never changed.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -68,6 +72,32 @@ func museMCPConfigFromOptions(opts *llmtypes.CallOptions) string {
 	}
 	cfg, _ := opts.Metadata.Custom[MetadataKeyMuseMCPConfig].(string)
 	return cfg
+}
+
+// WithToolAllowlist installs a best-effort PreToolUse execution policy for
+// this launch. MCP tools are mounted separately and must not be named here.
+// Unlisted native calls reaching the hook are denied; Muse internal controls
+// can bypass it. An explicitly empty list still installs the policy.
+func WithToolAllowlist(toolNames []string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyMuseToolAllowlist] = append([]string{}, toolNames...)
+	}
+}
+
+func museToolAllowlistFromOptions(opts *llmtypes.CallOptions) ([]string, bool) {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return nil, false
+	}
+	raw, ok := opts.Metadata.Custom[MetadataKeyMuseToolAllowlist]
+	if !ok {
+		return nil, false
+	}
+	names, ok := raw.([]string)
+	if !ok {
+		return nil, false
+	}
+	return append([]string{}, names...), true
 }
 
 func museInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {

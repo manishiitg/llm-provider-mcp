@@ -309,9 +309,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	var prompt string // set below via museResolveTmuxPrompt once launch/acquire decides whether AGENTS.md carries the system prompt
 	session := ""
 	if persistent {
+		toolAllowlist, toolAllowlistSet := museToolAllowlistFromOptions(opts)
+		if !toolAllowlistSet {
+			toolAllowlist = nil
+		}
 		entry, _, err := museAcquirePersistentSession(ctx, owner, workdir,
 			a.museExecProvider(), strings.TrimSpace(a.modelID),
-			strings.TrimSpace(museMCPConfigFromOptions(opts)), musePersistentReadyFile(opts),
+			strings.TrimSpace(museMCPConfigFromOptions(opts)), toolAllowlist, musePersistentReadyFile(opts),
 			strings.Join(system, "\n\n"), wantAgents, museRestoreProjectFilesFromOptions(opts),
 			museResumeSessionIDFromOptions(opts))
 		if err != nil {
@@ -327,7 +331,11 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 		prompt = museResolveTmuxPrompt(system, human, wantAgents, projected)
 		session = museTmuxSessionName(museInteractiveSessionIDFromOptions(opts))
-		restoreMCP, err := museLaunchTUI(ctx, workdir, session, a.museExecProvider(), strings.TrimSpace(museMCPConfigFromOptions(opts)))
+		toolAllowlist, toolAllowlistSet := museToolAllowlistFromOptions(opts)
+		if !toolAllowlistSet {
+			toolAllowlist = nil
+		}
+		restoreMCP, err := museLaunchTUI(ctx, workdir, session, a.museExecProvider(), strings.TrimSpace(museMCPConfigFromOptions(opts)), toolAllowlist)
 		if err != nil {
 			return nil, err
 		}

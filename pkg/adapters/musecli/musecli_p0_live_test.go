@@ -215,9 +215,11 @@ func museLiveBootTUI(t *testing.T, ctx context.Context, workdir string) string {
 	t.Cleanup(func() {
 		_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", session).Run()
 	})
-	if _, err := museLaunchTUI(ctx, workdir, session, "meta", ""); err != nil {
+	cleanup, err := museLaunchTUI(ctx, workdir, session, "meta", "", nil)
+	if err != nil {
 		t.Fatalf("launch TUI: %v", err)
 	}
+	t.Cleanup(cleanup)
 	if _, err := museWaitSettled(ctx, session, 90*time.Second); err != nil {
 		t.Fatalf("TUI never settled: %v", err)
 	}
@@ -553,12 +555,16 @@ func TestMuseCLIRealTmuxParallelIsolation(t *testing.T) {
 			_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", s).Run()
 		})
 	}
-	if _, err := museLaunchTUI(ctx, workA, sessA, "meta", ""); err != nil {
+	cleanupA, err := museLaunchTUI(ctx, workA, sessA, "meta", "", nil)
+	if err != nil {
 		t.Fatalf("launch A: %v", err)
 	}
-	if _, err := museLaunchTUI(ctx, workB, sessB, "meta", ""); err != nil {
+	t.Cleanup(cleanupA)
+	cleanupB, err := museLaunchTUI(ctx, workB, sessB, "meta", "", nil)
+	if err != nil {
 		t.Fatalf("launch B: %v", err)
 	}
+	t.Cleanup(cleanupB)
 	if _, err := museWaitSettled(ctx, sessA, 90*time.Second); err != nil {
 		t.Fatalf("A never settled: %v", err)
 	}
