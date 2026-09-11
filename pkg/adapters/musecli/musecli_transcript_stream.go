@@ -121,7 +121,7 @@ func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool
 		}
 	case "reasoning_summary_delta":
 		if text := strings.TrimSpace(evt.Text); text != "" && !museStreamPlumbing(text) {
-			out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: text, Metadata: museTranscriptStreamMeta})
+			out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: text, Metadata: map[string]interface{}{"muse_cli_stream_source": "transcript", "presentation": "assistant_update"}})
 		}
 	case "tool_result_batch_committed":
 		for _, r := range evt.Results {
@@ -175,7 +175,7 @@ func newMuseTranscriptStreamState(logPath, tmuxName string, transcriptEnabled, s
 	s := &museTranscriptStreamState{
 		logPath: logPath, tmuxName: tmuxName,
 		transcriptEnabled: transcriptEnabled, screenEnabled: screenEnabled,
-		seenTool: map[string]bool{},
+		seenTool:  map[string]bool{},
 		endedTool: map[string]bool{}, toolStartedAt: map[string]time.Time{},
 		done: make(chan struct{}),
 	}
@@ -258,9 +258,9 @@ func (s *museTranscriptStreamState) pollScreen(streamChan chan<- llmtypes.Stream
 		Type:    llmtypes.StreamChunkTypeTerminal,
 		Content: snapshot,
 		Metadata: map[string]interface{}{
-			"tmux_session":               s.tmuxName,
-			"muse_cli_stream_source":     "tmux-screen",
-			"muse_interactive_session":   s.tmuxName,
+			"tmux_session":             s.tmuxName,
+			"muse_cli_stream_source":   "tmux-screen",
+			"muse_interactive_session": s.tmuxName,
 		},
 	}:
 	default:

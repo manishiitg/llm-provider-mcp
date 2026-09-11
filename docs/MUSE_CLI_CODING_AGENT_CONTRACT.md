@@ -177,3 +177,34 @@ tmux provider"). Until then `TokenUsageSource` is undecided.
   synthetic `session.jsonl` fixtures → bridge-only proof → structured
   lane (`exec --json` argv pinned by unit test) → multi-turn resume on a
   real model.
+
+### Recommended answers in the native question widget
+
+The tmux adapter automatically selects the single option explicitly labelled
+`(Recommended)` in Muse's `Request user input` widget. It follows the Cursor
+readiness pattern: consecutive captures, validate the active dialog immediately
+before sending keys, and wait for the dialog to change before another submission.
+The current cursor is observed rather than assumed to be on the first choice.
+Multi-question forms advance through each question and submit the final review
+only when every reviewed answer is explicitly marked recommended.
+
+No recommendation, multiple recommendations, unrecognized dialogs, and auth/trust
+prompts remain manual. `WithAutoSelectRecommended(false)` restores the manual
+`user_input_required` behavior for callers that need it. Automatic selections
+do not emit UI announcements. Context cancellation stops further key delivery.
+
+Live regression: `TestMuseCLIRealAutoRecommendedThreeQuestionsP0`; parser and
+cancellation/duplicate checks: `TestMuseRecommendedQuestion`,
+`TestMuseRecommendedReview`, and `TestMuseAutoAnswerDisabledCanceledAndDuplicate`.
+
+Live input and retained-turn polling service the same native controls, including
+questions that appear after `GenerateContent` has returned. Before each typing
+attempt, live delivery resolves eligible questions and review screens. Selector
+state is shared per persistent session to serialize key delivery; the selector
+does not retain or write to generation stream channels.
+Killing the session disables further automatic answers.
+
+Live regression: `TestMuseCLIRealLiveInputQuestionsP0` covers a three-page form
+created after live delivery, plus a preexisting dialog with its cursor on the
+wrong option. It verifies both the recommended answer and the subsequent user
+message reach Muse. These are real adapter/tmux tests, not HTTP or desktop UI tests.

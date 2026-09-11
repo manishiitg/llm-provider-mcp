@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,18 @@ func TestClassifyPreservesChainAndIdempotent(t *testing.T) {
 	var inner *Error
 	if !errors.As(twice, &inner) || inner.Provider != "anthropic" {
 		t.Error("re-classification must pass through the existing *Error")
+	}
+}
+
+func TestClassifyIgnoresCapturedPaneConversation(t *testing.T) {
+	err := errors.New("timed out waiting for muse TUI to settle; latest pane:\nreflection: python3 << 'EOF' and unauthorized are mentioned in ordinary conversation")
+	classified := Classify("muse-cli", "muse-spark", err)
+
+	if got := KindOf(classified); got != KindTimeout {
+		t.Fatalf("KindOf(classified) = %q, want %q; captured pane text must not override the timeout prefix", got, KindTimeout)
+	}
+	if !strings.Contains(classified.Error(), "latest pane:") {
+		t.Fatal("classification must retain the captured pane in the surfaced diagnostic")
 	}
 }
 

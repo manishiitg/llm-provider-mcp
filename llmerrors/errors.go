@@ -23,6 +23,8 @@ import (
 type Kind string
 
 const (
+	// KindUserInputRequired means the native session needs a human answer. Never retry or fall back.
+	KindUserInputRequired Kind = "user_input_required"
 	// KindRateLimit is transient throttling (429, overloaded). Retry with
 	// backoff or fall back to another model; recovers within seconds/minutes.
 	KindRateLimit Kind = "rate_limit"
@@ -190,6 +192,15 @@ func classifyKind(err error) Kind {
 	}
 
 	msg := strings.ToLower(err.Error())
+	// Interactive coding-agent adapters include a captured terminal pane to
+	// make failures diagnosable. That pane is user/model conversation, not
+	// error metadata: words such as "EOF", "rate limit", or "unauthorized"
+	// inside it must not change the classification of the actual error prefix.
+	// Classify the diagnostic prefix only while preserving the full text on the
+	// returned error for logs and support.
+	if pane := strings.Index(msg, "latest pane:"); pane >= 0 {
+		msg = msg[:pane]
+	}
 	status := extractStatusCode(msg)
 
 	if containsAny(msg, "context canceled", "request canceled", "operation was canceled") {

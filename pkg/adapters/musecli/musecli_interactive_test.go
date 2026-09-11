@@ -48,6 +48,27 @@ func TestMuseTmuxTransportRequestedDefaultsOff(t *testing.T) {
 	}
 }
 
+// A reused Muse pane no longer contains the fresh-launch banner once a long
+// conversation has scrolled it away. It is nevertheless ready for the next
+// turn when the prompt and status line are present. The turn path must use
+// this retained-session readiness rule instead of waiting 90 seconds for a
+// banner that cannot return.
+func TestMuseReusedSessionReadinessDoesNotRequireBootBanner(t *testing.T) {
+	pane := strings.Join([]string{
+		"◆ Previous turn completed successfully.",
+		"",
+		"❯",
+		"muse-spark-1.3-contributor · xhigh · /tmp/workflow",
+	}, "\n")
+
+	if museTUISufficientlySettled(pane) {
+		t.Fatal("a retained pane without the Muse Code boot banner must not pass the fresh-launch check")
+	}
+	if !museTUIAtPrompt(pane) {
+		t.Fatal("a retained pane with prompt and status chrome must be ready for the next turn")
+	}
+}
+
 func TestMuseStructuredTransportRequestedDefaultsOff(t *testing.T) {
 	if museStructuredTransportRequested(nil) {
 		t.Fatal("nil options must not request structured")
@@ -500,6 +521,9 @@ func TestMuseTranscriptLineToChunks(t *testing.T) {
 			ends++
 			endIDs = append(endIDs, c.ToolCallID)
 		case llmtypes.StreamChunkTypeReasoning:
+			if c.Metadata["presentation"] != "assistant_update" {
+				t.Fatal("Muse summary must render as an assistant update")
+			}
 			reasoning++
 			if !strings.Contains(c.Content, "Checking") {
 				t.Fatalf("reasoning = %q, want delta text", c.Content)

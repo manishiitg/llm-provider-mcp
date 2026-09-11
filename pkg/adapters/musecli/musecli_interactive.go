@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -79,6 +80,22 @@ func museTmuxSessionName(owner string) string {
 	return name + "-" + museRandomSessionSuffix()
 }
 
+// Recognize the active native question widget, not mentions in old output.
+func musePendingUserInputError(pane string) error {
+	lower := strings.ToLower(pane)
+	start := strings.LastIndex(lower, "◆ request user input")
+	if start < 0 {
+		return nil
+	}
+	widget := lower[start:]
+	question := strings.Contains(widget, "enter to select") && strings.Contains(widget, "esc to interrupt")
+	review := strings.Contains(widget, "review answers before submit") && strings.Contains(widget, "enter to edit or submit") && strings.Contains(widget, "esc to go back")
+	if !question && !review {
+		return nil
+	}
+	return &llmerrors.Error{Kind: llmerrors.KindUserInputRequired, Provider: "muse-cli", Err: fmt.Errorf("Muse is waiting for your answer. Open its terminal and answer or dismiss the question before continuing:\n%s", strings.TrimSpace(pane[start:]))}
+}
+
 // musePaneShowsBlockingGate reports whether the pane is stuck on a trust,
 // auth, or login gate instead of the interactive TUI.
 func musePaneShowsBlockingGate(pane string) bool {
@@ -88,7 +105,6 @@ func musePaneShowsBlockingGate(pane string) bool {
 		"untrusted",
 		"muse login",
 		"log in to",
-		"approve this",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -192,30 +208,56 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	return restore, nil
 }
 
-// museWaitSettled polls the pane until the TUI settles, a blocking gate
-// appears, or the deadline passes. A gate is a hard failure with a pane
-// dump (trust_auth_prompts cert territory); a timeout is a hard failure
-// with the latest pane (fresh_launch fidelity).
+// museWaitSettled polls a freshly launched pane until the TUI settles, a
+// blocking gate appears, or the deadline passes. It deliberately requires
+// the boot banner; reused sessions must call museWaitAtPrompt because a long
+// conversation scrolls that banner out of the pane.
 func museWaitSettled(ctx context.Context, session string, timeout time.Duration) (string, error) {
+	return museWaitForReadyPane(ctx, session, timeout, museTUISufficientlySettled, "muse TUI to settle")
+}
+
+// museWaitAtPrompt waits for a reused TUI to become ready for another turn.
+// Unlike the fresh-boot waiter it only requires the idle prompt/status chrome,
+// which remains visible after the startup banner has scrolled away.
+func museWaitAtPrompt(ctx context.Context, session string, timeout time.Duration) (string, error) {
+	return museWaitForReadyPane(ctx, session, timeout, museTUIAtPrompt, "muse TUI to return to the prompt")
+}
+
+func museWaitForReadyPane(ctx context.Context, session string, timeout time.Duration, ready func(string) bool, waitDescription string) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var pane string
 	for {
 		if !museTmuxSessionAlive(ctx, session) {
-			return "", fmt.Errorf("muse tmux session %q died while waiting to settle", session)
+			return "", fmt.Errorf("muse tmux session %q died while waiting for %s", session, waitDescription)
 		}
 		p, err := museTmuxCapturePane(ctx, session)
 		if err != nil {
 			return "", fmt.Errorf("capture pane: %w", err)
 		}
 		pane = p
-		if museTUISufficientlySettled(pane) && musePaneStable(ctx, session, pane) {
+		pending, err := museHandlePendingQuestion(ctx, session, pane)
+		if err != nil {
+			return "", err
+		}
+		if pending {
+			if time.Now().After(deadline) {
+				return "", musePendingUserInputError(pane)
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
+		}
+		if ready(pane) && musePaneStable(ctx, session, pane) {
 			return pane, nil
 		}
 		if musePaneShowsBlockingGate(pane) {
 			return "", fmt.Errorf("muse TUI blocked on trust/auth gate (trust_auth_prompts cert territory); pane:\n%s", pane)
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("timed out waiting for muse TUI to settle; latest pane:\n%s", pane)
+			return "", fmt.Errorf("timed out waiting for %s; latest pane:\n%s", waitDescription, pane)
 		}
 		select {
 		case <-ctx.Done():
@@ -270,6 +312,9 @@ const (
 func museSendPrompt(ctx context.Context, session, prompt string) error {
 	const maxSubmitAttempts = 3
 	for attempt := 1; ; attempt++ {
+		if err := museWaitLiveInputComposer(ctx, session); err != nil {
+			return err
+		}
 		if musePromptNeedsAtomicPaste(prompt) {
 			if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
 				return err
@@ -351,6 +396,9 @@ func writeVisibleDraftAndConfirm(ctx context.Context, session, prompt string) er
 	}
 	const maxAttempts = 3
 	for attempt := 1; ; attempt++ {
+		if err := museWaitLiveInputComposer(ctx, session); err != nil {
+			return err
+		}
 		if err := writeMuseVisibleDraftToTmux(ctx, session, prompt); err != nil {
 			return err
 		}

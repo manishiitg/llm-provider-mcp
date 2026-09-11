@@ -166,7 +166,24 @@ func museWaitIntake(ctx context.Context, session string, turnStart time.Time, sn
 			return "", "", fmt.Errorf("muse TUI never took in the prompt after submit; last discovery error: %w", err)
 		}
 		if attempt > 0 {
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+		}
+		// A fast native question can appear before transcript discovery catches
+		// up. Never let the intake retry select its current/default option.
+		pane, captureErr := museTmuxCapturePane(ctx, session)
+		if captureErr != nil {
+			return "", "", captureErr
+		}
+		pending, questionErr := museHandlePendingQuestion(ctx, session, pane)
+		if questionErr != nil {
+			return "", "", questionErr
+		}
+		if pending {
+			continue
 		}
 		enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
 		if out, enterErr := enter.CombinedOutput(); enterErr != nil {
@@ -204,6 +221,21 @@ func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout
 		pane, err := museTmuxCapturePane(ctx, session)
 		if err != nil {
 			return "", fmt.Errorf("capture pane waiting for turn: %w", err)
+		}
+		pending, err := museHandlePendingQuestion(ctx, session, pane)
+		if err != nil {
+			return "", err
+		}
+		if pending {
+			if time.Now().After(deadline) {
+				return "", musePendingUserInputError(pane)
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
 		}
 		if musePaneShowsBlockingGate(pane) {
 			return "", fmt.Errorf("muse TUI hit a trust/auth gate mid-turn; pane:\n%s", pane)
@@ -246,6 +278,7 @@ func museResolveTmuxPrompt(system []string, human string, wantAgents, agentsProj
 
 // generateContentTmux runs one bounded turn through a fresh TUI session.
 func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	ctx = museWithAutoAnswer(ctx, opts)
 	persistent := musePersistentInteractiveFromOptions(opts)
 	owner := strings.TrimSpace(museInteractiveSessionIDFromOptions(opts))
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
@@ -284,6 +317,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		if err != nil {
 			return nil, err
 		}
+		ctx = museBindPersistentAutoAnswer(ctx, entry)
 		session = entry.tmuxName
 		prompt = museResolveTmuxPrompt(system, human, wantAgents, entry.agentsProjected)
 	} else {
@@ -333,12 +367,20 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}}}, nil
 	}
 
-	// Bounded sessions boot above; persistent ones are already up but may be
-	// mid-turn (a queued follow-up): wait for the idle prompt so turns
-	// serialize instead of interleaving in one TUI.
+	// Bounded sessions boot above and still have their startup banner.
+	// Persistent sessions may be mid-turn (a queued follow-up), and their boot
+	// banner commonly scrolls away after a long conversation. Use the reusable
+	// prompt/status chrome for those sessions so a healthy idle TUI does not
+	// sit for 90 seconds and get misreported as a retryable network timeout.
 	turnStart := time.Now()
-	if _, err := museWaitSettled(ctx, session, 90*time.Second); err != nil {
-		return nil, err
+	var readyErr error
+	if persistent {
+		_, readyErr = museWaitAtPrompt(ctx, session, 90*time.Second)
+	} else {
+		_, readyErr = museWaitSettled(ctx, session, 90*time.Second)
+	}
+	if readyErr != nil {
+		return nil, readyErr
 	}
 	if err := museSendPrompt(ctx, session, prompt); err != nil {
 		return nil, err

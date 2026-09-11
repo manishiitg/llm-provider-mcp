@@ -26,6 +26,7 @@ import (
 // boots (muse reads project rules at startup), so projection happens on the
 // fresh-launch path and the undo runs on kill.
 type musePersistentSession struct {
+	autoAnswer      *museAutoAnswerState
 	tmuxName        string
 	workdir         string
 	mcpJSON         string
@@ -108,6 +109,9 @@ func musePersistentTmuxName(owner string) string {
 func museKillPersistentLocked(ctx context.Context, entry *musePersistentSession) {
 	if entry == nil {
 		return
+	}
+	if entry.autoAnswer != nil {
+		entry.autoAnswer.stopped.Store(true)
 	}
 	_ = exec.CommandContext(ctx, "tmux", "kill-session", "-t", entry.tmuxName).Run()
 	if entry.restoreMCP != nil {
@@ -267,7 +271,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		}
 		return nil, false, err
 	}
-	entry = &musePersistentSession{tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, restoreMCP: restore}
+	entry = &musePersistentSession{autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, restoreMCP: restore}
 	if projected {
 		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
 			restoreAgents, strings.TrimSpace(systemPrompt), true

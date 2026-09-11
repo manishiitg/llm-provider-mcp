@@ -87,6 +87,9 @@ func TestMuseStatusChunkFromLiveWire(t *testing.T) {
 	if real == nil || real.Type != llmtypes.StreamChunkTypeReasoning || real.Content != "running tools" {
 		t.Fatalf("genuine progress status = %+v, want non-empty reasoning", real)
 	}
+	if real.Metadata["presentation"] != "assistant_update" {
+		t.Fatal("progress must render as an assistant update")
+	}
 	if museStatusChunk(json.RawMessage(`{broken`)) != nil {
 		t.Fatal("museStatusChunk(garbage) must be nil, not an error")
 	}

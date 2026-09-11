@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Live-input transport for the muse tmux lane: steering follow-up text and
@@ -48,15 +49,24 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 		return fmt.Errorf("no active Muse interactive session registered for owner session %s", ownerSessionID)
 	}
 	tmuxName := entry.tmuxName
+	autoAnswer := entry.autoAnswer
 	logPath := entry.logPath
 	if logPath == "" && entry.nativeSessionID != "" {
 		logPath = museSessionLogPath(entry.nativeSessionID)
 	}
-	baseline := museTranscriptMaxSequence(logPath)
 	musePersistentPool.Unlock()
 	if !museTmuxSessionAlive(ctx, tmuxName) {
 		return fmt.Errorf("muse tmux session %q for owner %s is gone", tmuxName, ownerSessionID)
 	}
+	if autoAnswer != nil {
+		ctx = context.WithValue(ctx, museAutoAnswerKey{}, autoAnswer)
+	}
+	if err := museWaitLiveInputComposer(ctx, tmuxName); err != nil {
+		return err
+	}
+	// Completing the old question can produce another assistant commit. The
+	// new live turn starts after that boundary, not at the pre-dialog cursor.
+	baseline := museTranscriptMaxSequence(logPath)
 	if err := museSendPrompt(ctx, tmuxName, message); err != nil {
 		return err
 	}
@@ -84,4 +94,33 @@ func SendMuseInteractiveControlKey(ctx context.Context, ownerSessionID, key stri
 		return fmt.Errorf("tmux send-keys %s: %w\n%s", key, err, out)
 	}
 	return nil
+}
+
+// A visible native question owns the keyboard even though Muse paints an
+// empty composer underneath it. Drain those dialogs before typing user text.
+func museWaitLiveInputComposer(ctx context.Context, session string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		pane, err := museTmuxCapturePane(ctx, session)
+		if err != nil {
+			return err
+		}
+		pending, err := museHandlePendingQuestion(ctx, session, pane)
+		if err != nil {
+			return err
+		}
+		if !pending {
+			if musePaneShowsBlockingGate(pane) {
+				return fmt.Errorf("Muse is waiting at a trust/auth prompt; live input was not typed")
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }

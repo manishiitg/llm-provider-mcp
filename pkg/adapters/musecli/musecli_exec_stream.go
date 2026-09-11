@@ -117,8 +117,8 @@ func museStreamPlumbing(message string) bool {
 	return strings.Contains(lower, "opening") || strings.Contains(lower, "completed")
 }
 
-// museStatusChunk maps one lifecycle status event to a reasoning chunk so
-// product UIs can render real progress as Thinking. Transport plumbing
+// museStatusChunk retains progress as a non-final update and asks product UIs
+// to present it as assistant commentary. Transport plumbing
 // (stream open/complete attempt counters) is dropped, never surfaced.
 // Nil on shape drift.
 func museStatusChunk(line json.RawMessage) *llmtypes.StreamChunk {
@@ -133,7 +133,8 @@ func museStatusChunk(line json.RawMessage) *llmtypes.StreamChunk {
 		return nil
 	}
 	return &llmtypes.StreamChunk{
-		Type:    llmtypes.StreamChunkTypeReasoning,
-		Content: message,
+		Type:     llmtypes.StreamChunkTypeReasoning,
+		Content:  message,
+		Metadata: map[string]interface{}{"presentation": "assistant_update"},
 	}
 }

@@ -17,7 +17,7 @@ var museRetainedTurnReady = func(tmuxName, logPath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	pane, err := museTmuxCapturePane(ctx, tmuxName)
-	return err == nil && museTUIAtPrompt(pane) && musePaneStable(ctx, tmuxName, pane)
+	return err == nil && musePendingUserInputError(pane) == nil && museTUIAtPrompt(pane) && musePaneStable(ctx, tmuxName, pane)
 }
 
 // ReadRetainedTurnMessages returns the committed final response for a prompt
@@ -43,7 +43,23 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 		logPath = museSessionLogPath(entry.nativeSessionID)
 	}
 	baseline := entry.retainedBaselineSequence
+	autoAnswer := entry.autoAnswer
 	musePersistentPool.Unlock()
+	// Live-input turns have no GenerateContent waiter. Service the same
+	// native controls here before asking whether the retained turn is done.
+	if autoAnswer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx = context.WithValue(ctx, museAutoAnswerKey{}, autoAnswer)
+		pane, captureErr := museTmuxCapturePane(ctx, tmuxName)
+		pending, questionErr := false, captureErr
+		if captureErr == nil {
+			pending, questionErr = museHandlePendingQuestion(ctx, tmuxName, pane)
+		}
+		cancel()
+		if pending || questionErr != nil {
+			return nil
+		}
+	}
 	if !museRetainedTurnReady(tmuxName, logPath) {
 		return nil
 	}
