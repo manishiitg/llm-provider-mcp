@@ -347,6 +347,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	if err != nil {
 		return nil, err
 	}
+	if persistent {
+		museRecordPersistentTranscript(owner, session, nativeSessionID, logPath)
+	}
 	// Opt-in transcript streaming: tail the intake-discovered session.jsonl
 	// so assistant text + tool starts/ends stream while the turn runs.
 	// Started here (not pre-submit) because the log path is only known once

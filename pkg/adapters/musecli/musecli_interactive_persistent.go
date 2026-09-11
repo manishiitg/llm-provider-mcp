@@ -29,10 +29,35 @@ type musePersistentSession struct {
 	tmuxName        string
 	workdir         string
 	mcpJSON         string
-	restoreMCP      func()
-	agentsContent   string
-	restoreAgents   func()
-	agentsProjected bool
+	nativeSessionID string
+	logPath         string
+	// retainedBaselineSequence is the last durable Muse event that existed
+	// before the most recent live-input submission. The retained-turn reader
+	// only accepts assistant commits after this cursor, so an older completed
+	// reply cannot settle a newly submitted follow-up.
+	retainedBaselineSequence int64
+	restoreMCP               func()
+	agentsContent            string
+	restoreAgents            func()
+	agentsProjected          bool
+}
+
+// museRecordPersistentTranscript binds the owner-scoped persistent TUI to the
+// native Muse transcript discovered by the first real turn. Live-input turns
+// reuse this file after the bounded Go call has returned.
+func museRecordPersistentTranscript(owner, tmuxName, nativeSessionID, logPath string) {
+	key, err := musePersistentKey(owner)
+	if err != nil {
+		return
+	}
+	musePersistentPool.Lock()
+	defer musePersistentPool.Unlock()
+	entry := musePersistentPool.m[key]
+	if entry == nil || entry.tmuxName != tmuxName {
+		return
+	}
+	entry.nativeSessionID = strings.TrimSpace(nativeSessionID)
+	entry.logPath = strings.TrimSpace(logPath)
 }
 
 var musePersistentPool = struct {

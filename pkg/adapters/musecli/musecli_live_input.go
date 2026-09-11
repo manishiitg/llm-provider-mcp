@@ -37,14 +37,38 @@ func musePersistentTmuxForOwner(owner string) (string, bool) {
 // SendMuseInteractiveInput types a follow-up message into the owner's live
 // pooled TUI and submits it.
 func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
-	tmuxName, ok := musePersistentTmuxForOwner(ownerSessionID)
-	if !ok {
+	key, err := musePersistentKey(ownerSessionID)
+	if err != nil {
+		return err
+	}
+	musePersistentPool.Lock()
+	entry := musePersistentPool.m[key]
+	if entry == nil {
+		musePersistentPool.Unlock()
 		return fmt.Errorf("no active Muse interactive session registered for owner session %s", ownerSessionID)
 	}
+	tmuxName := entry.tmuxName
+	logPath := entry.logPath
+	if logPath == "" && entry.nativeSessionID != "" {
+		logPath = museSessionLogPath(entry.nativeSessionID)
+	}
+	baseline := museTranscriptMaxSequence(logPath)
+	musePersistentPool.Unlock()
 	if !museTmuxSessionAlive(ctx, tmuxName) {
 		return fmt.Errorf("muse tmux session %q for owner %s is gone", tmuxName, ownerSessionID)
 	}
-	return museSendPrompt(ctx, tmuxName, message)
+	if err := museSendPrompt(ctx, tmuxName, message); err != nil {
+		return err
+	}
+	musePersistentPool.Lock()
+	if current := musePersistentPool.m[key]; current != nil && current.tmuxName == tmuxName {
+		current.retainedBaselineSequence = baseline
+		if current.logPath == "" {
+			current.logPath = logPath
+		}
+	}
+	musePersistentPool.Unlock()
+	return nil
 }
 
 // SendMuseInteractiveControlKey injects a raw tmux key (Escape, C-c, Enter,

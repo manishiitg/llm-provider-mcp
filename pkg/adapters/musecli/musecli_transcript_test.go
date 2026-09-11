@@ -77,6 +77,26 @@ func TestReadMuseTranscriptMessagesInOrder(t *testing.T) {
 	}
 }
 
+func TestReadMuseTranscriptMessagesAcceptsPersistentUserIntent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := `{"payload_type":"runtime.user_intent.accepted","payload":{"intent_id":"run-live","model_messages":[{"content":[{"kind":"text","text":"duplicate copy"}]}],"refill_blocks":[{"kind":"text","text":"follow up from chat"}]}}` + "\n" +
+		`{"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-live","event":{"kind":"assistant_message_committed","text":"retained answer"}}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	messages, ok := readMuseTranscriptMessages(path, "run-live")
+	if !ok || len(messages) != 2 {
+		t.Fatalf("messages = %+v, ok=%v; want one human and one assistant", messages, ok)
+	}
+	if got := messageText(messages[0]); got != "follow up from chat" {
+		t.Fatalf("human text = %q", got)
+	}
+	if got := messageText(messages[1]); got != "retained answer" {
+		t.Fatalf("assistant text = %q", got)
+	}
+}
+
 func messageText(m llmtypes.MessageContent) string {
 	var b strings.Builder
 	for _, part := range m.Parts {

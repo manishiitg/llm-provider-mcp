@@ -270,6 +270,28 @@ func readMuseTranscriptMessages(logPath, runID string) ([]llmtypes.MessageConten
 			}
 			continue
 		}
+		// Muse 1.1.1 persistent-TUI follow-ups are recorded as accepted user
+		// intents rather than command_intake rows. Keep the first text refill
+		// block as the canonical human message; model_messages contains the same
+		// text and would otherwise duplicate it during chat-history resync.
+		if pt, _ := rec["payload_type"].(string); pt == "runtime.user_intent.accepted" {
+			payload, _ := rec["payload"].(map[string]any)
+			intentID := museLogString(payload, "intent_id")
+			if runID != "" && intentID != runID {
+				continue
+			}
+			if blocks, _ := payload["refill_blocks"].([]any); len(blocks) > 0 {
+				if block, _ := blocks[0].(map[string]any); block != nil {
+					if text, _ := block["text"].(string); strings.TrimSpace(text) != "" {
+						out = append(out, llmtypes.MessageContent{
+							Role:  llmtypes.ChatMessageTypeHuman,
+							Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}},
+						})
+					}
+				}
+			}
+			continue
+		}
 		payload, _ := rec["payload"].(map[string]any)
 		if payload == nil || museLogString(payload, "kind") != "run" {
 			continue

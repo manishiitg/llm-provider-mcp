@@ -68,6 +68,17 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 	}
 }
 
+func TestMuseContractSupportsRetainedFinalExtraction(t *testing.T) {
+	contract, ok := GetCodingAgentProviderContract(ProviderMuseCLI, "")
+	if !ok {
+		t.Fatal("Muse coding-agent contract is missing")
+	}
+	if !contract.SupportsLiveInput || !contract.SupportsFinalExtraction {
+		t.Fatalf("Muse retained-turn contract = live-input:%v final-extraction:%v, want both true",
+			contract.SupportsLiveInput, contract.SupportsFinalExtraction)
+	}
+}
+
 // TestNativeResumeContractMatchesRegistry guards against drift between
 // contract.SupportsNativeResume and the actual end-to-end wiring (Agent
 // session-id field → adapter populator → public WithXxxResumeSessionID

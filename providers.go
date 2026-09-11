@@ -241,6 +241,8 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 		return cursorcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderPiCLI:
 		return picli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderMuseCLI:
+		return musecli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	default:
 		return nil
 	}

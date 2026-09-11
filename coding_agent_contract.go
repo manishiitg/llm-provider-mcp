@@ -398,7 +398,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsLiveInput:           true,
 		SupportsInterrupt:           true,
 		SupportsTerminalStream:      true,
-		SupportsFinalExtraction:     false,
+		SupportsFinalExtraction:     true,
 		SupportsNativeResume:        true,
 		UsesMCPBridge:               true,
 		RequiresMCPBridgeConfig:     true,
