@@ -163,15 +163,18 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	}
 	// MCP servers reach muse through the user-level settings.json (there is
 	// no --mcp-config flag). Merge for the duration of this run only.
+	// Unconditional: museApplyMCPConfig also forces tui.voice_enabled off
+	// (settings.json is the only control muse exposes for it), applied to
+	// every run so it can't be left on by whichever lane last restored it.
 	mcpJSON := strings.TrimSpace(museMCPConfigFromOptions(opts))
+	restoreMCP, err := museApplyMCPConfig(mcpJSON)
+	if err != nil {
+		return nil, err
+	}
+	if restoreMCP != nil {
+		defer restoreMCP()
+	}
 	if mcpJSON != "" {
-		restoreMCP, err := museApplyMCPConfig(mcpJSON)
-		if err != nil {
-			return nil, err
-		}
-		if restoreMCP != nil {
-			defer restoreMCP()
-		}
 		// MCP-server tools gate on approval while built-in shell tools do
 		// not: a mounted run with approvals on stalls forever waiting for a
 		// human (proven live 2026-09-10). Mounting a bridge is itself the

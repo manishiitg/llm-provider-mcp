@@ -275,16 +275,18 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	var restore func()
+	// Unconditional: museApplyMCPConfig also forces tui.voice_enabled off
+	// (settings.json is the only control muse exposes for it -- no CLI
+	// flag), which must apply to every launch, not just MCP-mounted ones.
+	restore, err := museApplyMCPConfig(strings.TrimSpace(mcpJSON))
+	if err != nil {
+		return nil, err
+	}
 	argv := []string{"--trust-workspace", "--provider", provider}
 	if strings.TrimSpace(modelID) != "" {
 		argv = append(argv, "--model", strings.TrimSpace(modelID))
 	}
 	if strings.TrimSpace(mcpJSON) != "" {
-		var err error
-		if restore, err = museApplyMCPConfig(strings.TrimSpace(mcpJSON)); err != nil {
-			return nil, err
-		}
 		// museTUIApprovalArgv covers mounted turns: MCP-server tools gate
 		// on approval while built-in shell tools do not.
 		argv = append(argv, museTUIApprovalArgv()...)

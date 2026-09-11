@@ -170,14 +170,15 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	var restore func()
+	// Unconditional: museApplyMCPConfig also forces tui.voice_enabled off
+	// (settings.json is the only control muse exposes for it -- no CLI
+	// flag), which must apply to every launch, not just MCP-mounted ones.
+	restore, err := museApplyMCPConfig(strings.TrimSpace(mcpJSON))
+	if err != nil {
+		return nil, err
+	}
 	argv := []string{"muse", "--trust-workspace", "--provider", provider}
 	if strings.TrimSpace(mcpJSON) != "" {
-		r, err := museApplyMCPConfig(strings.TrimSpace(mcpJSON))
-		if err != nil {
-			return nil, err
-		}
-		restore = r
 		argv = append(argv, museTUIApprovalArgv()...)
 	}
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", session,

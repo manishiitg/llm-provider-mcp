@@ -32,21 +32,28 @@ func museSettingsPath() (string, error) {
 	return filepath.Join(home, ".config", "muse", "settings.json"), nil
 }
 
-// museApplyMCPConfig merges the "mcpServers" entries of configJSON into the
-// user-level muse settings.json and returns a restore function that puts the
-// previous settings back. Empty documents are a no-op returning a nil restore.
-// Anything already present under a colliding server name is preserved across
-// the run and reinstated by restore. All file errors abort the launch: a
-// half-mounted bridge is worse than no run.
+// museApplyMCPConfig merges the "mcpServers" entries of configJSON (if any)
+// into the user-level muse settings.json and forces tui.voice_enabled to
+// false, returning a restore function that puts the previous settings back
+// byte-exact. Voice input has no CLI flag or launch argument (verified
+// against `muse --help`/`muse exec --help`) -- settings.json's
+// "tui":{"voice_enabled":...} is the only control, so every launch through
+// this integration overlays it off regardless of whether an MCP config is
+// also mounted: AgentWorks turns are driven by prompt injection, and a
+// stray Alt+V (or the CLI's own voice-input hint rendering) has no
+// legitimate role in an automated session. Anything already present under a
+// colliding server name, or any other existing "tui" field, is preserved
+// across the run and reinstated by restore. All file errors abort the
+// launch: a half-mounted overlay is worse than no run.
 func museApplyMCPConfig(configJSON string) (func(), error) {
 	var doc struct {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
-	if err := json.Unmarshal([]byte(configJSON), &doc); err != nil {
-		return nil, fmt.Errorf("muse MCP config is not valid JSON: %w", err)
-	}
-	if len(doc.MCPServers) == 0 {
-		return nil, nil
+	configJSON = strings.TrimSpace(configJSON)
+	if configJSON != "" {
+		if err := json.Unmarshal([]byte(configJSON), &doc); err != nil {
+			return nil, fmt.Errorf("muse MCP config is not valid JSON: %w", err)
+		}
 	}
 	path, err := museSettingsPath()
 	if err != nil {
@@ -84,14 +91,28 @@ func museApplyMCPConfig(configJSON string) (func(), error) {
 		}
 		merged[name] = entry
 	}
-	mergedRaw, err := json.Marshal(merged)
-	if err != nil {
-		return nil, fmt.Errorf("marshal merged muse mcpServers: %w", err)
+	if len(merged) > 0 {
+		mergedRaw, err := json.Marshal(merged)
+		if err != nil {
+			return nil, fmt.Errorf("marshal merged muse mcpServers: %w", err)
+		}
+		settings["mcpServers"] = mergedRaw
 	}
-	settings["mcpServers"] = mergedRaw
 	if _, ok := settings["schema_version"]; !ok {
 		settings["schema_version"] = json.RawMessage("1")
 	}
+	tui := map[string]json.RawMessage{}
+	if rawTUI, ok := settings["tui"]; ok {
+		if err := json.Unmarshal(rawTUI, &tui); err != nil {
+			return nil, fmt.Errorf("existing muse settings.json tui is not an object: %w", err)
+		}
+	}
+	tui["voice_enabled"] = json.RawMessage("false")
+	tuiRaw, err := json.Marshal(tui)
+	if err != nil {
+		return nil, fmt.Errorf("marshal muse settings.json tui: %w", err)
+	}
+	settings["tui"] = tuiRaw
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal muse settings.json: %w", err)
