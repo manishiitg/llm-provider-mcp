@@ -623,8 +623,129 @@ func TestMuseDiscoverSessionSincePrefersWorkdir(t *testing.T) {
 	}
 }
 
+// TestMuseDiscoverSessionSinceWorkdirCaseInsensitive pins a live-proven bug:
+// on a case-insensitive-but-case-preserving filesystem (macOS APFS default),
+// muse can canonicalize the workdir it records in workspace_root to a
+// different case than the caller passed in (observed live: caller passed
+// ".../AgentWorks/...", muse recorded ".../agentworks/..." — the true
+// on-disk casing). An exact-case match rejected the one log that actually
+// answered the prompt, timing every turn against that workdir out as
+// "never took in the prompt" despite muse working correctly.
+func TestMuseDiscoverSessionSinceWorkdirCaseInsensitive(t *testing.T) {
+	home := t.TempDir()
+	day := filepath.Join(home, "muse", "sessions", "2026", "09", "10")
+	callerWorkdir := filepath.Join(t.TempDir(), "AgentWorks", "state")
+	recordedRoot := strings.ToLower(callerWorkdir)
+	dir := filepath.Join(day, "sess-case")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"sequence":9,"payload_type":"runtime.session.metadata","payload":{"record":{"workspace_root":` + strconv.Quote(recordedRoot) + `}}}` + "\n" +
+		`{"sequence":10,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"hi there"}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Minute)
+	id, _, err := museDiscoverSessionSince(home, since, "hi there", callerWorkdir)
+	if err != nil {
+		t.Fatalf("discover with case-differing workdir: %v", err)
+	}
+	if id != "sess-case" {
+		t.Fatalf("session id = %q, want sess-case", id)
+	}
+}
+
 // TestSendMuseInteractiveInputNoSession pins the steer-path failure mode:
 // unknown owners fail loudly instead of typing into the void.
+// TestMuseTranscriptStreamStateFirstScreenPollEmits pins a real bug: the
+// first-ever pollScreen call used to "prime" lastScreen without emitting, to
+// avoid replaying the pre-turn pane. But a turn fast enough to finish (or
+// render its reply) before museScreenStreamPollInterval's first tick made
+// that discarded sample the ALREADY-COMPLETE pane, not the pre-turn one --
+// permanently emptying the "main terminal" UI panel for that turn despite a
+// live tmux session backing it (observed live 2026-09-11). The fix matches
+// cursor-cli's streamCursorTerminalSnapshot exactly: lastScreen starts at
+// its zero value with no priming step, so the very first capture always
+// qualifies as "changed" and emits -- run()'s ctx.Done() final flush relies
+// on this to publish a turn's only pane state when it never ticks even once.
+func TestMuseTranscriptStreamStateFirstScreenPollEmits(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux required: without it screen streaming can't be exercised")
+	}
+	session := "mlp-muse-test-final-screen-" + museRandomSessionSuffix()
+	launch := exec.CommandContext(context.Background(), "tmux", "new-session", "-d", "-s", session,
+		"-x", "80", "-y", "24", "sh", "-c", "echo settled-output; sleep 30")
+	if out, err := launch.CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", session).Run()
+	})
+	time.Sleep(300 * time.Millisecond) // let the pane settle before the state ever samples it
+
+	st := newMuseTranscriptStreamState(filepath.Join(t.TempDir(), "session.jsonl"), session, false, true)
+	ch := make(chan llmtypes.StreamChunk, 4)
+
+	// The very first call, exactly as run()'s ctx.Done() final flush would
+	// make it for a turn that finished before any periodic tick fired.
+	st.pollScreen(ch)
+
+	select {
+	case chunk := <-ch:
+		if chunk.Type != llmtypes.StreamChunkTypeTerminal {
+			t.Fatalf("chunk type = %v, want StreamChunkTypeTerminal", chunk.Type)
+		}
+		if !strings.Contains(chunk.Content, "settled-output") {
+			t.Fatalf("chunk content = %q, want it to contain the pane's actual output", chunk.Content)
+		}
+	default:
+		t.Fatal("expected the first-ever poll to emit the pane's state instead of silently priming")
+	}
+}
+
+// TestMuseEnterTookEffect pins the submit-verification guard against a real
+// (non-muse) tmux pane: proof the pane changing at all after Enter is what
+// distinguishes a keystroke the TUI acted on from one it silently swallowed
+// -- observed live 2026-09-10 as a confirmed-visible "hi" that never
+// submitted, with tmux reporting send-keys success the whole time.
+func TestMuseEnterTookEffect(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux required: without it this pane-behavior guard can't be exercised")
+	}
+	session := "mlp-muse-test-enter-effect-" + museRandomSessionSuffix()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	launch := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", session, "-x", "80", "-y", "24", "sh")
+	if out, err := launch.CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", session).Run()
+	})
+
+	// Let the shell's own startup rendering settle first: a pane can still
+	// change on its own for a beat right after launch (the same boot-render
+	// race the rest of this package guards against), which would otherwise
+	// read as a false "took effect".
+	time.Sleep(500 * time.Millisecond)
+	before, err := museTmuxCapturePane(ctx, session)
+	if err != nil {
+		t.Fatalf("capture pane: %v", err)
+	}
+
+	if museEnterTookEffect(ctx, session, before) {
+		t.Fatal("expected no effect while the pane never changes (the swallowed-keystroke case)")
+	}
+
+	send := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "echo hello-from-test", "Enter")
+	if out, err := send.CombinedOutput(); err != nil {
+		t.Fatalf("tmux send-keys: %v\n%s", err, out)
+	}
+	if !museEnterTookEffect(ctx, session, before) {
+		t.Fatal("expected the real output change to be detected")
+	}
+}
+
 func TestSendMuseInteractiveInputNoSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

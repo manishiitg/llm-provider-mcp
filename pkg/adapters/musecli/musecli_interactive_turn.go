@@ -102,18 +102,27 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, w
 // museLogMatchesWorkspace reports whether raw session.jsonl bytes record
 // the given workdir as their TUI's workspace_root. Both sides resolve
 // symlinks first (/var vs /private/var on darwin) and compare JSON-escaped,
-// the encoding the log actually stores.
+// the encoding the log actually stores. The compare is case-insensitive:
+// on a case-insensitive-but-case-preserving filesystem (macOS APFS default,
+// Windows), muse's own path canonicalization can record the true on-disk
+// casing (e.g. "agentworks") while the caller passes a differently-cased
+// path to the same directory (e.g. "AgentWorks") — proven live: a real
+// workdir under ~/Library/Application Support/AgentWorks/... was rejected
+// against its own matching session log solely because muse recorded
+// "agentworks", causing every turn against that workdir to time out as
+// "never took in the prompt" even though muse answered correctly.
 func museLogMatchesWorkspace(raw []byte, workdir string) bool {
 	dir := strings.TrimSpace(workdir)
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
-	needle := `"workspace_root":` + strconv.Quote(dir)
-	if strings.Contains(string(raw), needle) {
+	rawLower := strings.ToLower(string(raw))
+	needle := strings.ToLower(`"workspace_root":` + strconv.Quote(dir))
+	if strings.Contains(rawLower, needle) {
 		return true
 	}
 	// Fall back to the unresolved path (logs on some platforms store it).
-	return strings.Contains(string(raw), `"workspace_root":`+strconv.Quote(strings.TrimSpace(workdir)))
+	return strings.Contains(rawLower, strings.ToLower(`"workspace_root":`+strconv.Quote(strings.TrimSpace(workdir))))
 }
 
 // museLastAssistantText returns the last AI message text in order.
@@ -288,7 +297,20 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		if err != nil {
 			return nil, err
 		}
-		defer museKillTmuxSession(context.Background(), session)
+		// Keep the real tmux pane alive for the shared bounded retention
+		// window (llmtypes.TmuxKillDelay) instead of killing it inline, the
+		// same pattern claude-code/codex-cli/cursor-cli/pi-cli all use: the
+		// periodic pane scraper needs that window to capture a final
+		// snapshot into the terminals store, which is what backs the UI's
+		// "main terminal" view after the turn completes. Killing
+		// synchronously here (the previous behavior) tore the pane down
+		// before that scraper cycle could ever run, so muse's UI terminal
+		// was permanently empty even on a fully successful turn.
+		defer func() {
+			time.AfterFunc(llmtypes.TmuxKillDelay, func() {
+				museKillTmuxSession(context.Background(), session)
+			})
+		}()
 		if restoreMCP != nil {
 			defer restoreMCP()
 		}

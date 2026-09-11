@@ -253,20 +253,76 @@ const (
 	museAtomicPasteMinLines = 16
 )
 
-// museSendPrompt types the prompt into the TUI pane and submits it.
+// museSendPrompt types the prompt into the TUI pane and submits it, retrying
+// the submit (not just the typing) a bounded number of times.
+//
+// Confirming the draft is visible (writeVisibleDraftAndConfirm) is not
+// enough: observed live 2026-09-10, a fully visible, confirmed "hi" sat
+// unsubmitted at the prompt indefinitely after Enter -- tmux send-keys
+// reported success, but the TUI never acted on it (no reply, no streaming,
+// pane byte-for-byte unchanged). museWaitIntake's downstream Enter-resend
+// loop couldn't recover it: that loop only resends a bare Enter into
+// whatever state the pane is already in, so a keystroke genuinely dropped
+// by the TUI just gets dropped again. This is the same render-race class
+// museWaitSettled already guards at boot ("an Enter sent right after first
+// render is swallowed"); submission needs the equivalent guard.
 func museSendPrompt(ctx context.Context, session, prompt string) error {
-	if musePromptNeedsAtomicPaste(prompt) {
-		if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
+	const maxSubmitAttempts = 3
+	for attempt := 1; ; attempt++ {
+		if musePromptNeedsAtomicPaste(prompt) {
+			if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
+				return err
+			}
+		} else if err := writeVisibleDraftAndConfirm(ctx, session, prompt); err != nil {
 			return err
 		}
-	} else if err := writeVisibleDraftAndConfirm(ctx, session, prompt); err != nil {
-		return err
+		beforePane, err := museTmuxCapturePane(ctx, session)
+		if err != nil {
+			return fmt.Errorf("capture pane before Enter: %w", err)
+		}
+		// Give the just-confirmed draft a beat to finish rendering before
+		// firing Enter into it -- the same guard museWaitSettled applies at
+		// boot, applied here at submit time.
+		musePaneStable(ctx, session, beforePane)
+		enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
+		if out, err := enter.CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux send-keys Enter: %w\n%s", err, out)
+		}
+		if museEnterTookEffect(ctx, session, beforePane) {
+			return nil
+		}
+		if attempt >= maxSubmitAttempts {
+			return fmt.Errorf("muse TUI did not act on Enter after %d submit attempts; the keystroke may have been swallowed mid-render", maxSubmitAttempts)
+		}
+		clear := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u")
+		if out, err := clear.CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux clear input before resubmit retry: %w\n%s", err, out)
+		}
 	}
-	enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
-	if out, err := enter.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys Enter: %w\n%s", err, out)
+}
+
+// museEnterTookEffect reports whether the pane changed within a short
+// window after Enter was sent -- proof the TUI actually acted on the
+// keystroke rather than swallowing it. Any change counts (cleared input,
+// a thinking indicator, streamed text, or an already-complete reply); the
+// failure mode this guards is the pane staying byte-for-byte identical to
+// before Enter was sent.
+func museEnterTookEffect(ctx context.Context, session, beforePane string) bool {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pane, err := museTmuxCapturePane(ctx, session)
+		if err == nil && pane != beforePane {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(150 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 // writeVisibleDraftAndConfirm types the prompt via writeMuseVisibleDraftToTmux

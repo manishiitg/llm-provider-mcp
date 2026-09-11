@@ -157,10 +157,20 @@ type museTranscriptStreamState struct {
 	endedTool         map[string]bool
 	toolStartedAt     map[string]time.Time
 	lastScreen        string
-	screenPrimed      bool
 	done              chan struct{}
 }
 
+// newMuseTranscriptStreamState leaves lastScreen at its zero value, exactly
+// like cursor-cli's streamCursorTerminalSnapshot (var lastTerminalSnapshot
+// string): no priming/discard step at all, so the very first capture always
+// qualifies as "changed" and emits. A prior version of this code treated the
+// first captured sample as a "priming" throwaway meant to avoid replaying
+// the pre-turn pane -- but a turn fast enough to finish before
+// museScreenStreamPollInterval's first tick made that discarded sample the
+// ALREADY-COMPLETE pane, not the pre-turn one, permanently emptying the
+// "main terminal" UI panel for that turn despite a live tmux session backing
+// it (observed live 2026-09-11). Matching cursor's simpler, priming-free
+// pattern fixes this the same way cursor never had the bug.
 func newMuseTranscriptStreamState(logPath, tmuxName string, transcriptEnabled, screenEnabled bool) *museTranscriptStreamState {
 	s := &museTranscriptStreamState{
 		logPath: logPath, tmuxName: tmuxName,
@@ -213,6 +223,7 @@ func (s *museTranscriptStreamState) run(ctx context.Context, streamChan chan<- l
 			if s.transcriptEnabled {
 				s.poll(context.Background(), streamChan) // final flush (single-threaded now)
 			}
+			s.pollScreen(streamChan) // final flush: catches any change since the last periodic tick
 			return
 		case <-ticker.C:
 			if s.transcriptEnabled {
@@ -225,10 +236,10 @@ func (s *museTranscriptStreamState) run(ctx context.Context, streamChan chan<- l
 }
 
 // pollScreen captures the live pane and emits it as a Terminal chunk when
-// changed since the last snapshot. Dropped on backpressure (snapshots are
+// changed since the last snapshot (seeded at construction, see
+// newMuseTranscriptStreamState). Dropped on backpressure (snapshots are
 // lossy) and silent on capture errors — screen streaming must never fail a
-// turn. First snapshot primes without emitting (avoids replaying the
-// pre-turn pane as new output).
+// turn.
 func (s *museTranscriptStreamState) pollScreen(streamChan chan<- llmtypes.StreamChunk) {
 	if !s.screenEnabled || strings.TrimSpace(s.tmuxName) == "" || streamChan == nil {
 		return
@@ -238,11 +249,6 @@ func (s *museTranscriptStreamState) pollScreen(streamChan chan<- llmtypes.Stream
 		return
 	}
 	snapshot := strings.TrimRight(pane, "\n")
-	if !s.screenPrimed {
-		s.screenPrimed = true
-		s.lastScreen = snapshot
-		return
-	}
 	if strings.TrimSpace(snapshot) == "" || snapshot == s.lastScreen {
 		return
 	}
