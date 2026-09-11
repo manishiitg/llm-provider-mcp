@@ -128,7 +128,8 @@ func sortedKeys(m map[string]bool) []string {
 // over a real MCP server, with WithStreamTranscript(true). Cursor commits its
 // store.db asynchronously so streaming is laggier than the JSONL adapters; the
 // tailer's final flush catches late commits. Asserts real work (result.txt on
-// disk) + that structured chunks streamed, and records output for agent review.
+// disk), all three narration messages before their tool starts, and records
+// output for agent review. Tool-only or final-only streams must fail.
 func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
@@ -137,6 +138,8 @@ func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	workDir := t.TempDir()
 	outDir := t.TempDir()
 	codeWord := "ZEBRA_" + cursorRandomHex(4)
+	narration := []string{"SEARCHING_" + cursorRandomHex(4), "WRITING_" + cursorRandomHex(4), "READING_" + cursorRandomHex(4)}
+	task := workbenchRealWorldTask + fmt.Sprintf("\nEach narration must contain its exact marker: before web_search: %s; before write_file: %s; before read_file: %s. Do not include these markers in the final answer.", narration[0], narration[1], narration[2])
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"workbench":{"type":"stdio","command":"node","args":[%q]}}}`, writeWorkbenchMCPServer(t, outDir, codeWord))
 	preApproveCursorMCP(t, workDir, mcpConfig, "workbench")
 
@@ -147,7 +150,7 @@ func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	defer cancel()
 
 	resp, err := adapter.GenerateContent(ctx,
-		[]llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, workbenchRealWorldTask)},
+		[]llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, task)},
 		WithInteractiveSessionID("cursor-realworld-stream-"+cursorRandomHex(4)),
 		WithPersistentInteractiveSession(true),
 		WithWorkingDir(workDir),
@@ -177,10 +180,8 @@ func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	if !strings.Contains(string(wrote), codeWord) {
 		t.Fatalf("result.txt does not contain the searched code word %q; got %q", codeWord, string(wrote))
 	}
-	// Cursor's async store.db commit is laggy — require SOMETHING structured
-	// streamed (content and/or a tool), not strict counts.
-	if capture.contentChunks == 0 && capture.toolStarts == 0 {
-		t.Fatalf("no transcript-sourced chunks streamed at all; order=%v", capture.order)
+	if err := assertCursorStreamNarration(capture, narration); err != nil {
+		t.Fatal(err)
 	}
 
 	rec := agentreview.Write(t, "TestCursorCLITranscriptStreamingRealWorldLive",
@@ -196,4 +197,48 @@ func TestCursorCLITranscriptStreamingRealWorldLive(t *testing.T) {
 		map[string]any{"distinct_tools": sortedKeys(distinctToolNames(capture.toolNames))},
 	)
 	agentreview.RequireReviewed(t, rec)
+}
+
+func assertCursorStreamNarration(capture cursorStreamCapture, markers []string) error {
+	textIndex, toolIndex, allToolIndex := 0, 0, 0
+	counts := make([]int, len(markers))
+	for _, kind := range capture.order {
+		switch kind {
+		case "text":
+			text := capture.contentTexts[textIndex]
+			textIndex++
+			for i, marker := range markers {
+				if occurrences := strings.Count(text, marker); occurrences > 0 {
+					counts[i] += occurrences
+					if counts[i] != 1 {
+						return fmt.Errorf("duplicate narration marker %s", marker)
+					}
+					if toolIndex != i {
+						return fmt.Errorf("narration %s arrived at tool boundary %d, want %d", marker, toolIndex, i)
+					}
+				}
+			}
+		case "tool":
+			// Cursor can discover dynamic MCP schemas before the three
+			// requested operations. Discovery must not shift their boundaries.
+			discovery := allToolIndex < len(capture.toolNames) && capture.toolNames[allToolIndex] == "GetDynamicTools"
+			allToolIndex++
+			if discovery {
+				continue
+			}
+			if toolIndex < len(markers) && counts[toolIndex] != 1 {
+				return fmt.Errorf("tool %d started without narration %s", toolIndex, markers[toolIndex])
+			}
+			toolIndex++
+		}
+	}
+	if toolIndex != len(markers) {
+		return fmt.Errorf("got %d tool starts, want %d", toolIndex, len(markers))
+	}
+	for i, n := range counts {
+		if n != 1 {
+			return fmt.Errorf("missing narration %s", markers[i])
+		}
+	}
+	return nil
 }
