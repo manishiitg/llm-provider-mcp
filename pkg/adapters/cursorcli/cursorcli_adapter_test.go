@@ -2243,3 +2243,18 @@ func cursorArgsContainPair(args []string, key, value string) bool {
 	}
 	return false
 }
+
+func TestCursorLiveInputEmptyComposerDoesNotMatchFooter(t *testing.T) {
+	pane := "Removing duplicate cost and security ownership.\n⠘⠤ Working 162 tokens\n→ Add a follow-up                 ctrl+c to stop\nAuto · 79.5% · ~/.local/state/AgentWorks/cli-runtimes/v1/8bea1d8e · master\n"
+	for _, message := range []string{"1", "auto", "master", "stop"} {
+		t.Run(message, func(t *testing.T) {
+			if cursorPaneShowsPromptDraftWithMode(pane, message, true) {
+				t.Fatal("empty follow-up composer matched UI footer as pending user input")
+			}
+		})
+	}
+	typed := strings.Replace(pane, "Add a follow-up", "1", 1)
+	if !cursorPaneShowsPromptDraftWithMode(typed, "1", true) {
+		t.Fatal("real numeric live draft must still be detected while Cursor works")
+	}
+}

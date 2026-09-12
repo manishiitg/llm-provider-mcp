@@ -313,3 +313,32 @@ func TestEnsureCursorInputSubmittedSkipsWhenDraftAbsent(t *testing.T) {
 		t.Fatalf("expected no log entries (no Enter should have been sent); got=%q", string(content))
 	}
 }
+
+func TestEnsureCursorLiveInputSubmittedDoesNotRetryEmptyComposer(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "keys.log")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+ printf '%s\n' '⠘ Working 162 tokens' '→ Add a follow-up                 ctrl+c to stop' 'Auto · 79.5% · ~/.local/state/cli-runtimes/v1/8bea1d8e · master'
+ exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+ printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := ensureCursorInputSubmittedWithMode(ctx, "test-busy", "1", true); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := os.ReadFile(logPath)
+	if len(keys) > 0 {
+		t.Fatalf("recovery keys sent after input was accepted: %s", keys)
+	}
+}

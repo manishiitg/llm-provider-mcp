@@ -2570,6 +2570,18 @@ func cursorPaneShowsPromptDraftWithMode(captured, prompt string, allowActivity b
 	if lastPromptMarker < 0 {
 		return false
 	}
+	// An explicit empty-composer placeholder is stronger evidence than any
+	// substring found in the rows below it. Short replies such as "1" otherwise
+	// match the runtime directory or model/status footer while Cursor is busy,
+	// causing recovery Enter retries and a false live-input failure.
+	markerLine := visibleLines[lastPromptMarker]
+	composerLine := strings.TrimSpace(markerLine[strings.Index(markerLine, "→")+len("→"):])
+	if hint := strings.Index(composerLine, "ctrl+c to stop"); hint >= 0 {
+		composerLine = strings.TrimSpace(composerLine[:hint])
+	}
+	if composerLine == "add a follow-up" || composerLine == "type your message" {
+		return false
+	}
 	// Only inspect the active editor after the final structural prompt marker.
 	// Searching the whole pane mistakes an already-submitted user message in
 	// scrollback for a draft that is still waiting in the composer. Do not cap
