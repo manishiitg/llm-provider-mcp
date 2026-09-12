@@ -74,10 +74,13 @@ func museExecEffort(opts *llmtypes.CallOptions) (string, error) {
 // museBuildExecPrompt folds messages into one exec prompt: system texts
 // become a header (exec has no system-prompt flag), the last human text is
 // the prompt. Non-text parts are rejected: pass image paths as text.
-func museBuildExecPrompt(messages []llmtypes.MessageContent) (string, error) {
+func museBuildExecPrompt(messages []llmtypes.MessageContent, resume bool) (string, error) {
 	system, human, err := museSplitPrompt(messages)
 	if err != nil {
 		return "", err
+	}
+	if !resume {
+		human = museFreshHistoryPrompt(messages, human)
 	}
 	return museInlinePrompt(system, human), nil
 }
@@ -138,7 +141,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	for _, opt := range options {
 		opt(opts)
 	}
-	prompt, err := museBuildExecPrompt(messages)
+	prompt, err := museBuildExecPrompt(messages, museResumeSessionIDFromOptions(opts) != "")
 	if err != nil {
 		return nil, err
 	}
@@ -197,9 +200,14 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	// The CLI treats the process cwd as the workspace root (skills, trust,
 	// transcript scoping), so pin it when the caller asks. Empty keeps the
 	// inherited cwd — the working_directory cert pins the explicit case.
-	if dir := strings.TrimSpace(museWorkingDirFromOptions(opts)); dir != "" {
-		cmd.Dir = dir
+	workdir := strings.TrimSpace(museWorkingDirFromOptions(opts))
+	if workdir == "" {
+		workdir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Muse working directory: %w", err)
+		}
 	}
+	cmd.Dir = workdir
 	if a.apiKey != "" {
 		cmd.Stdin = strings.NewReader(a.apiKey)
 	} else {
@@ -305,6 +313,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		Provider:        "muse-cli",
 		Transport:       llmtypes.CodingProviderTransportStructured,
 		NativeSessionID: sessionID,
+		WorkingDir:      workdir,
 		Model:           model,
 	})
 	resp := &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{

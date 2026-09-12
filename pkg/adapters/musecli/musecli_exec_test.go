@@ -125,7 +125,7 @@ func TestMuseBuildExecPromptFoldsSystem(t *testing.T) {
 	got, err := museBuildExecPrompt([]llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Be brief."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "hi"}}},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestMuseBuildExecPromptFoldsSystem(t *testing.T) {
 	}
 	if _, err := museBuildExecPrompt([]llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "  "}}},
-	}); err == nil {
+	}, false); err == nil {
 		t.Fatal("blank human prompt should fail")
 	}
 }

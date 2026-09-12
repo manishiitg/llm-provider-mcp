@@ -202,7 +202,7 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	if err != nil {
 		return nil, err
 	}
-	argv := []string{"env", "XDG_CONFIG_HOME=" + configHome, "muse", "--trust-workspace", "--provider", provider}
+	argv := []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse", "--trust-workspace", "--provider", provider}
 	if strings.TrimSpace(mcpJSON) != "" {
 		argv = append(argv, museTUIApprovalArgv()...)
 	}

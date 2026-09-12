@@ -276,7 +276,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		}
 		return nil, false, err
 	}
-	entry = &musePersistentSession{autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
+	entry = &musePersistentSession{nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
 	if projected {
 		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
 			restoreAgents, strings.TrimSpace(systemPrompt), true
@@ -325,9 +325,9 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 	if toolAllowlist != nil {
 		argv = append(argv, museNativeContainmentArgv()...)
 	}
-	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "muse"}, argv...)
+	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse"}, argv...)
 	if id := strings.TrimSpace(resumeNativeID); id != "" {
-		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "muse", "resume", id}
+		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse", "resume", id}
 		cli = append(cli, argv...)
 	}
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workdir}, cli...)...)

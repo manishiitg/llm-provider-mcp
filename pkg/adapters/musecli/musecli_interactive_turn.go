@@ -308,6 +308,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 
 	var prompt string // set below via museResolveTmuxPrompt once launch/acquire decides whether AGENTS.md carries the system prompt
 	session := ""
+	nativeIDAtLaunch := ""
 	if persistent {
 		toolAllowlist, toolAllowlistSet := museToolAllowlistFromOptions(opts)
 		if !toolAllowlistSet {
@@ -323,8 +324,15 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 		ctx = museBindPersistentAutoAnswer(ctx, entry)
 		session = entry.tmuxName
+		musePersistentPool.Lock()
+		nativeIDAtLaunch = entry.nativeSessionID
+		musePersistentPool.Unlock()
+		if nativeIDAtLaunch == "" {
+			human = museFreshHistoryPrompt(messages, human)
+		}
 		prompt = museResolveTmuxPrompt(system, human, wantAgents, entry.agentsProjected)
 	} else {
+		human = museFreshHistoryPrompt(messages, human)
 		restoreAgents, projected := projectMuseAgentsForTurn(workdir, system, wantAgents, museRestoreProjectFilesFromOptions(opts))
 		if restoreAgents != nil {
 			defer restoreAgents()
@@ -363,10 +371,12 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		// tmux session; the native id is unknown until the first turn.
 		gi := &llmtypes.GenerationInfo{}
 		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
-			Provider:    "muse-cli",
-			Transport:   llmtypes.CodingProviderTransportTmux,
-			TmuxSession: session,
-			Model:       strings.TrimSpace(a.modelID),
+			Provider:        "muse-cli",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			TmuxSession:     session,
+			WorkingDir:      workdir,
+			NativeSessionID: nativeIDAtLaunch,
+			Model:           strings.TrimSpace(a.modelID),
 		})
 		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{
 			Content:        "",
@@ -446,6 +456,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		Transport:       llmtypes.CodingProviderTransportTmux,
 		NativeSessionID: nativeSessionID,
 		TmuxSession:     session,
+		WorkingDir:      workdir,
 		Model:           strings.TrimSpace(a.modelID),
 	})
 	// Keep the settled post-turn pane on the response: it is the wrapped
