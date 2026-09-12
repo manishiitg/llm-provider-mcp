@@ -2,10 +2,43 @@ package codexcli
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+type codexRetainedProgress struct {
+	mu    sync.Mutex
+	state *codexTranscriptStreamState
+}
+
+// ReadRetainedTurnProgressMessages reads commentary from this terminal's exact
+// rollout without treating it as a completed answer.
+func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	if turnStart.IsZero() {
+		return nil
+	}
+	session, ok := codexPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return nil
+	}
+	progress := &session.retainedProgress
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if progress.state == nil || !progress.state.turnStart.Equal(turnStart) {
+		progress.state = newCodexTranscriptStreamState(turnStart, "", func(start time.Time) string {
+			return resolveCodexRolloutPath(session, start)
+		})
+	}
+	var messages []llmtypes.MessageContent
+	for _, chunk := range progress.state.readChunks() {
+		if chunk.Type == llmtypes.StreamChunkTypeContent && strings.TrimSpace(chunk.Content) != "" {
+			messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk.Content))
+		}
+	}
+	return messages
+}
 
 // ReadRetainedTurnMessages returns the committed final answer for one
 // directly-injected turn. Intermediate assistant commentary is deliberately

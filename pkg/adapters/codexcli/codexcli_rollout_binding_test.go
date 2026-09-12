@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // PLAT-106 root cause: retained-answer lookup resolved a transcript by working
@@ -69,6 +71,23 @@ func TestRetainedLookupDoesNotReturnAnotherSessionsAnswer(t *testing.T) {
 	final, _ := readCodexRolloutFinalAssistantText(resolved, turnStart)
 	if final != "Chat answer for the user's question." {
 		t.Fatalf("final answer = %q, want the Chat session's own answer", final)
+	}
+	f, err := os.OpenFile(chatPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(f, "{\"timestamp\":%q,\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Checking the Chat request.\"}}\n", time.Now().UTC().Format(time.RFC3339Nano))
+	if closeErr := f.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := codexPersistentRegistry.Replace(map[string]*codexInteractiveSession{chatSession.ownerSessionID: chatSession})
+	t.Cleanup(func() { codexPersistentRegistry.Replace(old) })
+	updates := ReadRetainedTurnProgressMessages(chatSession.ownerSessionID, turnStart)
+	if len(updates) != 1 || updates[0].Parts[0].(llmtypes.TextContent).Text != "Checking the Chat request." {
+		t.Fatalf("progress must use this session's rollout: %+v", updates)
 	}
 }
 

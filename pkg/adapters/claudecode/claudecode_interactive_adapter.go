@@ -140,6 +140,7 @@ type claudeInteractivePersistentSession struct {
 	createdAt        time.Time
 	lastUsed         time.Time
 	mu               sync.Mutex
+	retainedProgress claudeRetainedProgress
 }
 
 var claudeInteractivePersistentRegistry = sessionregistry.NewOwnerRegistry[*claudeInteractivePersistentSession]()

@@ -89,6 +89,18 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 	if streamChan == nil {
 		return
 	}
+	for _, chunk := range s.readChunks() {
+		select {
+		case streamChan <- chunk:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// Both normal streaming and retained follow-ups consume the same decoder and
+// dedup rules. Reading progress never invokes the final-answer classifier.
+func (s *codexTranscriptStreamState) readChunks() []llmtypes.StreamChunk {
 	if s.path == "" {
 		if s.resolveRollout != nil {
 			s.path = s.resolveRollout(s.turnStart)
@@ -96,14 +108,15 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 			s.path = findCodexRolloutByWorkingDirUnsafe(s.turnStart, s.workingDir)
 		}
 		if s.path == "" {
-			return // rollout not created yet — try again next tick
+			return nil // rollout not created yet — try again next tick
 		}
 	}
 	events, next, err := readCodexTranscriptEventsFromFile(s.path, s.offset, s.turnStart, s.pendingToolStarts)
 	if err != nil {
-		return
+		return nil
 	}
 	s.offset = next
+	var chunks []llmtypes.StreamChunk
 	for _, e := range events {
 		// Defensive: emit a given tool call's start only once, keyed by
 		// call_id, in case a row is ever re-observed.
@@ -123,13 +136,9 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 			}
 			s.seenContent[e.Text] = true
 		}
-		chunk := codexTranscriptEventToChunk(e)
-		select {
-		case streamChan <- chunk:
-		case <-ctx.Done():
-			return
-		}
+		chunks = append(chunks, codexTranscriptEventToChunk(e))
 	}
+	return chunks
 }
 
 func codexTranscriptEventToChunk(e codexTranscriptEvent) llmtypes.StreamChunk {

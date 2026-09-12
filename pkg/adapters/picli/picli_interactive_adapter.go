@@ -126,6 +126,7 @@ type piInteractiveSession struct {
 	totalInputTokens  int
 	totalOutputTokens int
 	mu                sync.Mutex
+	retainedProgress  piRetainedProgress
 }
 
 var piInteractiveRegistry = struct {

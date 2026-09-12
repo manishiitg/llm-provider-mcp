@@ -29,9 +29,9 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 const (
@@ -91,7 +91,8 @@ type codexInteractiveSession struct {
 	// together: A holds A.mu and waits for B.mu while B holds B.mu and waits for
 	// A.mu. Keep rollout identity independently readable so completion/final
 	// extraction never waits on another session's whole-turn lock (PLAT-116).
-	rolloutMu sync.RWMutex
+	rolloutMu        sync.RWMutex
+	retainedProgress codexRetainedProgress
 }
 
 var codexInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()

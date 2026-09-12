@@ -249,12 +249,30 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 }
 
 // ReadCodingAgentRetainedTurnProgressMessages reads in-flight commentary without
-// asserting completion. This consumes the normal stream cursor: callers must
+// asserting completion. This consumes provider progress cursors: callers must
 // serialize reads with delivery/publication and must not discard returned text.
-// Currently Cursor exposes this separate busy-safe reader;
-// providers without it return no progress and retain their completion behavior.
-func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSessionID string) []llmtypes.MessageContent {
-	if Provider(strings.ToLower(strings.TrimSpace(string(provider)))) == ProviderCursorCLI {
+// Cursor shares its normal stream cursor; the other coding CLIs require the
+// turn start to bound their progress cursors. The optional argument preserves
+// existing Cursor callers. None of these readers asserts turn completion.
+func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSessionID string, turnStart ...time.Time) []llmtypes.MessageContent {
+	switch Provider(strings.ToLower(strings.TrimSpace(string(provider)))) {
+	case ProviderClaudeCode:
+		if len(turnStart) > 0 {
+			return claudecodeadapter.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
+		}
+	case ProviderCodexCLI:
+		if len(turnStart) > 0 {
+			return codexcli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
+		}
+	case ProviderMuseCLI:
+		if len(turnStart) > 0 {
+			return musecli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
+		}
+	case ProviderPiCLI:
+		if len(turnStart) > 0 {
+			return picli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
+		}
+	case ProviderCursorCLI:
 		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)
 	}
 	return nil

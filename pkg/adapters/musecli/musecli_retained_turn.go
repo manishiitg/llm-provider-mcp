@@ -5,10 +5,68 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+type museRetainedProgress struct {
+	mu        sync.Mutex
+	turnStart time.Time
+	lastSeq   int64
+}
+
+// ReadRetainedTurnProgressMessages exposes committed text and visible status
+// summaries even while the TUI is busy. Completion keeps its existing gate.
+func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	if turnStart.IsZero() {
+		return nil
+	}
+	key, err := musePersistentKey(ownerSessionID)
+	if err != nil {
+		return nil
+	}
+	musePersistentPool.Lock()
+	entry := musePersistentPool.m[key]
+	if entry == nil {
+		musePersistentPool.Unlock()
+		return nil
+	}
+	path, baseline := entry.logPath, entry.retainedBaselineSequence
+	if path == "" && entry.nativeSessionID != "" {
+		path = museSessionLogPath(entry.nativeSessionID)
+	}
+	musePersistentPool.Unlock()
+	progress := &entry.retainedProgress
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if !progress.turnStart.Equal(turnStart) {
+		progress.turnStart, progress.lastSeq = turnStart, baseline
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // adapter-owned transcript path
+	if err != nil {
+		return nil
+	}
+	var messages []llmtypes.MessageContent
+	// Only newline-committed records advance the cursor.
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines[:len(lines)-1] {
+		var envelope struct {
+			Sequence int64 `json:"sequence"`
+		}
+		if json.Unmarshal([]byte(line), &envelope) != nil || envelope.Sequence <= progress.lastSeq {
+			continue
+		}
+		progress.lastSeq = envelope.Sequence
+		for _, chunk := range museTranscriptLineToChunks(line, map[string]bool{}, map[string]bool{}, nil) {
+			if (chunk.Type == llmtypes.StreamChunkTypeContent || chunk.Metadata["presentation"] == "assistant_update") && strings.TrimSpace(chunk.Content) != "" {
+				messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk.Content))
+			}
+		}
+	}
+	return messages
+}
 
 var museRetainedTurnReady = func(tmuxName, logPath string) bool {
 	if tmuxName == "" || logPath == "" || !museLogQuietSince(logPath, 5*time.Second) {

@@ -38,6 +38,7 @@ type musePersistentSession struct {
 	// only accepts assistant commits after this cursor, so an older completed
 	// reply cannot settle a newly submitted follow-up.
 	retainedBaselineSequence int64
+	retainedProgress         museRetainedProgress
 	restoreMCP               func()
 	agentsContent            string
 	restoreAgents            func()

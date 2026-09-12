@@ -56,6 +56,13 @@ func TestReadRetainedTurnMessagesWaitsForEndTurn(t *testing.T) {
 	if got := ReadRetainedTurnMessages(ownerSessionID, turnStart); len(got) != 0 {
 		t.Fatalf("tool_use narration was treated as completion: %+v", got)
 	}
+	progress := ReadRetainedTurnProgressMessages(ownerSessionID, turnStart)
+	if len(progress) != 1 || progress[0].Parts[0].(llmtypes.TextContent).Text != "Let me check what sequence the workflow actually defines." {
+		t.Fatalf("missing live narration while the final answer is pending: %+v", progress)
+	}
+	if got := ReadRetainedTurnProgressMessages(ownerSessionID, turnStart); len(got) != 0 {
+		t.Fatalf("poll replayed narration: %+v", got)
+	}
 
 	completed := append(inProgress,
 		`{"type":"assistant","timestamp":"2026-08-19T05:46:01.930Z","message":{"id":"msg_final","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"done"}]}}`,
@@ -72,5 +79,14 @@ func TestReadRetainedTurnMessagesWaitsForEndTurn(t *testing.T) {
 	text, ok := got[0].Parts[0].(llmtypes.TextContent)
 	if !ok || text.Text != "Good instinct — and yes, that's the right sequence." {
 		t.Fatalf("completed retained response text = %#v", got[0].Parts[0])
+	}
+	progress = ReadRetainedTurnProgressMessages(ownerSessionID, turnStart)
+	if len(progress) != 1 || progress[0].Parts[0].(llmtypes.TextContent).Text != text.Text {
+		t.Fatalf("final flush lost the newly committed message: %+v", progress)
+	}
+	// A follow-up watcher starts after the previous turn, so old narration
+	// must not be replayed even though it reads the same native transcript.
+	if got := ReadRetainedTurnProgressMessages(ownerSessionID, turnStart.Add(time.Hour)); len(got) != 0 {
+		t.Fatalf("new turn replayed previous messages: %+v", got)
 	}
 }

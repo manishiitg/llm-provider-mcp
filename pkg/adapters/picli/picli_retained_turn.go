@@ -2,10 +2,54 @@ package picli
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+type piRetainedProgress struct {
+	mu           sync.Mutex
+	turnStart    time.Time
+	messageCount int
+}
+
+// ReadRetainedTurnProgressMessages returns newly committed assistant blocks,
+// including text alongside tool calls. Token fragments stay in Pi's native
+// stream; a completed block becomes one durable chat update.
+func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	if turnStart.IsZero() {
+		return nil
+	}
+	session, ok := activePiInteractiveSession(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return nil
+	}
+	progress := &session.retainedProgress
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if !progress.turnStart.Equal(turnStart) {
+		progress.turnStart, progress.messageCount = turnStart, 0
+	}
+	messages := ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	if len(messages) <= progress.messageCount {
+		return nil
+	}
+	newMessages := messages[progress.messageCount:]
+	progress.messageCount = len(messages)
+	var updates []llmtypes.MessageContent
+	for _, message := range newMessages {
+		if message.Role != llmtypes.ChatMessageTypeAI {
+			continue
+		}
+		for _, part := range message.Parts {
+			if text, ok := part.(llmtypes.TextContent); ok && strings.TrimSpace(text.Text) != "" {
+				updates = append(updates, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, text.Text))
+			}
+		}
+	}
+	return updates
+}
 
 // ReadRetainedTurnMessages reconstructs one directly-injected turn from the Pi
 // transcript owned by an already-running interactive session. It does not
