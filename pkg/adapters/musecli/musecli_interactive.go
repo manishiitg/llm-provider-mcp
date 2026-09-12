@@ -96,17 +96,22 @@ func musePendingUserInputError(pane string) error {
 	return &llmerrors.Error{Kind: llmerrors.KindUserInputRequired, Provider: "muse-cli", Err: fmt.Errorf("Muse is waiting for your answer. Open its terminal and answer or dismiss the question before continuing:\n%s", strings.TrimSpace(pane[start:]))}
 }
 
-// musePaneShowsBlockingGate reports whether the pane is stuck on a trust,
-// auth, or login gate instead of the interactive TUI.
+// musePaneShowsBlockingGate recognizes a gate surface, not authentication
+// words in the conversation. In particular, "log in to <another service>"
+// in an assistant answer must never prevent steering the Muse composer.
 func musePaneShowsBlockingGate(pane string) bool {
 	lower := strings.ToLower(pane)
-	for _, marker := range []string{
-		"do you trust",
-		"untrusted",
-		"muse login",
-		"log in to",
-	} {
-		if strings.Contains(lower, marker) {
+	lines := strings.Split(lower, "\n")
+	// Match complete prompt instructions at line starts. A composer can also
+	// be drawn beneath a native dialog, so its presence is not a gate bypass.
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "do you trust ") ||
+			strings.HasPrefix(line, "workspace is untrusted") ||
+			strings.HasPrefix(line, "this workspace is untrusted") ||
+			strings.HasPrefix(line, "run `muse login`") ||
+			strings.HasPrefix(line, "run muse login") ||
+			strings.HasPrefix(line, "please log in to meta") {
 			return true
 		}
 	}
