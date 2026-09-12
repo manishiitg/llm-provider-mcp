@@ -38,7 +38,7 @@ func TestMuseResumeHandleRoundTripTmuxP0(t *testing.T) {
 		return []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}}}}
 	}
 	history := append(message("HISTORY-MARKER-previous-user"), llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "HISTORY-MARKER-previous-answer"}}})
-	first, err := adapter.GenerateContent(ctx, append(history, message("resume identity first turn")...), opts...)
+	first, err := adapter.GenerateContent(ctx, append(history, message("resume identity first turn\n"+strings.Repeat("History line retained across terminal restart.\n", 70))...), opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,26 @@ func TestMuseResumeHandleRoundTripTmuxP0(t *testing.T) {
 	}
 	KillMusePersistentSession(owner)
 	opts = append(opts, WithResumeSessionID(restored.NativeSessionID))
+	// Restoring a long conversation scrolls the startup banner out of the
+	// newly created terminal. Exercise the application's launch-only restore
+	// path before sending another message, with a bounded readiness deadline.
+	restoreCtx, restoreCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer restoreCancel()
+	reopened, err := adapter.GenerateContent(restoreCtx, nil, append(opts, llmtypes.WithCodingProviderLaunchOnly())...)
+	if err != nil {
+		t.Fatalf("restore long native history: %v", err)
+	}
+	reopenedHandle := reopened.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if reopenedHandle.NativeSessionID != restored.NativeSessionID || !pathidentity.Same(reopenedHandle.WorkingDir, workdir) {
+		t.Fatal("launch-only restore lost native session identity or workspace")
+	}
+	pane, err := museTmuxCapturePane(ctx, reopenedHandle.TmuxSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(pane, "Muse Code") || !museTUIAtPrompt(pane) {
+		t.Fatalf("regression must exercise an idle restored pane without startup banner: %s", pane)
+	}
 	second, err := adapter.GenerateContent(ctx, message("resume identity second turn"), opts...)
 	if err != nil {
 		t.Fatal(err)

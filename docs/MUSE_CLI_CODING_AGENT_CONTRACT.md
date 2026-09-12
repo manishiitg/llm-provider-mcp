@@ -248,3 +248,19 @@ Live regression: `TestMuseCLIRealLiveInputQuestionsP0` covers a three-page form
 created after live delivery, plus a preexisting dialog with its cursor on the
 wrong option. It verifies both the recommended answer and the subsequent user
 message reach Muse. These are real adapter/tmux tests, not HTTP or desktop UI tests.
+
+### Restoring long native conversations
+
+A newly created tmux terminal can resume an existing conversation. When a native
+session ID is supplied, startup waits for stable prompt/status chrome using the
+same readiness check as a retained terminal. It must not require the `Muse Code`
+welcome banner: replayed history can scroll that banner out of the visible pane.
+Fresh conversations retain the banner check. Both paths retain question handling,
+auth/trust gate detection, terminal liveness, and pane stability checks.
+
+`TestMuseResumeHandleRoundTripTmuxP0` uses the real Muse CLI's credential-free echo
+provider to create history longer than the pane, serialize the session handle,
+kill the terminal, restore via launch-only, and send a follow-up. It asserts that
+the restored pane has no welcome banner and keeps the same native ID and working
+directory. Run it with `go test ./pkg/adapters/musecli -run
+'^TestMuseResumeHandleRoundTripTmuxP0$' -count=1`.

@@ -281,7 +281,14 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
 			restoreAgents, strings.TrimSpace(systemPrompt), true
 	}
-	if _, err := museWaitSettled(ctx, tmuxName, 90*time.Second); err != nil {
+	// A new terminal is not necessarily a new conversation: native resume
+	// replays history, which can scroll the startup banner off-screen before
+	// our first capture. Keep the banner requirement only for fresh sessions.
+	waitReady := museWaitSettled
+	if strings.TrimSpace(resumeNativeID) != "" {
+		waitReady = museWaitAtPrompt
+	}
+	if _, err := waitReady(ctx, tmuxName, 90*time.Second); err != nil {
 		restore()
 		if restoreAgents != nil {
 			restoreAgents()

@@ -220,7 +220,7 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 
 // museWaitSettled polls a freshly launched pane until the TUI settles, a
 // blocking gate appears, or the deadline passes. It deliberately requires
-// the boot banner; reused sessions must call museWaitAtPrompt because a long
+// the boot banner; reused and native-resumed sessions must call museWaitAtPrompt because a long
 // conversation scrolls that banner out of the pane.
 func museWaitSettled(ctx context.Context, session string, timeout time.Duration) (string, error) {
 	return museWaitForReadyPane(ctx, session, timeout, museTUISufficientlySettled, "muse TUI to settle")
