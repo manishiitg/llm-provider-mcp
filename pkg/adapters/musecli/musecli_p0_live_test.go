@@ -884,6 +884,28 @@ func TestMuseCLIRealInteractiveTmuxShortPromptRoundTrip(t *testing.T) {
 	}
 }
 
+// Copied table rows carry literal tabs, but Muse paints those tabs as spaces.
+// The visible-draft guard must recognize the rendered form and submit instead
+// of leaving a correct draft in the composer and returning a false 409.
+func TestMuseCLIRealInteractiveTmuxTabularPromptRoundTrip(t *testing.T) {
+	requireRealMuseCLIE2E(t)
+	adapter := museLiveAdapter()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	prompt := "AIS\tTDS-393(1)[Table: S.\tBusiness receipts\tUPWORK GLOBAL LLC\t205 — reply with exactly TABULAR-TMUX"
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
+			llmtypes.TextContent{Text: prompt}}},
+	}, WithTmuxTransport(true), WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("interactive tabular tmux round trip failed: %v", err)
+	}
+	if final := strings.TrimSpace(resp.Choices[0].Content); !strings.Contains(final, "TABULAR-TMUX") {
+		t.Fatalf("final = %q, want the TABULAR-TMUX marker", final)
+	}
+}
+
 // TestMuseCLIRealProjectInstructionOnly certifies file-only mode end to
 // end: the system prompt travels solely via the projected AGENTS.md while
 // the typed turn is a bare human message. The marker rule proves the TUI

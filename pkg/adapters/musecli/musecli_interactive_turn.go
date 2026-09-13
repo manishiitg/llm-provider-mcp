@@ -483,7 +483,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 // that identifies this turn's session log without false-matching.
 func promptSnippet(prompt string) string {
 	const maxSnippet = 120
-	snippet := strings.TrimSpace(prompt)
+	snippet := strings.TrimSpace(museTerminalPrompt(prompt))
 	if len(snippet) > maxSnippet {
 		snippet = strings.TrimSpace(snippet[:maxSnippet])
 	}

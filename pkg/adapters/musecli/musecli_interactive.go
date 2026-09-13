@@ -320,6 +320,7 @@ const (
 // museWaitSettled already guards at boot ("an Enter sent right after first
 // render is swallowed"); submission needs the equivalent guard.
 func museSendPrompt(ctx context.Context, session, prompt string) error {
+	prompt = museTerminalPrompt(prompt)
 	const maxSubmitAttempts = 3
 	for attempt := 1; ; attempt++ {
 		if err := museWaitLiveInputComposer(ctx, session); err != nil {
@@ -355,6 +356,16 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 			return fmt.Errorf("tmux clear input before resubmit retry: %w\n%s", err, out)
 		}
 	}
+}
+
+// museTerminalPrompt removes control characters that a terminal editor treats
+// as keyboard commands instead of text. Tabs copied from tables are semantic
+// separators, so one ordinary space preserves the prompt while ensuring Muse,
+// the visible-draft guard, and transcript discovery all see identical text.
+func museTerminalPrompt(prompt string) string {
+	prompt = strings.ReplaceAll(prompt, "\r\n", "\n")
+	prompt = strings.ReplaceAll(prompt, "\r", "\n")
+	return strings.ReplaceAll(prompt, "\t", " ")
 }
 
 // museEnterTookEffect reports whether the pane changed within a short
@@ -418,7 +429,7 @@ func writeVisibleDraftAndConfirm(ctx context.Context, session, prompt string) er
 		deadline := time.Now().Add(2 * time.Second)
 		for {
 			pane, err := museTmuxCapturePane(ctx, session)
-			if err == nil && strings.Contains(pane, snippet) {
+			if err == nil && musePaneContainsVisibleDraft(pane, snippet) {
 				return nil
 			}
 			if time.Now().After(deadline) {
@@ -438,6 +449,23 @@ func writeVisibleDraftAndConfirm(ctx context.Context, session, prompt string) er
 			return fmt.Errorf("tmux clear input before retry: %w\n%s", err, out)
 		}
 	}
+}
+
+// musePaneContainsVisibleDraft compares terminal-visible text rather than raw
+// input bytes. A copied table commonly contains tabs, while Muse renders those
+// tabs (and wrapped lines) as spaces in tmux capture-pane output. Requiring an
+// exact raw substring therefore reports failure even though the complete draft
+// is visibly present and ready to submit.
+func musePaneContainsVisibleDraft(pane, snippet string) bool {
+	if strings.Contains(pane, snippet) {
+		return true
+	}
+	visibleSnippet := strings.Join(strings.Fields(snippet), " ")
+	if visibleSnippet == "" {
+		return false
+	}
+	visiblePane := strings.Join(strings.Fields(pane), " ")
+	return strings.Contains(visiblePane, visibleSnippet)
 }
 
 // musePromptNeedsAtomicPaste reports whether the prompt is large enough that

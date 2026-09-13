@@ -140,6 +140,9 @@ func TestPromptSnippetTruncates(t *testing.T) {
 	if got := promptSnippet(long); len(got) != 120 {
 		t.Fatalf("snippet len = %d, want 120", len(got))
 	}
+	if got := promptSnippet("AIS\tTDS-393"); got != "AIS TDS-393" {
+		t.Fatalf("tabular snippet = %q, want terminal-safe spaces", got)
+	}
 }
 
 // TestMuseDiscoverSessionSince finds the newest matching session log in a
@@ -236,6 +239,19 @@ func TestMusePromptNeedsAtomicPaste(t *testing.T) {
 				t.Fatalf("musePromptNeedsAtomicPaste(%q...) = %v, want %v", tc.prompt[:min(20, len(tc.prompt))], got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMusePaneContainsVisibleDraftNormalizesRenderedWhitespace(t *testing.T) {
+	snippet := "ok also check AIS\tTDS-393(1)[Table: S.\tBusiness"
+	pane := "❯ ok also check AIS    TDS-393(1)[Table: S.    Business receipts\n" +
+		"muse-spark-1.3-contributor · max · /tmp/workflow"
+
+	if !musePaneContainsVisibleDraft(pane, snippet) {
+		t.Fatal("a copied tabular prompt must match the spaces Muse renders in the pane")
+	}
+	if musePaneContainsVisibleDraft(pane, "a different user prompt") {
+		t.Fatal("unrelated pane text must not confirm the draft")
 	}
 }
 
