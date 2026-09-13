@@ -245,11 +245,11 @@ func TestCodingAgentDefaultTierModelsMuseSingleModelEffortLadder(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
 		}
 	}
-	check("builder", defaults.Builder, "xhigh")
+	check("builder", defaults.Builder, "max")
 	check("high", defaults.High, "xhigh")
 	check("medium", defaults.Medium, "high")
 	check("low", defaults.Low, "medium")
-	check("pulse", defaults.Pulse, "xhigh")
+	check("pulse", defaults.Pulse, "max")
 }
 
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {

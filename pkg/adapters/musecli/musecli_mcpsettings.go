@@ -238,6 +238,14 @@ func musePrepareIsolatedConfig(configJSON string, toolAllowlist []string) (strin
 	if err != nil {
 		return "", nil, err
 	}
+	// Builds before isolated config roots wrote AgentWorks' bridge and native
+	// tool policy into the shared Muse settings. A crash or overlapping restore
+	// could leave that overlay behind permanently, making an ordinary `muse`
+	// launch see only mcpbridge tools. Remove only entries with the integration's
+	// strong fingerprints; user MCP servers and hooks remain untouched.
+	if err := museRemoveLegacySharedConfigLeak(sourceSettings); err != nil {
+		return "", nil, err
+	}
 	root, err := os.MkdirTemp("", "agentworks-muse-config-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create isolated muse config: %w", err)
@@ -301,6 +309,126 @@ func musePrepareIsolatedConfig(configJSON string, toolAllowlist []string) (strin
 		return "", nil, err
 	}
 	return root, cleanup, nil
+}
+
+func museRemoveLegacySharedConfigLeak(path string) error {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read shared muse settings for legacy cleanup: %w", err)
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("existing muse settings.json is not a JSON object: %w", err)
+	}
+	changed := false
+
+	if rawServers, ok := settings["mcpServers"]; ok {
+		var servers map[string]json.RawMessage
+		if err := json.Unmarshal(rawServers, &servers); err != nil {
+			return fmt.Errorf("existing muse settings.json mcpServers is not an object: %w", err)
+		}
+		if entry, ok := servers["api-bridge"]; ok && museIsLegacyAgentWorksBridge(entry) {
+			delete(servers, "api-bridge")
+			changed = true
+			if len(servers) == 0 {
+				delete(settings, "mcpServers")
+			} else {
+				settings["mcpServers"], _ = json.Marshal(servers)
+			}
+		}
+	}
+
+	if rawHooks, ok := settings["hooks"]; ok {
+		var hooks map[string]json.RawMessage
+		if err := json.Unmarshal(rawHooks, &hooks); err != nil {
+			return fmt.Errorf("existing muse settings.json hooks is not an object: %w", err)
+		}
+		if rawPre, ok := hooks["PreToolUse"]; ok {
+			var entries []json.RawMessage
+			if err := json.Unmarshal(rawPre, &entries); err != nil {
+				return fmt.Errorf("existing muse settings.json hooks.PreToolUse is not an array: %w", err)
+			}
+			kept := entries[:0]
+			for _, entry := range entries {
+				if museIsLegacyAgentWorksPolicyHook(entry) {
+					changed = true
+					continue
+				}
+				kept = append(kept, entry)
+			}
+			if len(kept) == 0 {
+				delete(hooks, "PreToolUse")
+			} else if len(kept) != len(entries) {
+				hooks["PreToolUse"], _ = json.Marshal(kept)
+			}
+		}
+		if changed {
+			if len(hooks) == 0 {
+				delete(settings, "hooks")
+			} else {
+				settings["hooks"], _ = json.Marshal(hooks)
+			}
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal shared muse settings after legacy cleanup: %w", err)
+	}
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings.json.agentworks-cleanup-*")
+	if err != nil {
+		return fmt.Errorf("create shared muse settings cleanup file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod shared muse settings cleanup file: %w", err)
+	}
+	if _, err := tmp.Write(append(out, '\n')); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write shared muse settings cleanup file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close shared muse settings cleanup file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("publish shared muse settings cleanup: %w", err)
+	}
+	return nil
+}
+
+func museIsLegacyAgentWorksBridge(raw json.RawMessage) bool {
+	var entry struct {
+		Command string            `json:"command"`
+		Env     map[string]string `json:"env"`
+	}
+	if json.Unmarshal(raw, &entry) != nil || filepath.Base(entry.Command) != "mcpbridge" {
+		return false
+	}
+	return entry.Env["MCP_API_URL"] != "" && entry.Env["MCP_SESSION_ID"] != "" && entry.Env["MCP_TOOLS"] != ""
+}
+
+func museIsLegacyAgentWorksPolicyHook(raw json.RawMessage) bool {
+	var entry struct {
+		Hooks []struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(raw, &entry) != nil || len(entry.Hooks) != 1 {
+		return false
+	}
+	return strings.Contains(entry.Hooks[0].Command, "/muse-cli-hooks/native-tool-policy-")
 }
 
 func copyMuseConfigFile(source, target string) error {

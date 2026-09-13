@@ -92,15 +92,15 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 		}, true
 	case ProviderMuseCLI:
 		// Single model for now (2026-09-10): every tier runs
-		// muse-spark-1.3-contributor, effort ladder xhigh (Builder,
-		// High, Pulse) / high (Medium) / medium (Low).
+		// muse-spark-1.3-contributor, with max for the long-horizon Builder
+		// and Pulse roles, xhigh for High, high for Medium, and medium for Low.
 		const museModel = "muse-spark-1.3-contributor"
 		return &CodingAgentDefaultTierModels{
-			Builder: codingAgentReasoningRef(providerID, museModel, "xhigh"),
+			Builder: codingAgentReasoningRef(providerID, museModel, "max"),
 			High:    codingAgentReasoningRef(providerID, museModel, "xhigh"),
 			Medium:  codingAgentReasoningRef(providerID, museModel, "high"),
 			Low:     codingAgentReasoningRef(providerID, museModel, "medium"),
-			Pulse:   codingAgentReasoningRef(providerID, museModel, "xhigh"),
+			Pulse:   codingAgentReasoningRef(providerID, museModel, "max"),
 		}, true
 	}
 

@@ -160,6 +160,81 @@ func TestMusePrepareIsolatedConfigKeepsConcurrentMountsSeparate(t *testing.T) {
 	}
 }
 
+func TestMusePrepareIsolatedConfigRepairsLegacySharedLeak(t *testing.T) {
+	sharedPath := redirectMuseConfigHome(t)
+	if err := os.MkdirAll(filepath.Dir(sharedPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := `{
+  "schema_version": 1,
+  "theme": "dark",
+  "mcpServers": {
+    "api-bridge": {"command":"/opt/agentworks/mcpbridge","env":{"MCP_API_URL":"http://127.0.0.1:1","MCP_SESSION_ID":"old","MCP_TOOLS":"[]"}},
+    "user-server": {"url":"https://example.test/mcp"}
+  },
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"*","hooks":[{"type":"command","command":"node '/tmp/muse-cli-hooks/native-tool-policy-deadbeef.js'"}]},
+      {"matcher":"user","hooks":[{"type":"command","command":"check-user-policy"}]}
+    ],
+    "PostToolUse": [{"matcher":"user","hooks":[]}]
+  }
+}`
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	home, cleanup, err := musePrepareIsolatedConfig(`{"mcpServers":{"current":{"url":"http://127.0.0.1:2/mcp"}}}`, nil)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer cleanup()
+
+	var repaired struct {
+		Theme   string                       `json:"theme"`
+		Servers map[string]json.RawMessage   `json:"mcpServers"`
+		Hooks   map[string][]json.RawMessage `json:"hooks"`
+	}
+	raw, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &repaired); err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Theme != "dark" || len(repaired.Servers) != 1 || repaired.Servers["user-server"] == nil {
+		t.Fatalf("shared settings lost user content: %s", raw)
+	}
+	if len(repaired.Hooks["PreToolUse"]) != 1 || len(repaired.Hooks["PostToolUse"]) != 1 {
+		t.Fatalf("shared hooks after repair = %#v", repaired.Hooks)
+	}
+	isolatedNames := readMCPServerNames(t, filepath.Join(home, "muse", "settings.json"))
+	if len(isolatedNames) != 1 || !isolatedNames["current"] {
+		t.Fatalf("isolated servers = %v, want current only", isolatedNames)
+	}
+}
+
+func TestMuseLegacyCleanupPreservesSimilarUserEntries(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{"mcpServers":{"api-bridge":{"command":"user-bridge","env":{"MCP_API_URL":"x","MCP_SESSION_ID":"y","MCP_TOOLS":"z"}}},"hooks":{"PreToolUse":[{"hooks":[{"command":"native-tool-policy-user.js"}]}]}}`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := museRemoveLegacySharedConfigLeak(path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != before {
+		t.Fatalf("similar user entries changed:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestMuseApplyMCPConfigRejectsBadInput(t *testing.T) {
 	redirectMuseConfigHome(t)
 	for _, bad := range []string{
