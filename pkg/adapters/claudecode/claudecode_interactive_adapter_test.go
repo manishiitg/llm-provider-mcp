@@ -1917,6 +1917,40 @@ func TestClaudePromptDraftToClearBeforePaste(t *testing.T) {
 	}
 }
 
+func TestClaudeConversationChoiceMenuIsNotPromptDraft(t *testing.T) {
+	pane := `
+│ PR #3 is unrelated. Which do you want?
+
+❯ 1. PR #49 (Coach library)
+     Fetch and check out PR #49
+  2. PR #3 (Dependabot bump)
+     Fetch the dependency branch
+  3. Both
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+`
+	if !isClaudeConversationChoiceMenu(pane) {
+		t.Fatal("conversation choice menu was not detected")
+	}
+	if draft, ok := claudePromptDraftToClearBeforePaste(pane); ok {
+		t.Fatalf("conversation choice was classified as editable draft %q", draft)
+	}
+}
+
+func TestClaudeConversationChoiceMenuRequiresSelectionFooter(t *testing.T) {
+	pane := `
+● Options considered:
+❯ 1. Keep the current branch
+  2. Switch branches
+`
+	if isClaudeConversationChoiceMenu(pane) {
+		t.Fatal("ordinary numbered output was classified as a conversation choice")
+	}
+}
+
 func TestClaudePromptDraftToClearBeforePasteIgnoresBlankPrompt(t *testing.T) {
 	pane := `
 ⏺ Done

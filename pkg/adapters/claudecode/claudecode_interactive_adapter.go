@@ -2188,6 +2188,20 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 		}
 		return nil
 	}
+	// Claude's AskUserQuestion UI uses the same leading ❯ glyph as the editable
+	// composer. The highlighted option is not draft text: C-u/C-e cannot clear
+	// it, and treating it as a stale draft causes a healthy retained session to
+	// be discarded. A new chat message supersedes the unanswered menu, so cancel
+	// it first and wait for the actual composer before pasting.
+	if isClaudeConversationChoiceMenu(captured) {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+			return fmt.Errorf("failed to cancel Claude Code conversation choice before sending input: %w", err)
+		}
+		captured, err = waitForClaudeConversationChoiceDismissed(ctx, sessionName)
+		if err != nil {
+			return err
+		}
+	}
 	draft, shouldClear := claudePromptDraftToClearBeforePaste(captured)
 	if !shouldClear {
 		return nil
@@ -2221,6 +2235,49 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 	return nil
 }
 
+// isClaudeConversationChoiceMenu identifies the model-created numbered chooser
+// (AskUserQuestion), not startup/trust prompts. Its footer is the stable signal;
+// ordinary assistant prose can contain numbered lists and must remain untouched.
+func isClaudeConversationChoiceMenu(captured string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(captured, "\u00a0", " "))
+	hasSelectionFooter := strings.Contains(normalized, "enter to select") &&
+		strings.Contains(normalized, "to navigate") &&
+		strings.Contains(normalized, "esc to cancel")
+	hasHighlightedOption := strings.Contains(normalized, "❯ 1.") ||
+		strings.Contains(normalized, "❯ 2.") ||
+		strings.Contains(normalized, "❯ 3.") ||
+		strings.Contains(normalized, "❯ 4.")
+	return hasSelectionFooter && hasHighlightedOption
+}
+
+func waitForClaudeConversationChoiceDismissed(ctx context.Context, sessionName string) (string, error) {
+	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(75 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastCaptured string
+	for {
+		captured, err := captureTmuxPane(deadline, sessionName)
+		if err == nil {
+			lastCaptured = captured
+			if !isClaudeConversationChoiceMenu(captured) && hasReadyInputPrompt(captured) {
+				return captured, nil
+			}
+		} else if isClaudeTmuxSessionLostError(err) {
+			return "", err
+		}
+		select {
+		case <-deadline.Done():
+			if strings.TrimSpace(lastCaptured) != "" {
+				return "", fmt.Errorf("timed out waiting for Claude Code conversation choice to close; %s", llmtypes.CompactTerminalPaneForError(sessionName, lastCaptured))
+			}
+			return "", fmt.Errorf("timed out waiting for Claude Code conversation choice to close")
+		case <-ticker.C:
+		}
+	}
+}
+
 // claudePromptDraftCleared reports whether the live ❯ input line is now empty or
 // a placeholder — i.e. nothing stale remains for the next paste to stack onto. A
 // missing ❯ line (transient repaint) is treated as not-yet-confirmed.
@@ -2237,6 +2294,9 @@ func claudePromptDraftCleared(ctx context.Context, sessionName string) (bool, er
 }
 
 func claudePromptDraftToClearBeforePaste(captured string) (string, bool) {
+	if isClaudeConversationChoiceMenu(captured) {
+		return "", false
+	}
 	if !hasReadyInputPrompt(captured) {
 		return "", false
 	}
