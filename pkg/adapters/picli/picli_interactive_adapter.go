@@ -1784,10 +1784,12 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					// alongside text_delta (identical shape: contentIndex + delta),
 					// and piMarkerExtensionSource's message_update hook already
 					// forwards it verbatim -- this was previously the only marker
-					// type silently dropped by this switch. Keep it on the
-					// reasoning stream so it remains separate from the final answer,
-					// while marking it as narrated progress for the UI.
-					deltaMeta := piAssistantUpdateChunkMetadata(session)
+					// type silently dropped by this switch. Route it to the
+					// reasoning stream (not content.String()) the same way
+					// cursor-cli's "thinking"/delta event does, so it renders in
+					// the product's Thinking surface instead of the final answer.
+					deltaMeta := piChunkMetadata(session)
+					deltaMeta[llmtypes.ContentDeltaMetadataKey] = true
 					emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 						Type:     llmtypes.StreamChunkTypeReasoning,
 						Content:  marker.Delta,
@@ -2358,13 +2360,6 @@ func piChunkMetadata(session *piInteractiveSession) map[string]interface{} {
 		"pi_persistent_interactive": session.persistent,
 		"pi_model":                  session.modelID,
 	}
-}
-
-func piAssistantUpdateChunkMetadata(session *piInteractiveSession) map[string]interface{} {
-	metadata := piChunkMetadata(session)
-	metadata[llmtypes.ContentDeltaMetadataKey] = true
-	metadata["presentation"] = "assistant_update"
-	return metadata
 }
 
 func releasePiInteractiveSession(session *piInteractiveSession) {
