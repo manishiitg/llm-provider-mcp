@@ -38,7 +38,14 @@ func (s *piTranscriptSummary) hasUsage() bool {
 }
 
 func readPiTranscriptSummary(sessionID string, turnStart time.Time) *piTranscriptSummary {
-	transcriptPath := latestPiTranscriptPath(sessionID)
+	return readPiTranscriptSummaryInDir(piTranscriptSessionDir(), sessionID, turnStart)
+}
+
+func readPiTranscriptSummaryInDir(sessionDir, sessionID string, turnStart time.Time) *piTranscriptSummary {
+	if strings.TrimSpace(sessionDir) == "" {
+		sessionDir = piTranscriptSessionDir()
+	}
+	transcriptPath := latestPiTranscriptPathInDir(sessionDir, sessionID)
 	if transcriptPath == "" {
 		return nil
 	}
@@ -51,11 +58,15 @@ func readPiTranscriptSummary(sessionID string, turnStart time.Time) *piTranscrip
 }
 
 func latestPiTranscriptPath(sessionID string) string {
+	return latestPiTranscriptPathInDir(piTranscriptSessionDir(), sessionID)
+}
+
+func latestPiTranscriptPathInDir(sessionDir, sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return ""
 	}
-	sessionDir := piTranscriptSessionDir()
+	sessionDir = strings.TrimSpace(sessionDir)
 	if sessionDir == "" {
 		return ""
 	}

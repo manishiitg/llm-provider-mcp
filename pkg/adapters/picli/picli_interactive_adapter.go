@@ -94,6 +94,7 @@ type piInteractiveSession struct {
 	nativeSessionID string
 	tmuxSessionName string
 	workingDir      string
+	sessionDir      string
 	tempDir         string
 	extensionPath   string
 	markerPath      string
@@ -321,7 +322,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	session.outputCostUSD = 0
 	session.cacheReadCostUSD = 0
 	session.cacheWriteCostUSD = 0
-	if transcript := readPiTranscriptSummary(session.nativeSessionID, turnStart); transcript != nil {
+	if transcript := readPiTranscriptSummaryInDir(session.sessionDir, session.nativeSessionID, turnStart); transcript != nil {
 		session.transcriptPath = transcript.Path
 		if len(transcript.Messages) > 0 {
 			transcriptMessages = transcript.Messages
@@ -543,11 +544,26 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 		_ = p.ProjectSkills(workingDir, skills)
 	}
+	var transcriptSessionDir string
+	var cleanupMCP func()
+	if strings.TrimSpace(mcpConfig) != "" {
+		_, transcriptSessionDir, cleanupMCP, err = preparePiExclusiveMCPConfig(workingDir, nativeSessionID, opts)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		transcriptSessionDir = piTranscriptSessionDir()
+	}
 	cleanupFiles, err = preparePiProjectFiles(workingDir, systemPrompt, opts)
 	if err != nil {
+		if cleanupMCP != nil {
+			cleanupMCP()
+		}
 		return nil, err
 	}
+	cleanupFiles = combinePiCleanups(cleanupFiles, cleanupMCP)
 	session.cleanupFiles = cleanupFiles
+	session.sessionDir = transcriptSessionDir
 	args, env, err := p.piLaunchArgs(provider, model, extensionPath, outputGuardPath, markerPath, systemPrompt, nativeSessionID, workingDir, opts)
 	if err != nil {
 		return nil, err
@@ -630,7 +646,14 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 && strings.TrimSpace(workingDir) != "" {
 		args = append(args, "--skill", piProjectedSkillsPath(workingDir))
 	}
-	if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
+	if strings.TrimSpace(mcpConfig) != "" {
+		agentDir, sessionDir := piSessionRuntimeDirs(workingDir, nativeSessionID)
+		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
+		}
+		args = append(args, "--session-dir", sessionDir)
+		env = append(env, piExclusiveMCPEnv(agentDir, sessionDir)...)
+	} else if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
 		}
@@ -747,20 +770,6 @@ func preparePiProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallO
 		}
 	}
 
-	mcpConfig := piMCPConfigFromOptions(opts)
-	if strings.TrimSpace(mcpConfig) != "" {
-		normalizedMCPConfig, err := normalizePiMCPConfig(mcpConfig)
-		if err != nil {
-			return nil, err
-		}
-		mcpPath := filepath.Join(workingDir, ".pi", "mcp.json")
-		cleanup, err := writePiRestoredFile(mcpPath, normalizedMCPConfig)
-		if err != nil {
-			return nil, err
-		}
-		addCleanup(cleanup)
-	}
-
 	if strings.TrimSpace(systemPrompt) != "" {
 		promptPath := filepath.Join(workingDir, ".pi", "APPEND_SYSTEM.md")
 		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
@@ -776,6 +785,23 @@ func preparePiProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallO
 		return nil, nil
 	}
 	return cleanupAll, nil
+}
+
+func combinePiCleanups(cleanups ...func()) func() {
+	var active []func()
+	for _, cleanup := range cleanups {
+		if cleanup != nil {
+			active = append(active, cleanup)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return func() {
+		for i := len(active) - 1; i >= 0; i-- {
+			active[i]()
+		}
+	}
 }
 
 func normalizePiMCPConfig(configJSON string) ([]byte, error) {
@@ -1206,43 +1232,59 @@ func isTmuxUnknownExtendedKeysOption(err error) bool {
 			strings.Contains(msg, "not a valid option"))
 }
 
-// sendPiInputToTmux delivers one message to a live Pi pane. markerPath is the
-// session's marker JSONL (may be empty for panes without one); when set, the
-// send is confirmed from Pi's own message_end acknowledgement rather than only
-// from what the pane looks like.
+// sendPiInputToTmux steers one message into a turn that is already running.
+// Live steering must not wait for Pi's idle composer: Pi accepts the message
+// while busy and its marker stream confirms that exact submission.
 func sendPiInputToTmux(ctx context.Context, sessionName, markerPath, message string) error {
-	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, false)
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputLiveSteer)
+}
+
+// sendPiRetainedInputToTmux starts a new logical turn in a retained terminal.
+// Unlike live steering, this route must wait until the previous turn is idle.
+func sendPiRetainedInputToTmux(ctx context.Context, sessionName, markerPath, message string) error {
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputRetainedTurn)
 }
 
 func sendPiInitialPromptToTmux(ctx context.Context, sessionName, markerPath, message string) error {
-	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, true)
+	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputInitialPrompt)
 }
 
-func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, markerPath, message string, initialPrompt bool) error {
+type piInputDeliveryMode uint8
+
+const (
+	piInputInitialPrompt piInputDeliveryMode = iota
+	piInputLiveSteer
+	piInputRetainedTurn
+)
+
+func (mode piInputDeliveryMode) waitForIdle() bool {
+	return mode == piInputRetainedTurn
+}
+
+func (mode piInputDeliveryMode) bypassBrokerReadiness() bool {
+	return mode != piInputRetainedTurn
+}
+
+func sendPiInputToTmuxWithReadiness(ctx context.Context, sessionName, markerPath, message string, mode piInputDeliveryMode) error {
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
 		SessionID:       sessionName,
 		Source:          "pi-cli",
-		BypassReadiness: initialPrompt,
+		BypassReadiness: mode.bypassBrokerReadiness(),
 	}, func(ctx context.Context) error {
-		return sendPiInputToTmuxUnserialized(ctx, sessionName, markerPath, message, initialPrompt)
+		return sendPiInputToTmuxUnserialized(ctx, sessionName, markerPath, message, mode.waitForIdle())
 	})
 	return err
 }
 
-func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath, message string, initialPrompt bool) error {
+func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath, message string, waitForIdle bool) error {
 	message = strings.TrimRight(message, "\r\n")
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("Pi interactive input is empty")
 	}
-	// The initial prompt right after launch already waited out Pi's full
-	// cold-start budget (Call -> waitForPiPromptReady, up to piPromptWait())
-	// before ever reaching here. Every other send -- including a "retained
-	// terminal recovery" resend after the in-process session registry lost
-	// track of an idle/reconnecting session -- has never actually confirmed
-	// Pi is idle *right now*; only that it was, once, at launch. Confirm it
-	// before pasting instead of finding out via 3 fast, identical paste
-	// failures.
-	if !initialPrompt {
+	// Only a new logical turn or retained-terminal recovery waits for idle.
+	// Live steering deliberately bypasses this gate and relies on Pi's
+	// message_end marker below to acknowledge that the busy turn accepted it.
+	if waitForIdle {
 		if err := waitForPiPromptReadyWithMarkers(ctx, sessionName, markerPath, piSendReadyWait); err != nil {
 			return fmt.Errorf("Pi session was not idle/ready to receive input: %w", err)
 		}
@@ -1784,12 +1826,10 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					// alongside text_delta (identical shape: contentIndex + delta),
 					// and piMarkerExtensionSource's message_update hook already
 					// forwards it verbatim -- this was previously the only marker
-					// type silently dropped by this switch. Route it to the
-					// reasoning stream (not content.String()) the same way
-					// cursor-cli's "thinking"/delta event does, so it renders in
-					// the product's Thinking surface instead of the final answer.
-					deltaMeta := piChunkMetadata(session)
-					deltaMeta[llmtypes.ContentDeltaMetadataKey] = true
+					// type silently dropped by this switch. Keep it on the
+					// reasoning stream so it remains separate from the final answer,
+					// while marking it as narrated progress for the UI.
+					deltaMeta := piAssistantUpdateChunkMetadata(session)
 					emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 						Type:     llmtypes.StreamChunkTypeReasoning,
 						Content:  marker.Delta,
@@ -2362,6 +2402,13 @@ func piChunkMetadata(session *piInteractiveSession) map[string]interface{} {
 	}
 }
 
+func piAssistantUpdateChunkMetadata(session *piInteractiveSession) map[string]interface{} {
+	metadata := piChunkMetadata(session)
+	metadata[llmtypes.ContentDeltaMetadataKey] = true
+	metadata["presentation"] = "assistant_update"
+	return metadata
+}
+
 func releasePiInteractiveSession(session *piInteractiveSession) {
 	session.lastUsed = time.Now()
 	session.mu.Unlock()
@@ -2504,6 +2551,17 @@ func SendPiInteractiveInput(ctx context.Context, ownerSessionID, message string)
 		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
 	}
 	return sendPiInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
+}
+
+// SendPiRetainedInput waits for the registered Pi terminal to become idle and
+// then starts a new logical turn. Callers must use SendPiInteractiveInput for
+// steering a turn that is already running.
+func SendPiRetainedInput(ctx context.Context, ownerSessionID, message string) error {
+	session, ok := activePiInteractiveSession(ownerSessionID)
+	if !ok {
+		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
+	}
+	return sendPiRetainedInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
 }
 
 // GetStatusLine retrieves the latest Pi statusline snapshot for an active

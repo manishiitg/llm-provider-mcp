@@ -139,13 +139,25 @@ func museTUISufficientlySettled(pane string) bool {
 // turns — proven live 2026-09-10 when a completed 300-char-line answer sat
 // under a fresh ❯ for five minutes while the banner-gated waiter timed
 // out). The prompt glyph plus the "<a> · <b>" status line is the idle
-// shape; streaming panes share it, so this is only ever half of a
-// completion check (stability + log quiet are the other half).
+// shape; streaming panes share it, so completion also requires stability
+// and log quiet. A running tool can have both while waiting for its result.
 func museTUIAtPrompt(pane string) bool {
-	if musePaneShowsBlockingGate(pane) {
+	if musePaneShowsBlockingGate(pane) || musePaneHasRunningTool(pane) {
 		return false
 	}
 	return strings.Contains(pane, "❯") && strings.Contains(pane, " · ")
+}
+
+// Only inspect the latest rendered block: an older tool's running text in
+// scrollback must not hide a later completed response. Live-input steering
+// intentionally does not use this idle check; the composer works mid-tool.
+func musePaneHasRunningTool(pane string) bool {
+	start := strings.LastIndex(pane, "◆ ")
+	if start < 0 {
+		return false
+	}
+	block := strings.ToLower(pane[start:])
+	return strings.Contains(block, "— running (") && strings.Contains(block, "esc to interrupt")
 }
 
 func museTmuxCapturePane(ctx context.Context, session string) (string, error) {
@@ -237,6 +249,9 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	var pane string
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		if !museTmuxSessionAlive(ctx, session) {
 			return "", fmt.Errorf("muse tmux session %q died while waiting for %s", session, waitDescription)
 		}
@@ -250,7 +265,7 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 			return "", err
 		}
 		if pending {
-			if time.Now().After(deadline) {
+			if timeout > 0 && time.Now().After(deadline) {
 				return "", musePendingUserInputError(pane)
 			}
 			select {
@@ -266,7 +281,7 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 		if musePaneShowsBlockingGate(pane) {
 			return "", fmt.Errorf("muse TUI blocked on trust/auth gate (trust_auth_prompts cert territory); pane:\n%s", pane)
 		}
-		if time.Now().After(deadline) {
+		if timeout > 0 && time.Now().After(deadline) {
 			return "", fmt.Errorf("timed out waiting for %s; latest pane:\n%s", waitDescription, pane)
 		}
 		select {

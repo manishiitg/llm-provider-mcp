@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -338,25 +337,6 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 			fn()
 		}
 	}()
-	if workingDir != "" {
-		if mcpJSON := piMCPConfigFromOptions(opts); mcpJSON != "" {
-			// Pi expects the SAME {"mcpServers": {...}} wrapper Cursor uses (NOT
-			// Codex's flat map) — confirmed by reading normalizePiMCPConfig
-			// directly rather than assuming, after getting this exact mismatch
-			// wrong once already tonight for Codex.
-			normalized, nErr := normalizePiMCPConfig(mcpJSON)
-			if nErr != nil {
-				return nil, nErr
-			}
-			mcpPath := filepath.Join(workingDir, ".pi", "mcp.json")
-			cleanup, wErr := writePiRestoredFile(mcpPath, normalized)
-			if wErr != nil {
-				return nil, wErr
-			}
-			configCleanups = append(configCleanups, cleanup)
-		}
-	}
-
 	mcpConfigSet := strings.TrimSpace(piMCPConfigFromOptions(opts)) != ""
 
 	// Session id: on a resume turn the caller supplies the prior turn's id (via
@@ -366,6 +346,18 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	sessionID := strings.TrimSpace(piResumeSessionIDFromOptions(opts))
 	if sessionID == "" {
 		sessionID = generatePiNativeSessionID()
+	}
+	agentDir := ""
+	transcriptSessionDir := ""
+	if mcpConfigSet {
+		var cleanup func()
+		agentDir, transcriptSessionDir, cleanup, err = preparePiExclusiveMCPConfig(workingDir, sessionID, opts)
+		if err != nil {
+			return nil, err
+		}
+		if cleanup != nil {
+			configCleanups = append(configCleanups, cleanup)
+		}
 	}
 	// Skill projection is a disk side-effect; do it first, then hand the
 	// resolved dir to the (unit-tested) argv builder.
@@ -385,6 +377,9 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// drift apart.
 	provider, model := p.resolveStructuredProviderModel(opts)
 	args := buildPiStructuredArgs(provider, model, sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
+	if transcriptSessionDir != "" {
+		args = append(args, "--session-dir", transcriptSessionDir)
+	}
 	if p.logger != nil {
 		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)
 	}
@@ -424,6 +419,9 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		cmd.Dir = workingDir
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
+	if mcpConfigSet {
+		cmd.Env = piOverrideEnv(cmd.Env, piExclusiveMCPEnv(agentDir, transcriptSessionDir))
+	}
 	// p.apiKey is the resolved key initializePiCLI already picked (workspace-
 	// scoped, then shared, then local pi auth) -- but until now nothing here
 	// ever turned it into an env var, so the subprocess only ever saw whatever

@@ -272,17 +272,17 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	t.Setenv(EnvPiMCPResultMaxLines, "55")
 	t.Setenv(EnvPiMCPResultMaxLineChars, "99")
 	t.Setenv("NODE_OPTIONS", "")
-	sessionDir := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_SESSION_DIR", sessionDir)
+	workDir := t.TempDir()
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 	WithBridgeOnlyTools(true)(opts)
 
 	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", "", opts)
+	args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", "/tmp/marker.ts", "/tmp/mcp-output-guard.ts", "/tmp/markers.jsonl", "", "mlp-pi-test-123", workDir, opts)
 	if err != nil {
 		t.Fatalf("piLaunchArgs() error = %v", err)
 	}
+	wantAgentDir, wantSessionDir := piSessionRuntimeDirs(workDir, "mlp-pi-test-123")
 	joined := strings.Join(args, "\x00")
 	for _, want := range []string{
 		"--no-extensions",
@@ -292,7 +292,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"-e\x00npm:pi-mcp-adapter",
 		"--approve",
 		"--session-id\x00mlp-pi-test-123",
-		"--session-dir\x00" + sessionDir,
+		"--session-dir\x00" + wantSessionDir,
 		"--no-builtin-tools",
 	} {
 		if !strings.Contains(joined, want) {
@@ -314,8 +314,15 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_STATUSLINE_PRESET=classic") {
 		t.Fatalf("env = %#v, want classic Pi statusline preset", env)
 	}
-	if got := strings.Join(env, "\n"); !strings.Contains(got, "PI_CODING_AGENT_SESSION_DIR="+sessionDir) {
-		t.Fatalf("env = %#v, want Pi session dir", env)
+	envText := strings.Join(env, "\n")
+	for _, want := range []string{
+		"PI_MCP_CONFIG_MODE=exclusive",
+		"PI_CODING_AGENT_DIR=" + wantAgentDir,
+		"PI_CODING_AGENT_SESSION_DIR=" + wantSessionDir,
+	} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf("env = %#v, want %q", env, want)
+		}
 	}
 }
 
@@ -831,20 +838,41 @@ func TestPiSessionHandleUsesNativeSessionID(t *testing.T) {
 	}
 }
 
-func TestPreparePiProjectFilesWritesMCPConfigAndCleansUp(t *testing.T) {
+func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testing.T) {
 	workDir := t.TempDir()
+	ambientHome := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	globalMCPPath := filepath.Join(ambientHome, ".config", "mcp", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(globalMCPPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalMCPPath, []byte(`{"mcpServers":{"linear":{"command":"must-not-load"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectMCPPath := filepath.Join(workDir, ".pi", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectMCPPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectMCP := []byte(`{"mcpServers":{"project-global":{"command":"must-not-load"}}}`)
+	if err := os.WriteFile(projectMCPPath, projectMCP, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	cleanup, err := preparePiProjectFiles(workDir, "", opts)
+	agentDir, sessionDir, cleanup, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-session-a", opts)
 	if err != nil {
-		t.Fatalf("preparePiProjectFiles() error = %v", err)
+		t.Fatalf("preparePiExclusiveMCPConfig() error = %v", err)
 	}
 	if cleanup == nil {
-		t.Fatal("preparePiProjectFiles() cleanup = nil, want cleanup")
+		t.Fatal("preparePiExclusiveMCPConfig() cleanup = nil, want cleanup")
+	}
+	if want := filepath.Join(agentDir, "sessions"); sessionDir != want {
+		t.Fatalf("sessionDir = %q, want %q", sessionDir, want)
 	}
 
-	mcpPath := filepath.Join(workDir, ".pi", "mcp.json")
+	mcpPath := filepath.Join(agentDir, "mcp.json")
 	body, err := os.ReadFile(mcpPath)
 	if err != nil {
 		t.Fatalf("read Pi MCP config: %v", err)
@@ -863,20 +891,26 @@ func TestPreparePiProjectFilesWritesMCPConfigAndCleansUp(t *testing.T) {
 	if bridge.Command != "node" || !bridge.DirectTools || bridge.Lifecycle != "keep-alive" {
 		t.Fatalf("api-bridge config = %#v, want node directTools keep-alive", bridge)
 	}
+	if len(config.MCPServers) != 1 {
+		t.Fatalf("exclusive config inherited ambient MCP servers: %#v", config.MCPServers)
+	}
 
 	cleanup()
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Fatalf("mcp.json should be removed after cleanup, err=%v", err)
+		t.Fatalf("exclusive mcp.json should be removed after cleanup, err=%v", err)
+	}
+	if got, err := os.ReadFile(projectMCPPath); err != nil || string(got) != string(projectMCP) {
+		t.Fatalf("project MCP config was mutated: got=%q err=%v", got, err)
 	}
 }
 
-func TestPreparePiProjectFilesRestoresExistingMCPConfig(t *testing.T) {
+func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	workDir := t.TempDir()
-	piDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(piDir, 0o755); err != nil {
+	agentDir, _ := piSessionRuntimeDirs(workDir, "mlp-pi-session-b")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	mcpPath := filepath.Join(piDir, "mcp.json")
+	mcpPath := filepath.Join(agentDir, "mcp.json")
 	original := []byte(`{"mcpServers":{"existing":{"command":"old"}}}` + "\n")
 	if err := os.WriteFile(mcpPath, original, 0o600); err != nil {
 		t.Fatal(err)
@@ -884,9 +918,9 @@ func TestPreparePiProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"new"}}}`)(opts)
 
-	cleanup, err := preparePiProjectFiles(workDir, "", opts)
+	_, _, cleanup, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-session-b", opts)
 	if err != nil {
-		t.Fatalf("preparePiProjectFiles() error = %v", err)
+		t.Fatalf("preparePiExclusiveMCPConfig() error = %v", err)
 	}
 	active, err := os.ReadFile(mcpPath)
 	if err != nil {
@@ -897,12 +931,8 @@ func TestPreparePiProjectFilesRestoresExistingMCPConfig(t *testing.T) {
 	}
 
 	cleanup()
-	restored, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("read restored mcp.json: %v", err)
-	}
-	if string(restored) != string(original) {
-		t.Fatalf("restored mcp.json = %q, want original %q", restored, original)
+	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
+		t.Fatalf("stale session mcp.json must not be restored, err=%v", err)
 	}
 }
 

@@ -34,7 +34,13 @@ func TestWriteClaudeCodeProjectInstructionFileLifecycle(t *testing.T) {
 		t.Errorf("rule file must contain the system prompt body; got:\n%s", body)
 	}
 	if !strings.Contains(string(body), "mlp-session-instructions") {
-		t.Errorf("rule file must include the orchestrator marker comment so future auditors can tell it's not human-authored; got:\n%s", body)
+		t.Errorf("rule file must include the cleanup ownership marker; got:\n%s", body)
+	}
+	if !strings.HasPrefix(string(body), prompt) {
+		t.Errorf("rule file must start with the real system prompt, not cleanup metadata; got:\n%s", body)
+	}
+	if strings.Contains(string(body), "Restored on cleanup") {
+		t.Errorf("rule file must not claim opt-in restoration always occurs; got:\n%s", body)
 	}
 
 	info, _ := os.Stat(path1)

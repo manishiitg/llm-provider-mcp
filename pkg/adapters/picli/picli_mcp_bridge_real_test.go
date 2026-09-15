@@ -56,9 +56,14 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
 	if !strings.Contains(resp.Choices[0].Content, "PI_MCP_BRIDGE_OK") {
 		t.Fatalf("response = %q, want PI_MCP_BRIDGE_OK", resp.Choices[0].Content)
 	}
+	liveSession, ok := activePiInteractiveSession(ownerSessionID)
+	if !ok {
+		t.Fatal("persistent Pi session missing before cleanup")
+	}
+	exclusiveAgentDir, _ := piSessionRuntimeDirs(workDir, liveSession.nativeSessionID)
 	ClosePiCLIInteractiveSessionForOwner(ownerSessionID, "test cleanup")
-	if _, err := os.Stat(filepath.Join(workDir, ".pi", "mcp.json")); !os.IsNotExist(err) {
-		t.Fatalf(".pi/mcp.json should be removed after persistent cleanup, err=%v", err)
+	if _, err := os.Stat(filepath.Join(exclusiveAgentDir, "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("exclusive session mcp.json should be removed after persistent cleanup, err=%v", err)
 	}
 }
 

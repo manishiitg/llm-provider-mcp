@@ -11,12 +11,11 @@ package picli
 // --session-id ("creating it if missing"), so BOTH a fresh turn (minted id)
 // and a resume turn (prior id) pass --session-id — that symmetry is what makes
 // turn 2 recall turn 1 instead of starting blank. bridgeOnly maps to
-// --no-builtin-tools (disables pi's native bash/edit/write while leaving
-// extensions enabled); it additionally needs an explicit `-e <mcp-extension>`
-// because --no-builtin-tools also suppresses default MCP extension
-// auto-discovery (an undocumented interaction, verified live against the real
-// CLI). --approve marks a dynamic temp workspace trusted so project-local .pi
-// resources (including the just-written .pi/mcp.json) are not silently ignored.
+// --no-builtin-tools (disables pi's native bash/edit/write). Default extensions
+// are always disabled; when MCP is configured, its adapter is loaded explicitly
+// with `-e <mcp-extension>`. --approve marks a dynamic temp workspace trusted,
+// so project-local .pi resources (such as explicitly projected skills) are not
+// silently ignored.
 //
 // provider/model are required, not optional: without them pi silently falls
 // back to whatever provider/model its own local session/settings last used
@@ -29,11 +28,12 @@ func buildPiStructuredArgs(provider, model, sessionID string, bridgeOnly, mcpCon
 	args := []string{"--print", "--mode", "json"}
 	args = append(args, "--provider", provider, "--model", model)
 	args = append(args, "--session-id", sessionID)
+	args = append(args, "--no-extensions")
+	if mcpConfigSet {
+		args = append(args, "-e", mcpExtension)
+	}
 	if bridgeOnly {
 		args = append(args, "--no-builtin-tools")
-		if mcpConfigSet {
-			args = append(args, "-e", mcpExtension)
-		}
 	}
 	if hasWorkingDir {
 		args = append(args, "--approve")

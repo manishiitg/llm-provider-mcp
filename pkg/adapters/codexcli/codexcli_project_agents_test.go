@@ -28,7 +28,13 @@ func TestWriteCodexProjectAgentsFileLifecycleNoPriorContent(t *testing.T) {
 		t.Errorf("AGENTS.md must contain the system prompt body; got:\n%s", body)
 	}
 	if !strings.Contains(string(body), "mlp-session-instructions") {
-		t.Errorf("AGENTS.md must include the orchestrator marker so future auditors can tell it's not human-authored; got:\n%s", body)
+		t.Errorf("AGENTS.md must include the cleanup ownership marker; got:\n%s", body)
+	}
+	if !strings.HasPrefix(string(body), prompt) {
+		t.Errorf("AGENTS.md must start with the real system prompt, not cleanup metadata; got:\n%s", body)
+	}
+	if strings.Contains(string(body), "Restored on cleanup") {
+		t.Errorf("AGENTS.md must not claim opt-in restoration always occurs; got:\n%s", body)
 	}
 
 	cleanup()

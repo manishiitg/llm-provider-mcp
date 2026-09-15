@@ -2,8 +2,10 @@ package musecli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +14,39 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 )
+
+// museMCPConfigsEquivalent compares the durable MCP surface, not per-agent
+// bridge bookkeeping. A full-turn Agent instance gets a fresh virtual-tool
+// trace scope and may get a fresh readiness marker; the already-running bridge
+// can continue using its original values because mcpagent routes stale scopes
+// to the latest registered scope for the same base session.
+func museMCPConfigsEquivalent(current, requested string) bool {
+	current = strings.TrimSpace(current)
+	requested = strings.TrimSpace(requested)
+	if current == requested {
+		return true
+	}
+	if current == "" || requested == "" {
+		return false
+	}
+	normalize := func(raw string) (map[string]interface{}, bool) {
+		var config map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &config); err != nil {
+			return nil, false
+		}
+		servers, _ := config["mcpServers"].(map[string]interface{})
+		for _, rawServer := range servers {
+			server, _ := rawServer.(map[string]interface{})
+			env, _ := server["env"].(map[string]interface{})
+			delete(env, "MCP_VIRTUAL_SCOPE_ID")
+			delete(env, "MCP_READY_FILE")
+		}
+		return config, true
+	}
+	left, leftOK := normalize(current)
+	right, rightOK := normalize(requested)
+	return leftOK && rightOK && reflect.DeepEqual(left, right)
+}
 
 // Persistent tmux sessions for muse, mirroring the other coding providers:
 // one live TUI per owner session id, reused across turns, killed
@@ -67,6 +102,62 @@ var musePersistentPool = struct {
 	sync.Mutex
 	m map[string]*musePersistentSession
 }{m: make(map[string]*musePersistentSession)}
+
+// musePersistentTurns serializes complete turns for one owner. The pool lock
+// only protects the entry map; it must not be held while a turn runs. Without
+// this owner gate, a follow-up whose durable MCP context changed could kill
+// and relaunch the pooled tmux while the preceding call was still finishing
+// its transcript, producing a misleading "session died mid-turn" failure.
+var musePersistentTurns = struct {
+	sync.Mutex
+	m map[string]*musePersistentTurnGate
+}{m: make(map[string]*musePersistentTurnGate)}
+
+type musePersistentTurnGate struct {
+	token chan struct{}
+	refs  int
+}
+
+func museAcquirePersistentTurn(ctx context.Context, owner string) (func(), error) {
+	key, err := musePersistentKey(owner)
+	if err != nil {
+		return nil, err
+	}
+	musePersistentTurns.Lock()
+	gate := musePersistentTurns.m[key]
+	if gate == nil {
+		gate = &musePersistentTurnGate{token: make(chan struct{}, 1)}
+		gate.token <- struct{}{}
+		musePersistentTurns.m[key] = gate
+	}
+	gate.refs++
+	musePersistentTurns.Unlock()
+
+	select {
+	case <-ctx.Done():
+		musePersistentTurns.Lock()
+		gate.refs--
+		if gate.refs == 0 {
+			delete(musePersistentTurns.m, key)
+		}
+		musePersistentTurns.Unlock()
+		return nil, ctx.Err()
+	case <-gate.token:
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			gate.token <- struct{}{}
+			musePersistentTurns.Lock()
+			gate.refs--
+			if gate.refs == 0 {
+				delete(musePersistentTurns.m, key)
+			}
+			musePersistentTurns.Unlock()
+		})
+	}, nil
+}
 
 // musePersistentKey requires an owner: pooling without one would let two
 // conversations share (and overhear) a TUI. Fail fast on caller bug.
@@ -212,7 +303,8 @@ func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 // wrong tools mounted. A retained entry whose projected system prompt
 // differs is relaunched too: a running TUI may not re-read AGENTS.md, so
 // the file is projected fresh before every boot and never rewritten under
-// a live session.
+// a live session. Durable MCP changes follow the same lifecycle. Transient
+// bridge trace/readiness values do not force a relaunch.
 //
 // systemPrompt carries the file-only system text when the caller opted into
 // project-instruction-only mode; empty disables projection. projectAgents
@@ -240,9 +332,10 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)
 			entry = nil
-		} else if mcpJSON != "" && entry.mcpJSON != "" && mcpJSON != entry.mcpJSON {
-			musePersistentPool.Unlock()
-			return nil, false, fmt.Errorf("muse-cli persistent session %q already mounted a different MCP config; kill it first", entry.tmuxName)
+		} else if !museMCPConfigsEquivalent(entry.mcpJSON, mcpJSON) {
+			museKillPersistentLocked(ctx, entry)
+			delete(musePersistentPool.m, key)
+			entry = nil
 		} else if (entry.toolAllowlist == nil) != (toolAllowlist == nil) || !slices.Equal(entry.toolAllowlist, toolAllowlist) {
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)

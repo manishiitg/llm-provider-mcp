@@ -25,8 +25,9 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 			"--print", "--mode", "json",
 			"--provider", "google", "--model", "gemini-3.7-flash",
 			"--session-id", "sess-1",
-			"--no-builtin-tools",
+			"--no-extensions",
 			"-e", "mcp-ext",
+			"--no-builtin-tools",
 			"--approve",
 			"--skill", "/work/.pi/skills",
 		}

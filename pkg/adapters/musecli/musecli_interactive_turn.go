@@ -210,11 +210,15 @@ func museLogQuietSince(logPath string, quietFor time.Duration) bool {
 // proven live 2026-09-10, when completion-by-growth returned on
 // typed-but-unsubmitted input. Streaming deltas, tool phases, and reminder
 // subagents all append to the log, so a quiet log plus a settled, stable
-// pane means the turn is done, not paused.
+// pane without a running-tool indicator means the turn is done, not paused.
+// A zero timeout delegates the turn lifetime to the caller's context.
 func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout time.Duration) (string, error) {
 	const quietFor = 5 * time.Second
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		if !museTmuxSessionAlive(ctx, session) {
 			return "", fmt.Errorf("muse tmux session %q died mid-turn", session)
 		}
@@ -227,7 +231,7 @@ func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout
 			return "", err
 		}
 		if pending {
-			if time.Now().After(deadline) {
+			if timeout > 0 && time.Now().After(deadline) {
 				return "", musePendingUserInputError(pane)
 			}
 			select {
@@ -244,7 +248,7 @@ func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout
 			museLogQuietSince(logPath, quietFor) {
 			return pane, nil
 		}
-		if time.Now().After(deadline) {
+		if timeout > 0 && time.Now().After(deadline) {
 			return "", fmt.Errorf("timed out waiting for muse turn to quiesce (commits=%d); latest pane:\n%s",
 				museTurnCommits(logPath), pane)
 		}
@@ -287,6 +291,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	}
 	if launchOnly && !persistent {
 		return nil, fmt.Errorf("muse-cli launch-only requires the persistent option: a bounded session would die before reuse")
+	}
+	if persistent {
+		releaseTurn, err := museAcquirePersistentTurn(ctx, owner)
+		if err != nil {
+			return nil, fmt.Errorf("wait for previous muse turn: %w", err)
+		}
+		defer releaseTurn()
 	}
 	// Launch-only with an empty prompt is the transport-session handshake:
 	// boot (or rebind) the TUI and hand back its handle. Anything else
@@ -386,14 +397,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	}
 
 	// Bounded sessions boot above and still have their startup banner.
-	// Persistent sessions may be mid-turn (a queued follow-up), and their boot
-	// banner commonly scrolls away after a long conversation. Use the reusable
-	// prompt/status chrome for those sessions so a healthy idle TUI does not
-	// sit for 90 seconds and get misreported as a retryable network timeout.
+	// Persistent sessions may still be executing a previous/live-input turn.
+	// Let the caller own that wait: a local 90-second timeout would enter the
+	// network retry loop while the same native turn continues doing work.
 	turnStart := time.Now()
 	var readyErr error
 	if persistent {
-		_, readyErr = museWaitAtPrompt(ctx, session, 90*time.Second)
+		_, readyErr = museWaitAtPrompt(ctx, session, 0)
 	} else {
 		_, readyErr = museWaitSettled(ctx, session, 90*time.Second)
 	}
@@ -433,7 +443,10 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 			museStreamCancel = nil
 		}
 	}
-	after, err := museWaitTurnQuiescent(ctx, session, logPath, 5*time.Minute)
+	// Tool calls and delegated workflows can legitimately exceed five minutes.
+	// Keep observing this submitted turn until completion or caller cancellation;
+	// never abandon it on an adapter deadline and retry its prompt.
+	after, err := museWaitTurnQuiescent(ctx, session, logPath, 0)
 	stopMuseStream()
 	if err != nil {
 		return nil, err

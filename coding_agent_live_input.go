@@ -9,6 +9,17 @@ import (
 // agent transport. Host applications should call this typed entry point instead
 // of switching over provider-specific tmux implementations themselves.
 func SendCodingAgentLiveInput(ctx context.Context, provider Provider, modelID, ownerSessionID, message string) error {
+	return sendCodingAgentInput(ctx, provider, modelID, ownerSessionID, message, false)
+}
+
+// SendCodingAgentRetainedInput starts a new logical turn in a retained coding
+// terminal. Pi needs this distinction because live steering is accepted while
+// busy, whereas retained recovery must wait for the idle composer.
+func SendCodingAgentRetainedInput(ctx context.Context, provider Provider, modelID, ownerSessionID, message string) error {
+	return sendCodingAgentInput(ctx, provider, modelID, ownerSessionID, message, true)
+}
+
+func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, ownerSessionID, message string, retainedTurn bool) error {
 	normalizedProvider := Provider(strings.ToLower(strings.TrimSpace(string(provider))))
 	contract, ok := GetCodingAgentProviderContract(normalizedProvider, modelID)
 	if !ok {
@@ -48,6 +59,9 @@ func SendCodingAgentLiveInput(ctx context.Context, provider Provider, modelID, o
 	case ProviderCursorCLI:
 		return SendCursorCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:
+		if retainedTurn {
+			return SendPiCLIRetainedInput(ctx, ownerSessionID, message)
+		}
 		return SendPiCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderMuseCLI:
 		return SendMuseCLIInteractiveInput(ctx, ownerSessionID, message)

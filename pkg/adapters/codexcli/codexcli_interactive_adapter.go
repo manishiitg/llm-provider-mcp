@@ -1054,7 +1054,10 @@ func writeCodexProjectAgentsFile(workingDir, systemPrompt string, restorePrior b
 			return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
 		}
 	}
-	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
+	// Keep the cleanup sentinel out of the instruction header. The CLI should
+	// encounter the actual system prompt first, and the marker must not make a
+	// false user-visible promise about restoration (which is opt-in).
+	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return nil, fmt.Errorf("write AGENTS.md: %w", err)
 	}

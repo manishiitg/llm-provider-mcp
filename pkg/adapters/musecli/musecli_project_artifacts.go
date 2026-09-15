@@ -37,7 +37,9 @@ func writeMuseProjectAgentsFile(workingDir, systemPrompt string, restorePrior bo
 			return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
 		}
 	}
-	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
+	// The marker is only an ownership sentinel for cleanup. Put the real
+	// instructions first and do not claim restoration when it is opt-in.
+	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return nil, fmt.Errorf("write AGENTS.md: %w", err)
 	}

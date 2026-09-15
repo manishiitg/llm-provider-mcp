@@ -36,6 +36,26 @@ with tmux as the default product path:
 * Suggested tmux registry prefix (following the other providers):
   `mlp-muse-cli-int`.
 
+## Tmux turn lifetime (2026-09-12)
+
+Submitted turns and waits for a previously active persistent turn use the
+caller's context deadline/cancellation. There is no adapter-level five-minute
+turn cutoff or 90-second cutoff for a busy reused terminal. Previously these
+cutoffs returned retryable timeouts while Muse kept executing the original
+turn, causing repeated waits and risking resubmission after it finished.
+Fresh terminal startup and prompt intake still have bounded readiness checks.
+
+Completion requires idle chrome, pane stability, a quiet transcript, and no
+running-tool indicator in the latest rendered block. A silent shell/MCP call
+is not completion merely because no text arrived for five seconds. Live-input
+steering remains available during tools. P0 coverage uses an isolated real
+tmux pane with a frozen running-tool display, eventual completion, and caller
+cancellation; the echo-provider resume test covers native session continuity.
+
+Remaining gap: this is a TUI/transcript heuristic, not an authoritative Muse
+turn-completion API. A permanently hung native call with no caller deadline
+requires cancellation; this change does not add an independent stall watchdog.
+
 ## Resume (verified at CLI level, context carryover TBD)
 
 * Interactive: `muse resume --last | <session-uuid>` (bare `resume` opens a picker).

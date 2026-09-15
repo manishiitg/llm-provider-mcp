@@ -31,7 +31,19 @@ type NativeTranscript struct {
 // missing transcript is not an error: ok is false and the transcript is
 // empty.
 func ReadNativeTranscript(sessionID string) (transcript NativeTranscript, ok bool, err error) {
-	path := latestPiTranscriptPath(sessionID)
+	return readNativeTranscriptPath(latestPiTranscriptPath(sessionID))
+}
+
+// ReadNativeTranscriptFromWorkingDir resolves transcripts from the same
+// session-scoped Pi runtime directory used at launch. Callers that know the
+// workspace should prefer this so transcript recovery survives process and
+// server restarts without depending on a shared HOME.
+func ReadNativeTranscriptFromWorkingDir(workingDir, sessionID string) (transcript NativeTranscript, ok bool, err error) {
+	_, sessionDir := piSessionRuntimeDirs(workingDir, sessionID)
+	return readNativeTranscriptPath(latestPiTranscriptPathInDir(sessionDir, sessionID))
+}
+
+func readNativeTranscriptPath(path string) (transcript NativeTranscript, ok bool, err error) {
 	if path == "" {
 		return NativeTranscript{}, false, nil
 	}

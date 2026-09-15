@@ -2,6 +2,7 @@ package musecli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -312,6 +313,12 @@ func TestWriteMuseProjectAgentsFile(t *testing.T) {
 	if !strings.Contains(string(raw), "session instructions") || !strings.Contains(string(raw), "mlp-session-instructions") {
 		t.Fatalf("projected AGENTS.md missing marker or content:\n%s", raw)
 	}
+	if !strings.HasPrefix(string(raw), "session instructions") {
+		t.Fatalf("projected AGENTS.md must start with the system prompt, not cleanup metadata:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "Restored on cleanup") {
+		t.Fatalf("projected AGENTS.md must not claim opt-in restoration always occurs:\n%s", raw)
+	}
 	restore()
 	raw, err = os.ReadFile(path)
 	if err != nil {
@@ -408,6 +415,23 @@ func TestMuseResolveTmuxPromptNoSystemMessage(t *testing.T) {
 	}
 }
 
+func TestMuseMCPConfigsEquivalentIgnoresOnlyTransientBridgeState(t *testing.T) {
+	config := func(scope, ready, tools string) string {
+		return `{"mcpServers":{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"http://api","MCP_SESSION_ID":"session-1","MCP_TOOLS":` + strconv.Quote(tools) + `,"MCP_VIRTUAL_SCOPE_ID":` + strconv.Quote(scope) + `,"MCP_READY_FILE":` + strconv.Quote(ready) + `}}}}`
+	}
+	first := config("session-1:vt:trace-a", "/tmp/ready-a", "tools-a")
+	second := config("session-1:vt:trace-b", "/tmp/ready-b", "tools-a")
+	if !museMCPConfigsEquivalent(first, second) {
+		t.Fatal("per-turn bridge scope and readiness paths must not invalidate a retained Muse session")
+	}
+	if museMCPConfigsEquivalent(first, config("session-1:vt:trace-b", "/tmp/ready-b", "tools-b")) {
+		t.Fatal("a durable MCP tool-surface change must relaunch the retained Muse session")
+	}
+	if museMCPConfigsEquivalent("", second) {
+		t.Fatal("mounting or removing MCP configuration must relaunch the retained Muse session")
+	}
+}
+
 // TestCloseMuseCLIInteractiveSessionByTmux is the muse-cli equivalent of the
 // pattern picli/cursorcli/codexcli/claudecode all already had:
 // Close<Provider>InteractiveSessionByTmux, a teardown-by-tmux-name backstop
@@ -460,6 +484,40 @@ func TestCloseMuseCLIInteractiveSessionForOwner(t *testing.T) {
 	musePersistentPool.Unlock()
 	if stillPooled {
 		t.Fatal("expected the pool entry to be removed")
+	}
+}
+
+func TestMusePersistentTurnGateSerializesOwnerAndHonorsCancellation(t *testing.T) {
+	releaseFirst, err := museAcquirePersistentTurn(context.Background(), "turn-gate-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() {
+		release, acquireErr := museAcquirePersistentTurn(context.Background(), "turn-gate-owner")
+		if acquireErr == nil {
+			acquired <- release
+		}
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("second turn acquired before first turn released")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := museAcquirePersistentTurn(canceled, "turn-gate-owner"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled acquire error = %v, want context.Canceled", err)
+	}
+
+	releaseFirst()
+	select {
+	case releaseSecond := <-acquired:
+		releaseSecond()
+	case <-time.After(time.Second):
+		t.Fatal("second turn did not acquire after first turn released")
 	}
 }
 

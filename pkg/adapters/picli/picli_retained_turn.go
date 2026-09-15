@@ -79,8 +79,9 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 	}
 	session.mu.Lock()
 	nativeSessionID := session.nativeSessionID
+	sessionDir := session.sessionDir
 	session.mu.Unlock()
-	summary := readPiTranscriptSummary(nativeSessionID, turnStart)
+	summary := readPiTranscriptSummaryInDir(sessionDir, nativeSessionID, turnStart)
 	if summary == nil {
 		return nil
 	}

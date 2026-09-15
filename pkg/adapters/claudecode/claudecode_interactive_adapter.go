@@ -747,42 +747,6 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			CachedInputCostPer1MTokens:      0.5,
 			CachedInputCostWritePer1MTokens: 6.25,
 		}, nil
-	case "claude-opus-4-8":
-		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Opus 4.8",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  5.00,
-			OutputCostPer1MTokens: 25.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.5,
-		}, nil
-	case "claude-opus-4-7":
-		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Opus 4.7",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  5.00,
-			OutputCostPer1MTokens: 25.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.5,
-		}, nil
-	case "claude-opus-4-6":
-		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Opus 4.6",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  5.00,
-			OutputCostPer1MTokens: 25.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.5,
-		}, nil
 	case "claude-sonnet-5":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,
@@ -795,18 +759,6 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			// models in pkg/adapters/anthropic/anthropic_models.go.
 			CachedInputCostPer1MTokens:      0.3,
 			CachedInputCostWritePer1MTokens: 3.75,
-		}, nil
-	case "claude-sonnet-4-6":
-		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Sonnet 4.6",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  3.00,
-			OutputCostPer1MTokens: 15.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.3,
 		}, nil
 	case "claude-haiku-4-5-20251001":
 		return &llmtypes.ModelMetadata{
@@ -1079,7 +1031,9 @@ func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string, rest
 			return "", fmt.Errorf("read pre-existing CLAUDE.md: %w", err)
 		}
 	}
-	body := "<!-- mlp-session-instructions: orchestrator-generated per-session system prompt. Restored on cleanup. -->\n\n" + systemPrompt
+	// The marker is only an ownership sentinel for cleanup. Put the real
+	// instructions first and do not claim restoration when it is opt-in.
+	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		claudeProjectFileRestores.Delete(path)
 		return "", fmt.Errorf("write CLAUDE.md: %w", err)

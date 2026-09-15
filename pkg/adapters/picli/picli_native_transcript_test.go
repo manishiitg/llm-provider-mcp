@@ -68,3 +68,26 @@ func TestReadNativeTranscriptKeepsTypedTurnsOnly(t *testing.T) {
 		t.Fatalf("missing session: ok=%v err=%v, want false/nil", ok, err)
 	}
 }
+
+func TestReadNativeTranscriptFromWorkingDirUsesSessionScopedRuntime(t *testing.T) {
+	workDir := t.TempDir()
+	sessionID := "mlp-pi-scoped-transcript"
+	_, sessionDir := piSessionRuntimeDirs(workDir, sessionID)
+	leaf := filepath.Join(sessionDir, "--private-workspace--")
+	if err := os.MkdirAll(leaf, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(leaf, "2026-09-11T12-00-00-000Z_"+sessionID+".jsonl")
+	line := `{"type":"message","timestamp":"2026-09-11T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"private reply"}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	transcript, ok, err := ReadNativeTranscriptFromWorkingDir(workDir, sessionID)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if transcript.Path != path {
+		t.Fatalf("path = %q, want %q", transcript.Path, path)
+	}
+}

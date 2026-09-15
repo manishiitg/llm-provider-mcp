@@ -216,6 +216,12 @@ func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) e
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
 }
 
+// SendPiCLIRetainedInput starts a new logical turn in an idle retained Pi
+// terminal. Live steering must use SendPiCLIInteractiveInput instead.
+func SendPiCLIRetainedInput(ctx context.Context, sessionID, message string) error {
+	return picli.SendPiRetainedInput(ctx, sessionID, message)
+}
+
 // SendMuseCLIInteractiveInput sends user input to a live Muse CLI
 // interactive tmux session registered for the owning application session.
 func SendMuseCLIInteractiveInput(ctx context.Context, sessionID, message string) error {

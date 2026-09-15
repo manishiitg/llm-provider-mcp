@@ -3,7 +3,27 @@ package picli
 import (
 	"strings"
 	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
+
+func TestPiThinkingDeltaUsesAssistantUpdatePresentation(t *testing.T) {
+	metadata := piAssistantUpdateChunkMetadata(&piInteractiveSession{
+		tmuxSessionName: "pi-test",
+		nativeSessionID: "native-test",
+		modelID:         "test-model",
+	})
+
+	if got := metadata["presentation"]; got != "assistant_update" {
+		t.Fatalf("presentation = %v, want assistant_update", got)
+	}
+	if got := metadata[llmtypes.ContentDeltaMetadataKey]; got != true {
+		t.Fatalf("%s = %v, want true", llmtypes.ContentDeltaMetadataKey, got)
+	}
+	if got := metadata["provider"]; got != "pi-cli" {
+		t.Fatalf("provider = %v, want pi-cli", got)
+	}
+}
 
 // TestPiApplyAssistantEventDoesNotMergeSeparateSegments is the regression
 // guard for a real bug: pi delimits each logical assistant text segment with
