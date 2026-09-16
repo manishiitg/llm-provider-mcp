@@ -31,7 +31,15 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	if !progress.turnStart.Equal(turnStart) {
 		progress.turnStart, progress.messageCount = turnStart, 0
 	}
-	messages := ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	session.mu.Lock()
+	nativeSessionID := session.nativeSessionID
+	sessionDir := session.sessionDir
+	session.mu.Unlock()
+	summary := readPiTranscriptSummaryInDir(sessionDir, nativeSessionID, turnStart)
+	if summary == nil {
+		return nil
+	}
+	messages := summary.ProgressMessages
 	if len(messages) <= progress.messageCount {
 		return nil
 	}

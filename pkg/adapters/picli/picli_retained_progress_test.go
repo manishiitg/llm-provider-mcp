@@ -39,8 +39,35 @@ func TestPiRetainedProgressPreservesMessagesAroundTools(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	appendThinking := func(text string, timestamp time.Time) {
+		t.Helper()
+		row := map[string]interface{}{"type": "message", "timestamp": timestamp.Format(time.RFC3339Nano), "message": map[string]interface{}{
+			"role": "assistant",
+			"content": []map[string]interface{}{
+				{"type": "thinking", "thinking": text},
+				{"type": "toolCall", "id": "thinking-call", "name": "read_file", "arguments": map[string]string{}},
+				{"type": "text", "text": ""},
+			},
+		}}
+		if err := json.NewEncoder(file).Encode(row); err != nil {
+			t.Fatal(err)
+		}
+	}
 	appendMessage("assistant", "Previous answer.", start.Add(-time.Minute), false)
 	appendMessage("user", "Check the report.", start, false)
+	appendThinking("Identifying session clues.", start.Add(500*time.Millisecond))
+	if got := ReadRetainedTurnProgressMessages(owner, start); len(got) != 1 || got[0].Parts[0].(llmtypes.TextContent).Text != "Identifying session clues." {
+		t.Fatalf("missing thinking-only progress: %+v", got)
+	}
+	// Thinking is progress only: it must not enter the final-response message
+	// stream or become a completed assistant answer.
+	for _, message := range ReadRetainedTurnMessages(owner, start) {
+		for _, part := range message.Parts {
+			if text, ok := part.(llmtypes.TextContent); ok && text.Text == "Identifying session clues." {
+				t.Fatalf("thinking leaked into final-answer messages: %+v", message)
+			}
+		}
+	}
 	for i := 1; i <= 2; i++ {
 		appendMessage("assistant", "Checking the report.", start.Add(time.Duration(i)*time.Second), true)
 		got := ReadRetainedTurnProgressMessages(owner, start)

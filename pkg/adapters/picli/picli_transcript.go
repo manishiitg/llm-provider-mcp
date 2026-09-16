@@ -15,6 +15,7 @@ import (
 type piTranscriptSummary struct {
 	Path                string
 	Messages            []llmtypes.MessageContent
+	ProgressMessages    []llmtypes.MessageContent
 	Provider            string
 	Model               string
 	API                 string
@@ -145,6 +146,9 @@ func readPiTranscriptSummaryFile(path string, turnStart time.Time) *piTranscript
 		if parts := piTranscriptParts(ev.Message.Content); len(parts) > 0 {
 			summary.Messages = append(summary.Messages, llmtypes.MessageContent{Role: role, Parts: parts})
 		}
+		if role == llmtypes.ChatMessageTypeAI {
+			summary.ProgressMessages = append(summary.ProgressMessages, piTranscriptProgressMessages(ev.Message.Content)...)
+		}
 		if role != llmtypes.ChatMessageTypeAI || ev.Message.Usage == nil {
 			continue
 		}
@@ -202,8 +206,9 @@ type piTranscriptMessage struct {
 }
 
 type piTranscriptContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking string `json:"thinking"`
 	// ID/Name are only present on a "toolCall" content block. Captured so a
 	// message can be recognized as still having a pending tool call attached
 	// (PLAT-179).
@@ -218,6 +223,29 @@ type piTranscriptContent struct {
 	// same shape piGenericBridgeToolName/piRealToolNameFromBridgeArgs
 	// already handle for the live marker-stream path.
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// piTranscriptProgressMessages preserves the human-readable narration Pi shows
+// in its terminal. Thinking blocks are intentionally excluded from Messages,
+// because they must never become the retained turn's final answer, but they are
+// exactly the intermediate progress users expect to see while that turn runs.
+func piTranscriptProgressMessages(content []piTranscriptContent) []llmtypes.MessageContent {
+	var messages []llmtypes.MessageContent
+	for _, part := range content {
+		var text string
+		switch strings.TrimSpace(part.Type) {
+		case "thinking":
+			text = part.Thinking
+		case "", "text":
+			text = part.Text
+		default:
+			continue
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, text))
+		}
+	}
+	return messages
 }
 
 type piTranscriptUsage struct {
