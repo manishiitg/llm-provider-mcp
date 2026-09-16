@@ -2084,6 +2084,26 @@ func TestClaudePromptDraftStillMatchesMessage(t *testing.T) {
 	}
 }
 
+func TestClaudeLiveInputNeedsPasteSettlement(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{name: "short single line", message: "check again", want: false},
+		{name: "multiline", message: "first line\nsecond line", want: true},
+		{name: "carriage return", message: "first line\rsecond line", want: true},
+		{name: "large single line", message: strings.Repeat("x", 800), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := claudeLiveInputNeedsPasteSettlement(test.message); got != test.want {
+				t.Fatalf("claudeLiveInputNeedsPasteSettlement() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // TestMultiLineAutoNotificationDraftIsDetectedAsUnsubmitted reproduces the live
 // bug where a multi-line AUTO-NOTIFICATION pasted into a Claude Code main agent
 // sat unsubmitted in the ❯ box. Claude Code wraps a multi-line paste so only the

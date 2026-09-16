@@ -122,6 +122,8 @@ var claudeLiveInputSubmitBackoff = []time.Duration{
 	2 * time.Second,
 }
 
+const claudeLiveInputPasteSettlementMaxWait = 5 * time.Second
+
 var claudeInteractiveOwnerRegistry = sessionregistry.NewOwnerRegistry[string]()
 
 type claudeInteractivePersistentSession struct {
@@ -2026,6 +2028,7 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
 	}
+	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
 	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("failed to load Claude Code tmux input into tmux buffer: %w", err)
 	}
@@ -2033,16 +2036,30 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 		return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
 	}
 	pasted := time.Since(start)
+	verifier := &claudeSubmitVerifier{message: message}
+	// Claude Code turns a bracketed multiline/large paste into an attachment
+	// chip asynchronously. Pressing Enter before that conversion settles can
+	// submit an empty prompt while the attachment remains in the editor (the UI
+	// then says "paste again to expand"). Wait only for attachment-shaped input;
+	// ordinary one-line steering keeps the immediate low-latency path.
+	if claudeLiveInputNeedsPasteSettlement(message) {
+		if _, err := waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, claudeLiveInputPasteSettlementMaxWait); err != nil {
+			return fmt.Errorf("Claude Code multiline live input did not settle before submit: %w", err)
+		}
+		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
+			_ = verifier.submitted(settledPane)
+		}
+	}
 	// Submit immediately after the paste. The pty delivers the pasted bytes and
-	// the C-e/Enter keystrokes in order, so waiting for the draft to *render*
-	// first adds latency without changing what Claude Code receives. (The old
+	// the C-e/Enter keystrokes in order for ordinary one-line input, so waiting
+	// for that draft to *render* first adds latency without changing what Claude
+	// Code receives. Attachment-shaped input is settled above. (The old
 	// pre-submit waitForPromptPasteWithTimeout(250ms) could never confirm within
 	// its own deadline — its stability window was 900ms — so every live send
 	// burned a fixed 250ms and then submitted anyway.) The submitted-draft
 	// verify + retry loop below remains the safety net for a swallowed Enter.
 	var lastErr error
 	var handoff time.Duration
-	verifier := &claudeSubmitVerifier{message: message}
 	for i, submitWait := range claudeLiveInputSubmitBackoff {
 		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
 		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
@@ -2070,6 +2087,10 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
 		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
 	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
+}
+
+func claudeLiveInputNeedsPasteSettlement(message string) bool {
+	return strings.ContainsAny(message, "\r\n") || len(message) >= 800
 }
 
 func claudeSubmitPromptKeys() []string {
