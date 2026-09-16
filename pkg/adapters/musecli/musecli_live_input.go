@@ -49,7 +49,6 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 		return fmt.Errorf("no active Muse interactive session registered for owner session %s", ownerSessionID)
 	}
 	tmuxName := entry.tmuxName
-	autoAnswer := entry.autoAnswer
 	logPath := entry.logPath
 	if logPath == "" && entry.nativeSessionID != "" {
 		logPath = museSessionLogPath(entry.nativeSessionID)
@@ -58,9 +57,19 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	if !museTmuxSessionAlive(ctx, tmuxName) {
 		return fmt.Errorf("muse tmux session %q for owner %s is gone", tmuxName, ownerSessionID)
 	}
-	if autoAnswer != nil {
-		ctx = context.WithValue(ctx, museAutoAnswerKey{}, autoAnswer)
-	}
+	// entry.autoAnswer is only ever populated by the turn that first launched
+	// this persistent session (generateContentTmux's museWithAutoAnswer +
+	// museBindPersistentAutoAnswer). A live steer delivered before that has
+	// happened -- or against a session whose launch predates this wiring --
+	// found entry.autoAnswer nil and skipped auto-answer setup entirely, so a
+	// native "Request user input" widget (e.g. Shape/Bounds) went straight to
+	// museHandlePendingQuestion's raw pendingErr instead of being resolved:
+	// live input steering surfaced "Live input unavailable: ... [user_input_required]"
+	// even though the exact same widget auto-answers fine from a fresh turn.
+	// Always enable auto-answer here too, and persist it the same way so a
+	// later turn on this session reuses this state instead of re-creating it.
+	ctx = museWithAutoAnswer(ctx, nil)
+	ctx = museBindPersistentAutoAnswer(ctx, entry)
 	if err := museWaitLiveInputComposer(ctx, tmuxName); err != nil {
 		return err
 	}

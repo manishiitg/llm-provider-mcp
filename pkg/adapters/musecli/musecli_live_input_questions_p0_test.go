@@ -103,4 +103,34 @@ func TestMuseCLIRealLiveInputQuestionsP0(t *testing.T) {
 		}
 		t.Logf("live input corrected cursor and preserved follow-up: %s", final)
 	})
+	// Regression for the 409 "Live input unavailable: ... [user_input_required]"
+	// bug: entry.autoAnswer is only populated by the turn that first launched
+	// the persistent session. Force it back to nil here -- as it would be for
+	// a live steer delivered before that first turn ever completed, or against
+	// a session whose launch predates museBindPersistentAutoAnswer -- and
+	// confirm SendMuseInteractiveInput still resolves a native question
+	// instead of surfacing the raw pendingErr.
+	t.Run("live_delivery_with_nil_persistent_auto_answer", func(t *testing.T) {
+		key, err := musePersistentKey(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		musePersistentPool.Lock()
+		entry := musePersistentPool.m[key]
+		if entry == nil {
+			musePersistentPool.Unlock()
+			t.Fatal("no pooled session for owner")
+		}
+		entry.autoAnswer = nil
+		musePersistentPool.Unlock()
+		prompt := "Use native request_user_input to ask ONE question: Which fruit? Options in order Apple (Recommended), Pear. Wait for the actual answer, then reply FRUIT=<selected fruit>. Do not use any other tools."
+		if err := SendMuseInteractiveInput(ctx, owner, prompt); err != nil {
+			t.Fatalf("live input with nil persistent auto-answer: %v", err)
+		}
+		final := waitFinal(t)
+		if !strings.Contains(strings.ToLower(final), "apple") {
+			t.Fatalf("question was not auto-answered: %q", final)
+		}
+		t.Logf("nil persistent auto-answer still resolved the native question: %s", final)
+	})
 }
