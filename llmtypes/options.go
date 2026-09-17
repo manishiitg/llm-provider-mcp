@@ -264,12 +264,13 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 // already-filtered environment. Nothing errored — the child simply did not see
 // the key, which is indistinguishable from the feature not existing.
 //
-// Three prefixes are admitted, matching what the shell whitelist already
-// promises (MCP_*, SECRET_*, VAR_*):
+// Three prefixes and one provider control are admitted, matching what the
+// shell whitelist already promises (MCP_*, SECRET_*, VAR_*):
 //
 //	SECRET_*  selected secret values
 //	VAR_*     workflow variables, VAR_WORKSPACE_PATH, VAR_GROUP_NAME
 //	MCP_*     the session-bound API routes, closed set below
+//	CLAUDE_CODE_DISABLE_AUTO_MEMORY  disables Claude's private provider memory
 //
 // VAR_* is not optional. mcpagent's prompt builder documents $VAR_<NAME> to
 // every coding agent as the way to read workflow config and tells it to fail
@@ -283,6 +284,9 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 func IsScopedCodingAgentEnvironmentKey(key string) bool {
 	key = strings.TrimSpace(key)
 	if strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_") {
+		return true
+	}
+	if key == "CLAUDE_CODE_DISABLE_AUTO_MEMORY" {
 		return true
 	}
 	return isScopedCodingAgentMCPEnvironmentKey(key)

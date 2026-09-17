@@ -162,6 +162,20 @@ func TestScopedPlanExportsDeclaredAndUnsetsUndeclared(t *testing.T) {
 	}
 }
 
+func TestScopedEnvironmentCarriesClaudeAutoMemoryControl(t *testing.T) {
+	const key = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+	opts := scopedEnvOpts(map[string]string{key: "1"})
+
+	merged := envMap(MergeCodingAgentSecretEnvironment(nil, opts))
+	if merged[key] != "1" {
+		t.Fatalf("structured environment omitted %s: %v", key, merged)
+	}
+	export, _ := ScopedCodingAgentEnvironmentPlan(nil, nil, opts)
+	if len(export) != 1 || export[0] != key+"=1" {
+		t.Fatalf("interactive environment omitted %s: %v", key, export)
+	}
+}
+
 // Without a declared scope the caller never opted in, so an interactive launch
 // must be byte-identical to what it was before -- no exports, no unsets.
 func TestScopedPlanIsInertWithoutADeclaredScope(t *testing.T) {
