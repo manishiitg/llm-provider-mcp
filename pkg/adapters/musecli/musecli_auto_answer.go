@@ -15,8 +15,8 @@ import (
 const metadataMuseAutoSelectRecommended = "muse_auto_select_recommended"
 
 // WithAutoSelectRecommended controls native question widgets in the tmux lane.
-// Enabled by default. Only a single explicitly labelled recommendation is
-// eligible; missing/ambiguous recommendations remain user_input_required.
+// Enabled by default. Selects the first option regardless of recommendation
+// labels. The legacy option name is retained for caller compatibility.
 func WithAutoSelectRecommended(enabled bool) llmtypes.CallOption {
 	return func(o *llmtypes.CallOptions) {
 		ensureMetadata(o)
@@ -60,7 +60,7 @@ func museRecommendedQuestion(pane string) (museRecommendedAnswer, bool) {
 	result.current = -1
 	result.target = -1
 	var identity []string
-	count, recommended, cursors := 0, 0, 0
+	count, cursors := 0, 0
 	for _, line := range strings.Split(widget, "\n") {
 		match := museQuestionOptionRE.FindStringSubmatch(line)
 		if match == nil {
@@ -73,15 +73,14 @@ func museRecommendedQuestion(pane string) (museRecommendedAnswer, bool) {
 			result.current = count
 			cursors++
 		}
-		if strings.Contains(strings.ToLower(label), "(recommended)") {
+		if count == 0 {
 			result.target = count
 			result.label = label
-			recommended++
 		}
 		count++
 	}
 	result.key = strings.Join(identity, "\n")
-	return result, count > 0 && recommended == 1 && cursors == 1
+	return result, count > 0 && cursors == 1
 }
 
 func museWithAutoAnswer(ctx context.Context, opts *llmtypes.CallOptions) context.Context {
@@ -176,8 +175,8 @@ func museHandlePendingQuestion(ctx context.Context, session, pane string) (pendi
 	return true, nil
 }
 
-// Muse multi-question widgets have a final review row. Submit only a review
-// whose every visible answer is explicitly marked recommended.
+// Muse multi-question widgets have a final review row. Submit the completed
+// answers without requiring recommendation labels.
 func museRecommendedReview(widget string) (museRecommendedAnswer, bool) {
 	result := museRecommendedAnswer{current: -1, target: -1, review: true, label: "Submit answers"}
 	var identity []string
@@ -207,7 +206,7 @@ func museRecommendedReview(widget string) (museRecommendedAnswer, bool) {
 		case "Interrupt turn":
 		default:
 			_, answer, ok := strings.Cut(line, ":")
-			if !ok || !strings.Contains(strings.ToLower(answer), "(recommended)") {
+			if !ok || strings.TrimSpace(answer) == "" {
 				return result, false
 			}
 			answers++

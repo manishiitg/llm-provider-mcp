@@ -14,11 +14,11 @@ const museQuestionFixture = "Historical 429 quota exhausted\n◆ Request user in
 
 func TestMuseRecommendedQuestion(t *testing.T) {
 	a, ok := museRecommendedQuestion(museQuestionFixture)
-	if !ok || a.current != 0 || a.target != 1 || a.label != "Blue (Recommended)" {
-		t.Fatalf("wrong recommendation: %+v %v", a, ok)
+	if !ok || a.current != 0 || a.target != 0 || a.label != "Red" {
+		t.Fatalf("wrong first option: %+v %v", a, ok)
 	}
 	moved, ok := museRecommendedQuestion(strings.Replace(strings.Replace(museQuestionFixture, "› 1.", "  1.", 1), "  2.", "› 2.", 1))
-	if !ok || moved.key != a.key || moved.current != 1 {
+	if !ok || moved.key != a.key || moved.current != 1 || moved.target != 0 {
 		t.Fatal("cursor movement changed question identity")
 	}
 	timer, ok := museRecommendedQuestion(strings.Replace(museQuestionFixture, "(1s)", "(20s)", 1))
@@ -32,6 +32,12 @@ func TestMuseRecommendedQuestion(t *testing.T) {
 	for _, pane := range []string{
 		strings.ReplaceAll(museQuestionFixture, " (Recommended)", ""),
 		strings.Replace(museQuestionFixture, "Red", "Red (Recommended)", 1),
+	} {
+		if answer, ok := museRecommendedQuestion(pane); !ok || answer.target != 0 {
+			t.Fatalf("must select first option regardless of labels: %+v %v", answer, ok)
+		}
+	}
+	for _, pane := range []string{
 		strings.ReplaceAll(museQuestionFixture, "›", " "),
 		strings.Replace(museQuestionFixture, "Choose a color", "Do you trust this workspace?", 1),
 		"Do you trust this folder?\n› 1. Yes (Recommended)\nEnter to select",
@@ -72,8 +78,19 @@ func TestMuseRecommendedReview(t *testing.T) {
 		t.Fatal("review must not be treated as idle")
 	}
 	changed := strings.Replace(pane, "Tea (Recommended)", "Coffee", 1)
-	if _, ok := museRecommendedQuestion(changed); ok {
-		t.Fatal("must not submit a nonrecommended review")
+	if answer, ok := museRecommendedQuestion(changed); !ok || !answer.review || answer.target != 3 {
+		t.Fatal("must submit completed answers without recommendation labels")
+	}
+	if _, ok := museRecommendedQuestion(strings.Replace(pane, "Tea (Recommended)", "", 1)); ok {
+		t.Fatal("must not submit an empty answer")
+	}
+}
+
+func TestMuseFirstOptionBotChannel(t *testing.T) {
+	pane := "◆ Request user input Channel, Chat, Behavior — running (7s)\nWhich bot channel do you want to connect to this workflow - Slack or WhatsApp?\n  1. Slack\n› 2. WhatsApp\n  3. None of the above\n1 of 3\nEnter to select · Esc to interrupt"
+	answer, ok := museRecommendedQuestion(pane)
+	if !ok || answer.current != 1 || answer.target != 0 || answer.label != "Slack" {
+		t.Fatalf("must navigate to first channel: %+v %v", answer, ok)
 	}
 }
 

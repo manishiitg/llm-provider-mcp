@@ -9,7 +9,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-func TestMuseCLIRealAutoRecommendedThreeQuestionsP0(t *testing.T) {
+func TestMuseCLIRealAutoFirstOptionThreeQuestionsP0(t *testing.T) {
 	requireMetaMuseCLIE2E(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
@@ -25,7 +25,7 @@ func TestMuseCLIRealAutoRecommendedThreeQuestionsP0(t *testing.T) {
 	final := strings.TrimSpace(resp.Choices[0].Content)
 	// Muse may echo the literal option labels, including their UI annotation.
 	selectedNames := strings.ReplaceAll(strings.ReplaceAll(final, "(Recommended)", ""), " ", "")
-	if strings.Trim(selectedNames, "`\n") != "Blue|Tea|Compact" {
+	if strings.Trim(selectedNames, "`\n") != "Red|Coffee|Compact" {
 		t.Fatalf("wrong selected answers: %q", final)
 	}
 	for _, chunk := range museDrainStream(stream) {
@@ -33,5 +33,5 @@ func TestMuseCLIRealAutoRecommendedThreeQuestionsP0(t *testing.T) {
 			t.Fatalf("automatic selection leaked into the UI stream: %q", chunk.Content)
 		}
 	}
-	t.Logf("PASS: auto-selected all three recommendations without selection announcements; final=%q", final)
+	t.Logf("PASS: auto-selected all three first options without selection announcements; final=%q", final)
 }
