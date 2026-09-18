@@ -937,7 +937,8 @@ func initializeMuseCLI(config Config) (llmtypes.Model, error) {
 	}
 	if apiKey != "" {
 		logger.Infof("Muse: using explicit API key (length=%d)", len(apiKey))
-	} else if apiKey = strings.TrimSpace(os.Getenv("META_API_KEY")); apiKey != "" {
+	} else if (config.APIKeys == nil || len(config.APIKeys.RuntimeEnvironment) == 0) && strings.TrimSpace(os.Getenv("META_API_KEY")) != "" {
+		apiKey = strings.TrimSpace(os.Getenv("META_API_KEY"))
 		logger.Infof("Muse: using API key from META_API_KEY env var (length=%d)", len(apiKey))
 	} else {
 		logger.Infof("Muse: no explicit API key, falling back to stored login")
@@ -1198,6 +1199,9 @@ func initializePiCLI(config Config) (llmtypes.Model, error) {
 	logger.Infof("Initializing Pi CLI adapter - model_id: %s", modelID)
 
 	piProvider := piProviderFromModelID(modelID)
+	if config.APIKeys != nil && len(config.APIKeys.RuntimeEnvironment) > 0 && piProviderKeyFromMap(config.APIKeys.PiProviderKeys, piProvider) == "" {
+		return nil, fmt.Errorf("Pi connection does not provide credentials for selected model provider %s", piProvider)
+	}
 	apiKey, apiKeySource := piCLIAPIKeyForProvider(config.APIKeys, piProvider)
 	if apiKey != "" {
 		logger.Infof("Pi CLI: using API key from %s for provider %s (length=%d)", apiKeySource, piProvider, len(apiKey))

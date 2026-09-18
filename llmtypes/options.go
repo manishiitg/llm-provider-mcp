@@ -368,11 +368,15 @@ func CodingAgentSecretEnvironmentFromOptions(opts *CallOptions) map[string]strin
 // With nothing declared, both results are empty: a caller that never opted into
 // scoping keeps exactly the behavior it had.
 func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOptions) (export, unset []string) {
+	export = mergeProviderAccountEnvironment(nil, opts)
+	if len(ProviderAccountEnvironment(opts)) > 0 {
+		unset = append(unset, ProviderAccountCredentialNames()...)
+	}
 	if key := codingAgentReleaseSessionKey(opts); key != "" {
 		export = append(export, "AGENTWORKS_CLI_SESSION_KEY="+key)
 	}
 	if !CodingAgentScopeDeclared(opts) {
-		return export, nil
+		return export, unset
 	}
 	declared := CodingAgentSecretEnvironmentFromOptions(opts)
 
@@ -437,12 +441,18 @@ func ScopedCredentialNames() []string {
 // scope is deliberately distinct from no scope at all, matching
 // CodingAgentScopeDeclared.
 func CodingAgentScopeFingerprint(opts *CallOptions) string {
+	accountEntries := mergeProviderAccountEnvironment(nil, opts)
+	accountHash := ""
+	if len(accountEntries) > 0 {
+		sum := sha256.Sum256([]byte(strings.Join(accountEntries, "\n")))
+		accountHash = hex.EncodeToString(sum[:]) + ":"
+	}
 	if !CodingAgentScopeDeclared(opts) {
-		return "unscoped"
+		return accountHash + "unscoped"
 	}
 	declared := CodingAgentSecretEnvironmentFromOptions(opts)
 	if len(declared) == 0 {
-		return "scoped-empty"
+		return accountHash + "scoped-empty"
 	}
 	keys := make([]string, 0, len(declared))
 	for key := range declared {
@@ -454,7 +464,7 @@ func CodingAgentScopeFingerprint(opts *CallOptions) string {
 		// Length-prefixed so ("AB","C") and ("A","BC") cannot collide.
 		fmt.Fprintf(hash, "%d:%s=%d:%s\n", len(key), key, len(declared[key]), declared[key])
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return accountHash + hex.EncodeToString(hash.Sum(nil))
 }
 
 // MergeCodingAgentSecretEnvironment overlays scoped secrets on a process
@@ -484,6 +494,7 @@ func CodingAgentScopeFingerprint(opts *CallOptions) string {
 // address a caller relies on the launcher to set reproduces that silent
 // failure, and an address grants nothing without the credentials above.
 func MergeCodingAgentSecretEnvironment(base []string, opts *CallOptions) []string {
+	base = mergeProviderAccountEnvironment(base, opts)
 	if key := codingAgentReleaseSessionKey(opts); key != "" {
 		// Runtime version selection does not declare or broaden credential scope.
 		filtered := make([]string, 0, len(base)+1)

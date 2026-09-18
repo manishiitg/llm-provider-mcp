@@ -35,7 +35,7 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	}
 	path, baseline := entry.logPath, entry.retainedBaselineSequence
 	if path == "" && entry.nativeSessionID != "" {
-		path = museSessionLogPath(entry.nativeSessionID)
+		path = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
 	}
 	musePersistentPool.Unlock()
 	progress := &entry.retainedProgress
@@ -98,7 +98,7 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	tmuxName := entry.tmuxName
 	logPath := entry.logPath
 	if logPath == "" && entry.nativeSessionID != "" {
-		logPath = museSessionLogPath(entry.nativeSessionID)
+		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
 	}
 	baseline := entry.retainedBaselineSequence
 	autoAnswer := entry.autoAnswer

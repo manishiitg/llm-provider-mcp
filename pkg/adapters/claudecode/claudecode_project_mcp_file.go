@@ -42,7 +42,7 @@ var claudeProjectFileRestores sync.Map // map[string][]byte
 // operator's pre-existing .mcp.json is destroyed. The OFF-by-default
 // flag keeps the blast radius bounded to callers that explicitly accept
 // this trade-off.
-func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string, restorePrior bool) (string, error) {
+func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string, restorePrior bool, accountHome ...string) (string, error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return "", nil
@@ -75,7 +75,7 @@ func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string, restorePrior bool
 	// Errors are silently ignored — the worst case is the operator
 	// gets prompted and the session times out, which is no worse than
 	// not doing this at all.
-	preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON)
+	preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON, accountHome...)
 
 	return path, nil
 }
@@ -90,7 +90,7 @@ func writeClaudeCodeProjectMCPFile(workingDir, mcpJSON string, restorePrior bool
 // The function follows the same path-resolution conventions as
 // preTrustClaudeWorkingDir (records under raw AND symlink-resolved
 // paths so macOS /var → /private/var aliases match).
-func preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON string) {
+func preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON string, accountHome ...string) {
 	serverNames := extractClaudeMCPServerNames(mcpJSON)
 	if len(serverNames) == 0 {
 		return
@@ -114,11 +114,13 @@ func preApproveClaudeMCPServersForWorkingDir(workingDir, mcpJSON string) {
 
 	paths := pathidentity.Candidates(workingDir)
 
-	home, err := os.UserHomeDir()
+	configPath, err := claudeUserConfigPath(accountHome...)
 	if err != nil {
 		return
 	}
-	configPath := filepath.Join(home, ".claude.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return
+	}
 
 	preTrustClaudeMu.Lock()
 	defer preTrustClaudeMu.Unlock()

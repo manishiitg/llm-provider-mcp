@@ -61,13 +61,15 @@ func museMCPConfigsEquivalent(current, requested string) bool {
 // boots (muse reads project rules at startup), so projection happens on the
 // fresh-launch path and the undo runs on kill.
 type musePersistentSession struct {
-	autoAnswer      *museAutoAnswerState
-	tmuxName        string
-	workdir         string
-	mcpJSON         string
-	toolAllowlist   []string
-	nativeSessionID string
-	logPath         string
+	accountFingerprint string
+	accountDataHome    string
+	autoAnswer         *museAutoAnswerState
+	tmuxName           string
+	workdir            string
+	mcpJSON            string
+	toolAllowlist      []string
+	nativeSessionID    string
+	logPath            string
 	// retainedBaselineSequence is the last durable Muse event that existed
 	// before the most recent live-input submission. The retained-turn reader
 	// only accepts assistant commits after this cursor, so an older completed
@@ -320,7 +322,11 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 	musePersistentPool.Lock()
 	entry := musePersistentPool.m[key]
 	if entry != nil {
-		if entry.workdir != workdir {
+		if entry.accountFingerprint != llmtypes.CodingAgentScopeFingerprint(museAccount(ctx).opts) {
+			museKillPersistentLocked(ctx, entry)
+			delete(musePersistentPool.m, key)
+			entry = nil
+		} else if entry.workdir != workdir {
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)
 			entry = nil
@@ -370,7 +376,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		}
 		return nil, false, err
 	}
-	entry = &musePersistentSession{nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
+	entry = &musePersistentSession{accountFingerprint: llmtypes.CodingAgentScopeFingerprint(museAccount(ctx).opts), accountDataHome: museAccountDataHome(ctx), nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID, museAccountDataHome(ctx)), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
 	if projected {
 		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
 			restoreAgents, strings.TrimSpace(systemPrompt), true
@@ -410,7 +416,7 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	configHome, restore, err := musePrepareIsolatedConfig(strings.TrimSpace(mcpJSON), toolAllowlist)
+	configHome, restore, err := museAccountConfig(ctx, strings.TrimSpace(mcpJSON), toolAllowlist)
 	if err != nil {
 		return nil, err
 	}
@@ -426,12 +432,18 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 	if toolAllowlist != nil {
 		argv = append(argv, museNativeContainmentArgv()...)
 	}
-	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse"}, argv...)
+	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museAccountDataHome(ctx), "muse"}, argv...)
 	if id := strings.TrimSpace(resumeNativeID); id != "" {
-		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse", "resume", id}
+		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museAccountDataHome(ctx), "muse", "resume", id}
 		cli = append(cli, argv...)
 	}
-	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workdir}, cli...)...)
+	shell, cleanupLaunch, err := museAccountLaunch(ctx, cli, workdir)
+	if err != nil {
+		restore()
+		return nil, err
+	}
+	defer func() { time.AfterFunc(30*time.Second, cleanupLaunch) }()
+	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workdir}, shell)...)
 	if out, err := launch.CombinedOutput(); err != nil {
 		if restore != nil {
 			restore()

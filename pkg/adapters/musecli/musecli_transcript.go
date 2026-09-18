@@ -25,12 +25,15 @@ func museXDGDataHome() string {
 // museSessionLogPath resolves
 // $XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<sessionID>/session.jsonl.
 // The date segment is the run date, so it is globbed, not assumed.
-func museSessionLogPath(sessionID string) string {
+func museSessionLogPath(sessionID string, accountDataHome ...string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
 		return ""
 	}
 	base := museXDGDataHome()
+	if len(accountDataHome) > 0 && accountDataHome[0] != "" {
+		base = accountDataHome[0]
+	}
 	if base == "" {
 		return ""
 	}

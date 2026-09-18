@@ -82,7 +82,7 @@ func resolveCodexRolloutPathLocked(session *codexInteractiveSession, turnStart t
 	// A pinned thread ID is authoritative. Re-resolving from it (rather than
 	// trusting a cached path) survives Codex rotating or compacting the file.
 	if session.threadID != "" {
-		if path := findCodexRolloutForThread(session.threadID); path != "" {
+		if path := findCodexRolloutForThread(session.threadID, session.accountRoot); path != "" {
 			session.rolloutPath = path
 			session.rolloutMu.Unlock()
 			return path
@@ -105,7 +105,7 @@ func resolveCodexRolloutPathLocked(session *codexInteractiveSession, turnStart t
 
 	// Never hold this session's rollout lock while reading other sessions. That
 	// keeps the claim scan free of cross-session lock ordering requirements.
-	path := findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, boundCodexRolloutPaths(session))
+	path := findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, boundCodexRolloutPaths(session), session.accountRoot)
 	if path == "" {
 		return ""
 	}
@@ -138,10 +138,11 @@ func codexRolloutResolverForSession(session *codexInteractiveSession) func(time.
 	knownPath, threadID := codexRolloutIdentity(session)
 	workingDir := session.workingDir
 	claimed := boundCodexRolloutPaths(session)
+	accountRoot := session.accountRoot
 
 	return func(turnStart time.Time) string {
 		if threadID != "" {
-			if path := findCodexRolloutForThread(threadID); path != "" {
+			if path := findCodexRolloutForThread(threadID, accountRoot); path != "" {
 				return path
 			}
 			return knownPath
@@ -149,6 +150,6 @@ func codexRolloutResolverForSession(session *codexInteractiveSession) func(time.
 		if knownPath != "" {
 			return knownPath
 		}
-		return findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, claimed)
+		return findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, claimed, accountRoot)
 	}
 }

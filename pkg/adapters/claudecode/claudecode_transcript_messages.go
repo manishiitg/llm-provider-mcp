@@ -40,11 +40,11 @@ import (
 //
 // Returns nil/empty on any error or if the transcript is missing.
 // Best-effort by design — never surfaces IO errors to the caller.
-func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.Time) []llmtypes.MessageContent {
+func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.Time, accountHome ...string) []llmtypes.MessageContent {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil
 	}
-	f, _, err := openClaudeTranscript(sessionID, workingDir)
+	f, _, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
 	if err != nil {
 		return nil
 	}
@@ -188,11 +188,11 @@ type claudeCompletedTranscriptResponse struct {
 //
 // Claude writes one JSONL row per content block and may repeat a message ID, so
 // text is accumulated by message ID and the last completed message wins.
-func completedAssistantResponseFromTranscript(sessionID, workingDir string, turnStart time.Time) claudeCompletedTranscriptResponse {
+func completedAssistantResponseFromTranscript(sessionID, workingDir string, turnStart time.Time, accountHome ...string) claudeCompletedTranscriptResponse {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return claudeCompletedTranscriptResponse{}
 	}
-	f, _, err := openClaudeTranscript(sessionID, workingDir)
+	f, _, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
 	if err != nil {
 		return claudeCompletedTranscriptResponse{}
 	}
@@ -276,8 +276,8 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 // period can therefore terminate a healthy tool loop before its final response
 // is committed. The owning turn context is the only timeout/cancellation
 // authority here.
-func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time) claudeCompletedTranscriptResponse {
-	response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
+func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, accountHome ...string) claudeCompletedTranscriptResponse {
+	response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
 	if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
 		return response
 	}
@@ -286,7 +286,7 @@ func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessio
 	// rescanning the entire JSONL on every poll while Claude is still thinking.
 	// An append changes size and mtime; transient stat/read failures retain the
 	// already-observed Found state rather than falling back to pane text.
-	transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true)
+	transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
 	var lastSize int64 = -1
 	var lastModTime time.Time
 	if info, err := os.Stat(transcriptPath); err == nil {
@@ -310,7 +310,7 @@ func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessio
 				lastSize = info.Size()
 				lastModTime = info.ModTime()
 			}
-			candidate := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart)
+			candidate := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
 			if !candidate.Found {
 				continue
 			}

@@ -25,11 +25,11 @@ import (
 // Best-effort by design — never surface IO errors to the caller. The
 // model string is the latest model seen on an in-turn assistant event
 // (claude-code can swap models mid-session via /model).
-func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time) (*llmtypes.GenerationInfo, string) {
+func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time, accountHome ...string) (*llmtypes.GenerationInfo, string) {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil, ""
 	}
-	f, _, err := openClaudeTranscript(sessionID, workingDir)
+	f, _, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
 	if err != nil {
 		return nil, ""
 	}

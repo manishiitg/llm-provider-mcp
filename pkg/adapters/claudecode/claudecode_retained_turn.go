@@ -28,6 +28,7 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	}
 	session.mu.Lock()
 	nativeSessionID, workingDir := session.nativeSessionID, session.workingDir
+	accountHome := session.accountHome
 	session.mu.Unlock()
 	progress := &session.retainedProgress
 	progress.mu.Lock()
@@ -36,7 +37,7 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 		progress.turnStart, progress.offset = turnStart, 0
 		progress.pendingTools = map[string]time.Time{}
 	}
-	path, err := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true)
+	path, err := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, accountHome)
 	if err != nil || path == "" {
 		return nil
 	}
@@ -74,8 +75,9 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 	session.mu.Lock()
 	nativeSessionID := session.nativeSessionID
 	workingDir := session.workingDir
+	accountHome := session.accountHome
 	session.mu.Unlock()
-	response := completedAssistantResponseFromTranscript(nativeSessionID, workingDir, turnStart)
+	response := completedAssistantResponseFromTranscript(nativeSessionID, workingDir, turnStart, accountHome)
 	if !response.Found || !response.Completed || strings.TrimSpace(response.Text) == "" {
 		return nil
 	}

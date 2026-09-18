@@ -233,10 +233,13 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 // non-ephemeral user preferences. MCP servers and PreToolUse hooks are rebuilt
 // exactly for this AgentWorks launch, so a prior crashed run cannot leak tools
 // or a localhost test stub into the next one.
-func musePrepareIsolatedConfig(configJSON string, toolAllowlist []string) (string, func(), error) {
+func musePrepareIsolatedConfig(configJSON string, toolAllowlist []string, accountSettings ...string) (string, func(), error) {
 	sourceSettings, err := museSettingsPath()
 	if err != nil {
 		return "", nil, err
+	}
+	if len(accountSettings) > 0 && accountSettings[0] != "" {
+		sourceSettings = accountSettings[0]
 	}
 	// Builds before isolated config roots wrote AgentWorks' bridge and native
 	// tool policy into the shared Muse settings. A crash or overlapping restore

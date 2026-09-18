@@ -63,6 +63,7 @@ const (
 )
 
 type codexInteractiveSession struct {
+	accountRoot          string
 	ownerSessionID       string
 	tmuxSessionName      string
 	systemPromptTempFile string
@@ -497,7 +498,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// splice the in-CLI turn-by-turn record into their persisted
 	// history. Best-effort: empty when the rollout is missing or has
 	// not been flushed yet.
-	if sidecarMsgs := readCodexTranscriptMessages(turnStart, session.workingDir); len(sidecarMsgs) > 0 {
+	if sidecarMsgs := readCodexTranscriptMessages(turnStart, session.workingDir, session.accountRoot); len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "codex-cli",
 			Transport: llmtypes.CodingProviderTransportTmux,
@@ -547,12 +548,13 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
-	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity)
+	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity) + ":" + llmtypes.CodingAgentScopeFingerprint(opts)
 	session, created, ok := codexPersistentRegistry.GetOrCreate(ownerSessionID, func() *codexInteractiveSession {
 		session := &codexInteractiveSession{
 			ownerSessionID:         ownerSessionID,
 			tmuxSessionName:        newCodexTmuxSessionName(),
 			workingDir:             workingDir,
+			accountRoot:            llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"],
 			cliSecurityFingerprint: securityFingerprint,
 			createdAt:              now,
 			lastUsed:               now,
@@ -717,7 +719,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 			autoApproveMCPTools = strings.TrimSpace(policy) == "never"
 		}
 	}
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity)
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity, llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"])
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -1363,7 +1365,15 @@ func startCodexTmuxSession(
 		// case is the prompt appears and the in-tmux dismissCodexTrustPrompt
 		// (already wired into waitForCodexPrompt) handles it
 		// reactively.
-		if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
+		accountHome := ""
+		for _, entry := range scopedEnv {
+			if strings.HasPrefix(entry, "HOME=") {
+				accountHome = strings.TrimPrefix(entry, "HOME=")
+			}
+		}
+		if accountHome != "" {
+			preTrustCodexWorkingDirAtHome(workingDir, accountHome)
+		} else if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
 			preTrustCodexWorkingDirAtHome(workingDir, policy.PrivateHome)
 		} else {
 			preTrustCodexWorkingDir(workingDir)
@@ -3968,7 +3978,14 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 	if strings.TrimSpace(workingDir) == "" {
 		return nil
 	}
-	gi, model, _ := readCodexTranscriptUsage(time.Time{}, workingDir)
+	accountRoot := ""
+	_, session, found := codexPersistentRegistry.Find(func(session *codexInteractiveSession) bool {
+		return session != nil && session.tmuxSessionName == tmuxSession
+	})
+	if found {
+		accountRoot = session.accountRoot
+	}
+	gi, model, _ := readCodexTranscriptUsage(time.Time{}, workingDir, accountRoot)
 	if gi == nil {
 		return nil
 	}

@@ -28,13 +28,16 @@ const maxClaudeTranscriptPathCacheEntries = 512
 var claudeTranscriptGlob = filepath.Glob
 var claudeTranscriptOpen = os.Open
 
-func resolveClaudeTranscriptPath(sessionID, workingDir string, allowGlobalFallback bool) (string, error) {
+func resolveClaudeTranscriptPath(sessionID, workingDir string, allowGlobalFallback bool, accountHome ...string) (string, error) {
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return "", nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	cacheKey := claudeTranscriptCacheKey(home, sessionID)
 	if path := cachedClaudeTranscriptPath(cacheKey); path != "" {
@@ -59,8 +62,8 @@ func resolveClaudeTranscriptPath(sessionID, workingDir string, allowGlobalFallba
 	return matches[0], nil
 }
 
-func openClaudeTranscript(sessionID, workingDir string) (*os.File, string, error) {
-	path, err := resolveClaudeTranscriptPath(sessionID, workingDir, true)
+func openClaudeTranscript(sessionID, workingDir string, accountHome ...string) (*os.File, string, error) {
+	path, err := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
 	if err != nil || path == "" {
 		return nil, path, err
 	}
@@ -74,8 +77,8 @@ func openClaudeTranscript(sessionID, workingDir string) (*os.File, string, error
 
 	// A cached transcript can disappear if Claude replaces a session or a test
 	// swaps HOME. Forget only this exact mapping and resolve once more.
-	forgetClaudeTranscriptPath(sessionID, path)
-	path, resolveErr := resolveClaudeTranscriptPath(sessionID, workingDir, true)
+	forgetClaudeTranscriptPath(sessionID, path, accountHome...)
+	path, resolveErr := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
 	if resolveErr != nil || path == "" {
 		return nil, path, resolveErr
 	}
@@ -147,10 +150,13 @@ func cacheClaudeTranscriptPath(cacheKey, path string) {
 	claudeTranscriptPathCache.Unlock()
 }
 
-func forgetClaudeTranscriptPath(sessionID, path string) {
+func forgetClaudeTranscriptPath(sessionID, path string, accountHome ...string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	cacheKey := claudeTranscriptCacheKey(home, sessionID)
 	claudeTranscriptPathCache.Lock()

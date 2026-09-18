@@ -29,8 +29,8 @@ type NativeTranscript struct {
 // this id (muse never ran, or it's on a different XDG data home) -- resync
 // callers then leave the persisted chat-history record as-is, the same
 // contract as picli.ReadNativeTranscript.
-func ReadNativeTranscript(nativeSessionID string) (NativeTranscript, bool, error) {
-	path := museSessionLogPath(nativeSessionID)
+func ReadNativeTranscript(nativeSessionID string, accountDataHome ...string) (NativeTranscript, bool, error) {
+	path := museSessionLogPath(nativeSessionID, accountDataHome...)
 	if path == "" {
 		return NativeTranscript{}, false, nil
 	}

@@ -38,6 +38,7 @@ func cursorInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 // adapter, so this runs as a goroutine that is stopped (with a final flush)
 // before any close.
 type cursorTranscriptStreamState struct {
+	accountHome     string
 	workingDir      string
 	nativeSessionID string
 	streamKey       string
@@ -58,7 +59,7 @@ func cursorTranscriptStreamKey(ownerSessionID string) string {
 	return ownerSessionID + "\x00transcript-stream"
 }
 
-func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID, nativeSessionID string) *cursorTranscriptStreamState {
+func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessionID, nativeSessionID string, accountHome ...string) *cursorTranscriptStreamState {
 	_ = turnStart // baseline is "now" (real-turn start), tighter than turnStart which predates warmups
 	s := &cursorTranscriptStreamState{
 		workingDir:      workingDir,
@@ -67,6 +68,9 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 		baseline:        time.Now().Add(-1 * time.Second), // small slack for clock/mtime skew
 		seenTool:        map[string]bool{},
 		toolStartedAt:   map[string]time.Time{},
+	}
+	if len(accountHome) > 0 {
+		s.accountHome = accountHome[0]
 	}
 	s.primeSeenBlobs()
 	return s
@@ -98,9 +102,12 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 // suppressing. The pane-extraction path has always had the equivalent guard
 // (historicalAssistantTexts); this brings the store.db stream path in line.
 func (s *cursorTranscriptStreamState) primeSeenBlobs() {
-	paths := allCursorStoreDBs(s.workingDir)
+	paths := allCursorStoreDBs(s.workingDir, s.accountHome)
 	if s.nativeSessionID != "" {
 		home, _ := os.UserHomeDir()
+		if s.accountHome != "" {
+			home = s.accountHome
+		}
 		paths = nil
 		if path := cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID); path != "" {
 			paths = []string{path}
@@ -116,10 +123,13 @@ func (s *cursorTranscriptStreamState) primeSeenBlobs() {
 // allCursorStoreDBs returns every store.db under this working dir's cursor chats
 // dir, unfiltered by mtime. Used only for dedup priming, where completeness
 // matters and freshness does not.
-func allCursorStoreDBs(workingDir string) []string {
+func allCursorStoreDBs(workingDir string, accountHome ...string) []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	hash := workingDirHashForCursor(workingDir)
 	if hash == "" {
@@ -143,10 +153,13 @@ func allCursorStoreDBs(workingDir string) []string {
 // cursor chats dir whose mtime is at/after `since`. Re-resolved every poll (not
 // cached) so the tailer converges onto the REAL turn's store.db as cursor
 // creates it — instead of latching onto a warmup "OK" store.db written first.
-func freshestCursorStoreDBSince(workingDir string, since time.Time) string {
+func freshestCursorStoreDBSince(workingDir string, since time.Time, accountHome ...string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	hash := workingDirHashForCursor(workingDir)
 	if hash == "" {
@@ -228,9 +241,12 @@ func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<
 		if err != nil {
 			return
 		}
+		if s.accountHome != "" {
+			home = s.accountHome
+		}
 		path = cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID)
 	} else {
-		path = freshestCursorStoreDBSince(s.workingDir, s.baseline)
+		path = freshestCursorStoreDBSince(s.workingDir, s.baseline, s.accountHome)
 	}
 	if path == "" {
 		return

@@ -127,6 +127,7 @@ const claudeLiveInputPasteSettlementMaxWait = 5 * time.Second
 var claudeInteractiveOwnerRegistry = sessionregistry.NewOwnerRegistry[string]()
 
 type claudeInteractivePersistentSession struct {
+	accountHome     string
 	ownerSessionID  string
 	tmuxSessionName string
 	nativeSessionID string
@@ -501,7 +502,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// stops when this function returns. The completed JSONL end_turn below is the
 	// authoritative final response; the pane remains the completion/display rail.
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
-		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan)
+		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
 		// streamClaudeTranscript performs one final transcript flush after its
 		// context is cancelled. It must finish that flush before this body
 		// returns: WithObservability owns (and immediately closes) StreamChan
@@ -544,7 +545,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	}
 	finalExtractionSource := "tmux_pane"
 	turnText := ""
-	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart)
+	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
 	if transcriptResponse.Found {
 		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
 			if ctxErr := callCtx.Err(); ctxErr != nil {
@@ -627,7 +628,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// records `usage` on every assistant event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	effectiveModel := c.modelID
-	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart); usage != nil || transcriptModel != "" {
+	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); usage != nil || transcriptModel != "" {
 		if usage != nil {
 			gi.PromptTokens = usage.PromptTokens
 			gi.CompletionTokens = usage.CompletionTokens
@@ -671,7 +672,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// their persisted history. Best-effort: empty when the transcript
 	// is missing, unparsable, or only contains the final assistant
 	// text with no internal loop.
-	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart); len(sidecarMsgs) > 0 {
+	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "claude-code",
 			Transport: llmtypes.CodingProviderTransportTmux,
@@ -912,7 +913,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		// (e.g. a tmux send-keys post-launch dismissal).
 		if os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
 			if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
-				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles); err != nil {
+				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); err != nil {
 					_ = err
 				} else if mcpPath != "" {
 					tempFiles = append(tempFiles, mcpPath)
@@ -1053,7 +1054,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
-		prepareClaudeUserConfig(workingDir, c.oauthToken)
+		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
@@ -1122,14 +1123,16 @@ func preTrustClaudeWorkingDir(workingDir string) {
 // Mark onboarding complete only when this adapter already holds an explicit
 // token; sessions that rely on an interactive saved login retain Claude's
 // normal onboarding flow.
-func prepareClaudeUserConfig(workingDir, oauthToken string) {
+func prepareClaudeUserConfig(workingDir, oauthToken string, accountHome ...string) {
 	paths := pathidentity.Candidates(workingDir)
 
-	home, err := os.UserHomeDir()
+	configPath, err := claudeUserConfigPath(accountHome...)
 	if err != nil {
 		return
 	}
-	configPath := filepath.Join(home, ".claude.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return
+	}
 
 	preTrustClaudeMu.Lock()
 	defer preTrustClaudeMu.Unlock()
@@ -3899,6 +3902,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			authFingerprint:  c.authFingerprint,
 			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
 			workingDir:       strings.TrimSpace(workingDir),
+			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
 			createdAt:        now,
 			lastUsed:         now,
 		}

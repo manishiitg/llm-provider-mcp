@@ -43,8 +43,8 @@ import (
 // (codex reports the effective model + reasoning effort there). The
 // thread ID is the Codex session UUID from session_meta or the rollout
 // filename.
-func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string) (*llmtypes.GenerationInfo, string, string) {
-	root := codexSessionsRoot()
+func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string, accountRoot ...string) (*llmtypes.GenerationInfo, string, string) {
+	root := codexSessionsRoot(accountRoot...)
 	if root == "" {
 		return nil, "", ""
 	}

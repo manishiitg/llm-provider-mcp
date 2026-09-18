@@ -258,7 +258,7 @@ func strictCodexMCPRuntimePaths(opts *llmtypes.CallOptions) ([]string, error) {
 // CODEX_HOME authentication/session state. autoApproveTools also writes the
 // MCP-specific approval mode because Codex's global approval policy alone does
 // not suppress its per-tool MCP confirmation dialog.
-func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, policy *llmtypes.CLISecurityPolicy) (string, func(), error) {
+func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, policy *llmtypes.CLISecurityPolicy, accountRoot ...string) (string, func(), error) {
 	noop := func() {}
 	if strings.TrimSpace(mcpServersJSON) == "" {
 		return "", noop, nil
@@ -303,6 +303,9 @@ func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, p
 			return "", noop, fmt.Errorf("resolve Codex home: %w", err)
 		}
 		codexHome = filepath.Join(home, ".codex")
+	}
+	if len(accountRoot) > 0 && accountRoot[0] != "" {
+		codexHome = accountRoot[0]
 	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return "", noop, fmt.Errorf("create Codex home: %w", err)

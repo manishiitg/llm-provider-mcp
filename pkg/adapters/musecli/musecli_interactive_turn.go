@@ -154,7 +154,7 @@ func museLastAssistantText(messages []llmtypes.MessageContent) string {
 // Enter (observed live), so Enter is re-sent a bounded number of times until
 // the log proves intake or the deadline passes.
 func museWaitIntake(ctx context.Context, session string, turnStart time.Time, snippet, workdir string) (nativeSessionID, logPath string, err error) {
-	dataHome := museXDGDataHome()
+	dataHome := museAccountDataHome(ctx)
 	intakeDeadline := time.Now().Add(60 * time.Second)
 	for attempt := 0; ; attempt++ {
 		id, path, findErr := museDiscoverSessionSince(dataHome, turnStart, snippet, workdir)
@@ -282,6 +282,7 @@ func museResolveTmuxPrompt(system []string, human string, wantAgents, agentsProj
 
 // generateContentTmux runs one bounded turn through a fresh TUI session.
 func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	ctx = museWithAccount(ctx, opts, a.apiKey)
 	ctx = museWithAutoAnswer(ctx, opts)
 	persistent := musePersistentInteractiveFromOptions(opts)
 	owner := strings.TrimSpace(museInteractiveSessionIDFromOptions(opts))

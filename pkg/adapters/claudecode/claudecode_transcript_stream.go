@@ -66,13 +66,13 @@ type claudeTranscriptEvent struct {
 // It relies on the transcript being append-live (claude-code writes one JSONL
 // row per content block during the turn) and on `sessionID` (a pre-generated
 // UUID passed to the CLI) being known before the turn starts.
-func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk) {
+func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk, accountHome ...string) {
 	if streamChan == nil || !isClaudeTranscriptSessionID(sessionID) {
 		return
 	}
 	ticker := time.NewTicker(claudeTranscriptStreamPollInterval)
 	defer ticker.Stop()
-	tailer := newClaudeTranscriptTailer(sessionID, workingDir)
+	tailer := newClaudeTranscriptTailer(sessionID, workingDir, accountHome...)
 	defer tailer.Close()
 
 	// A tool_use row and its tool_result row can land in different polls (the
@@ -117,12 +117,12 @@ func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, t
 // returns a stop function that waits for its final flush. The caller MUST call
 // that function before closing streamChan: streamClaudeTranscript intentionally
 // polls once more after cancellation so a just-written tool receipt is not lost.
-func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk) func() {
+func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk, accountHome ...string) func() {
 	streamCtx, cancel := context.WithCancel(parentCtx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		streamClaudeTranscript(streamCtx, sessionID, workingDir, turnStart, streamChan)
+		streamClaudeTranscript(streamCtx, sessionID, workingDir, turnStart, streamChan, accountHome...)
 	}()
 
 	var stopOnce sync.Once
@@ -139,6 +139,7 @@ func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDi
 // the transcript exists, path discovery backs off; the expensive compatibility
 // glob is delayed when workingDir is known, then runs at most every 30s.
 type claudeTranscriptTailer struct {
+	accountHome    []string
 	sessionID      string
 	workingDir     string
 	path           string
@@ -149,8 +150,9 @@ type claudeTranscriptTailer struct {
 	nextFallbackAt time.Time
 }
 
-func newClaudeTranscriptTailer(sessionID, workingDir string) *claudeTranscriptTailer {
+func newClaudeTranscriptTailer(sessionID, workingDir string, accountHome ...string) *claudeTranscriptTailer {
 	return &claudeTranscriptTailer{
+		accountHome:    append([]string(nil), accountHome...),
 		sessionID:      sessionID,
 		workingDir:     workingDir,
 		resolveBackoff: claudeTranscriptStreamPollInterval,
@@ -204,7 +206,7 @@ func (t *claudeTranscriptTailer) ensureOpen(now time.Time) error {
 		allowFallback = true
 		t.nextFallbackAt = now.Add(30 * time.Second)
 	}
-	path, err := resolveClaudeTranscriptPath(t.sessionID, t.workingDir, allowFallback)
+	path, err := resolveClaudeTranscriptPath(t.sessionID, t.workingDir, allowFallback, t.accountHome...)
 	if err != nil || path == "" {
 		t.scheduleResolve(now)
 		return err

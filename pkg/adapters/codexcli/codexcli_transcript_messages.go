@@ -40,8 +40,8 @@ import (
 // messages).
 //
 // Best-effort: returns nil on any error or when no rollout is found.
-func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string) []llmtypes.MessageContent {
-	root := codexSessionsRoot()
+func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string, accountRoot ...string) []llmtypes.MessageContent {
+	root := codexSessionsRoot(accountRoot...)
 	if root == "" {
 		return nil
 	}
@@ -95,8 +95,8 @@ func readCodexTranscriptMessages(turnStart time.Time, expectedWorkingDir string)
 // MCP calls, and tool outputs) for conversation forensics. Using that trail as
 // the workflow result is what caused MCP calls to leak into plan-step completion
 // summaries and automatic parent notifications.
-func readCodexTranscriptFinalAssistantText(turnStart time.Time, expectedWorkingDir string) (string, string) {
-	path := findCodexRolloutByWorkingDirUnsafe(turnStart, expectedWorkingDir)
+func readCodexTranscriptFinalAssistantText(turnStart time.Time, expectedWorkingDir string, accountRoot ...string) (string, string) {
+	path := findCodexRolloutByWorkingDirUnsafe(turnStart, expectedWorkingDir, accountRoot...)
 	if path == "" {
 		return "", ""
 	}

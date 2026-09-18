@@ -100,13 +100,16 @@ func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerS
 // too. Only fall back to the freshest-in-directory guess below when
 // knownNativeSessionID is empty — a genuinely first-ever turn, where cursor
 // hasn't reported an id yet and there is no better signal available.
-func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string, knownNativeSessionID string) ([]llmtypes.MessageContent, string) {
+func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string, knownNativeSessionID string, accountHome ...string) ([]llmtypes.MessageContent, string) {
 	if strings.TrimSpace(workingDir) == "" {
 		return nil, ""
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, ""
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	var pickedPath string
 	// A persisted native ID is authoritative. Never fall back to a different

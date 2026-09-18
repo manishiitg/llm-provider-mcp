@@ -310,9 +310,10 @@ func SendPiCLIInteractiveControlKey(ctx context.Context, sessionID, key string) 
 
 // Config holds configuration for LLM initialization
 type Config struct {
-	Provider    Provider
-	ModelID     string
-	Temperature float64
+	ConnectionID string
+	Provider     Provider
+	ModelID      string
+	Temperature  float64
 	// EventEmitter for emitting LLM events (replaces Tracers)
 	EventEmitter interfaces.EventEmitter
 	TraceID      interfaces.TraceID
@@ -332,9 +333,13 @@ type Config struct {
 
 // ProviderAPIKeys holds API keys for different providers
 type ProviderAPIKeys struct {
-	OpenRouter *string
-	OpenAI     *string
-	Anthropic  *string
+	RuntimeEnvironment map[string]string `json:"-"`
+	// ResolveConnection is a server-owned authorization and credential resolver.
+	// It is never accepted from JSON and must survive credential clones.
+	ResolveConnection func(context.Context, Provider, string) (*ProviderAPIKeys, error) `json:"-"`
+	OpenRouter        *string
+	OpenAI            *string
+	Anthropic         *string
 	// ClaudeCodeOAuthToken is a workflow-scoped Claude Code subscription token.
 	// It is deliberately separate from Anthropic: the claude-code provider must
 	// never fall back to API-key billing. Callers should populate this only from
@@ -415,6 +420,12 @@ func (k *ProviderAPIKeys) Clone() *ProviderAPIKeys {
 		return nil
 	}
 	out := *k // shallow copy — all *string fields are immutable, so sharing is safe
+	if k.RuntimeEnvironment != nil {
+		out.RuntimeEnvironment = map[string]string{}
+		for key, value := range k.RuntimeEnvironment {
+			out.RuntimeEnvironment[key] = value
+		}
+	}
 	if k.Bedrock != nil {
 		b := *k.Bedrock
 		out.Bedrock = &b
@@ -434,6 +445,23 @@ func (k *ProviderAPIKeys) Clone() *ProviderAPIKeys {
 
 // InitializeLLM creates and initializes an LLM based on the provider configuration
 func InitializeLLM(config Config) (llmtypes.Model, error) {
+	if config.ConnectionID != "" {
+		if config.APIKeys == nil || config.APIKeys.ResolveConnection == nil {
+			return nil, fmt.Errorf("provider connection cannot be resolved")
+		}
+		ctx := config.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		keys, err := config.APIKeys.ResolveConnection(ctx, config.Provider, config.ConnectionID)
+		if err != nil {
+			return nil, err
+		}
+		if keys == nil {
+			return nil, fmt.Errorf("provider connection has no credentials")
+		}
+		config.APIKeys = keys
+	}
 	var llm llmtypes.Model
 	var err error
 
@@ -477,6 +505,10 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 	}
 
 	// Wrap the LLM with provider information and tracing
+	if config.APIKeys != nil && len(config.APIKeys.RuntimeEnvironment) > 0 {
+		keys := config.APIKeys.Clone()
+		llm = &accountBoundModel{Model: llm, environment: keys.RuntimeEnvironment, credentials: accountCredentials(config)}
+	}
 	return NewProviderAwareLLM(llm, config.Provider, config.ModelID, config.EventEmitter, config.TraceID, config.Logger), nil
 }
 

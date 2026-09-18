@@ -248,8 +248,8 @@ func codexTaskCompleteBelongsToTurn(startedTurnID, completedTurnID string) bool 
 // sessions share a directory — which a workflow's Chat and Schedule always do
 // (PLAT-106). Every remaining caller is a known gap tracked by PLAT-108. New
 // code must use resolveCodexRolloutPath, which binds to the session's thread.
-func findCodexRolloutByWorkingDirUnsafe(turnStart time.Time, expectedWorkingDir string) string {
-	return findCodexRolloutByWorkingDirExcluding(turnStart, expectedWorkingDir, nil)
+func findCodexRolloutByWorkingDirUnsafe(turnStart time.Time, expectedWorkingDir string, accountRoot ...string) string {
+	return findCodexRolloutByWorkingDirExcluding(turnStart, expectedWorkingDir, nil, accountRoot...)
 }
 
 // findCodexRolloutByWorkingDirExcluding resolves a rollout by working directory
@@ -260,8 +260,8 @@ func findCodexRolloutByWorkingDirUnsafe(turnStart time.Time, expectedWorkingDir 
 // the other conversation's transcript (PLAT-106). The exclusion set is the
 // disambiguator until the session learns its own thread ID, after which
 // findCodexRolloutForThread is exact and this path is not used.
-func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool) string {
-	root := codexSessionsRoot()
+func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, accountRoot ...string) string {
+	root := codexSessionsRoot(accountRoot...)
 	if root == "" {
 		return ""
 	}
@@ -297,12 +297,12 @@ func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingD
 // Codex names each rollout `rollout-<timestamp>-<thread-id>.jsonl` and repeats
 // the same value in `session_meta.payload.id`, so the filename is a cheap
 // pre-filter and the payload is the authority.
-func findCodexRolloutForThread(threadID string) string {
+func findCodexRolloutForThread(threadID string, accountRoot ...string) string {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return ""
 	}
-	root := codexSessionsRoot()
+	root := codexSessionsRoot(accountRoot...)
 	if root == "" {
 		return ""
 	}
@@ -353,7 +353,10 @@ func readCodexRolloutThreadID(path string) string {
 	return ""
 }
 
-func codexSessionsRoot() string {
+func codexSessionsRoot(accountRoot ...string) string {
+	if len(accountRoot) > 0 && accountRoot[0] != "" {
+		return filepath.Join(accountRoot[0], "sessions")
+	}
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
 		return filepath.Join(codexHome, "sessions")
 	}

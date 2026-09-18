@@ -51,7 +51,7 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	tmuxName := entry.tmuxName
 	logPath := entry.logPath
 	if logPath == "" && entry.nativeSessionID != "" {
-		logPath = museSessionLogPath(entry.nativeSessionID)
+		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
 	}
 	musePersistentPool.Unlock()
 	if !museTmuxSessionAlive(ctx, tmuxName) {

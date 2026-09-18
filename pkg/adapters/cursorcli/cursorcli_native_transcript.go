@@ -38,7 +38,7 @@ type NativeTranscript struct {
 // `<user_query>` payload of cursor's second user blob per turn) and drops
 // the provider-options context blob, the system prompt, reasoning and tool
 // calls/results.
-func ReadNativeTranscript(workingDir, nativeSessionID string) (transcript NativeTranscript, ok bool, err error) {
+func ReadNativeTranscript(workingDir, nativeSessionID string, accountHome ...string) (transcript NativeTranscript, ok bool, err error) {
 	workingDir = strings.TrimSpace(workingDir)
 	nativeSessionID = strings.TrimSpace(nativeSessionID)
 	if workingDir == "" || nativeSessionID == "" {
@@ -47,6 +47,9 @@ func ReadNativeTranscript(workingDir, nativeSessionID string) (transcript Native
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return NativeTranscript{}, false, err
+	}
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		home = accountHome[0]
 	}
 	dbPath := cursorStoreDBForNativeSession(home, workingDir, nativeSessionID)
 	if dbPath == "" {

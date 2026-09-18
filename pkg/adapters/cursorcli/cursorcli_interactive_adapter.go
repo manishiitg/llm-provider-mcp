@@ -116,6 +116,7 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool) string 
 }
 
 type cursorInteractiveSession struct {
+	accountHome string
 	// Independent of mu: live input is accepted while GenerateContent owns mu.
 	retainedMu         sync.Mutex
 	retainedStoreDB    string
@@ -302,7 +303,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		nativeSessionID := resumeID
 		if nativeSessionID == "" {
-			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID); storeDBPath != "" {
+			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome); storeDBPath != "" {
 				nativeSessionID = cursorNativeSessionIDFromStoreDBPath(storeDBPath)
 			}
 		}
@@ -336,7 +337,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// as pre-existing history by the streaming deduplicator.
 	var streamState *cursorTranscriptStreamState
 	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled(opts) {
-		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID)
+		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
 	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
 	if err := sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
@@ -406,7 +407,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// twice — to recover the unwrapped reply text here, and for the native
 	// session ID / intermediate messages further down — and the read polls for up
 	// to 4s on cursor's async commit, so it must not happen twice per turn.
-	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID)
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
 	content = llmtypes.ReconcileFinalAnswer(content, latestCursorAssistantText(sidecarMsgs))
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
@@ -565,6 +566,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
 		session := &cursorInteractiveSession{
 			ownerSessionID:   ownerSessionID,
+			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
 			tmuxSessionName:  newCursorTmuxSessionName(),
 			persistent:       persistent,
 			createdAt:        now,

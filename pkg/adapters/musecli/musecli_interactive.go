@@ -210,19 +210,25 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	configHome, cleanup, err := musePrepareIsolatedConfig(strings.TrimSpace(mcpJSON), toolAllowlist)
+	configHome, cleanup, err := museAccountConfig(ctx, strings.TrimSpace(mcpJSON), toolAllowlist)
 	if err != nil {
 		return nil, err
 	}
-	argv := []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museXDGDataHome(), "muse", "--trust-workspace", "--provider", provider}
+	argv := []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museAccountDataHome(ctx), "muse", "--trust-workspace", "--provider", provider}
 	if strings.TrimSpace(mcpJSON) != "" {
 		argv = append(argv, museTUIApprovalArgv()...)
 	}
 	if toolAllowlist != nil {
 		argv = append(argv, museNativeContainmentArgv()...)
 	}
+	shell, cleanupLaunch, err := museAccountLaunch(ctx, argv, workdir)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	defer func() { time.AfterFunc(30*time.Second, cleanupLaunch) }()
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", session,
-		"-x", "200", "-y", "50", "-c", workdir}, argv...)...)
+		"-x", "200", "-y", "50", "-c", workdir}, shell)...)
 	if out, err := launch.CombinedOutput(); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("tmux new-session: %w\n%s", err, out)
