@@ -23,6 +23,8 @@ func TestClassifyKinds(t *testing.T) {
 		// Quota exhaustion (must win over rate-limit patterns in the same message)
 		{"gemini daily quota", errors.New("googleapi: Error 429: Quota exceeded for metric generate_requests_per_model_per_day"), KindQuotaExhausted},
 		{"openai quota", errors.New("429: You exceeded your current quota, please check your plan and billing details"), KindQuotaExhausted},
+		{"claude login is not billing quota", errors.New("failed to clear stale prompt; latest pane tail: Select login method: 1. Claude account with subscription 2. Anthropic Console account · API usage billing"), KindAuth},
+		{"claude pane billing text is not quota", errors.New("failed to clear stale prompt; latest pane tail: API usage billing"), KindUnknown},
 		{"claude code usage", errors.New("you've hit your usage limit, resets at 3pm"), KindQuotaExhausted},
 		{"muse usage", errors.New("Usage limit reached · /upgrade; wait for usage to reset at Sep 14 at 5:30 AM"), KindQuotaExhausted},
 		// Codex 0.153+ appends an OFFER to every reply ("You have N usage limit

@@ -198,6 +198,12 @@ func classifyKind(err error) Kind {
 	// inside it must not change the classification of the actual error prefix.
 	// Classify the diagnostic prefix only while preserving the full text on the
 	// returned error for logs and support.
+	if strings.Contains(msg, "select login method:") && strings.Contains(msg, "claude account with subscription") {
+		return KindAuth
+	}
+	if pane := strings.Index(msg, "latest pane tail:"); pane >= 0 {
+		msg = msg[:pane]
+	}
 	if pane := strings.Index(msg, "latest pane:"); pane >= 0 {
 		msg = msg[:pane]
 	}
