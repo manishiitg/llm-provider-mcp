@@ -2676,6 +2676,16 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 				}
 				continue
 			}
+			// Claude has finished converting a bracketed multiline paste as
+			// soon as the attachment chip is visible. The activity spinner may
+			// keep repainting another row while a turn is running, so requiring
+			// the entire pane to remain byte-for-byte stable can never succeed.
+			// This was observed in production as a false pre-submit timeout: the
+			// chip was ready, but Enter was never sent and the backend persisted
+			// a delivery-uncertain receipt.
+			if strings.Contains(captured, "[Pasted text") {
+				return false, nil
+			}
 			// If the pane already showed activity before paste, a changed screen can
 			// just be the pasted draft appearing while the old activity is still
 			// visible. Do not treat that as implicit submission; let the caller send
@@ -2683,7 +2693,7 @@ func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforeP
 			if hasClaudeActivity(captured) && !baselineActive && (captured != paneBeforePaste || sawPaste) {
 				return true, nil
 			}
-			if captured != paneBeforePaste || strings.Contains(captured, "[Pasted text") {
+			if captured != paneBeforePaste {
 				sawPaste = true
 			}
 			if !sawPaste {

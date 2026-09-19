@@ -34,6 +34,45 @@ func TestClaudeInteractiveStreamTmuxScreenFlag(t *testing.T) {
 	}
 }
 
+// Regression for submission ab23b1f9-45e2-42aa-a04f-7b1d2147df31:
+// Claude was still animating an active turn while a multiline follow-up had
+// already become a visible paste chip. Waiting for the whole pane to stabilize
+// timed out before Enter, producing a false delivery-uncertain 409.
+func TestClaudePromptPasteChipSettlesWhileActiveTurnRepaints(t *testing.T) {
+	fakeBin := t.TempDir()
+	tmuxPath := filepath.Join(fakeBin, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\n' '✳ Billowing… (45s · thinking with high effort)'
+  printf '%s\n' '❯ [Pasted text #1 +3 lines]'
+  printf '%s\n' '  paste again to expand'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	implicitlySubmitted, err := waitForPromptPasteWithTimeout(
+		context.Background(),
+		"active-multiline-follow-up",
+		"✳ Billowing… (44s · thinking with high effort)\n❯ ",
+		2*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("visible paste chip did not settle: %v", err)
+	}
+	if implicitlySubmitted {
+		t.Fatal("visible paste chip was mistaken for an already-submitted prompt")
+	}
+	if elapsed := time.Since(started); elapsed >= promptPasteVisibleStableWindow {
+		t.Fatalf("visible paste chip waited for the repainting pane to stabilize: %v", elapsed)
+	}
+}
+
 func TestClaudeTerminalStreamCapturesRawScreenRows(t *testing.T) {
 	fakeBin := t.TempDir()
 	argsPath := fakeBin + "/capture-args.log"
