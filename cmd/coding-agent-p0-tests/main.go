@@ -15,7 +15,20 @@ import (
 func main() {
 	providerFlag := flag.String("provider", "", "coding CLI provider ID")
 	packageFlag := flag.String("package", "", "repository-relative Go package containing the P0 tests")
+	listProviders := flag.Bool("list-providers", false, "print the registry-derived release matrix as 'provider package' lines")
 	flag.Parse()
+
+	if *listProviders {
+		matrix, err := llmproviders.CodingAgentP0ReleaseMatrix()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		for _, entry := range matrix {
+			fmt.Printf("%s %s\n", entry.Provider, entry.Package)
+		}
+		return
+	}
 
 	provider := llmproviders.Provider(strings.TrimSpace(*providerFlag))
 	expectedPackage := filepath.ToSlash(strings.Trim(strings.TrimSpace(*packageFlag), "/"))

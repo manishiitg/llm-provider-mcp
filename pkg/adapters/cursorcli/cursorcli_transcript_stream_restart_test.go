@@ -98,6 +98,46 @@ func TestCursorTranscriptStreamEmitsGenuinelyNewText(t *testing.T) {
 	}
 }
 
+// TestNoReplayLiveHelpersAgainstSyntheticStore exercises the machinery the
+// live no-replay test depends on — quiescence wait, blob SQL scan, mtime
+// touch, freshest-store resolution — against a synthetic store, so a bug
+// in that plumbing fails deterministically rather than on the next live run.
+func TestNoReplayLiveHelpersAgainstSyntheticStore(t *testing.T) {
+	const marker = "NOREPLAY_DETERMINISTIC_MARKER"
+	workingDir := newCursorHistoryFixture(t, "old narration "+marker)
+
+	stores := waitForCursorStoresQuiescent(t, workingDir, 30*time.Second)
+	if len(stores) == 0 {
+		t.Fatal("quiescence returned no stores")
+	}
+	var markerStores []string
+	for _, store := range stores {
+		if cursorStoreBlobsContain(t, store, marker) {
+			markerStores = append(markerStores, store)
+		}
+	}
+	if len(markerStores) == 0 {
+		t.Fatal("SQL scan did not find the marker in the synthetic store")
+	}
+	now := time.Now()
+	for _, store := range markerStores {
+		if err := os.Chtimes(store, now, now); err != nil {
+			t.Fatalf("Chtimes %s: %v", store, err)
+		}
+	}
+	const ownerSessionID = "noreplay-helpers-owner"
+	resetCursorReturnedBlobs(ownerSessionID + "\x00transcript-stream")
+	state := newCursorTranscriptStreamState(time.Now(), workingDir, ownerSessionID, "")
+	if path := freshestCursorStoreDBSince(workingDir, state.baseline, ""); path == "" {
+		t.Fatal("fresh reader resolved no store after the touch")
+	}
+	for _, chunk := range collectCursorStreamChunks(t, state) {
+		if chunk.Type == llmtypes.StreamChunkTypeContent && strings.Contains(chunk.Content, marker) {
+			t.Fatalf("history replayed on a fresh reader: %q", marker)
+		}
+	}
+}
+
 // resetCursorReturnedBlobs clears one stream key's dedup set, simulating the
 // empty map a newly-started process begins with.
 func resetCursorReturnedBlobs(streamKey string) {

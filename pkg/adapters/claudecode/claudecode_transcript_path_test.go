@@ -36,6 +36,37 @@ func transcriptPathForWorkingDir(t *testing.T, home, workingDir, sessionID strin
 	return paths[0]
 }
 
+func TestFreshestClaudeTranscriptForWorkDir(t *testing.T) {
+	// Exercises the live no-replay test's transcript discovery against a
+	// synthetic HOME, so a bug in that plumbing fails deterministically
+	// rather than on the next live run.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "ws", "proj")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldPath := transcriptPathForWorkingDir(t, home, workDir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	newPath := transcriptPathForWorkingDir(t, home, workDir, "ffffffff-1111-2222-3333-444444444444")
+	if err := os.WriteFile(oldPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+	past := time.Now().Add(-time.Hour)
+	now := time.Now()
+	if err := os.Chtimes(oldPath, past, past); err != nil {
+		t.Fatalf("Chtimes old: %v", err)
+	}
+	if err := os.Chtimes(newPath, now, now); err != nil {
+		t.Fatalf("Chtimes new: %v", err)
+	}
+	if got := freshestClaudeTranscriptForWorkDir(t, workDir); got != newPath {
+		t.Fatalf("freshest = %s, want %s", got, newPath)
+	}
+}
+
 func TestResolveClaudeTranscriptPathUsesWorkingDirectoryWithoutGlobalScan(t *testing.T) {
 	resetClaudeTranscriptResolverForTest(t)
 	home := t.TempDir()

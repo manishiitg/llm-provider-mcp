@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPiMarkerOffsetDoesNotReplayHistoryOnFreshProcess is the pi counterpart of
@@ -68,6 +69,15 @@ func TestPiMarkerOffsetDoesNotReplayHistoryOnFreshProcess(t *testing.T) {
 	if !strings.Contains(got.String(), current) {
 		t.Errorf("current-turn text was not read; the offset is too aggressive.\nread: %q", got.String())
 	}
+}
+
+// TestWaitForPiMarkerFileQuiescent exercises the live no-replay test's
+// settle wait against a static marker file, so a bug in that plumbing
+// fails deterministically rather than on the next live run.
+func TestWaitForPiMarkerFileQuiescent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "markers.jsonl")
+	writeMarkerLines(t, path, `{"type":"session_start"}`)
+	waitForPiMarkerFileQuiescent(t, path, 30*time.Second)
 }
 
 // writeMarkerLines appends newline-delimited marker JSON, the way pi's own

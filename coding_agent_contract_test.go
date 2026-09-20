@@ -413,41 +413,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertLifecyclePolicy,
 		CertPersistentCancelReuse,
 		CertStaleDraftCleanup,
-		// The no-history-replay behaviour IS proven for cursor, by
-		// TestCursorTranscriptStreamDoesNotReplayHistoryOnFreshProcess (plus a
-		// paired test that new text still streams) — cursor is the provider whose
-		// live bug prompted the certification, and that test fails if
-		// primeSeenBlobs() is removed. It cannot be REGISTERED here because
-		// TestCursorCLICertificationsUseRealE2EOnly requires every cursor cert to
-		// be a real cursor-agent run, and this proof is deterministic (synthetic
-		// store.db + an empty dedup map is the only way to simulate the restart
-		// that triggers the bug — a live run in a fresh workspace has no history
-		// to replay, which is exactly why the live streaming E2Es never caught
-		// it). Closing this gap means a real E2E that spans a process restart.
-		CertStreamNoHistoryReplay,
-	},
-	// Same shape as cursor: proven deterministically by
-	// TestPiMarkerOffsetDoesNotReplayHistoryOnFreshProcess (pi is structurally
-	// immune — its turn boundary is an on-disk marker-file size snapshot taken
-	// before the prompt is sent), but TestPiCLICertificationsUseRealE2EOnly
-	// requires a real Pi run for registration.
-	ProviderPiCLI: {
-		CertStreamNoHistoryReplay,
-	},
-	// Claude tails its JSONL with the same turnStart row filter as codex (see
-	// readClaudeTranscriptEventsSince, whose own doc notes it drops rows older
-	// than turnStart to avoid replay), so it is expected to be immune for the
-	// same reason — but nothing pins that down yet.
-	ProviderClaudeCode: {
-		CertStreamNoHistoryReplay,
-	},
-	// Codex IS proven deterministically by
-	// TestCodexTranscriptStreamDoesNotReplayHistoryOnFreshProcess (wall-clock
-	// row filter, so the boundary survives a restart). Listed as a gap rather
-	// than registered because this certification is real-E2E-only for every
-	// provider — see TestStreamNoHistoryReplayIsRealE2EOnly.
-	ProviderCodexCLI: {
-		CertStreamNoHistoryReplay,
 	},
 	// Muse onboarding (2026-09-10): all release-blocking P0s are registered
 	// with live E2E proofs; what remains below is the capability-derived
@@ -615,6 +580,86 @@ func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 			if len(cert.Env) != 1 || cert.Env[0] != "-coding-cli-p0-live" {
 				t.Fatalf("%s P0 certification %s must use only the live P0 gate, got %#v", contract.Provider, id, cert.Env)
 			}
+		}
+	}
+}
+
+func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
+	matrix, err := CodingAgentP0ReleaseMatrix()
+	if err != nil {
+		t.Fatalf("release matrix error = %v", err)
+	}
+	if len(matrix) == 0 {
+		t.Fatal("release matrix must not be empty")
+	}
+	// The default release matrix must equal the active release-provider
+	// set: every tmux, non-deprecated provider with P0 requirements,
+	// computed here via the default-contract lookup rather than the
+	// matrix's first-contract scan.
+	want := make(map[Provider]bool)
+	seen := make(map[Provider]bool)
+	for _, contract := range CodingAgentProviderContracts() {
+		if seen[contract.Provider] {
+			continue
+		}
+		seen[contract.Provider] = true
+		def, ok := GetCodingAgentProviderContract(contract.Provider, "")
+		if !ok || def.Transport != CodingAgentTransportTmux || def.Deprecated {
+			continue
+		}
+		if len(RequiredP0CodingAgentCertificationIDs(def)) == 0 {
+			continue
+		}
+		want[def.Provider] = true
+	}
+	if len(matrix) != len(want) {
+		t.Fatalf("release matrix has %d providers, want %d (%v)", len(matrix), len(want), want)
+	}
+	previous := Provider("")
+	for _, entry := range matrix {
+		if !want[entry.Provider] {
+			t.Fatalf("release matrix has unexpected provider %s", entry.Provider)
+		}
+		delete(want, entry.Provider)
+		if previous != "" && entry.Provider <= previous {
+			t.Fatalf("release matrix not sorted: %s after %s", entry.Provider, previous)
+		}
+		previous = entry.Provider
+		// The package must match every registered P0 test's location:
+		// a wrong package would run an empty selection and pass vacuously.
+		def, _ := GetCodingAgentProviderContract(entry.Provider, "")
+		need := make(map[CodingAgentCertificationID]bool)
+		for _, id := range RequiredP0CodingAgentCertificationIDs(def) {
+			need[id] = true
+		}
+		checked := 0
+		for _, cert := range CodingAgentProviderCertifications(entry.Provider) {
+			if !need[cert.ID] {
+				continue
+			}
+			checked++
+			if dir := filepath.ToSlash(filepath.Dir(cert.TestFile)); dir != entry.Package {
+				t.Fatalf("%s P0 test %s lives in %s, want package %s", entry.Provider, cert.TestName, dir, entry.Package)
+			}
+		}
+		if checked == 0 {
+			t.Fatalf("%s release entry has no registered P0 tests", entry.Provider)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("release matrix omits active providers %v", want)
+	}
+	// Deterministic across calls: release tooling resolves this fresh.
+	again, err := CodingAgentP0ReleaseMatrix()
+	if err != nil {
+		t.Fatalf("second release matrix error = %v", err)
+	}
+	if len(again) != len(matrix) {
+		t.Fatalf("second matrix has %d rows, want %d", len(again), len(matrix))
+	}
+	for i := range matrix {
+		if again[i] != matrix[i] {
+			t.Fatalf("row %d = %+v on repeat, want %+v", i, again[i], matrix[i])
 		}
 	}
 }

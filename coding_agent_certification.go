@@ -1,6 +1,8 @@
 package llmproviders
 
 import (
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -220,6 +222,17 @@ type CodingAgentCertification struct {
 	RealE2E     bool
 }
 
+// The capability-gated P0 blocks in RequiredP0CodingAgentCertificationIDs
+// spread these shared proof lists instead of naming IDs by hand, so the
+// requirement and the capability definition cannot disagree the way the
+// streaming pair once did (CertStructuredStreaming required while its
+// sibling CertStreamNoHistoryReplay silently fell to P1).
+var (
+	structuredStreamingCertificationIDs  = []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}
+	stalledTurnDiagnosisCertificationIDs = []CodingAgentCertificationID{CertStalledTurnDiagnosis}
+	durableAckCertificationIDs           = []CodingAgentCertificationID{CertDurableAck}
+)
+
 var codingAgentCapabilityCertifications = []struct {
 	name     string
 	enabled  func(CodingAgentProviderContract) bool
@@ -244,9 +257,9 @@ var codingAgentCapabilityCertifications = []struct {
 	{"ctrl-c state preserved", func(c CodingAgentProviderContract) bool { return c.HandlesCtrlCCleanExit }, []CodingAgentCertificationID{CertCtrlCStatePreserved}},
 	{"process cleanup", func(c CodingAgentProviderContract) bool { return c.ProcessScopedCleanup }, []CodingAgentCertificationID{CertCleanup}},
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
-	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}},
-	{"stalled turn diagnosis", func(c CodingAgentProviderContract) bool { return c.SupportsStalledTurnDiagnosis }, []CodingAgentCertificationID{CertStalledTurnDiagnosis}},
-	{"durable ack", func(c CodingAgentProviderContract) bool { return c.SupportsDurableAck }, []CodingAgentCertificationID{CertDurableAck}},
+	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, structuredStreamingCertificationIDs},
+	{"stalled turn diagnosis", func(c CodingAgentProviderContract) bool { return c.SupportsStalledTurnDiagnosis }, stalledTurnDiagnosisCertificationIDs},
+	{"durable ack", func(c CodingAgentProviderContract) bool { return c.SupportsDurableAck }, durableAckCertificationIDs},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
@@ -398,6 +411,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_realworld_test.go",
 			TestName:    "TestClaudeCodeTranscriptStreamingRealWorldLive",
 			Description: "tails the live JSONL transcript and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStreamNoHistoryReplay,
+			TestFile:    "pkg/adapters/claudecode/claudecode_transcript_stream_noreplay_live_test.go",
+			TestName:    "TestClaudeTranscriptStreamNoHistoryReplayLive",
+			Description: "commits a real marker turn to a real transcript, then proves a freshly constructed reader at a NOW boundary emits none of it",
 			RealE2E:     true,
 		},
 		{
@@ -657,6 +677,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertStreamNoHistoryReplay,
+			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_noreplay_live_test.go",
+			TestName:    "TestCodexTranscriptStreamNoHistoryReplayLive",
+			Description: "commits a real marker turn to a real rollout, then proves a freshly constructed reader at offset 0 with a NOW boundary emits none of it",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertReplyFormattingFidelity,
 			TestFile:    "pkg/adapters/codexcli/codexcli_reply_formatting_live_test.go",
 			TestName:    "TestCodexCLIRealReplyFormattingFidelityE2E",
@@ -908,6 +935,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertStreamNoHistoryReplay,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_noreplay_live_test.go",
+			TestName:    "TestCursorTranscriptStreamNoHistoryReplayLive",
+			Description: "commits a real marker turn to a real store.db, settles the async commit, then proves a freshly constructed reader with an empty dedup map emits none of it",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertReplyFormattingFidelity,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_reply_formatting_live_test.go",
 			TestName:    "TestCursorCLIRealReplyFormattingFidelityE2E",
@@ -1128,6 +1162,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/picli/picli_structured_stream_realworld_test.go",
 			TestName:    "TestPiCLIStructuredStreamingRealWorldLive",
 			Description: "streams structured assistant-text + tool-call chunks from pi's injected marker stream across a real bridge task",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStreamNoHistoryReplay,
+			TestFile:    "pkg/adapters/picli/picli_transcript_stream_noreplay_live_test.go",
+			TestName:    "TestPiMarkerStreamNoHistoryReplayLive",
+			Description: "commits a real marker turn to a real marker file, then proves a freshly snapshotted start offset reads none of it back",
 			RealE2E:     true,
 		},
 		{
@@ -1431,32 +1472,81 @@ func CodingAgentProviderCertifications(provider Provider) []CodingAgentCertifica
 	return certs
 }
 
-// CodingAgentCertificationPriorityForID returns the release priority for a
-// proof ID. New certifications default to P1 until deliberately promoted.
-func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) CodingAgentCertificationPriority {
-	for _, required := range requiredP0CertificationIDs {
-		if id == required {
-			return CodingAgentCertificationPriorityP0
+// CodingAgentP0ReleaseEntry is one row of the release matrix: an active P0
+// provider and the Go package containing its registered P0 tests.
+type CodingAgentP0ReleaseEntry struct {
+	Provider Provider
+	Package  string
+}
+
+// CodingAgentP0ReleaseMatrix derives the release matrix from the registry:
+// every active (tmux, non-deprecated) provider with required P0 proofs,
+// with the package holding its P0 tests. Release tooling resolves its
+// provider set and test packages from this function instead of
+// hardcoding them, so onboarding a provider cannot silently skip it.
+func CodingAgentP0ReleaseMatrix() ([]CodingAgentP0ReleaseEntry, error) {
+	var matrix []CodingAgentP0ReleaseEntry
+	seen := make(map[Provider]bool)
+	for _, contract := range CodingAgentProviderContracts() {
+		if seen[contract.Provider] {
+			continue
+		}
+		seen[contract.Provider] = true
+		if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+			continue
+		}
+		required := RequiredP0CodingAgentCertificationIDs(contract)
+		if len(required) == 0 {
+			continue
+		}
+		packagePath, err := codingAgentP0TestPackage(contract.Provider, required)
+		if err != nil {
+			return nil, err
+		}
+		matrix = append(matrix, CodingAgentP0ReleaseEntry{Provider: contract.Provider, Package: packagePath})
+	}
+	return matrix, nil
+}
+
+// codingAgentP0TestPackage derives the test package for a provider from the
+// registered P0 tests' file locations. Proof completeness stays with the
+// callers (the P0 runner rejects missing required tests per provider);
+// this only requires the registered P0 tests to agree on one package.
+func codingAgentP0TestPackage(provider Provider, required []CodingAgentCertificationID) (string, error) {
+	need := make(map[CodingAgentCertificationID]bool, len(required))
+	for _, id := range required {
+		need[id] = true
+	}
+	packagePath := ""
+	for _, cert := range CodingAgentProviderCertifications(provider) {
+		if !need[cert.ID] {
+			continue
+		}
+		dir := filepath.ToSlash(filepath.Dir(cert.TestFile))
+		if packagePath == "" {
+			packagePath = dir
+		} else if dir != packagePath {
+			return "", fmt.Errorf("%s P0 tests span packages %s and %s", provider, packagePath, dir)
 		}
 	}
-	// Streaming is P0 wherever it is required (capability-gated per provider via
-	// RequiredP0CodingAgentCertificationIDs), so its registered cert must carry P0
-	// priority + the live gate rather than defaulting to P1.
-	if id == CertStructuredStreaming || id == CertStructuredMultiTurn || id == CertBestEffortToolRestrictions {
-		return CodingAgentCertificationPriorityP0
+	if packagePath == "" {
+		return "", fmt.Errorf("%s has required P0 proofs but no registered P0 tests", provider)
 	}
-	// A false "made no progress" timeout on a turn that actually succeeded
-	// (PLAT-116) is release-blocking wherever the diagnostic is claimed, not
-	// a nice-to-have — same reasoning as streaming above.
-	if id == CertStalledTurnDiagnosis {
-		return CodingAgentCertificationPriorityP0
-	}
-	// A pane misread that fails a send the CLI accepted is a user-visible
-	// false error; a queued steer with no durability proof is a silent
-	// drop. Both are release-blocking wherever the adapter claims the
-	// durable record.
-	if id == CertDurableAck {
-		return CodingAgentCertificationPriorityP0
+	return packagePath, nil
+}
+
+// CodingAgentCertificationPriorityForID returns the release priority for a
+// proof ID. Priority derives from requirement: an ID is P0 exactly when
+// some active contract requires it, so the two can never disagree the
+// way the streaming pair once did. New certifications default to P1
+// until a requirement names them.
+func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) CodingAgentCertificationPriority {
+	for _, contract := range CodingAgentProviderContracts() {
+		for _, required := range RequiredP0CodingAgentCertificationIDs(contract) {
+			if id == required {
+				return CodingAgentCertificationPriorityP0
+			}
+		}
 	}
 	return CodingAgentCertificationPriorityP1
 }
@@ -1482,8 +1572,10 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// structured transcript chunks. A provider that merely reads a transcript for
 	// a final-answer summary (pi today) is not required to certify streaming —
 	// until its live tailer + streaming E2E land and it flips the flag on.
+	// Both proofs spread from the shared definition: the stream AND the
+	// no-history-replay guarantee are required together.
 	if contract.SupportsStructuredStreaming {
-		ids = append(ids, CertStructuredStreaming)
+		ids = append(ids, structuredStreamingCertificationIDs...)
 	}
 	// Workflow steps and background agents use structured execution. Every
 	// persistent provider must independently prove that the native session
@@ -1496,12 +1588,12 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// works against a real turn, the same way structured streaming above
 	// must prove itself for providers that claim it.
 	if contract.SupportsStalledTurnDiagnosis {
-		ids = append(ids, CertStalledTurnDiagnosis)
+		ids = append(ids, stalledTurnDiagnosisCertificationIDs...)
 	}
 	// A provider claiming rollout/transcript-backed submit confirmation
 	// must prove the durable record actually confirms a busy steer.
 	if contract.SupportsDurableAck {
-		ids = append(ids, CertDurableAck)
+		ids = append(ids, durableAckCertificationIDs...)
 	}
 	return ids
 }
