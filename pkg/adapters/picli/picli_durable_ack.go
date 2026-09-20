@@ -23,7 +23,7 @@ import (
 // The send path already consults markers inline (6s budget); this file
 // adds the long-budget observe-only arbiter for pane failures plus the
 // Await entry point the server durability watcher calls after every
-// fast ack. See docs/refactor/codex_durable_ack_p0.md in
+// fast ack. See docs/refactor/durable_ack_p0.md in
 // mcp-agent-builder-go for the two-stage receipt design.
 
 // PiDurableAckOutcome is the verdict of the marker arbiter.

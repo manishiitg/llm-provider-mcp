@@ -25,7 +25,7 @@ import (
 // The live-input path is otherwise pane-only ("fire-and-report"), which
 // makes this the highest-value durable ack of the rollout: without it a
 // pane misread is a user-visible false error with no second opinion.
-// See docs/refactor/codex_durable_ack_p0.md in mcp-agent-builder-go.
+// See docs/refactor/durable_ack_p0.md in mcp-agent-builder-go.
 
 // MuseDurableAckOutcome is the verdict of the transcript arbiter.
 type MuseDurableAckOutcome string

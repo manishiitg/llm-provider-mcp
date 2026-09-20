@@ -22,7 +22,7 @@ import (
 // usually within a second of Enter on an idle composer.
 //
 // The send path therefore runs in two phases (see
-// docs/refactor/codex_durable_ack_p0.md in mcp-agent-builder-go):
+// docs/refactor/durable_ack_p0.md in mcp-agent-builder-go):
 //
 //  1. Fast pane confirm with the existing resubmit loop. Success returns
 //     at once; the common case pays no file cost.
