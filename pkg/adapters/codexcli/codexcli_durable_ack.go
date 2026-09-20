@@ -81,6 +81,11 @@ const (
 	codexDurableAckBudgetMin     = 5 * time.Second
 	codexDurableAckBudgetMax     = 300 * time.Second
 	codexDurableAckPollInterval  = 250 * time.Millisecond
+	// codexDurableAckCaptureTimeout bounds the final pane read on
+	// budget expiry. It runs under a fresh context derived from the
+	// poll's parent (the budget deadline is expired there by
+	// construction); 5s is generous for one tmux scrape.
+	codexDurableAckCaptureTimeout = 5 * time.Second
 )
 
 // codexDurableAckBudget bounds the observe-only file arbiter.
@@ -109,11 +114,14 @@ func codexDurableAckBudget() time.Duration {
 // codexPendingDurableAck is the pre-paste snapshot that scopes one send's
 // durability proof. Offset scoping (plus exact text) means an identical
 // earlier message already in the stream cannot confirm a new one.
+// Occurrence disambiguates identical sends queued before any row lands:
+// the nth stashed send needs the nth matching proof row.
 type codexPendingDurableAck struct {
-	message string
-	path    string
-	offset  int64
-	since   time.Time
+	message    string
+	path       string
+	offset     int64
+	since      time.Time
+	occurrence int
 }
 
 const (
@@ -137,7 +145,16 @@ func stashCodexDurableReceipt(session *codexInteractiveSession, message, path st
 			kept = append(kept, pending)
 		}
 	}
-	kept = append(kept, codexPendingDurableAck{message: message, path: path, offset: offset, since: since})
+	// Occurrence is send-ordered: stashes run inside the broker-serialized
+	// send, so 1 + identical unexpired already pending is this send's
+	// position among identical queued sends.
+	occurrence := 1
+	for _, pending := range kept {
+		if pending.message == message {
+			occurrence++
+		}
+	}
+	kept = append(kept, codexPendingDurableAck{message: message, path: path, offset: offset, since: since, occurrence: occurrence})
 	if len(kept) > codexMaxPendingDurableAcks {
 		kept = append([]codexPendingDurableAck(nil), kept[len(kept)-codexMaxPendingDurableAcks:]...)
 	}
@@ -163,14 +180,16 @@ func peekCodexDurableReceipt(session *codexInteractiveSession, message string) (
 }
 
 // takeCodexDurableReceipt removes and returns the earliest pending
-// snapshot for an identical message. FIFO consumption binds each wait
-// to its own send's baseline: with peek semantics a repeated send
-// reused the first receipt's offset, so the first row falsely
-// confirmed the second wait. Sends are broker-serialized per session
-// and watchers take in spawn order under this lock, so takes match
-// sends FIFO; the inline arbiter and the server watcher are mutually
-// exclusive per send (pane-failure path vs fast-ack path), so exactly
-// one of them takes each receipt.
+// snapshot for an identical message. FIFO consumption plus the
+// receipt's occurrence binds each wait to distinct proof: the nth
+// take needs the nth matching row, so identical sends queued before
+// any row lands (same offset on every receipt) cannot share one row.
+// Takes serialize under this lock, but take order is acquisition
+// order, not send order — the occurrence threshold keeps k takes
+// needing k distinct rows however watchers schedule. The inline
+// arbiter and the server watcher are mutually exclusive per send
+// (pane-failure path vs fast-ack path), so exactly one of them takes
+// each receipt.
 func takeCodexDurableReceipt(session *codexInteractiveSession, message string) (codexPendingDurableAck, bool) {
 	if session == nil {
 		return codexPendingDurableAck{}, false
@@ -188,11 +207,15 @@ func takeCodexDurableReceipt(session *codexInteractiveSession, message string) (
 	return codexPendingDurableAck{}, false
 }
 
-// codexRolloutUserMessageSince returns the timestamp of the first
-// response_item user row at byte offset >= minOffset, timestamped at or
-// after since, whose text matches message — or false when no row does.
-// Malformed lines are skipped; a missing file simply has no proof yet.
-func codexRolloutUserMessageSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+// codexRolloutUserMessageOccurrenceSince returns the timestamp of the
+// occurrence-th response_item user row at byte offset >= minOffset,
+// timestamped at or after since, whose text matches message — or false
+// when fewer rows match. Occurrence values below 1 mean 1. Malformed
+// lines are skipped; a missing file simply has no proof yet.
+func codexRolloutUserMessageOccurrenceSince(path, message string, since time.Time, minOffset int64, occurrence int) (time.Time, bool) {
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	message = strings.TrimSpace(message)
 	if strings.TrimSpace(path) == "" || message == "" {
 		return time.Time{}, false
@@ -221,6 +244,7 @@ func codexRolloutUserMessageSince(path, message string, since time.Time, minOffs
 	since = since.Add(-2 * time.Second)
 	reader := bufio.NewReader(f)
 	var offset int64
+	matched := 0
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		lineStart := offset
@@ -235,7 +259,10 @@ func codexRolloutUserMessageSince(path, message string, since time.Time, minOffs
 							continue
 						}
 						if codexUserRowMatches(part.Text, message) {
-							return timestamp, true
+							matched++
+							if matched == occurrence {
+								return timestamp, true
+							}
 						}
 						break
 					}
@@ -246,6 +273,14 @@ func codexRolloutUserMessageSince(path, message string, since time.Time, minOffs
 			return time.Time{}, false
 		}
 	}
+}
+
+// codexRolloutUserMessageSince returns the timestamp of the first
+// response_item user row at byte offset >= minOffset, timestamped at or
+// after since, whose text matches message — or false when no row does.
+// Malformed lines are skipped; a missing file simply has no proof yet.
+func codexRolloutUserMessageSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+	return codexRolloutUserMessageOccurrenceSince(path, message, since, minOffset, 1)
 }
 
 // codexUserRowMatches compares rollout user text with the sent message.
@@ -305,11 +340,15 @@ func codexPaneShowsQueuedMessage(captured, message string) bool {
 
 // codexDurableAckPoll tunes pollCodexDurableAck. Zero values select live
 // defaults; tests inject resolve/capture and a shorter interval.
+// Occurrence is the taken receipt's 1-based position among identical
+// queued sends: the wait needs the occurrence-th matching row. Values
+// below 1 mean 1.
 type codexDurableAckPoll struct {
 	resolve     func() string
 	capture     func(context.Context, string) (string, error)
 	sessionName string
 	interval    time.Duration
+	occurrence  int
 }
 
 // pollCodexDurableAck waits observe-only for the user row matching one
@@ -325,6 +364,10 @@ func pollCodexDurableAck(ctx context.Context, message string, since time.Time, m
 	if interval <= 0 {
 		interval = codexDurableAckPollInterval
 	}
+	occurrence := poll.occurrence
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(interval)
@@ -337,7 +380,7 @@ func pollCodexDurableAck(ctx context.Context, message string, since time.Time, m
 		if strings.TrimSpace(path) == "" {
 			return time.Time{}, false
 		}
-		return codexRolloutUserMessageSince(path, message, since, minOffset)
+		return codexRolloutUserMessageOccurrenceSince(path, message, since, minOffset, occurrence)
 	}
 	if at, ok := check(); ok {
 		return CodexDurableAck{Outcome: CodexDurableAckConfirmed, Latency: time.Since(since), ProofPath: poll.resolve(), RowTimestamp: at}, nil
@@ -346,7 +389,10 @@ func pollCodexDurableAck(ctx context.Context, message string, since time.Time, m
 		select {
 		case <-deadline.Done():
 			if poll.capture != nil && strings.TrimSpace(poll.sessionName) != "" {
-				if captured, err := poll.capture(deadline, poll.sessionName); err == nil && codexPaneShowsQueuedMessage(captured, message) {
+				captureCtx, captureCancel := context.WithTimeout(ctx, codexDurableAckCaptureTimeout)
+				captured, captureErr := poll.capture(captureCtx, poll.sessionName)
+				captureCancel()
+				if captureErr == nil && codexPaneShowsQueuedMessage(captured, message) {
 					return CodexDurableAck{Outcome: CodexDurableAckUnflushed, Latency: time.Since(since)}, nil
 				}
 			}
@@ -418,15 +464,18 @@ func codexArbiterAfterPaneFailure(ctx context.Context, ownerSessionID, sessionNa
 	}
 	receipt, ok := takeCodexDurableReceipt(session, message)
 	minOffset := int64(0)
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minOffset = receipt.offset
+		occurrence = receipt.occurrence
 	}
 	budget := codexDurableAckBudget()
 	ack, err := pollCodexDurableAck(ctx, message, since, minOffset, budget, codexDurableAckPoll{
 		resolve:     func() string { return resolveCodexRolloutPathNoMu(session, since) },
 		capture:     captureCodexPane,
 		sessionName: sessionName,
+		occurrence:  occurrence,
 	})
 	if err == nil && ack.Outcome == CodexDurableAckConfirmed {
 		log.Printf("[codex-durable-ack] PANE/FILE DISAGREE owner=%s latency=%dms proof=%s phase1=%v",
@@ -465,15 +514,18 @@ func AwaitCodexInputDurable(ctx context.Context, ownerSessionID, message string,
 	receipt, ok := takeCodexDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minOffset int64
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minOffset = receipt.offset
+		occurrence = receipt.occurrence
 	}
 	tmuxName := session.tmuxSessionName
 	ack, err := pollCodexDurableAck(ctx, message, since, minOffset, timeout, codexDurableAckPoll{
 		resolve:     func() string { return resolveCodexRolloutPathNoMu(session, since) },
 		capture:     captureCodexPane,
 		sessionName: tmuxName,
+		occurrence:  occurrence,
 	})
 	if err != nil {
 		return CodexDurableAck{}, err

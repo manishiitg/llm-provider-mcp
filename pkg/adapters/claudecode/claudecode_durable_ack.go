@@ -101,12 +101,15 @@ func claudeDurableAckBudget() time.Duration {
 }
 
 // claudePendingDurableAck is the pre-send snapshot that scopes one send's
-// durability proof.
+// durability proof. Occurrence disambiguates identical sends queued
+// before any row lands: the nth stashed send needs the nth matching
+// proof row.
 type claudePendingDurableAck struct {
-	message string
-	path    string
-	offset  int64
-	since   time.Time
+	message    string
+	path       string
+	offset     int64
+	since      time.Time
+	occurrence int
 }
 
 const (
@@ -130,7 +133,16 @@ func stashClaudeDurableReceipt(session *claudeInteractivePersistentSession, mess
 			kept = append(kept, pending)
 		}
 	}
-	kept = append(kept, claudePendingDurableAck{message: message, path: path, offset: offset, since: since})
+	// Occurrence is send-ordered: stashes run inside the
+	// broker-serialized send, so 1 + identical unexpired already
+	// pending is this send's position among identical queued sends.
+	occurrence := 1
+	for _, pending := range kept {
+		if pending.message == message {
+			occurrence++
+		}
+	}
+	kept = append(kept, claudePendingDurableAck{message: message, path: path, offset: offset, since: since, occurrence: occurrence})
 	if len(kept) > claudeMaxPendingDurableAcks {
 		kept = append([]claudePendingDurableAck(nil), kept[len(kept)-claudeMaxPendingDurableAcks:]...)
 	}
@@ -156,12 +168,13 @@ func peekClaudeDurableReceipt(session *claudeInteractivePersistentSession, messa
 }
 
 // takeClaudeDurableReceipt removes and returns the earliest pending
-// snapshot for an identical message. FIFO consumption binds each wait
-// to its own send's baseline: with peek semantics a repeated send
-// reused the first receipt's offset, so the first row falsely
-// confirmed the second wait. Sends are broker-serialized per session
-// and watchers take in spawn order under this lock, so takes match
-// sends FIFO.
+// snapshot for an identical message. FIFO consumption plus the
+// receipt's occurrence binds each wait to distinct proof: the nth
+// take needs the nth matching row, so identical sends queued before
+// any row lands (same offset on every receipt) cannot share one row.
+// Takes serialize under this lock, but take order is acquisition
+// order, not send order — the occurrence threshold keeps k takes
+// needing k distinct rows however watchers schedule.
 func takeClaudeDurableReceipt(session *claudeInteractivePersistentSession, message string) (claudePendingDurableAck, bool) {
 	if session == nil {
 		return claudePendingDurableAck{}, false
@@ -242,26 +255,45 @@ func claudeUserRowText(row claudeTranscriptRow) (string, bool) {
 	return text, true
 }
 
+// claudeTranscriptUserMessageOccurrenceSince returns the timestamp of the
+// occurrence-th user row at byte offset >= minOffset, timestamped at
+// or after since, whose text matches message — or false when fewer
+// rows match. Occurrence values below 1 mean 1. Malformed lines are
+// skipped; a missing file simply has no proof yet. Rows without a
+// parseable timestamp still count when past the offset.
+func claudeTranscriptUserMessageOccurrenceSince(path, message string, since time.Time, minOffset int64, occurrence int) (time.Time, bool) {
+	return claudeTranscriptRowOccurrenceSince(path, message, since, minOffset, occurrence, claudeUserRowText)
+}
+
 // claudeTranscriptUserMessageSince returns the timestamp of the first
 // user row at byte offset >= minOffset, timestamped at or after since,
 // whose text matches message — or false when no row does. Malformed
 // lines are skipped; a missing file simply has no proof yet. Rows
 // without a parseable timestamp still count when past the offset.
 func claudeTranscriptUserMessageSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
-	return claudeTranscriptRowSince(path, message, since, minOffset, claudeUserRowText)
+	return claudeTranscriptUserMessageOccurrenceSince(path, message, since, minOffset, 1)
 }
 
-// claudeTranscriptEnqueueSince returns the timestamp of the first
-// queue-operation/enqueue row at byte offset >= minOffset,
-// timestamped at or after since, whose content matches message.
-func claudeTranscriptEnqueueSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+// claudeTranscriptEnqueueOccurrenceSince returns the timestamp of the
+// occurrence-th queue-operation/enqueue row at byte offset >=
+// minOffset, timestamped at or after since, whose content matches
+// message — or false when fewer rows match. Occurrence values below 1
+// mean 1.
+func claudeTranscriptEnqueueOccurrenceSince(path, message string, since time.Time, minOffset int64, occurrence int) (time.Time, bool) {
 	extract := func(row claudeTranscriptRow) (string, bool) {
 		if row.Type != "queue-operation" || strings.TrimSpace(row.Operation) != "enqueue" {
 			return "", false
 		}
 		return row.Content, true
 	}
-	return claudeTranscriptRowSince(path, message, since, minOffset, extract)
+	return claudeTranscriptRowOccurrenceSince(path, message, since, minOffset, occurrence, extract)
+}
+
+// claudeTranscriptEnqueueSince returns the timestamp of the first
+// queue-operation/enqueue row at byte offset >= minOffset,
+// timestamped at or after since, whose content matches message.
+func claudeTranscriptEnqueueSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+	return claudeTranscriptEnqueueOccurrenceSince(path, message, since, minOffset, 1)
 }
 
 // scanClaudeTranscriptRows visits each parseable JSONL row at byte offset
@@ -304,11 +336,19 @@ func claudeRowAfterSince(row claudeTranscriptRow, since time.Time) bool {
 	return at.IsZero() || !at.Before(since)
 }
 
-func claudeTranscriptRowSince(path, message string, since time.Time, minOffset int64, extract func(claudeTranscriptRow) (string, bool)) (time.Time, bool) {
+func claudeTranscriptRowOccurrenceSince(path, message string, since time.Time, minOffset int64, occurrence int, extract func(claudeTranscriptRow) (string, bool)) (time.Time, bool) {
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	var found time.Time
+	matched := 0
 	scanClaudeTranscriptRows(path, minOffset, func(row claudeTranscriptRow, _ int64) bool {
 		text, ok := extract(row)
 		if !ok || !claudeRowTextMatches(text, message) || !claudeRowAfterSince(row, since) {
+			return true
+		}
+		matched++
+		if matched < occurrence {
 			return true
 		}
 		if at := claudeRowTimestamp(row); !at.IsZero() {
@@ -321,16 +361,34 @@ func claudeTranscriptRowSince(path, message string, since time.Time, minOffset i
 	return found, !found.IsZero()
 }
 
-// claudeTranscriptDrainSince returns the timestamp of the first
-// queue-drain row proving the CLI consumed our queued send: a
-// queue-operation/remove carrying our text, or any queue-operation/dequeue
-// positioned after our enqueue row (dequeue rows are contentless, so the
-// match is positional — sends are broker-serialized per session and the
-// CLI drains FIFO). Either means the message reached the model loop;
+// claudeTranscriptDrainOccurrenceSince returns the timestamp of the
+// occurrence-th queue-drain event proving the CLI consumed our queued
+// sends: queue-operation/remove rows carrying our text and
+// queue-operation/dequeue rows positioned after our enqueue row
+// (dequeue rows are contentless, so the match is positional — sends
+// are broker-serialized per session and the CLI drains FIFO), counted
+// in file order. Each event means one send reached the model loop;
 // whether the model obeys it is beyond the delivery contract.
-func claudeTranscriptDrainSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+// Occurrence values below 1 mean 1.
+func claudeTranscriptDrainOccurrenceSince(path, message string, since time.Time, minOffset int64, occurrence int) (time.Time, bool) {
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	var found time.Time
+	drained := 0
 	var enqueueOffset int64 = -1
+	record := func(row claudeTranscriptRow) bool {
+		drained++
+		if drained < occurrence {
+			return true
+		}
+		if at := claudeRowTimestamp(row); !at.IsZero() {
+			found = at
+		} else {
+			found = time.Now()
+		}
+		return false
+	}
 	scanClaudeTranscriptRows(path, minOffset, func(row claudeTranscriptRow, offset int64) bool {
 		if row.Type != "queue-operation" {
 			return true
@@ -342,21 +400,11 @@ func claudeTranscriptDrainSince(path, message string, since time.Time, minOffset
 			}
 		case "remove":
 			if claudeRowTextMatches(row.Content, message) && claudeRowAfterSince(row, since) {
-				if at := claudeRowTimestamp(row); !at.IsZero() {
-					found = at
-				} else {
-					found = time.Now()
-				}
-				return false
+				return record(row)
 			}
 		case "dequeue":
 			if enqueueOffset >= 0 && offset > enqueueOffset && claudeRowAfterSince(row, since) {
-				if at := claudeRowTimestamp(row); !at.IsZero() {
-					found = at
-				} else {
-					found = time.Now()
-				}
-				return false
+				return record(row)
 			}
 		}
 		return true
@@ -364,11 +412,26 @@ func claudeTranscriptDrainSince(path, message string, since time.Time, minOffset
 	return found, !found.IsZero()
 }
 
+// claudeTranscriptDrainSince returns the timestamp of the first
+// queue-drain row proving the CLI consumed our queued send: a
+// queue-operation/remove carrying our text, or any queue-operation/dequeue
+// positioned after our enqueue row (dequeue rows are contentless, so the
+// match is positional — sends are broker-serialized per session and the
+// CLI drains FIFO). Either means the message reached the model loop;
+// whether the model obeys it is beyond the delivery contract.
+func claudeTranscriptDrainSince(path, message string, since time.Time, minOffset int64) (time.Time, bool) {
+	return claudeTranscriptDrainOccurrenceSince(path, message, since, minOffset, 1)
+}
+
 // claudeDurableAckPoll tunes pollClaudeDurableAck. Zero values select
 // live defaults; tests inject resolve and a shorter interval.
+// Occurrence is the taken receipt's 1-based position among identical
+// queued sends: the wait needs the occurrence-th matching row. Values
+// below 1 mean 1.
 type claudeDurableAckPoll struct {
-	resolve  func() string
-	interval time.Duration
+	resolve    func() string
+	interval   time.Duration
+	occurrence int
 }
 
 // pollClaudeDurableAck waits observe-only for the transcript proof of one
@@ -386,6 +449,10 @@ func pollClaudeDurableAck(ctx context.Context, message string, since time.Time, 
 	if interval <= 0 {
 		interval = claudeDurableAckPollInterval
 	}
+	occurrence := poll.occurrence
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(interval)
@@ -399,10 +466,10 @@ func pollClaudeDurableAck(ctx context.Context, message string, since time.Time, 
 		if strings.TrimSpace(path) == "" {
 			return time.Time{}, false
 		}
-		if at, ok := claudeTranscriptUserMessageSince(path, message, since, minOffset); ok {
+		if at, ok := claudeTranscriptUserMessageOccurrenceSince(path, message, since, minOffset, occurrence); ok {
 			return at, true
 		}
-		return claudeTranscriptDrainSince(path, message, since, minOffset)
+		return claudeTranscriptDrainOccurrenceSince(path, message, since, minOffset, occurrence)
 	}
 	if at, ok := check(); ok {
 		return ClaudeDurableAck{Outcome: ClaudeDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve(), RowTimestamp: at}, nil
@@ -410,7 +477,7 @@ func pollClaudeDurableAck(ctx context.Context, message string, since time.Time, 
 	for {
 		select {
 		case <-deadline.Done():
-			if _, ok := claudeTranscriptEnqueueSince(resolve(), message, since, minOffset); ok {
+			if _, ok := claudeTranscriptEnqueueOccurrenceSince(resolve(), message, since, minOffset, occurrence); ok {
 				return ClaudeDurableAck{Outcome: ClaudeDurableAckUnflushed, Latency: time.Since(since)}, nil
 			}
 			if ctx.Err() != nil {
@@ -491,12 +558,15 @@ func AwaitClaudeInputDurable(ctx context.Context, ownerSessionID, message string
 	receipt, ok := takeClaudeDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minOffset int64
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minOffset = receipt.offset
+		occurrence = receipt.occurrence
 	}
 	ack, err := pollClaudeDurableAck(ctx, message, since, minOffset, timeout, claudeDurableAckPoll{
-		resolve: func() string { return resolveClaudeTranscriptPathNoMu(session) },
+		resolve:    func() string { return resolveClaudeTranscriptPathNoMu(session) },
+		occurrence: occurrence,
 	})
 	if err != nil {
 		return ClaudeDurableAck{}, err

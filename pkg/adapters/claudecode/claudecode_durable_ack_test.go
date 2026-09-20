@@ -1,10 +1,12 @@
 package claudecode
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -263,6 +265,121 @@ func TestClaudeTranscriptDrainSince(t *testing.T) {
 	})
 }
 
+func TestClaudeTranscriptDrainOccurrence(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "STEER: end with PINEAPPLEBUS_9Q."
+	wrapped := "<pasted_content id=\"ad42\">\n" + msg + "\n</pasted_content id=\"ad42\">"
+
+	t.Run("dequeue shape needs one drain per send", func(t *testing.T) {
+		oneDrain := writeClaudeDurableFixture(t,
+			claudeEnqueueRow(base.Add(time.Second), wrapped),
+			claudeEnqueueRow(base.Add(2*time.Second), wrapped),
+			claudeDrainRow("dequeue", base.Add(7*time.Second), ""),
+		)
+		if _, ok := claudeTranscriptDrainOccurrenceSince(oneDrain, msg, base, 0, 1); !ok {
+			t.Fatal("expected the first drain to confirm the first wait")
+		}
+		if _, ok := claudeTranscriptDrainOccurrenceSince(oneDrain, msg, base, 0, 2); ok {
+			t.Fatal("one drain must not confirm two waits")
+		}
+		twoDrains := writeClaudeDurableFixture(t,
+			claudeEnqueueRow(base.Add(time.Second), wrapped),
+			claudeEnqueueRow(base.Add(2*time.Second), wrapped),
+			claudeDrainRow("dequeue", base.Add(7*time.Second), ""),
+			claudeDrainRow("dequeue", base.Add(8*time.Second), ""),
+		)
+		if _, ok := claudeTranscriptDrainOccurrenceSince(twoDrains, msg, base, 0, 2); !ok {
+			t.Fatal("expected the second drain to confirm the second wait")
+		}
+	})
+
+	t.Run("remove shape needs one drain per send", func(t *testing.T) {
+		oneDrain := writeClaudeDurableFixture(t,
+			claudeEnqueueRow(base.Add(time.Second), wrapped),
+			claudeEnqueueRow(base.Add(2*time.Second), wrapped),
+			claudeDrainRow("remove", base.Add(8*time.Second), wrapped),
+		)
+		if _, ok := claudeTranscriptDrainOccurrenceSince(oneDrain, msg, base, 0, 1); !ok {
+			t.Fatal("expected the first drain to confirm the first wait")
+		}
+		if _, ok := claudeTranscriptDrainOccurrenceSince(oneDrain, msg, base, 0, 2); ok {
+			t.Fatal("one drain must not confirm two waits")
+		}
+	})
+}
+
+func TestPollClaudeDurableAck(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "STEER: end with PINEAPPLEBUS_9Q."
+	wrapped := "<pasted_content id=\"ad42\">\n" + msg + "\n</pasted_content id=\"ad42\">"
+
+	t.Run("user row confirms", func(t *testing.T) {
+		path := writeClaudeDurableFixture(t, claudeUserRow(base.Add(time.Second), msg))
+		ack, err := pollClaudeDurableAck(context.Background(), msg, base, 0, 5*time.Second, claudeDurableAckPoll{
+			resolve:  func() string { return path },
+			interval: 10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("poll error = %v", err)
+		}
+		if ack.Outcome != ClaudeDurableAckConfirmed || ack.ProofPath != path {
+			t.Fatalf("ack = %+v, want confirmed with proof", ack)
+		}
+	})
+
+	t.Run("occurrence 2 waits past the first user row", func(t *testing.T) {
+		path := writeClaudeDurableFixture(t, claudeUserRow(base.Add(time.Second), msg))
+		_, err := pollClaudeDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, claudeDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want the second wait to time out on one row", err)
+		}
+	})
+
+	t.Run("occurrence 2 with one enqueue fails, not unflushed", func(t *testing.T) {
+		path := writeClaudeDurableFixture(t, claudeEnqueueRow(base.Add(time.Second), wrapped))
+		_, err := pollClaudeDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, claudeDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want failed: one enqueue cannot hold two sends", err)
+		}
+	})
+
+	t.Run("occurrence 1 with one enqueue is unflushed", func(t *testing.T) {
+		path := writeClaudeDurableFixture(t, claudeEnqueueRow(base.Add(time.Second), wrapped))
+		ack, err := pollClaudeDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, claudeDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 1,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != ClaudeDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("context cancel aborts", func(t *testing.T) {
+		path := writeClaudeDurableFixture(t, claudeUserRow(base.Add(-time.Hour), "older"))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollClaudeDurableAck(ctx, msg, base, 0, 5*time.Second, claudeDurableAckPoll{
+			resolve:  func() string { return path },
+			interval: 10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll")
+		}
+	})
+}
+
 func TestStashAndPeekClaudeDurableReceipt(t *testing.T) {
 	session := &claudeInteractivePersistentSession{ownerSessionID: "owner-1"}
 	since := time.Now()
@@ -328,6 +445,67 @@ func TestTakeClaudeDurableReceiptFIFORepeat(t *testing.T) {
 	// ...but the second wait cannot be satisfied by the first row.
 	if _, ok := claudeTranscriptUserMessageSince(path, msg, second.since, second.offset); ok {
 		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeClaudeDurableReceiptOccurrenceRepeat(t *testing.T) {
+	session := &claudeInteractivePersistentSession{ownerSessionID: "owner-occ"}
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "yes"
+	// Both identical sends snapshot before either row lands: same
+	// offset on both receipts, so only occurrence disambiguates them.
+	stashClaudeDurableReceipt(session, msg, "/tmp/session.jsonl", 0, base)
+	stashClaudeDurableReceipt(session, msg, "/tmp/session.jsonl", 0, base)
+
+	first, ok := takeClaudeDurableReceipt(session, msg)
+	if !ok || first.occurrence != 1 {
+		t.Fatalf("first take = (%+v %v), want occurrence 1", first, ok)
+	}
+	second, ok := takeClaudeDurableReceipt(session, msg)
+	if !ok || second.occurrence != 2 {
+		t.Fatalf("second take = (%+v %v), want occurrence 2", second, ok)
+	}
+
+	path := writeClaudeDurableFixture(t, claudeUserRow(base.Add(time.Second), msg))
+	// The first wait is satisfied by the first row...
+	if _, ok := claudeTranscriptUserMessageOccurrenceSince(path, msg, first.since, first.offset, first.occurrence); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait needs a second row.
+	if _, ok := claudeTranscriptUserMessageOccurrenceSince(path, msg, second.since, second.offset, second.occurrence); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeClaudeDurableReceiptConcurrentOccurrence(t *testing.T) {
+	session := &claudeInteractivePersistentSession{ownerSessionID: "owner-occ-race"}
+	msg := "yes"
+	stashClaudeDurableReceipt(session, msg, "/tmp/session.jsonl", 0, time.Now())
+	stashClaudeDurableReceipt(session, msg, "/tmp/session.jsonl", 0, time.Now())
+
+	// Watcher goroutines take in acquisition order, not spawn order:
+	// however they schedule, the two takes must bind distinct
+	// occurrences — never the same receipt twice, never a gap.
+	var wg sync.WaitGroup
+	got := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			receipt, ok := takeClaudeDurableReceipt(session, msg)
+			if !ok {
+				t.Errorf("take %d: expected a receipt", idx)
+				return
+			}
+			got[idx] = receipt.occurrence
+		}(i)
+	}
+	wg.Wait()
+	if (got[0] != 1 || got[1] != 2) && (got[0] != 2 || got[1] != 1) {
+		t.Fatalf("take occurrences = %v, want {1 2} in either order", got)
+	}
+	if _, ok := takeClaudeDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
 	}
 }
 

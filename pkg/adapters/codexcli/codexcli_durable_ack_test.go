@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -215,6 +216,18 @@ func TestPollCodexDurableAck(t *testing.T) {
 		}
 	})
 
+	t.Run("occurrence 2 waits past the first row", func(t *testing.T) {
+		path := writeDurableAckFixture(t, durableUserRow(base.Add(time.Second), msg))
+		_, err := pollCodexDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, codexDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want the second wait to time out on one row", err)
+		}
+	})
+
 	t.Run("still queued at expiry is unflushed, not failed", func(t *testing.T) {
 		path := writeDurableAckFixture(t, `{"type":"session_meta","payload":{"id":"thread-1"}}`)
 		pane := "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ " + msg + "\n› Ask Codex to do anything\n"
@@ -229,6 +242,49 @@ func TestPollCodexDurableAck(t *testing.T) {
 		}
 		if ack.Outcome != CodexDurableAckUnflushed {
 			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("expiry capture runs under a live context", func(t *testing.T) {
+		path := writeDurableAckFixture(t, `{"type":"session_meta","payload":{"id":"thread-1"}}`)
+		pane := "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ " + msg + "\n› Ask Codex to do anything\n"
+		ack, err := pollCodexDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, codexDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != CodexDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("parent cancel fails fast even when queued", func(t *testing.T) {
+		path := writeDurableAckFixture(t, `{"type":"session_meta","payload":{"id":"thread-1"}}`)
+		pane := "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ " + msg + "\n› Ask Codex to do anything\n"
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollCodexDurableAck(ctx, msg, base, 0, 5*time.Second, codexDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll, not report unflushed")
 		}
 	})
 
@@ -321,6 +377,90 @@ func TestTakeDurableReceiptFIFORepeat(t *testing.T) {
 	// ...but the second wait cannot be satisfied by the first row.
 	if _, ok := codexRolloutUserMessageSince(path, msg, second.since, second.offset); ok {
 		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeCodexDurableReceiptOccurrenceRepeat(t *testing.T) {
+	session := &codexInteractiveSession{ownerSessionID: "owner-occ"}
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "yes"
+	// Both identical sends snapshot before either row lands: same
+	// offset on both receipts, so offset scoping alone cannot
+	// disambiguate them — only occurrence can.
+	path := writeDurableAckFixture(t, `{"type":"session_meta","payload":{"id":"thread-1"}}`)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat fixture: %v", err)
+	}
+	stashCodexDurableReceipt(session, msg, path, info.Size(), base)
+	stashCodexDurableReceipt(session, msg, path, info.Size(), base.Add(time.Second))
+
+	first, ok := takeCodexDurableReceipt(session, msg)
+	if !ok || first.occurrence != 1 {
+		t.Fatalf("first take = (%+v %v), want occurrence 1", first, ok)
+	}
+	second, ok := takeCodexDurableReceipt(session, msg)
+	if !ok || second.occurrence != 2 {
+		t.Fatalf("second take = (%+v %v), want occurrence 2", second, ok)
+	}
+
+	appendRow := func(text string, at time.Time) {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Fatalf("append fixture row: %v", err)
+		}
+		defer f.Close()
+		if _, err := fmt.Fprintln(f, durableUserRow(at, text)); err != nil {
+			t.Fatalf("append fixture row: %v", err)
+		}
+	}
+	appendRow(msg, base.Add(2*time.Second))
+
+	// The first wait is satisfied by the first row...
+	if _, ok := codexRolloutUserMessageOccurrenceSince(path, msg, first.since, first.offset, first.occurrence); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait needs a second row.
+	if _, ok := codexRolloutUserMessageOccurrenceSince(path, msg, second.since, second.offset, second.occurrence); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+	// A second row satisfies the second wait.
+	appendRow(msg, base.Add(3*time.Second))
+	if _, ok := codexRolloutUserMessageOccurrenceSince(path, msg, second.since, second.offset, second.occurrence); !ok {
+		t.Fatal("expected the second row to confirm the second wait")
+	}
+}
+
+func TestTakeCodexDurableReceiptConcurrentOccurrence(t *testing.T) {
+	session := &codexInteractiveSession{ownerSessionID: "owner-occ-race"}
+	msg := "yes"
+	stashCodexDurableReceipt(session, msg, "/tmp/rollout.jsonl", 0, time.Now())
+	stashCodexDurableReceipt(session, msg, "/tmp/rollout.jsonl", 0, time.Now())
+
+	// Watcher goroutines take in acquisition order, not spawn order:
+	// however they schedule, the two takes must bind distinct
+	// occurrences — never the same receipt twice, never a gap.
+	var wg sync.WaitGroup
+	got := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			receipt, ok := takeCodexDurableReceipt(session, msg)
+			if !ok {
+				t.Errorf("take %d: expected a receipt", idx)
+				return
+			}
+			got[idx] = receipt.occurrence
+		}(i)
+	}
+	wg.Wait()
+	if (got[0] != 1 || got[1] != 2) && (got[0] != 2 || got[1] != 1) {
+		t.Fatalf("take occurrences = %v, want {1 2} in either order", got)
+	}
+	if _, ok := takeCodexDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
 	}
 }
 

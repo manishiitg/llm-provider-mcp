@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -192,6 +193,21 @@ func TestPollMuseDurableAck(t *testing.T) {
 		}
 	})
 
+	t.Run("occurrence 2 waits past the first row", func(t *testing.T) {
+		path := writeMuseDurableAckFixture(t,
+			museIntakeRow(100, at-1000, "older prompt"),
+			museIntakeRow(101, at, msg),
+		)
+		_, err := pollMuseDurableAck(context.Background(), msg, base, 100, 150*time.Millisecond, museDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want the second wait to time out on one row", err)
+		}
+	})
+
 	t.Run("still queued at expiry is unflushed, not failed", func(t *testing.T) {
 		path := writeMuseDurableAckFixture(t, museIntakeRow(100, at-1000, "older prompt"))
 		pane := "• Queued input\n  ↳ " + msg + "\n❯\n"
@@ -223,6 +239,49 @@ func TestPollMuseDurableAck(t *testing.T) {
 		}
 		if ack.Outcome != MuseDurableAckUnflushed {
 			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("expiry capture runs under a live context", func(t *testing.T) {
+		path := writeMuseDurableAckFixture(t, museIntakeRow(100, at-1000, "older prompt"))
+		pane := "• Queued input\n  ↳ " + msg + "\n❯\n"
+		ack, err := pollMuseDurableAck(context.Background(), msg, base, 100, 150*time.Millisecond, museDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != MuseDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("parent cancel fails fast even when queued", func(t *testing.T) {
+		path := writeMuseDurableAckFixture(t, museIntakeRow(100, at-1000, "older prompt"))
+		pane := "• Queued input\n  ↳ " + msg + "\n❯\n"
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollMuseDurableAck(ctx, msg, base, 100, 5*time.Second, museDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll, not report unflushed")
 		}
 	})
 
@@ -321,6 +380,88 @@ func TestTakeMuseDurableReceiptFIFORepeat(t *testing.T) {
 	// ...but the second wait cannot be satisfied by the first row.
 	if _, _, ok := museUserAckRow(path, msg, second.baselineSeq); ok {
 		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeMuseDurableReceiptOccurrenceRepeat(t *testing.T) {
+	owner := "muse-durable-owner-occ"
+	musePersistentPool.Lock()
+	musePersistentPool.m[owner] = &musePersistentSession{tmuxName: "mlp-muse-test"}
+	musePersistentPool.Unlock()
+	t.Cleanup(func() {
+		musePersistentPool.Lock()
+		delete(musePersistentPool.m, owner)
+		musePersistentPool.Unlock()
+	})
+
+	at := time.Now().UnixMicro()
+	msg := "yes"
+	// Both identical sends snapshot before either row lands: same
+	// baseline on both receipts, so only occurrence disambiguates them.
+	stashMuseDurableReceipt(owner, msg, "/tmp/session.jsonl", 100, time.Now())
+	stashMuseDurableReceipt(owner, msg, "/tmp/session.jsonl", 100, time.Now())
+
+	first, ok := takeMuseDurableReceipt(owner, msg)
+	if !ok || first.occurrence != 1 {
+		t.Fatalf("first take = (%+v %v), want occurrence 1", first, ok)
+	}
+	second, ok := takeMuseDurableReceipt(owner, msg)
+	if !ok || second.occurrence != 2 {
+		t.Fatalf("second take = (%+v %v), want occurrence 2", second, ok)
+	}
+
+	path := writeMuseDurableAckFixture(t,
+		museIntakeRow(100, at-1000, "older prompt"),
+		museIntakeRow(101, at, msg),
+	)
+	// The first wait is satisfied by the first row...
+	if _, _, ok := museUserAckRowOccurrence(path, msg, first.baselineSeq, first.occurrence); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait needs a second row.
+	if _, _, ok := museUserAckRowOccurrence(path, msg, second.baselineSeq, second.occurrence); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeMuseDurableReceiptConcurrentOccurrence(t *testing.T) {
+	owner := "muse-durable-owner-occ-race"
+	musePersistentPool.Lock()
+	musePersistentPool.m[owner] = &musePersistentSession{tmuxName: "mlp-muse-test"}
+	musePersistentPool.Unlock()
+	t.Cleanup(func() {
+		musePersistentPool.Lock()
+		delete(musePersistentPool.m, owner)
+		musePersistentPool.Unlock()
+	})
+
+	msg := "yes"
+	stashMuseDurableReceipt(owner, msg, "/tmp/session.jsonl", 100, time.Now())
+	stashMuseDurableReceipt(owner, msg, "/tmp/session.jsonl", 100, time.Now())
+
+	// Watcher goroutines take in acquisition order, not spawn order:
+	// however they schedule, the two takes must bind distinct
+	// occurrences — never the same receipt twice, never a gap.
+	var wg sync.WaitGroup
+	got := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			receipt, ok := takeMuseDurableReceipt(owner, msg)
+			if !ok {
+				t.Errorf("take %d: expected a receipt", idx)
+				return
+			}
+			got[idx] = receipt.occurrence
+		}(i)
+	}
+	wg.Wait()
+	if (got[0] != 1 || got[1] != 2) && (got[0] != 2 || got[1] != 1) {
+		t.Fatalf("take occurrences = %v, want {1 2} in either order", got)
+	}
+	if _, ok := takeMuseDurableReceipt(owner, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
 	}
 }
 

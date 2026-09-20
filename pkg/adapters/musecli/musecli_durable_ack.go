@@ -66,6 +66,11 @@ const (
 	museDurableAckBudgetMin     = 5 * time.Second
 	museDurableAckBudgetMax     = 300 * time.Second
 	museDurableAckPollInterval  = 250 * time.Millisecond
+	// museDurableAckCaptureTimeout bounds the final pane read on
+	// budget expiry. It runs under a fresh context derived from the
+	// poll's parent (the budget deadline is expired there by
+	// construction); 5s is generous for one tmux scrape.
+	museDurableAckCaptureTimeout = 5 * time.Second
 )
 
 // museDurableAckBudget bounds the observe-only transcript arbiter.
@@ -93,11 +98,14 @@ func museDurableAckBudget() time.Duration {
 
 // musePendingDurableAck is the pre-send snapshot that scopes one send's
 // durability proof to transcript rows this send could have produced.
+// Occurrence disambiguates identical sends queued before any row lands:
+// the nth stashed send needs the nth matching transcript row.
 type musePendingDurableAck struct {
 	message     string
 	logPath     string
 	baselineSeq int64
 	since       time.Time
+	occurrence  int
 }
 
 const (
@@ -131,7 +139,16 @@ func stashMuseDurableReceipt(owner, message, logPath string, baselineSeq int64, 
 			kept = append(kept, pending)
 		}
 	}
-	kept = append(kept, musePendingDurableAck{message: message, logPath: logPath, baselineSeq: baselineSeq, since: since})
+	// Occurrence is send-ordered: stashes run inside the serialized
+	// send, so 1 + identical unexpired already pending is this send's
+	// position among identical queued sends.
+	occurrence := 1
+	for _, pending := range kept {
+		if pending.message == message {
+			occurrence++
+		}
+	}
+	kept = append(kept, musePendingDurableAck{message: message, logPath: logPath, baselineSeq: baselineSeq, since: since, occurrence: occurrence})
 	if len(kept) > museMaxPendingDurableAcks {
 		kept = append([]musePendingDurableAck(nil), kept[len(kept)-museMaxPendingDurableAcks:]...)
 	}
@@ -163,12 +180,13 @@ func peekMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool)
 }
 
 // takeMuseDurableReceipt removes and returns the earliest pending
-// snapshot for an identical message. FIFO consumption binds each wait
-// to its own send's baseline: with peek semantics a repeated send
-// reused the first receipt's sequence, so the first row falsely
-// confirmed the second wait. Sends are serialized per session and
-// watchers take in spawn order under the pool lock, so takes match
-// sends FIFO.
+// snapshot for an identical message. FIFO consumption plus the
+// receipt's occurrence binds each wait to distinct proof: the nth
+// take needs the nth matching row, so identical sends queued before
+// any row lands (same baseline on every receipt) cannot share one
+// row. Takes serialize under the pool lock, but take order is
+// acquisition order, not send order — the occurrence threshold keeps
+// k takes needing k distinct rows however watchers schedule.
 func takeMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool) {
 	owner = strings.TrimSpace(owner)
 	message = strings.TrimSpace(message)
@@ -203,13 +221,18 @@ func museAckSnippet(message string) string {
 	return jsonEscapeLogSnippet(snippet)
 }
 
-// museUserAckRow returns the first transcript row above minSeq whose
-// raw bytes contain the send's snippet. Intake (user_intent.accepted)
-// and the native queue event (inbox_item_queued) both carry the exact
-// text; sequence scoping excludes identical earlier messages, and the
-// per-session log path excludes other sessions' traffic, so no row
-// typing is needed to stay sound.
-func museUserAckRow(logPath, message string, minSeq int64) (rowSeq int64, rowTime time.Time, found bool) {
+// museUserAckRowOccurrence returns the occurrence-th transcript row above
+// minSeq whose raw bytes contain the send's snippet — or false when
+// fewer rows match. Occurrence values below 1 mean 1. Intake
+// (user_intent.accepted) and the native queue event
+// (inbox_item_queued) both carry the exact text; sequence scoping
+// excludes identical earlier messages, and the per-session log path
+// excludes other sessions' traffic, so no row typing is needed to
+// stay sound.
+func museUserAckRowOccurrence(logPath, message string, minSeq int64, occurrence int) (rowSeq int64, rowTime time.Time, found bool) {
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	snippet := museAckSnippet(message)
 	if strings.TrimSpace(logPath) == "" || snippet == "" {
 		return 0, time.Time{}, false
@@ -225,6 +248,7 @@ func museUserAckRow(logPath, message string, minSeq int64) (rowSeq int64, rowTim
 	}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	matched := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.Contains(line, snippet) {
@@ -233,13 +257,26 @@ func museUserAckRow(logPath, message string, minSeq int64) (rowSeq int64, rowTim
 		if json.Unmarshal([]byte(line), &env) != nil || env.Sequence <= minSeq {
 			continue
 		}
-		at := time.UnixMicro(env.RecordedAt)
-		if env.RecordedAt == 0 {
-			at = time.Now()
+		matched++
+		if matched == occurrence {
+			at := time.UnixMicro(env.RecordedAt)
+			if env.RecordedAt == 0 {
+				at = time.Now()
+			}
+			return env.Sequence, at, true
 		}
-		return env.Sequence, at, true
 	}
 	return 0, time.Time{}, false
+}
+
+// museUserAckRow returns the first transcript row above minSeq whose
+// raw bytes contain the send's snippet. Intake (user_intent.accepted)
+// and the native queue event (inbox_item_queued) both carry the exact
+// text; sequence scoping excludes identical earlier messages, and the
+// per-session log path excludes other sessions' traffic, so no row
+// typing is needed to stay sound.
+func museUserAckRow(logPath, message string, minSeq int64) (rowSeq int64, rowTime time.Time, found bool) {
+	return museUserAckRowOccurrence(logPath, message, minSeq, 1)
 }
 
 // musePaneShowsQueuedMessage reports that message is sitting in Muse's
@@ -311,11 +348,15 @@ func musePaneLooksActive(captured string) bool {
 
 // museDurableAckPoll tunes pollMuseDurableAck. Zero values select live
 // defaults; tests inject resolve/capture and a shorter interval.
+// Occurrence is the taken receipt's 1-based position among identical
+// queued sends: the wait needs the occurrence-th matching row. Values
+// below 1 mean 1.
 type museDurableAckPoll struct {
 	resolve     func() string
 	capture     func(context.Context, string) (string, error)
 	sessionName string
 	interval    time.Duration
+	occurrence  int
 }
 
 // pollMuseDurableAck waits observe-only for the transcript row matching
@@ -331,6 +372,10 @@ func pollMuseDurableAck(ctx context.Context, message string, since time.Time, mi
 	if interval <= 0 {
 		interval = museDurableAckPollInterval
 	}
+	occurrence := poll.occurrence
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(interval)
@@ -343,7 +388,7 @@ func pollMuseDurableAck(ctx context.Context, message string, since time.Time, mi
 		if strings.TrimSpace(path) == "" {
 			return 0, time.Time{}, false
 		}
-		return museUserAckRow(path, message, minSeq)
+		return museUserAckRowOccurrence(path, message, minSeq, occurrence)
 	}
 	if _, at, ok := check(); ok {
 		return MuseDurableAck{Outcome: MuseDurableAckConfirmed, Latency: time.Since(since), ProofPath: poll.resolve(), RowTimestamp: at}, nil
@@ -352,7 +397,10 @@ func pollMuseDurableAck(ctx context.Context, message string, since time.Time, mi
 		select {
 		case <-deadline.Done():
 			if poll.capture != nil && strings.TrimSpace(poll.sessionName) != "" {
-				if captured, err := poll.capture(deadline, poll.sessionName); err == nil {
+				captureCtx, captureCancel := context.WithTimeout(ctx, museDurableAckCaptureTimeout)
+				captured, captureErr := poll.capture(captureCtx, poll.sessionName)
+				captureCancel()
+				if captureErr == nil {
 					if musePaneShowsQueuedMessage(captured, message) {
 						return MuseDurableAck{Outcome: MuseDurableAckUnflushed, Latency: time.Since(since)}, nil
 					}
@@ -400,11 +448,24 @@ func museResolveDurableLogPath(owner string) string {
 // becomes accepted-but-unflushed; anything else keeps the original
 // error with the arbiter note attached.
 func museArbiterAfterSubmitFailure(ctx context.Context, ownerSessionID, sessionName, message string, since time.Time, minSeq int64, submitErr error) error {
+	// Consume this send's receipt like the other adapters' arbiters: the
+	// sender stashed it just before the failed submit, and leaving it
+	// pending would let a later identical send's watcher take this
+	// send's (wider) baseline and match this send's row. On a take miss
+	// the caller's snapshot is this send's own scope, so it stays a
+	// sound fallback.
+	occurrence := 1
+	if receipt, ok := takeMuseDurableReceipt(ownerSessionID, message); ok {
+		since = receipt.since
+		minSeq = receipt.baselineSeq
+		occurrence = receipt.occurrence
+	}
 	budget := museDurableAckBudget()
 	ack, err := pollMuseDurableAck(ctx, message, since, minSeq, budget, museDurableAckPoll{
 		resolve:     func() string { return museResolveDurableLogPath(ownerSessionID) },
 		capture:     museTmuxCapturePane,
 		sessionName: sessionName,
+		occurrence:  occurrence,
 	})
 	if err == nil && ack.Outcome == MuseDurableAckConfirmed {
 		log.Printf("[muse-durable-ack] PANE/FILE DISAGREE owner=%s latency=%dms proof=%s submit=%v",
@@ -451,14 +512,17 @@ func AwaitMuseInputDurable(ctx context.Context, ownerSessionID, message string, 
 	receipt, ok := takeMuseDurableReceipt(ownerSessionID, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minSeq int64
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minSeq = receipt.baselineSeq
+		occurrence = receipt.occurrence
 	}
 	ack, err := pollMuseDurableAck(ctx, message, since, minSeq, timeout, museDurableAckPoll{
 		resolve:     func() string { return museResolveDurableLogPath(ownerSessionID) },
 		capture:     museTmuxCapturePane,
 		sessionName: tmuxName,
+		occurrence:  occurrence,
 	})
 	if err != nil {
 		return MuseDurableAck{}, err

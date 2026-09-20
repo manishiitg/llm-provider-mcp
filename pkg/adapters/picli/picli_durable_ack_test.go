@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,6 +57,23 @@ func TestPiUserAckMarker(t *testing.T) {
 	longMarkers := []piMarker{{Type: "message_end", TS: 5, Role: "user", Text: long[:80]}}
 	if _, ok := piUserAckMarker(longMarkers, long); !ok {
 		t.Fatal("expected a shared prefix to confirm a long send")
+	}
+}
+
+func TestPiUserAckMarkers(t *testing.T) {
+	msg := "New instruction: end with PIFLUSH_4D."
+	markers := []piMarker{
+		{Type: "agent_start", TS: 1},
+		{Type: "message_end", TS: 2, Role: "user", Text: msg},
+		{Type: "message_end", TS: 3, Role: "assistant", Text: msg},
+		{Type: "message_end", TS: 4, Role: "user", Text: msg},
+	}
+	matched := piUserAckMarkers(markers, msg)
+	if len(matched) != 2 || matched[0].TS != 2 || matched[1].TS != 4 {
+		t.Fatalf("matched = %+v, want both user rows in stream order", matched)
+	}
+	if got := piUserAckMarkers(nil, msg); len(got) != 0 {
+		t.Fatalf("matched = %+v, want none", got)
 	}
 }
 
@@ -154,6 +172,52 @@ func TestPollPiDurableAck(t *testing.T) {
 		}
 	})
 
+	t.Run("occurrence 2 waits past the first marker", func(t *testing.T) {
+		path := writePiDurableAckFixture(t,
+			`{"type":"session_start","ts":1}`,
+			piUserMarker(time.Now().UnixMilli(), msg),
+		)
+		_, err := pollPiDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, piDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want the second wait to time out on one marker", err)
+		}
+	})
+
+	t.Run("occurrence 2 confirms on a later second marker", func(t *testing.T) {
+		path := writePiDurableAckFixture(t,
+			`{"type":"session_start","ts":1}`,
+			piUserMarker(time.Now().UnixMilli(), msg),
+		)
+		secondTS := time.Now().Add(time.Second).UnixMilli()
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			_, _ = fmt.Fprintln(f, piUserMarker(secondTS, msg))
+		}()
+		ack, err := pollPiDurableAck(context.Background(), msg, base, 0, 5*time.Second, piDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err != nil {
+			t.Fatalf("poll error = %v", err)
+		}
+		if ack.Outcome != PiDurableAckConfirmed {
+			t.Fatalf("ack = %+v, want confirmed", ack)
+		}
+		if ack.RowTimestamp.UnixMilli() != secondTS {
+			t.Fatalf("row timestamp = %v, want the second marker's ts", ack.RowTimestamp)
+		}
+	})
+
 	t.Run("still queued at expiry is unflushed, not failed", func(t *testing.T) {
 		path := writePiDurableAckFixture(t, `{"type":"session_start","ts":1}`)
 		pane := " Steering: " + msg + "\n ↳ Option+Up to edit all queued messages\n── ⠏ Working ──\n"
@@ -185,6 +249,49 @@ func TestPollPiDurableAck(t *testing.T) {
 		}
 		if ack.Outcome != PiDurableAckUnflushed {
 			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("expiry capture runs under a live context", func(t *testing.T) {
+		path := writePiDurableAckFixture(t, `{"type":"session_start","ts":1}`)
+		pane := " Steering: " + msg + "\n ↳ Option+Up to edit all queued messages\n── ⠏ Working ──\n"
+		ack, err := pollPiDurableAck(context.Background(), msg, base, 0, 150*time.Millisecond, piDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != PiDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("parent cancel fails fast even when queued", func(t *testing.T) {
+		path := writePiDurableAckFixture(t, `{"type":"session_start","ts":1}`)
+		pane := " Steering: " + msg + "\n ↳ Option+Up to edit all queued messages\n── ⠏ Working ──\n"
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollPiDurableAck(ctx, msg, base, 0, 5*time.Second, piDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll, not report unflushed")
 		}
 	})
 
@@ -284,6 +391,65 @@ func TestTakePiDurableReceiptFIFORepeat(t *testing.T) {
 	}
 	if _, ok := piUserAckMarker(markers, msg); ok {
 		t.Fatal("the first marker must not confirm the repeated send")
+	}
+}
+
+func TestTakePiDurableReceiptOccurrenceRepeat(t *testing.T) {
+	session := &piInteractiveSession{ownerSessionID: "owner-occ"}
+	msg := "yes"
+	// Both identical sends snapshot before either marker lands: same
+	// offset on both receipts, so only occurrence disambiguates them.
+	// (The poll waits past the first marker — see TestPollPiDurableAck.)
+	path := writePiDurableAckFixture(t, `{"type":"session_start","ts":1}`)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat fixture: %v", err)
+	}
+	stashPiDurableReceipt(session, msg, path, info.Size(), time.Now())
+	stashPiDurableReceipt(session, msg, path, info.Size(), time.Now())
+
+	first, ok := takePiDurableReceipt(session, msg)
+	if !ok || first.occurrence != 1 {
+		t.Fatalf("first take = (%+v %v), want occurrence 1", first, ok)
+	}
+	second, ok := takePiDurableReceipt(session, msg)
+	if !ok || second.occurrence != 2 {
+		t.Fatalf("second take = (%+v %v), want occurrence 2", second, ok)
+	}
+	if _, ok := takePiDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+}
+
+func TestTakePiDurableReceiptConcurrentOccurrence(t *testing.T) {
+	session := &piInteractiveSession{ownerSessionID: "owner-occ-race"}
+	msg := "yes"
+	stashPiDurableReceipt(session, msg, "/tmp/markers.jsonl", 0, time.Now())
+	stashPiDurableReceipt(session, msg, "/tmp/markers.jsonl", 0, time.Now())
+
+	// Watcher goroutines take in acquisition order, not spawn order:
+	// however they schedule, the two takes must bind distinct
+	// occurrences — never the same receipt twice, never a gap.
+	var wg sync.WaitGroup
+	got := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			receipt, ok := takePiDurableReceipt(session, msg)
+			if !ok {
+				t.Errorf("take %d: expected a receipt", idx)
+				return
+			}
+			got[idx] = receipt.occurrence
+		}(i)
+	}
+	wg.Wait()
+	if (got[0] != 1 || got[1] != 2) && (got[0] != 2 || got[1] != 1) {
+		t.Fatalf("take occurrences = %v, want {1 2} in either order", got)
+	}
+	if _, ok := takePiDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
 	}
 }
 

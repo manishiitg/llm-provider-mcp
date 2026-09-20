@@ -65,6 +65,11 @@ const (
 	piDurableAckBudgetMin     = 5 * time.Second
 	piDurableAckBudgetMax     = 300 * time.Second
 	piDurableAckPollInterval  = 250 * time.Millisecond
+	// piDurableAckCaptureTimeout bounds the final pane read on budget
+	// expiry. It runs under a fresh context derived from the poll's
+	// parent (the budget deadline is expired there by construction);
+	// 5s is generous for one tmux scrape.
+	piDurableAckCaptureTimeout = 5 * time.Second
 )
 
 // piDurableAckBudget bounds the observe-only marker arbiter.
@@ -93,11 +98,14 @@ func piDurableAckBudget() time.Duration {
 // piPendingDurableAck is the pre-paste snapshot that scopes one send's
 // durability proof. Offset scoping (plus text match) means an identical
 // earlier message already in the stream cannot confirm a new one.
+// Occurrence disambiguates identical sends queued before any row lands:
+// the nth stashed send needs the nth matching marker row.
 type piPendingDurableAck struct {
-	message string
-	path    string
-	offset  int64
-	since   time.Time
+	message    string
+	path       string
+	offset     int64
+	since      time.Time
+	occurrence int
 }
 
 const (
@@ -121,7 +129,16 @@ func stashPiDurableReceipt(session *piInteractiveSession, message, path string, 
 			kept = append(kept, pending)
 		}
 	}
-	kept = append(kept, piPendingDurableAck{message: message, path: path, offset: offset, since: since})
+	// Occurrence is send-ordered: stashes run inside the serialized
+	// send, so 1 + identical unexpired already pending is this send's
+	// position among identical queued sends.
+	occurrence := 1
+	for _, pending := range kept {
+		if pending.message == message {
+			occurrence++
+		}
+	}
+	kept = append(kept, piPendingDurableAck{message: message, path: path, offset: offset, since: since, occurrence: occurrence})
 	if len(kept) > piMaxPendingDurableAcks {
 		kept = append([]piPendingDurableAck(nil), kept[len(kept)-piMaxPendingDurableAcks:]...)
 	}
@@ -147,14 +164,16 @@ func peekPiDurableReceipt(session *piInteractiveSession, message string) (piPend
 }
 
 // takePiDurableReceipt removes and returns the earliest pending
-// snapshot for an identical message. FIFO consumption binds each wait
-// to its own send's baseline: with peek semantics a repeated send
-// reused the first receipt's offset, so the first row falsely
-// confirmed the second wait. Sends are broker-serialized per session
-// and watchers take in spawn order under this lock, so takes match
-// sends FIFO; the inline arbiter and the server watcher are mutually
-// exclusive per send (submit-failure path vs fast-ack path), so exactly
-// one of them takes each receipt.
+// snapshot for an identical message. FIFO consumption plus the
+// receipt's occurrence binds each wait to distinct proof: the nth
+// take needs the nth matching marker row, so identical sends queued
+// before any row lands (same offset on every receipt) cannot share
+// one row. Takes serialize under this lock, but take order is
+// acquisition order, not send order — the occurrence threshold keeps
+// k takes needing k distinct rows however watchers schedule. The
+// inline arbiter and the server watcher are mutually exclusive per
+// send (submit-failure path vs fast-ack path), so exactly one of them
+// takes each receipt.
 func takePiDurableReceipt(session *piInteractiveSession, message string) (piPendingDurableAck, bool) {
 	if session == nil {
 		return piPendingDurableAck{}, false
@@ -176,11 +195,24 @@ func takePiDurableReceipt(session *piInteractiveSession, message string) (piPend
 // message, using the same compact-text + long-prefix rule as
 // piMarkersAcknowledgeUserMessage, which delegates to it.
 func piUserAckMarker(markers []piMarker, message string) (piMarker, bool) {
-	want := piCompactDraftText(message)
-	if want == "" {
+	matched := piUserAckMarkers(markers, message)
+	if len(matched) == 0 {
 		return piMarker{}, false
 	}
+	return matched[0], true
+}
+
+// piUserAckMarkers returns every message_end user row matching message,
+// in stream order. The durable poll accumulates these across its
+// advancing-offset reads and confirms on the occurrence-th match, so
+// identical sends queued before any row lands each need their own row.
+func piUserAckMarkers(markers []piMarker, message string) []piMarker {
+	want := piCompactDraftText(message)
+	if want == "" {
+		return nil
+	}
 	const longMessageRunes = 64
+	var matched []piMarker
 	for _, marker := range markers {
 		if marker.Type != "message_end" || marker.Role != "user" {
 			continue
@@ -190,13 +222,14 @@ func piUserAckMarker(markers []piMarker, message string) (piMarker, bool) {
 			continue
 		}
 		if got == want {
-			return marker, true
+			matched = append(matched, marker)
+			continue
 		}
 		if len([]rune(want)) >= longMessageRunes && (strings.HasPrefix(got, want) || strings.HasPrefix(want, got)) {
-			return marker, true
+			matched = append(matched, marker)
 		}
 	}
-	return piMarker{}, false
+	return matched
 }
 
 // piPaneShowsQueuedMessage reports that message is sitting in Pi's
@@ -244,11 +277,15 @@ func piPaneShowsQueuedMessage(captured, message string) bool {
 
 // piDurableAckPoll tunes pollPiDurableAck. Zero values select live
 // defaults; tests inject resolve/capture and a shorter interval.
+// Occurrence is the taken receipt's 1-based position among identical
+// queued sends: the wait needs the occurrence-th matching marker row.
+// Values below 1 mean 1.
 type piDurableAckPoll struct {
 	resolve     func() string
 	capture     func(context.Context, string) (string, error)
 	sessionName string
 	interval    time.Duration
+	occurrence  int
 }
 
 // pollPiDurableAck waits observe-only for the marker row matching one
@@ -269,6 +306,14 @@ func pollPiDurableAck(ctx context.Context, message string, since time.Time, minO
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	offset := minOffset
+	occurrence := poll.occurrence
+	if occurrence < 1 {
+		occurrence = 1
+	}
+	// The offset advances past consumed bytes every check, so matches
+	// accumulate here across ticks: the wait confirms on the
+	// occurrence-th matching marker overall, not per chunk.
+	var seen []piMarker
 	check := func() (piMarker, bool) {
 		if poll.resolve == nil {
 			return piMarker{}, false
@@ -282,7 +327,11 @@ func pollPiDurableAck(ctx context.Context, message string, since time.Time, minO
 			return piMarker{}, false
 		}
 		offset = nextOffset
-		return piUserAckMarker(markers, message)
+		seen = append(seen, piUserAckMarkers(markers, message)...)
+		if len(seen) >= occurrence {
+			return seen[occurrence-1], true
+		}
+		return piMarker{}, false
 	}
 	if marker, ok := check(); ok {
 		return PiDurableAck{Outcome: PiDurableAckConfirmed, Latency: time.Since(since), ProofPath: poll.resolve(), RowTimestamp: time.UnixMilli(marker.TS)}, nil
@@ -291,7 +340,10 @@ func pollPiDurableAck(ctx context.Context, message string, since time.Time, minO
 		select {
 		case <-deadline.Done():
 			if poll.capture != nil && strings.TrimSpace(poll.sessionName) != "" {
-				if captured, err := poll.capture(deadline, poll.sessionName); err == nil {
+				captureCtx, captureCancel := context.WithTimeout(ctx, piDurableAckCaptureTimeout)
+				captured, captureErr := poll.capture(captureCtx, poll.sessionName)
+				captureCancel()
+				if captureErr == nil {
 					if piPaneShowsQueuedMessage(captured, message) {
 						return PiDurableAck{Outcome: PiDurableAckUnflushed, Latency: time.Since(since)}, nil
 					}
@@ -354,15 +406,18 @@ func piArbiterAfterSubmitFailure(ctx context.Context, ownerSessionID, sessionNam
 	}
 	receipt, ok := takePiDurableReceipt(session, message)
 	minOffset := int64(0)
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minOffset = receipt.offset
+		occurrence = receipt.occurrence
 	}
 	budget := piDurableAckBudget()
 	ack, err := pollPiDurableAck(ctx, message, since, minOffset, budget, piDurableAckPoll{
 		resolve:     func() string { return resolvePiMarkerPathNoMu(session) },
 		capture:     capturePiPane,
 		sessionName: sessionName,
+		occurrence:  occurrence,
 	})
 	if err == nil && ack.Outcome == PiDurableAckConfirmed {
 		log.Printf("[pi-durable-ack] PANE/FILE DISAGREE owner=%s latency=%dms proof=%s submit=%v",
@@ -401,15 +456,18 @@ func AwaitPiInputDurable(ctx context.Context, ownerSessionID, message string, ti
 	receipt, ok := takePiDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minOffset int64
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		minOffset = receipt.offset
+		occurrence = receipt.occurrence
 	}
 	tmuxName := session.tmuxSessionName
 	ack, err := pollPiDurableAck(ctx, message, since, minOffset, timeout, piDurableAckPoll{
 		resolve:     func() string { return resolvePiMarkerPathNoMu(session) },
 		capture:     capturePiPane,
 		sessionName: tmuxName,
+		occurrence:  occurrence,
 	})
 	if err != nil {
 		return PiDurableAck{}, err

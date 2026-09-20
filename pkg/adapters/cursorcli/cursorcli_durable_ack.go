@@ -75,6 +75,11 @@ const (
 	cursorDurableAckBudgetMin     = 5 * time.Second
 	cursorDurableAckBudgetMax     = 300 * time.Second
 	cursorDurableAckPollInterval  = time.Second
+	// cursorDurableAckCaptureTimeout bounds the final pane read on
+	// budget expiry. It runs under a fresh context derived from the
+	// poll's parent (the budget deadline is expired there by
+	// construction); 5s is generous for one tmux scrape.
+	cursorDurableAckCaptureTimeout = 5 * time.Second
 )
 
 // cursorDurableAckBudget bounds the observe-only store arbiter.
@@ -103,12 +108,15 @@ func cursorDurableAckBudget() time.Duration {
 // cursorPendingDurableAck is the pre-send snapshot that scopes one send's
 // durability proof. Baseline holds the latest-root refs already present;
 // only rows under NEW refs can confirm, which self-disambiguates repeats
-// without timestamps.
+// without timestamps. Occurrence disambiguates identical sends queued
+// before any row commits: the nth stashed send needs the nth matching
+// new-ref row.
 type cursorPendingDurableAck struct {
-	message  string
-	storeDB  string
-	baseline map[string]struct{}
-	since    time.Time
+	message    string
+	storeDB    string
+	baseline   map[string]struct{}
+	since      time.Time
+	occurrence int
 }
 
 const (
@@ -132,7 +140,16 @@ func stashCursorDurableReceipt(session *cursorInteractiveSession, message, store
 			kept = append(kept, pending)
 		}
 	}
-	kept = append(kept, cursorPendingDurableAck{message: message, storeDB: storeDB, baseline: baseline, since: since})
+	// Occurrence is send-ordered: stashes run inside the serialized
+	// send, so 1 + identical unexpired already pending is this send's
+	// position among identical queued sends.
+	occurrence := 1
+	for _, pending := range kept {
+		if pending.message == message {
+			occurrence++
+		}
+	}
+	kept = append(kept, cursorPendingDurableAck{message: message, storeDB: storeDB, baseline: baseline, since: since, occurrence: occurrence})
 	if len(kept) > cursorMaxPendingDurableAcks {
 		kept = append([]cursorPendingDurableAck(nil), kept[len(kept)-cursorMaxPendingDurableAcks:]...)
 	}
@@ -158,12 +175,13 @@ func peekCursorDurableReceipt(session *cursorInteractiveSession, message string)
 }
 
 // takeCursorDurableReceipt removes and returns the earliest pending
-// snapshot for an identical message. FIFO consumption binds each wait
-// to its own send's baseline: with peek semantics a repeated send
-// reused the first receipt's ref baseline, so the first row falsely
-// confirmed the second wait. Sends are broker-serialized per session
-// and watchers take in spawn order under this lock, so takes match
-// sends FIFO.
+// snapshot for an identical message. FIFO consumption plus the
+// receipt's occurrence binds each wait to distinct proof: the nth
+// take needs the nth matching new-ref row, so identical sends queued
+// before any row commits (same baseline on every receipt) cannot
+// share one row. Takes serialize under this lock, but take order is
+// acquisition order, not send order — the occurrence threshold keeps
+// k takes needing k distinct rows however watchers schedule.
 func takeCursorDurableReceipt(session *cursorInteractiveSession, message string) (cursorPendingDurableAck, bool) {
 	if session == nil {
 		return cursorPendingDurableAck{}, false
@@ -219,26 +237,27 @@ func cursorSnapshotStoreRefs(storeDB string) map[string]struct{} {
 	return refs
 }
 
-// cursorStoreUserQuerySince reports whether the store holds a user_query
-// row with our text under a ref NOT in baseline (committed after the
-// send snapshot). A nil baseline matches any row — no repeat protection,
-// only for callers without a receipt. A missing/unreadable store simply
-// has no proof yet.
-func cursorStoreUserQuerySince(storeDB, message string, baseline map[string]struct{}) bool {
+// cursorStoreUserQueryCountSince counts the user_query rows with our text
+// under refs NOT in baseline (committed after the send snapshot). A
+// nil baseline matches any row — no repeat protection, only for
+// callers without a receipt. A missing/unreadable store simply has no
+// proof yet.
+func cursorStoreUserQueryCountSince(storeDB, message string, baseline map[string]struct{}) int {
 	if strings.TrimSpace(storeDB) == "" || strings.TrimSpace(message) == "" {
-		return false
+		return 0
 	}
 	db, err := sql.Open("sqlite", "file:"+storeDB+"?mode=ro")
 	if err != nil {
-		return false
+		return 0
 	}
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	refs, err := cursorStoreLatestRootRefs(ctx, db)
 	if err != nil {
-		return false
+		return 0
 	}
+	matched := 0
 	for _, ref := range refs {
 		if _, seen := baseline[ref]; seen {
 			continue
@@ -255,10 +274,19 @@ func cursorStoreUserQuerySince(storeDB, message string, baseline map[string]stru
 			continue
 		}
 		if query := cursorUserQueryFromContent(msg.Content); query != "" && cursorUserQueryMatches(query, message) {
-			return true
+			matched++
 		}
 	}
-	return false
+	return matched
+}
+
+// cursorStoreUserQuerySince reports whether the store holds a user_query
+// row with our text under a ref NOT in baseline (committed after the
+// send snapshot). A nil baseline matches any row — no repeat protection,
+// only for callers without a receipt. A missing/unreadable store simply
+// has no proof yet.
+func cursorStoreUserQuerySince(storeDB, message string, baseline map[string]struct{}) bool {
+	return cursorStoreUserQueryCountSince(storeDB, message, baseline) >= 1
 }
 
 // cursorPaneShowsQueuedMessage reports that message is sitting in Cursor's
@@ -281,11 +309,15 @@ func cursorPaneShowsQueuedMessage(captured, message string) bool {
 
 // cursorDurableAckPoll tunes pollCursorDurableAck. Zero values select live
 // defaults; tests inject resolve/capture and a shorter interval.
+// Occurrence is the taken receipt's 1-based position among identical
+// queued sends: the wait needs the occurrence-th matching new-ref row.
+// Values below 1 mean 1.
 type cursorDurableAckPoll struct {
 	resolve     func() string
 	capture     func(context.Context, string) (string, error)
 	sessionName string
 	interval    time.Duration
+	occurrence  int
 }
 
 // pollCursorDurableAck waits observe-only for the user_query row matching
@@ -301,6 +333,10 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 	if interval <= 0 {
 		interval = cursorDurableAckPollInterval
 	}
+	occurrence := poll.occurrence
+	if occurrence < 1 {
+		occurrence = 1
+	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(interval)
@@ -314,7 +350,7 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 		if strings.TrimSpace(path) == "" {
 			return false
 		}
-		return cursorStoreUserQuerySince(path, message, baseline)
+		return cursorStoreUserQueryCountSince(path, message, baseline) >= occurrence
 	}
 	if check() {
 		return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
@@ -323,7 +359,10 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 		select {
 		case <-deadline.Done():
 			if poll.capture != nil && strings.TrimSpace(poll.sessionName) != "" {
-				if captured, err := poll.capture(deadline, poll.sessionName); err == nil && cursorPaneShowsQueuedMessage(captured, message) {
+				captureCtx, captureCancel := context.WithTimeout(ctx, cursorDurableAckCaptureTimeout)
+				captured, captureErr := poll.capture(captureCtx, poll.sessionName)
+				captureCancel()
+				if captureErr == nil && cursorPaneShowsQueuedMessage(captured, message) {
 					return CursorDurableAck{Outcome: CursorDurableAckUnflushed, Latency: time.Since(since)}, nil
 				}
 			}
@@ -397,15 +436,18 @@ func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string
 	receipt, ok := takeCursorDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var baseline map[string]struct{}
+	occurrence := 1
 	if ok {
 		since = receipt.since
 		baseline = receipt.baseline
+		occurrence = receipt.occurrence
 	}
 	tmuxName := session.tmuxSessionName
 	ack, err := pollCursorDurableAck(ctx, message, since, baseline, timeout, cursorDurableAckPoll{
 		resolve:     func() string { return resolveCursorStoreNoMu(session) },
 		capture:     captureCursorPane,
 		sessionName: tmuxName,
+		occurrence:  occurrence,
 	})
 	if err != nil {
 		return CursorDurableAck{}, err

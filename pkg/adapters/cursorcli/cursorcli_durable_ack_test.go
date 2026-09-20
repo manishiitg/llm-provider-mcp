@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,6 +179,122 @@ func TestCursorPaneShowsQueuedMessage(t *testing.T) {
 	}
 }
 
+func TestPollCursorDurableAck(t *testing.T) {
+	msg := "STEER: end with PINEAPPLEBUS_9Q."
+	base := time.Now()
+
+	t.Run("row under new ref confirms", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, msg)
+		ack, err := pollCursorDurableAck(context.Background(), msg, base, map[string]struct{}{}, 5*time.Second, cursorDurableAckPoll{
+			resolve:  func() string { return path },
+			interval: 10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("poll error = %v", err)
+		}
+		if ack.Outcome != CursorDurableAckConfirmed || ack.ProofPath != path {
+			t.Fatalf("ack = %+v, want confirmed with proof", ack)
+		}
+	})
+
+	t.Run("occurrence 2 waits past the first row", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, msg)
+		_, err := pollCursorDurableAck(context.Background(), msg, base, map[string]struct{}{}, 150*time.Millisecond, cursorDurableAckPoll{
+			resolve:    func() string { return path },
+			interval:   10 * time.Millisecond,
+			occurrence: 2,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not durably acknowledged") {
+			t.Fatalf("err = %v, want the second wait to time out on one row", err)
+		}
+	})
+
+	t.Run("still queued at expiry is unflushed, not failed", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, "something else")
+		pane := strings.Join([]string{
+			"Follow-ups (1)",
+			msg,
+			"enter send now · select/edit",
+		}, "\n")
+		ack, err := pollCursorDurableAck(context.Background(), msg, base, nil, 150*time.Millisecond, cursorDurableAckPoll{
+			resolve:     func() string { return path },
+			capture:     func(context.Context, string) (string, error) { return pane, nil },
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != CursorDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("expiry capture runs under a live context", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, "something else")
+		pane := strings.Join([]string{
+			"Follow-ups (1)",
+			msg,
+			"enter send now · select/edit",
+		}, "\n")
+		ack, err := pollCursorDurableAck(context.Background(), msg, base, nil, 150*time.Millisecond, cursorDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("unflushed must not error, got %v", err)
+		}
+		if ack.Outcome != CursorDurableAckUnflushed {
+			t.Fatalf("ack = %+v, want accepted_but_unflushed", ack)
+		}
+	})
+
+	t.Run("parent cancel fails fast even when queued", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, "something else")
+		pane := strings.Join([]string{
+			"Follow-ups (1)",
+			msg,
+			"enter send now · select/edit",
+		}, "\n")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollCursorDurableAck(ctx, msg, base, nil, 5*time.Second, cursorDurableAckPoll{
+			resolve: func() string { return path },
+			capture: func(cctx context.Context, _ string) (string, error) {
+				if err := cctx.Err(); err != nil {
+					return "", err
+				}
+				return pane, nil
+			},
+			sessionName: "probe-session",
+			interval:    10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll, not report unflushed")
+		}
+	})
+
+	t.Run("context cancel aborts", func(t *testing.T) {
+		path, _ := writeCursorDurableStore(t, "something else")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := pollCursorDurableAck(ctx, msg, base, nil, 5*time.Second, cursorDurableAckPoll{
+			resolve:  func() string { return path },
+			interval: 10 * time.Millisecond,
+		})
+		if err == nil {
+			t.Fatal("expected cancellation to abort the poll")
+		}
+	})
+}
+
 func TestStashAndPeekCursorDurableReceipt(t *testing.T) {
 	session := &cursorInteractiveSession{ownerSessionID: "owner-1"}
 	since := time.Now()
@@ -245,6 +362,71 @@ func TestTakeCursorDurableReceiptFIFORepeat(t *testing.T) {
 	// ...but the second wait cannot be satisfied by the first row.
 	if cursorStoreUserQuerySince(path, msg, second.baseline) {
 		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
+func TestTakeCursorDurableReceiptOccurrenceRepeat(t *testing.T) {
+	session := &cursorInteractiveSession{ownerSessionID: "owner-occ"}
+	msg := "yes"
+	// Both identical sends snapshot before any row commits: same
+	// (empty) baseline on both receipts, so only occurrence
+	// disambiguates them.
+	stashCursorDurableReceipt(session, msg, "/tmp/store.db", map[string]struct{}{}, time.Now())
+	stashCursorDurableReceipt(session, msg, "/tmp/store.db", map[string]struct{}{}, time.Now())
+
+	first, ok := takeCursorDurableReceipt(session, msg)
+	if !ok || first.occurrence != 1 {
+		t.Fatalf("first take = (%+v %v), want occurrence 1", first, ok)
+	}
+	second, ok := takeCursorDurableReceipt(session, msg)
+	if !ok || second.occurrence != 2 {
+		t.Fatalf("second take = (%+v %v), want occurrence 2", second, ok)
+	}
+
+	// One committed row satisfies the first wait but not the second.
+	oneRow, _ := writeCursorDurableStore(t, msg)
+	if got := cursorStoreUserQueryCountSince(oneRow, msg, first.baseline); got < first.occurrence {
+		t.Fatalf("matching rows = %d, want at least the first wait's occurrence", got)
+	}
+	if got := cursorStoreUserQueryCountSince(oneRow, msg, second.baseline); got >= second.occurrence {
+		t.Fatalf("matching rows = %d, want fewer than the second wait's occurrence", got)
+	}
+	// A second committed row satisfies the second wait.
+	twoRows, _ := writeCursorDurableStore(t, msg, msg)
+	if got := cursorStoreUserQueryCountSince(twoRows, msg, second.baseline); got < second.occurrence {
+		t.Fatalf("matching rows = %d, want at least the second wait's occurrence", got)
+	}
+}
+
+func TestTakeCursorDurableReceiptConcurrentOccurrence(t *testing.T) {
+	session := &cursorInteractiveSession{ownerSessionID: "owner-occ-race"}
+	msg := "yes"
+	stashCursorDurableReceipt(session, msg, "/tmp/store.db", nil, time.Now())
+	stashCursorDurableReceipt(session, msg, "/tmp/store.db", nil, time.Now())
+
+	// Watcher goroutines take in acquisition order, not spawn order:
+	// however they schedule, the two takes must bind distinct
+	// occurrences — never the same receipt twice, never a gap.
+	var wg sync.WaitGroup
+	got := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			receipt, ok := takeCursorDurableReceipt(session, msg)
+			if !ok {
+				t.Errorf("take %d: expected a receipt", idx)
+				return
+			}
+			got[idx] = receipt.occurrence
+		}(i)
+	}
+	wg.Wait()
+	if (got[0] != 1 || got[1] != 2) && (got[0] != 2 || got[1] != 1) {
+		t.Fatalf("take occurrences = %v, want {1 2} in either order", got)
+	}
+	if _, ok := takeCursorDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
 	}
 }
 
