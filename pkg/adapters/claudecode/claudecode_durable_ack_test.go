@@ -297,6 +297,40 @@ func TestStashAndPeekClaudeDurableReceipt(t *testing.T) {
 	}
 }
 
+func TestTakeClaudeDurableReceiptFIFORepeat(t *testing.T) {
+	session := &claudeInteractivePersistentSession{ownerSessionID: "owner-fifo"}
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "yes"
+	// First send lands a row; the identical second send snapshots after it.
+	row := claudeUserRow(base.Add(time.Second), msg) + "\n"
+	path := writeClaudeDurableFixture(t, strings.TrimSuffix(row, "\n"))
+	secondOffset := int64(len(row))
+	stashClaudeDurableReceipt(session, msg, path, 0, base)
+	// Same window start: the second wait's exclusion must come from its
+	// offset alone, proving FIFO baselines disambiguate repeats.
+	stashClaudeDurableReceipt(session, msg, path, secondOffset, base)
+
+	first, ok := takeClaudeDurableReceipt(session, msg)
+	if !ok || first.offset != 0 {
+		t.Fatalf("first take = (%+v %v), want the first send's baseline", first, ok)
+	}
+	second, ok := takeClaudeDurableReceipt(session, msg)
+	if !ok || second.offset != secondOffset {
+		t.Fatalf("second take = (%+v %v), want the second send's baseline", second, ok)
+	}
+	if _, ok := takeClaudeDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+	// The first wait is satisfied by the first row...
+	if _, ok := claudeTranscriptUserMessageSince(path, msg, first.since, first.offset); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait cannot be satisfied by the first row.
+	if _, ok := claudeTranscriptUserMessageSince(path, msg, second.since, second.offset); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
 func TestClaudeInteractiveSessionRegistered(t *testing.T) {
 	owner := "claude-registered-owner"
 	if InteractiveSessionRegistered(owner) {

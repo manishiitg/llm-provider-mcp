@@ -230,7 +230,6 @@ func TestStashAndPeekPiDurableReceipt(t *testing.T) {
 	if _, ok := peekPiDurableReceipt(session, "other"); ok {
 		t.Fatal("a different message must not match the receipt")
 	}
-
 	stale := &piInteractiveSession{ownerSessionID: "owner-2"}
 	stashPiDurableReceipt(stale, "old", "/tmp/m.jsonl", 10, time.Now().Add(-time.Hour))
 	if _, ok := peekPiDurableReceipt(stale, "old"); ok {
@@ -246,6 +245,45 @@ func TestStashAndPeekPiDurableReceipt(t *testing.T) {
 	}
 	if _, ok := peekPiDurableReceipt(capped, fmt.Sprintf("msg-%d", piMaxPendingDurableAcks+2)); !ok {
 		t.Fatal("the newest receipt must survive the cap")
+	}
+}
+
+func TestTakePiDurableReceiptFIFORepeat(t *testing.T) {
+	session := &piInteractiveSession{ownerSessionID: "owner-fifo"}
+	msg := "yes"
+	// First send lands a marker; the identical second send snapshots after it.
+	line := piUserMarker(time.Now().UnixMilli(), msg) + "\n"
+	path := writePiDurableAckFixture(t, strings.TrimSuffix(line, "\n"))
+	secondOffset := int64(len(line))
+	stashPiDurableReceipt(session, msg, path, 0, time.Now())
+	stashPiDurableReceipt(session, msg, path, secondOffset, time.Now())
+
+	first, ok := takePiDurableReceipt(session, msg)
+	if !ok || first.offset != 0 {
+		t.Fatalf("first take = (%+v %v), want the first send's baseline", first, ok)
+	}
+	second, ok := takePiDurableReceipt(session, msg)
+	if !ok || second.offset != secondOffset {
+		t.Fatalf("second take = (%+v %v), want the second send's baseline", second, ok)
+	}
+	if _, ok := takePiDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+	// The first wait is satisfied by the first marker...
+	markers, _, err := readPiMarkersSince(path, first.offset)
+	if err != nil {
+		t.Fatalf("read markers: %v", err)
+	}
+	if _, ok := piUserAckMarker(markers, msg); !ok {
+		t.Fatal("expected the first marker to confirm the first wait")
+	}
+	// ...but the second wait cannot be satisfied by the first marker.
+	markers, _, err = readPiMarkersSince(path, second.offset)
+	if err != nil {
+		t.Fatalf("read markers: %v", err)
+	}
+	if _, ok := piUserAckMarker(markers, msg); ok {
+		t.Fatal("the first marker must not confirm the repeated send")
 	}
 }
 

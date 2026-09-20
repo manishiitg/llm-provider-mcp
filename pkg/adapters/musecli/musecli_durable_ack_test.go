@@ -282,6 +282,48 @@ func TestStashAndPeekMuseDurableReceipt(t *testing.T) {
 	}
 }
 
+func TestTakeMuseDurableReceiptFIFORepeat(t *testing.T) {
+	owner := "muse-durable-owner-fifo"
+	musePersistentPool.Lock()
+	musePersistentPool.m[owner] = &musePersistentSession{tmuxName: "mlp-muse-test"}
+	musePersistentPool.Unlock()
+	t.Cleanup(func() {
+		musePersistentPool.Lock()
+		delete(musePersistentPool.m, owner)
+		musePersistentPool.Unlock()
+	})
+
+	at := time.Now().UnixMicro()
+	msg := "yes"
+	// First send lands a row; the identical second send snapshots after it.
+	path := writeMuseDurableAckFixture(t,
+		museIntakeRow(100, at-1000, "older prompt"),
+		museIntakeRow(101, at, msg),
+	)
+	stashMuseDurableReceipt(owner, msg, path, 100, time.Now())
+	stashMuseDurableReceipt(owner, msg, path, 101, time.Now())
+
+	first, ok := takeMuseDurableReceipt(owner, msg)
+	if !ok || first.baselineSeq != 100 {
+		t.Fatalf("first take = (%+v %v), want the first send's baseline", first, ok)
+	}
+	second, ok := takeMuseDurableReceipt(owner, msg)
+	if !ok || second.baselineSeq != 101 {
+		t.Fatalf("second take = (%+v %v), want the second send's baseline", second, ok)
+	}
+	if _, ok := takeMuseDurableReceipt(owner, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+	// The first wait is satisfied by the first row...
+	if _, _, ok := museUserAckRow(path, msg, first.baselineSeq); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait cannot be satisfied by the first row.
+	if _, _, ok := museUserAckRow(path, msg, second.baselineSeq); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
 func TestInteractiveSessionRegistered(t *testing.T) {
 	owner := "muse-registered-owner"
 	if InteractiveSessionRegistered(owner) {

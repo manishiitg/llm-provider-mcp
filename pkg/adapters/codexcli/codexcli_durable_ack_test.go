@@ -292,6 +292,38 @@ func TestStashAndPeekDurableReceipt(t *testing.T) {
 	}
 }
 
+func TestTakeDurableReceiptFIFORepeat(t *testing.T) {
+	session := &codexInteractiveSession{ownerSessionID: "owner-fifo"}
+	base := time.Now().UTC().Truncate(time.Second)
+	msg := "yes"
+	// First send lands a row; the identical second send snapshots after it.
+	row := durableUserRow(base.Add(time.Second), msg) + "\n"
+	path := writeDurableAckFixture(t, strings.TrimSuffix(row, "\n"))
+	secondOffset := int64(len(row))
+	stashCodexDurableReceipt(session, msg, path, 0, base)
+	stashCodexDurableReceipt(session, msg, path, secondOffset, base.Add(2*time.Second))
+
+	first, ok := takeCodexDurableReceipt(session, msg)
+	if !ok || first.offset != 0 {
+		t.Fatalf("first take = (%+v %v), want the first send's baseline", first, ok)
+	}
+	second, ok := takeCodexDurableReceipt(session, msg)
+	if !ok || second.offset != secondOffset {
+		t.Fatalf("second take = (%+v %v), want the second send's baseline", second, ok)
+	}
+	if _, ok := takeCodexDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+	// The first wait is satisfied by the first row...
+	if _, ok := codexRolloutUserMessageSince(path, msg, first.since, first.offset); !ok {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait cannot be satisfied by the first row.
+	if _, ok := codexRolloutUserMessageSince(path, msg, second.since, second.offset); ok {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
 func TestInteractiveSessionRegistered(t *testing.T) {
 	owner := "codex-registered-owner"
 	if InteractiveSessionRegistered(owner) {

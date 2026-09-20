@@ -145,9 +145,8 @@ func stashCodexDurableReceipt(session *codexInteractiveSession, message, path st
 }
 
 // peekCodexDurableReceipt returns the earliest pending snapshot for an
-// identical message. Receipts are deliberately not consumed: sends are
-// broker-serialized per session and the CLI queues FIFO, so offset+text
-// scoping self-disambiguates repeats without cross-goroutine ownership.
+// identical message without consuming it. Production waits use
+// takeCodexDurableReceipt; peek remains for introspection and tests.
 func peekCodexDurableReceipt(session *codexInteractiveSession, message string) (codexPendingDurableAck, bool) {
 	if session == nil {
 		return codexPendingDurableAck{}, false
@@ -158,6 +157,32 @@ func peekCodexDurableReceipt(session *codexInteractiveSession, message string) (
 	for _, pending := range session.pendingDurable {
 		if pending.message == message && time.Since(pending.since) < codexPendingDurableAckTTL {
 			return pending, true
+		}
+	}
+	return codexPendingDurableAck{}, false
+}
+
+// takeCodexDurableReceipt removes and returns the earliest pending
+// snapshot for an identical message. FIFO consumption binds each wait
+// to its own send's baseline: with peek semantics a repeated send
+// reused the first receipt's offset, so the first row falsely
+// confirmed the second wait. Sends are broker-serialized per session
+// and watchers take in spawn order under this lock, so takes match
+// sends FIFO; the inline arbiter and the server watcher are mutually
+// exclusive per send (pane-failure path vs fast-ack path), so exactly
+// one of them takes each receipt.
+func takeCodexDurableReceipt(session *codexInteractiveSession, message string) (codexPendingDurableAck, bool) {
+	if session == nil {
+		return codexPendingDurableAck{}, false
+	}
+	message = strings.TrimSpace(message)
+	session.durableMu.Lock()
+	defer session.durableMu.Unlock()
+	for i, pending := range session.pendingDurable {
+		if pending.message == message && time.Since(pending.since) < codexPendingDurableAckTTL {
+			out := pending
+			session.pendingDurable = append(session.pendingDurable[:i], session.pendingDurable[i+1:]...)
+			return out, true
 		}
 	}
 	return codexPendingDurableAck{}, false
@@ -391,7 +416,7 @@ func codexArbiterAfterPaneFailure(ctx context.Context, ownerSessionID, sessionNa
 	if !ok || session == nil {
 		return phase1Err
 	}
-	receipt, ok := peekCodexDurableReceipt(session, message)
+	receipt, ok := takeCodexDurableReceipt(session, message)
 	minOffset := int64(0)
 	if ok {
 		since = receipt.since
@@ -437,7 +462,7 @@ func AwaitCodexInputDurable(ctx context.Context, ownerSessionID, message string,
 	if !ok || session == nil {
 		return CodexDurableAck{}, fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)
 	}
-	receipt, ok := peekCodexDurableReceipt(session, message)
+	receipt, ok := takeCodexDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minOffset int64
 	if ok {

@@ -140,9 +140,8 @@ func stashCursorDurableReceipt(session *cursorInteractiveSession, message, store
 }
 
 // peekCursorDurableReceipt returns the earliest pending snapshot for an
-// identical message. Receipts are deliberately not consumed: sends are
-// broker-serialized per session and the CLI queues FIFO, so ref+text
-// scoping self-disambiguates repeats without cross-goroutine ownership.
+// identical message without consuming it. Production waits use
+// takeCursorDurableReceipt; peek remains for introspection and tests.
 func peekCursorDurableReceipt(session *cursorInteractiveSession, message string) (cursorPendingDurableAck, bool) {
 	if session == nil {
 		return cursorPendingDurableAck{}, false
@@ -153,6 +152,30 @@ func peekCursorDurableReceipt(session *cursorInteractiveSession, message string)
 	for _, pending := range session.pendingDurable {
 		if pending.message == message && time.Since(pending.since) < cursorPendingDurableAckTTL {
 			return pending, true
+		}
+	}
+	return cursorPendingDurableAck{}, false
+}
+
+// takeCursorDurableReceipt removes and returns the earliest pending
+// snapshot for an identical message. FIFO consumption binds each wait
+// to its own send's baseline: with peek semantics a repeated send
+// reused the first receipt's ref baseline, so the first row falsely
+// confirmed the second wait. Sends are broker-serialized per session
+// and watchers take in spawn order under this lock, so takes match
+// sends FIFO.
+func takeCursorDurableReceipt(session *cursorInteractiveSession, message string) (cursorPendingDurableAck, bool) {
+	if session == nil {
+		return cursorPendingDurableAck{}, false
+	}
+	message = strings.TrimSpace(message)
+	session.durableMu.Lock()
+	defer session.durableMu.Unlock()
+	for i, pending := range session.pendingDurable {
+		if pending.message == message && time.Since(pending.since) < cursorPendingDurableAckTTL {
+			out := pending
+			session.pendingDurable = append(session.pendingDurable[:i], session.pendingDurable[i+1:]...)
+			return out, true
 		}
 	}
 	return cursorPendingDurableAck{}, false
@@ -371,7 +394,7 @@ func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string
 	if !ok || session == nil {
 		return CursorDurableAck{}, fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
 	}
-	receipt, ok := peekCursorDurableReceipt(session, message)
+	receipt, ok := takeCursorDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var baseline map[string]struct{}
 	if ok {

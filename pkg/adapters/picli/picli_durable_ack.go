@@ -129,9 +129,8 @@ func stashPiDurableReceipt(session *piInteractiveSession, message, path string, 
 }
 
 // peekPiDurableReceipt returns the earliest pending snapshot for an
-// identical message. Receipts are deliberately not consumed: sends are
-// broker-serialized per session and Pi queues FIFO, so offset+text
-// scoping self-disambiguates repeats without cross-goroutine ownership.
+// identical message without consuming it. Production waits use
+// takePiDurableReceipt; peek remains for introspection and tests.
 func peekPiDurableReceipt(session *piInteractiveSession, message string) (piPendingDurableAck, bool) {
 	if session == nil {
 		return piPendingDurableAck{}, false
@@ -142,6 +141,32 @@ func peekPiDurableReceipt(session *piInteractiveSession, message string) (piPend
 	for _, pending := range session.pendingDurable {
 		if pending.message == message && time.Since(pending.since) < piPendingDurableAckTTL {
 			return pending, true
+		}
+	}
+	return piPendingDurableAck{}, false
+}
+
+// takePiDurableReceipt removes and returns the earliest pending
+// snapshot for an identical message. FIFO consumption binds each wait
+// to its own send's baseline: with peek semantics a repeated send
+// reused the first receipt's offset, so the first row falsely
+// confirmed the second wait. Sends are broker-serialized per session
+// and watchers take in spawn order under this lock, so takes match
+// sends FIFO; the inline arbiter and the server watcher are mutually
+// exclusive per send (submit-failure path vs fast-ack path), so exactly
+// one of them takes each receipt.
+func takePiDurableReceipt(session *piInteractiveSession, message string) (piPendingDurableAck, bool) {
+	if session == nil {
+		return piPendingDurableAck{}, false
+	}
+	message = strings.TrimSpace(message)
+	session.durableMu.Lock()
+	defer session.durableMu.Unlock()
+	for i, pending := range session.pendingDurable {
+		if pending.message == message && time.Since(pending.since) < piPendingDurableAckTTL {
+			out := pending
+			session.pendingDurable = append(session.pendingDurable[:i], session.pendingDurable[i+1:]...)
+			return out, true
 		}
 	}
 	return piPendingDurableAck{}, false
@@ -327,7 +352,7 @@ func piArbiterAfterSubmitFailure(ctx context.Context, ownerSessionID, sessionNam
 	if !ok || session == nil {
 		return submitErr
 	}
-	receipt, ok := peekPiDurableReceipt(session, message)
+	receipt, ok := takePiDurableReceipt(session, message)
 	minOffset := int64(0)
 	if ok {
 		since = receipt.since
@@ -373,7 +398,7 @@ func AwaitPiInputDurable(ctx context.Context, ownerSessionID, message string, ti
 	if !ok || session == nil {
 		return PiDurableAck{}, fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
 	}
-	receipt, ok := peekPiDurableReceipt(session, message)
+	receipt, ok := takePiDurableReceipt(session, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minOffset int64
 	if ok {

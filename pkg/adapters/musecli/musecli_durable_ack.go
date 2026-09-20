@@ -139,9 +139,8 @@ func stashMuseDurableReceipt(owner, message, logPath string, baselineSeq int64, 
 }
 
 // peekMuseDurableReceipt returns the earliest pending snapshot for an
-// identical message. Receipts are deliberately not consumed: sends are
-// serialized per session and intake is FIFO, so baseline+text scoping
-// self-disambiguates repeats without cross-goroutine ownership.
+// identical message without consuming it. Production waits use
+// takeMuseDurableReceipt; peek remains for introspection and tests.
 func peekMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool) {
 	owner = strings.TrimSpace(owner)
 	message = strings.TrimSpace(message)
@@ -158,6 +157,36 @@ func peekMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool)
 	for _, pending := range entry.pendingDurable {
 		if pending.message == message && time.Since(pending.since) < musePendingDurableAckTTL {
 			return pending, true
+		}
+	}
+	return musePendingDurableAck{}, false
+}
+
+// takeMuseDurableReceipt removes and returns the earliest pending
+// snapshot for an identical message. FIFO consumption binds each wait
+// to its own send's baseline: with peek semantics a repeated send
+// reused the first receipt's sequence, so the first row falsely
+// confirmed the second wait. Sends are serialized per session and
+// watchers take in spawn order under the pool lock, so takes match
+// sends FIFO.
+func takeMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool) {
+	owner = strings.TrimSpace(owner)
+	message = strings.TrimSpace(message)
+	key, err := musePersistentKey(owner)
+	if err != nil {
+		return musePendingDurableAck{}, false
+	}
+	musePersistentPool.Lock()
+	defer musePersistentPool.Unlock()
+	entry := musePersistentPool.m[key]
+	if entry == nil {
+		return musePendingDurableAck{}, false
+	}
+	for i, pending := range entry.pendingDurable {
+		if pending.message == message && time.Since(pending.since) < musePendingDurableAckTTL {
+			out := pending
+			entry.pendingDurable = append(entry.pendingDurable[:i], entry.pendingDurable[i+1:]...)
+			return out, true
 		}
 	}
 	return musePendingDurableAck{}, false
@@ -419,7 +448,7 @@ func AwaitMuseInputDurable(ctx context.Context, ownerSessionID, message string, 
 	}
 	tmuxName := entry.tmuxName
 	musePersistentPool.Unlock()
-	receipt, ok := peekMuseDurableReceipt(ownerSessionID, message)
+	receipt, ok := takeMuseDurableReceipt(ownerSessionID, message)
 	since := time.Now().Add(-2 * time.Minute)
 	var minSeq int64
 	if ok {

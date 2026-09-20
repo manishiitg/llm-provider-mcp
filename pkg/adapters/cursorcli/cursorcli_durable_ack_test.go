@@ -216,6 +216,38 @@ func TestStashAndPeekCursorDurableReceipt(t *testing.T) {
 	}
 }
 
+func TestTakeCursorDurableReceiptFIFORepeat(t *testing.T) {
+	session := &cursorInteractiveSession{ownerSessionID: "owner-fifo"}
+	msg := "yes"
+	// First send lands a row; the identical second send snapshots after it.
+	path, refs := writeCursorDurableStore(t, msg)
+	stashCursorDurableReceipt(session, msg, path, map[string]struct{}{}, time.Now())
+	stashCursorDurableReceipt(session, msg, path, map[string]struct{}{refs[0]: {}}, time.Now())
+
+	first, ok := takeCursorDurableReceipt(session, msg)
+	if !ok || len(first.baseline) != 0 {
+		t.Fatalf("first take = (%+v %v), want the first send's baseline", first, ok)
+	}
+	second, ok := takeCursorDurableReceipt(session, msg)
+	if !ok {
+		t.Fatalf("second take = (%+v %v), want the second send's baseline", second, ok)
+	}
+	if _, ok := second.baseline[refs[0]]; !ok {
+		t.Fatalf("second take baseline = %+v, want the first row's ref", second.baseline)
+	}
+	if _, ok := takeCursorDurableReceipt(session, msg); ok {
+		t.Fatal("no receipt must remain after two takes")
+	}
+	// The first wait is satisfied by the first row...
+	if !cursorStoreUserQuerySince(path, msg, first.baseline) {
+		t.Fatal("expected the first row to confirm the first wait")
+	}
+	// ...but the second wait cannot be satisfied by the first row.
+	if cursorStoreUserQuerySince(path, msg, second.baseline) {
+		t.Fatal("the first row must not confirm the repeated send")
+	}
+}
+
 func TestCursorInteractiveSessionRegistered(t *testing.T) {
 	owner := "cursor-registered-owner"
 	if InteractiveSessionRegistered(owner) {
