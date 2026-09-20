@@ -94,6 +94,12 @@ type codexInteractiveSession struct {
 	// extraction never waits on another session's whole-turn lock (PLAT-116).
 	rolloutMu        sync.RWMutex
 	retainedProgress codexRetainedProgress
+	// durableMu guards pendingDurable only. It is a leaf lock like
+	// rolloutMu: the live send path holds no session lock, and nothing
+	// takes session.mu while holding it — the arbiter and the server
+	// durability watcher both run concurrent with a turn that owns mu.
+	durableMu      sync.Mutex
+	pendingDurable []codexPendingDurableAck
 }
 
 var codexInteractiveRegistry = sessionregistry.NewOwnerRegistry[string]()
@@ -1171,12 +1177,20 @@ func activeCodexInteractiveSession(ownerSessionID string) (string, bool) {
 	return sessionName, ok && strings.TrimSpace(sessionName) != ""
 }
 
+// InteractiveSessionRegistered reports whether the owner's Codex TUI is
+// registered — the live-injection transport exists. Cheap registry lookup
+// (no tmux round-trip) for steer gating; delivery re-verifies liveness.
+func InteractiveSessionRegistered(ownerSessionID string) bool {
+	_, ok := activeCodexInteractiveSession(ownerSessionID)
+	return ok
+}
+
 func SendCodexInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
 	sessionName, ok := activeCodexInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)
 	}
-	return sendCodexInputToTmux(ctx, sessionName, message)
+	return sendCodexInputToTmux(ctx, ownerSessionID, sessionName, message)
 }
 
 func codexInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
@@ -1740,8 +1754,14 @@ func sendCodexPromptToTmuxConfirmedBy(ctx context.Context, sessionName, prompt s
 	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, prompt, true, oracle)
 }
 
-func sendCodexInputToTmux(ctx context.Context, sessionName, message string) error {
-	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, message, false, nil)
+func sendCodexInputToTmux(ctx context.Context, ownerSessionID, sessionName, message string) error {
+	since := time.Now()
+	stashCodexDurableReceiptForSend(ownerSessionID, message, since)
+	err := sendCodexInputToTmuxWithReadiness(ctx, sessionName, message, false, nil)
+	if err == nil {
+		return nil
+	}
+	return codexArbiterAfterPaneFailure(ctx, ownerSessionID, sessionName, message, since, err)
 }
 
 func sendCodexInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt bool, oracle codexSubmissionOracle) error {

@@ -75,11 +75,16 @@ type musePersistentSession struct {
 	// only accepts assistant commits after this cursor, so an older completed
 	// reply cannot settle a newly submitted follow-up.
 	retainedBaselineSequence int64
-	retainedProgress         museRetainedProgress
-	restoreMCP               func()
-	agentsContent            string
-	restoreAgents            func()
-	agentsProjected          bool
+	// pendingDurable holds one pre-send snapshot per recent live-input
+	// send so the transcript arbiter and AwaitMuseInputDurable scope
+	// their match above the baseline that send could have produced.
+	// Guarded by the pool lock, which turns never hold while running.
+	pendingDurable   []musePendingDurableAck
+	retainedProgress museRetainedProgress
+	restoreMCP       func()
+	agentsContent    string
+	restoreAgents    func()
+	agentsProjected  bool
 }
 
 // museRecordPersistentTranscript binds the owner-scoped persistent TUI to the

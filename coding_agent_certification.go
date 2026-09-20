@@ -123,6 +123,14 @@ const (
 	// SEPARATE, later consumer can still find that same evidence after the
 	// fact if the live path's own signal never reached its caller.
 	CertStalledTurnDiagnosis CodingAgentCertificationID = "stalled_turn_diagnosis"
+	// CertDurableAck proves a live-input send is confirmed against the
+	// CLI's own durable record (Codex: rollout user row), not just the
+	// pane. The pane stays the fast resubmit signal, but a pane misread
+	// must not fail a send the CLI accepted, and a queued-then-flushed
+	// busy steer must be provable after the fact. The proof sends a
+	// follow-up into a busy turn, awaits the durable record, and shows
+	// the model obeyed it.
+	CertDurableAck CodingAgentCertificationID = "durable_ack"
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
@@ -238,10 +246,18 @@ var codingAgentCapabilityCertifications = []struct {
 	{"session loss", func(c CodingAgentProviderContract) bool { return c.HandlesTmuxSessionLoss }, []CodingAgentCertificationID{CertSessionLoss, CertSessionLossRecovery}},
 	{"structured streaming", func(c CodingAgentProviderContract) bool { return c.SupportsStructuredStreaming }, []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}},
 	{"stalled turn diagnosis", func(c CodingAgentProviderContract) bool { return c.SupportsStalledTurnDiagnosis }, []CodingAgentCertificationID{CertStalledTurnDiagnosis}},
+	{"durable ack", func(c CodingAgentProviderContract) bool { return c.SupportsDurableAck }, []CodingAgentCertificationID{CertDurableAck}},
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderMuseCLI: {
+		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/musecli/musecli_durable_ack_live_test.go",
+			TestName:    "TestMuseCLIRealDurableAckContract",
+			Description: "steers a busy Muse turn via the production live-input path, awaits the transcript user-intent row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertBestEffortToolRestrictions,
 			TestFile:    "pkg/adapters/musecli/musecli_tool_restrictions_live_test.go",
@@ -356,6 +372,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderClaudeCode: {
+		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/claudecode/claudecode_durable_ack_live_test.go",
+			TestName:    "TestClaudeCodeRealDurableAckContract",
+			Description: "steers a busy Claude turn via raw live input, awaits the transcript user row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStalledTurnDiagnosis,
 			TestFile:    "pkg/adapters/claudecode/claudecode_stalled_turn_diagnosis_live_test.go",
@@ -613,6 +636,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/codexcli/codexcli_durable_ack_live_test.go",
+			TestName:    "TestCodexCLIRealDurableAckContract",
+			Description: "steers a busy Codex turn via raw live input, awaits the rollout user row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertStructuredMultiTurn,
 			TestFile:    "pkg/adapters/codexcli/codexcli_structured_integration_test.go",
 			TestName:    "TestCodexCLIStructuredTwoTurnResume",
@@ -857,6 +887,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderCursorCLI: {
 		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_durable_ack_live_test.go",
+			TestName:    "TestCursorCLIRealDurableAckContract",
+			Description: "steers a busy Cursor turn via raw live input, awaits the store.db user_query row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertStructuredMultiTurn,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
 			TestName:    "TestCursorCLIStructuredTwoTurnResume",
@@ -1072,6 +1109,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderPiCLI: {
+		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/picli/picli_durable_ack_live_test.go",
+			TestName:    "TestPiCLIRealDurableAckContract",
+			Description: "steers a busy Pi turn via raw live input, awaits the marker message_end user row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStructuredMultiTurn,
 			TestFile:    "pkg/adapters/picli/picli_structured_integration_test.go",
@@ -1407,6 +1451,13 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 	if id == CertStalledTurnDiagnosis {
 		return CodingAgentCertificationPriorityP0
 	}
+	// A pane misread that fails a send the CLI accepted is a user-visible
+	// false error; a queued steer with no durability proof is a silent
+	// drop. Both are release-blocking wherever the adapter claims the
+	// durable record.
+	if id == CertDurableAck {
+		return CodingAgentCertificationPriorityP0
+	}
 	return CodingAgentCertificationPriorityP1
 }
 
@@ -1446,6 +1497,11 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// must prove itself for providers that claim it.
 	if contract.SupportsStalledTurnDiagnosis {
 		ids = append(ids, CertStalledTurnDiagnosis)
+	}
+	// A provider claiming rollout/transcript-backed submit confirmation
+	// must prove the durable record actually confirms a busy steer.
+	if contract.SupportsDurableAck {
+		ids = append(ids, CertDurableAck)
 	}
 	return ids
 }

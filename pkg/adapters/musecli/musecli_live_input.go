@@ -35,6 +35,14 @@ func musePersistentTmuxForOwner(owner string) (string, bool) {
 	return entry.tmuxName, true
 }
 
+// InteractiveSessionRegistered reports whether the owner's pooled Muse TUI
+// is registered — the live-injection transport exists. Cheap map lookup
+// (no tmux round-trip) for steer gating; delivery re-verifies liveness.
+func InteractiveSessionRegistered(ownerSessionID string) bool {
+	_, ok := musePersistentTmuxForOwner(ownerSessionID)
+	return ok
+}
+
 // SendMuseInteractiveInput types a follow-up message into the owner's live
 // pooled TUI and submits it.
 func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
@@ -76,8 +84,10 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	// Completing the old question can produce another assistant commit. The
 	// new live turn starts after that boundary, not at the pre-dialog cursor.
 	baseline := museTranscriptMaxSequence(logPath)
+	since := time.Now()
+	stashMuseDurableReceipt(ownerSessionID, message, logPath, baseline, since)
 	if err := museSendPrompt(ctx, tmuxName, message); err != nil {
-		return err
+		return museArbiterAfterSubmitFailure(ctx, ownerSessionID, tmuxName, message, since, baseline, err)
 	}
 	musePersistentPool.Lock()
 	if current := musePersistentPool.m[key]; current != nil && current.tmuxName == tmuxName {

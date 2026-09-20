@@ -1,0 +1,396 @@
+package cursorcli
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Durable submit confirmation for the Cursor tmux lane: the observe-only
+// store.db arbiter behind AwaitCursorInputDurable.
+//
+// Live evidence (2026-09-19 probe, auto model): an idle steer commits
+// its <user_query> blob ~9.5s after send-keys. Cursor's blobs carry no
+// per-message timestamps, so ref-identity (not time/offset) scopes one
+// send's proof: the pre-send snapshot of latest-root refs, plus exact
+// text, means an identical earlier message already in the store cannot
+// confirm a new one. Verdicts:
+//
+//   - user_query row under a new ref -> confirmed (durably committed)
+//   - no new row at budget expiry but the pane still shows the message
+//     natively queued -> accepted_but_unflushed (held, not failed)
+//   - neither -> timeout error (failed)
+//
+// NOTE (live-unverified 2026-09-19): login quota exhausted before the
+// busy-steer probe, so the busy commit path and the queued-followups
+// pane matcher below are shaped by code inspection + fixtures only.
+// Re-verify live (TestCursorCLIRealDurableAckContract) once quota resets.
+
+type CursorDurableAckOutcome string
+
+const (
+	// CursorDurableAckConfirmed means the session store holds the
+	// user_query row for this send.
+	CursorDurableAckConfirmed CursorDurableAckOutcome = "confirmed"
+	// CursorDurableAckUnflushed means the budget expired while the pane
+	// still positively showed the message natively queued. The CLI
+	// holds it; durability is unconfirmed, not failed.
+	CursorDurableAckUnflushed CursorDurableAckOutcome = "accepted_but_unflushed"
+)
+
+// CursorDurableAck carries the store proof for one send. RowTimestamp is
+// always zero: cursor blobs carry no per-message timestamps.
+type CursorDurableAck struct {
+	Outcome      CursorDurableAckOutcome
+	Latency      time.Duration
+	ProofPath    string
+	RowTimestamp time.Time
+}
+
+// CursorInputUnflushedError reports accepted-but-unflushed through the
+// error return so existing err != nil callers stay safe (they treat it
+// as a failure) while confirmation-aware callers can distinguish it
+// with errors.As.
+type CursorInputUnflushedError struct {
+	OwnerSessionID string
+	Latency        time.Duration
+}
+
+func (e *CursorInputUnflushedError) Error() string {
+	return fmt.Sprintf("Cursor input accepted but unflushed after %s (still natively queued; durability unconfirmed, not failed)", e.Latency.Round(100*time.Millisecond))
+}
+
+const (
+	// Default 180s: idle commit measured at ~9.5s but the busy path is
+	// unverified (quota). The watch is secondary (never blocks the
+	// user), so the generous budget only delays a verdict that would
+	// otherwise be a false negative. Revisit after the live P0.
+	cursorDurableAckBudgetDefault = 180 * time.Second
+	cursorDurableAckBudgetMin     = 5 * time.Second
+	cursorDurableAckBudgetMax     = 300 * time.Second
+	cursorDurableAckPollInterval  = time.Second
+)
+
+// cursorDurableAckBudget bounds the observe-only store arbiter.
+// CURSOR_DURABLE_ACK_SECONDS overrides the default; values outside
+// [5,300] are clamped so a broken env cannot hang sends or neuter
+// the arbiter.
+func cursorDurableAckBudget() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("CURSOR_DURABLE_ACK_SECONDS"))
+	if raw == "" {
+		return cursorDurableAckBudgetDefault
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return cursorDurableAckBudgetDefault
+	}
+	budget := time.Duration(seconds) * time.Second
+	if budget < cursorDurableAckBudgetMin {
+		return cursorDurableAckBudgetMin
+	}
+	if budget > cursorDurableAckBudgetMax {
+		return cursorDurableAckBudgetMax
+	}
+	return budget
+}
+
+// cursorPendingDurableAck is the pre-send snapshot that scopes one send's
+// durability proof. Baseline holds the latest-root refs already present;
+// only rows under NEW refs can confirm, which self-disambiguates repeats
+// without timestamps.
+type cursorPendingDurableAck struct {
+	message  string
+	storeDB  string
+	baseline map[string]struct{}
+	since    time.Time
+}
+
+const (
+	cursorMaxPendingDurableAcks = 8
+	cursorPendingDurableAckTTL  = 10 * time.Minute
+)
+
+func stashCursorDurableReceipt(session *cursorInteractiveSession, message, storeDB string, baseline map[string]struct{}, since time.Time) {
+	if session == nil {
+		return
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	session.durableMu.Lock()
+	defer session.durableMu.Unlock()
+	kept := session.pendingDurable[:0]
+	for _, pending := range session.pendingDurable {
+		if time.Since(pending.since) < cursorPendingDurableAckTTL {
+			kept = append(kept, pending)
+		}
+	}
+	kept = append(kept, cursorPendingDurableAck{message: message, storeDB: storeDB, baseline: baseline, since: since})
+	if len(kept) > cursorMaxPendingDurableAcks {
+		kept = append([]cursorPendingDurableAck(nil), kept[len(kept)-cursorMaxPendingDurableAcks:]...)
+	}
+	session.pendingDurable = kept
+}
+
+// peekCursorDurableReceipt returns the earliest pending snapshot for an
+// identical message. Receipts are deliberately not consumed: sends are
+// broker-serialized per session and the CLI queues FIFO, so ref+text
+// scoping self-disambiguates repeats without cross-goroutine ownership.
+func peekCursorDurableReceipt(session *cursorInteractiveSession, message string) (cursorPendingDurableAck, bool) {
+	if session == nil {
+		return cursorPendingDurableAck{}, false
+	}
+	message = strings.TrimSpace(message)
+	session.durableMu.Lock()
+	defer session.durableMu.Unlock()
+	for _, pending := range session.pendingDurable {
+		if pending.message == message && time.Since(pending.since) < cursorPendingDurableAckTTL {
+			return pending, true
+		}
+	}
+	return cursorPendingDurableAck{}, false
+}
+
+func cursorUserQueryMatches(rowText, message string) bool {
+	rowText = strings.TrimSpace(rowText)
+	message = strings.TrimSpace(message)
+	if rowText == message {
+		return true
+	}
+	const prefixLen = 200
+	if len(message) > prefixLen && strings.HasPrefix(rowText, message[:prefixLen]) {
+		return true
+	}
+	return false
+}
+
+// cursorSnapshotStoreRefs returns the current latest-root refs of storeDB,
+// or nil when the store is unreadable. Read-only open: WAL-safe against
+// the live CLI writer.
+func cursorSnapshotStoreRefs(storeDB string) map[string]struct{} {
+	refs := make(map[string]struct{})
+	if strings.TrimSpace(storeDB) == "" {
+		return refs
+	}
+	db, err := sql.Open("sqlite", "file:"+storeDB+"?mode=ro")
+	if err != nil {
+		return refs
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	latest, err := cursorStoreLatestRootRefs(ctx, db)
+	if err != nil {
+		return refs
+	}
+	for _, ref := range latest {
+		refs[ref] = struct{}{}
+	}
+	return refs
+}
+
+// cursorStoreUserQuerySince reports whether the store holds a user_query
+// row with our text under a ref NOT in baseline (committed after the
+// send snapshot). A nil baseline matches any row — no repeat protection,
+// only for callers without a receipt. A missing/unreadable store simply
+// has no proof yet.
+func cursorStoreUserQuerySince(storeDB, message string, baseline map[string]struct{}) bool {
+	if strings.TrimSpace(storeDB) == "" || strings.TrimSpace(message) == "" {
+		return false
+	}
+	db, err := sql.Open("sqlite", "file:"+storeDB+"?mode=ro")
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	refs, err := cursorStoreLatestRootRefs(ctx, db)
+	if err != nil {
+		return false
+	}
+	for _, ref := range refs {
+		if _, seen := baseline[ref]; seen {
+			continue
+		}
+		data := readCursorBlob(ctx, db, ref)
+		if len(data) == 0 || data[0] != '{' {
+			continue
+		}
+		var msg cursorMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		if query := cursorUserQueryFromContent(msg.Content); query != "" && cursorUserQueryMatches(query, message) {
+			return true
+		}
+	}
+	return false
+}
+
+// cursorPaneShowsQueuedMessage reports that message is sitting in Cursor's
+// native follow-ups queue right now: the queued-followups banner with the
+// message text visible. LIVE-UNVERIFIED (quota): shaped by the banner
+// helpers + fixtures; confirm against a real busy pane after 9/21.
+func cursorPaneShowsQueuedMessage(captured, message string) bool {
+	if !hasCursorQueuedFollowupsSendPrompt(captured) {
+		return false
+	}
+	needle := strings.TrimSpace(strings.Split(strings.TrimSpace(message), "\n")[0])
+	if len(needle) > 80 {
+		needle = needle[:80]
+	}
+	if needle == "" {
+		return false
+	}
+	return strings.Contains(stripCursorANSI(cursorVisiblePaneText(captured)), needle)
+}
+
+// cursorDurableAckPoll tunes pollCursorDurableAck. Zero values select live
+// defaults; tests inject resolve/capture and a shorter interval.
+type cursorDurableAckPoll struct {
+	resolve     func() string
+	capture     func(context.Context, string) (string, error)
+	sessionName string
+	interval    time.Duration
+}
+
+// pollCursorDurableAck waits observe-only for the user_query row matching
+// one send. It never sends keys: on entry the message may already be
+// accepted, so any keystroke risks duplicating it. On budget expiry it
+// distinguishes still-queued (unflushed, held by the CLI) from truly
+// lost via one final pane read.
+func pollCursorDurableAck(ctx context.Context, message string, since time.Time, baseline map[string]struct{}, timeout time.Duration, poll cursorDurableAckPoll) (CursorDurableAck, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	interval := poll.interval
+	if interval <= 0 {
+		interval = cursorDurableAckPollInterval
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	resolve := poll.resolve
+	if resolve == nil {
+		resolve = func() string { return "" }
+	}
+	check := func() bool {
+		path := resolve()
+		if strings.TrimSpace(path) == "" {
+			return false
+		}
+		return cursorStoreUserQuerySince(path, message, baseline)
+	}
+	if check() {
+		return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
+	}
+	for {
+		select {
+		case <-deadline.Done():
+			if poll.capture != nil && strings.TrimSpace(poll.sessionName) != "" {
+				if captured, err := poll.capture(deadline, poll.sessionName); err == nil && cursorPaneShowsQueuedMessage(captured, message) {
+					return CursorDurableAck{Outcome: CursorDurableAckUnflushed, Latency: time.Since(since)}, nil
+				}
+			}
+			if ctx.Err() != nil {
+				return CursorDurableAck{}, ctx.Err()
+			}
+			return CursorDurableAck{}, fmt.Errorf("Cursor input not durably acknowledged after %s", timeout)
+		case <-ticker.C:
+			if check() {
+				return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
+			}
+		}
+	}
+}
+
+// resolveCursorStoreNoMu resolves the session store from
+// immutable-after-construction identity without taking session.mu: the
+// live send path and the durability watcher both run concurrent with a
+// turn that owns mu for its full lifetime. retainedMu is safe: it is
+// independent of mu by design for live input.
+func resolveCursorStoreNoMu(session *cursorInteractiveSession) string {
+	if session == nil {
+		return ""
+	}
+	session.retainedMu.Lock()
+	defer session.retainedMu.Unlock()
+	return session.resolveRetainedStoreLocked()
+}
+
+// stashCursorDurableReceiptForSend snapshots the store refs before a
+// live-input send so the later durability watch only matches rows the
+// CLI committed for this send.
+func stashCursorDurableReceiptForSend(ownerSessionID, message string, since time.Time) {
+	session, ok := cursorPersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return
+	}
+	storeDB := resolveCursorStoreNoMu(session)
+	stashCursorDurableReceipt(session, message, storeDB, cursorSnapshotStoreRefs(storeDB), since)
+}
+
+// InteractiveSessionRegistered reports whether the owner's Cursor TUI is
+// registered — the live-injection transport exists. Cheap registry lookup
+// (no tmux round-trip) for steer gating; delivery re-verifies liveness.
+// Mirrors the SendCursorInteractiveInput registry.
+func InteractiveSessionRegistered(ownerSessionID string) bool {
+	_, ok := activeCursorInteractiveSession(ownerSessionID)
+	return ok
+}
+
+// AwaitCursorInputDurable waits for the store proof that a previous
+// SendCursorInteractiveInput reached the CLI. It is the durability half
+// of the two-stage delivery receipt (fast pane ack, then this): the
+// server watcher calls it after every fast ack and promotes the chat
+// tick on confirmation. A zero timeout selects the env-tuned budget.
+func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string, timeout time.Duration) (CursorDurableAck, error) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return CursorDurableAck{}, fmt.Errorf("owner session id is required")
+	}
+	if strings.TrimSpace(message) == "" {
+		return CursorDurableAck{}, fmt.Errorf("message is empty")
+	}
+	if timeout <= 0 {
+		timeout = cursorDurableAckBudget()
+	}
+	session, ok := cursorPersistentRegistry.Get(ownerSessionID)
+	if !ok || session == nil {
+		return CursorDurableAck{}, fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
+	}
+	receipt, ok := peekCursorDurableReceipt(session, message)
+	since := time.Now().Add(-2 * time.Minute)
+	var baseline map[string]struct{}
+	if ok {
+		since = receipt.since
+		baseline = receipt.baseline
+	}
+	tmuxName := session.tmuxSessionName
+	ack, err := pollCursorDurableAck(ctx, message, since, baseline, timeout, cursorDurableAckPoll{
+		resolve:     func() string { return resolveCursorStoreNoMu(session) },
+		capture:     captureCursorPane,
+		sessionName: tmuxName,
+	})
+	if err != nil {
+		return CursorDurableAck{}, err
+	}
+	if ack.Outcome == CursorDurableAckConfirmed {
+		log.Printf("[cursor-durable-ack] owner=%s latency=%dms proof=%s", ownerSessionID, ack.Latency.Milliseconds(), ack.ProofPath)
+	} else {
+		log.Printf("[cursor-durable-ack] owner=%s UNFLUSHED after %dms (still natively queued)", ownerSessionID, ack.Latency.Milliseconds())
+	}
+	return ack, nil
+}

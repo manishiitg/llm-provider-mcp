@@ -224,6 +224,15 @@ type CodingAgentProviderContract struct {
 	// timeout on a turn that actually succeeded is a release-blocking
 	// defect, not a nice-to-have.
 	SupportsStalledTurnDiagnosis bool
+
+	// SupportsDurableAck reports whether a live-input send is confirmed
+	// against the CLI's own durable record (rollout/transcript/marker),
+	// not just the pane. The pane stays the fast resubmit signal, but a
+	// pane misread must not fail a send the CLI actually accepted, and a
+	// queued-then-flushed steer must be provable after the fact.
+	//
+	// Pairs with CertDurableAck, promoted to P0 wherever true.
+	SupportsDurableAck bool
 }
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
@@ -265,6 +274,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		WorkingDirMCPConfigFile:      ".mcp.json",
 		UserMCPConfigFile:            "~/.claude/settings.json",
 		SupportsStalledTurnDiagnosis: true,
+		SupportsDurableAck:           true,
 	},
 	ProviderCodexCLI: {
 		Provider:                ProviderCodexCLI,
@@ -307,6 +317,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		WorkingDirMCPConfigFile:      "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
 		UserMCPConfigFile:            "~/.codex/config.toml",
 		SupportsStalledTurnDiagnosis: true,
+		SupportsDurableAck:           true,
 	},
 	ProviderCursorCLI: {
 		Provider:                ProviderCursorCLI,
@@ -350,6 +361,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserInstructionFile:         "~/.cursor/rules",  // same directory layout at the user level
 		WorkingDirMCPConfigFile:     ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
 		UserMCPConfigFile:           "~/.cursor/mcp.json",
+		SupportsDurableAck:          true,
 	},
 	ProviderPiCLI: {
 		Provider:                    ProviderPiCLI,
@@ -389,6 +401,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		UserInstructionFile:       "~/.pi/agent/AGENTS.md",
 		WorkingDirMCPConfigFile:   ".pi/mcp.json",
 		UserMCPConfigFile:         "~/.pi/agent/mcp.json",
+		SupportsDurableAck:        true,
 	},
 	ProviderMuseCLI: {
 		Provider:                ProviderMuseCLI,
@@ -425,6 +438,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresWorkspaceTrust:      true,
 		APIKeyEnvVars:               []string{"META_API_KEY"},
 		WorkingDirInstructionFile:   "AGENTS.md",
+		SupportsDurableAck:          true,
 	},
 }
 

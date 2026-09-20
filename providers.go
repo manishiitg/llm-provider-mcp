@@ -198,6 +198,28 @@ func SendClaudeCodeInput(ctx context.Context, sessionID, message string) error {
 	return claudecodeadapter.SendClaudeCodeInput(ctx, sessionID, message)
 }
 
+// AwaitClaudeInputDurable waits for the transcript proof that a previous
+// SendClaudeCodeInput reached the CLI. It is the durability half of the
+// two-stage delivery receipt; host applications call it after the fast
+// pane ack and promote their delivery tick on confirmation. A zero
+// timeout selects the adapter's env-tuned budget.
+func AwaitClaudeInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := claudecodeadapter.AwaitClaudeInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == claudecodeadapter.ClaudeDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
+}
+
 // SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
 // tmux session registered for the owning application session.
 func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
@@ -210,10 +232,54 @@ func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message strin
 	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
 }
 
+// AwaitCursorInputDurable waits for the store proof that a previous
+// SendCursorCLIInteractiveInput reached the CLI. It is the durability
+// half of the two-stage delivery receipt; host applications call it
+// after the fast pane ack and promote their delivery tick on
+// confirmation. A zero timeout selects the adapter's env-tuned budget.
+func AwaitCursorInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := cursorcli.AwaitCursorInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == cursorcli.CursorDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
+}
+
 // SendPiCLIInteractiveInput sends user input to a live Pi CLI interactive tmux
 // session registered for the owning application session.
 func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
+}
+
+// AwaitPiInputDurable waits for the marker proof that a previous
+// SendPiCLIInteractiveInput reached the CLI. It is the durability half
+// of the two-stage delivery receipt; host applications call it after
+// the fast pane ack and promote their delivery tick on confirmation. A
+// zero timeout selects the adapter's env-tuned budget.
+func AwaitPiInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := picli.AwaitPiInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == picli.PiDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
 }
 
 // SendPiCLIRetainedInput starts a new logical turn in an idle retained Pi
@@ -228,10 +294,54 @@ func SendMuseCLIInteractiveInput(ctx context.Context, sessionID, message string)
 	return musecli.SendMuseInteractiveInput(ctx, sessionID, message)
 }
 
+// AwaitMuseInputDurable waits for the transcript proof that a previous
+// SendMuseCLIInteractiveInput reached the CLI. It is the durability
+// half of the two-stage delivery receipt; host applications call it
+// after the fast pane ack and promote their delivery tick on
+// confirmation. A zero timeout selects the adapter's env-tuned budget.
+func AwaitMuseInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := musecli.AwaitMuseInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == musecli.MuseDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
+}
+
 // SendMuseCLIInteractiveControlKey injects a tmux control key into a registered
 // Muse CLI interactive session.
 func SendMuseCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
 	return musecli.SendMuseInteractiveControlKey(ctx, sessionID, key)
+}
+
+// AwaitCodexInputDurable waits for the rollout proof that a previous
+// SendCodexCLIInteractiveInput reached the CLI. It is the durability
+// half of the two-stage delivery receipt; host applications call it
+// after the fast pane ack and promote their delivery tick on
+// confirmation. A zero timeout selects the adapter's env-tuned budget.
+func AwaitCodexInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := codexcli.AwaitCodexInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == codexcli.CodexDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
 }
 
 // ReadCodingAgentRetainedTurnMessages reconstructs the structured messages for

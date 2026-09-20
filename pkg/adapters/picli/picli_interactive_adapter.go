@@ -128,6 +128,12 @@ type piInteractiveSession struct {
 	totalOutputTokens int
 	mu                sync.Mutex
 	retainedProgress  piRetainedProgress
+	// durableMu guards pendingDurable only. It is a leaf lock: the
+	// live send path takes no session lock around it, and nothing
+	// takes session.mu while holding it — the arbiter and the server
+	// durability watcher both run concurrent with a turn that owns mu.
+	durableMu      sync.Mutex
+	pendingDurable []piPendingDurableAck
 }
 
 var piInteractiveRegistry = struct {
@@ -1235,8 +1241,14 @@ func isTmuxUnknownExtendedKeysOption(err error) bool {
 // sendPiInputToTmux steers one message into a turn that is already running.
 // Live steering must not wait for Pi's idle composer: Pi accepts the message
 // while busy and its marker stream confirms that exact submission.
-func sendPiInputToTmux(ctx context.Context, sessionName, markerPath, message string) error {
-	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputLiveSteer)
+func sendPiInputToTmux(ctx context.Context, ownerSessionID, sessionName, markerPath, message string) error {
+	since := time.Now()
+	stashPiDurableReceiptForSend(ownerSessionID, message, since)
+	err := sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputLiveSteer)
+	if err == nil {
+		return nil
+	}
+	return piArbiterAfterSubmitFailure(ctx, ownerSessionID, sessionName, message, since, err)
 }
 
 // sendPiRetainedInputToTmux starts a new logical turn in a retained terminal.
@@ -1612,27 +1624,8 @@ func ensurePiInputSubmittedWith(ctx context.Context, message string, probes piSu
 // pasted text); a long message matches on a shared prefix because the pane
 // paste path may normalize trailing content.
 func piMarkersAcknowledgeUserMessage(markers []piMarker, message string) bool {
-	want := piCompactDraftText(message)
-	if want == "" {
-		return false
-	}
-	const longMessageRunes = 64
-	for _, marker := range markers {
-		if marker.Type != "message_end" || marker.Role != "user" {
-			continue
-		}
-		got := piCompactDraftText(marker.Text)
-		if got == "" {
-			continue
-		}
-		if got == want {
-			return true
-		}
-		if len([]rune(want)) >= longMessageRunes && (strings.HasPrefix(got, want) || strings.HasPrefix(want, got)) {
-			return true
-		}
-	}
-	return false
+	_, ok := piUserAckMarker(markers, message)
+	return ok
 }
 
 type piMarker struct {
@@ -2544,13 +2537,21 @@ func activePiInteractiveSession(ownerSessionID string) (*piInteractiveSession, b
 	return session, session != nil && strings.TrimSpace(session.tmuxSessionName) != ""
 }
 
+// InteractiveSessionRegistered reports whether the owner's Pi TUI is
+// registered — the live-injection transport exists. Cheap registry lookup
+// (no tmux round-trip) for steer gating; delivery re-verifies liveness.
+func InteractiveSessionRegistered(ownerSessionID string) bool {
+	_, ok := activePiInteractiveSession(ownerSessionID)
+	return ok
+}
+
 // SendPiInteractiveInput sends user input to a live Pi interactive session.
 func SendPiInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
 	session, ok := activePiInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
 	}
-	return sendPiInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
+	return sendPiInputToTmux(ctx, ownerSessionID, session.tmuxSessionName, session.markerPath, message)
 }
 
 // SendPiRetainedInput waits for the registered Pi terminal to become idle and

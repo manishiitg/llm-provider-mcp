@@ -144,6 +144,11 @@ type claudeInteractivePersistentSession struct {
 	lastUsed         time.Time
 	mu               sync.Mutex
 	retainedProgress claudeRetainedProgress
+	// pendingDurable scopes durability proofs per send; guarded by
+	// durableMu (never session.mu — the watcher runs concurrent with
+	// a turn that owns mu for its full lifetime).
+	pendingDurable []claudePendingDurableAck
+	durableMu      sync.Mutex
 }
 
 var claudeInteractivePersistentRegistry = sessionregistry.NewOwnerRegistry[*claudeInteractivePersistentSession]()
@@ -4109,6 +4114,8 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
+	since := time.Now()
+	stashClaudeDurableReceiptForSend(ownerSessionID, message, since)
 	return sendInputToActiveTmux(ctx, sessionName, message)
 }
 

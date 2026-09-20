@@ -127,12 +127,17 @@ type cursorInteractiveSession struct {
 	ownerSessionID  string
 	tmuxSessionName string
 	workingDir      string
-	persistent      bool
-	cleanupFiles    func()
-	idleTimer       *time.Timer
-	initErr         error
-	createdAt       time.Time
-	lastUsed        time.Time
+	// pendingDurable scopes durability proofs per send; guarded by
+	// durableMu (never session.mu — the watcher runs concurrent with
+	// a turn that owns mu for its full lifetime).
+	pendingDurable []cursorPendingDurableAck
+	durableMu      sync.Mutex
+	persistent     bool
+	cleanupFiles   func()
+	idleTimer      *time.Timer
+	initErr        error
+	createdAt      time.Time
+	lastUsed       time.Time
 	// scopeFingerprint identifies the credential scope this live process was
 	// LAUNCHED with, so a later turn's changed scope replaces it rather than
 	// silently reusing the old environment.
@@ -1298,6 +1303,8 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	if !ok {
 		return fmt.Errorf("no active Cursor interactive session registered for owner session %s", ownerSessionID)
 	}
+	since := time.Now()
+	stashCursorDurableReceiptForSend(ownerSessionID, message, since)
 	session, retained := cursorPersistentRegistry.Get(ownerSessionID)
 	if !retained || session == nil {
 		return sendCursorLiveInputToTmux(ctx, sessionName, message)
