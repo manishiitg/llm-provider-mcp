@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	llmproviders "github.com/manishiitg/multi-llm-provider-go"
 )
@@ -16,7 +18,77 @@ func main() {
 	providerFlag := flag.String("provider", "", "coding CLI provider ID")
 	packageFlag := flag.String("package", "", "repository-relative Go package containing the P0 tests")
 	listProviders := flag.Bool("list-providers", false, "print the registry-derived release matrix as 'provider package' lines")
+	cliVersions := flag.Bool("cli-versions", false, "print installed CLI versions as 'provider version' lines (MISSING when undetectable)")
+	checkVersions := flag.String("check-cli-versions", "", "fail unless installed CLIs match the certified versions file")
+	writeVersions := flag.String("write-cli-versions", "", "record installed CLI versions into the certified versions file")
+	providersFlag := flag.String("providers", "", "comma-separated provider IDs to check (default: release matrix)")
 	flag.Parse()
+
+	if *cliVersions {
+		matrix, err := llmproviders.CodingAgentP0ReleaseMatrix()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		for _, entry := range matrix {
+			version, err := llmproviders.CodingAgentCLIVersion(ctx, entry.Provider)
+			if err != nil {
+				fmt.Printf("%s MISSING\n", entry.Provider)
+				continue
+			}
+			fmt.Printf("%s %s\n", entry.Provider, version)
+		}
+		return
+	}
+
+	selectedProviders := func(installed map[string]string) []string {
+		if trimmed := strings.TrimSpace(*providersFlag); trimmed != "" {
+			return SplitProvidersFlag(trimmed)
+		}
+		providers := make([]string, 0, len(installed))
+		for provider := range installed {
+			providers = append(providers, provider)
+		}
+		sort.Strings(providers)
+		return providers
+	}
+
+	if *writeVersions != "" {
+		installed, err := ProbeInstalledCLIVersions(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		if err := WriteCertifiedCLIVersions(*writeVersions, installed, selectedProviders(installed)); err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *checkVersions != "" {
+		certified, err := LoadCertifiedCLIVersions(*checkVersions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		installed, err := ProbeInstalledCLIVersions(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: %v\n", err)
+			os.Exit(1)
+		}
+		if mismatches := CheckInstalledCLIVersions(installed, certified, selectedProviders(installed)); len(mismatches) > 0 {
+			fmt.Fprintf(os.Stderr, "coding-agent-p0-tests: CLI versions drifted from the certified claim:\n")
+			for _, mismatch := range mismatches {
+				fmt.Fprintf(os.Stderr, "  %s\n", mismatch)
+			}
+			fmt.Fprintf(os.Stderr, "re-run P0 with --update-certified-versions to certify the new versions\n")
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *listProviders {
 		matrix, err := llmproviders.CodingAgentP0ReleaseMatrix()

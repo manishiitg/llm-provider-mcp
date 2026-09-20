@@ -274,6 +274,64 @@ func TestTokenUsageContractIsWellFormed(t *testing.T) {
 	}
 }
 
+// TestCodingAgentRuntimeInstallContractIsWellFormed requires every active
+// tmux provider to declare how its CLI is detected, installed, and
+// version-gated. The providers page, the manifest, and the P0 release runner
+// all derive from these declarations; an empty field means a new CLI is
+// invisible to install/upgrade lifecycle instead of loudly undeclared.
+func TestCodingAgentRuntimeInstallContractIsWellFormed(t *testing.T) {
+	for _, c := range CodingAgentProviderContracts() {
+		if c.Transport != CodingAgentTransportTmux || c.Deprecated {
+			continue
+		}
+		if strings.TrimSpace(c.RuntimeBinary) == "" {
+			t.Errorf("%s has no RuntimeBinary — declare the PATH binary the terminal probes", c.Provider)
+		}
+		if strings.TrimSpace(c.InstallCommand) == "" {
+			t.Errorf("%s has no InstallCommand — declare the allowlisted install command shown on the providers page", c.Provider)
+		}
+		if len(c.VersionProbeArgs) == 0 {
+			t.Errorf("%s has no VersionProbeArgs — declare how to ask the CLI for its version", c.Provider)
+		}
+		if strings.TrimSpace(c.MinCLIVersion) == "" {
+			t.Errorf("%s has no MinCLIVersion — declare the oldest certified CLI version", c.Provider)
+		} else if len(cliVersionComponents(c.MinCLIVersion)) == 0 {
+			t.Errorf("%s MinCLIVersion=%q has no numeric components — use the CLI's --version form", c.Provider, c.MinCLIVersion)
+		}
+	}
+}
+
+// TestRuntimeAvailabilityLiveTestsProbeContractBinaries pins the one
+// intentional duplication: adapter live tests cannot import the SDK root
+// (import cycle), so each names its binary literally. This test requires
+// the runtime_availability proof file to mention the contract RuntimeBinary,
+// so renaming the binary fails here instead of probing a stale name live.
+func TestRuntimeAvailabilityLiveTestsProbeContractBinaries(t *testing.T) {
+	for _, c := range CodingAgentProviderContracts() {
+		if c.Transport != CodingAgentTransportTmux || c.Deprecated {
+			continue
+		}
+		var testFile string
+		for _, cert := range CodingAgentProviderCertifications(c.Provider) {
+			if cert.ID == CertRuntimeAvailability {
+				testFile = cert.TestFile
+			}
+		}
+		if testFile == "" {
+			t.Errorf("%s has no runtime_availability registration", c.Provider)
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Clean(testFile))
+		if err != nil {
+			t.Errorf("%s: unreadable proof file %s: %v", c.Provider, testFile, err)
+			continue
+		}
+		if !strings.Contains(string(raw), `"`+c.RuntimeBinary+`"`) {
+			t.Errorf("%s proof %s does not probe contract binary %q", c.Provider, testFile, c.RuntimeBinary)
+		}
+	}
+}
+
 // TestTranscriptReaderContractMatchesRegistry mirrors the resume drift
 // test for AdapterReadsTranscript. Contract claim must match registry
 // membership in both directions, AND the contract's TranscriptPathTemplate

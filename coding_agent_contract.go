@@ -38,6 +38,21 @@ type CodingAgentProviderContract struct {
 	CLIName     string
 	Transport   CodingAgentTransport
 
+	// RuntimeBinary is the executable the terminal probes on PATH to detect
+	// the CLI (e.g. "claude"). The providers page, the manifest, and the P0
+	// runner derive detection from this field — never a second hardcoded list.
+	RuntimeBinary string
+	// InstallCommand is the allowlisted command shown on the providers page
+	// and executed by guided terminal setup to install the CLI.
+	InstallCommand string
+	// VersionProbeArgs asks the CLI for its version (usually ["--version"]).
+	// CodingAgentCLIVersion runs RuntimeBinary with these args.
+	VersionProbeArgs []string
+	// MinCLIVersion is the oldest CLI version P0 has certified, in the
+	// CLI's own --version form. Older versions fail the floor check with an
+	// explicit update message instead of undefined adapter behavior.
+	MinCLIVersion string
+
 	// Deprecated marks coding-agent providers that remain runnable for old
 	// sessions/configs but should not be offered for new user setup.
 	Deprecated          bool
@@ -241,6 +256,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:                   "Claude Code",
 		CLIName:                       "claude",
 		Transport:                     CodingAgentTransportTmux,
+		RuntimeBinary:                 "claude",
+		InstallCommand:                "npm install -g @anthropic-ai/claude-code@latest",
+		VersionProbeArgs:              []string{"--version"},
+		MinCLIVersion:                 "2.1.278",
 		RequiresWorkingDir:            true,
 		RequiresOwnerSessionID:        true,
 		UsesPersistentSession:         true,
@@ -281,6 +300,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:             "Codex CLI",
 		CLIName:                 "codex",
 		Transport:               CodingAgentTransportTmux,
+		RuntimeBinary:           "codex",
+		InstallCommand:          "npm install -g @openai/codex@latest",
+		VersionProbeArgs:        []string{"--version"},
+		MinCLIVersion:           "0.155.1",
 		RequiresWorkingDir:      true,
 		RequiresOwnerSessionID:  true,
 		UsesPersistentSession:   true,
@@ -324,6 +347,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:             "Cursor CLI",
 		CLIName:                 "cursor-agent",
 		Transport:               CodingAgentTransportTmux,
+		RuntimeBinary:           "cursor-agent",
+		InstallCommand:          "curl --proto '=https' --proto-redir '=https' --tlsv1.2 https://cursor.com/install | bash",
+		VersionProbeArgs:        []string{"--version"},
+		MinCLIVersion:           "2026.09.18",
 		RequiresWorkingDir:      true,
 		RequiresOwnerSessionID:  true,
 		UsesPersistentSession:   true,
@@ -368,6 +395,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:                 "Pi CLI",
 		CLIName:                     "pi",
 		Transport:                   CodingAgentTransportTmux,
+		RuntimeBinary:               "pi",
+		InstallCommand:              "npm install -g @earendil-works/pi-coding-agent@latest",
+		VersionProbeArgs:            []string{"--version"},
+		MinCLIVersion:               "0.86.0",
 		RequiresWorkingDir:          true,
 		RequiresOwnerSessionID:      true,
 		UsesPersistentSession:       true,
@@ -408,6 +439,10 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		DisplayName:             "Muse",
 		CLIName:                 "muse",
 		Transport:               CodingAgentTransportTmux,
+		RuntimeBinary:           "muse",
+		InstallCommand:          "curl --proto '=https' --proto-redir '=https' --tlsv1.2 https://dev.meta.ai/install.sh | bash",
+		VersionProbeArgs:        []string{"--version"},
+		MinCLIVersion:           "1.3.0",
 		RequiresWorkingDir:      true,
 		RequiresOwnerSessionID:  true,
 		UsesPersistentSession:   true,

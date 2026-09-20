@@ -133,6 +133,17 @@ const (
 	// follow-up into a busy turn, awaits the durable record, and shows
 	// the model obeyed it.
 	CertDurableAck CodingAgentCertificationID = "durable_ack"
+	// CertRuntimeAvailability proves the provider's CLI is detectable and
+	// version-supported from the terminal: the contract RuntimeBinary
+	// resolves on PATH, answers the version probe, and meets the
+	// MinCLIVersion floor. Credential-free; the providers page and the P0
+	// runner derive install/upgrade status from the same probe.
+	CertRuntimeAvailability CodingAgentCertificationID = "runtime_availability"
+	// CertTokenUsage proves a real turn reports token usage through
+	// GenerationInfo. Providers whose TokenUsageSource is "estimated" must
+	// additionally set the token_usage_estimated marker so cost reports can
+	// be flagged as approximate.
+	CertTokenUsage CodingAgentCertificationID = "token_usage"
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
@@ -178,6 +189,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 // and process live follow-up input while busy, return the final answer, cancel,
 // preserve multi-turn continuity in tmux, and isolate concurrency.
 var requiredP0CertificationIDs = []CodingAgentCertificationID{
+	CertRuntimeAvailability,
 	CertFreshLaunch,
 	CertRuntimeContext,
 	CertWorkingDirectory,
@@ -231,6 +243,7 @@ var (
 	structuredStreamingCertificationIDs  = []CodingAgentCertificationID{CertStructuredStreaming, CertStreamNoHistoryReplay}
 	stalledTurnDiagnosisCertificationIDs = []CodingAgentCertificationID{CertStalledTurnDiagnosis}
 	durableAckCertificationIDs           = []CodingAgentCertificationID{CertDurableAck}
+	tokenUsageCertificationIDs           = []CodingAgentCertificationID{CertTokenUsage}
 )
 
 var codingAgentCapabilityCertifications = []struct {
@@ -264,6 +277,20 @@ var codingAgentCapabilityCertifications = []struct {
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	ProviderMuseCLI: {
+		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/musecli/musecli_runtime_availability_live_test.go",
+			TestName:    "TestMuseRuntimeAvailabilityLive",
+			Description: "contract muse binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/musecli/musecli_token_usage_live_test.go",
+			TestName:    "TestMuseTokenUsageLive",
+			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertDurableAck,
 			TestFile:    "pkg/adapters/musecli/musecli_durable_ack_live_test.go",
@@ -385,6 +412,20 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderClaudeCode: {
+		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/claudecode/claudecode_runtime_availability_live_test.go",
+			TestName:    "TestClaudeRuntimeAvailabilityLive",
+			Description: "contract claude binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/claudecode/claudecode_token_usage_live_test.go",
+			TestName:    "TestClaudeTokenUsageLive",
+			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertDurableAck,
 			TestFile:    "pkg/adapters/claudecode/claudecode_durable_ack_live_test.go",
@@ -648,6 +689,20 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/codexcli/codexcli_runtime_availability_live_test.go",
+			TestName:    "TestCodexRuntimeAvailabilityLive",
+			Description: "contract codex binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/codexcli/codexcli_token_usage_live_test.go",
+			TestName:    "TestCodexTokenUsageLive",
+			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertStalledTurnDiagnosis,
 			TestFile:    "pkg/adapters/codexcli/codexcli_stalled_turn_diagnosis_live_test.go",
@@ -914,6 +969,20 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderCursorCLI: {
 		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_availability_live_test.go",
+			TestName:    "TestCursorRuntimeAvailabilityLive",
+			Description: "contract cursor-agent binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_token_usage_live_test.go",
+			TestName:    "TestCursorTokenUsageLive",
+			Description: "real turn reports heuristic input/output counts through GenerationInfo with the token_usage_estimated marker",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertDurableAck,
 			TestFile:    "pkg/adapters/cursorcli/cursorcli_durable_ack_live_test.go",
 			TestName:    "TestCursorCLIRealDurableAckContract",
@@ -1143,6 +1212,20 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderPiCLI: {
+		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/picli/picli_runtime_availability_live_test.go",
+			TestName:    "TestPiRuntimeAvailabilityLive",
+			Description: "contract pi binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/picli/picli_token_usage_live_test.go",
+			TestName:    "TestPiTokenUsageLive",
+			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
 		{
 			ID:          CertDurableAck,
 			TestFile:    "pkg/adapters/picli/picli_durable_ack_live_test.go",
@@ -1594,6 +1677,11 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// must prove the durable record actually confirms a busy steer.
 	if contract.SupportsDurableAck {
 		ids = append(ids, durableAckCertificationIDs...)
+	}
+	// A provider claiming token usage must prove a real turn reports it.
+	// Declaration without this proof is how silent cost blindness ships.
+	if contract.SurfacesTokenUsage {
+		ids = append(ids, tokenUsageCertificationIDs...)
 	}
 	return ids
 }
