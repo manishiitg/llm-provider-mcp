@@ -238,22 +238,24 @@ tmux provider"). Until then `TokenUsageSource` is undecided.
   lane (`exec --json` argv pinned by unit test) → multi-turn resume on a
   real model.
 
-### Recommended answers in the native question widget
+### First-option answers in the native question widget
 
-The tmux adapter automatically selects the single option explicitly labelled
-`(Recommended)` in Muse's `Request user input` widget. It follows the Cursor
-readiness pattern: consecutive captures, validate the active dialog immediately
-before sending keys, and wait for the dialog to change before another submission.
-The current cursor is observed rather than assumed to be on the first choice.
-Multi-question forms advance through each question and submit the final review
-only when every reviewed answer is explicitly marked recommended.
+The tmux adapter automatically selects the first option in Muse's native
+`Request user input` widget, whether or not another option is labelled
+`(Recommended)`. It follows the Cursor readiness pattern: consecutive captures,
+validates the active dialog immediately before sending keys, and waits for the
+dialog to change before another submission. The current cursor is observed
+rather than assumed to be on the first choice. Multi-question forms advance
+through each question and submit the final review. Muse 1.3 animates the tool
+heading through multiple glyphs; the detector and question identity must stay
+stable across those frames.
 
-No recommendation, multiple recommendations, unrecognized dialogs, and auth/trust
-prompts remain manual. `WithAutoSelectRecommended(false)` restores the manual
+Unrecognized dialogs and auth/trust prompts remain manual.
+`WithAutoSelectRecommended(false)` retains the legacy name and restores manual
 `user_input_required` behavior for callers that need it. Automatic selections
 do not emit UI announcements. Context cancellation stops further key delivery.
 
-Live regression: `TestMuseCLIRealAutoRecommendedThreeQuestionsP0`; parser and
+Live regression: `TestMuseCLIRealAutoFirstOptionThreeQuestionsP0`; parser and
 cancellation/duplicate checks: `TestMuseRecommendedQuestion`,
 `TestMuseRecommendedReview`, and `TestMuseAutoAnswerDisabledCanceledAndDuplicate`.
 
@@ -266,8 +268,7 @@ Killing the session disables further automatic answers.
 
 Live regression: `TestMuseCLIRealLiveInputQuestionsP0` covers a three-page form
 created after live delivery, plus a preexisting dialog with its cursor on the
-wrong option. It verifies both the recommended answer and the subsequent user
-message reach Muse. These are real adapter/tmux tests, not HTTP or desktop UI tests.
+wrong option. These are real adapter/tmux tests, not HTTP or desktop UI tests.
 
 ### Restoring long native conversations
 

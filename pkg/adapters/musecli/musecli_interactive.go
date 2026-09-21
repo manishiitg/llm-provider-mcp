@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -82,18 +83,31 @@ func museTmuxSessionName(owner string) string {
 
 // Recognize the active native question widget, not mentions in old output.
 func musePendingUserInputError(pane string) error {
-	lower := strings.ToLower(pane)
-	start := strings.LastIndex(lower, "◆ request user input")
+	start := museQuestionWidgetStart(pane)
 	if start < 0 {
 		return nil
 	}
-	widget := lower[start:]
+	widget := strings.ToLower(pane[start:])
 	question := strings.Contains(widget, "enter to select") && strings.Contains(widget, "esc to interrupt")
 	review := strings.Contains(widget, "review answers before submit") && strings.Contains(widget, "enter to edit or submit") && strings.Contains(widget, "esc to go back")
 	if !question && !review {
 		return nil
 	}
 	return &llmerrors.Error{Kind: llmerrors.KindUserInputRequired, Provider: "muse-cli", Err: fmt.Errorf("Muse is waiting for your answer. Open its terminal and answer or dismiss the question before continuing:\n%s", strings.TrimSpace(pane[start:]))}
+}
+
+// Muse animates active tool rows through several diamond glyphs (◆, ◈, ◇).
+// Match the symbol category rather than a single animation frame, and use
+// the latest heading so older scrollback cannot win.
+var museQuestionHeadingRE = regexp.MustCompile(`(?mi)^[ \t]*\p{So}[ \t]+request user input\b`)
+var museToolRowRE = regexp.MustCompile(`(?m)^[ \t]*\p{So}[ \t]+`)
+
+func museQuestionWidgetStart(pane string) int {
+	locations := museQuestionHeadingRE.FindAllStringIndex(pane, -1)
+	if len(locations) == 0 {
+		return -1
+	}
+	return locations[len(locations)-1][0]
 }
 
 // musePaneShowsBlockingGate recognizes a gate surface, not authentication
@@ -152,10 +166,11 @@ func museTUIAtPrompt(pane string) bool {
 // scrollback must not hide a later completed response. Live-input steering
 // intentionally does not use this idle check; the composer works mid-tool.
 func musePaneHasRunningTool(pane string) bool {
-	start := strings.LastIndex(pane, "◆ ")
-	if start < 0 {
+	locations := museToolRowRE.FindAllStringIndex(pane, -1)
+	if len(locations) == 0 {
 		return false
 	}
+	start := locations[len(locations)-1][0]
 	block := strings.ToLower(pane[start:])
 	return strings.Contains(block, "— running (") && strings.Contains(block, "esc to interrupt")
 }

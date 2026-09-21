@@ -46,7 +46,7 @@ func museRecommendedQuestion(pane string) (museRecommendedAnswer, bool) {
 	if musePendingUserInputError(pane) == nil {
 		return museRecommendedAnswer{}, false
 	}
-	start := strings.LastIndex(strings.ToLower(pane), "◆ request user input")
+	start := museQuestionWidgetStart(pane)
 	widget := pane[start:]
 	if strings.Contains(strings.ToLower(widget), "review answers before submit") {
 		return museRecommendedReview(widget)
@@ -64,6 +64,9 @@ func museRecommendedQuestion(pane string) (museRecommendedAnswer, bool) {
 	for _, line := range strings.Split(widget, "\n") {
 		match := museQuestionOptionRE.FindStringSubmatch(line)
 		if match == nil {
+			if museQuestionHeadingRE.MatchString(line) {
+				line = line[strings.Index(strings.ToLower(line), "request user input"):]
+			}
 			identity = append(identity, museQuestionRunningRE.ReplaceAllString(strings.TrimSpace(line), ""))
 			continue
 		}
