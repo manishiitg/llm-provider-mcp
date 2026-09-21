@@ -198,6 +198,8 @@ The adapter must:
 - wait briefly for idle or process exit
 - reuse a persistent tmux session after cancellation only if the provider has
   visibly returned to a prompt-ready state
+- accept and complete a new user message under the same owner after Stop;
+  readiness alone is not proof that the conversation remains usable
 - discard and kill an adapter-owned persistent tmux session when cancellation
   does not return it to prompt-ready state; a later turn/fallback must start a
   fresh session instead of inheriting a still-busy pane
@@ -748,8 +750,8 @@ capability in `coding_agent_contract.go` without a registered certification, or
 if the registered certification points at a missing test function.
 
 Every active tmux provider has an explicit certification priority. P0 is a hard,
-non-waivable release gate for `claude-code`, `codex-cli`, `cursor-cli`, and
-`pi-cli`. `knownCertificationGaps` may track P1 work, but it cannot suppress a
+non-waivable release gate for `claude-code`, `codex-cli`, `cursor-cli`,
+`muse-cli`, and `pi-cli`. `knownCertificationGaps` may track P1 work, but it cannot suppress a
 missing P0 proof. The fast CI lane verifies the registry on every change; the
 authenticated lane runs the actual provider CLIs and the AgentWorks workflow
 advance test.
@@ -769,6 +771,8 @@ The current P0 set is intentionally limited to product survival requirements:
 - follow-up input submitted while the agent is processing is handled by that
   same live session after its in-flight work
 - cancellation
+- stop-then-new-message on the same persistent owner, including recovery from
+  an untracked tmux session name left by a canceled launch or server restart
 - parallel isolation
 
 The application-level P0 also proves that live input reaches an active coding
@@ -820,7 +824,7 @@ Every tmux coding provider must have opt-in real E2E tests for:
 | Stale draft cleanup | Seed an idle provider prompt with an untracked draft such as `go with option B`, then submit a different backend turn. The adapter must clear the stale draft, submit only the new turn, and ignore provider suggestion placeholders. |
 | Live steer | A message sent while working goes to the same tmux session or adapter pending queue, not a duplicate provider run, and is submitted when the provider returns to an input boundary. The adapter must not leave pasted live input sitting as an unsubmitted draft when the provider TUI is actively thinking. |
 | Cancellation | Context cancellation sends the provider interrupt and does not leave a foreground turn falsely completed. |
-| Persistent cancel reuse | Cancel a persistent turn while the provider is working or waiting on a tool. After the call returns, the session registry must either have no entry for that owner or the registered tmux pane must be prompt-ready. A non-ready canceled pane must never be reused by a retry/fallback. |
+| Persistent cancel reuse (P0) | Stop a persistent turn while the provider is working, then send a new user message under the same owner and verify it is answered. Reuse a prompt-ready pane or safely replace an untracked/dead one; never return only a duplicate-session error or mistake readiness for a successful follow-up. |
 | Lifecycle policy | Chat sessions keep tmux alive by default; workflow steps/sub-agents/background tasks close on completion unless their explicit lifecycle setting is `keep_alive`. |
 | Bounded retention | A completed bounded tmux turn remains viewable with `terminal_retention_seconds`, `closes_at`, and `state=closing`, then is killed after the retention window. |
 | Parallel isolation | Parallel sessions do not share tmux session names, pending queues, final text, or terminal snapshots. |

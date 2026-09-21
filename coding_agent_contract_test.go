@@ -224,6 +224,24 @@ func TestToolRestrictionsRequireP0WithExplicitMuseException(t *testing.T) {
 	}
 }
 
+func TestStopThenNewMessageIsP0ForEveryActiveTmuxProvider(t *testing.T) {
+	if priority := CodingAgentCertificationPriorityForID(CertPersistentCancelReuse); priority != CodingAgentCertificationPriorityP0 {
+		t.Fatalf("%s priority = %q, want P0", CertPersistentCancelReuse, priority)
+	}
+	for _, contract := range CodingAgentProviderContracts() {
+		if contract.Deprecated || contract.Transport != CodingAgentTransportTmux {
+			continue
+		}
+		found := false
+		for _, id := range RequiredP0CodingAgentCertificationIDs(contract) {
+			found = found || id == CertPersistentCancelReuse
+		}
+		if !found {
+			t.Errorf("%s P0 requirements omit stop-then-new-message", contract.Provider)
+		}
+	}
+}
+
 func TestProjectInstructionOnlyRegistryIsIntentional(t *testing.T) {
 	expected := map[Provider]bool{
 		ProviderClaudeCode: true,
@@ -469,7 +487,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	ProviderCursorCLI: {
 		CertBoundedRetention,
 		CertLifecyclePolicy,
-		CertPersistentCancelReuse,
 		CertStaleDraftCleanup,
 	},
 	// Muse onboarding (2026-09-10): all release-blocking P0s are registered
@@ -483,7 +500,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertLifecyclePolicy,
 		CertNativeSystemPrompt,
 		CertParallelStartupQueue,
-		CertPersistentCancelReuse,
 		CertPromptPaste,
 		CertResumeCompactionStartup,
 		CertSessionLoss,

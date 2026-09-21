@@ -40,11 +40,15 @@ const (
 	CertFinalExtraction            CodingAgentCertificationID = "final_extraction"
 	CertStatusLine                 CodingAgentCertificationID = "statusline"
 	// CertMultiTurn proves continuity in the persistent tmux transport.
-	CertMultiTurn                 CodingAgentCertificationID = "multi_turn"
-	CertStaleDraftCleanup         CodingAgentCertificationID = "stale_draft_cleanup"
-	CertLiveInput                 CodingAgentCertificationID = "live_input"
-	CertBusyLiveInput             CodingAgentCertificationID = "busy_live_input"
-	CertCancellation              CodingAgentCertificationID = "cancellation"
+	CertMultiTurn         CodingAgentCertificationID = "multi_turn"
+	CertStaleDraftCleanup CodingAgentCertificationID = "stale_draft_cleanup"
+	CertLiveInput         CodingAgentCertificationID = "live_input"
+	CertBusyLiveInput     CodingAgentCertificationID = "busy_live_input"
+	CertCancellation      CodingAgentCertificationID = "cancellation"
+	// CertPersistentCancelReuse proves a stopped in-flight tmux turn does not
+	// poison the conversation: after interruption, a NEW user message must be
+	// accepted and answered under the same owner. A prompt-ready pane alone is
+	// insufficient (the orphaned Muse tmux bug passed that weaker check).
 	CertPersistentCancelReuse     CodingAgentCertificationID = "persistent_cancel_reuse"
 	CertLifecyclePolicy           CodingAgentCertificationID = "lifecycle_policy"
 	CertBoundedRetention          CodingAgentCertificationID = "bounded_retention"
@@ -209,6 +213,7 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	CertLiveInput,
 	CertBusyLiveInput,
 	CertCancellation,
+	CertPersistentCancelReuse,
 	CertParallelIsolation,
 	// The final answer is the whole point of a turn, and callers render it as
 	// markdown — structure lost in extraction is as bad as no reply, so this is
@@ -394,6 +399,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
 			TestName:    "TestMuseCLIRealTmuxCancellation",
 			Description: "Ctrl-C mid-answer surfaces the interrupt marker, returns the TUI to idle, and the session takes the next turn",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPersistentCancelReuse,
+			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
+			TestName:    "TestMuseCLIRealPersistentStopThenNewMessage",
+			Description: "Escape stops an in-flight adapter turn, then the same owner accepts and answers a new message without a duplicate tmux session",
 			RealE2E:     true,
 		},
 		{
@@ -1160,6 +1172,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestCursorCLIRealInteractiveLiveInputAndEscapeContract",
 			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
 			Description: "canceling a live Cursor tmux turn interrupts the running GenerateContent call",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPersistentCancelReuse,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveLiveInputAndEscapeContract",
+			Description: "after interrupting a live turn, the same owner completes a new message",
 			RealE2E:     true,
 		},
 		{

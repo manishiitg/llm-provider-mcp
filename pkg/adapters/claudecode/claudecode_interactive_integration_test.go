@@ -767,6 +767,19 @@ func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusabl
 			t.Fatalf("canceled persistent session remained registered but was not prompt-ready; latest pane:\n%s", captured)
 		}
 	}
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer retryCancel()
+	retryToken := "CLAUDE_AFTER_STOP_" + randomHex(4)
+	retry, err := adapter.GenerateContent(retryCtx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "This is a cancellation contract test. Use only declared MCP tools."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply with exactly "+retryToken+" and nothing else."),
+	}, options...)
+	if err != nil {
+		t.Fatalf("new message after Stop: %v", err)
+	}
+	if len(retry.Choices) == 0 || !strings.Contains(retry.Choices[0].Content, retryToken) {
+		t.Fatalf("new message after Stop was not answered: %#v", retry.Choices)
+	}
 }
 
 func waitForClaudeInteractiveFileOrResult(t *testing.T, path, label string, timeout time.Duration, errCh <-chan error, ownerSessionID string) {

@@ -505,6 +505,22 @@ func TestCursorCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 		t.Fatalf("timed out waiting for GenerateContent to return after cancellation")
 	}
 	_ = drainCursorStream(streamChan)
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer retryCancel()
+	retryToken := "CURSOR_AFTER_STOP_" + cursorRandomHex(4)
+	retry, err := adapter.GenerateContent(retryCtx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply with exactly "+retryToken+" and nothing else."),
+	},
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithDenyBuiltinTools(true),
+	)
+	if err != nil {
+		t.Fatalf("new message after Stop: %v", err)
+	}
+	if len(retry.Choices) == 0 || !strings.Contains(retry.Choices[0].Content, retryToken) {
+		t.Fatalf("new message after Stop was not answered: %#v", retry.Choices)
+	}
 }
 
 func TestCursorCLIRealFinalExtractionFromTmuxAgentJudgeE2E(t *testing.T) {

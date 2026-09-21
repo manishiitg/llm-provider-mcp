@@ -539,6 +539,90 @@ func TestMuseCLIRealTmuxCancellation(t *testing.T) {
 	}
 }
 
+// TestMuseCLIRealPersistentStopThenNewMessage is the application-facing Stop
+// contract: Escape interrupts the current reply, cancellation ends its Go
+// caller, and a new message under the SAME owner completes. This catches the
+// orphaned deterministic tmux name that made every later message fail with
+// "duplicate session" after Stop.
+func TestMuseCLIRealPersistentStopThenNewMessage(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	owner := "muse-stop-resume-" + museRandomHex(t, 4)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	// Reproduce a canceled prelaunch (or server restart): tmux survived, but
+	// this process has no pool entry for the owner's deterministic name.
+	tmuxName := musePersistentTmuxName(owner)
+	if out, err := exec.CommandContext(t.Context(), "tmux", "new-session", "-d", "-s", tmuxName, "sleep 60").CombinedOutput(); err != nil {
+		t.Fatalf("seed untracked Muse tmux session: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = museClosePersistentTmux(tmuxName) })
+	adapter := museLiveAdapter()
+	opts := []llmtypes.CallOption{
+		WithPersistentInteractiveSession(true),
+		WithInteractiveSessionID(owner),
+		WithWorkingDir(t.TempDir()),
+	}
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	defer cancelTurn()
+	turnDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.GenerateContent(turnCtx, []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Write a detailed 1200-word essay on glass manufacturing history. Do not finish early."),
+		}, opts...)
+		turnDone <- err
+	}()
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		select {
+		case err := <-turnDone:
+			t.Fatalf("first turn ended before Stop could interrupt it: %v", err)
+		default:
+		}
+		if museTmuxSessionAlive(context.Background(), "="+tmuxName) {
+			pane, err := museTmuxCapturePane(context.Background(), tmuxName)
+			if err == nil && strings.Contains(pane, "◆") {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Muse did not start its first reply before Stop")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	keyCtx, cancelKey := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := SendMuseInteractiveControlKey(keyCtx, owner, "Escape"); err != nil {
+		cancelKey()
+		t.Fatalf("send Stop Escape: %v", err)
+	}
+	cancelKey()
+	cancelTurn()
+	select {
+	case err := <-turnDone:
+		if err == nil {
+			t.Fatal("stopped turn returned as a successful completed answer")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("stopped turn did not release its adapter call")
+	}
+	if !museTmuxSessionAlive(context.Background(), "="+tmuxName) {
+		t.Fatal("Stop destroyed the persistent Muse terminal")
+	}
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancelRetry()
+	token := "MUSE_AFTER_STOP_" + museRandomHex(t, 4)
+	retry, err := adapter.GenerateContent(retryCtx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply with exactly "+token+" and nothing else."),
+	}, opts...)
+	if err != nil {
+		t.Fatalf("new message after Stop: %v", err)
+	}
+	if len(retry.Choices) == 0 || !strings.Contains(retry.Choices[0].Content, token) {
+		t.Fatalf("new message was not answered: %#v", retry.Choices)
+	}
+	if got := retry.Choices[0].GenerationInfo.CodingProviderSessionHandle.TmuxSession; got != tmuxName {
+		t.Fatalf("Stop replaced the live pane: got %q want %q", got, tmuxName)
+	}
+}
+
 // TestMuseCLIRealTmuxParallelIsolation runs two TUI sessions in two
 // workdirs at once with distinct prompts: each native transcript must hold
 // its own answer and never the other's. Backs parallel_isolation.
