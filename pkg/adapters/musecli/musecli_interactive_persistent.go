@@ -204,6 +204,24 @@ func musePersistentTmuxName(owner string) string {
 	return strings.Trim(name, "-")
 }
 
+// museClosePersistentTmux cleans up a pane even when the turn that owned it
+// was canceled. A canceled request context cannot run tmux kill-session, and
+// leaving the deterministic name behind makes every later resume fail with
+// "duplicate session". Only the exact Muse-owned session is targeted.
+func museClosePersistentTmux(tmuxName string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	target := "=" + tmuxName
+	if !museTmuxSessionAlive(cleanupCtx, target) {
+		return nil
+	}
+	out, err := exec.CommandContext(cleanupCtx, "tmux", "kill-session", "-t", target).CombinedOutput()
+	if err != nil && museTmuxSessionAlive(cleanupCtx, target) {
+		return fmt.Errorf("close Muse tmux session %q: %w: %s", tmuxName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // museKillPersistentLocked kills the entry's tmux session and runs its
 // retained settings restore. Caller holds the pool lock.
 func museKillPersistentLocked(ctx context.Context, entry *musePersistentSession) {
@@ -213,7 +231,7 @@ func museKillPersistentLocked(ctx context.Context, entry *musePersistentSession)
 	if entry.autoAnswer != nil {
 		entry.autoAnswer.stopped.Store(true)
 	}
-	_ = exec.CommandContext(ctx, "tmux", "kill-session", "-t", entry.tmuxName).Run()
+	_ = museClosePersistentTmux(entry.tmuxName)
 	if entry.restoreMCP != nil {
 		entry.restoreMCP()
 	}
@@ -299,7 +317,7 @@ func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 		museKillPersistentLocked(context.Background(), entry)
 		return
 	}
-	_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", tmuxSessionName).Run()
+	_ = museClosePersistentTmux(tmuxSessionName)
 }
 
 // museAcquirePersistentSession returns the live pooled TUI for owner,
@@ -371,6 +389,16 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		}
 	}
 	tmuxName := musePersistentTmuxName(owner)
+	// The pool is process-local but tmux survives a server restart. A canceled
+	// launch can also leave a pane before it is inserted into the pool. In both
+	// cases this exact owner name is untracked and must be cleared before a
+	// native resume creates its replacement.
+	if err := museClosePersistentTmux(tmuxName); err != nil {
+		if restoreAgents != nil {
+			restoreAgents()
+		}
+		return nil, false, err
+	}
 	// A dead entry relaunches here (reuse returned early above), so a
 	// caller-supplied native id resumes the conversation instead of
 	// starting cold — this is the continuity-after-loss path.
@@ -398,7 +426,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		if restoreAgents != nil {
 			restoreAgents()
 		}
-		_ = exec.CommandContext(ctx, "tmux", "kill-session", "-t", tmuxName).Run()
+		_ = museClosePersistentTmux(tmuxName)
 		return nil, false, err
 	}
 	if readyFile != "" {

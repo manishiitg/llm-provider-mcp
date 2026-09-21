@@ -487,6 +487,39 @@ func TestCloseMuseCLIInteractiveSessionForOwner(t *testing.T) {
 	}
 }
 
+func TestMuseClosePersistentTmuxAfterCanceledTurn(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	owner := "cancel-cleanup-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	target := musePersistentTmuxName(owner)
+	other := musePersistentTmuxName(owner + "-other")
+	for _, name := range []string{target, other} {
+		if out, err := exec.CommandContext(t.Context(), "tmux", "new-session", "-d", "-s", name, "sleep 60").CombinedOutput(); err != nil {
+			t.Fatalf("create test tmux session %q: %v: %s", name, err, out)
+		}
+		t.Cleanup(func() { _ = museClosePersistentTmux(name) })
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatal("test turn was not canceled")
+	}
+	if err := museClosePersistentTmux(target); err != nil {
+		t.Fatal(err)
+	}
+	if museTmuxSessionAlive(context.Background(), "="+target) {
+		t.Fatal("canceled turn left its untracked tmux session alive")
+	}
+	if !museTmuxSessionAlive(context.Background(), "="+other) {
+		t.Fatal("cleanup affected another conversation's tmux session")
+	}
+	// Cleanup is also safe when a previous attempt already removed the name.
+	if err := museClosePersistentTmux(target); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMusePersistentTurnGateSerializesOwnerAndHonorsCancellation(t *testing.T) {
 	releaseFirst, err := museAcquirePersistentTurn(context.Background(), "turn-gate-owner")
 	if err != nil {
