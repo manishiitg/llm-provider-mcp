@@ -3,6 +3,7 @@ package llmproviders
 import (
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -24,6 +25,8 @@ func CodingAgentPaneReady(provider Provider, captured string) bool {
 		return cursorcli.PaneReadyForInput(captured)
 	case ProviderPiCLI:
 		return picli.PaneReadyForInput(captured)
+	case ProviderAgyCLI:
+		return agycli.PaneReadyForInput(captured)
 	default:
 		return false
 	}

@@ -74,6 +74,8 @@ func SendCodingAgentControlKey(ctx context.Context, provider Provider, modelID, 
 		return SendPiCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	case ProviderMuseCLI:
 		return SendMuseCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
+	case ProviderAgyCLI:
+		return SendAgyCLIInteractiveControlKey(ctx, ownerSessionID, trimmedKey)
 	default:
 		return &CodingAgentContinuationError{
 			Kind:     CodingAgentContinuationErrorNonContinuable,
