@@ -375,7 +375,9 @@ func TestCodexCLIRealInteractiveLiveInputAndEscapeContract(t *testing.T) {
 	}()
 
 	tmuxSession := waitForCodexRealActiveSession(t, ownerSessionID, 45*time.Second, errCh)
-	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Registration precedes CLI startup readiness. Give the live-input gate
+	// enough time to settle before treating this as a Stop/reuse failure.
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	liveMessage := "LIVE_FOLLOWUP_" + token
 	liveErr := SendCodexInteractiveInput(sendCtx, ownerSessionID, liveMessage)
 	sendCancel()
