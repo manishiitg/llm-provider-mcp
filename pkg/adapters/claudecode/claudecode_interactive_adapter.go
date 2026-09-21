@@ -139,6 +139,9 @@ type claudeInteractivePersistentSession struct {
 	workingDir       string
 	tempFiles        []string
 	idleTimer        *time.Timer
+	idleMu           sync.Mutex
+	idleGeneration   uint64
+	idleExpired      bool
 	initErr          error
 	createdAt        time.Time
 	lastUsed         time.Time
@@ -3952,11 +3955,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			session.mu.Unlock()
 			return nil, false, err
 		}
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.lastUsed = time.Now()
+		pauseClaudePersistentIdleTimer(session)
 		return session, false, nil
 	}
 
@@ -3985,12 +3984,79 @@ func releaseClaudePersistentInteractiveSession(session *claudeInteractivePersist
 	if session == nil {
 		return
 	}
-	session.lastUsed = time.Now()
-	idleTimeout := persistentInteractiveIdleTimeout()
-	session.idleTimer = time.AfterFunc(idleTimeout, func() {
-		closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
-	})
+	armClaudePersistentIdleTimer(session, logger)
 	session.mu.Unlock()
+}
+
+// armClaudePersistentIdleTimer records real owner activity and replaces the
+// prior expiry callback. Retained turns are delivered directly to tmux and do
+// not reacquire session.mu, so their input path must call this too; otherwise
+// an actively used chat is killed at the original three-hour idle deadline.
+func armClaudePersistentIdleTimer(session *claudeInteractivePersistentSession, logger interfaces.Logger) bool {
+	if session == nil {
+		return false
+	}
+	session.idleMu.Lock()
+	defer session.idleMu.Unlock()
+	if session.idleExpired {
+		return false
+	}
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+	}
+	session.lastUsed = time.Now()
+	session.idleGeneration++
+	generation := session.idleGeneration
+	timeout := persistentInteractiveIdleTimeout()
+	session.idleTimer = time.AfterFunc(timeout, func() {
+		expireClaudePersistentIdleTimer(session, generation, logger)
+	})
+	return true
+}
+
+func pauseClaudePersistentIdleTimer(session *claudeInteractivePersistentSession) {
+	if session == nil {
+		return
+	}
+	session.idleMu.Lock()
+	defer session.idleMu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	// Any callback already queued belongs to the previous generation and must
+	// not close a session that has just become active again.
+	session.idleGeneration++
+}
+
+func expireClaudePersistentIdleTimer(session *claudeInteractivePersistentSession, generation uint64, logger interfaces.Logger) {
+	if session == nil {
+		return
+	}
+	session.idleMu.Lock()
+	if session.idleExpired || generation != session.idleGeneration {
+		session.idleMu.Unlock()
+		return
+	}
+	session.idleExpired = true
+	session.idleGeneration++
+	session.idleTimer = nil
+	session.idleMu.Unlock()
+	closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
+}
+
+func stopClaudePersistentIdleTimer(session *claudeInteractivePersistentSession) {
+	if session == nil {
+		return
+	}
+	session.idleMu.Lock()
+	defer session.idleMu.Unlock()
+	if session.idleTimer != nil {
+		session.idleTimer.Stop()
+		session.idleTimer = nil
+	}
+	session.idleExpired = true
+	session.idleGeneration++
 }
 
 // CloseClaudeCodeInteractiveSessionForOwner closes the persistent
@@ -4035,10 +4101,7 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	stopClaudePersistentIdleTimer(session)
 	if logger != nil {
 		logger.Debugf("Closing persistent Claude Code tmux session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
@@ -4058,10 +4121,7 @@ func markClaudePersistentInteractiveSessionFailedLocked(session *claudeInteracti
 	if err != nil {
 		session.initErr = err
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	stopClaudePersistentIdleTimer(session)
 	if logger != nil {
 		logger.Debugf("Discarding persistent Claude Code tmux session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
@@ -4098,10 +4158,7 @@ func stopClaudeIdleTimerIfAvailable(session *claudeInteractivePersistentSession)
 		return
 	}
 	defer session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	stopClaudePersistentIdleTimer(session)
 }
 
 // SendClaudeCodeInput routes live input into a registered Claude Code tmux session.
@@ -4109,6 +4166,11 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return fmt.Errorf("Claude Code owner session ID is required")
+	}
+	if session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID); ok && session != nil {
+		if !armClaudePersistentIdleTimer(session, nil) {
+			return fmt.Errorf("Claude Code session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
+		}
 	}
 	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {

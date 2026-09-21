@@ -2473,3 +2473,45 @@ func TestClaudeRunningPaneCannotBecomeFinalResponse(t *testing.T) {
 		t.Fatalf("running pane parsed as final response: %q", got)
 	}
 }
+
+func TestClaudeRetainedInputRefreshInvalidatesPriorIdleExpiry(t *testing.T) {
+	session := &claudeInteractivePersistentSession{
+		ownerSessionID:  t.Name(),
+		tmuxSessionName: "mlp-claude-code-retained-idle-test",
+	}
+	previous := claudeInteractivePersistentRegistry.Replace(map[string]*claudeInteractivePersistentSession{
+		session.ownerSessionID: session,
+	})
+	t.Cleanup(func() {
+		stopClaudePersistentIdleTimer(session)
+		claudeInteractivePersistentRegistry.Replace(previous)
+	})
+
+	if !armClaudePersistentIdleTimer(session, nil) {
+		t.Fatal("initial idle timer was not armed")
+	}
+	session.idleMu.Lock()
+	firstGeneration := session.idleGeneration
+	firstUsed := session.lastUsed
+	session.idleMu.Unlock()
+
+	time.Sleep(time.Millisecond)
+	if !armClaudePersistentIdleTimer(session, nil) {
+		t.Fatal("retained input did not refresh the idle timer")
+	}
+	// Simulate the old AfterFunc callback already being queued when input
+	// refreshed the session. It must not remove or close the active session.
+	expireClaudePersistentIdleTimer(session, firstGeneration, nil)
+
+	if current, ok := claudeInteractivePersistentRegistry.Get(session.ownerSessionID); !ok || current != session {
+		t.Fatal("stale idle callback removed a session refreshed by retained input")
+	}
+	session.idleMu.Lock()
+	defer session.idleMu.Unlock()
+	if session.idleExpired {
+		t.Fatal("stale idle callback marked the refreshed session expired")
+	}
+	if !session.lastUsed.After(firstUsed) {
+		t.Fatalf("lastUsed was not refreshed: first=%s current=%s", firstUsed, session.lastUsed)
+	}
+}
