@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
@@ -138,10 +139,9 @@ type claudeInteractivePersistentSession struct {
 	scopeFingerprint string
 	workingDir       string
 	tempFiles        []string
-	idleTimer        *time.Timer
+	idleLease        sessionlease.Lease
 	initErr          error
 	createdAt        time.Time
-	lastUsed         time.Time
 	mu               sync.Mutex
 	retainedProgress claudeRetainedProgress
 	// pendingDurable scopes durability proofs per send; guarded by
@@ -3919,7 +3919,6 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			workingDir:       strings.TrimSpace(workingDir),
 			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
 			createdAt:        now,
-			lastUsed:         now,
 		}
 		session.mu.Lock()
 		return session
@@ -3952,11 +3951,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			session.mu.Unlock()
 			return nil, false, err
 		}
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.lastUsed = time.Now()
+		session.idleLease.Pause()
 		return session, false, nil
 	}
 
@@ -3985,12 +3980,19 @@ func releaseClaudePersistentInteractiveSession(session *claudeInteractivePersist
 	if session == nil {
 		return
 	}
-	session.lastUsed = time.Now()
-	idleTimeout := persistentInteractiveIdleTimeout()
-	session.idleTimer = time.AfterFunc(idleTimeout, func() {
+	armClaudePersistentIdleLease(session, logger)
+	session.mu.Unlock()
+}
+
+// armClaudePersistentIdleLease records both ordinary-turn release and retained
+// direct-input activity through the same shared lease implementation.
+func armClaudePersistentIdleLease(session *claudeInteractivePersistentSession, logger interfaces.Logger) bool {
+	if session == nil {
+		return false
+	}
+	return session.idleLease.Arm(persistentInteractiveIdleTimeout(), func() {
 		closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
 	})
-	session.mu.Unlock()
 }
 
 // CloseClaudeCodeInteractiveSessionForOwner closes the persistent
@@ -4035,10 +4037,7 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Closing persistent Claude Code tmux session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
@@ -4058,10 +4057,7 @@ func markClaudePersistentInteractiveSessionFailedLocked(session *claudeInteracti
 	if err != nil {
 		session.initErr = err
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Discarding persistent Claude Code tmux session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
@@ -4098,10 +4094,7 @@ func stopClaudeIdleTimerIfAvailable(session *claudeInteractivePersistentSession)
 		return
 	}
 	defer session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 }
 
 // SendClaudeCodeInput routes live input into a registered Claude Code tmux session.
@@ -4109,6 +4102,11 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return fmt.Errorf("Claude Code owner session ID is required")
+	}
+	if session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID); ok && session != nil {
+		if !armClaudePersistentIdleLease(session, nil) {
+			return fmt.Errorf("Claude Code session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
+		}
 	}
 	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {

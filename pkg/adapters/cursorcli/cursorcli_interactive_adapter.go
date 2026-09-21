@@ -27,6 +27,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
@@ -134,10 +135,9 @@ type cursorInteractiveSession struct {
 	durableMu      sync.Mutex
 	persistent     bool
 	cleanupFiles   func()
-	idleTimer      *time.Timer
+	idleLease      sessionlease.Lease
 	initErr        error
 	createdAt      time.Time
-	lastUsed       time.Time
 	// scopeFingerprint identifies the credential scope this live process was
 	// LAUNCHED with, so a later turn's changed scope replaces it rather than
 	// silently reusing the old environment.
@@ -575,7 +575,6 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 			tmuxSessionName:  newCursorTmuxSessionName(),
 			persistent:       persistent,
 			createdAt:        now,
-			lastUsed:         now,
 			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
 		}
 		session.mu.Lock()
@@ -601,11 +600,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 			session.mu.Unlock()
 			return nil, false, err
 		}
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.lastUsed = time.Now()
+		session.idleLease.Pause()
 		return session, false, nil
 	}
 
@@ -1110,8 +1105,7 @@ func releaseCursorInteractiveSession(session *cursorInteractiveSession, logger i
 	if session == nil {
 		return
 	}
-	session.lastUsed = time.Now()
-	session.idleTimer = time.AfterFunc(cursorInteractiveIdleTimeout(), func() {
+	session.idleLease.Arm(cursorInteractiveIdleTimeout(), func() {
 		closeCursorPersistentSession(session.ownerSessionID, "idle timeout", logger)
 	})
 	session.mu.Unlock()
@@ -1124,7 +1118,6 @@ func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, l
 	// Keep the real tmux pane alive for the shared bounded retention window so
 	// the UI terminal remains inspectable/debuggable while it is visible.
 	retention := llmtypes.TmuxKillDelay
-	session.lastUsed = time.Now()
 	if retention <= 0 {
 		closeCursorSessionLocked(session, "bounded turn complete", logger)
 		return
@@ -1132,7 +1125,7 @@ func releaseCursorBoundedInteractiveSession(session *cursorInteractiveSession, l
 	if logger != nil {
 		logger.Debugf("Retaining completed Cursor interactive session %s for owner %s for %s (then kill)", session.tmuxSessionName, session.ownerSessionID, retention)
 	}
-	session.idleTimer = time.AfterFunc(retention, func() {
+	session.idleLease.Arm(retention, func() {
 		closeCursorPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
 	})
 	session.mu.Unlock()
@@ -1181,10 +1174,7 @@ func closeCursorSessionLocked(session *cursorInteractiveSession, reason string, 
 	if session == nil {
 		return
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Closing Cursor interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
 	}
@@ -1213,10 +1203,7 @@ func markCursorInteractiveSessionFailedLocked(session *cursorInteractiveSession,
 	if err != nil {
 		session.initErr = err
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Discarding Cursor interactive session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
@@ -1268,10 +1255,7 @@ func stopCursorIdleTimerAndSnapshotCleanupIfAvailable(session *cursorInteractive
 		return nil
 	}
 	defer session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	cleanupFiles := session.cleanupFiles
 	session.cleanupFiles = nil
 	return cleanupFiles
@@ -1308,6 +1292,15 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	session, retained := cursorPersistentRegistry.Get(ownerSessionID)
 	if !retained || session == nil {
 		return sendCursorLiveInputToTmux(ctx, sessionName, message)
+	}
+	retention := cursorInteractiveIdleTimeout()
+	if !session.persistent {
+		retention = llmtypes.TmuxKillDelay
+	}
+	if retention <= 0 || !session.idleLease.Arm(retention, func() {
+		closeCursorPersistentSession(session.ownerSessionID, "idle timeout", nil)
+	}) {
+		return fmt.Errorf("Cursor session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
 	}
 	// Install the boundary before typing; otherwise a fast reply can commit
 	// before the completion watcher starts. Restore it if delivery fails.
