@@ -10,6 +10,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -41,6 +42,7 @@ const (
 	ProviderCursorCLI         Provider = "cursor-cli"
 	ProviderPiCLI             Provider = "pi-cli"
 	ProviderMuseCLI           Provider = "muse-cli"
+	ProviderAgyCLI            Provider = "agy-cli"
 	ProviderMiniMax           Provider = "minimax"
 	ProviderMiniMaxCodingPlan Provider = "minimax-coding-plan"
 	ProviderElevenLabs        Provider = "elevenlabs"
@@ -50,6 +52,7 @@ const (
 	DefaultCursorCLIModel = "composer-2.5"
 	DefaultPiCLIModel     = picli.DefaultModelID
 	DefaultMuseCLIModel   = "muse-cli"
+	DefaultAgyCLIModel    = "gemini-3.8-flash-high"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported normal value: "tmux" for Claude Code TUI mode.
@@ -109,6 +112,12 @@ func CleanupMuseCLIInteractiveSessions(ctx context.Context) error {
 	return musecli.CleanupMuseCLIInteractiveSessions(ctx)
 }
 
+// CleanupAgyCLIInteractiveSessions removes agy tmux sessions registered by
+// this process.
+func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
+	return agycli.CleanupAgyCLIInteractiveSessions(ctx)
+}
+
 // interactiveSessionPrefixes are the tmux session-name prefixes used by every
 // coding-agent CLI transport. Kept in sync with each adapter's
 // <provider>InteractiveSessionPrefix() default.
@@ -165,6 +174,10 @@ func CloseMuseCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 	musecli.CloseMuseCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
+func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	agycli.CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason)
+}
+
 // CloseXxxCLIInteractiveSessionByTmux variants tear down a tmux-backed coding
 // CLI session by its tmux session name rather than by owner key. They run the
 // same provider-specific graceful exit + cleanup as the owner-keyed closes,
@@ -190,6 +203,10 @@ func CloseClaudeCodeInteractiveSessionByTmux(tmuxSessionName, reason string) {
 
 func CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	musecli.CloseMuseCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	agycli.CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason)
 }
 
 // SendClaudeCodeInput sends user input to a live Claude Code tmux session
@@ -322,6 +339,18 @@ func SendMuseCLIInteractiveControlKey(ctx context.Context, sessionID, key string
 	return musecli.SendMuseInteractiveControlKey(ctx, sessionID, key)
 }
 
+// SendAgyCLIInteractiveInput sends user input to a live agy interactive
+// tmux session registered for the owning application session.
+func SendAgyCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
+	return agycli.SendAgyInteractiveInput(ctx, sessionID, message)
+}
+
+// SendAgyCLIInteractiveControlKey injects a tmux control key into a
+// registered agy interactive session.
+func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
+	return agycli.SendAgyInteractiveControlKey(ctx, sessionID, key)
+}
+
 // AwaitCodexInputDurable waits for the rollout proof that a previous
 // SendCodexCLIInteractiveInput reached the CLI. It is the durability
 // half of the two-stage delivery receipt; host applications call it
@@ -359,6 +388,8 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 		return picli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderAgyCLI:
+		return agycli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	default:
 		return nil
 	}
@@ -390,6 +421,10 @@ func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSession
 		}
 	case ProviderCursorCLI:
 		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)
+	case ProviderAgyCLI:
+		if len(turnStart) > 0 {
+			return agycli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
+		}
 	}
 	return nil
 }
@@ -463,7 +498,10 @@ type ProviderAPIKeys struct {
 	// MuseCLI is an explicit Meta API key for muse-cli. Empty (the common
 	// case) means stored `muse login` or META_API_KEY env, mirroring how
 	// the adapter resolves auth. Never a third-party key.
-	MuseCLI           *string
+	MuseCLI *string
+	// AgyCLI is an explicit Gemini API key for agy-cli. Empty (the common
+	// case) means stored `agy` Google login or GEMINI_API_KEY env.
+	AgyCLI            *string
 	MiniMax           *string
 	MiniMaxCodingPlan *string
 	ElevenLabs        *string
@@ -508,6 +546,8 @@ func (k *ProviderAPIKeys) SetKeyForProvider(provider Provider, key *string) {
 		k.CursorCLI = key
 	case ProviderPiCLI:
 		k.PiCLI = key
+	case ProviderAgyCLI:
+		k.AgyCLI = key
 	case ProviderMiniMax:
 		k.MiniMax = key
 	case ProviderMiniMaxCodingPlan:
@@ -602,6 +642,8 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 		llm, err = initializePiCLI(config)
 	case ProviderMuseCLI:
 		llm, err = initializeMuseCLI(config)
+	case ProviderAgyCLI:
+		llm, err = initializeAgyCLI(config)
 	case ProviderMiniMax:
 		llm, err = initializeMiniMax(config)
 	case ProviderMiniMaxCodingPlan:

@@ -262,11 +262,14 @@ func TestTokenUsageContractIsWellFormed(t *testing.T) {
 	for _, c := range CodingAgentProviderContracts() {
 		if c.SurfacesTokenUsage {
 			if c.TokenUsageSource == "" {
-				t.Errorf("%s claims SurfacesTokenUsage but TokenUsageSource is empty — declare one of stream-json|transcript-file|estimated", c.Provider)
+				t.Errorf("%s claims SurfacesTokenUsage but TokenUsageSource is empty — declare one of stream-json|transcript-file|estimated|exec-json", c.Provider)
 				continue
 			}
 			if !IsValidTokenUsageSource(c.TokenUsageSource) {
 				t.Errorf("%s declares TokenUsageSource=%q which is not in validTokenUsageSources — add it there first or fix the typo", c.Provider, c.TokenUsageSource)
+			}
+			if c.InteractiveTokenUsageSource != "" && !IsValidTokenUsageSource(c.InteractiveTokenUsageSource) {
+				t.Errorf("%s declares InteractiveTokenUsageSource=%q which is not in validTokenUsageSources — add it there first or fix the typo", c.Provider, c.InteractiveTokenUsageSource)
 			}
 		} else if c.TokenUsageSource != "" {
 			t.Errorf("%s has TokenUsageSource=%q but SurfacesTokenUsage=false — flip the bool or clear the source", c.Provider, c.TokenUsageSource)
@@ -478,6 +481,27 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 	// reply_formatting_fidelity, so it is deliberately absent). Remove IDs
 	// as proofs land — the staleness guard fails the suite otherwise.
 	ProviderMuseCLI: {
+		CertBoundedRetention,
+		CertCleanup,
+		CertLifecyclePolicy,
+		CertNativeSystemPrompt,
+		CertParallelStartupQueue,
+		CertPersistentCancelReuse,
+		CertPromptPaste,
+		CertResumeCompactionStartup,
+		CertSessionLoss,
+		CertSessionLossRecovery,
+		CertSharedWorkdirMCPIsolation,
+		CertSlowToolLiveInput,
+		CertStaleDraftCleanup,
+		CertStartupTerminalVisibility,
+	},
+	// Agy onboarding (2026-09-20): all release-blocking P0s are registered
+	// with live E2E proofs (bridge_only_tools via the best-effort
+	// exception); what remains below is the same capability-derived
+	// follow-up set Muse carries. Remove IDs as proofs land — the
+	// staleness guard fails the suite otherwise.
+	ProviderAgyCLI: {
 		CertBoundedRetention,
 		CertCleanup,
 		CertLifecyclePolicy,

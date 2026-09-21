@@ -144,6 +144,23 @@ const (
 	// additionally set the token_usage_estimated marker so cost reports can
 	// be flagged as approximate.
 	CertTokenUsage CodingAgentCertificationID = "token_usage"
+	// CertNativeTranscriptRecovery proves the adapter reads the CLI's own
+	// on-disk transcript back into Human/AI messages: a real multi-turn
+	// conversation is re-read by native session id and the texts come back
+	// in order. Builder's chat-history catch-up (PLAT-178 guard) requires
+	// this proof for persistent live-input providers.
+	CertNativeTranscriptRecovery CodingAgentCertificationID = "native_transcript_recovery"
+	// CertTmuxTurnExecution proves persistent-interactive turns execute
+	// inside the tmux pane (not headless): GenerateContent with the
+	// persistent option runs the prompt in the sidecar, consecutive turns
+	// share the native conversation, and usage is metered. This is the
+	// no-bypass bar for the tmux-in-Builder contract: a tmux provider may
+	// not route Builder turns through a headless lane with a decorative
+	// sidecar.
+	CertTmuxTurnExecution CodingAgentCertificationID = "tmux_turn_execution"
+	// CertInteractiveMCPBridge proves bridge tools flow inside persistent
+	// sidecar turns (mount visible, calls unblocked, no leak at close).
+	CertInteractiveMCPBridge CodingAgentCertificationID = "interactive_mcp_bridge"
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
@@ -180,6 +197,7 @@ var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertCleanup,
 	CertSessionLoss,
 	CertSessionLossRecovery,
+	CertTmuxTurnExecution,
 }
 
 // requiredP0CertificationIDs is deliberately short. These are the contracts
@@ -219,6 +237,11 @@ var requiredP0CertificationIDs = []CodingAgentCertificationID{
 	// fails when a run didn't actually exercise wrapping — a green test that
 	// proved nothing is how this defect shipped in the first place).
 	CertReplyFormattingFidelity,
+	// Builder chats run in tmux: persistent turns must execute inside the
+	// pane, not headless with a decorative sidecar. Without this bar a new
+	// provider can route Builder turns through exec while its steer and
+	// interrupt proofs exercise a sidecar conversation no app turn reads.
+	CertTmuxTurnExecution,
 }
 
 // CodingAgentCertification records the real or deterministic test that proves a
@@ -276,6 +299,155 @@ var codingAgentCapabilityCertifications = []struct {
 }
 
 var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
+	ProviderAgyCLI: {
+		{
+			ID:          CertRuntimeAvailability,
+			TestFile:    "pkg/adapters/agycli/agycli_runtime_availability_live_test.go",
+			TestName:    "TestAgyRuntimeAvailabilityLive",
+			Description: "contract agy binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertFreshLaunch,
+			TestFile:    "pkg/adapters/agycli/agycli_exec_live_test.go",
+			TestName:    "TestAgyCLIRealExecFullContract",
+			Description: "fresh print-mode turn starts and completes with a canary echo, wire usage, and a conversation handle",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertRuntimeContext,
+			TestFile:    "pkg/adapters/agycli/agycli_context_live_test.go",
+			TestName:    "TestAgyCLIRealRuntimeContextContract",
+			Description: "system-header fold steers the model (GEMINI.md project files are not auto-injected)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertWorkingDirectory,
+			TestFile:    "pkg/adapters/agycli/agycli_context_live_test.go",
+			TestName:    "TestAgyCLIRealWorkingDirectoryContract",
+			Description: "pinned cwd reaches the model (canary file read) in an untrusted tmpdir print mode runs trust-exempt",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTrustAuthPrompts,
+			TestFile:    "pkg/adapters/agycli/agycli_context_live_test.go",
+			TestName:    "TestAgyCLIRealTrustAuthPromptsContract",
+			Description: "logged-out agy (empty HOME) is detected via the auth marker and fails fast instead of hanging on OAuth",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMCPBridge,
+			TestFile:    "pkg/adapters/agycli/agycli_bridge_live_test.go",
+			TestName:    "TestAgyCLIRealMCPBridgeContract",
+			Description: "canary MCP server mounts through WithMCPConfig and the model routes a call through it with no mount leak",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBestEffortToolRestrictions,
+			TestFile:    "pkg/adapters/agycli/agycli_bridge_live_test.go",
+			TestName:    "TestAgyCLIRealBestEffortToolRestrictions",
+			Description: "unmounted native-tool attempt is auto-denied with the action named and nothing runs (no selective containment claimed)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertSlowToolFalseIdle,
+			TestFile:    "pkg/adapters/agycli/agycli_bridge_live_test.go",
+			TestName:    "TestAgyCLIRealSlowToolFalseIdleContract",
+			Description: "25s canary tool is awaited to completion with no premature done",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertDoneDetection,
+			TestFile:    "pkg/adapters/agycli/agycli_exec_live_test.go",
+			TestName:    "TestAgyCLIRealExecFullContract",
+			Description: "exit 0 + SUCCESS envelope marks done (same proof as fresh_launch)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertFinalExtraction,
+			TestFile:    "pkg/adapters/agycli/agycli_exec_live_test.go",
+			TestName:    "TestAgyCLIRealExecFullContract",
+			Description: "envelope response text extracted with the canary intact (same proof as fresh_launch)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertMultiTurn,
+			TestFile:    "pkg/adapters/agycli/agycli_resume_live_test.go",
+			TestName:    "TestAgyCLIRealResumeMultiTurnContract",
+			Description: "--conversation resume recalls turn 1 on the same native conversation id",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertStructuredMultiTurn,
+			TestFile:    "pkg/adapters/agycli/agycli_resume_live_test.go",
+			TestName:    "TestAgyCLIRealResumeMultiTurnContract",
+			Description: "resumed turn honors --json-schema with the schema payload extracted (same proof as multi_turn)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTokenUsage,
+			TestFile:    "pkg/adapters/agycli/agycli_exec_live_test.go",
+			TestName:    "TestAgyCLIRealExecFullContract",
+			Description: "wire input/output/thinking/cache usage lands on the response (same proof as fresh_launch)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertLiveInput,
+			TestFile:    "pkg/adapters/agycli/agycli_interactive_live_test.go",
+			TestName:    "TestAgyCLIRealInteractiveLiveInputContract",
+			Description: "follow-up typed into the TUI sidecar is answered with the canary",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertBusyLiveInput,
+			TestFile:    "pkg/adapters/agycli/agycli_interactive_live_test.go",
+			TestName:    "TestAgyCLIRealBusyLiveInputContract",
+			Description: "mid-turn follow-up queues behind the running turn and is answered after, plus Escape interrupt",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertCancellation,
+			TestFile:    "pkg/adapters/agycli/agycli_cancel_isolation_live_test.go",
+			TestName:    "TestAgyCLIRealCancellationContract",
+			Description: "context cancel mid-turn kills the run and later turns are unaffected",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertParallelIsolation,
+			TestFile:    "pkg/adapters/agycli/agycli_cancel_isolation_live_test.go",
+			TestName:    "TestAgyCLIRealParallelIsolationContract",
+			Description: "concurrent turns keep separate canaries and conversations",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertReplyFormattingFidelity,
+			TestFile:    "pkg/adapters/agycli/agycli_interactive_live_test.go",
+			TestName:    "TestAgyCLIRealReplyFormattingFidelityContract",
+			Description: "shared GFM-table + nested-fence bar survives sidecar pane capture byte-exact",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertNativeTranscriptRecovery,
+			TestFile:    "pkg/adapters/agycli/agycli_native_transcript_live_test.go",
+			TestName:    "TestAgyCLIRealNativeTranscriptContract",
+			Description: "real 2-turn conversation re-read from conversations/<id>.db by native session id with texts in order",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/agycli/agycli_interactive_turn_live_test.go",
+			TestName:    "TestAgyCLIRealInteractiveTurnContract",
+			Description: "persistent turns execute in the sidecar pane with shared conversation and metered usage",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertInteractiveMCPBridge,
+			TestFile:    "pkg/adapters/agycli/agycli_interactive_turn_live_test.go",
+			TestName:    "TestAgyCLIRealInteractiveMCPBridgeContract",
+			Description: "sidecar turn routes a bridge tool call with no approval stall and no leak at close",
+			RealE2E:     true,
+		},
+	},
 	ProviderMuseCLI: {
 		{
 			ID:          CertRuntimeAvailability,
@@ -408,6 +580,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
 			TestName:    "TestMuseCLIRealTmuxReplyFidelity",
 			Description: "transcript extraction of a long-lines-and-list reply preserves markdown structure against the wrapped 80-col pane (agent-review sign-off)",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
+			TestName:    "TestMuseCLIRealPersistentSession",
+			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
 			RealE2E:     true,
 		},
 	},
@@ -685,6 +864,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
 			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1"},
 			Description: "Claude Code recovers a remembered-token conversation after its tmux session is killed",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/claudecode/claudecode_interactive_integration_test.go",
+			TestName:    "TestClaudeCodeTmuxIntegrationFreshPromptCarriesUserText",
+			Env:         []string{"RUN_CLAUDE_CODE_TMUX_INTEGRATION=1"},
+			Description: "interactive adapter executes the turn in the tmux pane and returns the reply",
 			RealE2E:     true,
 		},
 	},
@@ -966,6 +1153,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Description: "parallel Codex sessions in one cwd keep MCP sessions isolated",
 			RealE2E:     true,
 		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
+			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
+			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
+			RealE2E:     true,
+		},
 	},
 	ProviderCursorCLI: {
 		{
@@ -1208,6 +1403,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
 			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1", "RUN_CURSOR_CLI_REAL_E2E via subtest cursor-cli"},
 			Description: "Cursor continuation after killed tmux starts a fresh tmux session and resumes provider-native memory",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
+			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
+			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
+			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
 			RealE2E:     true,
 		},
 	},
@@ -1494,6 +1697,14 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Description: "relaunches Pi with --session-id and recalls a canary without app history replay",
 			RealE2E:     true,
 		},
+		{
+			ID:          CertTmuxTurnExecution,
+			TestFile:    "pkg/adapters/picli/picli_real_contract_test.go",
+			TestName:    "TestPiCLIRealTmuxFullContract",
+			Env:         []string{"RUN_PI_CLI_REAL_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
+			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
+			RealE2E:     true,
+		},
 	},
 }
 
@@ -1683,6 +1894,20 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	if contract.SurfacesTokenUsage {
 		ids = append(ids, tokenUsageCertificationIDs...)
 	}
+	// A provider whose chat-history catch-up reads the CLI's native
+	// transcript must prove the reader against a real conversation:
+	// transcript formats drift per release and a silent misread backfills
+	// wrong history (PLAT-178). Scoped to providers with a registered live
+	// proof; the older cursor/pi/muse readers predate this requirement and
+	// carry their own fixture tests.
+	if contract.Provider == ProviderAgyCLI && contract.AdapterReadsTranscript {
+		ids = append(ids, CertNativeTranscriptRecovery)
+	}
+	// Agy's sidecar bridge proof rides its own requirement: peers cover
+	// tools-in-tmux through their long-standing bridge entries.
+	if contract.Provider == ProviderAgyCLI {
+		ids = append(ids, CertInteractiveMCPBridge)
+	}
 	return ids
 }
 
@@ -1716,8 +1941,14 @@ func MissingCodingAgentCertifications(contract CodingAgentProviderContract) []Co
 	return missing
 }
 
-// Muse is the explicitly accepted best-effort exception (2026-09-11).
-// Other providers retain the strict requirement even if they clear a flag.
+// Muse (2026-09-11) and Agy (2026-09-20) are the explicitly accepted
+// best-effort exceptions. Other providers retain the strict requirement
+// even if they clear a flag. Agy's print lane auto-denies every tool
+// headless with no selective switch, so strict bridge-only containment is
+// unprovable; the best-effort proof pins the denial posture instead.
 func acceptsBestEffortToolRestrictions(c CodingAgentProviderContract) bool {
-	return c.Provider == ProviderMuseCLI && !c.SupportsBridgeOnlyTools && len(c.ToolRestrictionGaps) > 0
+	if c.SupportsBridgeOnlyTools || len(c.ToolRestrictionGaps) == 0 {
+		return false
+	}
+	return c.Provider == ProviderMuseCLI || c.Provider == ProviderAgyCLI
 }

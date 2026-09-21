@@ -39,6 +39,9 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 	ProviderMuseCLI: {
 		PathTemplate: "$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl",
 	},
+	ProviderAgyCLI: {
+		PathTemplate: "~/.gemini/antigravity-cli/conversations/<conversation-id>.db",
+	},
 }
 
 // TranscriptReaderFor returns the transcript reader metadata for a provider,

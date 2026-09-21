@@ -18,6 +18,7 @@ var codingAgentInteractiveSessionRegistry = map[Provider]func(string) llmtypes.C
 	ProviderCursorCLI:  WithCursorInteractiveSessionID,
 	ProviderPiCLI:      WithPiInteractiveSessionID,
 	ProviderMuseCLI:    WithMuseInteractiveSessionID,
+	ProviderAgyCLI:     WithAgyInteractiveSessionID,
 }
 
 // CodingAgentInteractiveSessionOption returns the CallOption that associates a
@@ -39,6 +40,7 @@ var codingAgentPersistentInteractiveRegistry = map[Provider]func(bool) llmtypes.
 	ProviderCursorCLI:  WithCursorPersistentInteractiveSession,
 	ProviderPiCLI:      WithPiPersistentInteractiveSession,
 	ProviderMuseCLI:    WithMusePersistentInteractiveSession,
+	ProviderAgyCLI:     WithAgyPersistentInteractiveSession,
 }
 
 // CodingAgentPersistentInteractiveOption returns the provider's "keep tmux
@@ -56,6 +58,7 @@ var codingAgentWorkingDirRegistry = map[Provider]func(string) llmtypes.CallOptio
 	ProviderCursorCLI:  WithCursorWorkingDir,
 	ProviderPiCLI:      WithPiWorkingDir,
 	ProviderMuseCLI:    WithMuseWorkingDir,
+	ProviderAgyCLI:     WithAgyWorkingDir,
 }
 
 // CodingAgentWorkingDirOption returns the provider's working-directory

@@ -105,6 +105,15 @@ type CodingAgentProviderContract struct {
 	// the source so cost reports can be flagged as approximate.
 	TokenUsageSource string
 
+	// InteractiveTokenUsageSource optionally overrides TokenUsageSource for
+	// turns executed in the persistent interactive (tmux) lane. Empty
+	// means the interactive lane meters identically to the default lane
+	// (or has no interactive turns at all). When set it must name the
+	// same closed label set: a dual-lane provider may bill exec turns
+	// from JSON envelopes and sidecar turns from transcript files, but
+	// each lane's source must be declared.
+	InteractiveTokenUsageSource string
+
 	// AdapterReadsTranscript reports whether the adapter has code that reads
 	// the CLI's on-disk conversation transcript directly — used for sidecar
 	// features (token extraction for tmux mode, replay, forensic audit). This
@@ -474,6 +483,51 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		APIKeyEnvVars:               []string{"META_API_KEY"},
 		WorkingDirInstructionFile:   "AGENTS.md",
 		SupportsDurableAck:          true,
+	},
+	ProviderAgyCLI: {
+		Provider:                ProviderAgyCLI,
+		DisplayName:             "Antigravity",
+		CLIName:                 "agy",
+		Transport:               CodingAgentTransportTmux,
+		RuntimeBinary:           "agy",
+		InstallCommand:          "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+		VersionProbeArgs:        []string{"--version"},
+		MinCLIVersion:           "1.2.7",
+		RequiresWorkingDir:      true,
+		RequiresOwnerSessionID:  true,
+		UsesPersistentSession:   true,
+		SupportsLiveInput:       true,
+		SupportsInterrupt:       true,
+		SupportsTerminalStream:  false,
+		SupportsStatusLine:      false,
+		SupportsFinalExtraction: true,
+		SupportsNativeResume:    true,
+		UsesMCPBridge:           true,
+		RequiresMCPBridgeConfig: true,
+		SupportsBridgeOnlyTools: false,
+		ToolRestrictionGaps: []string{
+			"Print mode auto-denies every tool headless and ignores permissions.allow: the only tool switch is --dangerously-skip-permissions, which approves native tools alongside the bridge.",
+			"MCP servers mount into global user config only (agy mcp add); no per-run or per-project scope, so parallel runs cannot hold different mounts.",
+		},
+		UsesNativeSystemPrompt:      false,
+		LaunchesViaLoginShell:       false,
+		ProcessScopedCleanup:        true,
+		HandlesTmuxSessionLoss:      false,
+		StructuredFallback:          false,
+		ImageInputInteractive:       false,
+		SurfacesTokenUsage:          true,
+		TokenUsageSource:            "exec-json",
+		InteractiveTokenUsageSource: "transcript-file",
+		AdapterReadsTranscript:      true,
+		TranscriptPathTemplate:      "~/.gemini/antigravity-cli/conversations/<conversation-id>.db",
+		SupportsStructuredStreaming: false,
+		RequiresWorkspaceTrust:      true,
+		// Key mode is real (AUTH_MODE_GEMINI_API_KEY, changelog 1.1.13) but
+		// needs BOTH the env key and modelProvider:"gemini" in settings.json;
+		// without the provider switch the OAuth login wins and the key is
+		// ignored. GOOGLE_API_KEY takes precedence when both are set.
+		APIKeyEnvVars:      []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+		SupportsDurableAck: false,
 	},
 }
 

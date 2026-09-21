@@ -8,6 +8,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	anthropicadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/anthropic"
 	azureadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/azure"
 	bedrockadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/bedrock"
@@ -1373,6 +1374,59 @@ func derefTrim(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+func initializeAgyCLI(config Config) (llmtypes.Model, error) {
+	llmMetadata := LLMMetadata{
+		ModelVersion: config.ModelID,
+		MaxTokens:    0,
+		TopP:         config.Temperature,
+		User:         "agy_cli_user",
+		CustomFields: map[string]string{
+			"provider":  "agy-cli",
+			"operation": OperationLLMInitialization,
+		},
+	}
+
+	emitLLMInitializationStart(config.EventEmitter, string(config.Provider), config.ModelID, config.Temperature, config.TraceID, llmMetadata)
+
+	modelID := config.ModelID
+	if modelID == "" {
+		modelID = DefaultAgyCLIModel
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = &noopLoggerImpl{}
+	}
+	logger.Infof("Initializing Agy adapter - model_id: %s", modelID)
+
+	// Auth resolves inside the CLI: stored Google login by default, or the
+	// GEMINI_API_KEY env when settings.json flips modelProvider to "gemini"
+	// (key WITHOUT the flip is ignored — that is what the earlier "ignores
+	// the key" probe actually proved). Config-supplied keys are neither read
+	// nor exported; env is the only key path.
+	if config.APIKeys != nil && config.APIKeys.AgyCLI != nil && strings.TrimSpace(*config.APIKeys.AgyCLI) != "" {
+		logger.Infof("Agy: explicit API key not exported (key mode needs GEMINI_API_KEY env + modelProvider flip)")
+	}
+	logger.Infof("Agy: auth resolves in-CLI (stored `agy` Google login, or GEMINI_API_KEY when modelProvider is gemini)")
+
+	llm := agycli.NewAgyCLIAdapter("", modelID, logger)
+
+	successMetadata := LLMMetadata{
+		ModelVersion: modelID,
+		User:         "agy_cli_user",
+		CustomFields: map[string]string{
+			"provider":     "agy-cli",
+			"status":       StatusLLMInitialized,
+			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
+		},
+	}
+
+	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
+
+	logger.Infof("Initialized Agy adapter (stub) - model_id: %s", modelID)
+	return llm, nil
 }
 
 // GetDefaultModel returns the default model for each provider from environment variables

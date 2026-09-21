@@ -102,6 +102,17 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Low:     codingAgentReasoningRef(providerID, museModel, "medium"),
 			Pulse:   codingAgentReasoningRef(providerID, museModel, "max"),
 		}, true
+	case ProviderAgyCLI:
+		// Effort is baked into agy's model slugs (high/medium/low); Builder
+		// and Pulse run the flagship, matching `agy models` output.
+		const agyModel = "gemini-3.8-flash"
+		return &CodingAgentDefaultTierModels{
+			Builder: codingAgentReasoningRef(providerID, agyModel+"-high", "high"),
+			High:    codingAgentReasoningRef(providerID, agyModel+"-high", "high"),
+			Medium:  codingAgentReasoningRef(providerID, agyModel+"-medium", "medium"),
+			Low:     codingAgentReasoningRef(providerID, agyModel+"-low", "low"),
+			Pulse:   codingAgentReasoningRef(providerID, agyModel+"-high", "high"),
+		}, true
 	}
 
 	return nil, false

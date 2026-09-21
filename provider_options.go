@@ -2,6 +2,7 @@ package llmproviders
 
 import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	agycli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	codexcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	cursorcli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
@@ -389,6 +390,40 @@ func WithMusePersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 // WithMuseWorkingDir pins the tmux session working directory.
 func WithMuseWorkingDir(dir string) llmtypes.CallOption {
 	return musecli.WithWorkingDir(dir)
+}
+
+// --- Agy CLI Wrapper Functions ---
+
+// WithAgyResumeSessionID resumes an agy native conversation created by an
+// earlier turn (surfaced as conversation_id).
+func WithAgyResumeSessionID(sessionID string) llmtypes.CallOption {
+	return agycli.WithResumeSessionID(sessionID)
+}
+
+// WithAgyInteractiveSessionID associates the tmux session with an owner
+// session id for live follow-up input.
+func WithAgyInteractiveSessionID(sessionID string) llmtypes.CallOption {
+	return agycli.WithInteractiveSessionID(sessionID)
+}
+
+// WithAgyPersistentInteractiveSession keeps the tmux session alive after
+// turn completion.
+func WithAgyPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
+	return agycli.WithPersistentInteractiveSession(enabled)
+}
+
+// WithAgyWorkingDir pins the tmux session working directory.
+func WithAgyWorkingDir(dir string) llmtypes.CallOption {
+	return agycli.WithWorkingDir(dir)
+}
+
+// WithAgyMCPConfig mounts the document's stdio mcpServers for one turn via
+// `agy mcp add` (global user config: agy offers no scoped mount) and removes
+// them afterwards. A mounted turn runs with --dangerously-skip-permissions —
+// natives approved alongside the bridge, per the contract gaps — and mounted
+// turns serialize process-wide so parallel bridges cannot cross-expose.
+func WithAgyMCPConfig(configJSON string) llmtypes.CallOption {
+	return agycli.WithMCPConfig(configJSON)
 }
 
 // WithMuseMCPConfig mounts the document's mcpServers in a per-launch private

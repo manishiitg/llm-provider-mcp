@@ -8,6 +8,7 @@ var validTokenUsageSources = map[string]struct{}{
 	"stream-json":     {}, // exact, parsed from the CLI's structured output
 	"transcript-file": {}, // exact, parsed from a CLI-written transcript file
 	"estimated":       {}, // approximate; adapter heuristically guesses
+	"exec-json":       {}, // exact, parsed from the CLI's single-shot JSON result envelope
 }
 
 // IsValidTokenUsageSource reports whether s is one of the accepted
