@@ -41,8 +41,10 @@ func TestClaudeInteractiveStreamTmuxScreenFlag(t *testing.T) {
 func TestClaudePromptPasteChipSettlesWhileActiveTurnRepaints(t *testing.T) {
 	fakeBin := t.TempDir()
 	tmuxPath := filepath.Join(fakeBin, "tmux")
+	captureCountPath := filepath.Join(fakeBin, "capture-count")
 	script := `#!/bin/sh
 if [ "$1" = "capture-pane" ]; then
+  printf 'capture\n' >> "$TMUX_TEST_CAPTURE_COUNT"
   printf '%s\n' '✳ Billowing… (45s · thinking with high effort)'
   printf '%s\n' '❯ [Pasted text #1 +3 lines]'
   printf '%s\n' '  paste again to expand'
@@ -54,8 +56,8 @@ exit 1
 		t.Fatalf("write fake tmux: %v", err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_TEST_CAPTURE_COUNT", captureCountPath)
 
-	started := time.Now()
 	implicitlySubmitted, err := waitForPromptPasteWithTimeout(
 		context.Background(),
 		"active-multiline-follow-up",
@@ -68,8 +70,12 @@ exit 1
 	if implicitlySubmitted {
 		t.Fatal("visible paste chip was mistaken for an already-submitted prompt")
 	}
-	if elapsed := time.Since(started); elapsed >= promptPasteVisibleStableWindow {
-		t.Fatalf("visible paste chip waited for the repainting pane to stabilize: %v", elapsed)
+	captures, err := os.ReadFile(captureCountPath)
+	if err != nil {
+		t.Fatalf("read capture count: %v", err)
+	}
+	if got := strings.Count(string(captures), "capture\n"); got != 1 {
+		t.Fatalf("visible paste chip required %d pane captures, want immediate return after 1", got)
 	}
 }
 
@@ -2483,35 +2489,24 @@ func TestClaudeRetainedInputRefreshInvalidatesPriorIdleExpiry(t *testing.T) {
 		session.ownerSessionID: session,
 	})
 	t.Cleanup(func() {
-		stopClaudePersistentIdleTimer(session)
+		session.idleLease.Stop()
 		claudeInteractivePersistentRegistry.Replace(previous)
 	})
 
-	if !armClaudePersistentIdleTimer(session, nil) {
+	if !armClaudePersistentIdleLease(session, nil) {
 		t.Fatal("initial idle timer was not armed")
 	}
-	session.idleMu.Lock()
-	firstGeneration := session.idleGeneration
-	firstUsed := session.lastUsed
-	session.idleMu.Unlock()
+	firstUsed := session.idleLease.LastActivity()
 
 	time.Sleep(time.Millisecond)
-	if !armClaudePersistentIdleTimer(session, nil) {
+	if !armClaudePersistentIdleLease(session, nil) {
 		t.Fatal("retained input did not refresh the idle timer")
 	}
-	// Simulate the old AfterFunc callback already being queued when input
-	// refreshed the session. It must not remove or close the active session.
-	expireClaudePersistentIdleTimer(session, firstGeneration, nil)
 
 	if current, ok := claudeInteractivePersistentRegistry.Get(session.ownerSessionID); !ok || current != session {
-		t.Fatal("stale idle callback removed a session refreshed by retained input")
+		t.Fatal("refresh removed the retained session")
 	}
-	session.idleMu.Lock()
-	defer session.idleMu.Unlock()
-	if session.idleExpired {
-		t.Fatal("stale idle callback marked the refreshed session expired")
-	}
-	if !session.lastUsed.After(firstUsed) {
-		t.Fatalf("lastUsed was not refreshed: first=%s current=%s", firstUsed, session.lastUsed)
+	if current := session.idleLease.LastActivity(); !current.After(firstUsed) {
+		t.Fatalf("lease activity was not refreshed: first=%s current=%s", firstUsed, current)
 	}
 }

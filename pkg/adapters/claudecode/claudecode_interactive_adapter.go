@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
@@ -138,13 +139,9 @@ type claudeInteractivePersistentSession struct {
 	scopeFingerprint string
 	workingDir       string
 	tempFiles        []string
-	idleTimer        *time.Timer
-	idleMu           sync.Mutex
-	idleGeneration   uint64
-	idleExpired      bool
+	idleLease        sessionlease.Lease
 	initErr          error
 	createdAt        time.Time
-	lastUsed         time.Time
 	mu               sync.Mutex
 	retainedProgress claudeRetainedProgress
 	// pendingDurable scopes durability proofs per send; guarded by
@@ -3922,7 +3919,6 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			workingDir:       strings.TrimSpace(workingDir),
 			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
 			createdAt:        now,
-			lastUsed:         now,
 		}
 		session.mu.Lock()
 		return session
@@ -3955,7 +3951,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			session.mu.Unlock()
 			return nil, false, err
 		}
-		pauseClaudePersistentIdleTimer(session)
+		session.idleLease.Pause()
 		return session, false, nil
 	}
 
@@ -3984,79 +3980,19 @@ func releaseClaudePersistentInteractiveSession(session *claudeInteractivePersist
 	if session == nil {
 		return
 	}
-	armClaudePersistentIdleTimer(session, logger)
+	armClaudePersistentIdleLease(session, logger)
 	session.mu.Unlock()
 }
 
-// armClaudePersistentIdleTimer records real owner activity and replaces the
-// prior expiry callback. Retained turns are delivered directly to tmux and do
-// not reacquire session.mu, so their input path must call this too; otherwise
-// an actively used chat is killed at the original three-hour idle deadline.
-func armClaudePersistentIdleTimer(session *claudeInteractivePersistentSession, logger interfaces.Logger) bool {
+// armClaudePersistentIdleLease records both ordinary-turn release and retained
+// direct-input activity through the same shared lease implementation.
+func armClaudePersistentIdleLease(session *claudeInteractivePersistentSession, logger interfaces.Logger) bool {
 	if session == nil {
 		return false
 	}
-	session.idleMu.Lock()
-	defer session.idleMu.Unlock()
-	if session.idleExpired {
-		return false
-	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-	}
-	session.lastUsed = time.Now()
-	session.idleGeneration++
-	generation := session.idleGeneration
-	timeout := persistentInteractiveIdleTimeout()
-	session.idleTimer = time.AfterFunc(timeout, func() {
-		expireClaudePersistentIdleTimer(session, generation, logger)
+	return session.idleLease.Arm(persistentInteractiveIdleTimeout(), func() {
+		closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
 	})
-	return true
-}
-
-func pauseClaudePersistentIdleTimer(session *claudeInteractivePersistentSession) {
-	if session == nil {
-		return
-	}
-	session.idleMu.Lock()
-	defer session.idleMu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
-	// Any callback already queued belongs to the previous generation and must
-	// not close a session that has just become active again.
-	session.idleGeneration++
-}
-
-func expireClaudePersistentIdleTimer(session *claudeInteractivePersistentSession, generation uint64, logger interfaces.Logger) {
-	if session == nil {
-		return
-	}
-	session.idleMu.Lock()
-	if session.idleExpired || generation != session.idleGeneration {
-		session.idleMu.Unlock()
-		return
-	}
-	session.idleExpired = true
-	session.idleGeneration++
-	session.idleTimer = nil
-	session.idleMu.Unlock()
-	closeClaudePersistentInteractiveSession(session.ownerSessionID, "idle timeout", logger)
-}
-
-func stopClaudePersistentIdleTimer(session *claudeInteractivePersistentSession) {
-	if session == nil {
-		return
-	}
-	session.idleMu.Lock()
-	defer session.idleMu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
-	session.idleExpired = true
-	session.idleGeneration++
 }
 
 // CloseClaudeCodeInteractiveSessionForOwner closes the persistent
@@ -4101,7 +4037,7 @@ func closeClaudePersistentInteractiveSession(ownerSessionID, reason string, logg
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	stopClaudePersistentIdleTimer(session)
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Closing persistent Claude Code tmux session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
@@ -4121,7 +4057,7 @@ func markClaudePersistentInteractiveSessionFailedLocked(session *claudeInteracti
 	if err != nil {
 		session.initErr = err
 	}
-	stopClaudePersistentIdleTimer(session)
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Discarding persistent Claude Code tmux session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
@@ -4158,7 +4094,7 @@ func stopClaudeIdleTimerIfAvailable(session *claudeInteractivePersistentSession)
 		return
 	}
 	defer session.mu.Unlock()
-	stopClaudePersistentIdleTimer(session)
+	session.idleLease.Stop()
 }
 
 // SendClaudeCodeInput routes live input into a registered Claude Code tmux session.
@@ -4168,7 +4104,7 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 		return fmt.Errorf("Claude Code owner session ID is required")
 	}
 	if session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID); ok && session != nil {
-		if !armClaudePersistentIdleTimer(session, nil) {
+		if !armClaudePersistentIdleLease(session, nil) {
 			return fmt.Errorf("Claude Code session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
 		}
 	}

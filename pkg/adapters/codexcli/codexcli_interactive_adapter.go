@@ -24,6 +24,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
@@ -81,10 +82,9 @@ type codexInteractiveSession struct {
 	rolloutPath            string
 	threadID               string
 	cliSecurityFingerprint string
-	idleTimer              *time.Timer
+	idleLease              sessionlease.Lease
 	initErr                error
 	createdAt              time.Time
-	lastUsed               time.Time
 	mu                     sync.Mutex
 	// rolloutMu protects only the lightweight transcript identity. A Codex
 	// turn holds mu for its full lifetime, so using mu while enumerating other
@@ -563,7 +563,6 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			accountRoot:            llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"],
 			cliSecurityFingerprint: securityFingerprint,
 			createdAt:              now,
-			lastUsed:               now,
 			// A resumed conversation already has its Codex thread; pinning it
 			// now (instead of after the first turn binds a rollout) gives the
 			// first submission after a relaunch an authoritative rollout to
@@ -598,11 +597,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			session.mu.Unlock()
 			return nil, false, err
 		}
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-			session.idleTimer = nil
-		}
-		session.lastUsed = time.Now()
+		session.idleLease.Pause()
 		c.logger.Debugf("codex interactive startup timing owner=%s stage=reuse_lock tmux=%s elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, time.Since(sessionLockStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 		return session, false, nil
 	}
@@ -883,8 +878,7 @@ func releaseCodexInteractiveSession(session *codexInteractiveSession, logger int
 	if session == nil {
 		return
 	}
-	session.lastUsed = time.Now()
-	session.idleTimer = time.AfterFunc(codexInteractiveIdleTimeout(), func() {
+	session.idleLease.Arm(codexInteractiveIdleTimeout(), func() {
 		closeCodexPersistentSession(session.ownerSessionID, "idle timeout", logger)
 	})
 	session.mu.Unlock()
@@ -897,7 +891,6 @@ func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, log
 	// Keep the real tmux pane alive for the shared bounded retention window so
 	// the UI terminal remains inspectable/debuggable while it is visible.
 	retention := llmtypes.TmuxKillDelay
-	session.lastUsed = time.Now()
 	if retention <= 0 {
 		closeCodexSessionLocked(session, "bounded turn complete", logger)
 		return
@@ -905,7 +898,7 @@ func releaseCodexBoundedInteractiveSession(session *codexInteractiveSession, log
 	if logger != nil {
 		logger.Debugf("Retaining completed Codex interactive session %s for owner %s for %s (then kill)", session.tmuxSessionName, session.ownerSessionID, retention)
 	}
-	session.idleTimer = time.AfterFunc(retention, func() {
+	session.idleLease.Arm(retention, func() {
 		closeCodexPersistentSession(session.ownerSessionID, "bounded retention elapsed", logger)
 	})
 	session.mu.Unlock()
@@ -947,10 +940,7 @@ func closeCodexPersistentSession(ownerSessionID, reason string, logger interface
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Closing Codex interactive session %s for owner %s: %s", session.tmuxSessionName, ownerSessionID, reason)
 	}
@@ -961,10 +951,7 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 	if session == nil {
 		return
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Closing Codex interactive session %s for owner %s: %s", session.tmuxSessionName, session.ownerSessionID, reason)
 	}
@@ -1085,10 +1072,7 @@ func markCodexInteractiveSessionFailedLocked(session *codexInteractiveSession, e
 	if err != nil {
 		session.initErr = err
 	}
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 	if logger != nil {
 		logger.Debugf("Discarding Codex interactive session %s for owner %s: %v", session.tmuxSessionName, session.ownerSessionID, err)
 	}
@@ -1152,10 +1136,7 @@ func stopCodexIdleTimerIfAvailable(session *codexInteractiveSession) {
 		return
 	}
 	defer session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-		session.idleTimer = nil
-	}
+	session.idleLease.Stop()
 }
 
 func registerCodexInteractiveSession(ownerSessionID, tmuxSessionName string) {
@@ -1186,6 +1167,13 @@ func InteractiveSessionRegistered(ownerSessionID string) bool {
 }
 
 func SendCodexInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
+	if session, ok := codexPersistentRegistry.Get(ownerSessionID); ok && session != nil {
+		if !session.idleLease.Arm(codexInteractiveIdleTimeout(), func() {
+			closeCodexPersistentSession(session.ownerSessionID, "idle timeout", nil)
+		}) {
+			return fmt.Errorf("Codex session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
+		}
+	}
 	sessionName, ok := activeCodexInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)

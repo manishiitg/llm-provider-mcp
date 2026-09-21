@@ -25,6 +25,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
@@ -99,9 +100,8 @@ type piInteractiveSession struct {
 	extensionPath   string
 	markerPath      string
 	persistent      bool
-	idleTimer       *time.Timer
+	idleLease       sessionlease.Lease
 	createdAt       time.Time
-	lastUsed        time.Time
 	modelID         string
 	provider        string
 	cleanupFiles    func()
@@ -449,13 +449,9 @@ func (p *PiCLIAdapter) acquirePiInteractiveSession(ctx context.Context, ownerSes
 				existing.mcpExtension == mcpExtension &&
 				(requestedNativeSessionID == "" || existing.nativeSessionID == requestedNativeSessionID)
 			if sameLaunch && piTmuxSessionExists(ctx, existing.tmuxSessionName) {
-				if existing.idleTimer != nil {
-					existing.idleTimer.Stop()
-					existing.idleTimer = nil
-				}
+				existing.idleLease.Pause()
 				piInteractiveRegistry.Unlock()
 				existing.mu.Lock()
-				existing.lastUsed = time.Now()
 				return existing, false, nil
 			}
 			delete(piInteractiveRegistry.sessions, ownerSessionID)
@@ -534,7 +530,6 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		markerPath:       markerPath,
 		persistent:       persistent,
 		createdAt:        time.Now(),
-		lastUsed:         time.Now(),
 		modelID:          provider + "/" + model,
 		provider:         provider,
 		mcpFingerprint:   piMCPConfigFingerprint(mcpConfig),
@@ -2403,26 +2398,26 @@ func piAssistantUpdateChunkMetadata(session *piInteractiveSession) map[string]in
 }
 
 func releasePiInteractiveSession(session *piInteractiveSession) {
-	session.lastUsed = time.Now()
+	armPiInteractiveLease(session, piInteractiveIdleTimeout())
 	session.mu.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-	}
-	session.idleTimer = time.AfterFunc(piInteractiveIdleTimeout(), func() {
-		piInteractiveRegistry.Lock()
-		if current := piInteractiveRegistry.sessions[session.ownerSessionID]; current == session {
-			delete(piInteractiveRegistry.sessions, session.ownerSessionID)
-		}
-		piInteractiveRegistry.Unlock()
-		cleanupPiInteractiveSession(session)
-	})
 }
 
 func releasePiBoundedInteractiveSession(session *piInteractiveSession) {
-	session.mu.Unlock()
-	time.AfterFunc(piBoundedCleanupDelay(), func() {
+	delay := piBoundedCleanupDelay()
+	if delay <= 0 {
+		session.mu.Unlock()
 		cleanupPiInteractiveSession(session)
-	})
+		return
+	}
+	armPiInteractiveLease(session, delay)
+	session.mu.Unlock()
+}
+
+func armPiInteractiveLease(session *piInteractiveSession, timeout time.Duration) bool {
+	if session == nil || timeout <= 0 {
+		return false
+	}
+	return session.idleLease.Arm(timeout, func() { cleanupPiInteractiveSession(session) })
 }
 
 // piBoundedCleanupDelay is the process-lifecycle deadline for a bounded Pi
@@ -2441,9 +2436,7 @@ func cleanupPiInteractiveSession(session *piInteractiveSession) {
 		delete(piInteractiveRegistry.sessions, session.ownerSessionID)
 	}
 	piInteractiveRegistry.Unlock()
-	if session.idleTimer != nil {
-		session.idleTimer.Stop()
-	}
+	session.idleLease.Stop()
 	tmuxinput.RemoveReadiness(session.tmuxSessionName)
 	_ = tmuxexec.RunCommand(context.Background(), nil, piRedactArgs, "tmux", "kill-session", "-t", session.tmuxSessionName)
 	if session.tempDir != "" {
@@ -2473,9 +2466,7 @@ func CleanupPiCLIInteractiveSessions(ctx context.Context) error {
 	var errs []error
 	for _, session := range sessions {
 		tmuxinput.RemoveReadiness(session.tmuxSessionName)
-		if session.idleTimer != nil {
-			session.idleTimer.Stop()
-		}
+		session.idleLease.Stop()
 		if err := tmuxexec.RunCommand(ctx, nil, piRedactArgs, "tmux", "kill-session", "-t", session.tmuxSessionName); err != nil && !isPiTmuxSessionLostError(err) {
 			errs = append(errs, err)
 		}
@@ -2551,6 +2542,13 @@ func SendPiInteractiveInput(ctx context.Context, ownerSessionID, message string)
 	if !ok {
 		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
 	}
+	retention := piInteractiveIdleTimeout()
+	if !session.persistent {
+		retention = piBoundedCleanupDelay()
+	}
+	if !armPiInteractiveLease(session, retention) {
+		return fmt.Errorf("Pi session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
+	}
 	return sendPiInputToTmux(ctx, ownerSessionID, session.tmuxSessionName, session.markerPath, message)
 }
 
@@ -2561,6 +2559,13 @@ func SendPiRetainedInput(ctx context.Context, ownerSessionID, message string) er
 	session, ok := activePiInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Pi interactive session registered for owner session %s", ownerSessionID)
+	}
+	retention := piInteractiveIdleTimeout()
+	if !session.persistent {
+		retention = piBoundedCleanupDelay()
+	}
+	if !armPiInteractiveLease(session, retention) {
+		return fmt.Errorf("Pi session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
 	}
 	return sendPiRetainedInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
 }
