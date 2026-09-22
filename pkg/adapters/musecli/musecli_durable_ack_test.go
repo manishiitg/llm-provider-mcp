@@ -52,10 +52,29 @@ func TestMuseUserAckRow(t *testing.T) {
 		}
 	})
 
-	t.Run("queue event above baseline confirms", func(t *testing.T) {
+	t.Run("queue event alone does not confirm accepted intent", func(t *testing.T) {
 		path := writeMuseDurableAckFixture(t, museQueuedRow(103, at, msg))
-		if _, _, ok := museUserAckRow(path, msg, 102); !ok {
-			t.Fatal("expected the inbox_item_queued row to confirm the send")
+		if _, _, ok := museUserAckRow(path, msg, 102); ok {
+			t.Fatal("queue text alone must not confirm an accepted intent")
+		}
+	})
+
+	t.Run("assistant echo does not confirm", func(t *testing.T) {
+		path := writeMuseDurableAckFixture(t,
+			fmt.Sprintf(`{"sequence":103,"recorded_at":%d,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":%q}}}`, at, msg),
+		)
+		if _, _, ok := museUserAckRow(path, msg, 102); ok {
+			t.Fatal("assistant echo must not confirm user delivery")
+		}
+	})
+
+	t.Run("queue plus intake counts once for repeated sends", func(t *testing.T) {
+		path := writeMuseDurableAckFixture(t,
+			museIntakeRow(103, at, msg),
+			museQueuedRow(104, at+1, msg),
+		)
+		if _, _, ok := museUserAckRowOccurrence(path, msg, 102, 2); ok {
+			t.Fatal("one send's queue and intake rows must not confirm a second send")
 		}
 	})
 

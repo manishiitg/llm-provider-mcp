@@ -24,6 +24,46 @@ func claudeUserRow(ts time.Time, content string) string {
 	return fmt.Sprintf(`{"type":"user","timestamp":%q,"sessionId":"sess-1","message":{"role":"user","content":%s}}`, ts.Format(time.RFC3339Nano), quoteJSON(content))
 }
 
+func TestClaudeInitialPaneErrorDefersToTranscript(t *testing.T) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+	nativeID := newClaudeNativeSessionID()
+	paths := claudeTranscriptWorkingDirCandidates(home, workdir, nativeID)
+	if len(paths) == 0 {
+		t.Fatal("missing transcript candidate")
+	}
+	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	message := "initial durable Claude prompt"
+	if err := os.WriteFile(paths[0], []byte(claudeUserRow(time.Now().UTC(), message)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := claudeConfirmInitialSubmitAfterPaneError(context.Background(), nativeID, workdir, home, message, time.Now().UTC().Add(-time.Second), 0, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable transcript must override pane mismatch: %v", err)
+	}
+}
+
+func TestClaudeLivePaneErrorDefersToTranscript(t *testing.T) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+	nativeID := newClaudeNativeSessionID()
+	path := claudeTranscriptWorkingDirCandidates(home, workdir, nativeID)[0]
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	message := "live durable Claude prompt"
+	if err := os.WriteFile(path, []byte(claudeUserRow(time.Now().UTC(), message)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &claudeInteractivePersistentSession{accountHome: home, workingDir: workdir, nativeSessionID: nativeID}
+	previous := claudeInteractivePersistentRegistry.Replace(map[string]*claudeInteractivePersistentSession{t.Name(): session})
+	t.Cleanup(func() { claudeInteractivePersistentRegistry.Replace(previous) })
+	if err := claudeConfirmLiveSubmitAfterPaneError(context.Background(), t.Name(), message, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable transcript must override live pane mismatch: %v", err)
+	}
+}
+
 func claudeEnqueueRow(ts time.Time, content string) string {
 	return fmt.Sprintf(`{"type":"queue-operation","operation":"enqueue","timestamp":%q,"sessionId":"sess-1","content":%s}`, ts.Format(time.RFC3339Nano), quoteJSON(content))
 }

@@ -29,6 +29,15 @@ func piUserMarker(ts int64, text string) string {
 	return fmt.Sprintf(`{"type":"message_end","ts":%d,"role":"user","text":"%s"}`, ts, escaped)
 }
 
+func TestPiInitialPaneErrorDefersToMarker(t *testing.T) {
+	since := time.Now().Add(-time.Second)
+	message := "initial durable Pi prompt"
+	path := writePiDurableAckFixture(t, piUserMarker(time.Now().UnixMilli(), message))
+	if err := piConfirmInitialSubmitAfterPaneError(context.Background(), path, message, since, 0, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable marker must override pane mismatch: %v", err)
+	}
+}
+
 func TestPiUserAckMarker(t *testing.T) {
 	msg := "New instruction: end with PIFLUSH_4D."
 	markers := []piMarker{

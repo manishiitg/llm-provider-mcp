@@ -69,6 +69,26 @@ func writeCursorDurableStore(t *testing.T, userQueries ...string) (string, []str
 	return dbPath, refs
 }
 
+func TestCursorInitialPaneErrorDefersToStore(t *testing.T) {
+	message := "initial durable Cursor prompt"
+	path, _ := writeCursorDurableStore(t, message)
+	session := &cursorInteractiveSession{retainedStoreDB: path}
+	if err := cursorConfirmInitialSubmitAfterPaneError(context.Background(), session, message, time.Now().Add(-time.Second), map[string]struct{}{}, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable store row must override pane mismatch: %v", err)
+	}
+}
+
+func TestCursorLivePaneErrorDefersToStore(t *testing.T) {
+	message := "live durable Cursor prompt"
+	path, _ := writeCursorDurableStore(t, message)
+	session := &cursorInteractiveSession{retainedStoreDB: path}
+	previous := cursorPersistentRegistry.Replace(map[string]*cursorInteractiveSession{t.Name(): session})
+	t.Cleanup(func() { cursorPersistentRegistry.Replace(previous) })
+	if err := cursorConfirmLiveSubmitAfterPaneError(context.Background(), t.Name(), message, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable store row must override live pane mismatch: %v", err)
+	}
+}
+
 func TestCursorDurableAckBudget(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		t.Setenv("CURSOR_DURABLE_ACK_SECONDS", "")

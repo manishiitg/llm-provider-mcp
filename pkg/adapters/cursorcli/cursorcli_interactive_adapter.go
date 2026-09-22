@@ -345,7 +345,10 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
 	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
-	if err := sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt); err != nil {
+	initialStore := resolveCursorStoreNoMu(session)
+	initialRefs := cursorSnapshotStoreRefs(initialStore)
+	if err := cursorConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, initialRefs,
+		sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt)); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
 		failedSession := session
@@ -1291,7 +1294,7 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	stashCursorDurableReceiptForSend(ownerSessionID, message, since)
 	session, retained := cursorPersistentRegistry.Get(ownerSessionID)
 	if !retained || session == nil {
-		return sendCursorLiveInputToTmux(ctx, sessionName, message)
+		return cursorConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendCursorLiveInputToTmux(ctx, sessionName, message))
 	}
 	retention := cursorInteractiveIdleTimeout()
 	if !session.persistent {
@@ -1310,7 +1313,7 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	session.retainedInput = boundary
 	primeCursorRetainedProgress(ownerSessionID, boundary)
 	session.retainedMu.Unlock()
-	if err := sendCursorLiveInputToTmux(ctx, sessionName, message); err != nil {
+	if err := cursorConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendCursorLiveInputToTmux(ctx, sessionName, message)); err != nil {
 		session.retainedMu.Lock()
 		if session.retainedInput == boundary {
 			session.retainedInput = previous
@@ -1319,6 +1322,20 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 		return err
 	}
 	return nil
+}
+
+func cursorConfirmLiveSubmitAfterPaneError(ctx context.Context, ownerSessionID, message string, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := AwaitCursorInputDurable(ctx, ownerSessionID, message, 0)
+	if err == nil && ack.Outcome == CursorDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == CursorDurableAckUnflushed {
+		return &CursorInputUnflushedError{OwnerSessionID: ownerSessionID, Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; Cursor delivery unconfirmed by store: %w", submitErr, err)
 }
 
 func cursorInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {
@@ -1585,6 +1602,22 @@ func sendCursorLiveInputToTmux(ctx context.Context, sessionName, message string)
 
 func sendCursorInitialPromptToTmux(ctx context.Context, sessionName, message string) error {
 	return sendCursorInputToTmuxWithReadiness(ctx, sessionName, message, true, false)
+}
+
+func cursorConfirmInitialSubmitAfterPaneError(ctx context.Context, session *cursorInteractiveSession, message string, since time.Time, baseline map[string]struct{}, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := pollCursorDurableAck(ctx, message, since, baseline, cursorDurableAckBudget(), cursorDurableAckPoll{
+		resolve: func() string { return resolveCursorStoreNoMu(session) },
+	})
+	if err == nil && ack.Outcome == CursorDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == CursorDurableAckUnflushed {
+		return &CursorInputUnflushedError{OwnerSessionID: session.ownerSessionID, Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; initial Cursor delivery unconfirmed by store: %w", submitErr, err)
 }
 
 func sendCursorInputToTmuxWithReadiness(ctx context.Context, sessionName, message string, initialPrompt, liveInput bool) error {

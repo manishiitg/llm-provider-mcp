@@ -495,7 +495,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 
 	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
 	paneBaseline, _ := captureTmuxPane(callCtx, sessionName)
-	if err := sendPromptToTmux(callCtx, sessionName, prompt); err != nil {
+	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
+	var transcriptOffset int64
+	if info, statErr := os.Stat(transcriptPath); statErr == nil {
+		transcriptOffset = info.Size()
+	}
+	if err := claudeConfirmInitialSubmitAfterPaneError(ctx, nativeSessionID, workingDir, llmtypes.ProviderAccountEnvironment(opts)["HOME"], prompt, turnStart, transcriptOffset,
+		sendPromptToTmux(callCtx, sessionName, prompt)); err != nil {
 		discardPersistentSession(err)
 		return nil, err
 	}
@@ -1900,6 +1906,25 @@ func sendPromptToTmux(ctx context.Context, sessionName, prompt string) error {
 		return sendPromptToTmuxUnserialized(ctx, sessionName, prompt)
 	})
 	return err
+}
+
+func claudeConfirmInitialSubmitAfterPaneError(ctx context.Context, nativeSessionID, workingDir, accountHome, prompt string, since time.Time, minOffset int64, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := pollClaudeDurableAck(ctx, prompt, since, minOffset, claudeDurableAckBudget(), claudeDurableAckPoll{
+		resolve: func() string {
+			path, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, accountHome)
+			return path
+		},
+	})
+	if err == nil && ack.Outcome == ClaudeDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == ClaudeDurableAckUnflushed {
+		return &ClaudeInputUnflushedError{Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; initial Claude delivery unconfirmed by transcript: %w", submitErr, err)
 }
 
 func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt string) error {
@@ -4115,7 +4140,21 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	}
 	since := time.Now()
 	stashClaudeDurableReceiptForSend(ownerSessionID, message, since)
-	return sendInputToActiveTmux(ctx, sessionName, message)
+	return claudeConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendInputToActiveTmux(ctx, sessionName, message))
+}
+
+func claudeConfirmLiveSubmitAfterPaneError(ctx context.Context, ownerSessionID, message string, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := AwaitClaudeInputDurable(ctx, ownerSessionID, message, 0)
+	if err == nil && ack.Outcome == ClaudeDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == ClaudeDurableAckUnflushed {
+		return &ClaudeInputUnflushedError{OwnerSessionID: ownerSessionID, Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; Claude delivery unconfirmed by transcript: %w", submitErr, err)
 }
 
 func cleanupClaudeInteractiveSessionAfter(sessionName string, retention time.Duration) func() {

@@ -210,31 +210,16 @@ func takeMuseDurableReceipt(owner, message string) (musePendingDurableAck, bool)
 	return musePendingDurableAck{}, false
 }
 
-// museAckSnippet is the match needle: the first line, bounded, in the
-// same JSON-escaped form the transcript discovery uses so pane text
-// and log bytes compare apples to apples.
-func museAckSnippet(message string) string {
-	snippet := strings.TrimSpace(strings.Split(strings.TrimSpace(message), "\n")[0])
-	if len([]rune(snippet)) > 80 {
-		snippet = string([]rune(snippet)[:80])
-	}
-	return jsonEscapeLogSnippet(snippet)
-}
-
-// museUserAckRowOccurrence returns the occurrence-th transcript row above
-// minSeq whose raw bytes contain the send's snippet — or false when
-// fewer rows match. Occurrence values below 1 mean 1. Intake
-// (user_intent.accepted) and the native queue event
-// (inbox_item_queued) both carry the exact text; sequence scoping
-// excludes identical earlier messages, and the per-session log path
-// excludes other sessions' traffic, so no row typing is needed to
-// stay sound.
+// museUserAckRowOccurrence returns the occurrence-th native accepted intent
+// above minSeq with the exact send text. Queue and assistant rows may copy the
+// same text, but neither is a distinct acceptance and must not confirm a
+// second identical send.
 func museUserAckRowOccurrence(logPath, message string, minSeq int64, occurrence int) (rowSeq int64, rowTime time.Time, found bool) {
 	if occurrence < 1 {
 		occurrence = 1
 	}
-	snippet := museAckSnippet(message)
-	if strings.TrimSpace(logPath) == "" || snippet == "" {
+	want := strings.TrimSpace(museTerminalPrompt(message))
+	if strings.TrimSpace(logPath) == "" || want == "" {
 		return 0, time.Time{}, false
 	}
 	f, err := os.Open(logPath)
@@ -242,19 +227,25 @@ func museUserAckRowOccurrence(logPath, message string, minSeq int64, occurrence 
 		return 0, time.Time{}, false
 	}
 	defer f.Close()
-	var env struct {
-		Sequence   int64 `json:"sequence"`
-		RecordedAt int64 `json:"recorded_at"`
-	}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	matched := 0
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, snippet) {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), `"runtime.user_intent.accepted"`) {
 			continue
 		}
-		if json.Unmarshal([]byte(line), &env) != nil || env.Sequence <= minSeq {
+		var env museIntakeRecord
+		if json.Unmarshal(line, &env) != nil || env.Sequence <= minSeq || env.PayloadType != "runtime.user_intent.accepted" {
+			continue
+		}
+		var accepted strings.Builder
+		for _, block := range env.Payload.RefillBlocks {
+			if block.Kind == "text" {
+				accepted.WriteString(block.Text)
+			}
+		}
+		if strings.TrimSpace(accepted.String()) != want {
 			continue
 		}
 		matched++
@@ -269,9 +260,8 @@ func museUserAckRowOccurrence(logPath, message string, minSeq int64, occurrence 
 	return 0, time.Time{}, false
 }
 
-// museUserAckRow returns the first transcript row above minSeq whose
-// raw bytes contain the send's snippet. Intake (user_intent.accepted)
-// and the native queue event (inbox_item_queued) both carry the exact
+// museUserAckRow returns the first accepted intent above minSeq carrying the
+// exact message text.
 // text; sequence scoping excludes identical earlier messages, and the
 // per-session log path excludes other sessions' traffic, so no row
 // typing is needed to stay sound.

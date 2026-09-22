@@ -410,8 +410,8 @@ func museTerminalPrompt(prompt string) string {
 }
 
 // museEnterTookEffect reports whether the pane changed within a short
-// window after Enter was sent -- proof the TUI actually acted on the
-// keystroke rather than swallowing it. Any change counts (cleared input,
+// window after Enter was sent. This is a fast hint, not delivery proof;
+// durable intake makes the authoritative decision. Any change counts (cleared input,
 // a thinking indicator, streamed text, or an already-complete reply); the
 // failure mode this guards is the pane staying byte-for-byte identical to
 // before Enter was sent.

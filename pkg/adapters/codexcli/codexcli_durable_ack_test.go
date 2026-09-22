@@ -34,6 +34,16 @@ func durableAssistantRow(ts time.Time, text string) string {
 		ts.Format(time.RFC3339Nano), text)
 }
 
+func TestCodexInitialPaneErrorDefersToRollout(t *testing.T) {
+	since := time.Now().UTC().Add(-time.Second)
+	message := "initial durable Codex prompt"
+	path := writeDurableAckFixture(t, durableUserRow(time.Now().UTC(), message))
+	session := &codexInteractiveSession{rolloutPath: path}
+	if err := codexConfirmInitialSubmitAfterPaneError(context.Background(), session, message, since, fmt.Errorf("pane mismatch")); err != nil {
+		t.Fatalf("durable user row must override pane mismatch: %v", err)
+	}
+}
+
 func TestCodexRolloutUserMessageSince(t *testing.T) {
 	base := time.Now().UTC().Truncate(time.Second)
 	msg := "Do not use tools. Reply exactly: DURABLE_ACK_1A2B"

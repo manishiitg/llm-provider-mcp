@@ -284,7 +284,8 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 	startOffset, _ := piMarkerFileSize(session.markerPath)
 	p.logInfof("Executing Pi CLI tmux session: %s", session.tmuxSessionName)
 	turnStart := time.Now().Add(-1 * time.Second)
-	if err := sendPiInitialPromptToTmux(ctx, session.tmuxSessionName, session.markerPath, prompt); err != nil {
+	if err := piConfirmInitialSubmitAfterPaneError(ctx, session.markerPath, prompt, turnStart, startOffset,
+		sendPiInitialPromptToTmux(ctx, session.tmuxSessionName, session.markerPath, prompt)); err != nil {
 		releaseSession = false
 		session.mu.Unlock()
 		cleanupPiInteractiveSession(session)
@@ -1254,6 +1255,22 @@ func sendPiRetainedInputToTmux(ctx context.Context, sessionName, markerPath, mes
 
 func sendPiInitialPromptToTmux(ctx context.Context, sessionName, markerPath, message string) error {
 	return sendPiInputToTmuxWithReadiness(ctx, sessionName, markerPath, message, piInputInitialPrompt)
+}
+
+func piConfirmInitialSubmitAfterPaneError(ctx context.Context, markerPath, message string, since time.Time, minOffset int64, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := pollPiDurableAck(ctx, message, since, minOffset, piDurableAckBudget(), piDurableAckPoll{
+		resolve: func() string { return markerPath },
+	})
+	if err == nil && ack.Outcome == PiDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == PiDurableAckUnflushed {
+		return &PiInputUnflushedError{Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; initial Pi delivery unconfirmed by marker: %w", submitErr, err)
 }
 
 type piInputDeliveryMode uint8
@@ -2572,7 +2589,10 @@ func SendPiRetainedInput(ctx context.Context, ownerSessionID, message string) er
 	if !armPiInteractiveLease(session, retention) {
 		return fmt.Errorf("Pi session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
 	}
-	return sendPiRetainedInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message)
+	baseline, _ := piMarkerFileSize(session.markerPath)
+	since := time.Now()
+	return piConfirmInitialSubmitAfterPaneError(ctx, session.markerPath, message, since, baseline,
+		sendPiRetainedInputToTmux(ctx, session.tmuxSessionName, session.markerPath, message))
 }
 
 // GetStatusLine retrieves the latest Pi statusline snapshot for an active

@@ -290,6 +290,9 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		var err error
 		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan, codexInteractiveStreamTmuxScreenEnabled(opts))
 		if err != nil {
+			err = codexConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, err)
+		}
+		if err != nil {
 			inspector.EmitError(err, map[string]interface{}{"phase": "tmux_initial_prompt_start"})
 			markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 			releaseSession = false
@@ -300,7 +303,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			return nil, err
 		}
 		c.logger.Debugf("codex interactive launch prompt accepted owner=%s tmux=%s elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond))
-	} else if err := sendCodexPromptToTmuxConfirmedBy(callCtx, session.tmuxSessionName, prompt, codexTurnStartOracle(session, promptSentAt)); err != nil {
+	} else if err := codexConfirmInitialSubmitAfterPaneError(ctx, session, prompt, promptSentAt,
+		sendCodexPromptToTmuxConfirmedBy(callCtx, session.tmuxSessionName, prompt, codexTurnStartOracle(session, promptSentAt))); err != nil {
 		inspector.EmitError(err, map[string]interface{}{"phase": "tmux_prompt_send"})
 		markCodexInteractiveSessionFailedLocked(session, err, c.logger)
 		releaseSession = false
@@ -1740,6 +1744,24 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 
 func sendCodexPromptToTmuxConfirmedBy(ctx context.Context, sessionName, prompt string, oracle codexSubmissionOracle) error {
 	return sendCodexInputToTmuxWithReadiness(ctx, sessionName, prompt, true, oracle)
+}
+
+// A pane timeout after submission is provisional. Only a new rollout user
+// row can overturn it; the arbiter never sends another key.
+func codexConfirmInitialSubmitAfterPaneError(ctx context.Context, session *codexInteractiveSession, prompt string, since time.Time, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	ack, err := pollCodexDurableAck(ctx, prompt, since, 0, codexDurableAckBudget(), codexDurableAckPoll{
+		resolve: func() string { return resolveCodexRolloutPathNoMu(session, since) },
+	})
+	if err == nil && ack.Outcome == CodexDurableAckConfirmed {
+		return nil
+	}
+	if err == nil && ack.Outcome == CodexDurableAckUnflushed {
+		return &CodexInputUnflushedError{OwnerSessionID: session.ownerSessionID, Latency: ack.Latency}
+	}
+	return fmt.Errorf("%w; initial Codex delivery unconfirmed by rollout: %w", submitErr, err)
 }
 
 func sendCodexInputToTmux(ctx context.Context, ownerSessionID, sessionName, message string) error {

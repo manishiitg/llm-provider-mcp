@@ -1,14 +1,16 @@
 package musecli
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -20,48 +22,22 @@ import (
 // fails loudly rather than silently running uncontained single turns.
 
 // museDiscoverSessionSince finds the TUI session log produced after `since`
-// whose content includes promptSnippet. It walks the dated session tree
+// with a native intake record containing promptSnippet. It walks the dated session tree
 // ($XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl) and returns
 // the session id and log path. Pure filesystem work — unit-tested with
 // fixture trees, no CLI.
-// jsonEscapeLogSnippet escapes a plaintext snippet the way JSON string
-// encoding does, so it can be found in raw session.jsonl bytes with
-// strings.Contains. The discovery below compares against the raw file, not
-// decoded records; a snippet holding a literal newline can never match the
-// log's backslash-n bytes.
-func jsonEscapeLogSnippet(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	return b.String()
-}
-
 func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, workdir string) (sessionID, logPath string, err error) {
-	promptSnippet = jsonEscapeLogSnippet(promptSnippet)
 	root := filepath.Join(dataHome, "muse", "sessions")
 	var bestPath string
 	var bestMod time.Time
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() || d.Name() != "session.jsonl" {
+			return nil
+		}
+		// Subagent transcripts live below <id>/subagent/<id>/session.jsonl.
+		// Their copied prompts must not be mistaken for the owning TUI turn.
+		rel, err := filepath.Rel(root, path)
+		if err != nil || len(strings.Split(rel, string(filepath.Separator))) != 5 {
 			return nil
 		}
 		info, err := d.Info()
@@ -72,7 +48,7 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, w
 		if err != nil {
 			return nil
 		}
-		if promptSnippet != "" && !strings.Contains(string(raw), promptSnippet) {
+		if !museLogAcceptedPromptSince(path, since, promptSnippet) {
 			return nil
 		}
 		// Concurrent turns (two pooled TUIs, same dataHome) can send
@@ -94,9 +70,53 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, w
 		return "", "", fmt.Errorf("walk muse sessions: %w", walkErr)
 	}
 	if bestPath == "" {
-		return "", "", fmt.Errorf("no muse session log modified since %s mentions the prompt", since.Format(time.RFC3339))
+		return "", "", fmt.Errorf("no muse session log has a matching intake record since %s", since.Format(time.RFC3339))
 	}
 	return filepath.Base(filepath.Dir(bestPath)), bestPath, nil
+}
+
+// museLogAcceptedPromptSince requires a new, native intake record. A file's
+// mtime or an assistant echo of the prompt is not evidence that this send was
+// accepted, especially when identical notifications are retried.
+type museIntakeRecord struct {
+	Sequence    int64  `json:"sequence"`
+	RecordedAt  int64  `json:"recorded_at"`
+	PayloadType string `json:"payload_type"`
+	Payload     struct {
+		RefillBlocks []struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		} `json:"refill_blocks"`
+	} `json:"payload"`
+}
+
+func museLogAcceptedPromptSince(path string, since time.Time, snippet string) bool {
+	if snippet == "" {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), `"runtime.user_intent.accepted"`) {
+			continue
+		}
+		var row museIntakeRecord
+		if json.Unmarshal(line, &row) != nil || row.PayloadType != "runtime.user_intent.accepted" || row.RecordedAt < since.UnixMicro() {
+			continue
+		}
+		for _, block := range row.Payload.RefillBlocks {
+			if block.Kind == "text" && strings.HasPrefix(block.Text, snippet) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // museLogMatchesWorkspace reports whether raw session.jsonl bytes record
@@ -150,44 +170,32 @@ func museLastAssistantText(messages []llmtypes.MessageContent) string {
 }
 
 // museWaitIntake verifies the TUI actually took in the prompt: the native
-// session log must show the turn after submit. The TUI can swallow an early
-// Enter (observed live), so Enter is re-sent a bounded number of times until
-// the log proves intake or the deadline passes.
+// session log must show the turn after submit. This is observe-only: a pane
+// mismatch cannot justify another Enter while durable intake is uncertain.
 func museWaitIntake(ctx context.Context, session string, turnStart time.Time, snippet, workdir string) (nativeSessionID, logPath string, err error) {
 	dataHome := museAccountDataHome(ctx)
 	intakeDeadline := time.Now().Add(60 * time.Second)
-	for attempt := 0; ; attempt++ {
+	for {
 		id, path, findErr := museDiscoverSessionSince(dataHome, turnStart, snippet, workdir)
 		if findErr == nil {
 			return id, path, nil
 		}
 		err = findErr
 		if time.Now().After(intakeDeadline) {
-			return "", "", fmt.Errorf("muse TUI never took in the prompt after submit; last discovery error: %w", err)
+			return "", "", fmt.Errorf("muse prompt delivery unconfirmed after durable intake wait; last discovery error: %w", err)
 		}
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return "", "", ctx.Err()
-			case <-time.After(5 * time.Second):
+		// A native question can appear before transcript discovery catches up.
+		// Handle the blocker, but never resubmit the prompt from this loop.
+		pane, captureErr := museTmuxCapturePane(ctx, session)
+		if captureErr == nil {
+			if _, questionErr := museHandlePendingQuestion(ctx, session, pane); questionErr != nil {
+				return "", "", questionErr
 			}
 		}
-		// A fast native question can appear before transcript discovery catches
-		// up. Never let the intake retry select its current/default option.
-		pane, captureErr := museTmuxCapturePane(ctx, session)
-		if captureErr != nil {
-			return "", "", captureErr
-		}
-		pending, questionErr := museHandlePendingQuestion(ctx, session, pane)
-		if questionErr != nil {
-			return "", "", questionErr
-		}
-		if pending {
-			continue
-		}
-		enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
-		if out, enterErr := enter.CombinedOutput(); enterErr != nil {
-			return "", "", fmt.Errorf("tmux re-send Enter: %w\n%s", enterErr, out)
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(5 * time.Second):
 		}
 	}
 }
@@ -411,11 +419,12 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	if readyErr != nil {
 		return nil, readyErr
 	}
-	if err := museSendPrompt(ctx, session, prompt); err != nil {
-		return nil, err
-	}
+	submitErr := museSendPrompt(ctx, session, prompt)
 	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
+		if submitErr != nil {
+			return nil, fmt.Errorf("muse intake unconfirmed after pane submit error (%w): %w", submitErr, err)
+		}
 		return nil, err
 	}
 	if persistent {
@@ -499,7 +508,11 @@ func promptSnippet(prompt string) string {
 	const maxSnippet = 120
 	snippet := strings.TrimSpace(museTerminalPrompt(prompt))
 	if len(snippet) > maxSnippet {
-		snippet = strings.TrimSpace(snippet[:maxSnippet])
+		end := maxSnippet
+		for end > 0 && !utf8.ValidString(snippet[:end]) {
+			end--
+		}
+		snippet = strings.TrimSpace(snippet[:end])
 	}
 	return snippet
 }

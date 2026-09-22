@@ -3,6 +3,7 @@ package musecli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -144,6 +146,11 @@ func TestPromptSnippetTruncates(t *testing.T) {
 	if got := promptSnippet("AIS\tTDS-393"); got != "AIS TDS-393" {
 		t.Fatalf("tabular snippet = %q, want terminal-safe spaces", got)
 	}
+	// The production notification had an em dash starting at byte 119.
+	unicodePrompt := strings.Repeat("x", 119) + "— delivered"
+	if got := promptSnippet(unicodePrompt); got != strings.Repeat("x", 119) {
+		t.Fatalf("unicode snippet = %q, want complete UTF-8 prefix", got)
+	}
 }
 
 // TestMuseDiscoverSessionSince finds the newest matching session log in a
@@ -160,16 +167,16 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 		}
 	}
 	oldTime := time.Now().Add(-time.Hour)
-	if err := os.WriteFile(filepath.Join(oldDir, "session.jsonl"), []byte("pineapple old\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, "session.jsonl"), []byte(museIntakeRow(1, oldTime.UnixMicro(), "pineapple old")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(filepath.Join(oldDir, "session.jsonl"), oldTime, oldTime); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(otherDir, "session.jsonl"), []byte("unrelated chatter\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(otherDir, "session.jsonl"), []byte(museIntakeRow(1, time.Now().UnixMicro(), "unrelated chatter")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(newDir, "session.jsonl"), []byte("pineapple new turn\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, "session.jsonl"), []byte(museIntakeRow(1, time.Now().UnixMicro(), "pineapple new turn")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,7 +198,7 @@ func TestMuseDiscoverSessionSince(t *testing.T) {
 
 // TestMuseDiscoverSessionSinceMultilineSnippet pins the intake false
 // negative: session.jsonl stores newlines JSON-escaped, so a snippet holding
-// a literal newline must still match the log's backslash-n bytes. Every
+// a literal newline must match the decoded intake text. Every
 // multi-line builder prompt failed intake while single-line test prompts
 // always matched.
 func TestMuseDiscoverSessionSinceMultilineSnippet(t *testing.T) {
@@ -201,8 +208,7 @@ func TestMuseDiscoverSessionSinceMultilineSnippet(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Raw log bytes as the CLI writes them: JSON-escaped newlines.
-	content := `{"payload":{"record":{"text":"# Workflow Builder Agent\n\nYou design, run, monitor."}}}` + "\n"
+	content := museIntakeRow(1, time.Now().UnixMicro(), "# Workflow Builder Agent\n\nYou design, run, monitor.") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +219,42 @@ func TestMuseDiscoverSessionSinceMultilineSnippet(t *testing.T) {
 	}
 	if id != "sess-multi" {
 		t.Fatalf("session id = %q, want sess-multi", id)
+	}
+}
+
+func TestMuseDiscoverSessionSinceUnicodeIntakeNotPaneEcho(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "muse", "sessions", "2026", "09", "22", "sess-notification")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "session.jsonl")
+	prompt := "[AUTO-NOTIFICATION] Agent 'Message sequence item -> Validate Candidates / execute-and-verify (user_message)' completed — status=completed"
+	snippet := promptSnippet(prompt)
+	if !utf8.ValidString(snippet) {
+		t.Fatalf("snippet split a UTF-8 character: %q", snippet)
+	}
+	since := time.Now().Add(-time.Second)
+	old := museIntakeRow(1, since.Add(-time.Second).UnixMicro(), prompt)
+	echo := fmt.Sprintf(`{"sequence":2,"recorded_at":%d,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":%q}}}`, time.Now().UnixMicro(), prompt)
+	if err := os.WriteFile(path, []byte(old+"\n"+echo+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := museDiscoverSessionSince(home, since, snippet, ""); err == nil {
+		t.Fatal("stale intake plus fresh assistant echo must not confirm this send")
+	}
+	if err := os.WriteFile(path, []byte(old+"\n"+echo+"\n"+museIntakeRow(3, time.Now().UnixMicro(), prompt)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentDir := filepath.Join(dir, "subagent", "child")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentDir, "session.jsonl"), []byte(museIntakeRow(4, time.Now().UnixMicro(), prompt)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, err := museDiscoverSessionSince(home, since, snippet, ""); err != nil || id != "sess-notification" {
+		t.Fatalf("new Unicode intake = (%q, %v), want sess-notification", id, err)
 	}
 }
 
@@ -736,7 +778,7 @@ func TestMuseDiscoverSessionSincePrefersWorkdir(t *testing.T) {
 			t.Fatal(err)
 		}
 		content := `{"sequence":9,"payload_type":"runtime.session.metadata","payload":{"record":{"workspace_root":` + strconv.Quote(root) + `}}}` + "\n" +
-			`{"sequence":10,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":` + strconv.Quote(snippet) + `}}}` + "\n"
+			museIntakeRow(10, time.Now().UnixMicro(), snippet) + "\n"
 		if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -782,7 +824,7 @@ func TestMuseDiscoverSessionSinceWorkdirCaseInsensitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := `{"sequence":9,"payload_type":"runtime.session.metadata","payload":{"record":{"workspace_root":` + strconv.Quote(recordedRoot) + `}}}` + "\n" +
-		`{"sequence":10,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"hi there"}}}` + "\n"
+		museIntakeRow(10, time.Now().UnixMicro(), "hi there") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
