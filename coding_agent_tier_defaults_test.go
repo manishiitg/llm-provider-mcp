@@ -64,8 +64,8 @@ func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
 	if defaults.Medium.ModelID != "claude-sonnet-5" || defaults.Medium.Options["reasoning_effort"] != "medium" {
 		t.Fatalf("medium = %+v, want claude-sonnet-5/medium", defaults.Medium)
 	}
-	if defaults.Low.ModelID != "claude-haiku-4-5-20251001" || defaults.Low.Options["reasoning_effort"] != "medium" {
-		t.Fatalf("low = %+v, want claude-haiku-4-5-20251001/medium", defaults.Low)
+	if defaults.Low.ModelID != "claude-sonnet-5" || defaults.Low.Options["reasoning_effort"] != "low" {
+		t.Fatalf("low = %+v, want claude-sonnet-5/low", defaults.Low)
 	}
 }
 

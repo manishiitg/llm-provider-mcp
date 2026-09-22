@@ -65,7 +65,7 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Builder: builder,
 			High:    high,
 			Medium:  medium,
-			Low:     codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
+			Low:     codingAgentReasoningRef(providerID, "claude-sonnet-5", "low"),
 			Pulse:   high,
 		}, true
 	case ProviderCursorCLI:
