@@ -93,6 +93,26 @@ func TestReadClaudeTranscriptEventsIncremental(t *testing.T) {
 	}
 }
 
+func TestReadClaudeTranscriptEventsPreservesEmptyThinkingActivity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	turnStart := time.Date(2026, 9, 22, 7, 9, 0, 0, time.UTC)
+	ts := turnStart.Add(time.Second).Format(time.RFC3339Nano)
+	appendLine(t, path, `{"type":"assistant","timestamp":"`+ts+`","message":{"id":"msg_A","content":[{"type":"thinking","thinking":""}]}}`+"\n")
+
+	events, _, err := readClaudeTranscriptEventsFromFile(path, 0, turnStart, nil)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 1 || !events[0].IsThinking || events[0].Reasoning != "" {
+		t.Fatalf("events = %+v, want one explicit empty thinking activity event", events)
+	}
+
+	chunk := transcriptEventToChunk("session", events[0])
+	if chunk.Type != llmtypes.StreamChunkTypeReasoning || chunk.Content != "" || chunk.Metadata["thinking_active"] != true {
+		t.Fatalf("chunk = %+v, want empty reasoning chunk marked thinking_active", chunk)
+	}
+}
+
 // TestReadClaudeTranscriptEventsInterleavedOrder proves the realistic shape a
 // real turn produces — text → tool → result → text → tool → result → final
 // text — streams in the correct ORDER across incremental (append-live) polls,

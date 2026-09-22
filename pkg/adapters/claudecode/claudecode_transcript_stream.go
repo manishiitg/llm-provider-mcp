@@ -37,8 +37,14 @@ func claudeInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 // streaming signal, not the authoritative end-of-turn reconstruction
 // (readClaudeTranscriptMessages).
 type claudeTranscriptEvent struct {
-	Text       string
-	Reasoning  string
+	Text      string
+	Reasoning string
+	// IsThinking preserves Claude's explicit thinking activity even when the
+	// provider intentionally redacts the thinking text to an empty string.
+	// Without this bit an empty thinking block is indistinguishable from an
+	// empty/default transcript event and the UI remains silent until the final
+	// answer arrives.
+	IsThinking bool
 	ToolName   string
 	ToolCallID string
 	// ToolArgs is the call's arguments, carried onto the START chunk (the only
@@ -260,7 +266,8 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 			Metadata:   meta,
 		}
 	}
-	if e.Reasoning != "" {
+	if e.IsThinking {
+		meta["thinking_active"] = true
 		return llmtypes.StreamChunk{
 			Type:     llmtypes.StreamChunkTypeReasoning,
 			Content:  e.Reasoning,
@@ -341,8 +348,11 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 			// history, but it is a first-class structured progress stream.
 			// Text/tool blocks still use the common reconstruction mapping.
 			for _, block := range am.Content {
-				if block.Type == "thinking" && strings.TrimSpace(block.Thinking) != "" {
-					events = append(events, claudeTranscriptEvent{Reasoning: strings.TrimSpace(block.Thinking)})
+				if block.Type == "thinking" {
+					events = append(events, claudeTranscriptEvent{
+						Reasoning:  strings.TrimSpace(block.Thinking),
+						IsThinking: true,
+					})
 				}
 			}
 			// Reuse the same block→parts mapping the end-of-turn reader uses,
