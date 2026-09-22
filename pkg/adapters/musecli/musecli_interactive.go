@@ -377,9 +377,10 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		// firing Enter into it -- the same guard museWaitSettled applies at
 		// boot, applied here at submit time.
 		musePaneStable(ctx, session, beforePane)
-		enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter")
+		enterArgs := append([]string{"send-keys", "-t", session}, museSubmitKeys()...)
+		enter := exec.CommandContext(ctx, "tmux", enterArgs...)
 		if out, err := enter.CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux send-keys Enter: %w\n%s", err, out)
+			return fmt.Errorf("tmux send-keys submit: %w\n%s", err, out)
 		}
 		if museEnterTookEffect(ctx, session, beforePane) {
 			return nil
@@ -392,6 +393,10 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 			return fmt.Errorf("tmux clear input before resubmit retry: %w\n%s", err, out)
 		}
 	}
+}
+
+func museSubmitKeys() []string {
+	return []string{"Enter", "Enter"}
 }
 
 // museTerminalPrompt removes control characters that a terminal editor treats

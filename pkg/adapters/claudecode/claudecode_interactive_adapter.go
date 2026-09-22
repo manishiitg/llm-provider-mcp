@@ -2104,8 +2104,9 @@ func claudeLiveInputNeedsPasteSettlement(message string) bool {
 func claudeSubmitPromptKeys() []string {
 	// Claude Code can leave a bracket-pasted live message as a visible draft when
 	// Enter is sent while the cursor/focus is not at the accepted end of input.
-	// Move to the end first, then submit.
-	return []string{"C-e", "Enter"}
+	// Move to the end first, then send two submit keys because one Enter can be
+	// swallowed by a repaint even after tmux has accepted the keystroke.
+	return []string{"C-e", "Enter", "Enter"}
 }
 
 // waitForClaudeCompactionToSettle blocks while the pane is actively compacting or

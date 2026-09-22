@@ -1360,7 +1360,12 @@ func sendPiInputToTmuxUnserialized(ctx context.Context, sessionName, markerPath,
 }
 
 func submitPiInputInTmux(ctx context.Context, sessionName string) error {
-	return runPiCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter")
+	args := append([]string{"send-keys", "-t", sessionName}, piSubmitKeys()...)
+	return runPiCommand(ctx, nil, "tmux", args...)
+}
+
+func piSubmitKeys() []string {
+	return []string{"Enter", "Enter"}
 }
 
 func waitForPiInputDraftVisible(ctx context.Context, sessionName, message, beforePaste string, timeout time.Duration) bool {

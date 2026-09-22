@@ -313,9 +313,9 @@ exit 0
 	}
 }
 
-func TestClaudeSubmitPromptKeysMoveToEndBeforeEnter(t *testing.T) {
+func TestClaudeSubmitPromptKeysMoveToEndBeforeDoubleEnter(t *testing.T) {
 	got := claudeSubmitPromptKeys()
-	want := []string{"C-e", "Enter"}
+	want := []string{"C-e", "Enter", "Enter"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude submit keys = %v, want %v", got, want)
 	}

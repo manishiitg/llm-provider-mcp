@@ -1702,10 +1702,15 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 		log.Printf("[LATENCY_DEBUG] cursor atomic paste has no visual draft receipt; submitting acknowledged buffer | session=%s runes=%d lines=%d",
 			sessionName, runeCount, lineCount)
 	}
-	if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err != nil {
+	args := append([]string{"send-keys", "-t", sessionName}, cursorSubmitKeys()...)
+	if err := runCursorCommand(ctx, nil, "tmux", args...); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
 	return ensureCursorInputSubmittedWithMode(ctx, sessionName, message, liveInput)
+}
+
+func cursorSubmitKeys() []string {
+	return []string{"C-m", "C-m"}
 }
 
 func cursorInputNeedsAtomicPaste(message string, preferAtomic bool) bool {

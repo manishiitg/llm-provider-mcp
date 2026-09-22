@@ -1805,8 +1805,11 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	pasted := time.Since(start)
 	// Codex 0.142's TUI accepts tmux's literal Enter key here, while C-m can
 	// leave the pasted text sitting in the input buffer without starting a turn.
+	// Send the submit key twice in the same tmux operation: production has
+	// observed a single Enter being swallowed even though tmux accepted it.
 	submit := func(ctx context.Context) error {
-		if err := runCodexCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
+		args := append([]string{"send-keys", "-t", sessionName}, codexSubmitKeys()...)
+		if err := runCodexCommand(ctx, nil, "tmux", args...); err != nil {
 			return fmt.Errorf("failed to submit input to Codex interactive session: %w", err)
 		}
 		return nil
@@ -1821,6 +1824,10 @@ func sendCodexInputToTmuxUnserialized(ctx context.Context, sessionName, message 
 	log.Printf("[LATENCY_DEBUG] codex tmux delivery | session=%s pasted=%dms confirmed=%dms err=%v",
 		sessionName, pasted.Milliseconds(), time.Since(start).Milliseconds(), err)
 	return err
+}
+
+func codexSubmitKeys() []string {
+	return []string{"Enter", "Enter"}
 }
 
 func waitForCodexInputSubmitted(ctx context.Context, sessionName, message, baseline string, timeout time.Duration) error {
