@@ -46,10 +46,10 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentReasoningRef(providerID, "gpt-5.6-terra", "medium")
-		builder := codingAgentReasoningRef(providerID, "gpt-6-astra", "medium")
-		medium := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "high")
-		low := codingAgentReasoningRef(providerID, "gpt-5.6-luna", "medium")
+		high := codingAgentReasoningRef(providerID, "gpt-6-sol", "medium")
+		builder := codingAgentReasoningRef(providerID, "gpt-6-sol", "high")
+		medium := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
+		low := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
 			High:    high,
@@ -60,20 +60,16 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 	case ProviderClaudeCode:
 		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
 		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
-		builder := high
+		builder := codingAgentReasoningRef(providerID, "claude-opus-5-5", "medium")
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
 			High:    high,
 			Medium:  medium,
 			Low:     codingAgentReasoningRef(providerID, "claude-haiku-4-5-20251001", "medium"),
-			Pulse:   builder,
+			Pulse:   high,
 		}, true
 	case ProviderCursorCLI:
-		// All tiers on Cursor's auto routing (product decision 2026-09-03,
-		// reversing the earlier grok-4.6 pin for Builder/High/Pulse: a live
-		// RTS run hit "quota_exhausted" on grok-4.6 with no fallback, so pick
-		// a model that always has capacity rather than pinning one that can
-		// run out).
+		// Auto routing avoids pinning a model that can run out of quota.
 		auto := codingAgentHighReasoningRef(providerID, "auto")
 		return &CodingAgentDefaultTierModels{
 			Builder: auto,

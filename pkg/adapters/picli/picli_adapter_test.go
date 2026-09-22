@@ -112,7 +112,6 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 		ModelGLM53,
 		ModelGLM53Flash,
 		ModelKimiK3,
-		ModelGrok46,
 	}
 	if len(models) != len(want) {
 		t.Fatalf("GetAllPiCLIModels() returned %d models, want %d", len(models), len(want))

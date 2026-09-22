@@ -707,6 +707,9 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	if costLookupModel == "" {
 		costLookupModel = modelToUse
 	}
+	if strings.Contains(strings.ToLower(modelToUse), "fast=true") {
+		costLookupModel = modelToUse
+	}
 	if costLookupModel != "" {
 		if meta, _ := c.GetModelMetadata(costLookupModel); meta != nil {
 			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {

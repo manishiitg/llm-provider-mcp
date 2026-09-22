@@ -34,10 +34,10 @@ func codexCLIRealContractModelFromEnv() string {
 	if model := strings.TrimSpace(os.Getenv("CODEX_CLI_REAL_CONTRACT_MODEL")); model != "" {
 		return model
 	}
-	// gpt-5.4-mini is deprecated: Codex renders a "switch to GPT-5.6" modal
+	// gpt-5.4-mini is deprecated: Codex renders a model-switch modal
 	// instead of running the turn, so the live P0 tests never execute. Default
 	// to a current model; override with CODEX_CLI_REAL_CONTRACT_MODEL.
-	return "gpt-5.6-luna"
+	return "gpt-6-luna"
 }
 
 func TestCodexCLIAdapterImplementsWebSearchModel(t *testing.T) {
@@ -203,27 +203,27 @@ func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 	}
 }
 
-func TestCodexCLIAdapterGPT56MetadataAndAliases(t *testing.T) {
+func TestCodexCLIAdapterGPT6MetadataAndAliases(t *testing.T) {
 	for alias, wantModel := range map[string]string{
-		"high":   "gpt-5.6-sol",
-		"medium": "gpt-5.6-terra",
-		"low":    "gpt-5.6-luna",
+		"high":   "gpt-6-sol",
+		"medium": "gpt-6-luna",
+		"low":    "gpt-6-luna",
 	} {
 		if got := resolveCodexCLIModelID(alias); got != wantModel {
 			t.Fatalf("resolveCodexCLIModelID(%q) = %q, want %q", alias, got, wantModel)
 		}
 	}
 
-	adapter := NewCodexCLIAdapter("", "gpt-5.6-sol", &MockLogger{})
-	meta, err := adapter.GetModelMetadata("gpt-5.6-sol")
+	adapter := NewCodexCLIAdapter("", "gpt-6-sol", &MockLogger{})
+	meta, err := adapter.GetModelMetadata("gpt-6-sol")
 	if err != nil {
 		t.Fatalf("GetModelMetadata: %v", err)
 	}
-	if meta.ContextWindow != 372000 || meta.InputCostPer1MTokens != 5 || meta.OutputCostPer1MTokens != 30 {
-		t.Fatalf("GPT-5.6 Sol metadata = %+v", meta)
+	if meta.ContextWindow != 1050000 || meta.InputCostPer1MTokens != 2 || meta.OutputCostPer1MTokens != 10 {
+		t.Fatalf("GPT-6 Sol metadata = %+v", meta)
 	}
 	if !slices.Contains(meta.ReasoningEffortLevels, "max") || !slices.Contains(meta.ReasoningEffortLevels, "ultra") {
-		t.Fatalf("GPT-5.6 Sol reasoning levels = %v, want max and ultra", meta.ReasoningEffortLevels)
+		t.Fatalf("GPT-6 Sol reasoning levels = %v, want max and ultra", meta.ReasoningEffortLevels)
 	}
 }
 

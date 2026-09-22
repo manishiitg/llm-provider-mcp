@@ -17,7 +17,6 @@ func TestListPiIncludesCurrentCuratedModelsAndDynamicHint(t *testing.T) {
 		"minimax/MiniMax-M3":            false,
 		"zai/glm-5.3":                   false,
 		"moonshotai/kimi-k3":            false,
-		"xai/grok-4.6":                  false,
 	}
 	for _, model := range catalog.Models {
 		if _, ok := want[model.ID]; ok {
@@ -34,5 +33,51 @@ func TestListPiIncludesCurrentCuratedModelsAndDynamicHint(t *testing.T) {
 func TestListRejectsUnknownProvider(t *testing.T) {
 	if _, err := List("missing"); err == nil {
 		t.Fatal("List() error = nil")
+	}
+}
+
+func TestListIncludesNewCodingAgentModels(t *testing.T) {
+	for provider, wantIDs := range map[string][]string{
+		"codex-cli":   {"gpt-6-sol", "gpt-6-luna"},
+		"claude-code": {"claude-opus-5-5"},
+		"cursor-cli":  {"grok-4.7"},
+	} {
+		catalog, err := List(provider)
+		if err != nil {
+			t.Fatalf("List(%q): %v", provider, err)
+		}
+		for _, wantID := range wantIDs {
+			found := false
+			for _, model := range catalog.Models {
+				if model.ID == wantID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s catalog is missing %q", provider, wantID)
+			}
+		}
+	}
+}
+
+func TestListOmitsRetiredCodingAgentModels(t *testing.T) {
+	for provider, retired := range map[string][]string{
+		"codex-cli":   {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+		"claude-code": {"claude-opus-5"},
+		"cursor-cli":  {"grok-4.6"},
+		"pi-cli":      {"xai/grok-4.6"},
+	} {
+		catalog, err := List(provider)
+		if err != nil {
+			t.Fatalf("List(%q): %v", provider, err)
+		}
+		for _, model := range catalog.Models {
+			for _, id := range retired {
+				if model.ID == id {
+					t.Errorf("%s catalog still lists retired model %q", provider, id)
+				}
+			}
+		}
 	}
 }

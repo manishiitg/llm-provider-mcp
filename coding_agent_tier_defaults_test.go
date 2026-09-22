@@ -20,9 +20,9 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 5.6 terra medium",
+			name:          "codex uses gpt 6 sol medium",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-5.6-terra",
+			wantModelID:   "gpt-6-sol",
 			wantReasoning: "medium",
 		},
 		{
@@ -84,10 +84,10 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning:  "high",
 		},
 		{
-			name:          "codex uses gpt 6 astra medium",
+			name:          "codex uses gpt 6 sol high",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-6-astra",
-			wantReasoning: "medium",
+			wantModelID:   "gpt-6-sol",
+			wantReasoning: "high",
 		},
 		{
 			name:          "cursor uses auto high",
@@ -127,14 +127,14 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 	}
 }
 
-func TestCodingAgentDefaultTierModelsBuilderAndPulseMatch(t *testing.T) {
+func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
 	for _, tt := range []struct {
 		provider Provider
 		model    string
 		effort   string
 	}{
-		{provider: ProviderClaudeCode, model: "claude-sonnet-5", effort: "high"},
-		{provider: ProviderCodexCLI, model: "gpt-6-astra", effort: "medium"},
+		{provider: ProviderClaudeCode, model: "claude-opus-5-5", effort: "medium"},
+		{provider: ProviderCodexCLI, model: "gpt-6-sol", effort: "high"},
 	} {
 		t.Run(string(tt.provider), func(t *testing.T) {
 			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
@@ -147,19 +147,14 @@ func TestCodingAgentDefaultTierModelsBuilderAndPulseMatch(t *testing.T) {
 			if defaults.Builder.Options["reasoning_effort"] != tt.effort {
 				t.Fatalf("builder reasoning_effort = %#v, want %q", defaults.Builder.Options["reasoning_effort"], tt.effort)
 			}
-			if defaults.Pulse.Provider != defaults.Builder.Provider ||
-				defaults.Pulse.ModelID != defaults.Builder.ModelID ||
-				defaults.Pulse.Options["reasoning_effort"] != defaults.Builder.Options["reasoning_effort"] {
-				t.Fatalf("pulse = %+v, want builder default %+v", defaults.Pulse, defaults.Builder)
-			}
 		})
 	}
 }
 
-// TestCodingAgentDefaultTierModelsCodexGPT56Family covers the execution tiers,
-// which stay on the GPT-5.6 family. Builder and Pulse use GPT-6 Astra and are
-// covered by TestCodingAgentDefaultTierModelsBuilderAndPulseMatch.
-func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
+// TestCodingAgentDefaultTierModelsCodexGPT6Family covers the execution tiers.
+// Builder and Pulse use GPT-6 Sol with high reasoning and are
+// covered by TestCodingAgentDefaultTierModelsBuilder and the pulse test.
+func TestCodingAgentDefaultTierModelsCodexGPT6Family(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderCodexCLI)
 	if !ok {
 		t.Fatal("GetCodingAgentDefaultTierModels(codex-cli) ok = false")
@@ -170,9 +165,9 @@ func TestCodingAgentDefaultTierModelsCodexGPT56Family(t *testing.T) {
 		model  string
 		effort string
 	}{
-		"high":   {ref: defaults.High, model: "gpt-5.6-terra", effort: "medium"},
-		"medium": {ref: defaults.Medium, model: "gpt-5.6-luna", effort: "high"},
-		"low":    {ref: defaults.Low, model: "gpt-5.6-luna", effort: "medium"},
+		"high":   {ref: defaults.High, model: "gpt-6-sol", effort: "medium"},
+		"medium": {ref: defaults.Medium, model: "gpt-6-luna", effort: "high"},
+		"low":    {ref: defaults.Low, model: "gpt-6-luna", effort: "high"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
 			t.Fatalf("%s = %+v, want model %s effort %s", name, check.ref, check.model, check.effort)

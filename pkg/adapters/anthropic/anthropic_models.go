@@ -9,6 +9,8 @@ import (
 
 // Anthropic model name constants
 const (
+	ModelClaudeOpus55 = "claude-opus-5-5"
+
 	// Claude 4.8 Series
 	ModelClaudeOpus48 = "claude-opus-4-8"
 
@@ -43,6 +45,16 @@ func normalizeToBaseModel(modelID string) string {
 // getAnthropicModels returns the map of Anthropic model metadata
 func getAnthropicModels() map[string]*llmtypes.ModelMetadata {
 	return map[string]*llmtypes.ModelMetadata{
+		ModelClaudeOpus55: {
+			ModelID:                         ModelClaudeOpus55,
+			ModelName:                       "Claude Opus 5.5",
+			ContextWindow:                   200000,
+			InputCostPer1MTokens:            4.00,
+			OutputCostPer1MTokens:           20.00,
+			CachedInputCostPer1MTokens:      0.20,
+			CachedInputCostWritePer1MTokens: 5.00,
+			Provider:                        "anthropic",
+		},
 		// Claude 4.8 Series
 		ModelClaudeOpus48: {
 			ModelID:                         ModelClaudeOpus48,
@@ -127,7 +139,7 @@ func GetAllAnthropicModels() []*llmtypes.ModelMetadata {
 
 // GetAnthropicModelMetadata returns metadata for Anthropic models including token limits and pricing
 // Pricing includes input, output, cached input read tokens, and cached input write tokens
-// Cache read cost: 10% of base input cost
+// Cache read cost varies by model (Opus 5.5 is 5% of base input).
 // Cache write cost: 125% of base input cost (25% more than base)
 // Accepts both base model names (e.g., "claude-3-5-sonnet") and versioned names (e.g., "claude-3-5-sonnet-20241022")
 // Versioned names are normalized to base model names

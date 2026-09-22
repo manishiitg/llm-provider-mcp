@@ -313,7 +313,6 @@ func recommendedPiModel(models []piModel) piModel {
 		"minimax/MiniMax-M3",
 		"zai/glm-5.3",
 		"moonshotai/kimi-k3",
-		"xai/grok-4.6",
 	}
 	for _, selector := range preferred {
 		for _, model := range models {

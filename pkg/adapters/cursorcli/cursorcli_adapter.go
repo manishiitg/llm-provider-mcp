@@ -144,7 +144,12 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 		metadataModelID = "cursor-cli"
 	}
 
-	switch resolveCursorCLIModelID(modelID) {
+	resolvedModelID := resolveCursorCLIModelID(modelID)
+	metadataSelector := resolvedModelID
+	if strings.HasPrefix(metadataSelector, "grok-4.7[") {
+		metadataSelector = "grok-4.7"
+	}
+	switch metadataSelector {
 	case "":
 		return &llmtypes.ModelMetadata{
 			ModelID:           metadataModelID,
@@ -161,13 +166,26 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			ContextWindow:     200000,
 			SupportsToolCalls: true,
 		}, nil
-	case "cursor-grok-4.6-medium":
+	case "grok-4.7":
+		fast := strings.Contains(strings.ToLower(strings.ReplaceAll(resolvedModelID, " ", "")), "fast=true")
+		inputRate, outputRate, cacheReadRate := 2.0, 6.0, 0.5
+		longContextMultiplier := 2.0
+		if fast {
+			inputRate, outputRate, cacheReadRate = 4, 12, 1
+			longContextMultiplier = 1.5
+		}
 		return &llmtypes.ModelMetadata{
-			ModelID:           metadataModelID,
-			Provider:          "cursor-cli",
-			ModelName:         "Grok 4.6 (Cursor Agent CLI)",
-			ContextWindow:     500000,
-			SupportsToolCalls: true,
+			ModelID:                     metadataModelID,
+			Provider:                    "cursor-cli",
+			ModelName:                   "Grok 4.7 (Cursor Agent CLI)",
+			ContextWindow:               256000,
+			InputCostPer1MTokens:        inputRate,
+			OutputCostPer1MTokens:       outputRate,
+			CachedInputCostPer1MTokens:  cacheReadRate,
+			LongContextThresholdTokens:  256000,
+			LongContextInputMultiplier:  longContextMultiplier,
+			LongContextOutputMultiplier: longContextMultiplier,
+			SupportsToolCalls:           true,
 		}, nil
 	case "gpt-5":
 		return &llmtypes.ModelMetadata{

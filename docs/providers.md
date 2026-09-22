@@ -24,9 +24,8 @@ the current account-visible model catalog.
 
 ## Cursor Agent
 
-Omitting the model currently selects `composer-2.5`. The friendly selector
-`grok-4.6` maps to Cursor's `cursor-grok-4.6-medium`; exact Cursor IDs pass
-through unchanged.
+Omitting the model currently selects `composer-2.5`. `grok-4.7` is an exact
+Cursor model ID. Other exact Cursor IDs pass through unchanged.
 
 Cursor model availability belongs to the current Cursor account and can change
 independently of this project. Run `cursor-agent models` or the live catalog
@@ -37,7 +36,7 @@ command when an exact selector is rejected.
 The curated catalog keeps one current model per supported family, with separate
 Gemini Flash and Pro tracks:
 
-- `google/gemini-3.7-flash`
+- `google/gemini-3.8-flash`
 - `google/gemini-3.5-flash-lite`
 - `google/gemini-3.1-pro-preview`
 - `minimax/MiniMax-M3`
@@ -58,15 +57,10 @@ Codex accepts model IDs and reasoning levels exposed by the installed CLI. Use
 the catalog instead of assuming that an account has access to every advertised
 model.
 
-GPT-5.6 Sol, Terra, and Luna require a Codex 0.145 build. In the July 11, 2026
-real demo, stable Codex CLI 0.144.1 rejected `gpt-5.6-sol` with an upgrade
-message, while `0.145.0-alpha.4` completed the job. Until 0.145 reaches the
-stable channel, install the alpha explicitly only when you intend to use these
-selectors:
-
-```bash
-npm install -g @openai/codex@alpha
-```
+The curated catalog includes GPT-6 Astra, Sol, and Luna. Exact availability
+depends on the installed Codex build and account.
+Published standard token rates are recorded in the model metadata; requests
+above 272k input tokens use the published long-context multipliers.
 
 Codex delegated jobs run with `approval_policy=never` and the `workspace-write`
 sandbox so a detached job cannot wait on an invisible approval prompt.
@@ -75,7 +69,17 @@ sandbox so a detached job cannot wait on an invisible approval prompt.
 
 Claude Code accepts its native model selectors and uses project-scoped tool
 permissions for detached jobs. Setup checks the existing Claude authentication
-status and can open the native login flow when needed.
+status and can open the native login flow when needed. The curated catalog
+includes `claude-opus-5-5`.
+
+## Cost estimates
+
+Model metadata uses published standard token rates. Cursor Grok 4.7 has
+separate Fast pricing: select `grok-4.7[fast=true]` when requesting Fast so the
+cost estimate uses those rates. Cursor may enable Fast by default based on the
+account plan, which cannot be inferred from a plain `grok-4.7` selector.
+Grok 4.7 requests above 256k input tokens use long-context rates. Estimates
+from interactive Cursor sessions also rely on approximate token counts.
 
 ## Removed Providers
 

@@ -33,6 +33,13 @@ type ModelMetadata struct {
 	// Set to 0 if the model doesn't support cache write tracking or if cache writes are charged at regular input rate
 	CachedInputCostWritePer1MTokens float64 `json:"cached_input_cost_write_per_1m"`
 
+	// LongContextThresholdTokens activates request-wide input and output rate
+	// multipliers when the total input footprint exceeds this many tokens.
+	// Cached reads and writes use the input multiplier.
+	LongContextThresholdTokens  int     `json:"long_context_threshold_tokens,omitempty"`
+	LongContextInputMultiplier  float64 `json:"long_context_input_multiplier,omitempty"`
+	LongContextOutputMultiplier float64 `json:"long_context_output_multiplier,omitempty"`
+
 	// CostPerImage is the cost per generated image (in USD).
 	// Applies to image generation models (e.g., Imagen). Set to 0 for text/embedding models.
 	CostPerImage float64 `json:"cost_per_image,omitempty"`

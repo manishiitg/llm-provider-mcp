@@ -40,10 +40,19 @@ func ComputeUSDCostFromMetadata(meta *ModelMetadata, gi *GenerationInfo) float64
 			freshPrompt = 0
 		}
 	}
+	inputMultiplier, outputMultiplier := 1.0, 1.0
+	if meta.LongContextThresholdTokens > 0 && freshPrompt+cached+cacheWrite > meta.LongContextThresholdTokens {
+		if meta.LongContextInputMultiplier > 0 {
+			inputMultiplier = meta.LongContextInputMultiplier
+		}
+		if meta.LongContextOutputMultiplier > 0 {
+			outputMultiplier = meta.LongContextOutputMultiplier
+		}
+	}
 
 	var cost float64
-	cost += float64(freshPrompt) * meta.InputCostPer1MTokens / 1_000_000
-	cost += float64(completion) * meta.OutputCostPer1MTokens / 1_000_000
+	cost += float64(freshPrompt) * meta.InputCostPer1MTokens * inputMultiplier / 1_000_000
+	cost += float64(completion) * meta.OutputCostPer1MTokens * outputMultiplier / 1_000_000
 	if cached > 0 {
 		rate := meta.CachedInputCostPer1MTokens
 		if rate == 0 {
@@ -53,14 +62,14 @@ func ComputeUSDCostFromMetadata(meta *ModelMetadata, gi *GenerationInfo) float64
 			// cache rate.
 			rate = meta.InputCostPer1MTokens * 0.10
 		}
-		cost += float64(cached) * rate / 1_000_000
+		cost += float64(cached) * rate * inputMultiplier / 1_000_000
 	}
 	if cacheWrite > 0 {
 		rate := meta.CachedInputCostWritePer1MTokens
 		if rate == 0 {
 			rate = meta.InputCostPer1MTokens
 		}
-		cost += float64(cacheWrite) * rate / 1_000_000
+		cost += float64(cacheWrite) * rate * inputMultiplier / 1_000_000
 	}
 	return cost
 }

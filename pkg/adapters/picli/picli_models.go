@@ -9,7 +9,6 @@ const (
 	ModelGLM53              = "zai/glm-5.3"
 	ModelGLM53Flash         = "zai/glm-5.3-flash"
 	ModelKimiK3             = "moonshotai/kimi-k3"
-	ModelGrok46             = "xai/grok-4.6"
 )
 
 var knownPiCLIModels = []string{
@@ -20,7 +19,6 @@ var knownPiCLIModels = []string{
 	ModelGLM53,
 	ModelGLM53Flash,
 	ModelKimiK3,
-	ModelGrok46,
 }
 
 // GetAllPiCLIModels returns the frontend-visible Pi CLI routed model selectors.
@@ -52,9 +50,6 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 		case ModelKimiK3:
 			// 1M-token context, same as the adapter default -- no override needed.
 			meta.ModelName = "Pi CLI (Kimi K3)"
-		case ModelGrok46:
-			meta.ModelName = "Pi CLI (Grok 4.6)"
-			meta.ContextWindow = 500000
 		}
 		meta.ModelSelectionMode = "dynamic"
 

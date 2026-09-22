@@ -477,6 +477,11 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		Additional:   additional,
 	}
 	costLookupModel := c.modelID
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if model, ok := opts.Metadata.Custom[MetadataKeyCursorModel].(string); ok && strings.TrimSpace(model) != "" {
+			costLookupModel = model
+		}
+	}
 	if costLookupModel != "" {
 		if meta, _ := c.GetModelMetadata(costLookupModel); meta != nil {
 			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, genInfo); cost > 0 {

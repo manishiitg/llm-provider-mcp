@@ -748,6 +748,17 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			// models in pkg/adapters/anthropic/anthropic_models.go.
 			CachedInputCostPer1MTokens: 1.0,
 		}, nil
+	case "claude-opus-5-5":
+		return &llmtypes.ModelMetadata{
+			ModelID:                         modelID,
+			Provider:                        "claude-code",
+			ModelName:                       "Claude Opus 5.5",
+			ContextWindow:                   200000,
+			InputCostPer1MTokens:            4.00,
+			OutputCostPer1MTokens:           20.00,
+			CachedInputCostPer1MTokens:      0.20,
+			CachedInputCostWritePer1MTokens: 5.00,
+		}, nil
 	case "claude-opus-5":
 		return &llmtypes.ModelMetadata{
 			ModelID:               modelID,

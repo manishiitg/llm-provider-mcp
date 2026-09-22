@@ -19,10 +19,8 @@ var claudeCodeCachePricedModels = []string{
 	"claude-haiku-4-5-20251001",
 }
 
-// Anthropic prices a cache read at 10% of the base input rate. The direct
-// Anthropic adapter (pkg/adapters/anthropic/anthropic_models.go) already
-// encodes that ratio for these same models; the claude-code adapters must not
-// drift from it just because the tokens arrive via the CLI.
+// These older Anthropic models price a cache read at 10% of the base input
+// rate. Opus 5.5 has a different rate and is checked separately below.
 func TestClaudeCodeModelsPriceCacheReads(t *testing.T) {
 	interactive := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
 
@@ -62,5 +60,32 @@ func TestClaudeCodeModelsPriceCacheReads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClaudeCodeOpus55Pricing(t *testing.T) {
+	for name, adapter := range map[string]func() (float64, float64, float64, float64, error){
+		"interactive": func() (float64, float64, float64, float64, error) {
+			meta, err := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata("claude-opus-5-5")
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			return meta.InputCostPer1MTokens, meta.OutputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.CachedInputCostWritePer1MTokens, nil
+		},
+		"compat": func() (float64, float64, float64, float64, error) {
+			meta, err := NewClaudeCodeAdapter("", "claude-opus-5-5", &MockLogger{}).GetModelMetadata("claude-opus-5-5")
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			return meta.InputCostPer1MTokens, meta.OutputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.CachedInputCostWritePer1MTokens, nil
+		},
+	} {
+		input, output, cacheRead, cacheWrite, err := adapter()
+		if err != nil {
+			t.Fatalf("%s metadata: %v", name, err)
+		}
+		if input != 4 || output != 20 || cacheRead != 0.2 || cacheWrite != 5 {
+			t.Errorf("%s Opus 5.5 pricing = (%v, %v, %v, %v), want (4, 20, 0.2, 5)", name, input, output, cacheRead, cacheWrite)
+		}
 	}
 }

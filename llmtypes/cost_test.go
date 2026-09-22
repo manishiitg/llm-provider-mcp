@@ -98,6 +98,39 @@ func TestComputeUSDCostFromMetadataPricesCacheWriteOnce(t *testing.T) {
 	}
 }
 
+func TestComputeUSDCostFromMetadataLongContextRates(t *testing.T) {
+	metadata := &ModelMetadata{
+		InputCostPer1MTokens:            2,
+		OutputCostPer1MTokens:           10,
+		CachedInputCostPer1MTokens:      0.2,
+		CachedInputCostWritePer1MTokens: 2.5,
+		LongContextThresholdTokens:      272000,
+		LongContextInputMultiplier:      2,
+		LongContextOutputMultiplier:     1.5,
+	}
+	completion, cacheRead, cacheWrite := 20000, 100000, 10000
+	for _, tt := range []struct {
+		prompt int
+		want   float64
+	}{
+		{272000, 0.569},
+		{300000, 1.15},
+	} {
+		info := &GenerationInfo{
+			PromptTokens:        &tt.prompt,
+			CompletionTokens:    &completion,
+			CachedContentTokens: &cacheRead,
+			Additional: map[string]interface{}{
+				"cache_creation_input_tokens": cacheWrite,
+				"prompt_tokens_include_cache": true,
+			},
+		}
+		if got := ComputeUSDCostFromMetadata(metadata, info); math.Abs(got-tt.want) > 1e-12 {
+			t.Errorf("prompt %d: cost = %.9f, want %.9f", tt.prompt, got, tt.want)
+		}
+	}
+}
+
 func TestExtractUsageFromGenerationInfoDeduplicatesCacheAliases(t *testing.T) {
 	cacheRead, cacheWrite := 1_000, 100
 	for _, test := range []struct {
