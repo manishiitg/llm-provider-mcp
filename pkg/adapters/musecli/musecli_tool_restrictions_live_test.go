@@ -124,7 +124,7 @@ func museRestrictionProbeResults(raw []byte) map[string]string {
 	return results
 }
 
-// TestMuseCLIRealReadOnlyToolsAllowed certifies AgentWorks' production Muse
+// TestMuseCLIRealReadOnlyToolsAllowed certifies AgentWorks' hybrid-mode Muse
 // allowlist (mcpagent appendMuseCLIIntegrationOptions): native read_file,
 // search and Muse's own read_skill run; native shell stays denied.
 func TestMuseCLIRealReadOnlyToolsAllowed(t *testing.T) {
