@@ -64,6 +64,7 @@ type musePersistentSession struct {
 	accountFingerprint string
 	accountDataHome    string
 	autoAnswer         *museAutoAnswerState
+	userChoice         bool
 	tmuxName           string
 	workdir            string
 	mcpJSON            string
