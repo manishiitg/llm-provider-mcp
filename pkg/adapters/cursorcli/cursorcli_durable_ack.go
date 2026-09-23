@@ -392,6 +392,17 @@ func resolveCursorStoreNoMu(session *cursorInteractiveSession) string {
 	return session.resolveRetainedStoreLocked()
 }
 
+// pinnedCursorStoreNoMu returns the session's store only if one is already
+// pinned; unlike resolveCursorStoreNoMu it never discovers (and so never pins).
+func pinnedCursorStoreNoMu(session *cursorInteractiveSession) string {
+	if session == nil {
+		return ""
+	}
+	session.retainedMu.Lock()
+	defer session.retainedMu.Unlock()
+	return session.retainedStoreDB
+}
+
 // stashCursorDurableReceiptForSend snapshots the store refs before a
 // live-input send so the later durability watch only matches rows the
 // CLI committed for this send.

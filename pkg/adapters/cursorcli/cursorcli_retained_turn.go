@@ -193,3 +193,26 @@ func readCursorRetainedInput(input *cursorRetainedInput) []llmtypes.MessageConte
 	}
 	return out
 }
+
+// cursorCompletedTurnAnswer returns the final assistant text of one query's
+// store trail, or "" while the trail is not finished: the last message must be
+// assistant prose, not a tool call or a tool result still awaiting a reply.
+func cursorCompletedTurnAnswer(trail []llmtypes.MessageContent) string {
+	if len(trail) == 0 {
+		return ""
+	}
+	last := trail[len(trail)-1]
+	if last.Role != llmtypes.ChatMessageTypeAI {
+		return ""
+	}
+	var text strings.Builder
+	for _, part := range last.Parts {
+		switch p := part.(type) {
+		case llmtypes.TextContent:
+			text.WriteString(p.Text)
+		case llmtypes.ToolCall:
+			return ""
+		}
+	}
+	return strings.TrimSpace(text.String())
+}

@@ -345,8 +345,11 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
 	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
-	initialStore := resolveCursorStoreNoMu(session)
-	initialRefs := cursorSnapshotStoreRefs(initialStore)
+	// Snapshot only an already-pinned store (resumed session). A cold
+	// session has no store for this chat yet, and discovering one here
+	// would pin whichever sibling chat in the same workdir was freshest
+	// (an earlier chat or helper run), blinding every later durable ack.
+	initialRefs := cursorSnapshotStoreRefs(pinnedCursorStoreNoMu(session))
 	if err := cursorConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, initialRefs,
 		sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt)); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
@@ -375,7 +378,19 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		go func() { defer close(cursorStreamDone); streamState.run(streamCtx, opts.StreamChan) }()
 	}
 
-	captured, err := waitForCursorInteractiveResponse(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts), cursorInteractiveStreamTmuxScreenEnabled(opts))
+	storeAnswer := func(query string) (string, bool) {
+		storeDB := pinnedCursorStoreNoMu(session)
+		if storeDB == "" {
+			storeDB = freshestCursorStoreDBSince(session.workingDir, turnStart, session.accountHome)
+		}
+		trail := readCursorRetainedInput(&cursorRetainedInput{
+			storeDB:  storeDB,
+			query:    strings.Join(strings.Fields(query), " "),
+			baseline: initialRefs,
+		})
+		return cursorCompletedTurnAnswer(trail), len(trail) > 0
+	}
+	captured, storeFinal, err := waitForCursorInteractiveResponseWithStore(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts), cursorInteractiveStreamTmuxScreenEnabled(opts), storeAnswer)
 	if cursorStreamStop != nil {
 		cursorStreamStop()
 		<-cursorStreamDone // goroutine (and its final flush) done before any close(opts.StreamChan)
@@ -400,6 +415,11 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+	completionSource := "pane"
+	if strings.TrimSpace(content) == "" && storeFinal != "" {
+		content = storeFinal
+		completionSource = "store_turn_answer"
+	}
 	if forcedComplete && strings.TrimSpace(content) == "" {
 		content = forcedCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	}
@@ -441,6 +461,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		"cursor_interactive_session":    session.tmuxSessionName,
 		"cursor_persistent_interactive": persistent,
 		"cursor_uses_print_json":        false,
+		"cursor_completion_source":      completionSource,
 		"cursor_working_dir":            session.workingDir,
 		// Cursor's TUI exposes neither tokenizer telemetry nor billing totals.
 		// Preserve this fact through the event bridge so product UIs do not
@@ -630,6 +651,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
 	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
 	env = append(env, scopedEnv...)
+	env = append(env, cursorAmbientAPIKeyEnv(env, os.Getenv("CURSOR_API_KEY"), opts)...)
 
 	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		session.initErr = err
@@ -1329,6 +1351,25 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	return nil
 }
 
+// cursorAmbientAPIKeyEnv carries this process's CURSOR_API_KEY into the tmux
+// launch when nothing else supplies one. The structured path inherits it via
+// os.Environ(); a pane inherits the tmux SERVER's environment instead, so
+// without this the key reached the TUI only if the process that started the
+// tmux server happened to have it ("Press any key to log in" otherwise).
+// A declared scope or provider account owns credentials, so it is left alone.
+func cursorAmbientAPIKeyEnv(env []string, ambientKey string, opts *llmtypes.CallOptions) []string {
+	ambientKey = strings.TrimSpace(ambientKey)
+	if ambientKey == "" || llmtypes.CodingAgentScopeDeclared(opts) || len(llmtypes.ProviderAccountEnvironment(opts)) > 0 {
+		return nil
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "CURSOR_API_KEY=") {
+			return nil
+		}
+	}
+	return []string{"CURSOR_API_KEY=" + ambientKey}
+}
+
 func cursorConfirmLiveSubmitAfterPaneError(ctx context.Context, ownerSessionID, message string, submitErr error) error {
 	if submitErr == nil {
 		return nil
@@ -1614,7 +1655,14 @@ func cursorConfirmInitialSubmitAfterPaneError(ctx context.Context, session *curs
 		return nil
 	}
 	ack, err := pollCursorDurableAck(ctx, message, since, baseline, cursorDurableAckBudget(), cursorDurableAckPoll{
-		resolve: func() string { return resolveCursorStoreNoMu(session) },
+		// Discover without pinning, limited to stores written since this
+		// submit, so a sibling chat cannot become the session's store.
+		resolve: func() string {
+			if pinned := pinnedCursorStoreNoMu(session); pinned != "" {
+				return pinned
+			}
+			return freshestCursorStoreDBSince(session.workingDir, since, session.accountHome)
+		},
 	})
 	if err == nil && ack.Outcome == CursorDurableAckConfirmed {
 		return nil
@@ -1946,7 +1994,28 @@ func waitForCursorInputDraftVisibleWithMode(ctx context.Context, sessionName, me
 	}
 }
 
+// cursorStoreIntakeWait bounds how long an idle-looking pane defers to the
+// store for proof that the prompt was taken in (cold boot + trust screen).
+const cursorStoreIntakeWait = 90 * time.Second
+
+// cursorStoreIntakeNudgeAfter is how long an idle, draft-free composer may sit
+// with the prompt not taken in before one Enter nudge (and between nudges).
+const cursorStoreIntakeNudgeAfter = 10 * time.Second
+
 func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool) (string, error) {
+	captured, _, err := waitForCursorInteractiveResponseWithStore(ctx, sessionName, baseline, prompt, historicalAssistantTexts, streamChan, autoApproveWebSearch, streamTerminalScreen, nil)
+	return captured, err
+}
+
+// waitForCursorInteractiveResponseWithStore is the tmux turn wait. storeAnswer,
+// when set, reports for one exact submitted query whether the native store has
+// taken it in and, once committed, its completed answer (turn-bound). When the
+// pane is back at the composer but pane parsing finds no reply -- e.g. a Cursor
+// release changed the screen layout -- the store answer completes the turn
+// instead of failing it (P0: the provider's own record proves the final
+// answer). Until the store shows the prompt was taken in, an idle-looking pane
+// (boot/trust screen) must not trigger answer recovery or a no-output failure.
+func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool, storeAnswer func(query string) (string, bool)) (string, string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	waitStartedAt := time.Now()
@@ -1962,6 +2031,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 	var lastTerminalStreamedAt time.Time
 	controls := cursorRuntimeControls{autoApproveWebSearch: autoApproveWebSearch}
 	var finalAnswerRecoveryCount int
+	var heldSubmitNudges int
 	// Stale-pane backstop tracking: the raw capture from the previous tick and
 	// the time it last changed. This is tracked at the top of every tick,
 	// independent of all the branch logic below, so a prompt-detection bug that
@@ -1972,15 +2042,15 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 		select {
 		case <-ctx.Done():
 			captured, _ := captureCursorPane(context.Background(), sessionName)
-			return captured, ctx.Err()
+			return captured, "", ctx.Err()
 		case <-ticker.C:
 			captured, err := captureCursorPane(ctx, sessionName)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			delta := cursorCapturedAfterBaseline(captured, baseline)
 			if tmuxcontrol.ConsumeForceComplete(sessionName) {
-				return captured, tmuxcontrol.ErrForceComplete
+				return captured, "", tmuxcontrol.ErrForceComplete
 			}
 			// Stale-pane backstop. Independent of hasCursorReadyPrompt and every
 			// branch below: if the pane has produced activity and then frozen
@@ -2000,9 +2070,9 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 					content = forcedCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 				}
 				if strings.TrimSpace(content) != "" {
-					return captured, nil
+					return captured, "", nil
 				}
-				return captured, fmt.Errorf("Cursor Agent CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
+				return captured, "", fmt.Errorf("Cursor Agent CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCursorTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -2041,7 +2111,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 				// the step surfaces an error instead of hanging.
 				if firstActivityTimeout > 0 && time.Since(waitStartedAt) >= firstActivityTimeout {
 					captured, _ := captureCursorPane(context.Background(), sessionName)
-					return captured, fmt.Errorf("Cursor Agent CLI produced no activity within %s of submitting the prompt — the input was likely not delivered to the tmux pane; latest pane:\n%s", firstActivityTimeout, captured)
+					return captured, "", fmt.Errorf("Cursor Agent CLI produced no activity within %s of submitting the prompt — the input was likely not delivered to the tmux pane; latest pane:\n%s", firstActivityTimeout, captured)
 				}
 				idleSince = time.Time{}
 				lastCaptured = captured
@@ -2063,6 +2133,53 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 			}
 			if time.Since(idleSince) >= cursorInteractiveStableWindow {
 				content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
+				if strings.TrimSpace(content) == "" && storeAnswer != nil {
+					// A recovery prompt typed while Cursor was still working may
+					// never become its own stored turn; the original query's
+					// finished trail is then the answer.
+					queries := []string{prompt}
+					if finalAnswerRecoveryCount > 0 {
+						queries = []string{cursorFinalAnswerRecoveryPrompt, prompt}
+					}
+					promptTaken := false
+					for _, query := range queries {
+						answer, taken := storeAnswer(query)
+						if answer != "" {
+							return captured, answer, nil
+						}
+						if query == prompt {
+							promptTaken = taken
+						}
+					}
+					if !promptTaken && time.Since(waitStartedAt) < cursorStoreIntakeWait {
+						// Not taken in yet. If our prompt is still sitting in the
+						// composer, its Enter was swallowed (e.g. by the workspace
+						// trust screen): resubmit it. Never type a recovery prompt
+						// here -- it would be appended to the unsent draft.
+						if cursorPaneShowsPromptDraft(captured, prompt) && submitRetryCount < 3 && time.Since(lastSubmitRetryAt) >= 2*time.Second {
+							draftVisible := func(current string) bool {
+								return cursorPaneShowsPromptDraft(current, prompt)
+							}
+							if handled, _ := sendCursorControlIfVisible(ctx, sessionName, "cursor-submit-retry", draftVisible, "C-m"); handled {
+								submitRetryCount++
+								lastSubmitRetryAt = time.Now()
+							}
+						} else if time.Since(waitStartedAt) >= cursorStoreIntakeNudgeAfter && heldSubmitNudges < 2 && time.Since(lastSubmitRetryAt) >= cursorStoreIntakeNudgeAfter {
+							// Cursor 2026.09 can show a submitted prompt in its history
+							// yet hold it without starting a turn (the store never
+							// records it); the next Enter releases it. The composer is
+							// idle and empty here, so Enter adds no text of its own.
+							log.Printf("[LATENCY_DEBUG] cursor prompt not taken in by store after %s; nudging held submit | session=%s", time.Since(waitStartedAt).Round(time.Second), sessionName)
+							if err := runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m"); err == nil {
+								heldSubmitNudges++
+								lastSubmitRetryAt = time.Now()
+							}
+						}
+						idleSince = time.Time{}
+						readyWithoutContentSince = time.Time{}
+						continue
+					}
+				}
 				if strings.TrimSpace(content) == "" {
 					if readyWithoutContentSince.IsZero() {
 						readyWithoutContentSince = time.Now()
@@ -2097,11 +2214,11 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 						}
 					}
 					if time.Since(readyWithoutContentSince) >= 15*time.Second {
-						return captured, fmt.Errorf("Cursor Agent CLI returned to the prompt without visible assistant output; latest pane:\n%s", captured)
+						return captured, "", fmt.Errorf("Cursor Agent CLI returned to the prompt without visible assistant output; latest pane:\n%s", captured)
 					}
 					continue
 				}
-				return captured, nil
+				return captured, "", nil
 			}
 		}
 	}
