@@ -2,6 +2,7 @@ package testcontracts
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -69,12 +70,19 @@ func AssertAgentJudgesFinalExtraction(t testing.TB, c FinalExtractionJudgeCase) 
 	// Fingerprint over the extraction shape (provider + extracted text): stable
 	// for a deterministic parser, and it changes exactly when the extraction
 	// output changes — which is when a fresh agent review is genuinely needed.
-	shape := map[string]any{"provider": c.Provider, "extracted": c.Extracted}
+	// Live tests embed a fresh random token per run (LIVE_CLAUDE_FINAL_<hex>);
+	// it is normalised out so an approval carries over across runs, while any
+	// change to the extracted text's content or format still invalidates it.
+	shape := map[string]any{"provider": c.Provider, "extracted": liveRunTokenPattern.ReplaceAllString(c.Extracted, "<RUN_TOKEN>")}
 	summary := fmt.Sprintf("Final-response extraction for %s: is EXTRACTED_FINAL the clean final answer from RAW_PROVIDER_OUTPUT?", c.Provider)
 
 	rec := agentreview.WriteWithCriteria(t, t.Name(), summary, agentreview.FinalExtractionCriteria, output, shape)
 	agentreview.RequireReviewed(t, rec)
 }
+
+// liveRunTokenPattern matches the per-run random tokens live tests embed:
+// an upper-case name ending in _<8+ lower-case hex chars>.
+var liveRunTokenPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_[0-9a-f]{8,}\b`)
 
 func truncateForJudge(s string) string {
 	const max = 12000

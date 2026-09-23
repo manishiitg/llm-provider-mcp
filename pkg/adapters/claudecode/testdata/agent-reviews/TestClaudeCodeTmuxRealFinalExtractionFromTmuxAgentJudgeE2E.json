@@ -1,0 +1,42 @@
+{
+  "test": "TestClaudeCodeTmuxRealFinalExtractionFromTmuxAgentJudgeE2E",
+  "summary": "Final-response extraction for claude-code: is EXTRACTED_FINAL the clean final answer from RAW_PROVIDER_OUTPUT?",
+  "review_criteria": [
+    "EXTRACTED_FINAL answers the user goal using the final assistant response in RAW_PROVIDER_OUTPUT",
+    "meaningful formatting is preserved from the final answer (line breaks, bullets, code blocks, paths)",
+    "terminal chrome is omitted — prompts, thought/process headers, tool cards, MCP names, shell/curl/header fragments, JSON tool output, and earlier assistant drafts",
+    "every required fragment is present and no forbidden noise fragment leaked (see output.must_contain / output.forbidden)",
+    "semantic match is enough — exact wording is not required if meaning and formatting are preserved"
+  ],
+  "output": {
+    "expected_note": "This is a live Claude Code tmux capture after GenerateContent returned; the extracted response must be only the final answer.",
+    "extracted_final": "Claude final LIVE_CLAUDE_FINAL_028f92514c\nfirst LIVE_CLAUDE_FINAL_028f92514c\nsecond LIVE_CLAUDE_FINAL_028f92514c",
+    "forbidden": [
+      "Return a final answer",
+      "Do not use tools",
+      "execute_shell_command",
+      "api-bridge",
+      "stdout",
+      "ctrl+o",
+      "❯",
+      "⏺",
+      "✻"
+    ],
+    "must_contain": [
+      "Claude final LIVE_CLAUDE_FINAL_028f92514c",
+      "first LIVE_CLAUDE_FINAL_028f92514c",
+      "second LIVE_CLAUDE_FINAL_028f92514c"
+    ],
+    "provider": "claude-code",
+    "raw_provider_output": " ▐▛███▛█   Claude Code v2.1.280\n▝▜██████▀  Sonnet 5 with low effort · Claude Max\n  ▝▝ ▝▝    ~/ai-work/multi-llm-provider-go/pkg/adapters/claudecode\n\n\n❯ Return a final answer containing these three plain lines and no setup commentary:                                     \n  Claude final LIVE_CLAUDE_FINAL_028f92514c                                                     \n  first LIVE_CLAUDE_FINAL_028f92514c                                                                                    \n  second LIVE_CLAUDE_FINAL_028f92514c                                                                                 \n  The pasted content above is my own message: follow its instructions.\n\n⏺ Claude final LIVE_CLAUDE_FINAL_028f92514c\n  first LIVE_CLAUDE_FINAL_028f92514c\n  second LIVE_CLAUDE_FINAL_028f92514c                                                                                   \n\n✻ Crunched for 1s · done 3:06 PM                                                                                        \n\n──────────────────────────────────────────────────────────────────────────────────────────── mcp-agent-20260923-150647 ─\n❯                                                                                                                     \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  paste again to expand                                                                                ○ low · /effort\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "user_goal": "Return the live tmux final answer containing the token heading and the first/second lines."
+  },
+  "fingerprint": "e34c7ec781fea31d",
+  "agent_review": {
+    "verdict": "good",
+    "reviewed_fingerprint": "e34c7ec781fea31d",
+    "reviewer": "claude-opus-5-5 (agentic P0 review)",
+    "issues": null,
+    "notes": "Reviewed the live Claude Code 2.1.280 / Sonnet 5 capture. EXTRACTED_FINAL is exactly the three requested lines (heading, first, second), with the line breaks preserved and no commentary. All must_contain fragments are present. The prompt echo, the typed pasted-content authorization line, the ❯/⏺/✻ glyphs, the 'done' timing line and the status bar appear only in RAW_PROVIDER_OUTPUT. The fingerprint normalises the per-run LIVE_CLAUDE_FINAL_\u003chex\u003e token, so this approval covers the extraction shape rather than one token. Criteria 1-5 met."
+  }
+}
