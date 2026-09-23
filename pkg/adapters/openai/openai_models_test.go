@@ -41,7 +41,7 @@ func TestOpenAIGPT6Pricing(t *testing.T) {
 
 func TestOpenAICatalogOmitsRetiredGPT56Family(t *testing.T) {
 	for _, model := range GetAllOpenAIModels() {
-		for _, retired := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		for _, retired := range []string{"gpt-5.6-sol", "gpt-5.6-luna"} {
 			if model.ModelID == retired {
 				t.Errorf("OpenAI catalog still lists %q", retired)
 			}

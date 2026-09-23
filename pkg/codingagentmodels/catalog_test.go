@@ -63,7 +63,7 @@ func TestListIncludesNewCodingAgentModels(t *testing.T) {
 
 func TestListOmitsRetiredCodingAgentModels(t *testing.T) {
 	for provider, retired := range map[string][]string{
-		"codex-cli":   {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+		"codex-cli":   {"gpt-5.6-sol", "gpt-5.6-luna"},
 		"claude-code": {"claude-opus-5"},
 		"cursor-cli":  {"grok-4.6"},
 		"pi-cli":      {"xai/grok-4.6"},

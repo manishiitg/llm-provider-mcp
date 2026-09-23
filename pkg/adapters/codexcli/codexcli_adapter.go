@@ -226,25 +226,6 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
 		}, nil
 
-	case strings.Contains(modelID, "gpt-5.6-terra"):
-		return &llmtypes.ModelMetadata{
-			ModelID:                         metadataModelID,
-			Provider:                        "codex-cli",
-			ModelName:                       "GPT-5.6 Terra",
-			ContextWindow:                   1050000,
-			InputCostPer1MTokens:            2.00,
-			OutputCostPer1MTokens:           12.00,
-			CachedInputCostPer1MTokens:      0.20,
-			CachedInputCostWritePer1MTokens: 2.50,
-			LongContextThresholdTokens:      272000,
-			LongContextInputMultiplier:      2,
-			LongContextOutputMultiplier:     1.5,
-			SupportsToolCalls:               true,
-			SupportsJSONMode:                true,
-			SupportsReasoningEffort:         true,
-			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
-		}, nil
-
 	case strings.Contains(modelID, "gpt-5.6-luna"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                         metadataModelID,

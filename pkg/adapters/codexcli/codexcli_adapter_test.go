@@ -375,7 +375,7 @@ if [ "$1" = "capture-pane" ]; then
   if [ "$count" -lt 7 ]; then
     printf '• Working (%ss • esc to interrupt)\n' "$count"
   else
-    printf '› Implement {feature}\n\n  gpt-5.6-terra high · /tmp/workspace\n'
+    printf '› Implement {feature}\n\n  gpt-6-sol high · /tmp/workspace\n'
   fi
   exit 0
 fi
@@ -1961,7 +1961,7 @@ func TestCodexV0144WorkedFooterAllowsReadyPromptDespiteOldWorkingLine(t *testing
 
 › Write tests for @filename
 
-  gpt-5.6-terra medium · /tmp/workspace
+  gpt-6-sol medium · /tmp/workspace
 `
 	if !isCodexCompletedStatusLine("─ Worked for 4m 23s ──────") {
 		t.Fatalf("Codex 0.144.1 worked footer should be classified as completed")
@@ -1992,7 +1992,7 @@ if [ "$1" = "capture-pane" ]; then
     '  STATUS: COMPLETED' \
     '─ Worked for 4m 23s ────────────────' \
     '› Write tests for @filename' \
-    '  gpt-5.6-terra medium · /tmp/workspace'
+    '  gpt-6-sol medium · /tmp/workspace'
 fi
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {

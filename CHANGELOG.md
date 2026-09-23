@@ -50,7 +50,7 @@
 
 ### Documentation
 
-- Documented the Codex 0.145 rollout requirement for GPT-5.6 Sol, Terra, and
+- Documented the Codex 0.145 rollout requirement for GPT-5.6 Sol and
   Luna, including multiple-installation troubleshooting.
 
 ### Fixed

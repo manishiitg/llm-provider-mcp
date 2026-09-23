@@ -141,7 +141,7 @@ if [ "$1" = "capture-pane" ]; then
     '  STATUS: COMPLETED' \
     '────────────────────────────────────────────────────────────────' \
     '› Find and fix a bug in @filename' \
-    '  gpt-5.6-terra medium · /tmp/workspace'
+    '  gpt-6-sol medium · /tmp/workspace'
 fi
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
@@ -155,7 +155,7 @@ fi
   STATUS: COMPLETED
 ────────────────────────────────────────────────────────────────
 › Find and fix a bug in @filename
-  gpt-5.6-terra medium · /tmp/workspace
+  gpt-6-sol medium · /tmp/workspace
 `
 	if !hasCodexActivity(pane) {
 		t.Fatal("fixture must reproduce stale Working activity without a Worked-for footer")
@@ -266,7 +266,7 @@ if [ "$1" = "capture-pane" ]; then
     '  STATUS: COMPLETED' \
     '────────────────────────────────────────────────────────────────' \
     '› Find and fix a bug in @filename' \
-    '  gpt-5.6-terra medium · /tmp/workspace'
+    '  gpt-6-sol medium · /tmp/workspace'
 fi
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
@@ -300,7 +300,7 @@ if [ "$1" = "capture-pane" ]; then
 	'• The agent produced an intermediate summary but has not declared completion.' \
 	'────────────────────────────────────────────────────────────────' \
 	'› Find and fix a bug in @filename' \
-	'  gpt-5.6-terra medium · /tmp/workspace'
+	'  gpt-6-sol medium · /tmp/workspace'
 fi
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {

@@ -43,7 +43,7 @@ if [ "$1" = "capture-pane" ]; then
     '  STATUS: COMPLETED' \
     '────────────────────────────────────────────────────────────────' \
     '› Find and fix a bug in @filename' \
-    '  gpt-5.6-terra medium · /tmp/workspace'
+    '  gpt-6-sol medium · /tmp/workspace'
 fi
 `
 	if err := os.WriteFile(filepath.Join(fakeBin, "tmux"), []byte(script), 0o755); err != nil {
