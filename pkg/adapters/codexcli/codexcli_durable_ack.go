@@ -430,7 +430,8 @@ func resolveCodexRolloutPathNoMu(session *codexInteractiveSession, since time.Ti
 	if strings.TrimSpace(path) != "" {
 		return path
 	}
-	return findCodexRolloutForSessionScan(since, session.workingDir, boundCodexRolloutPaths(session), codexRolloutBindPrompt(session), session.accountRoot)
+	bindPrompt, bindSince := codexRolloutBindPrompt(session)
+	return findCodexRolloutForSessionScan(since, session.workingDir, boundCodexRolloutPaths(session), bindPrompt, bindSince, session.accountRoot)
 }
 
 // stashCodexDurableReceiptForSend snapshots the rollout offset before a

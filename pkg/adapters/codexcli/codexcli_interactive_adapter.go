@@ -86,7 +86,11 @@ type codexInteractiveSession struct {
 	// it: exclusion alone let two sessions that started together in one
 	// directory claim each other's rollouts and return each other's answers.
 	// Guarded by rolloutMu.
-	bindPrompt             string
+	bindPrompt string
+	// bindSince bounds the bind-prompt scan. It is taken before the session is
+	// acquired, because a fresh session receives its first prompt as a launch
+	// argument and Codex can record it well before the turn's promptSentAt.
+	bindSince              time.Time
 	cliSecurityFingerprint string
 	idleLease              sessionlease.Lease
 	initErr                error
@@ -174,6 +178,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	inspector.EmitEvent("tmux_session_acquiring", map[string]interface{}{
 		"owner_session_id": ownerSessionID,
 	})
+	bindSince := time.Now()
 	session, created, err := c.acquireCodexInteractiveSession(callCtx, ownerSessionID, opts, systemPrompt, prompt)
 	if err != nil {
 		inspector.EmitError(err, map[string]interface{}{
@@ -291,7 +296,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		baseline, _ = captureCodexPane(callCtx, session.tmuxSessionName)
 	}
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
-	setCodexRolloutBindPrompt(session, prompt)
+	setCodexRolloutBindPrompt(session, prompt, bindSince)
 	promptSentAt := time.Now()
 	if initialPromptAtLaunch {
 		var err error

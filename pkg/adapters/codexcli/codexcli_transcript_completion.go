@@ -315,8 +315,14 @@ func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingD
 // With one, a rollout qualifies only if it recorded that prompt as a user row:
 // first a strict match, then a loose (shared-prefix) match that must be
 // unique. It returns "" rather than guess, and callers retry on the next poll.
-func findCodexRolloutForSessionScan(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, bindPrompt string, accountRoot ...string) string {
-	candidates := codexRolloutCandidatesInWorkingDir(turnStart, expectedWorkingDir, excluded, accountRoot...)
+// bindSince, when set and earlier than turnStart, widens the scan to cover a
+// prompt Codex recorded at launch, before the turn's own start time.
+func findCodexRolloutForSessionScan(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, bindPrompt string, bindSince time.Time, accountRoot ...string) string {
+	scanFrom := turnStart
+	if !bindSince.IsZero() && (scanFrom.IsZero() || bindSince.Before(scanFrom)) {
+		scanFrom = bindSince
+	}
+	candidates := codexRolloutCandidatesInWorkingDir(scanFrom, expectedWorkingDir, excluded, accountRoot...)
 	bindPrompt = strings.TrimSpace(bindPrompt)
 	if bindPrompt == "" {
 		if len(candidates) == 0 {
@@ -326,7 +332,7 @@ func findCodexRolloutForSessionScan(turnStart time.Time, expectedWorkingDir stri
 	}
 	var loose []string
 	for _, path := range candidates {
-		strict, looseMatch := codexRolloutRecordsBindPrompt(path, bindPrompt, turnStart)
+		strict, looseMatch := codexRolloutRecordsBindPrompt(path, bindPrompt, scanFrom)
 		if strict {
 			return path
 		}
