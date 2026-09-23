@@ -184,6 +184,11 @@ type claudeCompletedTranscriptResponse struct {
 	// (a queued message or a background result delivered as a new user row),
 	// so only LastIsEndTurn may end a turn.
 	LastIsEndTurn bool
+	// PendingBackgroundAgents is Claude's own count of background agents
+	// still running when the latest turn ended (system turn_duration row's
+	// pendingBackgroundAgentCount). While it is non-zero the answer is interim:
+	// each agent's report arrives later as a new user row and Claude continues.
+	PendingBackgroundAgents int
 }
 
 // completedAssistantResponseFromTranscript returns the final assistant message
@@ -211,9 +216,11 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		Content    []claudeAssistantContentBlock `json:"content"`
 	}
 	type event struct {
-		Type      string          `json:"type"`
-		Timestamp string          `json:"timestamp"`
-		Message   json.RawMessage `json:"message"`
+		Type                        string          `json:"type"`
+		Subtype                     string          `json:"subtype"`
+		Timestamp                   string          `json:"timestamp"`
+		Message                     json.RawMessage `json:"message"`
+		PendingBackgroundAgentCount int             `json:"pendingBackgroundAgentCount"`
 	}
 	type group struct {
 		text      []string
@@ -229,7 +236,14 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var e event
-		if json.Unmarshal(scanner.Bytes(), &e) != nil || (e.Type != "assistant" && e.Type != "user") {
+		if json.Unmarshal(scanner.Bytes(), &e) != nil {
+			continue
+		}
+		if e.Type == "system" && e.Subtype == "turn_duration" {
+			result.PendingBackgroundAgents = e.PendingBackgroundAgentCount
+			continue
+		}
+		if e.Type != "assistant" && e.Type != "user" {
 			continue
 		}
 		if !turnStart.IsZero() && e.Timestamp != "" {
@@ -266,8 +280,11 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		}
 		lastAssistantID = id
 		userAfterLastAssistant = false
+		// A new assistant record belongs to a turn whose turn_duration row
+		// (if any) has not been written yet.
+		result.PendingBackgroundAgents = 0
 	}
-	if last := groups[lastAssistantID]; last != nil && last.completed && !userAfterLastAssistant && len(last.text) > 0 {
+	if last := groups[lastAssistantID]; last != nil && last.completed && !userAfterLastAssistant && len(last.text) > 0 && result.PendingBackgroundAgents == 0 {
 		result.LastIsEndTurn = true
 	}
 
