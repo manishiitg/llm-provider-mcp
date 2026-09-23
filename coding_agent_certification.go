@@ -355,15 +355,15 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{
 			ID:          CertSlowToolFalseIdle,
 			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
-			TestName:    "TestMuseCLIRealExecSlowTool",
-			Description: "forces a real shell-tool round trip inside a Meta turn: completion (not a false-idle timeout) plus a live tool_call_end stream chunk",
+			TestName:    "TestMuseCLIRealTmuxToolRunTerminal",
+			Description: "interactive shell-tool turn waits for its current run terminal event after the tool result and returns the run-scoped final answer",
 			RealE2E:     true,
 		},
 		{
 			ID:          CertDoneDetection,
 			TestFile:    "pkg/adapters/musecli/musecli_p0_live_test.go",
 			TestName:    "TestMuseCLIRealTmuxMultiTurn",
-			Description: "detects per-turn completion through intake plus pane/log quiescence across two turns in one TUI session",
+			Description: "detects per-turn completion through accepted intent and matching run terminal events across two turns in one TUI session",
 			RealE2E:     true,
 		},
 		{

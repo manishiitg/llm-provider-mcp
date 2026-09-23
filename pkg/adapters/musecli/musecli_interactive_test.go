@@ -735,6 +735,24 @@ func TestMuseTranscriptStreamStatePollsBySequence(t *testing.T) {
 	}
 }
 
+func TestMuseTranscriptStreamIncludesFastCommitAfterPreSubmitBaseline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	rows := []string{
+		`{"sequence":1,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"old answer"}}}`,
+		`{"sequence":2,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","text":"fast current answer"}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(rows, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The current answer may commit before intake discovers the path.
+	state := newMuseTranscriptStreamStateAt(path, "", true, false, 1)
+	ch := make(chan llmtypes.StreamChunk, 4)
+	state.poll(context.Background(), ch)
+	if len(ch) != 1 || (<-ch).Content != "fast current answer" {
+		t.Fatal("fast current commit must stream exactly once without old history")
+	}
+}
+
 // TestMuseTUIApprovalArgv pins the mounted-turn approval posture both launch
 // paths share: --approval-mode never must stay present — --disable-approval
 // alone lets MCP tools park in approval_wait and hang the turn (proven live).

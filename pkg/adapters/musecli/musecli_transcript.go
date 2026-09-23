@@ -166,8 +166,9 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 func museIntPtr(v int) *int { return &v }
 
 // museTurnCommits counts assistant_message_committed run events in a native
-// session log: one per model answer, the turn-completion ground truth the
-// quiescence waiter anchors on. Unreadable logs count zero, never an error.
+// session log for legacy pane-wait diagnostics. A commit is not whole-run
+// completion; production uses the run terminal event. Unreadable logs count
+// zero, never an error.
 func museTurnCommits(logPath string) int {
 	raw, err := os.ReadFile(logPath)
 	if err != nil {

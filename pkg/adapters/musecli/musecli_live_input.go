@@ -86,6 +86,11 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	baseline := museTranscriptMaxSequence(logPath)
 	since := time.Now()
 	stashMuseDurableReceipt(ownerSessionID, message, logPath, baseline, since)
+	musePersistentPool.Lock()
+	if current := musePersistentPool.m[key]; current != nil && current.tmuxName == tmuxName {
+		current.lastSubmittedPrompt = museTerminalPrompt(message)
+	}
+	musePersistentPool.Unlock()
 	if err := museSendPrompt(ctx, tmuxName, message); err != nil {
 		return museArbiterAfterSubmitFailure(ctx, ownerSessionID, tmuxName, message, since, baseline, err)
 	}
@@ -111,6 +116,16 @@ func SendMuseInteractiveControlKey(ctx context.Context, ownerSessionID, key stri
 	send := exec.CommandContext(ctx, "tmux", "send-keys", "-t", tmuxName, key)
 	if out, err := send.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux send-keys %s: %w\n%s", key, err, out)
+	}
+	if key == "Escape" {
+		poolKey, err := musePersistentKey(ownerSessionID)
+		if err == nil {
+			musePersistentPool.Lock()
+			if current := musePersistentPool.m[poolKey]; current != nil && current.tmuxName == tmuxName {
+				current.stoppedPrompt = current.lastSubmittedPrompt
+			}
+			musePersistentPool.Unlock()
+		}
 	}
 	return nil
 }

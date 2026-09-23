@@ -83,6 +83,7 @@ type museIntakeRecord struct {
 	RecordedAt  int64  `json:"recorded_at"`
 	PayloadType string `json:"payload_type"`
 	Payload     struct {
+		IntentID     string `json:"intent_id"`
 		RefillBlocks []struct {
 			Kind string `json:"kind"`
 			Text string `json:"text"`
@@ -91,12 +92,20 @@ type museIntakeRecord struct {
 }
 
 func museLogAcceptedPromptSince(path string, since time.Time, snippet string) bool {
+	_, _, ok := museAcceptedIntentSince(path, since, snippet)
+	return ok
+}
+
+// museAcceptedIntentSince returns the accepted intent for this submission.
+// The intent ID is also the run ID on ordinary interactive turns; callers
+// use it to exclude old turns from completion, final text, and usage.
+func museAcceptedIntentSince(path string, since time.Time, snippet string) (string, int64, bool) {
 	if snippet == "" {
-		return false
+		return "", 0, false
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return "", 0, false
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -112,11 +121,11 @@ func museLogAcceptedPromptSince(path string, since time.Time, snippet string) bo
 		}
 		for _, block := range row.Payload.RefillBlocks {
 			if block.Kind == "text" && strings.HasPrefix(block.Text, snippet) {
-				return true
+				return row.Payload.IntentID, row.Sequence, true
 			}
 		}
 	}
-	return false
+	return "", 0, false
 }
 
 // museLogMatchesWorkspace reports whether raw session.jsonl bytes record
@@ -210,7 +219,9 @@ func museLogQuietSince(logPath string, quietFor time.Duration) bool {
 	return time.Since(info.ModTime()) >= quietFor
 }
 
-// museWaitTurnQuiescent waits for a submitted, taken-in turn to finish:
+// museWaitTurnQuiescent is the legacy pane/log waiter retained for visual
+// settling tests. Production completion uses museWaitTurnTerminal instead.
+// It waits for a submitted, taken-in turn to appear finished:
 // the pane has returned to settled idle and the native session log has been
 // quiet for a beat. Callers must prove intake first (museWaitIntake): pane
 // markers alone cannot signal completion, because the settled chrome
@@ -409,16 +420,35 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// Persistent sessions may still be executing a previous/live-input turn.
 	// Let the caller own that wait: a local 90-second timeout would enter the
 	// network retry loop while the same native turn continues doing work.
-	turnStart := time.Now()
+	var readyPane string
 	var readyErr error
 	if persistent {
-		_, readyErr = museWaitAtPrompt(ctx, session, 0)
+		readyPane, readyErr = museWaitAtPrompt(ctx, session, 0)
 	} else {
-		_, readyErr = museWaitSettled(ctx, session, 90*time.Second)
+		readyPane, readyErr = museWaitSettled(ctx, session, 90*time.Second)
 	}
 	if readyErr != nil {
 		return nil, readyErr
 	}
+	var preSubmitLogPath string
+	if persistent {
+		if err := musePrepareStoppedPrompt(ctx, owner, session, readyPane); err != nil {
+			return nil, err
+		}
+		if key, err := musePersistentKey(owner); err == nil {
+			musePersistentPool.Lock()
+			if entry := musePersistentPool.m[key]; entry != nil && entry.tmuxName == session {
+				entry.lastSubmittedPrompt = museTerminalPrompt(prompt)
+				preSubmitLogPath = entry.logPath
+				if preSubmitLogPath == "" && entry.nativeSessionID != "" {
+					preSubmitLogPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
+				}
+			}
+			musePersistentPool.Unlock()
+		}
+	}
+	preSubmitSeq := museTranscriptMaxSequence(preSubmitLogPath)
+	turnStart := time.Now()
 	submitErr := museSendPrompt(ctx, session, prompt)
 	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
@@ -427,23 +457,30 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 		return nil, err
 	}
+	runID, acceptedSeq, ok := museAcceptedIntentSince(logPath, turnStart, promptSnippet(prompt))
+	if !ok || runID == "" {
+		return nil, fmt.Errorf("muse intake record has no current run ID (session %s)", nativeSessionID)
+	}
 	if persistent {
 		museRecordPersistentTranscript(owner, session, nativeSessionID, logPath)
 	}
 	// Opt-in transcript streaming: tail the intake-discovered session.jsonl
 	// so assistant text + tool starts/ends stream while the turn runs.
-	// Started here (not pre-submit) because the log path is only known once
-	// intake finds it; primed to the intake-time max sequence so nothing
-	// committed before this point replays. Stopped synchronously below —
+	// Started here because the log path is only known once intake finds it,
+	// but primed to the pre-submit sequence so a fast answer committed before
+	// discovery still streams. Stopped synchronously below —
 	// the final flush lands before return, and the adapter never closes
 	// StreamChan itself (caller-owned, exec-lane precedent).
 	var museStreamState *museTranscriptStreamState
 	var museStreamCancel context.CancelFunc
 	if opts.StreamChan != nil && (museInteractiveStreamTranscriptEnabled(opts) || museInteractiveStreamTmuxScreenEnabled(opts)) {
+		if preSubmitLogPath != logPath {
+			preSubmitSeq = 0 // new native session: no prior rows to replay
+		}
 		streamCtx, cancel := context.WithCancel(ctx)
 		museStreamCancel = cancel
-		museStreamState = newMuseTranscriptStreamState(logPath, session,
-			museInteractiveStreamTranscriptEnabled(opts), museInteractiveStreamTmuxScreenEnabled(opts))
+		museStreamState = newMuseTranscriptStreamStateAt(logPath, session,
+			museInteractiveStreamTranscriptEnabled(opts), museInteractiveStreamTmuxScreenEnabled(opts), preSubmitSeq)
 		go museStreamState.run(streamCtx, opts.StreamChan)
 	}
 	stopMuseStream := func() {
@@ -456,13 +493,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// Tool calls and delegated workflows can legitimately exceed five minutes.
 	// Keep observing this submitted turn until completion or caller cancellation;
 	// never abandon it on an adapter deadline and retry its prompt.
-	after, err := museWaitTurnQuiescent(ctx, session, logPath, 0)
+	after, err := museWaitTurnTerminal(ctx, session, logPath, runID, acceptedSeq, 0)
 	stopMuseStream()
 	if err != nil {
 		return nil, err
 	}
 
-	transcript, ok := readMuseTranscriptMessages(logPath, "")
+	transcript, ok := readMuseTranscriptMessages(logPath, runID)
 	if !ok {
 		return nil, fmt.Errorf("read muse TUI transcript at %s", logPath)
 	}
@@ -482,10 +519,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		WorkingDir:      workdir,
 		Model:           strings.TrimSpace(a.modelID),
 	})
-	// Keep the settled post-turn pane on the response: it is the wrapped
-	// screen the reply-formatting-fidelity cert compares the transcript
-	// extraction against. Bounded sessions are torn down below, so no test
-	// can re-capture it afterwards; persistent ones stay live.
+	// Keep a best-effort post-turn pane for terminal presentation and the
+	// formatting cert. The native run event, not pane appearance, establishes
+	// completion and scopes the returned answer.
 	if gi.Additional == nil {
 		gi.Additional = map[string]any{}
 	}
@@ -495,7 +531,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		StopReason:     "completed",
 		GenerationInfo: gi,
 	}}}
-	if usage, ok := readMuseTranscriptUsage(logPath, ""); ok {
+	if usage, ok := readMuseTranscriptUsage(logPath, runID); ok {
 		resp.Usage = &usage
 		museAttachTurnCost(gi, strings.TrimSpace(a.modelID), &usage)
 	}

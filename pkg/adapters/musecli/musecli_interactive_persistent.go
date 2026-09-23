@@ -70,6 +70,10 @@ type musePersistentSession struct {
 	toolAllowlist      []string
 	nativeSessionID    string
 	logPath            string
+	// Stop can leave the interrupted prompt in Muse's composer. Record only
+	// our own last submission so the next turn can clear that exact draft.
+	lastSubmittedPrompt string
+	stoppedPrompt       string
 	// retainedBaselineSequence is the last durable Muse event that existed
 	// before the most recent live-input submission. The retained-turn reader
 	// only accepts assistant commits after this cursor, so an older completed

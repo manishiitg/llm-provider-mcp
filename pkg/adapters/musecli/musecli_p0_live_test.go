@@ -31,6 +31,85 @@ func requireMetaMuseCLIE2E(t *testing.T) {
 	}
 }
 
+// A long native shell task may outlive its foreground answer. Muse can record
+// post-terminal task rows without an explicit task_backgrounded marker.
+func TestMuseCLIRealBackgroundTaskAfterRunTerminal(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	workdir := t.TempDir()
+	prompt := "Use a shell command to run `sleep 25; echo BACKGROUND_DONE > task-result.txt` in this directory. The command may continue in the background; tell me as soon as it has started. Do not wait for task-result.txt before replying."
+	turnStart := time.Now()
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+		WithTmuxTransport(true), WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if handle == nil || handle.NativeSessionID == "" {
+		t.Fatal("missing native session handle")
+	}
+	path := museSessionLogPath(handle.NativeSessionID)
+	runID, acceptedSeq, ok := museAcceptedIntentSince(path, turnStart, promptSnippet(prompt))
+	if !ok || runID == "" {
+		t.Fatal("accepted run missing from native journal")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminalSeq int64
+	for _, line := range strings.Split(string(raw), "\n") {
+		var row struct {
+			Sequence    int64  `json:"sequence"`
+			PayloadType string `json:"payload_type"`
+			Payload     struct {
+				Kind  string `json:"kind"`
+				RunID string `json:"run_id"`
+				Event struct {
+					Kind     string `json:"kind"`
+					Terminal string `json:"terminal"`
+				} `json:"event"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &row) == nil && row.PayloadType == "runtime.session" && row.Payload.Kind == "run" && row.Payload.RunID == runID && row.Payload.Event.Kind == "terminal" && row.Payload.Event.Terminal == "completed" {
+			terminalSeq = row.Sequence
+		}
+	}
+	if terminalSeq <= acceptedSeq {
+		t.Fatalf("current run has no completed terminal: run=%s", runID)
+	}
+	reader := NewBackgroundTaskReader(handle.NativeSessionID, 0)
+	var later []BackgroundTaskEvent
+	completed := false
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, err := reader.Poll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.RunID == runID && row.Sequence > terminalSeq {
+				later = append(later, row)
+				if row.Kind == "completed" {
+					completed = true
+				}
+			}
+		}
+		if completed {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+	if !completed {
+		t.Fatalf("no completed task event after native foreground terminal: run=%s terminal=%d late=%+v", runID, terminalSeq, later)
+	}
+}
+
 // museLiveAdapter returns an adapter on CLI defaults: empty modelID means
 // no --model flag, so the CLI resolves muse-spark-1.3-contributor itself
 // (single model everywhere; the constructor's second arg is the model id,
@@ -207,6 +286,78 @@ func TestMuseCLIRealExecSlowTool(t *testing.T) {
 	t.Logf("tool_call pair: tool=%q call=%q args=%q", end.ToolName, end.ToolCallID, end.ToolArgs)
 }
 
+// TestMuseCLIRealTmuxToolRunTerminal is the interactive slow_tool_false_idle
+// proof. A model step may finish with tool_calls, and task rows may complete,
+// but the adapter must wait for the same run's terminal event and return the
+// answer produced after the tool result.
+func TestMuseCLIRealTmuxToolRunTerminal(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	defer cancel()
+	workdir := t.TempDir()
+	token := "TOOLRUN-" + museRandomHex(t, 4)
+	if err := os.WriteFile(filepath.Join(workdir, "marker.txt"), []byte(token+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := museLiveBootTUI(t, ctx, workdir)
+	prompt := "Use a shell command to sleep 8 seconds and then print the contents of marker.txt in the current directory. Reply with exactly the printed text and nothing else."
+	turnStart := time.Now()
+	if err := museSendPrompt(ctx, session, prompt); err != nil {
+		t.Fatal(err)
+	}
+	_, path, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, acceptedSeq, ok := museAcceptedIntentSince(path, turnStart, promptSnippet(prompt))
+	if !ok || runID == "" {
+		t.Fatal("accepted tool turn has no run ID")
+	}
+	if _, err := museWaitTurnTerminal(ctx, session, path, runID, acceptedSeq, 6*time.Minute); err != nil {
+		t.Fatalf("tool run did not complete: %v", err)
+	}
+	transcript, ok := readMuseTranscriptMessages(path, runID)
+	if !ok || strings.TrimSpace(museLastAssistantText(transcript)) != token {
+		t.Fatalf("current run answer = %q, want %q", museLastAssistantText(transcript), token)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolCallsSeq, toolResultsSeq, terminalSeq int64
+	for _, line := range strings.Split(string(raw), "\n") {
+		var row struct {
+			Sequence    int64  `json:"sequence"`
+			PayloadType string `json:"payload_type"`
+			Payload     struct {
+				Kind  string `json:"kind"`
+				RunID string `json:"run_id"`
+				Event struct {
+					Kind     string `json:"kind"`
+					Terminal string `json:"terminal"`
+				} `json:"event"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil || row.PayloadType != "runtime.session" ||
+			row.Payload.Kind != "run" || row.Payload.RunID != runID {
+			continue
+		}
+		switch row.Payload.Event.Kind {
+		case "assistant_tool_calls_committed":
+			toolCallsSeq = row.Sequence
+		case "tool_result_batch_committed":
+			toolResultsSeq = row.Sequence
+		case "terminal":
+			if row.Payload.Event.Terminal == "completed" {
+				terminalSeq = row.Sequence
+			}
+		}
+	}
+	if toolCallsSeq <= acceptedSeq || toolResultsSeq <= toolCallsSeq || terminalSeq <= toolResultsSeq {
+		t.Fatalf("run sequence accepted=%d tool_calls=%d tool_results=%d terminal=%d", acceptedSeq, toolCallsSeq, toolResultsSeq, terminalSeq)
+	}
+}
+
 // museLiveBootTUI launches a Meta TUI in workdir and waits for the settled
 // idle pane. The session is killed on test cleanup.
 func museLiveBootTUI(t *testing.T, ctx context.Context, workdir string) string {
@@ -226,9 +377,8 @@ func museLiveBootTUI(t *testing.T, ctx context.Context, workdir string) string {
 	return session
 }
 
-// museLiveSubmitTurn sends one prompt, verifies intake through the session
-// log, and waits for quiescence, returning the finished pane and the turn's
-// session log path.
+// museLiveSubmitTurn sends one prompt, verifies native intake, then waits for
+// that run's terminal event. The pane is returned only as presentation data.
 func museLiveSubmitTurn(t *testing.T, ctx context.Context, session, prompt string) (pane, logPath string) {
 	t.Helper()
 	turnStart := time.Now()
@@ -239,7 +389,11 @@ func museLiveSubmitTurn(t *testing.T, ctx context.Context, session, prompt strin
 	if err != nil {
 		t.Fatalf("prompt never taken in: %v", err)
 	}
-	after, err := museWaitTurnQuiescent(ctx, session, path, 5*time.Minute)
+	runID, acceptedSeq, ok := museAcceptedIntentSince(path, turnStart, promptSnippet(prompt))
+	if !ok || runID == "" {
+		t.Fatal("accepted turn has no run ID")
+	}
+	after, err := museWaitTurnTerminal(ctx, session, path, runID, acceptedSeq, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("turn never completed: %v", err)
 	}
@@ -326,7 +480,7 @@ func TestMuseCLIRealPersistentSession(t *testing.T) {
 }
 
 // TestMuseCLIRealTmuxMultiTurn drives two turns through ONE TUI session:
-// per-turn completion detection (re-settle after each submit), continuity
+// per-turn completion detection (matching run terminal event), continuity
 // (both answers in one native transcript), and transcript final extraction.
 // Backs multi_turn and done_detection.
 func TestMuseCLIRealTmuxMultiTurn(t *testing.T) {
@@ -673,10 +827,18 @@ func TestMuseCLIRealTmuxParallelIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("B prompt never taken in: %v", err)
 	}
-	if _, err := museWaitTurnQuiescent(ctx, sessA, logA, 5*time.Minute); err != nil {
+	runA, seqA, ok := museAcceptedIntentSince(logA, startA, tokenA)
+	if !ok || runA == "" {
+		t.Fatal("A accepted turn has no run ID")
+	}
+	runB, seqB, ok := museAcceptedIntentSince(logB, startB, tokenB)
+	if !ok || runB == "" {
+		t.Fatal("B accepted turn has no run ID")
+	}
+	if _, err := museWaitTurnTerminal(ctx, sessA, logA, runA, seqA, 5*time.Minute); err != nil {
 		t.Fatalf("A never completed: %v", err)
 	}
-	if _, err := museWaitTurnQuiescent(ctx, sessB, logB, 5*time.Minute); err != nil {
+	if _, err := museWaitTurnTerminal(ctx, sessB, logB, runB, seqB, 5*time.Minute); err != nil {
 		t.Fatalf("B never completed: %v", err)
 	}
 	if logA == logB {

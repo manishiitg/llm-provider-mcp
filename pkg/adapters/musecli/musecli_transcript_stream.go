@@ -142,8 +142,9 @@ func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool
 }
 
 // museTranscriptStreamState tails one turn's session.jsonl by sequence and
-// emits new records as chunks. lastSeq primes to the file's current max at
-// construction so prior turns' history never replays. When screenEnabled it
+// emits new records as chunks. Production primes lastSeq to the pre-submit
+// sequence, so records committed before intake discovery still stream while
+// earlier history cannot replay. When screenEnabled it
 // also snapshots the live pane on a coarse ticker, emitting Terminal chunks
 // only on change (the mode1 raw-terminal view) — same split as cursor's
 // transcript + tmux-screen flags.
@@ -172,6 +173,10 @@ type museTranscriptStreamState struct {
 // it (observed live 2026-09-11). Matching cursor's simpler, priming-free
 // pattern fixes this the same way cursor never had the bug.
 func newMuseTranscriptStreamState(logPath, tmuxName string, transcriptEnabled, screenEnabled bool) *museTranscriptStreamState {
+	return newMuseTranscriptStreamStateAt(logPath, tmuxName, transcriptEnabled, screenEnabled, museTranscriptMaxSequence(logPath))
+}
+
+func newMuseTranscriptStreamStateAt(logPath, tmuxName string, transcriptEnabled, screenEnabled bool, baselineSeq int64) *museTranscriptStreamState {
 	s := &museTranscriptStreamState{
 		logPath: logPath, tmuxName: tmuxName,
 		transcriptEnabled: transcriptEnabled, screenEnabled: screenEnabled,
@@ -179,7 +184,7 @@ func newMuseTranscriptStreamState(logPath, tmuxName string, transcriptEnabled, s
 		endedTool: map[string]bool{}, toolStartedAt: map[string]time.Time{},
 		done: make(chan struct{}),
 	}
-	s.lastSeq = museTranscriptMaxSequence(logPath)
+	s.lastSeq = baselineSeq
 	return s
 }
 
