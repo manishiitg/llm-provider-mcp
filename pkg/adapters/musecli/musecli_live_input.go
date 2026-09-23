@@ -58,22 +58,12 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	}
 	tmuxName := entry.tmuxName
 	logPath := entry.logPath
-	userChoice := entry.userChoice
 	if logPath == "" && entry.nativeSessionID != "" {
 		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
 	}
 	musePersistentPool.Unlock()
 	if !museTmuxSessionAlive(ctx, tmuxName) {
 		return fmt.Errorf("muse tmux session %q for owner %s is gone", tmuxName, ownerSessionID)
-	}
-	if userChoice {
-		pane, err := museTmuxCapturePane(ctx, tmuxName)
-		if err != nil {
-			return err
-		}
-		if pendingErr := musePendingUserInputError(pane); pendingErr != nil {
-			return pendingErr
-		}
 	}
 	// entry.autoAnswer is only ever populated by the turn that first launched
 	// this persistent session (generateContentTmux's museWithAutoAnswer +
@@ -86,12 +76,8 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	// even though the exact same widget auto-answers fine from a fresh turn.
 	// Always enable auto-answer here too, and persist it the same way so a
 	// later turn on this session reuses this state instead of re-creating it.
-	if userChoice {
-		ctx = context.WithValue(ctx, museUserChoiceKey{}, true)
-	} else {
-		ctx = museWithAutoAnswer(ctx, nil)
-		ctx = museBindPersistentAutoAnswer(ctx, entry)
-	}
+	ctx = museWithAutoAnswer(ctx, nil)
+	ctx = museBindPersistentAutoAnswer(ctx, entry)
 	if err := museWaitLiveInputComposer(ctx, tmuxName); err != nil {
 		return err
 	}

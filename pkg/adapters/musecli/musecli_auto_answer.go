@@ -13,18 +13,6 @@ import (
 )
 
 const metadataMuseAutoSelectRecommended = "muse_auto_select_recommended"
-const metadataMuseUserChoice = "muse_user_choice"
-
-// WithUserChoice leaves native questions open for a structured chat choice.
-// The caller must consume QuestionReader events and submit the answer.
-func WithUserChoice(enabled bool) llmtypes.CallOption {
-	return func(o *llmtypes.CallOptions) {
-		ensureMetadata(o)
-		o.Metadata.Custom[metadataMuseUserChoice] = enabled
-	}
-}
-
-type museUserChoiceKey struct{}
 
 // WithAutoSelectRecommended controls native question widgets in the tmux lane.
 // Enabled by default. Selects the first option regardless of recommendation
@@ -103,9 +91,6 @@ func museWithAutoAnswer(ctx context.Context, opts *llmtypes.CallOptions) context
 		if value, ok := opts.Metadata.Custom[metadataMuseAutoSelectRecommended].(bool); ok && !value {
 			return ctx
 		}
-		if enabled, _ := opts.Metadata.Custom[metadataMuseUserChoice].(bool); enabled {
-			return context.WithValue(ctx, museUserChoiceKey{}, true)
-		}
 	}
 	state := &museAutoAnswerState{}
 	return context.WithValue(ctx, museAutoAnswerKey{}, state)
@@ -128,9 +113,6 @@ func museHandlePendingQuestion(ctx context.Context, session, pane string) (pendi
 		return false, nil
 	}
 	answer, ok := museRecommendedQuestion(pane)
-	if userChoice, _ := ctx.Value(museUserChoiceKey{}).(bool); userChoice {
-		return true, nil
-	}
 	if state == nil || !ok {
 		return true, pendingErr
 	}
@@ -247,10 +229,8 @@ func museBindPersistentAutoAnswer(ctx context.Context, entry *musePersistentSess
 	defer musePersistentPool.Unlock()
 	if requested == nil {
 		entry.autoAnswer = nil
-		entry.userChoice, _ = ctx.Value(museUserChoiceKey{}).(bool)
 		return ctx
 	}
-	entry.userChoice = false
 	if entry.autoAnswer == nil {
 		entry.autoAnswer = requested
 	}
