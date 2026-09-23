@@ -599,10 +599,13 @@ func TestMuseCLIRealTmuxLiveInput(t *testing.T) {
 		t.Log("long turn finished before the 8s queue window; follow-up still exercises live input on an idle pane")
 	}
 	queueStart := time.Now()
-	if err := museSendPrompt(ctx, session, "Reply with exactly "+token+" and nothing else."); err != nil {
+	queuedPrompt := "Reply with exactly " + token + " and nothing else."
+	if err := museSendPrompt(ctx, session, queuedPrompt); err != nil {
 		t.Fatalf("send queued follow-up: %v", err)
 	}
-	_, logPath, err := museWaitIntake(ctx, session, queueStart, token, "")
+	// Intake matches the accepted intent's text by prefix (71fdb70), the
+	// same promptSnippet production passes. A mid-prompt token never matches.
+	_, logPath, err := museWaitIntake(ctx, session, queueStart, promptSnippet(queuedPrompt), "")
 	if err != nil {
 		t.Fatalf("queued follow-up never taken in: %v", err)
 	}
@@ -640,10 +643,11 @@ func TestMuseCLIRealTmuxCancellation(t *testing.T) {
 	session := museLiveBootTUI(t, ctx, t.TempDir())
 
 	essayStart := time.Now()
-	if err := museSendPrompt(ctx, session, "Write a 600-word essay on glass manufacturing history with extensive detail."); err != nil {
+	longPrompt := "Write a 600-word essay on glass manufacturing history with extensive detail."
+	if err := museSendPrompt(ctx, session, longPrompt); err != nil {
 		t.Fatalf("send long turn: %v", err)
 	}
-	if _, _, err := museWaitIntake(ctx, session, essayStart, "glass manufacturing", ""); err != nil {
+	if _, _, err := museWaitIntake(ctx, session, essayStart, promptSnippet(longPrompt), ""); err != nil {
 		t.Fatalf("long turn never taken in: %v", err)
 	}
 	// Prove the model is mid-answer before interrupting: the "◆" answer
@@ -682,6 +686,33 @@ func TestMuseCLIRealTmuxCancellation(t *testing.T) {
 			t.Fatalf("no interrupt marker after Ctrl-C; latest pane:\n%s", pane)
 		}
 		time.Sleep(time.Second)
+	}
+	// A Ctrl-C before any model output makes Muse retract the run and
+	// restore the prompt into the composer (run_retracted
+	// no_output_interrupt_restore). Production clears that draft in
+	// musePrepareStoppedPrompt; do the same here or the next prompt is
+	// appended to it.
+	if draft, ok := museActiveComposerDraft(pane); ok && draft != "" {
+		if !strings.HasPrefix(longPrompt, draft) && !strings.HasPrefix(draft, longPrompt) {
+			t.Fatalf("unexpected composer draft after interrupt: %q", draft)
+		}
+		if err := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u").Run(); err != nil {
+			t.Fatalf("clear restored draft: %v", err)
+		}
+		clearDeadline := time.Now().Add(5 * time.Second)
+		for {
+			p, err := museTmuxCapturePane(ctx, session)
+			if err != nil {
+				t.Fatalf("capture pane: %v", err)
+			}
+			if d, ok := museActiveComposerDraft(p); ok && d == "" {
+				break
+			}
+			if time.Now().After(clearDeadline) {
+				t.Fatalf("restored draft not cleared; latest pane:\n%s", p)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	token := "AFTERCANCEL-" + museRandomHex(t, 3)
 	after, logPath := museLiveSubmitTurn(t, ctx, session, "Reply with exactly "+token+" and nothing else.")
@@ -812,26 +843,28 @@ func TestMuseCLIRealTmuxParallelIsolation(t *testing.T) {
 	tokenA := "PARA-" + museRandomHex(t, 3)
 	tokenB := "PARB-" + museRandomHex(t, 3)
 	startA := time.Now()
-	if err := museSendPrompt(ctx, sessA, "Reply with exactly "+tokenA+" and nothing else."); err != nil {
+	promptA := "Reply with exactly " + tokenA + " and nothing else."
+	if err := museSendPrompt(ctx, sessA, promptA); err != nil {
 		t.Fatalf("send A: %v", err)
 	}
 	startB := time.Now()
-	if err := museSendPrompt(ctx, sessB, "Reply with exactly "+tokenB+" and nothing else."); err != nil {
+	promptB := "Reply with exactly " + tokenB + " and nothing else."
+	if err := museSendPrompt(ctx, sessB, promptB); err != nil {
 		t.Fatalf("send B: %v", err)
 	}
-	_, logA, err := museWaitIntake(ctx, sessA, startA, tokenA, "")
+	_, logA, err := museWaitIntake(ctx, sessA, startA, promptSnippet(promptA), "")
 	if err != nil {
 		t.Fatalf("A prompt never taken in: %v", err)
 	}
-	_, logB, err := museWaitIntake(ctx, sessB, startB, tokenB, "")
+	_, logB, err := museWaitIntake(ctx, sessB, startB, promptSnippet(promptB), "")
 	if err != nil {
 		t.Fatalf("B prompt never taken in: %v", err)
 	}
-	runA, seqA, ok := museAcceptedIntentSince(logA, startA, tokenA)
+	runA, seqA, ok := museAcceptedIntentSince(logA, startA, promptSnippet(promptA))
 	if !ok || runA == "" {
 		t.Fatal("A accepted turn has no run ID")
 	}
-	runB, seqB, ok := museAcceptedIntentSince(logB, startB, tokenB)
+	runB, seqB, ok := museAcceptedIntentSince(logB, startB, promptSnippet(promptB))
 	if !ok || runB == "" {
 		t.Fatal("B accepted turn has no run ID")
 	}
