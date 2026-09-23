@@ -194,16 +194,38 @@ func readCursorRetainedInput(input *cursorRetainedInput) []llmtypes.MessageConte
 	return out
 }
 
-// cursorCompletedTurnAnswer returns the final assistant text of one query's
-// store trail, or "" while the trail is not finished: the last message must be
-// assistant prose, not a tool call or a tool result still awaiting a reply.
-func cursorCompletedTurnAnswer(trail []llmtypes.MessageContent) string {
+// cursorTrailState classifies one query's store trail for turn completion.
+type cursorTrailState int
+
+const (
+	// cursorTrailNotTaken: no user row for the query yet (not taken in).
+	cursorTrailNotTaken cursorTrailState = iota
+	// cursorTrailTaken: the query is recorded but no reply has committed.
+	cursorTrailTaken
+	// cursorTrailPendingTool: the latest assistant tool call has no result.
+	cursorTrailPendingTool
+	// cursorTrailAwaitingReply: the latest tool returned; no reply followed.
+	cursorTrailAwaitingReply
+	// cursorTrailFinished: the trail ends in assistant prose -- the answer.
+	cursorTrailFinished
+)
+
+// cursorTurnTrailState reports where one query's trail stands and, when
+// finished, its final assistant text. Cursor writes no end-of-turn marker, so
+// the shape of the trail is the proof: a trailing tool call means a tool is
+// still running, a trailing tool result means the reply is missing, and
+// trailing prose (with no tool call in it) is the finished answer.
+func cursorTurnTrailState(trail []llmtypes.MessageContent) (string, cursorTrailState) {
 	if len(trail) == 0 {
-		return ""
+		return "", cursorTrailNotTaken
 	}
 	last := trail[len(trail)-1]
-	if last.Role != llmtypes.ChatMessageTypeAI {
-		return ""
+	switch last.Role {
+	case llmtypes.ChatMessageTypeTool:
+		return "", cursorTrailAwaitingReply
+	case llmtypes.ChatMessageTypeAI:
+	default:
+		return "", cursorTrailTaken
 	}
 	var text strings.Builder
 	for _, part := range last.Parts {
@@ -211,8 +233,12 @@ func cursorCompletedTurnAnswer(trail []llmtypes.MessageContent) string {
 		case llmtypes.TextContent:
 			text.WriteString(p.Text)
 		case llmtypes.ToolCall:
-			return ""
+			return "", cursorTrailPendingTool
 		}
 	}
-	return strings.TrimSpace(text.String())
+	answer := strings.TrimSpace(text.String())
+	if answer == "" {
+		return "", cursorTrailTaken
+	}
+	return answer, cursorTrailFinished
 }

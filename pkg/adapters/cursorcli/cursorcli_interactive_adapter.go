@@ -378,7 +378,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		go func() { defer close(cursorStreamDone); streamState.run(streamCtx, opts.StreamChan) }()
 	}
 
-	storeAnswer := func(query string) (string, bool) {
+	storeAnswer := func(query string) (string, cursorTrailState) {
 		storeDB := pinnedCursorStoreNoMu(session)
 		if storeDB == "" {
 			storeDB = freshestCursorStoreDBSince(session.workingDir, turnStart, session.accountHome)
@@ -388,7 +388,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 			query:    strings.Join(strings.Fields(query), " "),
 			baseline: initialRefs,
 		})
-		return cursorCompletedTurnAnswer(trail), len(trail) > 0
+		return cursorTurnTrailState(trail)
 	}
 	captured, storeFinal, err := waitForCursorInteractiveResponseWithStore(callCtx, session.tmuxSessionName, baseline, prompt, historicalAssistantTexts, opts.StreamChan, cursorAutoApproveWebSearchFromOptions(opts), cursorInteractiveStreamTmuxScreenEnabled(opts), storeAnswer)
 	if cursorStreamStop != nil {
@@ -416,7 +416,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 
 	content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
 	completionSource := "pane"
-	if strings.TrimSpace(content) == "" && storeFinal != "" {
+	if storeFinal != "" {
 		content = storeFinal
 		completionSource = "store_turn_answer"
 	}
@@ -2015,7 +2015,7 @@ func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline
 // instead of failing it (P0: the provider's own record proves the final
 // answer). Until the store shows the prompt was taken in, an idle-looking pane
 // (boot/trust screen) must not trigger answer recovery or a no-output failure.
-func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool, storeAnswer func(query string) (string, bool)) (string, string, error) {
+func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool, storeAnswer func(query string) (string, cursorTrailState)) (string, string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	waitStartedAt := time.Now()
@@ -2133,25 +2133,39 @@ func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName,
 			}
 			if time.Since(idleSince) >= cursorInteractiveStableWindow {
 				content := parseCursorInteractiveResponse(captured, baseline, prompt, historicalAssistantTexts)
-				if strings.TrimSpace(content) == "" && storeAnswer != nil {
-					// A recovery prompt typed while Cursor was still working may
-					// never become its own stored turn; the original query's
-					// finished trail is then the answer.
+				storeAwaitingReply := false
+				if storeAnswer != nil {
+					// P0: the store's trail for this exact query decides. The
+					// pane only says the composer is back. A recovery prompt
+					// typed while Cursor was still working may never become its
+					// own stored turn, so the original query is checked too.
 					queries := []string{prompt}
 					if finalAnswerRecoveryCount > 0 {
 						queries = []string{cursorFinalAnswerRecoveryPrompt, prompt}
 					}
-					promptTaken := false
+					state := cursorTrailNotTaken
 					for _, query := range queries {
-						answer, taken := storeAnswer(query)
-						if answer != "" {
+						answer, st := storeAnswer(query)
+						if st == cursorTrailFinished {
 							return captured, answer, nil
 						}
-						if query == prompt {
-							promptTaken = taken
+						if state == cursorTrailNotTaken {
+							state = st
 						}
 					}
-					if !promptTaken && time.Since(waitStartedAt) < cursorStoreIntakeWait {
+					switch {
+					case state == cursorTrailPendingTool:
+						// A tool call has no result yet: the idle-looking pane is
+						// a false idle (slow tool). Keep waiting; never recover.
+						idleSince = time.Time{}
+						readyWithoutContentSince = time.Time{}
+						continue
+					case state == cursorTrailAwaitingReply:
+						// The last tool returned but no reply followed. Pane text
+						// here is pre-tool narration, not an answer.
+						content = ""
+						storeAwaitingReply = true
+					case state == cursorTrailNotTaken && time.Since(waitStartedAt) < cursorStoreIntakeWait:
 						// Not taken in yet. If our prompt is still sitting in the
 						// composer, its Enter was swallowed (e.g. by the workspace
 						// trust screen): resubmit it. Never type a recovery prompt
@@ -2179,6 +2193,12 @@ func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName,
 						readyWithoutContentSince = time.Time{}
 						continue
 					}
+					// Taken in but still streaming (user row only, or assistant
+					// prose not yet committed): only a finished trail completes.
+					if state == cursorTrailTaken {
+						idleSince = time.Time{}
+						continue
+					}
 				}
 				if strings.TrimSpace(content) == "" {
 					if readyWithoutContentSince.IsZero() {
@@ -2192,7 +2212,7 @@ func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName,
 					// recover by asking the same native session for the missing final
 					// answer. The original baseline remains valid: the new User: boundary
 					// causes extraction to retain only this recovery turn's response.
-					if finalAnswerRecoveryCount == 0 && cursorPaneContainsToolActivity(delta) &&
+					if finalAnswerRecoveryCount == 0 && (storeAwaitingReply || cursorPaneContainsToolActivity(delta)) &&
 						time.Since(readyWithoutContentSince) >= cursorFinalAnswerRecoveryDelay {
 						if err := sendCursorInitialPromptToTmux(ctx, sessionName, cursorFinalAnswerRecoveryPrompt); err == nil {
 							finalAnswerRecoveryCount++

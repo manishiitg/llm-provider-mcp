@@ -830,7 +830,7 @@ func TestCursorCLIRealCompletionDetection(t *testing.T) {
 	defer cancel()
 
 	stream := make(chan llmtypes.StreamChunk, 64)
-	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Keep replies concise. Do not use tools."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What is 7 * 8?"}}},
 	},
@@ -843,6 +843,15 @@ func TestCursorCLIRealCompletionDetection(t *testing.T) {
 		t.Fatalf("GenerateContent error = %v", err)
 	}
 	_ = drainCursorStream(stream)
+
+	// P0 (PLAT-354): the turn is completed and answered from Cursor's own
+	// store.db trail for this query, not from the pane.
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, "56") {
+		t.Fatalf("final answer missing 56: %#v", resp)
+	}
+	if gi := resp.Choices[0].GenerationInfo; gi == nil || gi.Additional["cursor_completion_source"] != "store_turn_answer" {
+		t.Fatalf("completion source = %v, want store_turn_answer", gi)
+	}
 
 	// After GenerateContent returns, pane must be in ready state.
 	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
