@@ -522,7 +522,57 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		defer stopTranscriptStream()
 	}
 
-	content, err := waitForMarkedResponse(callCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))
+	// done_detection (PLAT-354): the current turn's final end_turn in the JSONL
+	// transcript is the primary completion signal; the pane wait below is the
+	// fallback when no transcript is readable. Whichever finishes first ends the
+	// wait. The structured waiter publishes its result before cancelling the
+	// pane wait, so a cancelled pane wait always finds that result here.
+	accountHome := llmtypes.ProviderAccountEnvironment(opts)["HOME"]
+	paneCtx, cancelPaneWait := context.WithCancel(callCtx)
+	structuredEnd := make(chan claudeCompletedTranscriptResponse, 1)
+	go func() {
+		if response, ok := waitForClaudeTurnEndInTranscript(paneCtx, nativeSessionID, workingDir, turnStart, claudeTranscriptTurnEndQuiet, accountHome); ok {
+			structuredEnd <- response
+			cancelPaneWait()
+		}
+	}()
+	content, err := waitForMarkedResponse(paneCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))
+	completionSource := "tmux_pane"
+	select {
+	case response := <-structuredEnd:
+		if callCtx.Err() == nil {
+			content, err = response.Text, nil
+			completionSource = "jsonl_end_turn"
+		}
+	default:
+		// The pane looked finished first. When a transcript exists it is still
+		// the authority: wait for the current turn's final end_turn and quiet
+		// window instead of trusting pane idleness (a brief prompt can appear
+		// between tool rounds, or before Claude continues with a queued message).
+		// Only a session with no readable transcript keeps the pane result.
+		if err == nil && callCtx.Err() == nil {
+			if transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, accountHome); transcriptPath != "" {
+				select {
+				case response := <-structuredEnd:
+					content = response.Text
+					completionSource = "jsonl_end_turn"
+				case <-callCtx.Done():
+				}
+			}
+		}
+	}
+	cancelPaneWait()
+	if completionSource == "jsonl_end_turn" && persistentInteractive {
+		// The answer is committed, but the retained pane may still be finishing
+		// its render; the next turn pastes into it without its own readiness
+		// wait. Give it a short, bounded chance to settle. A pane that never
+		// settles no longer hangs the finished turn.
+		settleCtx, cancelSettle := context.WithTimeout(callCtx, 10*time.Second)
+		if settleErr := waitForTmuxPrompt(settleCtx, sessionName, nil, false); settleErr != nil && c.logger != nil {
+			c.logger.Infof("claude-code: turn completed from transcript end_turn but pane %s did not settle: %v", sessionName, settleErr)
+		}
+		cancelSettle()
+	}
 	if err != nil {
 		if isClaudeTmuxSessionLostError(err) {
 			discardPersistentSession(err)
@@ -697,6 +747,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// parsing only as a compatibility fallback for CLI versions/environments in
 	// which the transcript cannot be read.
 	additional["claude_code_final_extraction_source"] = finalExtractionSource
+	additional["claude_code_completion_source"] = completionSource
 	// Chat surfaces want the whole turn (narration before tool calls too), not
 	// only the committed end_turn answer that final_result keeps for workflows.
 	if turnText != "" && turnText != content {

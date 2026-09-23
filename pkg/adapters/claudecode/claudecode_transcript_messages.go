@@ -178,6 +178,12 @@ type claudeCompletedTranscriptResponse struct {
 	TurnText  string
 	Found     bool
 	Completed bool
+	// LastIsEndTurn is stricter than Completed: the current turn's latest
+	// assistant or user record is an end_turn message with text. Completed
+	// stays true once any end_turn appears, even if Claude then continued
+	// (a queued message or a background result delivered as a new user row),
+	// so only LastIsEndTurn may end a turn.
+	LastIsEndTurn bool
 }
 
 // completedAssistantResponseFromTranscript returns the final assistant message
@@ -217,17 +223,26 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	groups := make(map[string]*group)
 	order := make([]string, 0)
 	standalone := 0
+	lastAssistantID := ""
+	userAfterLastAssistant := false
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var e event
-		if json.Unmarshal(scanner.Bytes(), &e) != nil || e.Type != "assistant" {
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || (e.Type != "assistant" && e.Type != "user") {
 			continue
 		}
 		if !turnStart.IsZero() && e.Timestamp != "" {
 			if ts, parseErr := time.Parse(time.RFC3339Nano, e.Timestamp); parseErr == nil && ts.Before(turnStart) {
 				continue
 			}
+		}
+		if e.Type == "user" {
+			// A tool result or a newly delivered message: Claude is working again.
+			if lastAssistantID != "" {
+				userAfterLastAssistant = true
+			}
+			continue
 		}
 		var am assistantMessage
 		if json.Unmarshal(e.Message, &am) != nil {
@@ -249,6 +264,11 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 			g.completed = true
 			result.Completed = true
 		}
+		lastAssistantID = id
+		userAfterLastAssistant = false
+	}
+	if last := groups[lastAssistantID]; last != nil && last.completed && !userAfterLastAssistant && len(last.text) > 0 {
+		result.LastIsEndTurn = true
 	}
 
 	for i := len(order) - 1; i >= 0; i-- {
@@ -266,6 +286,57 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		}
 	}
 	return result
+}
+
+// claudeTranscriptTurnEndQuiet is how long the transcript must stay unchanged
+// after the current turn's final end_turn before that turn counts as finished.
+// It absorbs a continuation Claude starts right after end_turn (a queued
+// message or background result arrives as a new record and resets the wait).
+const claudeTranscriptTurnEndQuiet = 1500 * time.Millisecond
+
+// waitForClaudeTurnEndInTranscript is the structured done_detection gate
+// (PLAT-354): it returns once the current turn's latest record is a committed
+// end_turn answer and the transcript has been quiet for quiet. The pane plays
+// no part. ok is false when ctx ends first or no transcript exists for the
+// session; callers then keep the pane-based completion as a fallback.
+func waitForClaudeTurnEndInTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, quiet time.Duration, accountHome ...string) (claudeCompletedTranscriptResponse, bool) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastSize int64 = -1
+	var lastModTime time.Time
+	var endSeenAt time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return claudeCompletedTranscriptResponse{}, false
+		case <-ticker.C:
+		}
+		transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
+		if transcriptPath == "" {
+			continue
+		}
+		info, err := os.Stat(transcriptPath)
+		if err != nil {
+			continue
+		}
+		if info.Size() != lastSize || !info.ModTime().Equal(lastModTime) {
+			lastSize, lastModTime = info.Size(), info.ModTime()
+			response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
+			if response.LastIsEndTurn && strings.TrimSpace(response.Text) != "" {
+				endSeenAt = time.Now()
+			} else {
+				endSeenAt = time.Time{}
+			}
+			continue
+		}
+		if !endSeenAt.IsZero() && time.Since(endSeenAt) >= quiet {
+			response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
+			if response.LastIsEndTurn && strings.TrimSpace(response.Text) != "" {
+				return response, true
+			}
+			endSeenAt = time.Time{}
+		}
+	}
 }
 
 // waitForCompletedAssistantResponseFromTranscript waits for Claude Code's
