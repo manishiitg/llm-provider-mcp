@@ -497,12 +497,24 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// Keep observing this submitted turn until completion or caller cancellation;
 	// never abandon it on an adapter deadline and retry its prompt.
 	after, err := museWaitTurnTerminal(ctx, session, logPath, runID, acceptedSeq, 0)
+	if err != nil {
+		stopMuseStream()
+		return nil, err
+	}
+	// A background subagent's result arrives after this run ended, in a new
+	// inbox-delivery run; that run holds the real answer.
+	finalRunID, err := museWaitSubagentContinuation(ctx, session, logPath, runID, acceptedSeq)
 	stopMuseStream()
 	if err != nil {
 		return nil, err
 	}
+	if finalRunID != runID {
+		if pane, captureErr := museTmuxCapturePane(ctx, session); captureErr == nil {
+			after = pane
+		}
+	}
 
-	transcript, ok := readMuseTranscriptMessages(logPath, runID)
+	transcript, ok := readMuseTranscriptMessages(logPath, finalRunID)
 	if !ok {
 		return nil, fmt.Errorf("read muse TUI transcript at %s", logPath)
 	}
@@ -534,7 +546,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		StopReason:     "completed",
 		GenerationInfo: gi,
 	}}}
-	if usage, ok := readMuseTranscriptUsage(logPath, runID); ok {
+	if usage, ok := readMuseTranscriptUsage(logPath, finalRunID); ok {
 		resp.Usage = &usage
 		museAttachTurnCost(gi, strings.TrimSpace(a.modelID), &usage)
 	}

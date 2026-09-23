@@ -308,3 +308,38 @@ func museResultKeys(results map[string]string) map[string]string {
 	}
 	return out
 }
+
+// TestMuseCLIRealBackgroundSubagentNoEarlyAnswer: a subagent the parent does
+// not wait on must not end the turn with an interim reply; the final answer
+// must carry what only the subagent can report.
+func TestMuseCLIRealBackgroundSubagentNoEarlyAnswer(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	var called atomic.Int32
+	stub := museProbeMCPStub(&called)
+	defer stub.Close()
+	workDir := t.TempDir()
+	secret := "BG-CHILD-" + museRandomHex(t, 4)
+	if err := os.WriteFile(filepath.Join(workDir, "witness.txt"), []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prompt := "Integration test. Spawn exactly one native subagent in the background and do NOT call subagent_wait. " +
+		"Do NOT read witness.txt yourself. Tell the subagent to read witness.txt and report its exact contents. " +
+		"When its report reaches you, reply with ONLY the witness contents it reported."
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	allow := []string{"web_search", "read_skill", "read_file", "search", "subagent_spawn", "subagent_wait", "subagent_send_message", "subagent_read_result", "subagent_input", "subagent_cancel"}
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+		WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`),
+		WithToolAllowlist(allow), WithWorkingDir(workDir), WithMuseStructuredTransport(false), WithTmuxTransport(true), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle; handle != nil && handle.TmuxSession != "" {
+		t.Cleanup(func() { CloseMuseCLIInteractiveSessionByTmux(handle.TmuxSession, "bg subagent probe complete") })
+		raw, _ := os.ReadFile(museSessionLogPath(handle.NativeSessionID))
+		t.Logf("parent tool results: %v", museResultKeys(museRestrictionProbeResults(raw)))
+	}
+	if final := resp.Choices[0].Content; !strings.Contains(final, secret) {
+		t.Fatalf("turn ended before the background subagent reported: final %q, want %s", final, secret)
+	}
+}
