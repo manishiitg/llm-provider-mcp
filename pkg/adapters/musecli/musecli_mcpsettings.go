@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -147,7 +148,14 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		// as unknown names. Keep the full discovery surface and enforce the exact
 		// native policy at execution time with a PreToolUse hook instead.
 		delete(run, "toolset")
-		run["subagent_delegation_mode"] = json.RawMessage(`"off"`)
+		// Native subagents are opt-in: allowlisting subagent_spawn turns
+		// delegation on ("auto"); otherwise the tools stay hidden ("off").
+		// Children run under this same settings.json hook and launch flags.
+		delegation := `"off"`
+		if slices.Contains(cleaned, "subagent_spawn") {
+			delegation = `"auto"`
+		}
+		run["subagent_delegation_mode"] = json.RawMessage(delegation)
 		run["workflow_trigger_mode"] = json.RawMessage(`"off"`)
 		runRaw, err := json.Marshal(run)
 		if err != nil {

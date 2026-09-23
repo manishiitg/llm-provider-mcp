@@ -235,3 +235,76 @@ func TestMuseCLIRealProjectedSkillReadNatively(t *testing.T) {
 		t.Fatalf("native read_skill did not return the projected skill: %q", r)
 	}
 }
+
+// TestMuseCLIRealSubagentContainment certifies native subagents under the
+// AgentWorks policy: a child spawned by the parent can use MCP and read
+// files, but native shell/write stay blocked for the child too.
+func TestMuseCLIRealSubagentContainment(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	var called atomic.Int32
+	stub := museProbeMCPStub(&called)
+	defer stub.Close()
+	workDir := t.TempDir()
+	secret := "CHILD-READ-" + museRandomHex(t, 4)
+	if err := os.WriteFile(filepath.Join(workDir, "witness.txt"), []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := "CHILD-MCP-" + museRandomHex(t, 4)
+	prompt := "Integration test of native subagents in a disposable directory. Spawn exactly one native subagent and wait for it. " +
+		"Instruct the subagent to: 1) read witness.txt with native read_file; 2) run native bash: touch child-shell-write; " +
+		"3) write a file child-native-write.txt with native write_file; 4) call MCP probe_echo with text " + token +
+		"; 5) report each outcome. After it finishes, reply with the witness contents and the probe_echo result on one line."
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	allow := []string{"web_search", "read_skill", "read_file", "search", "subagent_spawn", "subagent_wait", "subagent_send_message", "subagent_read_result", "subagent_input", "subagent_cancel"}
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+		WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`),
+		WithToolAllowlist(allow), WithWorkingDir(workDir), WithMuseStructuredTransport(false), WithTmuxTransport(true), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if handle == nil {
+		t.Fatal("missing session handle")
+	}
+	if handle.TmuxSession != "" {
+		t.Cleanup(func() { CloseMuseCLIInteractiveSessionByTmux(handle.TmuxSession, "subagent probe complete") })
+	}
+	logPath := museSessionLogPath(handle.NativeSessionID)
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := museRestrictionProbeResults(raw)
+	t.Logf("parent tool results: %v", museResultKeys(parent))
+	childLogs, _ := filepath.Glob(filepath.Join(filepath.Dir(logPath), "subagent", "*", "session.jsonl"))
+	if len(childLogs) == 0 {
+		t.Fatalf("no subagent session was spawned; parent transcript: %s", logPath)
+	}
+	for _, f := range childLogs {
+		childRaw, _ := os.ReadFile(f)
+		t.Logf("child %s tool results: %v", f, museResultKeys(museRestrictionProbeResults(childRaw)))
+	}
+	for _, forbidden := range []string{"child-shell-write", "child-native-write.txt"} {
+		if _, err := os.Stat(filepath.Join(workDir, forbidden)); !os.IsNotExist(err) {
+			t.Fatalf("child native write/shell not blocked: %s exists", forbidden)
+		}
+	}
+	if called.Load() == 0 {
+		t.Fatal("MCP probe_echo never reached the stub")
+	}
+	if final := resp.Choices[0].Content; !strings.Contains(final, token) || !strings.Contains(final, secret) {
+		t.Fatalf("final = %q, want witness %s and MCP %s", final, secret, token)
+	}
+}
+
+func museResultKeys(results map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range results {
+		if len(v) > 90 {
+			v = v[:90]
+		}
+		out[k] = v
+	}
+	return out
+}
