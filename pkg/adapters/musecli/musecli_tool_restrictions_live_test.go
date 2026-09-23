@@ -123,3 +123,67 @@ func museRestrictionProbeResults(raw []byte) map[string]string {
 	}
 	return results
 }
+
+// TestMuseCLIRealReadOnlyToolsAllowed certifies AgentWorks' production Muse
+// allowlist (mcpagent appendMuseCLIIntegrationOptions): native read_file,
+// search and Muse's own read_skill run; native shell stays denied.
+func TestMuseCLIRealReadOnlyToolsAllowed(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	var called atomic.Int32
+	stub := museProbeMCPStub(&called)
+	defer stub.Close()
+	workDir := t.TempDir()
+	secret := "NATIVE-READ-OK-" + museRandomHex(t, 4)
+	needle := "NEEDLE-" + museRandomHex(t, 4)
+	if err := os.WriteFile(filepath.Join(workDir, "witness.txt"), []byte(secret+"\n"+needle+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := "READONLY-MCP-" + museRandomHex(t, 4)
+	prompt := "This is a native tool policy integration test in a disposable directory. Make each attempt once. " +
+		"1) Call native read_file on witness.txt. 2) Call native search for " + needle + " in this directory. " +
+		"3) Call native read_skill for bundled:taste. 4) Call native bash with command: touch forbidden-shell-write. " +
+		"You must actually attempt each native tool; do not substitute MCP. Finally call MCP probe_echo with text " + token +
+		". Reply with ONLY that MCP result."
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+		WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`),
+		WithToolAllowlist([]string{"web_search", "read_skill", "read_file", "search"}),
+		WithWorkingDir(workDir), WithMuseStructuredTransport(false), WithTmuxTransport(true), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if called.Load() == 0 || !strings.Contains(resp.Choices[0].Content, token) {
+		t.Fatalf("MCP did not remain usable: calls=%d final=%q", called.Load(), resp.Choices[0].Content)
+	}
+	handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if handle == nil {
+		t.Fatal("missing session handle")
+	}
+	if handle.TmuxSession != "" {
+		t.Cleanup(func() { CloseMuseCLIInteractiveSessionByTmux(handle.TmuxSession, "read-only probe complete") })
+	}
+	logPath := museSessionLogPath(handle.NativeSessionID)
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := museRestrictionProbeResults(raw)
+	const denied = "Muse internal tools are disabled"
+	if r := results["read_file"]; !strings.Contains(r, secret) {
+		t.Fatalf("native read_file did not return the file: %q; transcript: %s", r, logPath)
+	}
+	if r := results["search"]; r == "" || strings.Contains(r, denied) || !strings.Contains(r, needle) {
+		t.Fatalf("native search did not run: %q; transcript: %s", r, logPath)
+	}
+	if r := results["read_skill"]; r == "" || strings.Contains(r, denied) {
+		t.Fatalf("native read_skill did not run: %q; transcript: %s", r, logPath)
+	}
+	if r := results["bash"]; r != "" && !strings.Contains(r, denied) {
+		t.Fatalf("native bash was not denied: %q", r)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "forbidden-shell-write")); !os.IsNotExist(err) {
+		t.Fatalf("native shell write was not blocked: %v", err)
+	}
+	t.Logf("read_file/search/read_skill allowed, shell blocked, MCP usable; transcript: %s", logPath)
+}
