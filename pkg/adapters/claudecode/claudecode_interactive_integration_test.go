@@ -257,7 +257,7 @@ func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session A initial GenerateContent error = %v", err)
 	}
-	if got := firstChoiceText(firstA); !containsFold(got, keyA) {
+	if got := firstChoiceText(firstA); !containsFold(got, "A saved "+keyA) {
 		t.Fatalf("session A initial content = %q, want token %q", got, keyA)
 	}
 	sessionA := experimentalClaudeSessionID(firstA)
@@ -294,7 +294,7 @@ func TestClaudeCodeTmuxIntegrationHaikuExtendedResumeIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session B initial GenerateContent error = %v", err)
 	}
-	if got := firstChoiceText(firstB); !containsFold(got, keyB) || containsFold(got, keyA) {
+	if got := firstChoiceText(firstB); !containsFold(got, "B saved "+keyB) || containsFold(got, keyA) {
 		t.Fatalf("session B initial content = %q, want token %q and no %q", got, keyB, keyA)
 	}
 	sessionB := experimentalClaudeSessionID(firstB)

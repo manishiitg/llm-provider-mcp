@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
@@ -2011,11 +2012,9 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 		pasteBody = body
 	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
-	if err := runCommand(ctx, strings.NewReader(pasteBody), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
-		return fmt.Errorf("failed to load prompt into tmux buffer: %w", err)
-	}
-	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste prompt into Claude Code tmux session: %w", err)
+	wholePaste, err := deliverClaudeComposerText(ctx, sessionName, bufferName, pasteBody)
+	if err != nil {
+		return err
 	}
 	// Wait for the pasted draft to appear, best-effort. Do NOT early-return on a
 	// "submitted" signal: a bracketed paste never auto-submits in Claude Code, so
@@ -2033,8 +2032,10 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 		// busy status line changes wording); still attempt the submit so the
 		// prompt doesn't sit unsubmitted.
 	}
-	if err := typeClaudePasteAuthorization(ctx, sessionName, pasteBody); err != nil {
-		return err
+	if wholePaste {
+		if err := typeClaudePasteAuthorization(ctx, sessionName, pasteBody); err != nil {
+			return err
+		}
 	}
 
 	var lastErr error
@@ -2138,11 +2139,9 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 		return err
 	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
-	if err := runCommand(ctx, strings.NewReader(message), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
-		return fmt.Errorf("failed to load Claude Code tmux input into tmux buffer: %w", err)
-	}
-	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
-		return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
+	wholePaste, err := deliverClaudeComposerText(ctx, sessionName, bufferName, message)
+	if err != nil {
+		return err
 	}
 	pasted := time.Since(start)
 	verifier := &claudeSubmitVerifier{message: message}
@@ -2158,8 +2157,10 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
 			_ = verifier.submitted(settledPane)
 		}
-		if err := typeClaudePasteAuthorization(ctx, sessionName, message); err != nil {
-			return err
+		if wholePaste {
+			if err := typeClaudePasteAuthorization(ctx, sessionName, message); err != nil {
+				return err
+			}
 		}
 	}
 	// Submit immediately after the paste. The pty delivers the pasted bytes and
@@ -2216,6 +2217,68 @@ func splitClaudeLeadingSlashCommand(prompt string) (command, body string, ok boo
 		return "", "", false
 	}
 	return first, rest, true
+}
+
+// claudeLinePasteChunk keeps every bracketed paste below Claude Code's
+// attachment threshold (claudeLiveInputNeedsPasteSettlement's 800).
+const claudeLinePasteChunk = 700
+
+// deliverClaudeComposerText puts text into Claude Code's composer. Claude Code
+// records one multi-line or large paste as <pasted_content>, which its system
+// prompt treats as untrusted: Haiku and Sonnet 5 refused ordinary prompts
+// (reproduced live 2026-09-23, also on resume). Pasting each line separately
+// in chunks under the attachment threshold, with Ctrl-J (a newline, not a
+// submit) between lines, is recorded as a plain user message -- verified live
+// for an 8 KB multi-line message and a 3.6 KB single line. Bracketed paste
+// still protects '@', tabs and other text that typing would trigger on.
+// A message starting with '!' would switch the empty composer to shell mode,
+// so it keeps the whole-message paste; wholePaste reports that case so the
+// caller can add claudePastedContentAuthorization.
+func deliverClaudeComposerText(ctx context.Context, sessionName, bufferName, text string) (wholePaste bool, err error) {
+	pasteOne := func(chunk string) error {
+		if err := runCommand(ctx, strings.NewReader(chunk), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
+			return fmt.Errorf("failed to load Claude Code input into tmux buffer: %w", err)
+		}
+		if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+			return fmt.Errorf("failed to paste input into Claude Code tmux session: %w", err)
+		}
+		return nil
+	}
+	if !claudeLiveInputNeedsPasteSettlement(text) || strings.HasPrefix(strings.TrimLeft(text, " \t"), "!") {
+		return claudeLiveInputNeedsPasteSettlement(text), pasteOne(text)
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		for _, chunk := range claudeLineChunks(line, claudeLinePasteChunk) {
+			if err := pasteOne(chunk); err != nil {
+				return false, err
+			}
+		}
+		if i < len(lines)-1 {
+			if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-j"); err != nil {
+				return false, fmt.Errorf("failed to insert newline into Claude Code tmux session: %w", err)
+			}
+		}
+	}
+	return false, nil
+}
+
+// claudeLineChunks splits line into pieces of at most max bytes on rune
+// boundaries. An empty line yields no chunks.
+func claudeLineChunks(line string, max int) []string {
+	var chunks []string
+	for len(line) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		chunks = append(chunks, line[:cut])
+		line = line[cut:]
+	}
+	if line != "" {
+		chunks = append(chunks, line)
+	}
+	return chunks
 }
 
 // claudePastedContentAuthorization is typed (never pasted) after a multi-line
