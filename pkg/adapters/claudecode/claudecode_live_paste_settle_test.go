@@ -47,3 +47,20 @@ func TestClaudeNormalizeRowTextStripsPasteAuthorization(t *testing.T) {
 		t.Fatal("authorization must be typed for multi-line pastes only (and large ones)")
 	}
 }
+
+func TestSplitClaudeLeadingSlashCommand(t *testing.T) {
+	cmd, body, ok := splitClaudeLeadingSlashCommand("/runtime-self-check\n\nRun only the skill part.\nReply SKILL_CANARY=<value>.")
+	if !ok || cmd != "/runtime-self-check" || body != "Run only the skill part.\nReply SKILL_CANARY=<value>." {
+		t.Fatalf("split = %q, %q, %v", cmd, body, ok)
+	}
+	for _, prompt := range []string{
+		"/runtime-self-check",              // lone command: paste as is
+		"Please run /runtime-self-check",   // not leading
+		"/path/to/file is broken\nfix it",  // a path, not a command name
+		"## Pre-validation failed\n\nFix.", // ordinary multi-line prompt
+	} {
+		if _, _, ok := splitClaudeLeadingSlashCommand(prompt); ok {
+			t.Fatalf("%q should not be split", prompt)
+		}
+	}
+}

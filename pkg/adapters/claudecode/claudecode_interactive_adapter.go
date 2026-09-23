@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1999,8 +2000,18 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
 		return err
 	}
+	// A leading slash command must be typed, not pasted: Claude Code records a
+	// multi-line paste as <pasted_content>, and a command inside pasted text is
+	// never expanded, so "/skill\n\n..." silently lost the skill (2026-09-23).
+	pasteBody := prompt
+	if command, body, ok := splitClaudeLeadingSlashCommand(prompt); ok {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", command+" "); err != nil {
+			return fmt.Errorf("failed to type Claude Code slash command: %w", err)
+		}
+		pasteBody = body
+	}
 	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
-	if err := runCommand(ctx, strings.NewReader(prompt), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
+	if err := runCommand(ctx, strings.NewReader(pasteBody), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("failed to load prompt into tmux buffer: %w", err)
 	}
 	if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", sessionName); err != nil {
@@ -2022,7 +2033,7 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 		// busy status line changes wording); still attempt the submit so the
 		// prompt doesn't sit unsubmitted.
 	}
-	if err := typeClaudePasteAuthorization(ctx, sessionName, prompt); err != nil {
+	if err := typeClaudePasteAuthorization(ctx, sessionName, pasteBody); err != nil {
 		return err
 	}
 
@@ -2188,6 +2199,23 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
 		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
 	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
+}
+
+// claudeLeadingSlashCommand matches a prompt whose first line is only a slash
+// command name, such as "/runtime-self-check".
+var claudeLeadingSlashCommand = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9:_.-]*$`)
+
+// splitClaudeLeadingSlashCommand splits "/command\n\nbody" into the command
+// to type and the body to paste. ok is false when there is no such leading
+// command or no body; a lone command line is short enough to paste as is.
+func splitClaudeLeadingSlashCommand(prompt string) (command, body string, ok bool) {
+	first, rest, found := strings.Cut(strings.TrimLeft(prompt, "\r\n"), "\n")
+	first = strings.TrimSpace(first)
+	rest = strings.TrimLeft(rest, "\r\n")
+	if !found || strings.TrimSpace(rest) == "" || !claudeLeadingSlashCommand.MatchString(first) {
+		return "", "", false
+	}
+	return first, rest, true
 }
 
 // claudePastedContentAuthorization is typed (never pasted) after a multi-line
@@ -2506,7 +2534,14 @@ func closeClaudeSessionForResumeUnserialized(closeCtx context.Context, sessionNa
 	}
 	promptCancel()
 
-	if err := runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-u", "/exit", "C-m"); err != nil {
+	// Exit with Ctrl-C twice, not "/exit". A typed /exit is recorded in the
+	// transcript as a local command (a <local-command-caveat> telling the model
+	// "DO NOT respond to these messages", then <command-name>/exit and its
+	// stdout), so a resumed conversation's next prompt arrived right after that
+	// caveat, and Sonnet 5 refused it as mixed with command output (2026-09-23).
+	// Ctrl-C on the idle composer prints "Press Ctrl-C again to exit"; the second
+	// exits with the same "claude --resume <id>" hint and records no rows.
+	if err := runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-u", "C-c"); err != nil {
 		if logger != nil {
 			logger.Errorf("Failed to close Claude Code tmux session %s cleanly: %v", sessionName, err)
 		}
@@ -2515,14 +2550,10 @@ func closeClaudeSessionForResumeUnserialized(closeCtx context.Context, sessionNa
 		}
 		return ""
 	}
-	// Claude Code v2.1.x can treat the first Enter as "open/select the /exit
-	// slash-command menu" rather than executing the command. Send one more Enter
-	// after a tiny settle window; if the pane already exited this is a harmless
-	// best-effort no-op.
 	select {
 	case <-closeCtx.Done():
 	case <-time.After(250 * time.Millisecond):
-		_ = runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+		_ = runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-c")
 	}
 	if isUUIDLike(knownSessionID) {
 		return knownSessionID
