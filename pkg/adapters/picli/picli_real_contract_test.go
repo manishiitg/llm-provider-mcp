@@ -647,6 +647,11 @@ func TestPiCLIRealSlowMCPToolDoneDetectionContract(t *testing.T) {
 	if got := strings.TrimSpace(resp.Choices[0].Content); !strings.Contains(got, want) {
 		t.Fatalf("content = %q, want slow MCP result %q", got, want)
 	}
+	// P0 (PLAT-354): the turn ended on Pi's once-per-run agent_settled
+	// marker, not on an agent_end that can fire mid-run.
+	if gi := resp.Choices[0].GenerationInfo; gi == nil || gi.Additional["pi_completion_source"] != "marker_agent_settled" {
+		t.Fatalf("completion source = %v, want marker_agent_settled", gi)
+	}
 }
 
 func TestPiCLIRealSlowToolLiveInputAndCancellationContract(t *testing.T) {

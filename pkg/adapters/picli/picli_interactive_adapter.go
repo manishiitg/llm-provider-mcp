@@ -91,22 +91,25 @@ const (
 )
 
 type piInteractiveSession struct {
-	ownerSessionID  string
-	nativeSessionID string
-	tmuxSessionName string
-	workingDir      string
-	sessionDir      string
-	tempDir         string
-	extensionPath   string
-	markerPath      string
-	persistent      bool
-	idleLease       sessionlease.Lease
-	createdAt       time.Time
-	modelID         string
-	provider        string
-	cleanupFiles    func()
-	releaseMCPLease func()
-	mcpFingerprint  string
+	// completionSource records which marker ended the latest tmux turn
+	// (marker_agent_settled, or the marker_agent_end_quiet fallback).
+	completionSource string
+	ownerSessionID   string
+	nativeSessionID  string
+	tmuxSessionName  string
+	workingDir       string
+	sessionDir       string
+	tempDir          string
+	extensionPath    string
+	markerPath       string
+	persistent       bool
+	idleLease        sessionlease.Lease
+	createdAt        time.Time
+	modelID          string
+	provider         string
+	cleanupFiles     func()
+	releaseMCPLease  func()
+	mcpFingerprint   string
 	// scopeFingerprint identifies the credential scope this live process was
 	// LAUNCHED with, so a later turn's changed scope replaces it rather than
 	// silently reusing the old environment.
@@ -1469,7 +1472,7 @@ func piAgentSettledAfterMarkers(settled bool, markers []piMarker) bool {
 		switch marker.Type {
 		case "agent_start":
 			settled = false
-		case "agent_end":
+		case "agent_end", "agent_settled":
 			settled = true
 		}
 	}
@@ -1761,6 +1764,10 @@ func piResultTextFromMarker(result json.RawMessage) string {
 	return trimmed
 }
 
+// piAgentEndQuietFallback completes a turn on agent_end alone only after the
+// marker stream has stayed silent this long (Pi builds without agent_settled).
+var piAgentEndQuietFallback = 15 * time.Second
+
 func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSession, offset int64, streamChan chan<- llmtypes.StreamChunk) (string, error) {
 	ticker := time.NewTicker(piInteractiveMarkerPollInterval)
 	defer ticker.Stop()
@@ -1807,6 +1814,22 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// tool call; if pi's own auto-retry recovered and produced real output
 	// afterward, that output wins and this is never consulted.
 	lastProviderErrorStatus := 0
+	// agent_end is only a candidate: it can fire mid-run. The turn ends on
+	// agent_settled, or -- for a Pi build that never emits it -- on
+	// agent_end followed by piAgentEndQuietFallback with no further markers.
+	agentEndPending := false
+	lastMarkerAt := time.Now()
+	finish := func(source string) (string, error) {
+		session.completionSource = source
+		if finalAssistantText != "" {
+			return finalAssistantText, nil
+		}
+		trimmed := strings.TrimSpace(content.String())
+		if trimmed == "" && len(toolStart) == 0 && lastProviderErrorStatus != 0 {
+			return "", fmt.Errorf("pi-cli provider request failed: HTTP %d", lastProviderErrorStatus)
+		}
+		return trimmed, nil
+	}
 
 	for {
 		markers, nextOffset, err := readPiMarkersSince(session.markerPath, currentOffset)
@@ -1814,6 +1837,9 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			return content.String(), err
 		}
 		currentOffset = nextOffset
+		if len(markers) > 0 {
+			lastMarkerAt = time.Now()
+		}
 		for _, marker := range markers {
 			switch marker.Type {
 			case "message_update":
@@ -1944,15 +1970,12 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				streamedDeltaThisMessage = false
 			case "provider_error":
 				lastProviderErrorStatus = marker.Status
+			case "agent_start":
+				agentEndPending = false
 			case "agent_end":
-				if finalAssistantText != "" {
-					return finalAssistantText, nil
-				}
-				trimmed := strings.TrimSpace(content.String())
-				if trimmed == "" && len(toolStart) == 0 && lastProviderErrorStatus != 0 {
-					return "", fmt.Errorf("pi-cli provider request failed: HTTP %d", lastProviderErrorStatus)
-				}
-				return trimmed, nil
+				agentEndPending = true
+			case "agent_settled":
+				return finish("marker_agent_settled")
 			}
 		}
 
@@ -1967,6 +1990,9 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				continue
 			}
 		case <-ticker.C:
+			if agentEndPending && time.Since(lastMarkerAt) >= piAgentEndQuietFallback {
+				return finish("marker_agent_end_quiet")
+			}
 			if !piTmuxSessionExists(ctx, session.tmuxSessionName) {
 				return content.String(), fmt.Errorf("Pi tmux session %q is no longer running", session.tmuxSessionName)
 			}
@@ -2356,6 +2382,7 @@ func piResponseAdditional(session *piInteractiveSession, persistent bool) map[st
 		"pi_working_dir":            session.workingDir,
 		"pi_model":                  session.modelID,
 		"pi_marker_file":            session.markerPath,
+		"pi_completion_source":      session.completionSource,
 	}
 	if !persistent {
 		additional["pi_interactive_retention_seconds"] = int(piInteractiveRetention().Seconds())
@@ -3085,6 +3112,10 @@ export default function mlpMarkerExtension(pi: any) {
 	});
 	pi.on("turn_end", async (event: any) => emit("turn_end", { role: role(event?.message) }));
 	pi.on("agent_end", async () => emit("agent_end"));
+	// agent_end fires inside Pi's post-run loop (retries, multi-step work),
+	// possibly several times per run; agent_settled is the once-per-run
+	// terminal event, emitted after that loop drains.
+	pi.on("agent_settled", async () => emit("agent_settled"));
 	// A non-2xx provider response (rate limit, upstream outage, auth failure)
 	// shows up in pi's own TUI pane as colored error text, but pi's agent_end
 	// still fires normally -- from Pi's perspective the low-level run simply

@@ -135,6 +135,7 @@ func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 		`{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","isError":false}`,
 		`{"type":"message_update","updateType":"text_delta","delta":"world"}`,
 		`{"type":"agent_end"}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
@@ -183,6 +184,7 @@ func TestPiMarkerParserSurfacesProviderErrorAsFailureWhenTurnProducedNothing(t *
 	body := strings.Join([]string{
 		`{"type":"provider_error","status":429}`,
 		`{"type":"agent_end"}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
@@ -213,6 +215,7 @@ func TestPiMarkerParserIgnoresProviderErrorOnceTurnProducedRealContent(t *testin
 		`{"type":"provider_error","status":429}`,
 		`{"type":"message_update","updateType":"text_delta","delta":"recovered after retry"}`,
 		`{"type":"agent_end"}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
@@ -242,6 +245,7 @@ func TestPiMarkerParserUsesCompletedAssistantMessageWithoutDeltas(t *testing.T) 
 		`{"type":"tool_execution_end","toolCallId":"tool1","toolName":"api_bridge_execute_shell_command","isError":false}`,
 		`{"type":"message_end","role":"assistant","text":"P0_FINAL_AFTER_MCP\nSTATUS: COMPLETED"}`,
 		`{"type":"agent_end"}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
