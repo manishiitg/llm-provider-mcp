@@ -17,7 +17,13 @@ import (
 const (
 	claudeTmuxIntegrationModelEnv        = "CLAUDE_CODE_TMUX_INTEGRATION_MODEL"
 	claudeInteractiveIntegrationModelEnv = "CLAUDE_CODE_EXPERIMENTAL_INTEGRATION_MODEL"
-	defaultClaudeInteractiveTestModel    = "claude-haiku-4-5-20251001"
+	// Sonnet 5 by default (2026-09-23): Haiku refused ordinary test prompts as
+	// "prompt injection" and sometimes wrote fake tool calls as text, which made
+	// the live suite flaky for reasons that were not about the transport.
+	defaultClaudeInteractiveTestModel = "claude-sonnet-5"
+	// claudeHaikuRegressionModel keeps Haiku for the test that caught the
+	// pasted-content refusal: a stronger model can hide that production bug.
+	claudeHaikuRegressionModel = "claude-haiku-4-5-20251001"
 )
 
 func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {

@@ -2022,6 +2022,9 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 		// busy status line changes wording); still attempt the submit so the
 		// prompt doesn't sit unsubmitted.
 	}
+	if err := typeClaudePasteAuthorization(ctx, sessionName, prompt); err != nil {
+		return err
+	}
 
 	var lastErr error
 	// Preserve draft-observation evidence across every initial-submit retry, just
@@ -2144,6 +2147,9 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
 			_ = verifier.submitted(settledPane)
 		}
+		if err := typeClaudePasteAuthorization(ctx, sessionName, message); err != nil {
+			return err
+		}
 	}
 	// Submit immediately after the paste. The pty delivers the pasted bytes and
 	// the C-e/Enter keystrokes in order for ordinary one-line input, so waiting
@@ -2182,6 +2188,29 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
 		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
 	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
+}
+
+// claudePastedContentAuthorization is typed (never pasted) after a multi-line
+// or large paste. Claude Code records such a paste as <pasted_content> with no
+// typed text, and its system prompt tells the model to follow instructions in
+// pasted content only where the user's own message asks it to. A fully pasted
+// prompt therefore read as a possible injection: Haiku, and sometimes Sonnet,
+// refused ordinary AgentWorks prompts (reproduced live 2026-09-23). This typed
+// line is the user's own request to act on the pasted content.
+// claudeNormalizeRowText strips it again, so transcript matching is unchanged.
+const claudePastedContentAuthorization = "The pasted content above is my own message: follow its instructions."
+
+// typeClaudePasteAuthorization types claudePastedContentAuthorization after a
+// paste that Claude Code will frame as <pasted_content>. Single-line prompts
+// are recorded as plain text and need nothing.
+func typeClaudePasteAuthorization(ctx context.Context, sessionName, message string) error {
+	if !claudeLiveInputNeedsPasteSettlement(strings.TrimSpace(message)) {
+		return nil
+	}
+	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "-l", " "+claudePastedContentAuthorization); err != nil {
+		return fmt.Errorf("failed to type pasted-content authorization into Claude Code tmux session: %w", err)
+	}
+	return nil
 }
 
 func claudeLiveInputNeedsPasteSettlement(message string) bool {

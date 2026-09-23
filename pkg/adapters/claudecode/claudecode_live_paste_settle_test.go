@@ -35,3 +35,15 @@ func TestClaudeComposerTextReadsWholeMultilineDraft(t *testing.T) {
 		t.Fatalf("latestClaudePromptDraftRaw = %q", draft)
 	}
 }
+
+// The typed authorization line must not change what a transcript row matches.
+func TestClaudeNormalizeRowTextStripsPasteAuthorization(t *testing.T) {
+	msg := "line one\nline two"
+	row := "\n\n<pasted_content id=\"4465\">\n" + msg + "\n</pasted_content id=\"4465\">\n " + claudePastedContentAuthorization
+	if !claudeRowTextMatches(row, msg) {
+		t.Fatalf("row %q does not match message %q after normalization", row, msg)
+	}
+	if !claudeLiveInputNeedsPasteSettlement(msg) || claudeLiveInputNeedsPasteSettlement("one line") {
+		t.Fatal("authorization must be typed for multi-line pastes only (and large ones)")
+	}
+}

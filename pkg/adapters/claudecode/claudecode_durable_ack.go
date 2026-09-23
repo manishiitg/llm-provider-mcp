@@ -199,7 +199,8 @@ var claudePastedContentTag = regexp.MustCompile(`</?pasted_content[^>]*>`)
 // sent message.
 func claudeNormalizeRowText(text string) string {
 	text = claudePastedContentTag.ReplaceAllString(text, "")
-	return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	return strings.TrimSpace(strings.TrimSuffix(text, claudePastedContentAuthorization))
 }
 
 func claudeRowTextMatches(rowText, message string) bool {
