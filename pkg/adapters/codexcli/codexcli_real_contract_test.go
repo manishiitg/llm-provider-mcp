@@ -2,6 +2,7 @@ package codexcli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -498,7 +499,13 @@ func TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract(t *testing.T) {
 
 	// Deliver the follow-up WHILE Codex is busy in the slow tool, via the raw
 	// adapter path (no server queue in between).
-	liveMessage := fmt.Sprintf("New highest-priority instruction: after the current tool returns, reply exactly %s.", liveAck)
+	// Additive, not a competing "reply exactly": the first prompt already says
+	// "reply exactly <firstDone>", and two exact-reply instructions made the model
+	// pick one (it answered only firstDone about 1 run in 3 on codex 0.156.1 even
+	// though the rollout showed the steer delivered inside the same turn). The
+	// assertion below is unchanged: the final answer must contain liveAck.
+	liveMessage := fmt.Sprintf("Additional instruction for this same task: after the current tool returns, also include %s on its own line in your final reply.", liveAck)
+	steerSentAt := time.Now()
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := SendCodexInteractiveInput(sendCtx, ownerSessionID, liveMessage); err != nil {
 		sendCancel()
@@ -515,18 +522,53 @@ func TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract(t *testing.T) {
 		if !strings.Contains(got.content, liveAck) {
 			t.Fatalf("live steer did not affect the busy Codex turn; final content=%q\npane:\n%s", got.content, paneDiag())
 		}
-		pane := paneDiag()
-		if !strings.Contains(stripCodexANSI(pane), liveMessage) {
-			t.Fatalf("live follow-up was not durably submitted to the CLI conversation; pane:\n%s", pane)
+		// P0 proof comes from the rollout, not the pane: a long steer wraps
+		// across pane lines, so a pane substring match is presentation (P1).
+		rolloutPath := ""
+		if session, ok := codexPersistentRegistry.Get(ownerSessionID); ok && session != nil {
+			rolloutPath, _ = codexRolloutIdentity(session)
 		}
-		if strings.Contains(strings.ToLower(stripCodexANSI(pane)), "conversation interrupted") {
-			t.Fatalf("normal live input interrupted the active Codex conversation; pane:\n%s", pane)
+		if rolloutPath == "" {
+			t.Fatalf("no rollout bound to the live session; pane:\n%s", paneDiag())
+		}
+		if _, ok := codexRolloutUserMessageSince(rolloutPath, liveMessage, steerSentAt, 0); !ok {
+			t.Fatalf("live follow-up has no user row in the rollout %s; pane:\n%s", rolloutPath, paneDiag())
+		}
+		if codexRolloutHasTurnAbortedSince(t, rolloutPath, steerSentAt) {
+			t.Fatalf("normal live input interrupted the active Codex conversation (turn_aborted in %s)", rolloutPath)
 		}
 		t.Log("OK: Codex CLI durably submitted and applied the live steer while the initial turn was busy")
 	case <-time.After(3 * time.Minute):
 		t.Fatalf("timed out waiting for Codex to complete after live input submission; pane:\n%s", paneDiag())
 	}
 	_ = drainCodexStream(streamChan)
+}
+
+// codexRolloutHasTurnAbortedSince reports a turn_aborted event recorded at or
+// after since: the structured equivalent of the pane's "conversation
+// interrupted" notice.
+func codexRolloutHasTurnAbortedSince(t *testing.T, path string, since time.Time) bool {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rollout %s: %v", path, err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		var e struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Payload   struct {
+				Type string `json:"type"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil || e.Type != "event_msg" || e.Payload.Type != "turn_aborted" {
+			continue
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && !ts.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireRealCodexCLIE2E(t *testing.T) {
