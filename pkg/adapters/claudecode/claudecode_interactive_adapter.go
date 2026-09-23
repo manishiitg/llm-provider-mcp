@@ -2138,7 +2138,7 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	// then says "paste again to expand"). Wait only for attachment-shaped input;
 	// ordinary one-line steering keeps the immediate low-latency path.
 	if claudeLiveInputNeedsPasteSettlement(message) {
-		if _, err := waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, claudeLiveInputPasteSettlementMaxWait); err != nil {
+		if _, err := waitForClaudeLiveInputPasteSettled(ctx, sessionName, paneBeforePaste, message, claudeLiveInputPasteSettlementMaxWait); err != nil {
 			return fmt.Errorf("Claude Code multiline live input did not settle before submit: %w", err)
 		}
 		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
@@ -2735,6 +2735,72 @@ func isUUIDLike(value string) bool {
 
 func waitForPromptPaste(ctx context.Context, sessionName, paneBeforePaste string) (bool, error) {
 	return waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, 15*time.Second)
+}
+
+// claudeComposerText returns the whole text of Claude Code's input box: the
+// last line starting with ❯ plus the continuation lines below it, up to the
+// box border. latestClaudePromptDraftRaw reads only the first line, which is
+// not enough to recognise a multi-line draft.
+func claudeComposerText(captured string) string {
+	lines := strings.Split(strings.ReplaceAll(captured, "\u00a0", " "), "\n")
+	start := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	parts := []string{strings.TrimPrefix(strings.TrimSpace(lines[start]), "❯")}
+	for _, line := range lines[start+1:] {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "─") || strings.HasPrefix(trimmed, "╰") {
+			break
+		}
+		parts = append(parts, trimmed)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// waitForClaudeLiveInputPasteSettled waits until a multi-line live message has
+// landed in the composer before submit: either Claude turned it into a
+// "[Pasted text" chip, or the input box visibly holds the whole message.
+// Short multi-line pastes stay inline as plain text in current Claude Code,
+// and a running turn's spinner keeps the pane changing, so the old wait (chip
+// or whole-pane stability) could only time out even though the paste had
+// landed. The pane stability path remains as the final fallback.
+func waitForClaudeLiveInputPasteSettled(ctx context.Context, sessionName, paneBeforePaste, message string, timeout time.Duration) (bool, error) {
+	visibleCtx, cancelVisible := context.WithTimeout(ctx, timeout)
+	defer cancelVisible()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-visibleCtx.Done():
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			return waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, time.Second)
+		case <-ticker.C:
+			captured, err := captureTmuxPane(visibleCtx, sessionName)
+			if err != nil {
+				if isClaudeTmuxSessionLostError(err) {
+					return false, err
+				}
+				continue
+			}
+			if strings.Contains(captured, "[Pasted text") {
+				return false, nil
+			}
+			composer := claudeComposerText(captured)
+			if composer != "" && claudePromptDraftStillMatchesMessage(composer, message) &&
+				strings.Contains(strings.Join(strings.Fields(composer), " "), strings.Join(strings.Fields(message), " ")) {
+				return false, nil
+			}
+		}
+	}
 }
 
 func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforePaste string, timeout time.Duration) (bool, error) {
