@@ -210,6 +210,9 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 			return nil, fmt.Errorf("resolve Muse working directory: %w", err)
 		}
 	}
+	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+		_ = a.ProjectSkills(workdir, skills)
+	}
 	cmd.Dir = workdir
 	if a.apiKey != "" {
 		cmd.Stdin = strings.NewReader(a.apiKey)

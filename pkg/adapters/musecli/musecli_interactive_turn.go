@@ -334,6 +334,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 			return nil, fmt.Errorf("resolve working dir for muse tmux lane: %w", err)
 		}
 	}
+	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
+		_ = a.ProjectSkills(workdir, skills)
+	}
 	instructionOnly := museProjectInstructionOnlyFromOptions(opts)
 	wantAgents := instructionOnly && len(system) > 0
 

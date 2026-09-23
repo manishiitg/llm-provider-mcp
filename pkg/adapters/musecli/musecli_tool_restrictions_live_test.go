@@ -187,3 +187,51 @@ func TestMuseCLIRealReadOnlyToolsAllowed(t *testing.T) {
 	}
 	t.Logf("read_file/search/read_skill allowed, shell blocked, MCP usable; transcript: %s", logPath)
 }
+
+// TestMuseCLIRealProjectedSkillReadNatively certifies skill projection: an
+// attached AgentWorks skill lands in <workdir>/.agents/skills and Muse's
+// native read_skill (allowed in production) returns its body.
+func TestMuseCLIRealProjectedSkillReadNatively(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	var called atomic.Int32
+	stub := museProbeMCPStub(&called)
+	defer stub.Close()
+	workDir := t.TempDir()
+	marker := "SKILL-BODY-" + museRandomHex(t, 4)
+	skill := &llmtypes.Skill{
+		Name:        "aw-probe-skill",
+		Description: "AgentWorks projection probe skill. Load when asked to read aw-probe-skill.",
+		Content:     "# AW probe\n\nThe secret phrase is " + marker + ".\n",
+	}
+	prompt := "Call native read_skill for the project skill aw-probe-skill, then reply with ONLY the secret phrase it contains."
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+		WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`),
+		WithToolAllowlist([]string{"web_search", "read_skill", "read_file", "search"}),
+		llmtypes.WithAttachedSkills([]*llmtypes.Skill{skill}),
+		WithWorkingDir(workDir), WithMuseStructuredTransport(false), WithTmuxTransport(true), llmtypes.WithReasoningEffort("low"))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle; handle != nil && handle.TmuxSession != "" {
+		t.Cleanup(func() { CloseMuseCLIInteractiveSessionByTmux(handle.TmuxSession, "skill probe complete") })
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".agents", "skills", "aw-probe-skill", "SKILL.md")); err != nil {
+		t.Fatalf("skill not projected: %v", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, marker) {
+		t.Fatalf("final = %q, want projected skill phrase %s", resp.Choices[0].Content, marker)
+	}
+	handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if handle == nil {
+		t.Fatal("missing session handle")
+	}
+	raw, err := os.ReadFile(museSessionLogPath(handle.NativeSessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := museRestrictionProbeResults(raw)["read_skill"]; !strings.Contains(r, marker) {
+		t.Fatalf("native read_skill did not return the projected skill: %q", r)
+	}
+}
