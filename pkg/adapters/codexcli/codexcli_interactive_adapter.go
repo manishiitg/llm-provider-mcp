@@ -322,7 +322,9 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 
 	initialRolloutPath, initialThreadID := codexRolloutIdentity(session)
 	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_started owner=%q tmux=%q thread=%q rollout=%q turn_started_at=%s", ownerSessionID, session.tmuxSessionName, initialThreadID, initialRolloutPath, promptSentAt.UTC().Format(time.RFC3339Nano))
+	completionSource := ""
 	completionDiagnostics := &codexCompletionDiagnosticHooks{
+		completedBy: func(source string) { completionSource = source },
 		rolloutSelected: func(path, threadID string) {
 			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_rollout_selected owner=%q tmux=%q thread=%q rollout=%q", ownerSessionID, session.tmuxSessionName, threadID, path)
 		},
@@ -442,6 +444,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		"codex_persistent_interactive":  persistent,
 		"codex_uses_exec_json":          false,
 		"codex_final_extraction_source": finalExtractionSource,
+		"codex_completion_source":       completionSource,
 		"context_window_usage_known":    false,
 	}
 	if !persistent {
@@ -2111,9 +2114,14 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				if time.Since(completionObservedAt) < postCompletionModalGrace {
 					continue
 				}
+				diagnostics.reportCompletedBy(codexCompletionSourceRollout)
 				return captured, nil
 			}
 			rolloutBlocksTerminalFallback := completionTracker.blocksTerminalFallback()
+			// Once the rollout records this turn it is the authority (PLAT-354):
+			// pane idleness and the stale-pane backstop no longer end the turn,
+			// except through the bounded late fallback below.
+			rolloutOwnsTurn := completionTracker.rolloutOwnsTurn()
 			// Stale-pane backstop. Independent of hasCodexReadyPrompt and every
 			// branch below: if the pane has produced activity and then frozen
 			// (byte-identical) for longer than the backstop, the turn is over but
@@ -2128,8 +2136,9 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				paneUnchangedSince = time.Now()
 			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
 				time.Since(paneUnchangedSince) >= stalePaneBackstop &&
-				!rolloutBlocksTerminalFallback &&
+				!rolloutOwnsTurn &&
 				hasCodexPromptCandidate(captured) && hasCodexExplicitCompletedMarker(captured) {
+				diagnostics.reportCompletedBy(codexCompletionSourcePane)
 				return captured, nil
 			}
 			if streamChan != nil && streamTerminalScreen {
@@ -2176,7 +2185,14 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				continue
 			}
 			if time.Since(idleSince) >= codexInteractiveStableWindow {
-				return captured, nil
+				if !rolloutOwnsTurn {
+					diagnostics.reportCompletedBy(codexCompletionSourcePane)
+					return captured, nil
+				}
+				if completionTracker.finalAnswerSettled() && time.Since(idleSince) >= codexRolloutLateFallback {
+					diagnostics.reportCompletedBy(codexCompletionSourceRolloutLateFallback)
+					return captured, nil
+				}
 			}
 		}
 	}

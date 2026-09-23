@@ -71,6 +71,35 @@ type codexTurnCompletionTracker struct {
 type codexCompletionDiagnosticHooks struct {
 	rolloutSelected func(path, threadID string)
 	taskComplete    func(path, threadID, turnID string, completedAt time.Time, offset int64)
+	// completedBy reports which signal ended the response wait: see the
+	// codexCompletionSource* constants.
+	completedBy func(source string)
+}
+
+// Completion sources reported through codexCompletionDiagnosticHooks.completedBy
+// and surfaced as codex_completion_source (PLAT-354).
+const (
+	// codexCompletionSourceRollout: the turn's task_complete in the rollout.
+	codexCompletionSourceRollout = "rollout_task_complete"
+	// codexCompletionSourceRolloutLateFallback: the rollout recorded this turn's
+	// final answer with no pending tool call, but task_complete never arrived,
+	// and the pane has been idle for codexRolloutLateFallback.
+	codexCompletionSourceRolloutLateFallback = "tmux_pane_after_rollout_final_answer"
+	// codexCompletionSourcePane: no rollout recorded this turn; pane idleness
+	// or the stale-pane backstop ended it (compatibility fallback).
+	codexCompletionSourcePane = "tmux_pane"
+)
+
+// codexRolloutLateFallback bounds how long a turn whose rollout already holds
+// the final answer may wait for a missing task_complete before a stable idle
+// pane is allowed to end it, so a Codex build that skips task_complete cannot
+// hang the turn forever.
+var codexRolloutLateFallback = 30 * time.Second
+
+func (h *codexCompletionDiagnosticHooks) reportCompletedBy(source string) {
+	if h != nil && h.completedBy != nil {
+		h.completedBy(source)
+	}
 }
 
 func newCodexTurnCompletionTracker(turnStart time.Time, expectedWorkingDir string, resolveRollout func(time.Time) string) *codexTurnCompletionTracker {
@@ -153,6 +182,19 @@ func (t *codexTurnCompletionTracker) aborted() (bool, string) {
 // is still inside the turn. The TUI may show an idle composer while an MCP call
 // is pending, so a ready-looking pane is not a completion signal once the
 // rollout has shown tool activity or commentary without a final_answer.
+// rolloutOwnsTurn reports that the rollout has recorded this turn. From then on
+// only task_complete or turn_aborted ends it; the pane may end it only through
+// the late fallback in waitForCodexInteractiveResponse.
+func (t *codexTurnCompletionTracker) rolloutOwnsTurn() bool {
+	return t != nil && t.sawTurnEvent
+}
+
+// finalAnswerSettled reports that the rollout holds this turn's final answer
+// and no tool call is still pending.
+func (t *codexTurnCompletionTracker) finalAnswerSettled() bool {
+	return t != nil && t.sawTurnEvent && t.sawFinalAnswer && len(t.pendingToolCalls) == 0
+}
+
 func (t *codexTurnCompletionTracker) blocksTerminalFallback() bool {
 	if t == nil || !t.sawTurnEvent {
 		return false
