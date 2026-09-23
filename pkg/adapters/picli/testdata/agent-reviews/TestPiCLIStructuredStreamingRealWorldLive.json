@@ -12,41 +12,35 @@
   ],
   "output": {
     "content_chunks": [
-      "Calling the echo_contract tool with token A_a4abbf8a.",
-      "Searching the api-bridge server tools.",
-      "Calling the api_bridge_echo_contract tool with token A_a4abbf8a.",
-      "Calling the api_bridge_echo_contract tool with token B_8c5434c8.",
-      "PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8"
+      "Calling echo_contract with the first token.",
+      "Calling echo_contract with the second token.",
+      "PI_STREAM_A_7494e316 PI_",
+      "STREAM_B_d388b141"
     ],
-    "final": "PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
-    "reassembled_message": "Calling the echo_contract tool with token A_a4abbf8a.Searching the api-bridge server tools.\nCalling the api_bridge_echo_contract tool with token A_a4abbf8a.\nCalling the api_bridge_echo_contract tool with token B_8c5434c8.\nPI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
+    "final": "PI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
+    "reassembled_message": "Calling echo_contract with the first token.Calling echo_contract with the second token.\nPI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
     "stream_order": [
       "text",
       "tool",
       "text",
       "tool",
       "text",
-      "tool",
-      "text",
-      "tool",
       "text"
     ],
-    "streamed_content": "Calling the echo_contract tool with token A_a4abbf8a.Searching the api-bridge server tools.Calling the api_bridge_echo_contract tool with token A_a4abbf8a.Calling the api_bridge_echo_contract tool with token B_8c5434c8.PI_STREAM_A_a4abbf8a PI_STREAM_B_8c5434c8",
+    "streamed_content": "Calling echo_contract with the first token.Calling echo_contract with the second token.PI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
     "tool_names": [
-      "mcp",
-      "mcp",
-      "mcp",
-      "mcp"
+      "api-bridge_echo_contract",
+      "api-bridge_echo_contract"
     ]
   },
-  "fingerprint": "4021cf6fe8615e9f",
+  "fingerprint": "c7a041d495dacdc4",
   "agent_review": {
     "verdict": "good",
-    "reviewed_fingerprint": "4021cf6fe8615e9f",
-    "reviewer": "claude-opus-4-8 (agentic P0 review)",
+    "reviewed_fingerprint": "c7a041d495dacdc4",
+    "reviewer": "claude-opus-5-5 (independent P0 review, 2026-09-23)",
     "issues": [
-      "Tool name granularity: pi surfaces MCP calls under the generic marker name 'mcp' (4x here) rather than the specific tool (echo_contract). The call is genuinely the MCP tool, just labelled generically — the specific name lives in the tool arguments and is not yet surfaced by our marker extension. Tracked follow-up."
+      "Pre-existing, previously accepted: the text-only reassembled_message joins narration 1 and narration 2 with no separator ('first token.Calling echo_contract...') because no message-end boundary arrives between them and StreamAssistantText does not treat an intervening tool chunk as a block boundary. A streaming UI renders the tool card between them (stream_order text,tool,text,tool), so the user-visible transcript is not run-on; the old approved record had the same join ('A_a4abbf8a.Searching'). Candidate follow-up: flush delta runs on ToolCallStart in StreamAssistantText."
     ],
-    "notes": "Reviewed the REASSEMBLED user-facing message (not just raw chunks). The earlier delta-garbling + run-on are FIXED: pi still streams token-level deltas that split mid-word ('...PI_STREAM_B_5d8cd' + '0c2'), but the granularity-aware reassembler concatenates them verbatim and the new message-end boundary marker separates messages, so the message a UI shows is clean:\n  'I will call the echo_contract tool with token A_2fa62e69.\\nI will search for the echo_contract tool in the MCP server.\\nI will call api_bridge_echo_contract with token A_2fa62e69.\\nI will call api_bridge_echo_contract with token B_5d8cd0c2.\\nPI_STREAM_A_2fa62e69 PI_STREAM_B_5d8cd0c2'\nProper line segmentation, tokens intact, coherent narration, correct interleaving, and the final matches the work (both tokens returned = tools executed). The only open item is the generic 'mcp' tool label above."
+    "notes": "Reviewed 2026-09-23 against the prior approved output (fingerprint 4021cf6fe8615e9f). Change is a legitimate improvement, not a regression: tool_names are now the specific 'api-bridge_echo_contract' (x2) instead of the generic 'mcp' (x4) — the prior review's open issue is resolved — and the model called echo_contract directly, so the extra search step (and its narration) disappeared, giving the exact intended order text,tool,text,tool,text. Narration precedes each tool call; both real tool results appear exactly in final ('PI_STREAM_A_7494e316 PI_STREAM_B_d388b141'); the live mid-token split ('...PI_' + 'STREAM_B_d388b141') is reassembled verbatim with tokens intact; no duplication, no escape codes; streamed_content ends with exactly the final line."
   }
 }

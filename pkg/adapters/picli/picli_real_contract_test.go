@@ -27,7 +27,7 @@ func TestPiCLIRealTmuxFullContract(t *testing.T) {
 	adapter := newRealPiCLIAdapter(t)
 	expectedModelRoute := piRealContractModel()
 	ownerSessionID := "pi-real-full-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	systemToken := "PI_SYSTEM_" + piRandomHex(5)
 	pasteToken := "PI_PASTE_" + piRandomHex(5)
 
@@ -112,7 +112,7 @@ func TestPiCLIRealColdResumeWaitsForReadyPrompt(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	firstOwner := "pi-real-resume-first-" + piRandomHex(4)
 	token := "PI_COLD_RESUME_" + piRandomHex(5)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -209,7 +209,7 @@ func TestPiCLIRealLongWorkingDirNameStillReachesReadyPrompt(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	digest := piRandomHex(32) // 64 hex chars: matches cliruntime.Prepare's sha256 digest length exactly
-	workDir := filepath.Join(t.TempDir(), digest)
+	workDir := filepath.Join(piLiveWorkDir(t), digest)
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		t.Fatalf("mkdir digest-named working dir: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	adapter := newRealPiCLIAdapter(t)
 	expectedModelRoute := piRealContractModel()
 	ownerSessionID := "pi-real-cwd-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiReportCWDMCPServer(t))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -289,7 +289,7 @@ func TestPiCLIRealMCPBridgeToolCallReportsRealToolName(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-toolname-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiReportCWDMCPServer(t))
 
 	stream := make(chan llmtypes.StreamChunk, 4096)
@@ -366,7 +366,7 @@ func TestPiCLIRealPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-stale-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	opts := []llmtypes.CallOption{
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
@@ -504,7 +504,7 @@ func TestPiCLIRealSharedWorkingDirMCPConfigConflictRejected(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
-	sharedWorkDir := t.TempDir()
+	sharedWorkDir := piLiveWorkDir(t)
 	alphaConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiEchoMCPServer(t, "PI_ALPHA"))
 	betaConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiEchoMCPServer(t, "PI_BETA"))
 
@@ -579,7 +579,7 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 	}
 
 	ownerSessionID := "pi-real-cleanup-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiEchoMCPServer(t, "PI_CLEANUP"))
 	persistent, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply exactly: pi persistent cleanup ok"),
@@ -619,7 +619,7 @@ func TestPiCLIRealSlowMCPToolDoneDetectionContract(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-slow-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	token := "PI_SLOW_" + piRandomHex(5)
 	delay := 8 * time.Second
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, writePiSlowMCPServer(t, "PI_SLOW_SECRET", ""))
@@ -655,7 +655,7 @@ func TestPiCLIRealSlowToolLiveInputAndCancellationContract(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-live-cancel-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	token := "PI_CANCEL_" + piRandomHex(5)
 	liveToken := "PI_LIVE_" + piRandomHex(5)
 	markerPath := filepath.Join(t.TempDir(), "slow-tool-started")
@@ -774,7 +774,7 @@ func TestPiCLIRealInteractiveLiveInputProcessesQueuedFollowupContract(t *testing
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-live-process-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	token := "PI_LIVE_PROCESS_" + piRandomHex(5)
 	firstDone := "PI_FIRST_DONE_" + piRandomHex(5)
 	liveAck := "PI_LIVE_ACK_" + piRandomHex(5)
@@ -1103,4 +1103,16 @@ rl.on("line", async (line) => {
 		t.Fatalf("write Pi MCP server: %v", err)
 	}
 	return path
+}
+
+// piLiveWorkDir is t.TempDir() for a live Pi workspace. Cleanups run LIFO, so
+// a session-kill registered before t.TempDir() runs after the directory's
+// RemoveAll, which then races the still-running Pi writing .pi/agentworks/
+// ("unlinkat ...: directory not empty"). Registering the kill here, after the
+// directory, stops Pi first.
+func piLiveWorkDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+	return dir
 }

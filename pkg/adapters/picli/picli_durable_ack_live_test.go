@@ -22,7 +22,7 @@ func TestPiCLIRealDurableAckContract(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	ownerSessionID := "pi-real-durable-ack-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	toolToken := "SLOW_DURABLE_" + piRandomHex(4)
 	firstDone := "PI_FIRST_DONE_" + piRandomHex(4)
 	liveAck := "PI_DURABLE_ACK_" + piRandomHex(4)

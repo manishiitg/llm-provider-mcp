@@ -17,7 +17,7 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
 	requireRealPiCLIContractE2E(t)
 	apiKey := firstNonEmptyPiTestEnv("GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY")
 
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	serverPath := filepath.Join(workDir, "pi-mcp-canary-server.js")
 	logPath := filepath.Join(workDir, "pi-mcp-canary-calls.jsonl")
 	if err := os.WriteFile(serverPath, []byte(piMCPBridgeCanaryServerSource()), 0o700); err != nil {
@@ -96,7 +96,7 @@ func TestPiCLIRealDirectToolsActivateOnRepeatedStableConfig(t *testing.T) {
 	requireRealPiCLIContractE2E(t)
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	serverPath := writePiReportCWDMCPServer(t)
 	mcpConfig := fmt.Sprintf(`{
   "mcpServers": {
@@ -199,7 +199,7 @@ func TestPiCLIRealMcpProxyToolIsUnavailableOnWarmDirectToolsCache(t *testing.T) 
 	})
 	toolsJSON := realMCPBridgeToolDefsJSON("execute_shell_command")
 
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	mcpConfig := fmt.Sprintf(`{
   "mcpServers": {
     "api-bridge": {
@@ -299,7 +299,7 @@ func TestPiCLIRealMCPOutputGuardCompactsLongSingleLineResult(t *testing.T) {
 	t.Setenv(EnvPiMCPResultMaxChars, "5000")
 	t.Setenv(EnvPiMCPResultMaxLines, "80")
 
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	serverPath := filepath.Join(workDir, "pi-mcp-long-line-server.js")
 	logPath := filepath.Join(workDir, "pi-mcp-long-line-calls.jsonl")
 	longPayload := "MCP_LONG_LINE_BEGIN_" + strings.Repeat("0123456789", 120) + "_MCP_LONG_LINE_TAIL"

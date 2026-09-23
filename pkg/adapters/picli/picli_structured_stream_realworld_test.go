@@ -92,7 +92,7 @@ func TestPiCLIStructuredStreamingRealWorldLive(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	tokenA := "A_" + piRandomHex(4)
 	tokenB := "B_" + piRandomHex(4)
 	wantA := "PI_STREAM_" + tokenA

@@ -20,7 +20,7 @@ func TestPiTokenUsageLive(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	owner := "pi-usage-live-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	marker := "USAGE_" + strings.ToUpper(piRandomHex(4))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

@@ -27,7 +27,7 @@ func TestPiMarkerStreamNoHistoryReplayLive(t *testing.T) {
 
 	adapter := newRealPiCLIAdapter(t)
 	owner := "pi-noreplay-live-" + piRandomHex(4)
-	workDir := t.TempDir()
+	workDir := piLiveWorkDir(t)
 	marker := "NOREPLAY_" + strings.ToUpper(piRandomHex(4))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
