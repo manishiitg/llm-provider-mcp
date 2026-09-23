@@ -79,8 +79,14 @@ type codexInteractiveSession struct {
 	// ambiguous whenever two sessions share a directory — a Chat and a Schedule
 	// for the same workflow do — and would return the other conversation's
 	// final answer (PLAT-106). Once bound, every later lookup is exact.
-	rolloutPath            string
-	threadID               string
+	rolloutPath string
+	threadID    string
+	// bindPrompt is the first prompt this session sent while it had no rollout
+	// bound. A directory scan may bind only a rollout whose user rows contain
+	// it: exclusion alone let two sessions that started together in one
+	// directory claim each other's rollouts and return each other's answers.
+	// Guarded by rolloutMu.
+	bindPrompt             string
 	cliSecurityFingerprint string
 	idleLease              sessionlease.Lease
 	initErr                error
@@ -285,6 +291,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		baseline, _ = captureCodexPane(callCtx, session.tmuxSessionName)
 	}
 	c.logger.Infof("Executing Codex CLI interactive tmux session: %s", session.tmuxSessionName)
+	setCodexRolloutBindPrompt(session, prompt)
 	promptSentAt := time.Now()
 	if initialPromptAtLaunch {
 		var err error

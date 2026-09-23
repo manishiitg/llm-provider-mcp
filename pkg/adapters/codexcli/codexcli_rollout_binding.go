@@ -44,6 +44,29 @@ func boundCodexRolloutPaths(exclude *codexInteractiveSession) map[string]bool {
 	return claimed
 }
 
+// setCodexRolloutBindPrompt records the prompt a not-yet-bound session is
+// about to send, so its rollout can be recognised by content. Only the first
+// prompt before binding counts; a bound session ignores it.
+func setCodexRolloutBindPrompt(session *codexInteractiveSession, prompt string) {
+	if session == nil || strings.TrimSpace(prompt) == "" {
+		return
+	}
+	session.rolloutMu.Lock()
+	defer session.rolloutMu.Unlock()
+	if session.threadID == "" && session.rolloutPath == "" && session.bindPrompt == "" {
+		session.bindPrompt = prompt
+	}
+}
+
+func codexRolloutBindPrompt(session *codexInteractiveSession) string {
+	if session == nil {
+		return ""
+	}
+	session.rolloutMu.RLock()
+	defer session.rolloutMu.RUnlock()
+	return session.bindPrompt
+}
+
 func codexRolloutIdentity(session *codexInteractiveSession) (path, threadID string) {
 	if session == nil {
 		return "", ""
@@ -101,11 +124,12 @@ func resolveCodexRolloutPathLocked(session *codexInteractiveSession, turnStart t
 		return path
 	}
 	workingDir := session.workingDir
+	bindPrompt := session.bindPrompt
 	session.rolloutMu.Unlock()
 
 	// Never hold this session's rollout lock while reading other sessions. That
 	// keeps the claim scan free of cross-session lock ordering requirements.
-	path := findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, boundCodexRolloutPaths(session), session.accountRoot)
+	path := findCodexRolloutForSessionScan(turnStart, workingDir, boundCodexRolloutPaths(session), bindPrompt, session.accountRoot)
 	if path == "" {
 		return ""
 	}
@@ -139,6 +163,7 @@ func codexRolloutResolverForSession(session *codexInteractiveSession) func(time.
 	workingDir := session.workingDir
 	claimed := boundCodexRolloutPaths(session)
 	accountRoot := session.accountRoot
+	bindPrompt := codexRolloutBindPrompt(session)
 
 	return func(turnStart time.Time) string {
 		if threadID != "" {
@@ -150,6 +175,6 @@ func codexRolloutResolverForSession(session *codexInteractiveSession) func(time.
 		if knownPath != "" {
 			return knownPath
 		}
-		return findCodexRolloutByWorkingDirExcluding(turnStart, workingDir, claimed, accountRoot)
+		return findCodexRolloutForSessionScan(turnStart, workingDir, claimed, bindPrompt, accountRoot)
 	}
 }

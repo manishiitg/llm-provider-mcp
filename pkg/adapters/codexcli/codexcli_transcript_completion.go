@@ -303,9 +303,105 @@ func findCodexRolloutByWorkingDirUnsafe(turnStart time.Time, expectedWorkingDir 
 // disambiguator until the session learns its own thread ID, after which
 // findCodexRolloutForThread is exact and this path is not used.
 func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, accountRoot ...string) string {
+	candidates := codexRolloutCandidatesInWorkingDir(turnStart, expectedWorkingDir, excluded, accountRoot...)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+// findCodexRolloutForSessionScan is the directory scan a session uses before it
+// knows its thread ID. With no bind prompt it is the legacy recency match.
+// With one, a rollout qualifies only if it recorded that prompt as a user row:
+// first a strict match, then a loose (shared-prefix) match that must be
+// unique. It returns "" rather than guess, and callers retry on the next poll.
+func findCodexRolloutForSessionScan(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, bindPrompt string, accountRoot ...string) string {
+	candidates := codexRolloutCandidatesInWorkingDir(turnStart, expectedWorkingDir, excluded, accountRoot...)
+	bindPrompt = strings.TrimSpace(bindPrompt)
+	if bindPrompt == "" {
+		if len(candidates) == 0 {
+			return ""
+		}
+		return candidates[0]
+	}
+	var loose []string
+	for _, path := range candidates {
+		strict, looseMatch := codexRolloutRecordsBindPrompt(path, bindPrompt, turnStart)
+		if strict {
+			return path
+		}
+		if looseMatch {
+			loose = append(loose, path)
+		}
+	}
+	if len(loose) == 1 {
+		return loose[0]
+	}
+	return ""
+}
+
+// codexRolloutRecordsBindPrompt reports whether a rollout has a user row for
+// prompt at or after since. strict: identical text, or for a long prompt a
+// shared 200-byte prefix AND a shared 120-byte suffix. The per-request part of
+// a prompt is usually at its end, while two sessions of one workflow can share
+// a long opening. loose: the durable-ack rule (a shared prefix is enough).
+func codexRolloutRecordsBindPrompt(path, prompt string, since time.Time) (strict, loose bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+	type contentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type event struct {
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Payload   struct {
+			Role    string        `json:"role"`
+			Content []contentPart `json:"content"`
+		} `json:"payload"`
+	}
+	since = since.Add(-2 * time.Second)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var e event
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || e.Type != "response_item" || e.Payload.Role != "user" {
+			continue
+		}
+		if ts, parseErr := time.Parse(time.RFC3339Nano, e.Timestamp); parseErr != nil || ts.Before(since) {
+			continue
+		}
+		for _, part := range e.Payload.Content {
+			if part.Type != "input_text" {
+				continue
+			}
+			row := strings.TrimSpace(part.Text)
+			if row == prompt {
+				return true, true
+			}
+			const prefixLen, suffixLen = 200, 120
+			if len(prompt) > prefixLen && len(row) > prefixLen && row[:prefixLen] == prompt[:prefixLen] &&
+				strings.HasSuffix(row, prompt[len(prompt)-suffixLen:]) {
+				return true, true
+			}
+			if codexUserRowMatches(row, prompt) {
+				loose = true
+			}
+		}
+	}
+	return false, loose
+}
+
+// codexRolloutCandidatesInWorkingDir lists rollouts recorded for
+// expectedWorkingDir, modified since shortly before turnStart and not claimed
+// by another session, newest first.
+func codexRolloutCandidatesInWorkingDir(turnStart time.Time, expectedWorkingDir string, excluded map[string]bool, accountRoot ...string) []string {
 	root := codexSessionsRoot(accountRoot...)
 	if root == "" {
-		return ""
+		return nil
 	}
 	cutoff := turnStart.Add(-30 * time.Second)
 	type candidate struct {
@@ -327,12 +423,13 @@ func findCodexRolloutByWorkingDirExcluding(turnStart time.Time, expectedWorkingD
 		return nil
 	})
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod.After(candidates[j].mod) })
+	var out []string
 	for _, candidate := range candidates {
 		if sameCodexWorkingDir(readCodexRolloutWorkingDir(candidate.path), expectedWorkingDir) {
-			return candidate.path
+			out = append(out, candidate.path)
 		}
 	}
-	return ""
+	return out
 }
 
 // findCodexRolloutForThread resolves the rollout for an EXACT Codex thread ID.
