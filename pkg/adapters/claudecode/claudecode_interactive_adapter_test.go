@@ -126,6 +126,7 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	want := []string{
 		"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
 		"-e", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=5400000",
+		"-e", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
 		"-e", "ANTHROPIC_API_KEY=",
 		"-e", "ANTHROPIC_AUTH_TOKEN=",
 		"-e", "ANTHROPIC_BASE_URL=",
@@ -133,6 +134,14 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
+	}
+}
+
+// The fullscreen renderer draws in the alternate screen (no scrollback), so
+// the AgentWorks terminal viewer could not scroll Claude panes.
+func TestClaudeStartSessionKeepsClassicRendererForScrollback(t *testing.T) {
+	if got := claudePromptSuggestionEnvArgs(); !containsArg(got, "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1") {
+		t.Fatalf("Claude env args = %v, want the classic (normal-screen) renderer", got)
 	}
 }
 

@@ -109,6 +109,7 @@ const (
 	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
 	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
 	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+	EnvClaudeDisableAlternateScreen         = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"
 )
 
 var claudeInteractiveSessionRegistry = struct {
@@ -1251,6 +1252,13 @@ func claudePromptSuggestionEnvArgs() []string {
 	args := []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
 		"-e", EnvClaudeMCPToolIdleTimeout + "=" + strconv.FormatInt(mcpToolIdleTimeoutMS, 10),
+		// Keep the classic renderer. Claude Code's fullscreen renderer (the
+		// default on recent builds) draws inside the alternate screen, which
+		// has no scrollback: the tmux pane keeps history_size=0, so AgentWorks'
+		// terminal viewer has nothing to scroll back through (observed on RTS,
+		// Claude 2.1.233). The classic renderer writes the conversation into the
+		// normal screen, where tmux history and the viewer's scrollback grow.
+		"-e", EnvClaudeDisableAlternateScreen + "=1",
 		// The tmux adapter relies on the user's Claude Code login. Inherited
 		// Anthropic API env vars make recent Claude Code builds stop at an
 		// interactive auth-choice prompt that this transport cannot answer.
