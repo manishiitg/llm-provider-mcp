@@ -190,6 +190,12 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	resume := resumeID != ""
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	prompt := buildCursorPrompt(conversationMessages, resume)
+	// A resumed Cursor chat keeps the rules it started with; a rewritten
+	// .cursor/rules file is not re-read (verified on cursor-agent
+	// 2026.09.18). Resend a changed system prompt once, inline.
+	if resume && !launchOnly && strings.TrimSpace(prompt) != "" && cursorResumeSystemPromptChanged(cursorWorkingDirFromOptions(opts), resumeID, systemPrompt) {
+		prompt = "[Updated System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
+	}
 	// Launch-only: boot tmux with --resume so the user can see the prior
 	// cursor conversation in the pane without sending any prompt yet.
 	// Mirrors what claude-code experimental does; the chat-history

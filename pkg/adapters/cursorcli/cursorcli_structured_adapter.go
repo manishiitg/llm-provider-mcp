@@ -317,6 +317,14 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 	// cursor-agent even starts (observed on a 50-message Builder conversation).
 	systemPrompt, conversationMessages := splitCursorSystemPrompt(messages)
 	prompt := buildCursorStructuredPrompt(systemPrompt, conversationMessages, resumeID)
+	// Cursor keeps the instructions it was first given for a resumed chat
+	// (verified on cursor-agent 2026.09.18). When AgentWorks' system prompt
+	// changed since it was last delivered to this native session (e.g. a
+	// deploy updated the Crew prompt), resend it once, inline; later resumed
+	// turns keep following it.
+	if resumeID != "" && cursorResumeSystemPromptChanged(workingDir, resumeID, systemPrompt) {
+		prompt = "[Updated System Instructions]\n" + systemPrompt + "\n\n[User Message]\n" + prompt
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("cursor-cli prompt is empty")
 	}
