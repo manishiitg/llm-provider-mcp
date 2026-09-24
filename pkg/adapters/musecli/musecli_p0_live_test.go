@@ -932,6 +932,20 @@ func TestMuseCLIRealTrustGate(t *testing.T) {
 	if err := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
 		t.Fatalf("send Enter: %v", err)
 	}
+	// The Enter reaches Muse before it redraws; museWaitSettled fails fast on
+	// a visible gate (production behavior), so first wait for the trust prompt
+	// to leave the pane.
+	clearDeadline := time.Now().Add(15 * time.Second)
+	for {
+		p, err := museTmuxCapturePane(ctx, session)
+		if err == nil && !musePaneShowsBlockingGate(p) {
+			break
+		}
+		if time.Now().After(clearDeadline) {
+			t.Fatalf("trust prompt still shown 15s after choosing trust; pane:\n%s", p)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if _, err := museWaitSettled(ctx, session, 90*time.Second); err != nil {
 		t.Fatalf("TUI never settled after trusting: %v", err)
 	}
