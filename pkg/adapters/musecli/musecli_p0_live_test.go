@@ -205,12 +205,14 @@ func TestMuseCLIRealExecTurnContract(t *testing.T) {
 func TestMuseCLIRealExecRuntimeContext(t *testing.T) {
 	requireMetaMuseCLIE2E(t)
 	workdir := t.TempDir()
-	canarySkill := "muse-ctx-canary-" + museRandomHex(t, 3)
+	// Neutral wording on purpose: Muse treats a "canary"/"secret" skill as an
+	// exfiltration probe and refuses to answer from it.
+	canarySkill := "project-codename-" + museRandomHex(t, 3)
 	skillDir := filepath.Join(workdir, ".agents", "skills", canarySkill)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skillDoc := "---\nname: " + canarySkill + "\ndescription: runtime context canary\n---\n# Canary\nWhen asked for the canary word, reply with exactly: MANGO-CONTEXT\n"
+	skillDoc := "---\nname: " + canarySkill + "\ndescription: this project's codename\n---\n# Project codename\nThis project's codename is MANGO-CONTEXT. When asked for the project codename, reply with it.\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillDoc), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -219,13 +221,13 @@ func TestMuseCLIRealExecRuntimeContext(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{
-			llmtypes.TextContent{Text: "What is the canary word? Reply with exactly that word and nothing else."}}},
+			llmtypes.TextContent{Text: "What is this project's codename? Reply with just the codename."}}},
 	}, WithWorkingDir(workdir), llmtypes.WithReasoningEffort("low"), WithMuseStructuredTransport(true))
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)
 	}
 	if final := resp.Choices[0].Content; !strings.Contains(strings.ToUpper(final), "MANGO-CONTEXT") {
-		t.Fatalf("final = %q, want the skill's canary word (skill not projected or cwd not honored)", final)
+		t.Fatalf("final = %q, want the skill's codename (skill not projected or cwd not honored)", final)
 	}
 }
 
