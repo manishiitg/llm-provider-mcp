@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -327,6 +328,41 @@ func musePaneStable(ctx context.Context, session, pane string) bool {
 	return err == nil && again == pane
 }
 
+// musePaneSettledForSubmit is the pre-Enter settle for a draft that is
+// already confirmed visible in a TUI past its boot readiness. The fixed 1s
+// window of musePaneStable (a boot guard) put every Muse send over the 1s
+// retained-delivery P0 envelope (PLAT-102). Here the draft is done once the
+// pane is unchanged for ~120ms, capped at the same 1s; a swallowed Enter is
+// still caught and retried by museEnterTookEffect.
+func musePaneSettledForSubmit(ctx context.Context, session, pane string) bool {
+	const (
+		poll   = 50 * time.Millisecond
+		window = 120 * time.Millisecond
+		cap    = time.Second
+	)
+	deadline := time.Now().Add(cap)
+	last, lastChange := pane, time.Now()
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(poll):
+		}
+		current, err := museTmuxCapturePane(ctx, session)
+		if err != nil {
+			return false
+		}
+		if current != last {
+			last, lastChange = current, time.Now()
+			continue
+		}
+		if time.Since(lastChange) >= window {
+			return true
+		}
+	}
+	return false
+}
+
 // museVisibleInputChunkRunes bounds each literal tmux key injection. tmux
 // rejects a single oversized send-keys argument ("command too long",
 // reproduced live with a 100KB builder prompt), so prompts are typed in
@@ -358,10 +394,14 @@ const (
 func museSendPrompt(ctx context.Context, session, prompt string) error {
 	prompt = museTerminalPrompt(prompt)
 	const maxSubmitAttempts = 3
+	start := time.Now()
 	for attempt := 1; ; attempt++ {
+		stage := time.Now()
 		if err := museWaitLiveInputComposer(ctx, session); err != nil {
 			return err
 		}
+		composer := time.Since(stage)
+		stage = time.Now()
 		if musePromptNeedsAtomicPaste(prompt) {
 			if err := pasteMuseDraftToTmux(ctx, session, prompt); err != nil {
 				return err
@@ -369,6 +409,7 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		} else if err := writeVisibleDraftAndConfirm(ctx, session, prompt); err != nil {
 			return err
 		}
+		draft := time.Since(stage)
 		beforePane, err := museTmuxCapturePane(ctx, session)
 		if err != nil {
 			return fmt.Errorf("capture pane before Enter: %w", err)
@@ -376,13 +417,19 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		// Give the just-confirmed draft a beat to finish rendering before
 		// firing Enter into it -- the same guard museWaitSettled applies at
 		// boot, applied here at submit time.
-		musePaneStable(ctx, session, beforePane)
+		stage = time.Now()
+		settled := musePaneSettledForSubmit(ctx, session, beforePane)
+		settle := time.Since(stage)
 		enterArgs := append([]string{"send-keys", "-t", session}, museSubmitKeys()...)
 		enter := exec.CommandContext(ctx, "tmux", enterArgs...)
 		if out, err := enter.CombinedOutput(); err != nil {
 			return fmt.Errorf("tmux send-keys submit: %w\n%s", err, out)
 		}
-		if museEnterTookEffect(ctx, session, beforePane) {
+		stage = time.Now()
+		took := museEnterTookEffect(ctx, session, beforePane)
+		log.Printf("[LATENCY_DEBUG] muse submit | session=%s attempt=%d composer=%dms draft=%dms settle=%dms settled=%v enter_confirm=%dms took=%v total=%dms runes=%d",
+			session, attempt, composer.Milliseconds(), draft.Milliseconds(), settle.Milliseconds(), settled, time.Since(stage).Milliseconds(), took, time.Since(start).Milliseconds(), utf8.RuneCountInString(prompt))
+		if took {
 			return nil
 		}
 		if attempt >= maxSubmitAttempts {
@@ -479,7 +526,7 @@ func writeVisibleDraftAndConfirm(ctx context.Context, session, prompt string) er
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("muse type-and-confirm wait canceled: %w", ctx.Err())
-			case <-time.After(150 * time.Millisecond):
+			case <-time.After(40 * time.Millisecond):
 			}
 		}
 		if attempt >= maxAttempts {
