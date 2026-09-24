@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -71,7 +72,9 @@ const (
 	// so the earlier lines remain and the next paste stacks onto them. Repeat the
 	// clear until the input line reads empty, bounded so a non-clearing TUI can't
 	// spin forever.
-	claudeDraftClearMaxRounds = 8
+	// Each round removes one logical line (C-e C-u empties it, BSpace joins it
+	// onto the previous one), so a long multi-line draft needs many rounds.
+	claudeDraftClearMaxRounds = 120
 	claudeDraftClearSettle    = 100 * time.Millisecond
 
 	EnvClaudeTmuxSessionPrefix     = "CLAUDE_CODE_TMUX_SESSION_PREFIX"
@@ -2160,6 +2163,12 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	// ordinary one-line steering keeps the immediate low-latency path.
 	if claudeLiveInputNeedsPasteSettlement(message) {
 		if _, err := waitForClaudeLiveInputPasteSettled(ctx, sessionName, paneBeforePaste, message, claudeLiveInputPasteSettlementMaxWait); err != nil {
+			// Nothing was submitted. Remove the half-verified text we typed so it
+			// does not sit in the composer as a stale draft and block every later
+			// live input (RTS 2026-09-24 04:29-04:30).
+			if !isClaudeTmuxSessionLostError(err) {
+				_, _ = clearClaudeComposerDraftRounds(context.WithoutCancel(ctx), sessionName)
+			}
 			return fmt.Errorf("Claude Code multiline live input did not settle before submit: %w", err)
 		}
 		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
@@ -2410,21 +2419,10 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 	// would stack onto). This only runs once we have decided to clear (idle pane
 	// with a real stale draft); the busy-pane gate above still protects legitimately
 	// queued messages from being touched.
-	for round := 0; round < claudeDraftClearMaxRounds; round++ {
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u"); err != nil {
-			return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
-		}
-		sleepCtx(ctx, claudeDraftClearSettle)
-		cleared, err := claudePromptDraftCleared(ctx, sessionName)
-		if err != nil {
-			if isClaudeTmuxSessionLostError(err) {
-				return err
-			}
-			continue // transient capture/repaint; try the next round
-		}
-		if cleared {
-			return nil
-		}
+	if cleared, err := clearClaudeComposerDraftRounds(ctx, sessionName); err != nil {
+		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
+	} else if cleared {
+		return nil
 	}
 	// Did not confirm an empty line within the bounded rounds — fall back to the
 	// timed wait so we still surface a failure rather than paste onto a dirty draft.
@@ -2432,6 +2430,31 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 		return fmt.Errorf("failed to clear stale Claude Code prompt draft %q: %w", truncateClaudeDraftForError(draft, 120), err)
 	}
 	return nil
+}
+
+// clearClaudeComposerDraftRounds empties the composer one logical line per
+// round: C-e C-u clears the current line and BSpace removes the line break
+// before it, so the next round works on the previous line. C-e C-u alone only
+// ever emptied the last line of a multi-line draft (RTS 2026-09-24: a 16-line
+// draft could never be cleared and blocked every later live input).
+func clearClaudeComposerDraftRounds(ctx context.Context, sessionName string) (bool, error) {
+	for round := 0; round < claudeDraftClearMaxRounds; round++ {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u", "BSpace"); err != nil {
+			return false, err
+		}
+		sleepCtx(ctx, claudeDraftClearSettle)
+		cleared, err := claudePromptDraftCleared(ctx, sessionName)
+		if err != nil {
+			if isClaudeTmuxSessionLostError(err) {
+				return false, err
+			}
+			continue // transient capture/repaint; try the next round
+		}
+		if cleared {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isClaudeConversationChoiceMenu identifies the model-created numbered chooser
@@ -2930,8 +2953,36 @@ func waitForClaudeLiveInputPasteSettled(ctx context.Context, sessionName, paneBe
 				strings.Contains(strings.Join(strings.Fields(composer), " "), strings.Join(strings.Fields(message), " ")) {
 				return false, nil
 			}
+			// A long multi-line message does not fit the visible composer (the
+			// editor keeps its end, where the cursor is, in view), so the whole
+			// message can never be seen. Its tail being present proves the
+			// paste finished landing.
+			if claudeComposerHoldsMessageTail(composer, message) {
+				return false, nil
+			}
 		}
 	}
+}
+
+// claudeComposerHoldsMessageTail reports whether the visible composer ends
+// with the end of message. Whitespace is ignored entirely so terminal soft
+// wraps (which can split a word) and line-number gutters do not matter.
+func claudeComposerHoldsMessageTail(composer, message string) bool {
+	strip := func(s string) []rune {
+		out := make([]rune, 0, len(s))
+		for _, r := range s {
+			if !unicode.IsSpace(r) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	c, m := strip(composer), strip(message)
+	const tailRunes = 120
+	if len(m) < tailRunes {
+		return false // short input is fully visible; the whole-message check owns it
+	}
+	return strings.Contains(string(c), string(m[len(m)-tailRunes:]))
 }
 
 func waitForPromptPasteWithTimeout(ctx context.Context, sessionName, paneBeforePaste string, timeout time.Duration) (bool, error) {
