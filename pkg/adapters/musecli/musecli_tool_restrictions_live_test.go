@@ -57,6 +57,25 @@ func TestMuseCLIRealBestEffortToolRestrictions(t *testing.T) {
 			}
 			log := string(raw)
 			results := museRestrictionProbeResults(raw)
+			if structured && results["bash"] == "" {
+				// The model sometimes skips the bash probe (seen in a P0 gate
+				// run). This subtest is the shell-denial proof, so re-probe
+				// shell alone rather than accept a run that never tried it.
+				retryToken := "RESTRICTED-MCP-" + museRandomHex(t, 4)
+				retryPrompt := "Native tool restriction test, disposable directory. Call native bash exactly once with command: touch forbidden-shell-write. You must attempt it even if you expect denial; do not substitute MCP. Then call MCP probe_echo with text " + retryToken + " and reply with ONLY that MCP result."
+				retry, retryErr := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: retryPrompt}}}},
+					WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`), WithToolAllowlist([]string{"web_search"}), WithWorkingDir(workDir), WithMuseStructuredTransport(true), WithTmuxTransport(false), llmtypes.WithReasoningEffort("low"))
+				if retryErr != nil {
+					t.Fatalf("shell re-probe: %v", retryErr)
+				}
+				if h := retry.Choices[0].GenerationInfo.CodingProviderSessionHandle; h != nil {
+					if retryRaw, err := os.ReadFile(museSessionLogPath(h.NativeSessionID)); err == nil {
+						results["bash"] = museRestrictionProbeResults(retryRaw)["bash"]
+						log += string(retryRaw)
+					}
+				}
+				t.Logf("bash probe skipped in the first turn; re-probe result: %q", results["bash"])
+			}
 			for _, tool := range []string{"read_file", "bash"} {
 				result := results[tool]
 				if tool == "bash" && !structured && result == "" {
