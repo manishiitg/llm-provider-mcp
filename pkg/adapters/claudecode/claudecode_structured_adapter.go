@@ -463,7 +463,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 // credential before setting it. This prevents the server process's saved/default
 // Claude account from winning account selection on multi-account machines.
 func claudeStructuredProcessEnv(base []string, opts *llmtypes.CallOptions, oauthToken string) []string {
-	environment := llmtypes.MergeCodingAgentSecretEnvironment(base, opts)
+	environment := withoutClaudeParentSessionEnv(llmtypes.MergeCodingAgentSecretEnvironment(base, opts))
 	oauthToken = strings.TrimSpace(oauthToken)
 	if oauthToken == "" {
 		return environment

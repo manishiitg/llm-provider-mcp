@@ -1272,7 +1272,47 @@ func claudePromptSuggestionEnvArgs() []string {
 		// privately by the final launch wrapper; otherwise Claude uses /login.
 		"-e", "CLAUDE_CODE_OAUTH_TOKEN=",
 	}
+	for _, name := range claudeParentSessionEnvNames {
+		args = append(args, "-e", name+"=")
+	}
 	return args
+}
+
+// claudeParentSessionEnvNames are set by a running Claude Code session for
+// its own children. A server (or test) started from inside Claude Code passes
+// them on, and the launched Claude then treats itself as a child: it stops
+// saving its transcript ("Transcript saving is off -- inherited
+// CLAUDE_CODE_CHILD_SESSION marker", seen live 2026-09-24), which blinds
+// every transcript-based completion, answer and durable-ack proof, and it can
+// message the parent session over the inherited socket. Blank them on every
+// launch.
+var claudeParentSessionEnvNames = []string{
+	"CLAUDECODE",
+	"CLAUDE_CODE_CHILD_SESSION",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ATTENDED",
+}
+
+// withoutClaudeParentSessionEnv drops those variables from a process
+// environment (structured `claude -p` launches build cmd.Env directly).
+func withoutClaudeParentSessionEnv(environment []string) []string {
+	out := environment[:0:0]
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		drop := false
+		for _, parent := range claudeParentSessionEnvNames {
+			if name == parent {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func claudeInteractiveShellCommand(args []string, workingDir string) string {

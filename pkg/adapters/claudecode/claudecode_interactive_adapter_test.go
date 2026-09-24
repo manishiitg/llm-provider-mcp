@@ -132,6 +132,9 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 		"-e", "ANTHROPIC_BASE_URL=",
 		"-e", "CLAUDE_CODE_OAUTH_TOKEN=",
 	}
+	for _, name := range claudeParentSessionEnvNames {
+		want = append(want, "-e", name+"=")
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude prompt suggestion env args = %v, want %v", got, want)
 	}
@@ -2517,5 +2520,12 @@ func TestClaudeRetainedInputRefreshInvalidatesPriorIdleExpiry(t *testing.T) {
 	}
 	if current := session.idleLease.LastActivity(); !current.After(firstUsed) {
 		t.Fatalf("lease activity was not refreshed: first=%s current=%s", firstUsed, current)
+	}
+}
+
+func TestWithoutClaudeParentSessionEnv(t *testing.T) {
+	got := withoutClaudeParentSessionEnv([]string{"PATH=/bin", "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDECODE=1", "HOME=/h", "CLAUDE_CODE_MESSAGING_SOCKET=/s"})
+	if !reflect.DeepEqual(got, []string{"PATH=/bin", "HOME=/h"}) {
+		t.Fatalf("parent Claude session env not stripped: %v", got)
 	}
 }
