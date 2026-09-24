@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -189,6 +190,64 @@ type claudeCompletedTranscriptResponse struct {
 	// pendingBackgroundAgentCount). While it is non-zero the answer is interim:
 	// each agent's report arrives later as a new user row and Claude continues.
 	PendingBackgroundAgents int
+	// PendingBackgroundTasks counts tool calls Claude moved to the background
+	// during the turn ("MCP tool ... is still running after 120s. It was moved
+	// to the background as task <id>") whose <task-notification> has not
+	// arrived yet. Claude ends its turn right away and starts a new one on its
+	// own when the task finishes; without this gate the platform closed the
+	// chat turn and never showed that continuation (RTS 2026-09-24).
+	PendingBackgroundTasks int
+}
+
+var (
+	claudeBackgroundedTaskPattern = regexp.MustCompile(`moved to the background as task ([A-Za-z0-9_-]+)`)
+	claudeTaskNotificationPattern = regexp.MustCompile(`<task-notification>\s*<task-id>([A-Za-z0-9_-]+)</task-id>`)
+)
+
+// claudeUserMessageText is the plain text of a user row: its string content, or
+// the text of its tool results.
+func claudeUserMessageText(raw json.RawMessage) string {
+	var message struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &message) != nil || len(message.Content) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(message.Content, &text) == nil {
+		return text
+	}
+	var blocks []struct {
+		Type    string          `json:"type"`
+		Text    string          `json:"text"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(message.Content, &blocks) != nil {
+		return ""
+	}
+	parts := []string{}
+	for _, block := range blocks {
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+		if len(block.Content) == 0 {
+			continue
+		}
+		var inner string
+		if json.Unmarshal(block.Content, &inner) == nil {
+			parts = append(parts, inner)
+			continue
+		}
+		var innerBlocks []struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(block.Content, &innerBlocks) == nil {
+			for _, ib := range innerBlocks {
+				parts = append(parts, ib.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // completedAssistantResponseFromTranscript returns the final assistant message
@@ -232,6 +291,7 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	standalone := 0
 	lastAssistantID := ""
 	userAfterLastAssistant := false
+	pendingTasks := map[string]bool{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -255,6 +315,14 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 			// A tool result or a newly delivered message: Claude is working again.
 			if lastAssistantID != "" {
 				userAfterLastAssistant = true
+			}
+			if text := claudeUserMessageText(e.Message); text != "" {
+				for _, match := range claudeBackgroundedTaskPattern.FindAllStringSubmatch(text, -1) {
+					pendingTasks[match[1]] = true
+				}
+				for _, match := range claudeTaskNotificationPattern.FindAllStringSubmatch(text, -1) {
+					delete(pendingTasks, match[1])
+				}
 			}
 			continue
 		}
@@ -284,7 +352,8 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		// (if any) has not been written yet.
 		result.PendingBackgroundAgents = 0
 	}
-	if last := groups[lastAssistantID]; last != nil && last.completed && !userAfterLastAssistant && len(last.text) > 0 && result.PendingBackgroundAgents == 0 {
+	result.PendingBackgroundTasks = len(pendingTasks)
+	if last := groups[lastAssistantID]; last != nil && last.completed && !userAfterLastAssistant && len(last.text) > 0 && result.PendingBackgroundAgents == 0 && result.PendingBackgroundTasks == 0 {
 		result.LastIsEndTurn = true
 	}
 
