@@ -1118,6 +1118,24 @@ rl.on("line", async (line) => {
 func piLiveWorkDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
+	t.Cleanup(func() {
+		_ = CleanupPiCLIInteractiveSessions(context.Background())
+		// kill-session does not wait for Pi to stop writing .pi/agentworks,
+		// so remove the directory here until it stays gone (bounded), before
+		// t.TempDir's own RemoveAll runs.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if err := os.RemoveAll(dir); err == nil {
+				time.Sleep(200 * time.Millisecond)
+				if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+					return
+				}
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
 	return dir
 }
