@@ -98,6 +98,32 @@ var codexBridgeOnlyDisabledFeatures = []string{
 	"image_generation",
 }
 
+// codexReadOnlyHybridEnabledFeatures are re-enabled for AgentWorks' hybrid
+// ("Native agent tools") mode: the shell (Codex reads and searches files only
+// through it) and native subagents. Everything else in the bridge-only list
+// (browser/computer use, apps, plugins, hooks, image generation, dependency
+// installs, tool search) stays off. Callers must pair this with the
+// read-only sandbox so no native write is possible.
+var codexReadOnlyHybridEnabledFeatures = map[string]bool{"shell_tool": true, "unified_exec": true, "multi_agent": true}
+
+// CodexReadOnlyHybridDisabledFeatures is codexBridgeOnlyDisabledFeatures minus
+// the shell and multi_agent.
+func CodexReadOnlyHybridDisabledFeatures() []string {
+	out := make([]string, 0, len(codexBridgeOnlyDisabledFeatures))
+	for _, feature := range codexBridgeOnlyDisabledFeatures {
+		if !codexReadOnlyHybridEnabledFeatures[feature] {
+			out = append(out, feature)
+		}
+	}
+	return out
+}
+
+// WithReadOnlyHybridTools disables every Codex native feature except its
+// shell and subagents. Pair with WithSandbox("read-only").
+func WithReadOnlyHybridTools() llmtypes.CallOption {
+	return WithDisableFeatures(strings.Join(CodexReadOnlyHybridDisabledFeatures(), ","))
+}
+
 func appendCodexDisabledFeatureArgs(args []string, seen map[string]bool, features ...string) []string {
 	for _, feature := range features {
 		feature = strings.TrimSpace(feature)
