@@ -172,7 +172,18 @@ func readCursorRetainedInput(input *cursorRetainedInput) []llmtypes.MessageConte
 				continue
 			}
 			_, old := input.baseline[ref]
-			matched = !old && strings.Join(strings.Fields(query), " ") == input.query
+			isOurs := !old && strings.Join(strings.Fields(query), " ") == input.query
+			if matched && !isOurs {
+				// A later user row after our query is a live input (steer) sent
+				// during this turn: Cursor absorbs it and continues, and the
+				// turn's answer is the prose after it. Keep it in this trail;
+				// resetting here dropped the steered turn's final answer (store
+				// held one complete line; the pane fallback returned only its
+				// last wrapped line).
+				out = append(out, llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, query))
+				continue
+			}
+			matched = isOurs
 			out = nil
 			if matched {
 				out = append(out, llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, query))
