@@ -1393,6 +1393,9 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	boundary := newCursorRetainedInput(session.resolveRetainedStoreLocked(), message)
 	session.retainedInput = boundary
 	primeCursorRetainedProgress(ownerSessionID, boundary)
+	// Everything before this live send belongs to turns already recorded;
+	// the normal turn reader must not return it again.
+	markCursorStoreRefsReturned(ownerSessionID, boundary.storeDB)
 	session.retainedMu.Unlock()
 	if err := cursorConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendCursorLiveInputToTmux(ctx, sessionName, message)); err != nil {
 		session.retainedMu.Lock()
