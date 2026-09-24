@@ -330,6 +330,13 @@ func WithCursorDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 	return cursorcli.WithDenyBuiltinTools(enabled)
 }
 
+// WithCursorReadOnlyHybridTools is the "Native agent tools" variant: Cursor's
+// native read/list/search tools run; shell, writes, deletes and subagents stay
+// denied by the same hooks.
+func WithCursorReadOnlyHybridTools() llmtypes.CallOption {
+	return cursorcli.WithReadOnlyHybridTools()
+}
+
 // WithCursorMode sets Cursor Agent CLI's --mode flag. "ask" and "plan" are
 // both read-only at the CLI level. Leave empty for normal agent mode.
 //
