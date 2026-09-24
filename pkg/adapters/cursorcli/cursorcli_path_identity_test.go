@@ -65,7 +65,7 @@ func TestCursorMissingKnownSessionDoesNotAdoptAnotherTranscript(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	writeCursorStoreFixture(t, dir, "unrelated-session", []string{`{"role":"assistant","content":[{"type":"text","text":"wrong chat"}]}`})
-	messages, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), dir, "owner", "missing-known-session")
+	messages, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), dir, nil, "missing-known-session")
 	if path != "" || len(messages) != 0 {
 		t.Fatalf("missing saved session adopted another transcript: %s", path)
 	}
@@ -92,7 +92,7 @@ func TestCursorLegacyTranscriptHashWithExactSession(t *testing.T) {
 	if err != nil || !ok || transcript.Path != legacy {
 		t.Fatalf("legacy transcript was lost: ok=%v err=%v path=%s", ok, err, transcript.Path)
 	}
-	messages, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), alias, "owner", "saved-session")
+	messages, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), alias, nil, "saved-session")
 	if len(messages) != 1 || path != legacy {
 		t.Fatal("resumed turn lost its legacy transcript")
 	}

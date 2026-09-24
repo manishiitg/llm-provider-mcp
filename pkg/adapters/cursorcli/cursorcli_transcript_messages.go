@@ -65,15 +65,17 @@ var (
 //   - first user blob: provider-options context (cwd / mcp / rules)
 //   - assistant:redacted-reasoning: encrypted CoT, no usable text
 //
-// ownerSessionID scopes the per-session "already returned" cache used
-// to dedup across multi-turn chats (cursor's root is cumulative).
-// Pass an empty string to disable diffing and return the full root —
-// useful for one-shot workflow phases or for diagnostic smoke tests.
+// baseline is the set of store entries that existed before this turn's
+// prompt was sent (cursor's root is cumulative): only entries after it are
+// the turn's messages. Turns run one at a time (FIFO), so this per-turn
+// snapshot is all the scoping recording needs; nothing is remembered across
+// turns. A nil or empty baseline returns the full root -- a fresh session's
+// first turn, a one-shot phase, or a diagnostic read.
 //
 // Returns nil on any error or when no store.db is found for the
 // given workingDir. Best-effort.
-func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerSessionID string) []llmtypes.MessageContent {
-	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, ownerSessionID, "")
+func readCursorTranscriptMessages(turnStart time.Time, workingDir string, baseline map[string]struct{}) []llmtypes.MessageContent {
+	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, baseline, "")
 	return msgs
 }
 
@@ -100,7 +102,7 @@ func readCursorTranscriptMessages(turnStart time.Time, workingDir string, ownerS
 // too. Only fall back to the freshest-in-directory guess below when
 // knownNativeSessionID is empty — a genuinely first-ever turn, where cursor
 // hasn't reported an id yet and there is no better signal available.
-func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, ownerSessionID string, knownNativeSessionID string, accountHome ...string) ([]llmtypes.MessageContent, string) {
+func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, baseline map[string]struct{}, knownNativeSessionID string, accountHome ...string) ([]llmtypes.MessageContent, string) {
 	if strings.TrimSpace(workingDir) == "" {
 		return nil, ""
 	}
@@ -172,7 +174,7 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 	// return. This is best-effort by design.
 	deadline := time.Now().Add(4 * time.Second)
 	for {
-		msgs := readCursorStoreDBMessages(pickedPath, ownerSessionID)
+		msgs := readCursorStoreDBMessagesAfter(pickedPath, baseline)
 		if hasUsableCursorTurn(msgs) || time.Now().After(deadline) {
 			return msgs, pickedPath
 		}
@@ -266,49 +268,66 @@ func workingDirHashForCursor(workingDir string) string {
 // any new IDs are recorded for the next call. Best-effort: returns
 // nil on any error.
 func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.MessageContent {
-	// Open read-only so a concurrent cursor process can't be disturbed.
+	// Display-only cursor for live streaming: remembers what this stream has
+	// already shown. It never decides what a turn records (see
+	// readCursorStoreDBMessagesAfter).
+	var seen map[string]struct{}
+	if ownerSessionID != "" {
+		cursorReturnedBlobsMu.Lock()
+		current := cursorReturnedBlobs[ownerSessionID]
+		seen = make(map[string]struct{}, len(current))
+		for ref := range current {
+			seen[ref] = struct{}{}
+		}
+		cursorReturnedBlobsMu.Unlock()
+	}
+	msgs, refs := cursorStoreMessagesExcept(dbPath, seen)
+	if ownerSessionID != "" && refs != nil {
+		cursorReturnedBlobsMu.Lock()
+		bucket := cursorReturnedBlobs[ownerSessionID]
+		if bucket == nil {
+			bucket = make(map[string]struct{}, len(refs))
+			cursorReturnedBlobs[ownerSessionID] = bucket
+		}
+		for _, r := range refs {
+			bucket[r] = struct{}{}
+		}
+		cursorReturnedBlobsMu.Unlock()
+	}
+	return msgs
+}
+
+// readCursorStoreDBMessagesAfter returns the messages committed after the
+// baseline snapshot: one turn's own messages. Nothing is cached.
+func readCursorStoreDBMessagesAfter(dbPath string, baseline map[string]struct{}) []llmtypes.MessageContent {
+	msgs, _ := cursorStoreMessagesExcept(dbPath, baseline)
+	return msgs
+}
+
+// cursorStoreMessagesExcept converts the store's current root, skipping refs
+// in except, and returns the messages plus every ref it walked (nil on
+// error).
+func cursorStoreMessagesExcept(dbPath string, except map[string]struct{}) ([]llmtypes.MessageContent, []string) {
 	// NB: modernc.org/sqlite returns empty results when `immutable=1`
 	// is set on the URI (driver quirk — different from mattn). Stick
 	// to `mode=ro` only.
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	// Pull field-1 (length-delimited, 32-byte) refs in source order.
 	refs, err := cursorStoreLatestRootRefs(ctx, db)
 	if err != nil || len(refs) == 0 {
-		return nil
-	}
-
-	// If we have an owner session, snapshot the already-seen set and
-	// prepare to record this turn's additions. Cursor's root is
-	// cumulative, so prior-turn refs reappear on every new turn.
-	var seenForSession map[string]struct{}
-	if ownerSessionID != "" {
-		cursorReturnedBlobsMu.Lock()
-		seen := cursorReturnedBlobs[ownerSessionID]
-		if seen == nil {
-			seen = make(map[string]struct{})
-			cursorReturnedBlobs[ownerSessionID] = seen
-		}
-		// Copy so we don't mutate while iterating refs above.
-		seenForSession = make(map[string]struct{}, len(seen))
-		for ref := range seen {
-			seenForSession[ref] = struct{}{}
-		}
-		cursorReturnedBlobsMu.Unlock()
+		return nil, nil
 	}
 
 	var out []llmtypes.MessageContent
 	skippedFirstUserContext := false
 	for _, ref := range refs {
-		if seenForSession != nil {
-			if _, already := seenForSession[ref]; already {
-				continue
-			}
+		if _, skip := except[ref]; skip {
+			continue
 		}
 		data := readCursorBlob(ctx, db, ref)
 		if len(data) == 0 || data[0] != '{' {
@@ -324,16 +343,12 @@ func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.
 			// internal "You are Composer..." duplicates that.
 			continue
 		case "user":
-			// Cursor stores TWO user blobs per turn: the first
-			// carries provider-options context (cwd, mcp config,
-			// rules — recognizable as a long string payload with
-			// no <user_query> wrapper); the second carries the
-			// actual user query. Skip the first, keep nothing
-			// from the second (the outer history already has the
-			// user message).
+			// Cursor stores TWO user blobs per turn: the first carries
+			// provider-options context (cwd, mcp config, rules); the
+			// second the actual user query. Neither is returned: the
+			// outer history already has the user message.
 			if !skippedFirstUserContext {
 				skippedFirstUserContext = true
-				continue
 			}
 			continue
 		case "assistant":
@@ -341,38 +356,16 @@ func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.
 			if len(parts) == 0 {
 				continue
 			}
-			out = append(out, llmtypes.MessageContent{
-				Role:  llmtypes.ChatMessageTypeAI,
-				Parts: parts,
-			})
+			out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: parts})
 		case "tool":
 			parts := cursorToolPartsFromContent(msg.Content)
 			if len(parts) == 0 {
 				continue
 			}
-			out = append(out, llmtypes.MessageContent{
-				Role:  llmtypes.ChatMessageTypeTool,
-				Parts: parts,
-			})
+			out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeTool, Parts: parts})
 		}
 	}
-
-	// Record every ref we walked under this session — including the
-	// system/user blobs we skipped — so we never re-emit anything
-	// from this root's prefix on the next turn.
-	if ownerSessionID != "" {
-		cursorReturnedBlobsMu.Lock()
-		bucket := cursorReturnedBlobs[ownerSessionID]
-		if bucket == nil {
-			bucket = make(map[string]struct{})
-			cursorReturnedBlobs[ownerSessionID] = bucket
-		}
-		for _, r := range refs {
-			bucket[r] = struct{}{}
-		}
-		cursorReturnedBlobsMu.Unlock()
-	}
-	return out
+	return out, refs
 }
 
 type cursorMessage struct {

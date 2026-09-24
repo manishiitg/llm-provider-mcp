@@ -140,45 +140,7 @@ func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtype
 			return nil
 		}
 	}
-	messages := readCursorRetainedInput(input)
-	if _, state := cursorTurnTrailState(messages); state == cursorTrailFinished {
-		// The retained turn is recorded through this path. Mark its store
-		// entries returned for the normal turn reader too, or the next
-		// normal turn (an auto-notification, say) re-emits every retained
-		// turn since the session started as its own reply (RTS 2026-09-24,
-		// automationtesting: 23 earlier assistant messages replayed).
-		markCursorStoreRefsReturned(ownerSessionID, input.storeDB)
-	}
-	return messages
-}
-
-// markCursorStoreRefsReturned records every entry now in the store as already
-// returned for the owner's normal turn reader (readCursorStoreDBMessages keyed
-// by the owner session).
-func markCursorStoreRefsReturned(ownerSessionID, storeDB string) {
-	ownerSessionID = strings.TrimSpace(ownerSessionID)
-	if ownerSessionID == "" || storeDB == "" {
-		return
-	}
-	db, err := sql.Open("sqlite", "file:"+storeDB+"?mode=ro")
-	if err != nil {
-		return
-	}
-	defer db.Close()
-	refs, err := cursorStoreLatestRootRefs(context.Background(), db)
-	if err != nil {
-		return
-	}
-	cursorReturnedBlobsMu.Lock()
-	defer cursorReturnedBlobsMu.Unlock()
-	bucket := cursorReturnedBlobs[ownerSessionID]
-	if bucket == nil {
-		bucket = make(map[string]struct{}, len(refs))
-		cursorReturnedBlobs[ownerSessionID] = bucket
-	}
-	for _, ref := range refs {
-		bucket[ref] = struct{}{}
-	}
+	return readCursorRetainedInput(input)
 }
 
 func readCursorRetainedInput(input *cursorRetainedInput) []llmtypes.MessageContent {

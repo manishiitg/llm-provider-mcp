@@ -143,32 +143,31 @@ func TestReadCursorStoreDBMessagesStillReadsAfterRootRefsRefactor(t *testing.T) 
 	}
 }
 
-// Messages recorded through retained (live-input) turns must not come back
-// from the normal turn reader: an auto-notification turn after several live
-// sends replayed every earlier assistant message as its reply (RTS
-// 2026-09-24, automationtesting).
-func TestRetainedTurnsAdvanceTheNormalTurnReader(t *testing.T) {
+// A turn records only what Cursor committed after the snapshot taken before
+// its prompt, however many earlier turns (live-typed or not) the session
+// holds. An auto-notification turn after several live sends once replayed
+// every earlier assistant message as its reply (RTS 2026-09-24,
+// automationtesting).
+func TestTurnRecordsOnlyWhatFollowsItsSnapshot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workingDir := filepath.Join(home, "ws", "proj")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	db := writeCursorStoreFixture(t, workingDir, "sess-1", []string{
+	earlier := []string{
 		`{"role":"user","content":"context"}`,
 		`{"role":"user","content":"<user_query>first question</user_query>"}`,
 		`{"role":"assistant","content":[{"type":"text","text":"first answer"}]}`,
 		`{"role":"user","content":"<user_query>live follow-up</user_query>"}`,
 		`{"role":"assistant","content":[{"type":"text","text":"follow-up answer"}]}`,
-	})
-	owner := "owner-" + t.Name()
-	t.Cleanup(func() {
-		cursorReturnedBlobsMu.Lock()
-		delete(cursorReturnedBlobs, owner)
-		cursorReturnedBlobsMu.Unlock()
-	})
-	markCursorStoreRefsReturned(owner, db)
-	if msgs := readCursorStoreDBMessages(db, owner); len(msgs) != 0 {
-		t.Fatalf("normal turn reader replayed %d already-recorded messages: %+v", len(msgs), msgs)
+	}
+	db := writeCursorStoreFixture(t, workingDir, "sess-1", earlier)
+	snapshot := cursorSnapshotStoreRefs(db)
+	if msgs := readCursorStoreDBMessagesAfter(db, snapshot); len(msgs) != 0 {
+		t.Fatalf("nothing new since the snapshot, got %d messages: %+v", len(msgs), msgs)
+	}
+	if msgs := readCursorStoreDBMessagesAfter(db, nil); len(msgs) != 2 {
+		t.Fatalf("no snapshot (fresh session) returns the whole store, got %d", len(msgs))
 	}
 }

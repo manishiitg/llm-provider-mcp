@@ -118,7 +118,7 @@ func TestReadCursorTranscriptMessagesShapesAToolLoop(t *testing.T) {
 	}
 
 	turnStart := time.Now().Add(-1 * time.Hour)
-	msgs := readCursorTranscriptMessages(turnStart, workingDir, "")
+	msgs := readCursorTranscriptMessages(turnStart, workingDir, nil)
 
 	// Expect: assistant text, assistant tool_call, tool result, final assistant text.
 	// (System, user-context, user-query all skipped.)
@@ -250,9 +250,9 @@ func TestReadCursorTranscriptMessagesDedupesAcrossMultiTurnCalls(t *testing.T) {
 	_ = os.Chtimes(dbPath, now, now)
 
 	turnStart := time.Now().Add(-1 * time.Hour)
-	const owner = "owner-multi-turn"
-
-	t1 := readCursorTranscriptMessages(turnStart, workingDir, owner)
+	// Each turn records only what follows the snapshot taken before its
+	// prompt; nothing is remembered across turns.
+	t1 := readCursorTranscriptMessages(turnStart, workingDir, nil)
 	if len(t1) != 1 {
 		t.Fatalf("turn 1: got %d msgs, want 1 (asstT1); msgs=%+v", len(t1), t1)
 	}
@@ -260,6 +260,7 @@ func TestReadCursorTranscriptMessagesDedupesAcrossMultiTurnCalls(t *testing.T) {
 		t.Fatalf("turn 1 msg[0] = %+v, want 'turn-1 answer'", t1[0].Parts[0])
 	}
 
+	beforeTurn2 := cursorSnapshotStoreRefs(dbPath)
 	// Promote root2 (turn 2 occurred — cursor wrote a new root with
 	// all 5 refs, accumulating turn-1 refs and adding turn-2 refs).
 	db, err = sql.Open("sqlite", "file:"+dbPath)
@@ -272,7 +273,7 @@ func TestReadCursorTranscriptMessagesDedupesAcrossMultiTurnCalls(t *testing.T) {
 	}
 	_ = os.Chtimes(dbPath, now, now)
 
-	t2 := readCursorTranscriptMessages(turnStart, workingDir, owner)
+	t2 := readCursorTranscriptMessages(turnStart, workingDir, beforeTurn2)
 	if len(t2) != 1 {
 		t.Fatalf("turn 2: got %d msgs, want 1 (only asstT2 — asstT1 must be deduped); msgs=%+v", len(t2), t2)
 	}
@@ -286,7 +287,7 @@ func TestReadCursorTranscriptMessagesDedupesAcrossMultiTurnCalls(t *testing.T) {
 func TestReadCursorTranscriptMessagesReturnsNilWhenNoSession(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
-	got := readCursorTranscriptMessages(time.Now().Add(-1*time.Hour), filepath.Join(tmpHome, "nonexistent"), "")
+	got := readCursorTranscriptMessages(time.Now().Add(-1*time.Hour), filepath.Join(tmpHome, "nonexistent"), nil)
 	if got != nil {
 		t.Fatalf("got %+v, want nil", got)
 	}

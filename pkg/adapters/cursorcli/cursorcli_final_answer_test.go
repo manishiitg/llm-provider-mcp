@@ -123,7 +123,7 @@ func TestCursorSidecarFoundWhenOnlyWALIsFresh(t *testing.T) {
 		t.Fatalf("write -wal: %v", err)
 	}
 
-	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, "", "")
+	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, nil, "")
 	if path == "" || len(msgs) == 0 {
 		t.Fatalf("sidecar not found while only the -wal was fresh — callers would fall back to the wrapped pane")
 	}
@@ -171,7 +171,7 @@ func TestReadCursorTranscriptPrefersKnownSessionOverNewerDecoy(t *testing.T) {
 	// broke this live.
 	writeCursorStoreDBAt(t, workingDir, "cursor-bounded-decoy1234", decoyReply)
 
-	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, "", "real-parent-session")
+	msgs, path := readCursorTranscriptMessagesAndStoreDB(time.Now(), workingDir, nil, "real-parent-session")
 	if path == "" {
 		t.Fatal("expected to find the known session's store.db")
 	}

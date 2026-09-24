@@ -351,7 +351,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		nativeSessionID := resumeID
 		if nativeSessionID == "" {
-			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome); storeDBPath != "" {
+			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, nil, resumeID, session.accountHome); storeDBPath != "" {
 				nativeSessionID = cursorNativeSessionIDFromStoreDBPath(storeDBPath)
 			}
 		}
@@ -392,7 +392,17 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// session has no store for this chat yet, and discovering one here
 	// would pin whichever sibling chat in the same workdir was freshest
 	// (an earlier chat or helper run), blinding every later durable ack.
-	initialRefs := cursorSnapshotStoreRefs(pinnedCursorStoreNoMu(session))
+	initialStore := pinnedCursorStoreNoMu(session)
+	if initialStore == "" && resumeID != "" {
+		// A resumed native session already holds earlier turns; snapshot it
+		// so this turn records only what follows its prompt.
+		home := session.accountHome
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		initialStore = cursorStoreDBForNativeSession(home, session.workingDir, resumeID)
+	}
+	initialRefs := cursorSnapshotStoreRefs(initialStore)
 	if err := cursorConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, initialRefs,
 		sendCursorInitialPromptToTmux(callCtx, session.tmuxSessionName, prompt)); err != nil {
 		markCursorInteractiveSessionFailedLocked(session, err, c.logger)
@@ -478,7 +488,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// twice — to recover the unwrapped reply text here, and for the native
 	// session ID / intermediate messages further down — and the read polls for up
 	// to 4s on cursor's async commit, so it must not happen twice per turn.
-	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
+	// This turn's messages are what Cursor committed after the snapshot taken
+	// before its prompt: one turn at a time, nothing carried across turns.
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, initialRefs, resumeID, session.accountHome)
 	content = llmtypes.ReconcileFinalAnswer(content, latestCursorAssistantText(sidecarMsgs))
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
@@ -1393,9 +1405,6 @@ func SendCursorInteractiveInput(ctx context.Context, ownerSessionID, message str
 	boundary := newCursorRetainedInput(session.resolveRetainedStoreLocked(), message)
 	session.retainedInput = boundary
 	primeCursorRetainedProgress(ownerSessionID, boundary)
-	// Everything before this live send belongs to turns already recorded;
-	// the normal turn reader must not return it again.
-	markCursorStoreRefsReturned(ownerSessionID, boundary.storeDB)
 	session.retainedMu.Unlock()
 	if err := cursorConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendCursorLiveInputToTmux(ctx, sessionName, message)); err != nil {
 		session.retainedMu.Lock()
