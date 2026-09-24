@@ -527,6 +527,33 @@ func stashClaudeDurableReceiptForSend(ownerSessionID, message string, since time
 	stashClaudeDurableReceipt(session, message, path, offset, since)
 }
 
+// claudeTranscriptTookSend returns a check for whether the transcript holds
+// this send yet: a user row or a queue row for it, past the offset stashed
+// just before the send. The receipt is read now, because the server's durable
+// watch consumes it as soon as the caller is released. Nil when there is no
+// receipt to scope the check (then nothing is resent).
+func claudeTranscriptTookSend(ownerSessionID, message string) func() bool {
+	session, ok := claudeInteractivePersistentRegistry.Get(strings.TrimSpace(ownerSessionID))
+	if !ok || session == nil {
+		return nil
+	}
+	receipt, ok := peekClaudeDurableReceipt(session, message)
+	if !ok {
+		return nil
+	}
+	return func() bool {
+		path := resolveClaudeTranscriptPathNoMu(session)
+		if strings.TrimSpace(path) == "" {
+			return false
+		}
+		if _, ok := claudeTranscriptUserMessageOccurrenceSince(path, receipt.message, receipt.since, receipt.offset, receipt.occurrence); ok {
+			return true
+		}
+		_, ok := claudeTranscriptEnqueueOccurrenceSince(path, receipt.message, receipt.since, receipt.offset, receipt.occurrence)
+		return ok
+	}
+}
+
 // InteractiveSessionRegistered reports whether the owner's Claude Code
 // TUI is registered — the live-injection transport exists. Cheap
 // registry lookup (no tmux round-trip) for steer gating; delivery

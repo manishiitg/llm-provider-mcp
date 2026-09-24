@@ -2118,7 +2118,15 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 // operation owns the session's input slot for its whole life.
 const claudeLiveInputDeliveryMaxWait = claudeCompactionMaxWait + time.Minute
 
-func sendInputToActiveTmux(ctx context.Context, sessionName, message string) error {
+// sendInputToActiveTmuxWithProof delivers live input, with recovery for a
+// send the submit check could not confirm. taken reports whether Claude's own
+// transcript already holds the message (a user row or a queue row); when the
+// submit retries run out and the transcript still has neither, the message
+// never reached Claude (RTS 2026-09-24 13:20: the text vanished and the
+// composer was left holding two blank lines). The composer is then emptied
+// and the message sent once more, inside the same input slot so nothing can
+// interleave. The server's durable watch keeps judging the outcome.
+func sendInputToActiveTmuxWithProof(ctx context.Context, sessionName, message string, taken func() bool) error {
 	// Delivery is synchronous, verification is not. The verify+retry loop only
 	// re-presses Enter on a draft the TUI swallowed — it cannot change what
 	// Claude Code already received — so putting a TUI repaint on the caller's
@@ -2140,9 +2148,23 @@ func sendInputToActiveTmux(ctx context.Context, sessionName, message string) err
 			if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
 				return err
 			}
-			return sendInputToActiveTmuxUnserialized(ctx, sessionName, message, func(err error) {
+			err := sendInputToActiveTmuxUnserialized(ctx, sessionName, message, func(err error) {
 				handoff <- err
 			})
+			if err == nil || taken == nil || !errors.Is(err, errClaudeInputUnsubmitted) {
+				return err
+			}
+			if claudeWaitForTranscriptProof(ctx, taken, claudeLiveInputProofWait) {
+				return nil
+			}
+			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s not in transcript after submit retries; clearing the composer and sending once more", sessionName)
+			if clearErr := clearClaudeComposerBlind(ctx, sessionName, message); clearErr != nil {
+				return fmt.Errorf("%w; clearing the composer for a resend failed: %w", err, clearErr)
+			}
+			if resendErr := sendInputToActiveTmuxUnserialized(ctx, sessionName, message, nil); resendErr != nil && !errors.Is(resendErr, errClaudeInputUnsubmitted) {
+				return fmt.Errorf("%w; resend failed: %w", err, resendErr)
+			}
+			return nil
 		})
 		// Do can fail before the operation body ever runs — readiness wait, enqueue,
 		// context death — and in that case nothing has released the caller yet.
@@ -2256,7 +2278,50 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	// place a genuinely swallowed Enter surfaces. Keep it loud.
 	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
 		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
-	return fmt.Errorf("Claude Code tmux input remained unsubmitted after submit retries: %w", lastErr)
+	return fmt.Errorf("%w: %w", errClaudeInputUnsubmitted, lastErr)
+}
+
+// errClaudeInputUnsubmitted marks a send whose submit check ran out of
+// retries after the caller was already released. The check can miss a fast
+// submit, so the transcript decides whether it really was lost.
+var errClaudeInputUnsubmitted = errors.New("Claude Code tmux input remained unsubmitted after submit retries")
+
+// claudeLiveInputProofWait is how long a send the submit check could not
+// confirm waits for its transcript row before it is treated as lost. Claude
+// writes a queue row within ~0.5 s of a steer and a user row within ~3 s of
+// an idle submit.
+const claudeLiveInputProofWait = 6 * time.Second
+
+func claudeWaitForTranscriptProof(ctx context.Context, taken func() bool, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		if taken() {
+			return true
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return false
+		}
+		sleepCtx(ctx, claudeDurableAckPollInterval)
+	}
+}
+
+// clearClaudeComposerBlind empties the composer without reading the pane:
+// one C-e C-u BSpace round per line the message could have left (plus a few
+// for stray blank lines). On an already empty composer the keys do nothing.
+func clearClaudeComposerBlind(ctx context.Context, sessionName, message string) error {
+	rounds := strings.Count(message, "\n") + 4
+	if rounds > 64 {
+		rounds = 64
+	}
+	args := []string{"send-keys", "-t", sessionName}
+	for i := 0; i < rounds; i++ {
+		args = append(args, "C-e", "C-u", "BSpace")
+	}
+	if err := runCommand(ctx, nil, "tmux", args...); err != nil {
+		return err
+	}
+	sleepCtx(ctx, claudeDraftClearSettle)
+	return nil
 }
 
 // claudeLeadingSlashCommand matches a prompt whose first line is only a slash
@@ -2452,6 +2517,16 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 	}
 	draft, shouldClear := claudePromptDraftToClearBeforePaste(captured)
 	if !shouldClear {
+		// Only the ❯ line is read, so blank lines left in a multi-line
+		// composer look empty; the next paste then lands after them (RTS
+		// 2026-09-24: a resend was recorded with two leading newlines). A
+		// couple of blind rounds remove them; on an empty composer the keys
+		// do nothing.
+		if hasReadyInputPrompt(captured) && !isClaudeConversationChoiceMenu(captured) {
+			if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-e", "C-u", "BSpace", "C-e", "C-u", "BSpace"); err != nil {
+				return fmt.Errorf("failed to clear blank lines from the Claude Code composer: %w", err)
+			}
+		}
 		return nil
 	}
 	// Repeat C-e + C-u until the input line is empty so multi-line stale drafts are
@@ -4490,7 +4565,8 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	}
 	since := time.Now()
 	stashClaudeDurableReceiptForSend(ownerSessionID, message, since)
-	return claudeConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendInputToActiveTmux(ctx, sessionName, message))
+	taken := claudeTranscriptTookSend(ownerSessionID, message)
+	return claudeConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendInputToActiveTmuxWithProof(ctx, sessionName, message, taken))
 }
 
 func claudeConfirmLiveSubmitAfterPaneError(ctx context.Context, ownerSessionID, message string, submitErr error) error {

@@ -560,3 +560,72 @@ func TestClaudeInteractiveSessionRegistered(t *testing.T) {
 		t.Fatal("a registered owner must be steer-ready")
 	}
 }
+
+// A send the submit check could not confirm is resent only when Claude's
+// transcript has neither a user row nor a queue row for it past the receipt
+// offset; an earlier identical message does not count.
+func TestClaudeTranscriptTookSendScopesToThisSend(t *testing.T) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+	nativeID := newClaudeNativeSessionID()
+	path := claudeTranscriptWorkingDirCandidates(home, workdir, nativeID)[0]
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	message := "another option is that\n1. live kit\n2. another llm"
+	earlier := claudeUserRow(time.Now().UTC().Add(-time.Minute), message) + "\n"
+	if err := os.WriteFile(path, []byte(earlier), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &claudeInteractivePersistentSession{accountHome: home, workingDir: workdir, nativeSessionID: nativeID}
+	previous := claudeInteractivePersistentRegistry.Replace(map[string]*claudeInteractivePersistentSession{t.Name(): session})
+	t.Cleanup(func() { claudeInteractivePersistentRegistry.Replace(previous) })
+
+	stashClaudeDurableReceiptForSend(t.Name(), message, time.Now())
+	taken := claudeTranscriptTookSend(t.Name(), message)
+	if taken == nil {
+		t.Fatal("expected a transcript check scoped by the stashed receipt")
+	}
+	if taken() {
+		t.Fatal("the earlier identical message must not prove this send")
+	}
+	appendRow := func(row string) {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(row + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendRow(claudeEnqueueRow(time.Now().UTC().Add(time.Second), message))
+	if !taken() {
+		t.Fatal("a queue row for this send must count as taken")
+	}
+	// The server's durable watch may consume the receipt first; the check
+	// captured it before the send and keeps working.
+	if _, ok := takeClaudeDurableReceipt(session, message); !ok {
+		t.Fatal("receipt should still be pending for the durable watch")
+	}
+	if !taken() {
+		t.Fatal("check must not depend on the receipt still being pending")
+	}
+	if claudeTranscriptTookSend("unknown-owner", message) != nil {
+		t.Fatal("no session means no check (nothing is resent)")
+	}
+}
+
+func TestClaudeWaitForTranscriptProof(t *testing.T) {
+	calls := 0
+	if !claudeWaitForTranscriptProof(context.Background(), func() bool { calls++; return calls >= 2 }, time.Second) {
+		t.Fatal("expected proof on the second look")
+	}
+	start := time.Now()
+	if claudeWaitForTranscriptProof(context.Background(), func() bool { return false }, 300*time.Millisecond) {
+		t.Fatal("no proof must report false")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("wait must stop at its deadline")
+	}
+}
