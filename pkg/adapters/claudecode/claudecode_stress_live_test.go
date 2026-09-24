@@ -87,6 +87,7 @@ func TestClaudeCodeTmuxStressHybridParallelAgents(t *testing.T) {
 			if names["Agent"]+names["Task"] < 3 {
 				t.Fatalf("expected three subagents, tools: %v", names)
 			}
+			claudeAssertNoNativeWrites(t, names, workDir)
 
 			resp2, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with only the B token from your previous answer."}}}}, opts...)
 			if err != nil {

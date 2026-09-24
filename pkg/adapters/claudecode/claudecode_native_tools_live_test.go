@@ -13,6 +13,25 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
+// claudeHybridLiveTools mirrors mcpagent's claudeHybridNativeTools.
+const claudeHybridLiveTools = "WebSearch,WebFetch,Read,Grep,Glob,Skill,Agent,TaskCreate,TaskGet,TaskUpdate,TaskList,TodoWrite"
+
+// claudeAssertNoNativeWrites fails if the parent or any subagent used a native
+// shell or write tool, or if a probe file appeared on disk.
+func claudeAssertNoNativeWrites(t *testing.T, names map[string]int, workDir string, probes ...string) {
+	t.Helper()
+	for _, forbidden := range []string{"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"} {
+		if names[forbidden] > 0 {
+			t.Fatalf("hybrid must never run native %s: %v", forbidden, names)
+		}
+	}
+	for _, probe := range probes {
+		if _, err := os.Stat(filepath.Join(workDir, probe)); !os.IsNotExist(err) {
+			t.Fatalf("native shell/write happened: %s exists", probe)
+		}
+	}
+}
+
 func claudeNativeToolsOptions(t *testing.T, workDir, sessionID string) []llmtypes.CallOption {
 	t.Helper()
 	mcpServerPath := writeClaudeInteractiveSlowMCPServer(t, filepath.Join(t.TempDir(), "slow-tool-started"))
@@ -21,9 +40,10 @@ func claudeNativeToolsOptions(t *testing.T, workDir, sessionID string) []llmtype
 		WithPersistentInteractiveSession(true),
 		WithWorkingDir(workDir),
 		WithMCPConfig(fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":%q}}}`, mcpServerPath)),
-		// Mirrors mcpagent's hybrid coding-tools mode: Claude's default native
-		// tool set with auto permissions, the bridge still mounted.
-		WithClaudeCodeTools("default"),
+		// Mirrors mcpagent's hybrid coding-tools mode (claudeHybridNativeTools):
+		// native read/search, skills, todos, subagents and web tools; never Bash
+		// or file writes. Auto permissions, the bridge still mounted.
+		WithClaudeCodeTools(claudeHybridLiveTools),
 		WithPermissionMode("auto"),
 		WithAllowedTools("mcp__api-bridge__*,WebSearch"),
 		WithEffort("low"),
@@ -101,8 +121,8 @@ func TestClaudeCodeTmuxRealHybridNativeToolsP0(t *testing.T) {
 	defer cancel()
 	prompt := "Integration test in a disposable directory. Do each step with your native tools: " +
 		"1) Create a todo list for these steps. 2) Read witness.txt. 3) Search the directory for " + needle + " and note the token after it. " +
-		"4) Use the aw-probe-skill skill to get its phrase. " +
-		"5) Call the api-bridge slow_contract MCP tool with token BRIDGE-OK and delay_ms 100. " +
+		"4) Use the aw-probe-skill skill to get its phrase. 5) Try to run the shell command: touch shell-write-attempt (report if unavailable). " +
+		"6) Call the api-bridge slow_contract MCP tool with token BRIDGE-OK and delay_ms 100. " +
 		"Finally reply on one line: the witness contents, the token after the needle, the skill phrase, and the MCP result."
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
 	if err != nil {
@@ -116,11 +136,10 @@ func TestClaudeCodeTmuxRealHybridNativeToolsP0(t *testing.T) {
 	}
 	names := claudeTranscriptToolNames(t, experimentalClaudeSessionID(resp), workDir)
 	t.Logf("tool_use names: %v", names)
-	// Hybrid lets Claude pick Read/Grep or Bash for navigation; the projected
-	// AgentWorks skill must load through the native Skill tool.
-	if names["Skill"] == 0 {
-		t.Fatalf("native Skill not used: %v", names)
+	if names["Read"] == 0 || names["Skill"] == 0 {
+		t.Fatalf("native Read/Skill not used: %v", names)
 	}
+	claudeAssertNoNativeWrites(t, names, workDir, "shell-write-attempt")
 }
 
 // TestClaudeCodeTmuxRealHybridBackgroundAgentP0: a subagent Claude runs in the
@@ -155,4 +174,5 @@ func TestClaudeCodeTmuxRealHybridBackgroundAgentP0(t *testing.T) {
 	if !strings.Contains(final, secret) {
 		t.Fatalf("turn ended before the background agent reported: final %q, want %s", final, secret)
 	}
+	claudeAssertNoNativeWrites(t, names, workDir)
 }
