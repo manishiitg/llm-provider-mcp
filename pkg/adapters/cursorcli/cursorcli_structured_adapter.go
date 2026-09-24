@@ -384,7 +384,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			// Same hooks the tmux path installs, in the same place. They deny
 			// cursor's built-in shell/file tools so the agent routes through the
 			// MCP bridge, while leaving it in agent mode and able to act.
-			cleanup, werr := writeCursorDenyBuiltinHooks(cursorDir, true)
+			cleanup, werr := writeCursorDenyBuiltinHooks(cursorDir, true, cursorReadOnlyHybridFromOptions(opts))
 			if werr != nil {
 				return nil, fmt.Errorf("cursor deny-builtin hooks: %w", werr)
 			}

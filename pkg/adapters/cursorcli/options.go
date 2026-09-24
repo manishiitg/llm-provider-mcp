@@ -19,6 +19,7 @@ const (
 	MetadataKeyInteractiveSessionID  = "cursor_interactive_session_id"
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
+	MetadataKeyReadOnlyHybridTools   = "cursor_read_only_hybrid_tools"
 	// MetadataKeyStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) mid-turn by polling Cursor's own
 	// store.db. Set via WithStreamTranscript (default OFF).
@@ -238,6 +239,26 @@ func WithDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyDenyBuiltinTools] = enabled
 	}
+}
+
+// WithReadOnlyHybridTools is the "Native agent tools" (hybrid) variant of
+// WithDenyBuiltinTools: Cursor's native read/list/search tools run, while
+// shell, writes, deletes, computer use, image generation and subagents stay
+// denied by the same hooks. It implies WithDenyBuiltinTools(true).
+func WithReadOnlyHybridTools() llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyDenyBuiltinTools] = true
+		opts.Metadata.Custom[MetadataKeyReadOnlyHybridTools] = true
+	}
+}
+
+func cursorReadOnlyHybridFromOptions(opts *llmtypes.CallOptions) bool {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return false
+	}
+	enabled, _ := opts.Metadata.Custom[MetadataKeyReadOnlyHybridTools].(bool)
+	return enabled
 }
 
 // WithStreamTranscript enables (or disables) mid-turn structured streaming —

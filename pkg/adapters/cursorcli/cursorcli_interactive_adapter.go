@@ -78,15 +78,29 @@ const (
 	EnvCursorInteractiveStalePaneBackstopSeconds    = "CURSOR_CLI_INTERACTIVE_STALE_PANE_BACKSTOP_SECONDS"
 )
 
+// cursorBridgeOnlyDeniedTools are the Cursor hook tool names denied in
+// bridge-only mode. Names come from the cursor-agent bundle's toolName
+// registry (2026.09.18): Delete, List, WriteShellStdin, ComputerUse,
+// RecordScreen, generateImage and lowercase task were missing, so a native
+// Delete fell through to Cursor's own approval prompt and stalled the turn
+// (reproduced live 2026-09-24). Todos (updateTodos), plans (createPlan) and
+// read-only diagnostics stay allowed.
 var cursorBridgeOnlyDeniedTools = []string{
 	"Shell",
+	"WriteShellStdin",
 	"Read",
+	"List",
 	"ListDir",
 	"Glob",
 	"Grep",
 	"Search",
 	"Edit",
 	"Write",
+	"Delete",
+	"ComputerUse",
+	"RecordScreen",
+	"generateImage",
+	"task",
 	"Task",
 	"Agent",
 	"Subagent",
@@ -95,11 +109,28 @@ var cursorBridgeOnlyDeniedTools = []string{
 	"Delegate",
 }
 
+// cursorReadOnlyHybridAllowedTools run natively in hybrid ("Native agent
+// tools") mode; every other name above stays denied.
+var cursorReadOnlyHybridAllowedTools = map[string]bool{"Read": true, "List": true, "ListDir": true, "Glob": true, "Grep": true, "Search": true}
+
 func cursorBridgeOnlyDeniedToolMatcher() string {
 	return strings.Join(cursorBridgeOnlyDeniedTools, "|")
 }
 
-func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool) string {
+func cursorDeniedToolMatcher(readOnlyHybrid bool) string {
+	if !readOnlyHybrid {
+		return cursorBridgeOnlyDeniedToolMatcher()
+	}
+	denied := make([]string, 0, len(cursorBridgeOnlyDeniedTools))
+	for _, tool := range cursorBridgeOnlyDeniedTools {
+		if !cursorReadOnlyHybridAllowedTools[tool] {
+			denied = append(denied, tool)
+		}
+	}
+	return strings.Join(denied, "|")
+}
+
+func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, readOnlyHybrid ...bool) string {
 	if !denyBuiltin {
 		return systemPrompt
 	}
@@ -107,6 +138,12 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool) string 
 - Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Nested Cursor agents do not reliably inherit the api-bridge MCP config and can stall on interactive mode-switch prompts.
 - Complete the task in this same Cursor session using the api-bridge MCP tools.
 - Built-in filesystem, shell, edit, search, and delegation tools are intentionally denied by the orchestrator.`)
+	if len(readOnlyHybrid) > 0 && readOnlyHybrid[0] {
+		guidance = strings.TrimSpace(`Cursor session rules:
+- Your built-in read-only tools (Read, List, Glob, Grep, Search) and your todo list are enabled; use them directly.
+- Built-in shell, write, edit, delete, computer-use and image tools are denied by the orchestrator: run commands and create or change files only through the api-bridge MCP tools.
+- Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session.`)
+	}
 	if strings.TrimSpace(systemPrompt) == "" {
 		return guidance
 	}
@@ -769,7 +806,8 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		denyBuiltin, _ = opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool)
 	}
-	systemPrompt = cursorBridgeOnlySystemPrompt(systemPrompt, denyBuiltin)
+	readOnlyHybrid := cursorReadOnlyHybridFromOptions(opts)
+	systemPrompt = cursorBridgeOnlySystemPrompt(systemPrompt, denyBuiltin, readOnlyHybrid)
 
 	// cursor-agent uses the git project root for .cursor/mcp.json discovery.
 	// An empty .git/ directory is not enough for the interactive TUI: when the
@@ -867,7 +905,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			}
 		}
 		if denyBuiltin {
-			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts))
+			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts), readOnlyHybrid)
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -1004,7 +1042,18 @@ func cursorMCPAllowlistCLIConfig(mcpJSON string) (string, bool, error) {
 // workspace and removes our deny script + the hooks/ subdir if we created
 // them. Order matters: write-then-restore composes cleanly with the rest
 // of prepareCursorProjectFiles's cleanup stack.
-func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool) (func(), error) {
+// cursorBeforeReadFileHook denies native file reads in bridge-only mode; in
+// hybrid mode reads are allowed, so the hook is not installed.
+func cursorBeforeReadFileHook(readOnlyHybrid bool) string {
+	if readOnlyHybrid {
+		return ""
+	}
+	return `,
+    "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}]`
+}
+
+func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool, readOnlyHybrid ...bool) (func(), error) {
+	hybrid := len(readOnlyHybrid) > 0 && readOnlyHybrid[0]
 	hooksDir := filepath.Join(cursorDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cursor hooks dir: %w", err)
@@ -1049,9 +1098,8 @@ exit 0
 	hooksConfig := `{
   "version": 1,
   "hooks": {
-    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "` + cursorBridgeOnlyDeniedToolMatcher() + `", "failClosed": true}],
-    "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}],
-    "beforeReadFile": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}]
+    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "` + cursorDeniedToolMatcher(hybrid) + `", "failClosed": true}],
+    "beforeShellExecution": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "failClosed": true}]` + cursorBeforeReadFileHook(hybrid) + `
   }
 }
 `
