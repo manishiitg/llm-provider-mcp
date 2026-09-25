@@ -1259,6 +1259,10 @@ func claudePromptSuggestionEnvArgs() []string {
 	mcpToolIdleTimeoutMS := codingtimeout.LongRunningMCPToolTimeout().Milliseconds()
 	args := []string{
 		"-e", EnvClaudePromptSuggestion + "=false",
+		// The session-quality survey ("How is Claude doing this session?")
+		// takes over the input box; its documented off switch keeps it from
+		// ever appearing in an unattended session.
+		"-e", "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1",
 		"-e", EnvClaudeMCPToolIdleTimeout + "=" + strconv.FormatInt(mcpToolIdleTimeoutMS, 10),
 		// Keep the classic renderer. Claude Code's fullscreen renderer (the
 		// default on recent builds) draws inside the alternate screen, which

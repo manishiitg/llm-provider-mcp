@@ -83,6 +83,9 @@ var codexBridgeOnlyDisabledFeatures = []string{
 	"computer_use",
 	"workspace_dependencies",
 	"hooks",
+	// Update notices are UI that can take over the screen; startup checks
+	// are already off (check_for_update_on_startup=false).
+	"in_app_updates",
 	"plugins",
 	"unavailable_dummy_tools",
 	// image_generation is codex's own built-in image_gen tool (see

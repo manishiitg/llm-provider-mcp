@@ -125,6 +125,7 @@ func TestClaudeStartSessionDisablesPromptSuggestions(t *testing.T) {
 	got := claudePromptSuggestionEnvArgs()
 	want := []string{
 		"-e", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
+		"-e", "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1",
 		"-e", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=5400000",
 		"-e", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
 		"-e", "ANTHROPIC_API_KEY=",
