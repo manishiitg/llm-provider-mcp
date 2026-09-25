@@ -51,8 +51,15 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 			continue
 		}
 		for _, part := range message.Parts {
-			if text, ok := part.(llmtypes.TextContent); ok && strings.TrimSpace(text.Text) != "" {
-				updates = append(updates, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, text.Text))
+			switch part := part.(type) {
+			case llmtypes.TextContent:
+				if strings.TrimSpace(part.Text) != "" {
+					updates = append(updates, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, part.Text))
+				}
+			case llmtypes.ThinkingContent:
+				if strings.TrimSpace(part.Thinking) != "" {
+					updates = append(updates, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{part}})
+				}
 			}
 		}
 	}

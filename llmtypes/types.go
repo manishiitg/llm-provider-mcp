@@ -39,6 +39,12 @@ type TextContent struct {
 	Text string
 }
 
+// ThinkingContent is a model's reasoning, kept apart from its answer text so
+// consumers can render it as thinking and never forward it as a reply.
+type ThinkingContent struct {
+	Thinking string
+}
+
 // ImageContent represents an image content part
 // Supports both base64-encoded images and image URLs
 type ImageContent struct {

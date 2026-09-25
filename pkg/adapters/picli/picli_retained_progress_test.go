@@ -56,8 +56,11 @@ func TestPiRetainedProgressPreservesMessagesAroundTools(t *testing.T) {
 	appendMessage("assistant", "Previous answer.", start.Add(-time.Minute), false)
 	appendMessage("user", "Check the report.", start, false)
 	appendThinking("Identifying session clues.", start.Add(500*time.Millisecond))
-	if got := ReadRetainedTurnProgressMessages(owner, start); len(got) != 1 || got[0].Parts[0].(llmtypes.TextContent).Text != "Identifying session clues." {
+	// Thinking is progress, tagged as thinking so it never shows as reply text.
+	if got := ReadRetainedTurnProgressMessages(owner, start); len(got) != 1 {
 		t.Fatalf("missing thinking-only progress: %+v", got)
+	} else if thinking, ok := got[0].Parts[0].(llmtypes.ThinkingContent); !ok || thinking.Thinking != "Identifying session clues." {
+		t.Fatalf("thinking progress not tagged as thinking: %+v", got)
 	}
 	// Thinking is progress only: it must not enter the final-response message
 	// stream or become a completed assistant answer.

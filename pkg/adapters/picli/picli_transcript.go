@@ -232,17 +232,20 @@ type piTranscriptContent struct {
 func piTranscriptProgressMessages(content []piTranscriptContent) []llmtypes.MessageContent {
 	var messages []llmtypes.MessageContent
 	for _, part := range content {
-		var text string
 		switch strings.TrimSpace(part.Type) {
 		case "thinking":
-			text = part.Thinking
+			// Tagged as thinking: sent as plain text it showed as a reply in
+			// the chat and reached Slack/WhatsApp (2026-09-25).
+			if thinking := strings.TrimSpace(part.Thinking); thinking != "" {
+				messages = append(messages, llmtypes.MessageContent{
+					Role:  llmtypes.ChatMessageTypeAI,
+					Parts: []llmtypes.ContentPart{llmtypes.ThinkingContent{Thinking: thinking}},
+				})
+			}
 		case "", "text":
-			text = part.Text
-		default:
-			continue
-		}
-		if text = strings.TrimSpace(text); text != "" {
-			messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, text))
+			if text := strings.TrimSpace(part.Text); text != "" {
+				messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, text))
+			}
 		}
 	}
 	return messages
