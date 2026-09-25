@@ -168,6 +168,41 @@ func TestClaudeCodeTmuxIntegrationLargePastedPromptSubmits(t *testing.T) {
 	assertClaudeInteractiveHaikuMetadata(t, resp)
 }
 
+// A multi-line command with long lines (the shape of a user slash command)
+// must reach Claude whole. With a separate newline keystroke before each
+// pasted line, Claude Code dropped the pasted lines and kept only the last one
+// (RTS 2026-09-25), which a last-line token alone never caught.
+func TestClaudeCodeTmuxIntegrationMultilineCommandKeepsEveryLine(t *testing.T) {
+	skipClaudeInteractiveIntegration(t)
+
+	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+
+	first, middle, last := "ALPHA_"+randomHex(3), "BRAVO_"+randomHex(3), "CHARLIE_"+randomHex(3)
+	prompt := "This is a transport test for a multi-line command; do not use tools. The first code word is " + first + ", and this opening line is deliberately long so that it wraps in the terminal like a real command would.\n" +
+		"1. Read every numbered step before answering; each one matters and none of them may be skipped or summarised away.\n" +
+		"2. The second code word is " + middle + ", written on a line that follows a newline key in the composer.\n" +
+		"\n" +
+		"3. Reply with the three code words in order, separated by single spaces, and nothing else.\n" +
+		"\n" +
+		"The third code word is " + last + "."
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{
+		Role:  llmtypes.ChatMessageTypeHuman,
+		Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}},
+	}}, WithEffort("low"))
+	if err != nil {
+		t.Fatalf("GenerateContent multi-line command error = %v", err)
+	}
+	got := strings.TrimSpace(resp.Choices[0].Content)
+	for _, word := range []string{first, middle, last} {
+		if !strings.Contains(got, word) {
+			t.Fatalf("content = %q, missing %s: a line of the command never reached Claude", got, word)
+		}
+	}
+}
+
 func TestClaudeCodeTmuxIntegrationNativeResume(t *testing.T) {
 	skipClaudeInteractiveIntegration(t)
 

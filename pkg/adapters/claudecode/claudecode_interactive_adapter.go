@@ -2397,16 +2397,19 @@ func deliverClaudeComposerText(ctx context.Context, sessionName, bufferName, tex
 	if !claudeLiveInputNeedsPasteSettlement(text) || strings.HasPrefix(strings.TrimLeft(text, " \t"), "!") {
 		return claudeLiveInputNeedsPasteSettlement(text), pasteOne(text)
 	}
+	// Each line after the first carries its newline inside its own bracketed
+	// paste. A separate C-j keystroke raced the paste that followed it: Claude
+	// Code dropped the pasted line and kept only the newline, so a command
+	// arrived as blank lines plus its last line (RTS 2026-09-25, 2.1.233; a
+	// 100ms gap after C-j hid it, the in-paste newline removes the race).
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	for i, line := range lines {
+		if i > 0 {
+			line = "\n" + line
+		}
 		for _, chunk := range claudeLineChunks(line, claudeLinePasteChunk) {
 			if err := pasteOne(chunk); err != nil {
 				return false, err
-			}
-		}
-		if i < len(lines)-1 {
-			if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-j"); err != nil {
-				return false, fmt.Errorf("failed to insert newline into Claude Code tmux session: %w", err)
 			}
 		}
 	}
