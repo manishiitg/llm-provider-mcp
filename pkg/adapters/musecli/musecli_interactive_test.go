@@ -958,3 +958,45 @@ func TestSendMuseInteractiveInputNoSession(t *testing.T) {
 		t.Fatal("expected error for unknown owner session")
 	}
 }
+
+// A new Muse session can take over a minute to accept its first prompt
+// (66s and 135s measured on 2026-09-24/25). museSessionStartedSince is what
+// lets the intake wait keep going once Muse has started a session for this
+// workdir, instead of failing the turn while Muse goes on to run it.
+func TestMuseSessionStartedSinceSeesAStartedSessionForTheWorkdir(t *testing.T) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+	day := filepath.Join(home, "muse", "sessions", "2026", "09", "25")
+	write := func(id, workspaceRoot string, mod time.Time) {
+		t.Helper()
+		dir := filepath.Join(day, id)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "session.jsonl")
+		row := `{"payload_type":"runtime.session.metadata","payload":{"workspace_root":` + strconv.Quote(workspaceRoot) + `}}`
+		if err := os.WriteFile(path, []byte(row+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	since := time.Now().Add(-time.Minute)
+
+	if museSessionStartedSince(home, since, workdir) {
+		t.Fatal("no session yet: must not extend the wait")
+	}
+	write("other-workdir", t.TempDir(), time.Now())
+	write("before-turn", workdir, time.Now().Add(-time.Hour))
+	if museSessionStartedSince(home, since, workdir) {
+		t.Fatal("another workdir's session or one from before the turn must not count")
+	}
+	write("this-turn", workdir, time.Now())
+	if !museSessionStartedSince(home, since, workdir) {
+		t.Fatal("a session for this workdir started after the turn should count")
+	}
+	if museSessionStartedSince(home, since, "") {
+		t.Fatal("without a workdir the session cannot be attributed")
+	}
+}

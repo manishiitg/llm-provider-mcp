@@ -178,12 +178,59 @@ func museLastAssistantText(messages []llmtypes.MessageContent) string {
 	return ""
 }
 
+const (
+	// museIntakeWait is how long to wait for Muse to accept a prompt when no
+	// Muse session for the workdir has appeared.
+	museIntakeWait = 60 * time.Second
+	// museSlowStartIntakeWait bounds the wait once Muse has started a session
+	// for the workdir. The first prompt of a new session was accepted 66s and
+	// 135s after the session started on 2026-09-24/25; a 60s limit failed
+	// those turns while Muse went on to run them.
+	museSlowStartIntakeWait = 5 * time.Minute
+)
+
+// museSessionStartedSince reports whether Muse has written a session log for
+// this workdir since turnStart: Muse is running but has not yet accepted the
+// prompt. Without a workdir the session cannot be attributed, so it reports
+// false and the normal wait applies.
+func museSessionStartedSince(dataHome string, since time.Time, workdir string) bool {
+	if strings.TrimSpace(workdir) == "" {
+		return false
+	}
+	root := filepath.Join(dataHome, "muse", "sessions")
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if found || walkErr != nil || d.IsDir() || d.Name() != "session.jsonl" {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || len(strings.Split(rel, string(filepath.Separator))) != 5 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.ModTime().Before(since) {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if museLogMatchesWorkspace(raw, workdir) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
 // museWaitIntake verifies the TUI actually took in the prompt: the native
 // session log must show the turn after submit. This is observe-only: a pane
 // mismatch cannot justify another Enter while durable intake is uncertain.
 func museWaitIntake(ctx context.Context, session string, turnStart time.Time, snippet, workdir string) (nativeSessionID, logPath string, err error) {
 	dataHome := museAccountDataHome(ctx)
-	intakeDeadline := time.Now().Add(60 * time.Second)
+	waitStart := time.Now()
+	intakeDeadline := waitStart.Add(museIntakeWait)
+	extended := false
 	for {
 		id, path, findErr := museDiscoverSessionSince(dataHome, turnStart, snippet, workdir)
 		if findErr == nil {
@@ -191,7 +238,18 @@ func museWaitIntake(ctx context.Context, session string, turnStart time.Time, sn
 		}
 		err = findErr
 		if time.Now().After(intakeDeadline) {
-			return "", "", fmt.Errorf("muse prompt delivery unconfirmed after durable intake wait; last discovery error: %w", err)
+			// A new Muse session can take over a minute to accept its first
+			// prompt. Once Muse has started a session for this workdir it is
+			// up and still initializing: give up now and the turn is marked
+			// failed while Muse goes on to run it unseen.
+			if !extended && museSessionStartedSince(dataHome, turnStart, workdir) {
+				extended = true
+				intakeDeadline = waitStart.Add(museSlowStartIntakeWait)
+			} else if extended {
+				return "", "", fmt.Errorf("muse prompt delivery unconfirmed: muse started a session but did not accept the prompt within %s; last discovery error: %w", museSlowStartIntakeWait, err)
+			} else {
+				return "", "", fmt.Errorf("muse prompt delivery unconfirmed after durable intake wait; last discovery error: %w", err)
+			}
 		}
 		// A native question can appear before transcript discovery catches up.
 		// Handle the blocker, but never resubmit the prompt from this loop.
