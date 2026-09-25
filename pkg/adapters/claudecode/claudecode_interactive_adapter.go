@@ -1227,6 +1227,11 @@ func prepareClaudeUserConfig(workingDir, oauthToken string, accountHome ...strin
 	if strings.TrimSpace(oauthToken) != "" {
 		config["hasCompletedOnboarding"] = true
 	}
+	// A chosen theme keeps the first-run appearance picker from blocking the
+	// prompt; an operator's own choice is kept.
+	if theme, _ := config["theme"].(string); strings.TrimSpace(theme) == "" {
+		config["theme"] = "dark"
+	}
 
 	projects, _ := config["projects"].(map[string]interface{})
 	if projects == nil {
@@ -1686,21 +1691,14 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				lastActivityAt = time.Now()
 				continue
 			}
-			// Claude Code shows optional onboarding/feature modals on startup
-			// (e.g. "Claude in Chrome extension detected", "Try the new fullscreen
-			// renderer?") which block the input prompt and time the session out.
-			// Decline them with Esc. --no-chrome prevents the Chrome one; this is the
-			// defensive, future-proof catch for the whole class. Capped so a prompt
-			// Esc fails to clear can't spin forever. The trust-folder security prompt
-			// is excluded (handled above with "1. Yes").
-			if featurePromptsDismissed < 5 && isClaudeDismissableFeaturePrompt(captured) {
-				featurePromptsDismissed++
-				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
-					return fmt.Errorf("failed to dismiss Claude Code feature prompt: %w", err)
-				}
-				lastActivityAt = time.Now()
-				continue
-			}
+			// Optional feature/onboarding popups are prevented at launch, never
+			// dismissed by pressing keys: --no-chrome, the classic renderer, and
+			// the pre-seeded trust/onboarding/theme settings in ~/.claude.json.
+			// A popup that still appears (a new one from a CLI update) is left
+			// alone and reported with the screen when the startup wait ends, so
+			// it can be prevented too. Guessing at it with Escape once misread
+			// redrawn conversation as a popup and opened Claude's Rewind list
+			// (local 2026-09-25).
 			if hasReadyInputPrompt(captured) {
 				return nil
 			}
@@ -2539,20 +2537,9 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 			captured = recaptured
 		}
 	}
-	// Claude's AskUserQuestion UI uses the same leading ❯ glyph as the editable
-	// composer. The highlighted option is not draft text: C-u/C-e cannot clear
-	// it, and treating it as a stale draft causes a healthy retained session to
-	// be discarded. A new chat message supersedes the unanswered menu, so cancel
-	// it first and wait for the actual composer before pasting.
-	if isClaudeConversationChoiceMenu(captured) {
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
-			return fmt.Errorf("failed to cancel Claude Code conversation choice before sending input: %w", err)
-		}
-		captured, err = waitForClaudeConversationChoiceDismissed(ctx, sessionName)
-		if err != nil {
-			return err
-		}
-	}
+	// Claude's question-menu tool (AskUserQuestion) is not in the session's
+	// --tools list in either agent-tools mode, so no question menu can be
+	// open here; nothing is cancelled with Escape.
 	draft, shouldClear := claudePromptDraftToClearBeforePaste(captured)
 	if !shouldClear {
 		// Only the ❯ line is read, so blank lines left in a multi-line
@@ -2625,33 +2612,6 @@ func isClaudeConversationChoiceMenu(captured string) bool {
 	return hasSelectionFooter && hasHighlightedOption
 }
 
-func waitForClaudeConversationChoiceDismissed(ctx context.Context, sessionName string) (string, error) {
-	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(75 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastCaptured string
-	for {
-		captured, err := captureTmuxPane(deadline, sessionName)
-		if err == nil {
-			lastCaptured = captured
-			if !isClaudeConversationChoiceMenu(captured) && hasReadyInputPrompt(captured) {
-				return captured, nil
-			}
-		} else if isClaudeTmuxSessionLostError(err) {
-			return "", err
-		}
-		select {
-		case <-deadline.Done():
-			if strings.TrimSpace(lastCaptured) != "" {
-				return "", fmt.Errorf("timed out waiting for Claude Code conversation choice to close; %s", llmtypes.CompactTerminalPaneForError(sessionName, lastCaptured))
-			}
-			return "", fmt.Errorf("timed out waiting for Claude Code conversation choice to close")
-		case <-ticker.C:
-		}
-	}
-}
 
 // claudePromptDraftCleared reports whether the live ❯ input line is now empty or
 // a placeholder — i.e. nothing stale remains for the next paste to stack onto. A
