@@ -1663,6 +1663,21 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			// handled above and excluded inside the predicate; here we accept claude's
 			// highlighted recommended default with Enter (its convention for the safe
 			// "proceed" option) so the session is never stuck on an unrecognized menu.
+			// A ready input prompt means no modal is in the way. Resumed sessions
+			// redraw earlier conversation text, which can look like a numbered
+			// menu with "no thanks" in it; pressing keys at a ready prompt then
+			// is harmful (two Escapes open Claude's Rewind list, and the next live
+			// input could not be delivered -- local 2026-09-25 07:49).
+			if hasReadyInputPrompt(captured) && !isClaudeRewindSelector(captured) {
+				return nil
+			}
+			if isClaudeRewindSelector(captured) {
+				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+					return fmt.Errorf("failed to close Claude Code rewind list: %w", err)
+				}
+				lastActivityAt = time.Now()
+				continue
+			}
 			if featurePromptsDismissed < 5 && isClaudeBlockingChoiceMenu(captured) {
 				featurePromptsDismissed++
 				if err := runCommand(deadline, nil, "tmux", "send-keys", "-t", sessionName, "Enter"); err != nil {
@@ -1824,6 +1839,17 @@ func absInt(value int) int {
 // block the input prompt; Esc declines them safely. Examples: "Claude in Chrome
 // extension detected", "Try the new fullscreen renderer?". The trust-folder
 // security prompt is explicitly excluded (it needs an affirmative "1. Yes").
+// isClaudeRewindSelector reports Claude Code's Rewind list (opened by two
+// Escapes at an idle prompt): "Restore the code and/or conversation to the
+// point before…" with the latest entry highlighted as "❯ (current)". It is a
+// selection list, not a draft: delete keys cannot clear it, one Escape closes
+// it.
+func isClaudeRewindSelector(captured string) bool {
+	c := strings.ToLower(captured)
+	return strings.Contains(c, "restore the code and/or conversation") &&
+		strings.Contains(c, "(current)") && strings.Contains(c, "esc to cancel")
+}
+
 func isClaudeDismissableFeaturePrompt(captured string) bool {
 	if isClaudeTrustFolderPrompt(captured) {
 		return false
@@ -2500,6 +2526,18 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 			return err
 		}
 		return nil
+	}
+	// A Rewind list left open (two Escapes at an idle prompt) shows
+	// "❯ (current)", which read as a stale draft that delete keys can never
+	// clear; the send then failed after a minute. One Escape closes it.
+	if isClaudeRewindSelector(captured) {
+		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
+			return fmt.Errorf("failed to close Claude Code rewind list before sending input: %w", err)
+		}
+		sleepCtx(ctx, claudeDraftClearSettle)
+		if recaptured, recaptureErr := captureTmuxPane(ctx, sessionName); recaptureErr == nil {
+			captured = recaptured
+		}
 	}
 	// Claude's AskUserQuestion UI uses the same leading ❯ glyph as the editable
 	// composer. The highlighted option is not draft text: C-u/C-e cannot clear

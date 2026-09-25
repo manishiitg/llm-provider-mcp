@@ -629,3 +629,27 @@ func TestClaudeWaitForTranscriptProof(t *testing.T) {
 		t.Fatal("wait must stop at its deadline")
 	}
 }
+
+// Two Escapes at an idle prompt open Claude Code's Rewind list; its
+// highlighted "❯ (current)" entry must not be taken for a stale draft
+// (local 2026-09-25 07:49: two live inputs failed trying to delete it).
+func TestClaudeRewindSelectorIsNotADraft(t *testing.T) {
+	rewind := strings.Join([]string{
+		"  Rewind",
+		"  Restore the code and/or conversation to the point before…",
+		"    reply with just OK",
+		"    No code changes",
+		"  ❯ (current)",
+		"  Enter to continue · Esc to cancel",
+	}, "\n")
+	if !isClaudeRewindSelector(rewind) {
+		t.Fatal("the Rewind list must be recognised")
+	}
+	idle := "────\n❯ \n────\n  ⏸ manual mode on · ← for agents"
+	if isClaudeRewindSelector(idle) {
+		t.Fatal("an idle prompt is not the Rewind list")
+	}
+	if isClaudeRewindSelector("❯ explain what (current) means\nesc to cancel") {
+		t.Fatal("typed text mentioning (current) is not the Rewind list")
+	}
+}
