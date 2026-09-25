@@ -455,7 +455,9 @@ func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string
 	}
 	tmuxName := session.tmuxSessionName
 	ack, err := pollCursorDurableAck(ctx, message, since, baseline, timeout, cursorDurableAckPoll{
-		resolve:     func() string { return resolveCursorStoreNoMu(session) },
+		// Re-pins to the chat that holds the message when the pinned one
+		// does not (several chats can share the folder after a relaunch).
+		resolve:     func() string { return session.repinStoreForMessage(message, since) },
 		capture:     captureCursorPane,
 		sessionName: tmuxName,
 		occurrence:  occurrence,

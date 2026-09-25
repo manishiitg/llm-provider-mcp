@@ -17,6 +17,10 @@ type cursorRetainedInput struct {
 	storeDB  string
 	query    string
 	baseline map[string]struct{}
+	// message is the text as sent (query is whitespace-normalized) and sentAt
+	// when; together they find the chat that received it (repinStoreForMessage).
+	message string
+	sentAt  time.Time
 }
 
 func (s *cursorInteractiveSession) setRetainedStore(nativeID string) {
@@ -55,7 +59,7 @@ func (s *cursorInteractiveSession) resolveRetainedStoreLocked() string {
 }
 
 func newCursorRetainedInput(storeDB, query string) *cursorRetainedInput {
-	input := &cursorRetainedInput{storeDB: storeDB, query: strings.Join(strings.Fields(query), " "), baseline: map[string]struct{}{}}
+	input := &cursorRetainedInput{storeDB: storeDB, query: strings.Join(strings.Fields(query), " "), baseline: map[string]struct{}{}, message: query, sentAt: time.Now()}
 	if storeDB == "" {
 		return input
 	}
@@ -140,7 +144,20 @@ func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtype
 			return nil
 		}
 	}
-	return readCursorRetainedInput(input)
+	if messages := readCursorRetainedInput(input); messages != nil {
+		return messages
+	}
+	// Nothing yet: make sure the pinned chat is the one that received the
+	// message before concluding the reply is still pending.
+	if repinned := session.repinStoreForMessage(input.message, input.sentAt.Add(-time.Minute)); repinned != "" && repinned != input.storeDB {
+		session.retainedMu.Lock()
+		current := session.retainedInput
+		session.retainedMu.Unlock()
+		if current != nil {
+			return readCursorRetainedInput(current)
+		}
+	}
+	return nil
 }
 
 func readCursorRetainedInput(input *cursorRetainedInput) []llmtypes.MessageContent {
