@@ -2619,7 +2619,6 @@ func isClaudeConversationChoiceMenu(captured string) bool {
 	return hasSelectionFooter && hasHighlightedOption
 }
 
-
 // claudePromptDraftCleared reports whether the live ❯ input line is now empty or
 // a placeholder — i.e. nothing stale remains for the next paste to stack onto. A
 // missing ❯ line (transient repaint) is treated as not-yet-confirmed.
@@ -3198,23 +3197,36 @@ func waitForPromptAccepted(ctx context.Context, sessionName, preSubmitPane strin
 				}
 				continue
 			}
-			// The stateful verifier requires positive evidence that this draft was
-			// visible before an empty prompt can count as accepted. It also keeps a
-			// missing prompt row inconclusive during transient TUI repaints.
-			if verifier != nil && verifier.submitted(captured) {
-				return nil
-			}
-			if _, ok := latestClaudePromptDraft(captured); !ok {
-				continue
-			}
-			if hasClaudeActivity(captured) {
-				return nil
-			}
-			if hasReadyEmptyInputPrompt(captured) && hasNewAssistantOutput(capturedAfterPaneBaseline(captured, preSubmitPane)) {
+			if claudeInitialPromptAccepted(captured, preSubmitPane, verifier) {
 				return nil
 			}
 		}
 	}
+}
+
+// claudeInitialPromptAccepted decides from one pane capture whether the first
+// prompt of a launch left the input box. The stateful verifier requires
+// positive evidence that this draft was visible before an empty prompt counts,
+// and keeps a missing prompt row inconclusive during repaints. Activity on
+// screen only counts once our message is no longer in the box: a resumed
+// conversation shows activity while it loads, and reading that as "accepted"
+// skipped the Enter retries and left the prompt sitting unsubmitted until the
+// user pressed Enter by hand (RTS 2026-09-26 10:01, a resumed crew chat).
+func claudeInitialPromptAccepted(captured, preSubmitPane string, verifier *claudeSubmitVerifier) bool {
+	if verifier != nil && verifier.submitted(captured) {
+		return true
+	}
+	draft, ok := latestClaudePromptDraft(captured)
+	if !ok {
+		return false
+	}
+	if verifier != nil && claudePromptDraftStillMatchesMessage(draft, verifier.message) {
+		return false
+	}
+	if hasClaudeActivity(captured) {
+		return true
+	}
+	return hasReadyEmptyInputPrompt(captured) && hasNewAssistantOutput(capturedAfterPaneBaseline(captured, preSubmitPane))
 }
 
 // claudeSubmitVerifier decides whether a pasted live message actually left the

@@ -2530,3 +2530,19 @@ func TestWithoutClaudeParentSessionEnv(t *testing.T) {
 		t.Fatalf("parent Claude session env not stripped: %v", got)
 	}
 }
+
+// A resumed conversation shows activity while it loads. With our first prompt
+// still in the box that is not a submit: the Enter must be retried (RTS
+// 2026-09-26 10:01: the prompt sat unsubmitted until the user pressed Enter).
+func TestInitialPromptStillInBoxIsNotAcceptedDespiteActivity(t *testing.T) {
+	const message = "Design and publish this project's Slack bot App Home tab"
+	stuck := "✢ Resuming conversation… (esc to interrupt)\n\n❯ " + message + "\n  ⏵⏵ don't ask on (shift+tab to cycle)\n"
+	verifier := &claudeSubmitVerifier{message: message}
+	if claudeInitialPromptAccepted(stuck, "", verifier) {
+		t.Fatal("the prompt still sitting in the box was read as accepted because of on-screen activity")
+	}
+	cleared := "✢ Thinking… (esc to interrupt)\n\n❯ \n  ⏵⏵ don't ask on (shift+tab to cycle)\n"
+	if !claudeInitialPromptAccepted(cleared, "", verifier) {
+		t.Fatal("after the draft was seen, an emptied box with activity is a real submit")
+	}
+}
