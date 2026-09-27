@@ -935,6 +935,12 @@ func piMCPConfigFingerprint(config string) string {
 					if env, ok := srvMap["env"].(map[string]interface{}); ok {
 						delete(env, "MCP_SESSION_ID")
 						delete(env, "MCP_VIRTUAL_SCOPE_ID")
+						// The bridge token is per session now (like MCP_SESSION_ID), so
+						// it cannot tell two launches of the same config apart; keeping
+						// it made same-profile Pi agents in one working directory fail
+						// the concurrent-session lease with "different MCP configs".
+						delete(env, "MCP_API_TOKEN")
+						delete(env, "MCP_AUTH")
 						// MCP_READY_FILE is a fresh, randomly-named marker path generated
 						// on EVERY call (it gates the cold-turn MCP-readiness wait — see
 						// the bridgeReadyFile doc in mcpagent's agent.go), not something
