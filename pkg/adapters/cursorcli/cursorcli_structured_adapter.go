@@ -355,7 +355,19 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 		cursorDir := filepath.Join(workingDir, ".cursor")
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
-			cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(mcpJSON), true)
+			// The bridge token goes to a private file, not the workspace
+			// (cursorcli_bridge_token.go); this launch is one call, so the
+			// file goes when it ends.
+			safeMCPJSON, tokenFiles, terr := externalizeCursorBridgeTokens(mcpJSON)
+			if terr != nil {
+				return nil, fmt.Errorf("cursor MCP config: %w", terr)
+			}
+			configCleanups = append(configCleanups, func() {
+				for _, path := range tokenFiles {
+					_ = os.Remove(path)
+				}
+			})
+			cleanup, werr := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(safeMCPJSON), true)
 			if werr != nil {
 				return nil, fmt.Errorf("cursor MCP config: %w", werr)
 			}
