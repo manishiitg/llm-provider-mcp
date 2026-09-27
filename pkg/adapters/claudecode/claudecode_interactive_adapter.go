@@ -1232,6 +1232,17 @@ func prepareClaudeUserConfig(workingDir, oauthToken string, accountHome ...strin
 	if theme, _ := config["theme"].(string); strings.TrimSpace(theme) == "" {
 		config["theme"] = "dark"
 	}
+	// "Set up auto mode for your environment?" takes over the input box in
+	// auto-mode sessions once enough startups have accumulated, so an Enter
+	// meant for our message selects "Set it up" (the default) instead. Its own
+	// "Don't show again" choice writes autoModeEnvSetup.dismissed=true (Claude
+	// Code 2.1.233); record the same so the dialog never appears unattended.
+	autoModeSetup, _ := config["autoModeEnvSetup"].(map[string]interface{})
+	if autoModeSetup == nil {
+		autoModeSetup = map[string]interface{}{}
+	}
+	autoModeSetup["dismissed"] = true
+	config["autoModeEnvSetup"] = autoModeSetup
 
 	projects, _ := config["projects"].(map[string]interface{})
 	if projects == nil {
@@ -2135,6 +2146,13 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 			return nil
 		} else {
 			lastErr = err
+			// Record what the pane showed when this attempt was not accepted,
+			// so an intermittent "prompt did not start" names its cause (a
+			// dialog over the input box, a still-loading resume, ...).
+			if pane, capErr := captureTmuxPane(ctx, sessionName); capErr == nil {
+				log.Printf("[CLAUDE_SUBMIT] session=%s attempt=%d/3 not accepted: %v | pane tail:\n%s",
+					sessionName, attempt, err, claudeSubmitPaneTail(pane, 14))
+			}
 		}
 	}
 
@@ -5212,4 +5230,18 @@ func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessio
 	recordClaudeSessionRateLimitWindows(tmuxSessionName, status.RateLimitWindows(), time.Now().UTC())
 
 	return status, nil
+}
+
+// claudeSubmitPaneTail returns the last n non-blank lines of a pane capture.
+func claudeSubmitPaneTail(pane string, n int) string {
+	var kept []string
+	for _, line := range strings.Split(pane, "\n") {
+		if strings.TrimSpace(line) != "" {
+			kept = append(kept, strings.TrimRight(line, " "))
+		}
+	}
+	if len(kept) > n {
+		kept = kept[len(kept)-n:]
+	}
+	return strings.Join(kept, "\n")
 }
