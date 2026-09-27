@@ -423,6 +423,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
+			ID:          CertPersistentCancelReuse,
+			TestFile:    "pkg/adapters/agycli/agycli_cancel_isolation_live_test.go",
+			TestName:    "TestAgyCLIRealPersistentCancelReuseContract",
+			Description: "a canceled sidecar turn is followed by a completed new message under the same owner",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertParallelIsolation,
 			TestFile:    "pkg/adapters/agycli/agycli_cancel_isolation_live_test.go",
 			TestName:    "TestAgyCLIRealParallelIsolationContract",

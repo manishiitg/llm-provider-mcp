@@ -542,6 +542,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SurfacesTokenUsage:          true,
 		TokenUsageSource:            "exec-json",
 		InteractiveTokenUsageSource: "transcript-file",
+		PlanUsageUnavailableReason:  "agy exposes per-turn tokens in JSON and conversation files, but no account plan usage windows or reset times through the CLI",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "~/.gemini/antigravity-cli/conversations/<conversation-id>.db",
 		SupportsStructuredStreaming: false,

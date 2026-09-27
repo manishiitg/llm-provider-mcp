@@ -113,6 +113,13 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	}
 	reply, usage, toolCalls, err := runAgyInteractiveTurn(ctx, owner, prompt)
 	if err != nil {
+		if ctx.Err() != nil {
+			// A cancellation can land before the sidecar reaches its busy
+			// wait, or while Escape is still being handled. Retiring the
+			// process prevents the next message for this owner from queuing
+			// behind the abandoned turn.
+			CloseAgyCLIInteractiveSessionForOwner(owner, "turn canceled")
+		}
 		return nil, err
 	}
 	if opts != nil && opts.StreamChan != nil {

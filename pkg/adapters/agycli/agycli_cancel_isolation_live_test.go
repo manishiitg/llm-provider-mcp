@@ -54,6 +54,69 @@ func TestAgyCLIRealCancellationContract(t *testing.T) {
 	}
 }
 
+// TestAgyCLIRealPersistentCancelReuseContract proves that stopping a turn in
+// the persistent sidecar does not leave its owner unable to send a new turn.
+func TestAgyCLIRealPersistentCancelReuseContract(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	agyKeyModeForTest(t)
+	workDir := t.TempDir()
+	agyTrustWorkdirForTest(t, workDir)
+	owner := "agy-cancel-reuse-" + agyRandomHex(t, 4)
+	t.Cleanup(func() { CloseAgyCLIInteractiveSessionForOwner(owner, "test done") })
+	adapter := NewAgyCLIAdapter("", "", nil)
+
+	turnCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.GenerateContent(turnCtx, []llmtypes.MessageContent{
+			llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Write a 3000-word essay about the history of glass. Be thorough and do not use tools."),
+		}, WithWorkingDir(workDir), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner))
+		done <- err
+	}()
+
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer probeCancel()
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("slow turn ended before interruption: %v", err)
+		case <-probeCtx.Done():
+			t.Fatal("sidecar turn never reached its busy state")
+		default:
+		}
+		if session, ok := activeAgyInteractiveSession(owner); ok {
+			pane, err := captureAgyPane(probeCtx, session.tmuxSessionName)
+			if err == nil && strings.Contains(pane, agyPaneBusyMarker) {
+				break
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled sidecar turn returned no error")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("canceled sidecar turn did not return")
+	}
+
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer freshCancel()
+	token := "AGY_REUSE_" + agyRandomHex(t, 4)
+	resp, err := adapter.GenerateContent(freshCtx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply with exactly this token and nothing else: "+token),
+	}, WithWorkingDir(workDir), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner))
+	if err != nil {
+		t.Fatalf("new message under canceled owner: %v", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Content, token) {
+		t.Fatalf("new message under canceled owner did not answer %q: %#v", token, resp)
+	}
+}
+
 func TestAgyCLIRealParallelIsolationContract(t *testing.T) {
 	requireRealAgyCLIE2E(t)
 	adapter := NewAgyCLIAdapter("", "", nil)

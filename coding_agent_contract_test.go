@@ -523,7 +523,6 @@ var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
 		CertLifecyclePolicy,
 		CertNativeSystemPrompt,
 		CertParallelStartupQueue,
-		CertPersistentCancelReuse,
 		CertPromptPaste,
 		CertResumeCompactionStartup,
 		CertSessionLoss,
