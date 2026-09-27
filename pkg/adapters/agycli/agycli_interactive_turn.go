@@ -225,94 +225,181 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("submit sidecar prompt: %w", err)
 	}
-	// Echo gating cannot prove submission (pasted-but-unsubmitted input
-	// also echoes), so require the busy marker: the turn started.
-	if err := agyWaitSidecarTurnStarted(ctx, session.tmuxSessionName); err != nil {
-		return "", llmtypes.Usage{}, nil, err
-	}
-	pane, err := agyWaitSidecarTurnDone(ctx, session.tmuxSessionName)
+	// The pane can echo a draft before Enter, so only the conversation's
+	// matching user step proves that this prompt was taken in.
+	userIdx, err := agyWaitTurnIntake(ctx, session, idxBefore, prompt)
 	if err != nil {
 		return "", llmtypes.Usage{}, nil, err
 	}
-	// The TUI persists steps write-behind: pane completion precedes the
-	// .db flush, so await the new steps before metering. Generous bound:
-	// a slow flush must wait, not fail (observed: a mounted key-mode turn
-	// needed past 30s once); a truly missing conversation still fails
-	// loudly at the deadline.
-	if err := agyAwaitTurnSteps(ctx, session, idxBefore, prompt, 90*time.Second); err != nil {
+	if err := agyWaitTurnAnswer(ctx, session, userIdx); err != nil {
 		return "", llmtypes.Usage{}, nil, err
 	}
-	// The reply comes from the .db (user-visible assistant text only),
-	// never the pane (which mixes prompt echo, thoughts, and tool
-	// renderings into the reply). Pane scraping stays as the fallback so
-	// a pane-proved turn never fails on unattributable steps.
-	reply := agyTurnReplySince(session.conversationID, idxBefore)
+	// Only the structured record supplies the answer. The pane includes
+	// prompt echo, thoughts and tool renderings, so it cannot repair an
+	// unattributable or missing assistant step.
+	reply := agyTurnReplySince(session.conversationID, userIdx)
 	if reply == "" {
-		reply = agyExtractLastReply(pane)
+		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
-	if reply == "" {
-		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no extractable reply; pane tail:\n%s", agyPaneTail(pane, 30))
-	}
-	usage := agyTurnUsageSince(session.conversationID, idxBefore)
-	toolCalls := agyTurnToolCallsSince(session.conversationID, idxBefore)
+	usage := agyTurnUsageSince(session.conversationID, userIdx)
+	toolCalls := agyTurnToolCallsSince(session.conversationID, userIdx)
 	return reply, usage, toolCalls, nil
 }
 
-// agyWaitSidecarTurnStarted waits for the busy marker after Enter: proof
-// the TUI accepted the prompt and a turn is running. An approval prompt
-// here fails loudly (bridge tools are pre-approved).
-func agyWaitSidecarTurnStarted(ctx context.Context, tmuxName string) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		pane, err := captureAgyPane(ctx, tmuxName)
-		if err != nil {
-			return err
-		}
-		if marker := agyApprovalMarkerShown(pane); marker != "" {
-			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); bridge tools are pre-approved, refusing to auto-answer", marker)
-		}
-		if strings.Contains(pane, agyPaneBusyMarker) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("sidecar did not start the turn within 30s of Enter (prompt may not have submitted); pane tail:\n%s", agyPaneTail(pane, 20))
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
+// agyTurnRecord is a single snapshot of the CLI's own SQLite steps. A turn
+// starts at its matching user row; rows before that receipt cannot satisfy
+// answer or completion, even in a resumed conversation.
+type agyTurnRecord struct {
+	userIdx    int
+	lastIdx    int
+	lastType   int
+	lastStatus int
+	answer     string
 }
 
-// agyAwaitTurnSteps waits for the turn's steps to flush to the
-// conversation .db, discovering the conversation when still unknown:
-// first by the TUI process's open files (exact, parallel-safe), then by
-// content match (strict: ambiguity fails rather than misattributes).
-// Returns an error when attribution stays impossible: metering must be
-// explicit, never a silent zero blamed on a slow flush.
-func agyAwaitTurnSteps(ctx context.Context, session *agyInteractiveSession, idxBefore int, prompt string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyTurnRecord, error) {
+	record := agyTurnRecord{userIdx: -1, lastIdx: -1}
+	if prompt == "" {
+		record.userIdx = sinceIdx
+	}
+	if conversationID == "" {
+		return record, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return record, err
+	}
+	path := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", conversationID+".db")
+	tmpPath, cleanup, err := agyCopyDBFile(path)
+	if os.IsNotExist(err) {
+		return record, nil
+	}
+	if err != nil {
+		return record, err
+	}
+	defer cleanup()
+	db, err := sql.Open("sqlite", "file:"+tmpPath)
+	if err != nil {
+		return record, err
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(context.Background(), `SELECT idx, step_type, status, step_payload FROM steps WHERE idx > ? ORDER BY idx`, sinceIdx)
+	if err != nil {
+		return record, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var idx, stepType, status int
+		var payload []byte
+		if err := rows.Scan(&idx, &stepType, &status, &payload); err != nil {
+			return record, err
+		}
+		if record.userIdx < 0 {
+			if stepType != agyStepUser {
+				continue
+			}
+			stored, _, ok := agyTranscriptStepText(stepType, payload)
+			if !ok || strings.TrimSpace(stored) != strings.TrimSpace(prompt) {
+				continue
+			}
+			record.userIdx = idx
+		}
+		record.lastIdx, record.lastType, record.lastStatus = idx, stepType, status
+		if stepType == agyStepAssistant {
+			if part, _, ok := agyTranscriptStepText(stepType, payload); ok && strings.TrimSpace(part) != "" {
+				if record.answer != "" {
+					record.answer += "\n\n"
+				}
+				record.answer += strings.TrimSpace(part)
+			}
+		}
+	}
+	return record, rows.Err()
+}
+
+func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinceIdx int, prompt string) (int, error) {
+	deadline := time.Now().Add(90 * time.Second)
 	for {
+		if err := ctx.Err(); err != nil {
+			return -1, err
+		}
+		pane, err := captureAgyPane(ctx, session.tmuxSessionName)
+		if err != nil {
+			return -1, err
+		}
+		if marker := agyApprovalMarkerShown(pane); marker != "" {
+			return -1, fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s)", marker)
+		}
 		if session.conversationID == "" {
 			session.conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
 		}
 		if session.conversationID == "" {
 			session.conversationID = agyDiscoverConversationID(session.createdAt, prompt)
 		}
-		if session.conversationID != "" && agyConversationMaxIdx(session.conversationID) > idxBefore {
-			return nil
+		record, err := agyReadTurnRecord(session.conversationID, sinceIdx, prompt)
+		if err == nil && record.userIdx >= 0 {
+			return record.userIdx, nil
 		}
 		if time.Now().After(deadline) {
-			if session.conversationID == "" {
-				return fmt.Errorf("sidecar turn steps never attributable to a conversation within %s", timeout)
+			readError := "none"
+			if err != nil {
+				readError = err.Error()
 			}
-			return fmt.Errorf("sidecar turn steps for conversation %s never appeared within %s", session.conversationID, timeout)
+			return -1, fmt.Errorf("sidecar prompt has no matching user step after 90s (conversation %q, read error %s); pane tail:\n%s", session.conversationID, readError, agyPaneTail(pane, 20))
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// AGY 1.2.12 has no run-terminal row. A completed assistant step (status 3)
+// is the durable answer proof; its SQLite trail must end there and remain
+// unchanged for two seconds. Pane readiness remains a secondary guard against
+// an assistant narration step that precedes a tool call.
+func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, userIdx int) error {
+	deadline := time.Now().Add(agySidecarTurnTimeout)
+	var settledAt time.Time
+	var settledIdx int
+	var settledAnswer string
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = agyTmuxSendKeys(context.Background(), session.tmuxSessionName, "Escape")
+			return err
+		}
+		pane, err := captureAgyPane(ctx, session.tmuxSessionName)
+		if err != nil {
+			return err
+		}
+		if marker := agyApprovalMarkerShown(pane); marker != "" {
+			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
+		}
+		record, err := agyReadTurnRecord(session.conversationID, userIdx, "")
+		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.answer != "" {
+			if record.lastIdx != settledIdx || record.answer != settledAnswer {
+				settledIdx, settledAnswer, settledAt = record.lastIdx, record.answer, time.Now()
+			}
+			if time.Since(settledAt) >= 2*time.Second && PaneReadyForInput(pane) {
+				return nil
+			}
+		} else {
+			settledAt = time.Time{}
+		}
+		if time.Now().After(deadline) {
+			readError := "none"
+			if err != nil {
+				readError = err.Error()
+			}
+			return fmt.Errorf("sidecar turn has no settled recorded answer within %s (read error %s); pane tail:\n%s", agySidecarTurnTimeout, readError, agyPaneTail(pane, 30))
+		}
+		select {
+		case <-ctx.Done():
+			_ = agyTmuxSendKeys(context.Background(), session.tmuxSessionName, "Escape")
+			return ctx.Err()
+		case <-time.After(agyApprovalPollInterval):
+		}
 	}
 }
 
@@ -369,37 +456,6 @@ func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
-// agyWaitSidecarTurnDone waits for turn completion, failing fast on
-// unexpected approval prompts instead of hanging until the timeout.
-func agyWaitSidecarTurnDone(ctx context.Context, tmuxName string) (string, error) {
-	deadline := time.Now().Add(agySidecarTurnTimeout)
-	for {
-		if err := ctx.Err(); err != nil {
-			_ = agyTmuxSendKeys(context.Background(), tmuxName, "Escape")
-			return "", err
-		}
-		pane, err := captureAgyPane(ctx, tmuxName)
-		if err != nil {
-			return "", err
-		}
-		if marker := agyApprovalMarkerShown(pane); marker != "" {
-			return "", fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); bridge tools are pre-approved, refusing to auto-answer; pane tail:\n%s", marker, agyPaneTail(pane, 25))
-		}
-		if PaneReadyForInput(pane) {
-			return pane, nil
-		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("sidecar turn did not complete within %s; pane tail:\n%s", agySidecarTurnTimeout, agyPaneTail(pane, 30))
-		}
-		select {
-		case <-ctx.Done():
-			_ = agyTmuxSendKeys(context.Background(), tmuxName, "Escape")
-			return "", ctx.Err()
-		case <-time.After(agyApprovalPollInterval):
 		}
 	}
 }

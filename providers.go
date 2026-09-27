@@ -345,6 +345,21 @@ func SendAgyCLIInteractiveInput(ctx context.Context, sessionID, message string) 
 	return agycli.SendAgyInteractiveInput(ctx, sessionID, message)
 }
 
+// AwaitAgyInputDurable confirms a prior tmux live-input send from AGY's
+// conversation SQLite user step rather than its pane echo.
+func AwaitAgyInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := agycli.AwaitAgyInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	return llmtypes.DurableAck{
+		Outcome:      llmtypes.DurableAckConfirmed,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
+}
+
 // SendAgyCLIInteractiveControlKey injects a tmux control key into a
 // registered agy interactive session.
 func SendAgyCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {

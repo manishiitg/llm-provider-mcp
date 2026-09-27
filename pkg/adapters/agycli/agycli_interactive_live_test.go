@@ -66,7 +66,7 @@ func TestAgyCLIRealInteractiveLiveInputContract(t *testing.T) {
 		t.Fatalf("boot sidecar: %v", err)
 	}
 	token := "AGY_LIVE_" + agyRandomHex(t, 4)
-	if err := SendAgyInteractiveInput(ctx, owner, "Reply with exactly this token and nothing else: "+token); err != nil {
+	if err := SendAgyInteractiveInput(ctx, owner, "Do not use tools. Reply with exactly this token and nothing else: "+token); err != nil {
 		t.Fatalf("live input: %v", err)
 	}
 	if err := waitAgyPromptEcho(ctx, session.tmuxSessionName, token, 60*time.Second); err != nil {

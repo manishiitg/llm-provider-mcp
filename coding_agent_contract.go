@@ -552,7 +552,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// without the provider switch the OAuth login wins and the key is
 		// ignored. GOOGLE_API_KEY takes precedence when both are set.
 		APIKeyEnvVars:      []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
-		SupportsDurableAck: false,
+		SupportsDurableAck: true,
 	},
 }
 

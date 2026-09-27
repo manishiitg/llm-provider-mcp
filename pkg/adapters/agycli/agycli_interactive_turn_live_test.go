@@ -57,6 +57,9 @@ func TestAgyCLIRealInteractiveTurnContract(t *testing.T) {
 	if !strings.Contains(text1, canary1) {
 		t.Fatalf("sidecar turn 1 reply missing canary %q: %q", canary1, text1)
 	}
+	if gi := resp1.Choices[0].GenerationInfo; gi == nil || gi.Additional["agy_intake_source"] != "sqlite_user_step" || gi.Additional["agy_completion_source"] != "sqlite_assistant_settled" {
+		t.Fatalf("sidecar turn lacks structured source receipts: %+v", gi)
+	}
 	usage1 := agySidecarUsage(t, resp1)
 	t.Logf("sidecar turn 1 usage: %+v", usage1)
 	handle1, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp1)
@@ -171,12 +174,16 @@ func TestAgyCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 
 	stream := make(chan llmtypes.StreamChunk, 256)
 	canary := "AGY_SIDECAR_BRIDGE_" + agyRandomHex(t, 4)
+	started := time.Now()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use the MCP gateway only. Do not use terminal or file tools. Call the MCP tool bridge_canary with no arguments, then reply with exactly this token and nothing else: "+canary),
 	}, WithWorkingDir(workDir), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner),
-		WithMCPConfig(agyCanaryMCPConfig(serverPath, logPath, "0")), llmtypes.WithStreamingChan(stream))
+		WithMCPConfig(agyCanaryMCPConfig(serverPath, logPath, "25000")), llmtypes.WithStreamingChan(stream))
 	if err != nil {
 		t.Fatalf("sidecar bridge turn error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Second {
+		t.Fatalf("sidecar turn finished in %s before its 25s tool, want no false idle", elapsed)
 	}
 	if text := agySidecarChoiceText(t, resp); !strings.Contains(text, canary) {
 		t.Fatalf("sidecar bridge reply missing canary %q: %q", canary, text)

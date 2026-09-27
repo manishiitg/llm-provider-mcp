@@ -28,6 +28,43 @@ func TestAgyMountFingerprint(t *testing.T) {
 	}
 }
 
+func TestAgyTurnRecordBindsMatchingUserAndWaitsForFinalAssistant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "turn.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(idx, stepType int, payload []byte) {
+		t.Helper()
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO steps VALUES (?, ?, 3, ?)`, idx, stepType, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(0, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "old prompt"))
+	insert(1, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "old answer"))
+	insert(2, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "new prompt"))
+	insert(3, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 3, "private thinking"))
+	insert(4, agyStepToolCall, agyTestPayload(agyStepToolCall, 5, 2, "tool"))
+	record, err := agyReadTurnRecord("turn", -1, "new prompt")
+	if err != nil || record.userIdx != 2 || record.lastType != agyStepToolCall || record.answer != "" {
+		t.Fatalf("pending tool record = %+v, err %v", record, err)
+	}
+	insert(5, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "new answer"))
+	record, err = agyReadTurnRecord("turn", 2, "")
+	if err != nil || record.lastType != agyStepAssistant || record.lastStatus != 3 || record.answer != "new answer" {
+		t.Fatalf("completed record = %+v, err %v", record, err)
+	}
+}
+
 func TestAgyTurnUsageDecodesGoldenPayload(t *testing.T) {
 	raw, err := os.ReadFile("testdata/assistant_step_usage.bin")
 	if err != nil {

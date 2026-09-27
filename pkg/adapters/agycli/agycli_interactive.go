@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 )
 
@@ -36,7 +35,6 @@ const (
 	agyPaneTrustGateMarker   = "Do you trust the contents of this project?"
 	agyPaneApprovalMarker    = "Requesting permission for:"
 	agyPaneInterruptedMarker = "Interrupted"
-	agyPanePromptPrefix      = "> "
 )
 
 type agyInteractiveSession struct {
@@ -56,6 +54,14 @@ type agyInteractiveSession struct {
 	// conversationID is the TUI-native conversation, discovered by
 	// content match after the first turn; "" until then.
 	conversationID string
+	// Live-input sends are serialized so each durability receipt snapshots
+	// the conversation before its own Enter. The receipt watcher reads the
+	// CLI's SQLite user rows after the fast tmux send returns.
+	sendMu         sync.Mutex
+	durableMu      sync.Mutex
+	pendingDurable []agyPendingDurableAck
+	retainedMu     sync.Mutex
+	retainedState  agyRetainedState
 }
 
 var agyInteractiveRegistry = struct {
@@ -513,48 +519,21 @@ func sendAgyInteractiveMessage(ctx context.Context, ownerSessionID, message stri
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("agy interactive input is empty")
 	}
+	session.sendMu.Lock()
+	defer session.sendMu.Unlock()
+	conversationID := session.conversationID
+	if conversationID == "" {
+		conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
+	}
+	baseline := agyConversationMaxIdx(conversationID)
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "-l", message); err != nil {
 		return err
 	}
-	return agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter")
-}
-
-// agyExtractLastReply returns the text between the last "> " prompt echo
-// and the next rule line: the TUI turn's reply. Best-effort; empty when the
-// shape is unrecognized.
-func agyExtractLastReply(pane string) string {
-	lines := strings.Split(pane, "\n")
-	start := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, agyPanePromptPrefix) && len(strings.TrimSpace(strings.TrimPrefix(trimmed, agyPanePromptPrefix))) > 0 {
-			start = i
-			break
-		}
+	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
+		return err
 	}
-	if start < 0 {
-		return ""
-	}
-	var out []string
-	for _, line := range lines[start+1:] {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "──") || trimmed == ">" {
-			break
-		}
-		out = append(out, strings.TrimSpace(line))
-	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
-func agyRetainedMessages(pane string) []llmtypes.MessageContent {
-	reply := agyExtractLastReply(pane)
-	if reply == "" {
-		reply = strings.TrimSpace(pane)
-	}
-	if reply == "" {
-		return nil
-	}
-	return []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, reply)}
+	agyStashDurableAck(session, message, conversationID, baseline)
+	return nil
 }
 
 // CleanupAgyCLIInteractiveSessions kills every agy tmux sidecar registered
@@ -645,25 +624,4 @@ func SendAgyInteractiveControlKey(ctx context.Context, sessionID, key string) er
 	default:
 		return fmt.Errorf("agy interactive control key %q not supported (want Escape|Enter)", key)
 	}
-}
-
-// ReadRetainedTurnMessages returns the sidecar's latest reply, if any.
-func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
-	session, ok := activeAgyInteractiveSession(ownerSessionID)
-	if !ok {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	pane, err := captureAgyPane(ctx, session.tmuxSessionName)
-	if err != nil {
-		return nil
-	}
-	return agyRetainedMessages(pane)
-}
-
-// ReadRetainedTurnProgressMessages reads the in-flight sidecar pane without
-// asserting completion.
-func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
-	return ReadRetainedTurnMessages(ownerSessionID, turnStart)
 }

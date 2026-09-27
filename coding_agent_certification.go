@@ -464,6 +464,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			Description: "sidecar turn routes a bridge tool call with no approval stall and no leak at close",
 			RealE2E:     true,
 		},
+		{
+			ID:          CertDurableAck,
+			TestFile:    "pkg/adapters/agycli/agycli_durable_ack_live_test.go",
+			TestName:    "TestAgyCLIRealDurableAckContract",
+			Description: "live tmux input is confirmed by a matching new user step in AGY's conversation SQLite",
+			RealE2E:     true,
+		},
 	},
 	ProviderMuseCLI: {
 		{
