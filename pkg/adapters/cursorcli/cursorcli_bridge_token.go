@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 // cursor-agent only reads MCP servers from .cursor/mcp.json in the agent's
@@ -17,14 +19,54 @@ import (
 // workspace, and the config names it with MCP_API_TOKEN_FILE, which mcpbridge
 // reads at startup (AgentWorks PLAT-362 D2).
 
-// cursorBridgeTokenDir is where token files go: the user's cache directory,
-// never the workspace. Overridable in tests.
-var cursorBridgeTokenDir = func() string {
+// cursorBridgeTokenRoot holds one folder per backend process: the user's
+// cache directory, never the workspace. Overridable in tests.
+var cursorBridgeTokenRoot = func() string {
 	base, err := os.UserCacheDir()
 	if err != nil || strings.TrimSpace(base) == "" {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "agentworks-bridge-tokens")
+}
+
+// cursorBridgeTokenDir is this backend process's folder. Several backends can
+// share a machine, so each keeps its own and only its own are swept.
+func cursorBridgeTokenDir() string {
+	return filepath.Join(cursorBridgeTokenRoot(), strconv.Itoa(os.Getpid()))
+}
+
+// SweepStaleBridgeTokenFiles removes the token folders of backend processes
+// that are no longer running (their tokens stopped verifying when they
+// exited) and returns how many it removed. Call it at backend startup, next
+// to the tmux orphan sweep.
+func SweepStaleBridgeTokenFiles() int {
+	root := cursorBridgeTokenRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || !entry.IsDir() || pid == os.Getpid() || processAlive(pid) {
+			continue
+		}
+		if os.RemoveAll(filepath.Join(root, entry.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // externalizeCursorBridgeTokens returns mcpJSON with every bridge token moved
@@ -70,6 +112,7 @@ func writeCursorBridgeTokenFile(token string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("bridge token dir: %w", err)
 	}
+	_ = os.Chmod(cursorBridgeTokenRoot(), 0o700)
 	_ = os.Chmod(dir, 0o700)
 	sum := sha256.Sum256([]byte(token))
 	path := filepath.Join(dir, "cursor-"+hex.EncodeToString(sum[:12]))
