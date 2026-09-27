@@ -209,6 +209,12 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	// llmtypes.StatusExtrasMetaKey).
 	// Structured plan usage for callers that decide on it (the coding
 	// watchdog): the highest used percentage across Codex's windows.
+	if windows := codexStructuredRateLimitWindows(latestRateLimits); len(windows) > 0 {
+		if gi.Additional == nil {
+			gi.Additional = map[string]interface{}{}
+		}
+		gi.Additional[llmtypes.RateLimitWindowsMetaKey] = windows
+	}
 	if used, ok := codexMaxUsedPercent(latestRateLimits); ok {
 		if gi.Additional == nil {
 			gi.Additional = map[string]interface{}{}
@@ -347,4 +353,44 @@ func UsageLimitState(tmuxSession string) (known, exhausted bool) {
 		return false, false
 	}
 	return true, used >= 99
+}
+
+// codexStructuredRateLimitWindows converts Codex's primary/secondary windows
+// into the shared machine-readable form (same contract as Claude): named by
+// length (300 min "five_hour", 10080 min "seven_day", otherwise
+// "window_<N>m"; "primary"/"secondary" when Codex omits the length), with the
+// absolute reset instant, or zero when Codex did not state one.
+func codexStructuredRateLimitWindows(rl *codexRateLimits) []llmtypes.RateLimitWindow {
+	if rl == nil {
+		return nil
+	}
+	var windows []llmtypes.RateLimitWindow
+	for _, entry := range []struct {
+		window   *codexRateLimitWindow
+		fallback string
+	}{{rl.Primary, "primary"}, {rl.Secondary, "secondary"}} {
+		w := entry.window
+		if w == nil {
+			continue
+		}
+		window := llmtypes.RateLimitWindow{Name: codexWindowName(w.WindowMinutes, entry.fallback), UsedPercent: w.UsedPercent}
+		if w.ResetsAt > 0 {
+			window.ResetsAt = time.Unix(w.ResetsAt, 0).UTC()
+		}
+		windows = append(windows, window)
+	}
+	return windows
+}
+
+func codexWindowName(minutes int, fallback string) string {
+	switch {
+	case minutes <= 0:
+		return fallback
+	case minutes == 300:
+		return "five_hour"
+	case minutes == 10080:
+		return "seven_day"
+	default:
+		return fmt.Sprintf("window_%dm", minutes)
+	}
 }

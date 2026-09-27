@@ -4080,6 +4080,9 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 		if extras, ok := gi.Additional[llmtypes.StatusExtrasMetaKey].([]string); ok {
 			status.SetStatusExtras(extras)
 		}
+		if windows, ok := gi.Additional[llmtypes.RateLimitWindowsMetaKey].([]llmtypes.RateLimitWindow); ok {
+			status.SetRateLimitWindows(windows)
+		}
 	}
 	return status
 }

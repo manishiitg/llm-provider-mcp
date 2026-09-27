@@ -868,3 +868,31 @@ func TestBestEffortToolRestrictionsRequireExplicitMuseGaps(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanUsageContractIsWellFormed forces every provider to decide about plan
+// usage (5h/7d windows the chat UI shows and the coding watchdog trusts over
+// screen text): either it surfaces them from a named source, or it states why
+// it cannot. A new provider cannot silently skip the question.
+func TestPlanUsageContractIsWellFormed(t *testing.T) {
+	valid := map[string]bool{"statusline-sidecar": true, "transcript-file": true}
+	for _, c := range CodingAgentProviderContracts() {
+		if c.Deprecated {
+			continue
+		}
+		if c.SurfacesPlanUsage {
+			if !valid[c.PlanUsageSource] {
+				t.Errorf("%s claims SurfacesPlanUsage but PlanUsageSource=%q is not one of statusline-sidecar|transcript-file", c.Provider, c.PlanUsageSource)
+			}
+			if c.PlanUsageUnavailableReason != "" {
+				t.Errorf("%s surfaces plan usage but also states PlanUsageUnavailableReason", c.Provider)
+			}
+			continue
+		}
+		if c.PlanUsageSource != "" {
+			t.Errorf("%s has PlanUsageSource=%q but SurfacesPlanUsage=false", c.Provider, c.PlanUsageSource)
+		}
+		if strings.TrimSpace(c.PlanUsageUnavailableReason) == "" {
+			t.Errorf("%s does not surface plan usage and gives no PlanUsageUnavailableReason — decide: surface it (and certify CertPlanUsage) or say why it cannot", c.Provider)
+		}
+	}
+}

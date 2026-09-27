@@ -105,6 +105,24 @@ type CodingAgentProviderContract struct {
 	// the source so cost reports can be flagged as approximate.
 	TokenUsageSource string
 
+	// SurfacesPlanUsage reports whether the adapter exposes the account's plan
+	// usage windows (e.g. 5-hour / 7-day percentages and reset times) as
+	// structured llmtypes.RateLimitWindow data on its StatusLine
+	// (RateLimitWindowsMetaKey). The chat UI shows them and the coding
+	// watchdog trusts them over screen text, so a provider that has them must
+	// keep proving it (CertPlanUsage).
+	SurfacesPlanUsage bool
+
+	// PlanUsageSource describes where plan usage comes from when
+	// SurfacesPlanUsage is true: "statusline-sidecar" (the CLI's own
+	// statusline JSON) or "transcript-file" (a CLI-written rollout/transcript).
+	PlanUsageSource string
+
+	// PlanUsageUnavailableReason is REQUIRED when SurfacesPlanUsage is false:
+	// why this CLI cannot report plan usage (so onboarding a provider forces
+	// the decision instead of silently skipping it).
+	PlanUsageUnavailableReason string
+
 	// AdapterReadsTranscript reports whether the adapter has code that reads
 	// the CLI's on-disk conversation transcript directly — used for sidecar
 	// features (token extraction for tmux mode, replay, forensic audit). This
@@ -280,6 +298,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ImageInputInteractive:         true,
 		SurfacesTokenUsage:            true,
 		TokenUsageSource:              "transcript-file",
+		SurfacesPlanUsage:             true,
+		PlanUsageSource:               "statusline-sidecar",
 		AdapterReadsTranscript:        true,
 		TranscriptPathTemplate:        "~/.claude/projects/*/<session-id>.jsonl",
 		SupportsStructuredStreaming:   true,
@@ -330,6 +350,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ImageInputInteractive:        true,
 		SurfacesTokenUsage:           true,
 		TokenUsageSource:             "transcript-file",
+		SurfacesPlanUsage:            true,
+		PlanUsageSource:              "transcript-file",
 		AdapterReadsTranscript:       true,
 		TranscriptPathTemplate:       "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
 		SupportsStructuredStreaming:  true,
@@ -379,6 +401,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// Cursor's tmux interactive path falls back to a 4-chars-per-token
 		// heuristic in estimateCursorTmuxTokens.
 		TokenUsageSource:            "estimated",
+		PlanUsageUnavailableReason:  "Cursor CLI exposes no local or structured plan usage; only its private account API",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
 		SupportsStructuredStreaming: true,
@@ -419,6 +442,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ImageInputInteractive:       false,
 		SurfacesTokenUsage:          true,
 		TokenUsageSource:            "transcript-file",
+		PlanUsageUnavailableReason:  "Pi runs on API keys / bring-your-own providers; its output carries tokens and cost, no plan windows",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",
 		SupportsStructuredStreaming: true,
@@ -467,6 +491,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ImageInputInteractive:       false,
 		SurfacesTokenUsage:          true,
 		TokenUsageSource:            "transcript-file",
+		PlanUsageUnavailableReason:  "Muse reports usage only over its MSP host (usage/read, usage/changed); the TUI/exec adapter does not consume it yet",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl",
 		SupportsStructuredStreaming: false,

@@ -148,6 +148,10 @@ const (
 	// additionally set the token_usage_estimated marker so cost reports can
 	// be flagged as approximate.
 	CertTokenUsage CodingAgentCertificationID = "token_usage"
+	// CertPlanUsage proves a real turn leaves the account's plan usage windows
+	// (RateLimitWindow: name, used %, reset) readable from the CLI's own data.
+	// Required for providers whose contract sets SurfacesPlanUsage.
+	CertPlanUsage CodingAgentCertificationID = "plan_usage"
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
@@ -249,6 +253,7 @@ var (
 	stalledTurnDiagnosisCertificationIDs = []CodingAgentCertificationID{CertStalledTurnDiagnosis}
 	durableAckCertificationIDs           = []CodingAgentCertificationID{CertDurableAck}
 	tokenUsageCertificationIDs           = []CodingAgentCertificationID{CertTokenUsage}
+	planUsageCertificationIDs            = []CodingAgentCertificationID{CertPlanUsage}
 )
 
 var codingAgentCapabilityCertifications = []struct {
@@ -436,6 +441,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/claudecode/claudecode_token_usage_live_test.go",
 			TestName:    "TestClaudeTokenUsageLive",
 			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPlanUsage,
+			TestFile:    "pkg/adapters/claudecode/claudecode_plan_usage_live_test.go",
+			TestName:    "TestClaudePlanUsageLive",
+			Description: "real turn leaves the account's plan usage windows (5h/7d used %, reset) in Claude's statusline sidecar",
 			RealE2E:     true,
 		},
 		{
@@ -713,6 +725,13 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/codexcli/codexcli_token_usage_live_test.go",
 			TestName:    "TestCodexTokenUsageLive",
 			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPlanUsage,
+			TestFile:    "pkg/adapters/codexcli/codexcli_plan_usage_live_test.go",
+			TestName:    "TestCodexPlanUsageLive",
+			Description: "real turn leaves the account's plan usage windows (used %, reset) in Codex's rollout, surfaced as structured RateLimitWindows",
 			RealE2E:     true,
 		},
 		{
@@ -1701,6 +1720,11 @@ func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract)
 	// Declaration without this proof is how silent cost blindness ships.
 	if contract.SurfacesTokenUsage {
 		ids = append(ids, tokenUsageCertificationIDs...)
+	}
+	// A provider claiming plan usage must prove a real turn reports it: the UI
+	// shows it and the watchdog trusts it over screen text.
+	if contract.SurfacesPlanUsage {
+		ids = append(ids, planUsageCertificationIDs...)
 	}
 	return ids
 }
