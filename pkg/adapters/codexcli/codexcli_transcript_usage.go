@@ -207,6 +207,14 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	// Carry display-ready statusline extras (rate-limit usage, context fill,
 	// effort, plan) so buildCodexStatusLine can expose them generically (see
 	// llmtypes.StatusExtrasMetaKey).
+	// Structured plan usage for callers that decide on it (the coding
+	// watchdog): the highest used percentage across Codex's windows.
+	if used, ok := codexMaxUsedPercent(latestRateLimits); ok {
+		if gi.Additional == nil {
+			gi.Additional = map[string]interface{}{}
+		}
+		gi.Additional[codexMaxUsedPercentKey] = used
+	}
 	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort, time.Now()); len(extras) > 0 {
 		if gi.Additional == nil {
 			gi.Additional = map[string]interface{}{}
@@ -293,3 +301,50 @@ func codexThreadIDFromRolloutPath(path string) string {
 func intRef(v int) *int { return &v }
 
 func sameCodexWorkingDir(a, b string) bool { return pathidentity.Same(a, b) }
+
+const codexMaxUsedPercentKey = "codex_rate_limit_max_used_percent"
+
+// codexMaxUsedPercent is the highest used percentage across Codex's plan
+// rate-limit windows, and whether any window was reported.
+func codexMaxUsedPercent(rl *codexRateLimits) (float64, bool) {
+	if rl == nil {
+		return 0, false
+	}
+	used, known := 0.0, false
+	for _, w := range []*codexRateLimitWindow{rl.Primary, rl.Secondary} {
+		if w == nil {
+			continue
+		}
+		known = true
+		if w.UsedPercent > used {
+			used = w.UsedPercent
+		}
+	}
+	return used, known
+}
+
+// UsageLimitState reports, for the Codex session running in tmuxSession,
+// whether its plan usage is known from the session's own rollout and whether
+// a rate-limit window is exhausted (>= 99% used). Unknown usage (no session,
+// no rollout yet, no rate_limits block) returns known=false.
+func UsageLimitState(tmuxSession string) (known, exhausted bool) {
+	tmuxSession = strings.TrimSpace(tmuxSession)
+	if tmuxSession == "" {
+		return false, false
+	}
+	_, session, found := codexPersistentRegistry.Find(func(session *codexInteractiveSession) bool {
+		return session != nil && session.tmuxSessionName == tmuxSession
+	})
+	if !found || session == nil || strings.TrimSpace(session.workingDir) == "" {
+		return false, false
+	}
+	gi, _, _ := readCodexTranscriptUsage(time.Time{}, session.workingDir, session.accountRoot)
+	if gi == nil || gi.Additional == nil {
+		return false, false
+	}
+	used, ok := gi.Additional[codexMaxUsedPercentKey].(float64)
+	if !ok {
+		return false, false
+	}
+	return true, used >= 99
+}

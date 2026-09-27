@@ -3,6 +3,7 @@ package claudecode
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,4 +83,13 @@ func claudeSessionAccountKey(sessionName string) string {
 // default bucket would let one account's exhaustion gate another's work.
 func recordClaudeSessionRateLimitWindows(sessionName string, windows []llmtypes.RateLimitWindow, observedAt time.Time) {
 	llmtypes.RecordAccountRateLimitWindows(claudeSessionAccountKey(sessionName), windows, observedAt)
+}
+
+// UsageLimitState reports, from the Claude statusline sidecar of the session
+// running in tmuxSession, whether the account's plan usage is known and
+// whether a rate-limit window is exhausted. Claude writes rate_limits only
+// after its first API response, so a fresh pane reports known=false.
+func UsageLimitState(tmuxSession string) (known, exhausted bool) {
+	known, exhausted, _, _ = claudeStatuslineUsageLimitState(strings.TrimSpace(tmuxSession), time.Now())
+	return known, exhausted
 }
