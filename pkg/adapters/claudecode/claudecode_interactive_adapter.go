@@ -56,7 +56,10 @@ const (
 	// completion from pane inactivity by default.
 	defaultClaudeInteractiveStalePaneBackstop = 0
 	promptPasteVisibleStableWindow            = 900 * time.Millisecond
-	promptPasteInvisibleGrace                 = 1500 * time.Millisecond
+	// A busy Claude (cold start, loaded box) can take seconds to render a
+	// paste; submitting before it does lets Claude read the paste and the
+	// submit keys together and stick in paste mode (see sendClaudeSubmitKeys).
+	promptPasteInvisibleGrace = 8 * time.Second
 	// Compaction handling. While Claude Code is compacting/summarizing the
 	// conversation it replaces the input box with a "Compacting…/Summarizing…"
 	// status and refuses input — pasting+submitting into that window fuses our
@@ -2138,8 +2141,7 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 	for attempt := 1; attempt <= 3; attempt++ {
 		preSubmitPane, _ := captureTmuxPane(ctx, sessionName)
 		_ = verifier.submitted(preSubmitPane) // arm sawDraft when the paste is visible
-		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
-		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
+		if err := sendClaudeSubmitKeys(ctx, sessionName, claudeRetryNeedsPasteRelease(attempt, preSubmitPane)); err != nil {
 			return fmt.Errorf("failed to submit prompt to Claude Code tmux session: %w", err)
 		}
 		if err := waitForPromptAccepted(ctx, sessionName, preSubmitPane, verifier); err == nil {
@@ -2299,8 +2301,12 @@ func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message
 	var lastErr error
 	var handoff time.Duration
 	for i, submitWait := range claudeLiveInputSubmitBackoff {
-		args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
-		if err := runCommand(ctx, nil, "tmux", args...); err != nil {
+		releasePaste := false
+		if i > 0 {
+			pane, _ := captureTmuxPane(ctx, sessionName)
+			releasePaste = claudeRetryNeedsPasteRelease(i+1, pane)
+		}
+		if err := sendClaudeSubmitKeys(ctx, sessionName, releasePaste); err != nil {
 			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
 		}
 		if i == 0 {
@@ -2477,6 +2483,39 @@ func typeClaudePasteAuthorization(ctx context.Context, sessionName, message stri
 
 func claudeLiveInputNeedsPasteSettlement(message string) bool {
 	return strings.ContainsAny(message, "\r\n") || len(message) >= 800
+}
+
+// claudeBracketedPasteEnd is the terminal's end-of-paste marker.
+const claudeBracketedPasteEnd = "\x1b[201~"
+
+// sendClaudeSubmitKeys submits the composer draft. With releasePaste it first
+// sends a bare end-of-paste marker. When Claude Code is busy (cold start, a
+// loaded box) it can read the bracketed paste and the C-e/Enter keys in one
+// go and stay in paste mode: every later key lands inside the paste, is
+// stripped as an "invisible character" ("Removed 2 invisible characters ·
+// review and press Enter to send") and the prompt never starts (RTS
+// 2026-09-27, Claude Code 2.1.283). Only the end marker gets it out. Send it
+// only on a retry whose draft is still in the box: outside a paste Claude
+// reads a lone marker as an empty paste and attaches the clipboard image.
+func sendClaudeSubmitKeys(ctx context.Context, sessionName string, releasePaste bool) error {
+	if releasePaste {
+		bufferName := "mlp-claude-paste-end-" + randomHex(6)
+		if err := runCommand(ctx, strings.NewReader(claudeBracketedPasteEnd), "tmux", "load-buffer", "-b", bufferName, "-"); err != nil {
+			return err
+		}
+		// No -p: the marker must reach Claude as raw bytes, not wrapped in a paste.
+		if err := runCommand(ctx, nil, "tmux", "paste-buffer", "-d", "-r", "-b", bufferName, "-t", sessionName); err != nil {
+			return err
+		}
+	}
+	args := append([]string{"send-keys", "-t", sessionName}, claudeSubmitPromptKeys()...)
+	return runCommand(ctx, nil, "tmux", args...)
+}
+
+// claudeRetryNeedsPasteRelease reports whether a submit retry should first
+// close a paste Claude may still be inside: the draft is still in the box.
+func claudeRetryNeedsPasteRelease(attempt int, pane string) bool {
+	return attempt > 1 && claudeComposerText(pane) != ""
 }
 
 func claudeSubmitPromptKeys() []string {
