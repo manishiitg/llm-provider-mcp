@@ -93,3 +93,28 @@ func UsageLimitState(tmuxSession string) (known, exhausted bool) {
 	known, exhausted, _, _ = claudeStatuslineUsageLimitState(strings.TrimSpace(tmuxSession), time.Now())
 	return known, exhausted
 }
+
+// StatusLineForTmuxSession returns the statusline Claude Code last wrote for
+// the session running in tmuxSession: tokens, cost, and plan usage under
+// StatusExtrasMetaKey / RateLimitWindowsMetaKey. It never waits; false when
+// Claude has not written one yet (before its first response).
+//
+// A launch-only turn hands the reply to the caller's transcript streamer, so
+// the adapter's own polling loops, which stream this snapshot, never run for
+// it. Callers read it here instead (RTS 2026-09-27: no usage on the terminal
+// hover for Crew chats).
+func StatusLineForTmuxSession(tmuxSession string) (*llmtypes.StatusLine, bool) {
+	tmuxSession = strings.TrimSpace(tmuxSession)
+	if tmuxSession == "" {
+		return nil, false
+	}
+	raw, err := os.ReadFile(claudeStatuslinePath(tmuxSession))
+	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
+		return nil, false
+	}
+	status, err := parseClaudeStatusLineJSON(raw, "")
+	if err != nil || status == nil {
+		return nil, false
+	}
+	return status, true
+}

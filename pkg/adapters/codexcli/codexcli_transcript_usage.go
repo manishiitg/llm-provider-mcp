@@ -355,6 +355,36 @@ func UsageLimitState(tmuxSession string) (known, exhausted bool) {
 	return true, used >= 99
 }
 
+// StatusMetaForTmuxSession returns Codex's plan usage for the session running
+// in tmuxSession, from its rollout, as status metadata: display segments
+// under StatusExtrasMetaKey and windows under RateLimitWindowsMetaKey. False
+// when the session is unknown or Codex reported no usage yet. Launch-only
+// turns never run the adapter's own usage reporting, so callers read it here.
+func StatusMetaForTmuxSession(tmuxSession string) (map[string]interface{}, bool) {
+	tmuxSession = strings.TrimSpace(tmuxSession)
+	if tmuxSession == "" {
+		return nil, false
+	}
+	_, session, found := codexPersistentRegistry.Find(func(session *codexInteractiveSession) bool {
+		return session != nil && session.tmuxSessionName == tmuxSession
+	})
+	if !found || session == nil || strings.TrimSpace(session.workingDir) == "" {
+		return nil, false
+	}
+	gi, _, _ := readCodexTranscriptUsage(time.Time{}, session.workingDir, session.accountRoot)
+	if gi == nil || gi.Additional == nil {
+		return nil, false
+	}
+	meta := map[string]interface{}{}
+	if extras, ok := gi.Additional[llmtypes.StatusExtrasMetaKey].([]string); ok && len(extras) > 0 {
+		meta[llmtypes.StatusExtrasMetaKey] = extras
+	}
+	if windows, ok := gi.Additional[llmtypes.RateLimitWindowsMetaKey].([]llmtypes.RateLimitWindow); ok && len(windows) > 0 {
+		meta[llmtypes.RateLimitWindowsMetaKey] = windows
+	}
+	return meta, len(meta) > 0
+}
+
 // codexStructuredRateLimitWindows converts Codex's primary/secondary windows
 // into the shared machine-readable form (same contract as Claude): named by
 // length (300 min "five_hour", 10080 min "seven_day", otherwise
