@@ -164,3 +164,33 @@ func TestUsageLimitErrorStaysTypedWithoutAResetTime(t *testing.T) {
 		t.Error("RetryAt must be zero, never guessed")
 	}
 }
+
+// A limit phrase inside prose is not Claude parking on a limit wall. Seen on
+// RTS 2026-09-27: a resumed SDE session redrew an assistant reply explaining
+// a Notion error ("... reached the usage limit..."), and the pane fallback
+// (no statusline yet after the restart) failed the turn as quota_exhausted.
+func TestClaudeUsageLimitIgnoresProseAndUserText(t *testing.T) {
+	for _, text := range []string{
+		"  update\" section now show a clear message (\"Notion call error: ... reached the usage limit...\") and fall back to the",
+		"● The error was Notion itself: your Notion account has hit its usage limit for querying data sources",
+		"  Notion itself throttling. Your workspace has reached the usage limit for Query Data Source.",
+		"> Could not reach Notion: Error: Your workspace has reached the usage limit for Query Data Source.",
+		"❯ You've hit your limit is what the other tool said, can you check?",
+		"If you hit your limit, you can continue on Fable 5 with usage credits.",
+	} {
+		if IsClaudeUsageLimitText(text) {
+			t.Errorf("prose misread as a Claude limit wall: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"  ⎿  You've hit your weekly limit · resets 11:30pm (Asia/Calcutta)",
+		"● some reply\n  ⎿  Usage limit reached · resets 5pm",
+		"Claude usage limit reached. Your limit will reset at 5pm.",
+		"✻ You've exceeded your weekly usage limit",
+		"  ⎿  API Error: Claude AI usage limit reached|1790486400",
+	} {
+		if !IsClaudeUsageLimitText(text) {
+			t.Errorf("real limit notice missed: %q", text)
+		}
+	}
+}
