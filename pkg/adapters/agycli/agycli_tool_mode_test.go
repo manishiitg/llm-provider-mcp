@@ -53,6 +53,36 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 	}
 }
 
+func TestAgyToolModeHookFailsClosedOnParseOrInterpreterError(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	for _, tc := range []struct {
+		name, python, input string
+	}{
+		{"malformed input", python, "{"},
+		{"missing interpreter", filepath.Join(t.TempDir(), "missing-python"), `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", agyToolModeHookCommand(tc.python, "mcp_only"))
+			cmd.Stdin = strings.NewReader(tc.input)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decision struct {
+				Decision string `json:"decision"`
+			}
+			if err := json.Unmarshal(out, &decision); err != nil || decision.Decision != "deny" {
+				t.Fatalf("failed gate output = %q, parse error = %v", out, err)
+			}
+		})
+	}
+}
+
 func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 unavailable")

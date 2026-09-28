@@ -44,16 +44,26 @@ func agyToolModeHookCommand(python, mode string) string {
 	if mode == "hybrid" {
 		readEnabled = "True"
 	}
-	program := `import json,sys
+	program := `import json,sys,signal
+def timeout(_signum,_frame):
+    raise TimeoutError("AGY hook input timed out")
+if hasattr(signal,"SIGALRM"):
+    signal.signal(signal.SIGALRM,timeout)
+    signal.alarm(3)
 try:
     name=json.load(sys.stdin).get("toolCall",{}).get("name","")
 except Exception:
     name=""
+if hasattr(signal,"SIGALRM"):
+    signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
 read=name in {"view_file","list_dir","find_by_name","grep_search","search_web","read_url_content"}
 allowed=bridge or (` + readEnabled + ` and read)
 print(json.dumps({"decision":"allow" if allowed else "deny","reason":"Use the AgentWorks MCP bridge for this tool" if not allowed else ""}))`
-	return agyShellQuote(python) + " -c " + agyShellQuote(program)
+	// A missing or crashing interpreter still emits an explicit denial. The
+	// internal alarm returns before AGY's outer hook timeout fires.
+	return agyShellQuote(python) + " -c " + agyShellQuote(program) +
+		" || printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"AGY tool gate failed\"}'"
 }
 
 type agyWorkspaceHookHold struct {
@@ -134,7 +144,7 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 		"PreToolUse": []interface{}{map[string]interface{}{
 			"matcher": "*",
 			"hooks": []interface{}{map[string]interface{}{
-				"type": "command", "command": agyToolModeHookCommand(python, mode), "timeout": 5,
+				"type": "command", "command": agyToolModeHookCommand(python, mode), "timeout": 10,
 			}},
 		}},
 	}

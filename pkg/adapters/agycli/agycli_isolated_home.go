@@ -13,7 +13,7 @@ import (
 // credentials never appear in agy mcp add argv or another user's settings.
 // Conversations are shared with the normal AGY home for durable transcript
 // reads and native --conversation resume.
-func agyIsolatedHome(servers []agyMCPServer) (string, func(), error) {
+func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, func(), error) {
 	base, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, err
@@ -73,6 +73,19 @@ func agyIsolatedHome(servers []agyMCPServer) (string, func(), error) {
 	// only the private copy; the user's global login settings stay untouched.
 	if os.Getenv("GEMINI_API_KEY") != "" {
 		settings["modelProvider"] = "gemini"
+	}
+	if len(workingDirs) > 0 && workingDirs[0] != "" {
+		trusted, _ := settings["trustedWorkspaces"].([]interface{})
+		alreadyTrusted := false
+		for _, entry := range trusted {
+			if entry == workingDirs[0] {
+				alreadyTrusted = true
+				break
+			}
+		}
+		if !alreadyTrusted {
+			settings["trustedWorkspaces"] = append(trusted, workingDirs[0])
+		}
 	}
 	perms, _ := settings["permissions"].(map[string]interface{})
 	if perms == nil {

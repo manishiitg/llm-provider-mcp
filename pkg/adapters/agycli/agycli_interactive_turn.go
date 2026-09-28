@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -77,12 +78,12 @@ func agyMountFingerprint(mcpJSON string) string {
 // resume conversation the live sidecar is not serving reboots with
 // --conversation (cross-process restore). Mounts and permission entries
 // are installed before boot and owned by the session until Close/Cleanup.
-func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, workingDir, model, mcpJSON, resumeConversation, toolMode string) (*agyInteractiveSession, error) {
+func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, workingDir, model, mcpJSON, resumeConversation, toolMode string, opts *llmtypes.CallOptions) (*agyInteractiveSession, error) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	workingDir = strings.TrimSpace(workingDir)
 	model = strings.TrimSpace(model)
 	resumeConversation = strings.TrimSpace(resumeConversation)
-	fingerprint := agyToolModeFingerprint(mcpJSON, toolMode)
+	fingerprint := agyToolModeFingerprint(mcpJSON, toolMode) + ":" + llmtypes.CodingAgentScopeFingerprint(opts)
 	if session, ok := agyReserveTurnSession(ownerSessionID); ok {
 		if agySidecarReusable(ctx, session, workingDir, model, fingerprint, resumeConversation) {
 			return session, nil
@@ -99,7 +100,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		}
 		// Each sidecar owns a private AGY home, so distinct users never
 		// share MCP credentials or block each other's turns.
-		privateHome, releaseMounts, err = agyIsolatedHome(servers)
+		privateHome, releaseMounts, err = agyIsolatedHome(servers, workingDir)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +117,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 	}
 	if privateHome == "" {
 		var err error
-		privateHome, releaseMounts, err = agyIsolatedHome(nil)
+		privateHome, releaseMounts, err = agyIsolatedHome(nil, workingDir)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +129,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		}
 		return nil, err
 	}
-	session, err := bootAgyInteractiveSession(ctx, ownerSessionID, workingDir, model, resumeConversation, privateHome)
+	session, err := bootAgyInteractiveSession(ctx, ownerSessionID, workingDir, model, resumeConversation, privateHome, opts)
 	if err != nil {
 		releaseToolHook()
 		if releaseMounts != nil {
@@ -164,7 +165,7 @@ func agySidecarReusable(ctx context.Context, session *agyInteractiveSession, wor
 	if session.workingDir != workingDir || session.model != model || session.mountFingerprint != fingerprint {
 		return false
 	}
-	if resumeConversation != "" && session.conversationID != resumeConversation {
+	if resumeConversation != "" && session.getConversationID() != resumeConversation {
 		return false
 	}
 	return agyTmuxSessionAlive(ctx, session.tmuxSessionName)
@@ -182,15 +183,30 @@ var agySidecarKeyEnvVars = []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
 // conversation (--conversation); otherwise the TUI starts fresh and the
 // conversation id is discovered by content match after the first turn.
 // Callers own mounts/permissions; this only starts the process.
-func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, model, resumeConversation, privateHome string) (*agyInteractiveSession, error) {
+func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, model, resumeConversation, privateHome string, opts *llmtypes.CallOptions) (*agyInteractiveSession, error) {
 	tmuxName := agySanitizeTmuxName(ownerSessionID)
 	args := []string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workingDir}
-	if privateHome != "" {
-		args = append(args, "-e", "HOME="+privateHome)
+	baseEnv := []string{"HOME=" + privateHome}
+	if len(llmtypes.ProviderAccountEnvironment(opts)) == 0 {
+		for _, key := range agySidecarKeyEnvVars {
+			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+				baseEnv = append(baseEnv, key+"="+value)
+			}
+		}
 	}
-	for _, key := range agySidecarKeyEnvVars {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			args = append(args, "-e", key+"="+value)
+	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), baseEnv, opts)
+	var scrub *shelllaunch.ScopeScrub
+	if llmtypes.CodingAgentScopeDeclared(opts) {
+		keep := make([]string, 0, len(baseEnv)+len(scopedEnv))
+		for _, entry := range append(append([]string(nil), baseEnv...), scopedEnv...) {
+			if key, _, ok := strings.Cut(entry, "="); ok {
+				keep = append(keep, key)
+			}
+		}
+		scrub = &shelllaunch.ScopeScrub{
+			Prefixes: llmtypes.ScopedCredentialPrefixes(),
+			Names:    llmtypes.ScopedCredentialNames(),
+			Keep:     keep,
 		}
 	}
 	cli := []string{"agy"}
@@ -204,8 +220,17 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 	if resumeConversation = strings.TrimSpace(resumeConversation); resumeConversation != "" {
 		cli = append(cli, "--conversation", resumeConversation)
 	}
-	launch := exec.CommandContext(ctx, "tmux", append(args, cli...)...)
+	// The private AGY home must win over a provider-account HOME overlay;
+	// account credentials still reach the child through their own variables.
+	launchEnv := append(append([]string(nil), scopedEnv...), baseEnv...)
+	command, cleanupScript, err := shelllaunch.CommandWithScopedEnv(cli, workingDir, launchEnv, unsetEnv, scrub)
+	if err != nil {
+		return nil, fmt.Errorf("prepare agy sidecar environment: %w", err)
+	}
+	args = append(args, command)
+	launch := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := launch.CombinedOutput(); err != nil {
+		cleanupScript()
 		return nil, fmt.Errorf("tmux new-session %s: %w\n%s", tmuxName, err, out)
 	}
 	session := &agyInteractiveSession{
@@ -220,9 +245,11 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 	agyInteractiveRegistry.sessions[ownerSessionID] = session
 	agyInteractiveRegistry.Unlock()
 	if _, err := waitAgyPaneReady(ctx, tmuxName, 90*time.Second); err != nil {
+		cleanupScript()
 		CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, "boot failed")
 		return nil, err
 	}
+	cleanupScript()
 	return session, nil
 }
 
@@ -248,7 +275,7 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if strings.TrimSpace(prompt) == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
 	}
-	idxBefore := agyConversationMaxIdx(session.conversationID)
+	idxBefore := agyConversationMaxIdx(session.getConversationID())
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
 		return "", llmtypes.Usage{}, nil, err
 	}
@@ -267,15 +294,16 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	// Only the structured record supplies the answer. The pane includes
 	// prompt echo, thoughts and tool renderings, so it cannot repair an
 	// unattributable or missing assistant step.
-	reply := agyTurnReplySince(session.conversationID, userIdx)
+	conversationID := session.getConversationID()
+	reply := agyTurnReplySince(conversationID, userIdx)
 	if reply == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
 	if quotaErr := agyQuotaError(session.model, reply); quotaErr != nil {
 		return "", llmtypes.Usage{}, nil, quotaErr
 	}
-	usage := agyTurnUsageSince(session.conversationID, userIdx)
-	toolCalls := agyTurnToolCallsSince(session.conversationID, userIdx)
+	usage := agyTurnUsageSince(conversationID, userIdx)
+	toolCalls := agyTurnToolCallsSince(conversationID, userIdx)
 	return reply, usage, toolCalls, nil
 }
 
@@ -366,13 +394,14 @@ func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinc
 		if marker := agyApprovalMarkerShown(pane); marker != "" {
 			return -1, fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s)", marker)
 		}
-		if session.conversationID == "" {
-			session.conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
+		conversationID := session.getConversationID()
+		if conversationID == "" {
+			conversationID = session.setConversationIDIfEmpty(agyConversationIDFromPane(ctx, session.tmuxSessionName))
 		}
-		if session.conversationID == "" {
-			session.conversationID = agyDiscoverConversationID(session.createdAt, prompt)
+		if conversationID == "" {
+			conversationID = session.setConversationIDIfEmpty(agyDiscoverConversationID(session.createdAt, prompt))
 		}
-		record, err := agyReadTurnRecord(session.conversationID, sinceIdx, prompt)
+		record, err := agyReadTurnRecord(conversationID, sinceIdx, prompt)
 		if err == nil && record.userIdx >= 0 {
 			return record.userIdx, nil
 		}
@@ -381,7 +410,7 @@ func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinc
 			if err != nil {
 				readError = err.Error()
 			}
-			return -1, fmt.Errorf("sidecar prompt has no matching user step after 90s (conversation %q, read error %s); pane tail:\n%s", session.conversationID, readError, agyPaneTail(pane, 20))
+			return -1, fmt.Errorf("sidecar prompt has no matching user step after 90s (conversation %q, read error %s); pane tail:\n%s", conversationID, readError, agyPaneTail(pane, 20))
 		}
 		select {
 		case <-ctx.Done():
@@ -412,7 +441,7 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 		if marker := agyApprovalMarkerShown(pane); marker != "" {
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
-		record, err := agyReadTurnRecord(session.conversationID, userIdx, "")
+		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "")
 		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
 			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
 				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
@@ -499,8 +528,9 @@ func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 // agyApprovalMarkerShown returns the approval marker text when the pane is
 // asking to approve a tool call or file access.
 func agyApprovalMarkerShown(pane string) string {
+	status := agyPaneStatusRows(pane)
 	for _, marker := range agyPaneNativeApprovalMarkers {
-		if strings.Contains(pane, marker) {
+		if strings.Contains(status, marker) {
 			return marker
 		}
 	}

@@ -14,8 +14,8 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 )
 
-// agyExecEnvelope is one JSON object from
-// `agy --output-format json -p='<prompt>'`. Shape verified live against agy
+// agyExecEnvelope is the terminal result object from AGY's JSON output.
+// Shape verified live against agy
 // 1.2.7: status/response/usage plus denied_actions when headless mode
 // auto-denies a native tool it cannot prompt for.
 type agyExecEnvelope struct {
@@ -85,16 +85,15 @@ func agyBuildExecPrompt(messages []llmtypes.MessageContent, launchSystemPrompt s
 	return "System instructions:\n" + strings.Join(systems, "\n\n") + "\n\n" + human, nil
 }
 
-// agyBuildExecArgv builds the print-mode argv. agy quirk: bare `-p` consumes
-// the next argument as the prompt, so --output-format comes first and the
-// prompt rides on `-p=`; otherwise the flags are eaten as prompt text. The
-// requested model is always explicit because AGY's API-key default differs
+// agyBuildExecArgv builds the stream-json print-mode argv. The prompt is
+// sent on stdin, avoiding process-list disclosure and Linux's per-argument
+// size limit. The requested model is always explicit because AGY's API-key default differs
 // from its signed-in default; resume pins --conversation; a schema
 // string pins --json-schema. The exec lane never passes
 // --dangerously-skip-permissions: headless default-deny is the containment
 // posture the bridge proofs rely on.
-func agyBuildExecArgv(prompt, model, resumeID, schemaJSON string) []string {
-	argv := []string{"--output-format", "json", "-p=" + prompt}
+func agyBuildExecArgv(model, resumeID, schemaJSON string) []string {
+	argv := []string{"--input-format", "stream-json", "--output-format", "stream-json"}
 	if model = strings.TrimSpace(model); model != "" {
 		argv = append(argv, "--model", model)
 	}
@@ -105,6 +104,43 @@ func agyBuildExecArgv(prompt, model, resumeID, schemaJSON string) []string {
 		argv = append(argv, "--json-schema", schemaJSON)
 	}
 	return argv
+}
+
+func agyStreamInput(prompt string) ([]byte, error) {
+	message, err := json.Marshal(map[string]any{
+		"event":   "user",
+		"message": map[string]string{"content": prompt},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode agy stream input: %w", err)
+	}
+	return append(message, '\n'), nil
+}
+
+// agyParseStreamExec finds the terminal result event in AGY's NDJSON output.
+// Init and step_update events are progress evidence, not final answers.
+func agyParseStreamExec(data []byte) (*agyParsedExec, error) {
+	var result json.RawMessage
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var event struct {
+			Type   string          `json:"event"`
+			Result json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			return nil, fmt.Errorf("agy stream event not JSON: %w (output: %s)", err, agyOutputTail(string(line)))
+		}
+		if event.Type == "result" {
+			result = event.Result
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("agy stream returned no result event (output: %s)", agyOutputTail(string(data)))
+	}
+	return agyParseExecEnvelope(result)
 }
 
 // agyExecSchemaJSON marshals the caller's JSONSchema config for --json-schema.
@@ -240,7 +276,7 @@ const (
 const agyLoginRequiredMarker = "Authentication required"
 
 // generateContentExec runs one headless turn via
-// `agy --output-format json -p='<prompt>'` and returns the envelope's final
+// `agy --input-format stream-json --output-format stream-json` and returns the envelope's final
 // text. Print mode is non-streaming: when opts.StreamChan is set it gets one
 // content chunk with the full text; the channel stays caller-owned and is
 // never closed here. Wire usage lands on the response (token_usage); the
@@ -260,6 +296,13 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if model == "" {
 		model = DefaultModelID
 	}
+	workdir := agyStringMetadata(opts, MetadataKeyWorkingDir)
+	if workdir == "" {
+		workdir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve agy working directory: %w", err)
+		}
+	}
 	schemaJSON, err := agyExecSchemaJSON(opts)
 	if err != nil {
 		return nil, err
@@ -268,7 +311,11 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if err != nil {
 		return nil, err
 	}
-	argv := agyBuildExecArgv(prompt, model, agyStringMetadata(opts, MetadataKeyResumeSessionID), schemaJSON)
+	argv := agyBuildExecArgv(model, agyStringMetadata(opts, MetadataKeyResumeSessionID), schemaJSON)
+	streamInput, err := agyStreamInput(prompt)
+	if err != nil {
+		return nil, err
+	}
 	if effort != "" {
 		argv = append(argv, "--effort", effort)
 	}
@@ -282,10 +329,9 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	privateHome := ""
 	if mcpJSON := agyStringMetadata(opts, MetadataKeyMCPConfig); strings.TrimSpace(mcpJSON) != "" {
 		// Mounting the bridge is the explicit request for tool-capable
-		// execution, so this run only gets --dangerously-skip-permissions;
-		// unmounted runs keep headless default-deny. Mounts are global
-		// user config with no per-run scope, hence the process-wide
-		// serialize: parallel mounts would cross-expose bridges.
+		// execution, so this run gets --dangerously-skip-permissions;
+		// unmounted runs keep headless default-deny. Each run owns a private
+		// AGY home and MCP catalogue.
 		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 			if readyFile := codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom); strings.TrimSpace(readyFile) != "" {
 				_ = codingready.WaitForMCPReadyFile(ctx, readyFile, codingready.MCPReadyWait())
@@ -296,7 +342,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 			return nil, err
 		}
 		var releaseMounts func()
-		privateHome, releaseMounts, err = agyIsolatedHome(servers)
+		privateHome, releaseMounts, err = agyIsolatedHome(servers, workdir)
 		if err != nil {
 			return nil, err
 		}
@@ -305,7 +351,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	}
 	if privateHome == "" {
 		var cleanup func()
-		privateHome, cleanup, err = agyIsolatedHome(nil)
+		privateHome, cleanup, err = agyIsolatedHome(nil, workdir)
 		if err != nil {
 			return nil, err
 		}
@@ -313,6 +359,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	}
 
 	cmd := exec.CommandContext(ctx, "agy", argv...)
+	cmd.Stdin = bytes.NewReader(streamInput)
 	baseEnv := os.Environ()
 	if privateHome != "" {
 		filtered := make([]string, 0, len(baseEnv)+1)
@@ -341,13 +388,6 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	// The CLI treats the process cwd as the workspace root (trust,
 	// conversation scoping), so pin it when the caller asks. Empty keeps
 	// the inherited cwd — the working_directory cert pins the explicit case.
-	workdir := agyStringMetadata(opts, MetadataKeyWorkingDir)
-	if workdir == "" {
-		workdir, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("resolve agy working directory: %w", err)
-		}
-	}
 	cmd.Dir = workdir
 	releaseToolHook, err := agyHoldToolModeHook(workdir, toolMode)
 	if err != nil {
@@ -379,7 +419,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		for scanner.Scan() {
 			line := scanner.Text()
 			stderr.WriteString(line + "\n")
-			if !marked && strings.Contains(line, agyLoginRequiredMarker) {
+			if !marked && strings.Contains(strings.ToLower(line), strings.ToLower(agyLoginRequiredMarker)) {
 				marked = true
 				close(loginRequired)
 				_ = cmd.Process.Kill()
@@ -399,7 +439,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		}
 		return nil, fmt.Errorf("agy exec failed: %w (stderr: %s)", waitErr, agyOutputTail(stderr.String()))
 	}
-	parsed, err := agyParseExecEnvelope(stdout.Bytes())
+	parsed, err := agyParseStreamExec(stdout.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("%w (stderr: %s)", err, agyOutputTail(stderr.String()))
 	}
