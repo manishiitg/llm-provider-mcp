@@ -439,7 +439,36 @@ func museIsLegacyAgentWorksPolicyHook(raw json.RawMessage) bool {
 	if json.Unmarshal(raw, &entry) != nil || len(entry.Hooks) != 1 {
 		return false
 	}
-	return strings.Contains(entry.Hooks[0].Command, "/muse-cli-hooks/native-tool-policy-")
+	return museHookCommandPattern.MatchString(entry.Hooks[0].Command)
+}
+
+// museHookCommandPattern matches a hook command this adapter wrote, in the
+// shared legacy folder or a per-user one.
+var museHookCommandPattern = regexp.MustCompile(`/muse-cli-hooks(-\d+)?/native-tool-policy-`)
+
+// museHookDir is this OS user's own hook folder. One shared /tmp folder broke
+// on hosts with several service accounts: the first account to run Muse owned
+// it and every other account failed with "permission denied" -- and another
+// account could have created it first and controlled the hook it runs. The
+// folder is per user, owner-only, and refused when it is not ours.
+func museHookDir() (string, error) {
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("muse-cli-hooks-%d", os.Getuid()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create muse hook dir: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", fmt.Errorf("check muse hook dir: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(info) {
+		return "", fmt.Errorf("muse hook dir %s is not a directory owned by this user", dir)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", fmt.Errorf("secure muse hook dir: %w", err)
+		}
+	}
+	return dir, nil
 }
 
 func copyMuseConfigFile(source, target string) error {
@@ -524,9 +553,9 @@ func museWriteToolPolicyHook(nativeAllowed []string) (string, error) {
 		"if (allowed.has(name) || name.startsWith('mcp__')) process.exit(0);\n" +
 		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'Muse internal tools are disabled for this session; use web search or an AgentWorks MCP tool.'}}) + '\\n');\n"
 	digest := sha256.Sum256([]byte(body))
-	dir := filepath.Join(os.TempDir(), "muse-cli-hooks")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", fmt.Errorf("create muse hook dir: %w", err)
+	dir, err := museHookDir()
+	if err != nil {
+		return "", err
 	}
 	path := filepath.Join(dir, fmt.Sprintf("native-tool-policy-%x.js", digest[:8]))
 	// Publish atomically: another launch may be executing this same hook.
