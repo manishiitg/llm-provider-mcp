@@ -441,7 +441,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if quotaErr := agyQuotaFailureError(model, stderr.String(), waitErr.Error()); quotaErr != nil {
+		if quotaErr := agyQuotaStderrError(model, stderr.String()); quotaErr != nil {
 			return nil, quotaErr
 		}
 		// A failed result envelope is an error carrier; raw NDJSON stdout is not.

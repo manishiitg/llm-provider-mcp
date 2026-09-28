@@ -407,6 +407,9 @@ func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinc
 			if err != nil {
 				readError = err.Error()
 			}
+			if quotaErr := agyQuotaPaneError("", pane); quotaErr != nil {
+				return -1, quotaErr
+			}
 			return -1, fmt.Errorf("sidecar prompt has no matching user step after 90s (conversation %q, read error %s); pane tail:\n%s", conversationID, readError, agyPaneTail(pane, 20))
 		}
 		select {
@@ -453,6 +456,11 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 			readError := "none"
 			if err != nil {
 				readError = err.Error()
+			}
+			if record.finalAnswer == "" {
+				if quotaErr := agyQuotaPaneError("", pane); quotaErr != nil {
+					return quotaErr
+				}
 			}
 			return fmt.Errorf("sidecar turn has no settled recorded answer within %s (read error %s); pane tail:\n%s", agySidecarTurnTimeout, readError, agyPaneTail(pane, 30))
 		}

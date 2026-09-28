@@ -257,6 +257,44 @@ func TestAgyWorkspaceHookRejectsAncestorHookFile(t *testing.T) {
 	}
 }
 
+func TestAgyWorkspaceHookAcceptsExactManagedAncestor(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	parent := t.TempDir()
+	child := filepath.Join(parent, ".agents", "delegated")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	releaseParent, err := agyHoldToolModeHook(parent, "mcp_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseParent()
+	releaseChild, err := agyHoldToolModeHook(child, "hybrid")
+	if err != nil {
+		t.Fatalf("managed ancestor blocked delegation: %v", err)
+	}
+	releaseChild()
+
+	path := filepath.Join(parent, ".agents", "hooks.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooks map[string]interface{}
+	if err := json.Unmarshal(raw, &hooks); err != nil {
+		t.Fatal(err)
+	}
+	hooks["foreign"] = map[string]interface{}{"PreToolUse": []interface{}{}}
+	if err := agyWriteHooksFile(path, hooks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(child, "mcp_only"); err == nil {
+		t.Fatal("managed ancestor with a foreign hook was accepted")
+	}
+}
+
 func TestAgyToolModeValidationAndFingerprint(t *testing.T) {
 	for _, mode := range []string{"mcp_only", "hybrid"} {
 		if got, err := agyToolMode(mode); err != nil || got != mode {

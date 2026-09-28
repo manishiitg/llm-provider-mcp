@@ -98,6 +98,27 @@ func TestAgyQuotaFailureIsTyped(t *testing.T) {
 	}
 }
 
+func TestAgyQuotaOnlyUsesExplicitStderrAndPaneErrors(t *testing.T) {
+	for _, output := range []string{
+		"MCP bridge child: HTTP 429 quota exceeded\n",
+		"The agent explained what rate limit exceeded means\n",
+		"Error: HTTP 429 quota exceeded in a child tool\n",
+	} {
+		if err := agyQuotaStderrError("", output); err != nil {
+			t.Fatalf("child output classified as quota: %v", err)
+		}
+	}
+	if err := agyQuotaStderrError("", "tool output: quota exceeded\nError: RESOURCE_EXHAUSTED: quota exceeded\n"); llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
+		t.Fatalf("explicit stderr error kind = %q, err=%v", llmerrors.KindOf(err), err)
+	}
+	if err := agyQuotaPaneError("", "Error: quota exceeded\n"+strings.Repeat("ordinary status\n", 12)); err != nil {
+		t.Fatalf("old pane text classified as quota: %v", err)
+	}
+	if err := agyQuotaPaneError("", strings.Repeat("ordinary status\n", 12)+"Error: quota exceeded\n"); llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
+		t.Fatalf("recent TUI error kind = %q, err=%v", llmerrors.KindOf(err), err)
+	}
+}
+
 func TestAgySweepLegacyDeadMountsKeepsLiveOnes(t *testing.T) {
 	home := t.TempDir()
 	dead := "agentworks-old-99999999-abcd"

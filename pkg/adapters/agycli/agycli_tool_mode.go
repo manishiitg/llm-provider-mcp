@@ -104,7 +104,7 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := agyRejectAncestorHooks(workingDir); err != nil {
+	if err := agyRejectAncestorHooks(workingDir, python); err != nil {
 		return nil, err
 	}
 	agyWorkspaceHooks.Lock()
@@ -187,14 +187,7 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 			original = nil
 		}
 	}
-	entry := map[string]interface{}{
-		"PreToolUse": []interface{}{map[string]interface{}{
-			"matcher": "*",
-			"hooks": []interface{}{map[string]interface{}{
-				"type": "command", "command": agyToolModeHookCommand(python, mode), "timeout": 10,
-			}},
-		}},
-	}
+	entry := agyManagedToolHookEntry(python, mode)
 	// AGY executes every workspace hook even with permissions skipped. A
 	// foreign hook can run arbitrary code before our tool gate, so the live
 	// file must contain only the managed gate. Preserve the user's bytes for
@@ -213,13 +206,27 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	return agyToolModeReleaseFunc(workingDir), nil
 }
 
+func agyManagedToolHookEntry(python, mode string) map[string]interface{} {
+	return map[string]interface{}{
+		"PreToolUse": []interface{}{map[string]interface{}{
+			"matcher": "*",
+			"hooks": []interface{}{map[string]interface{}{
+				"type": "command", "command": agyToolModeHookCommand(python, mode), "timeout": 10,
+			}},
+		}},
+	}
+}
+
 // AGY's parent-directory hook discovery has not been certified. Refuse a
-// nested run beneath another hook file rather than assuming it is ignored.
-func agyRejectAncestorHooks(workingDir string) error {
+// nested run beneath a foreign hook file. The exact managed gate is safe for
+// delegated AGY runs underneath an already active parent workspace.
+func agyRejectAncestorHooks(workingDir, python string) error {
 	for parent := filepath.Dir(workingDir); parent != workingDir; parent = filepath.Dir(parent) {
 		path := filepath.Join(parent, ".agents", "hooks.json")
 		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("agy workspace %q is below another hook file %q", workingDir, path)
+			if !agyIsManagedAncestorHookFile(path, python) {
+				return fmt.Errorf("agy workspace %q is below another hook file %q", workingDir, path)
+			}
 		} else if !os.IsNotExist(err) {
 			return err
 		}
@@ -228,6 +235,29 @@ func agyRejectAncestorHooks(workingDir string) error {
 		}
 	}
 	return nil
+}
+
+func agyIsManagedAncestorHookFile(path, python string) bool {
+	if err := agyEnsureHookDir(filepath.Dir(path)); err != nil {
+		return false
+	}
+	if err := agyRejectSymlink(path); err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var hooks map[string]interface{}
+	if json.Unmarshal(raw, &hooks) != nil || len(hooks) != 1 {
+		return false
+	}
+	for _, mode := range []string{"mcp_only", "hybrid"} {
+		if agySameHookEntry(hooks[agyToolModeHookName], agyManagedToolHookEntry(python, mode)) {
+			return true
+		}
+	}
+	return false
 }
 
 func agyEnsureHookDir(dir string) error {
