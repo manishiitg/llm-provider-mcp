@@ -432,11 +432,17 @@ func WithAgyWorkingDir(dir string) llmtypes.CallOption {
 
 // WithAgyMCPConfig mounts the document's stdio mcpServers for one turn via
 // `agy mcp add` (global user config: agy offers no scoped mount) and removes
-// them afterwards. A mounted turn runs with --dangerously-skip-permissions —
-// natives approved alongside the bridge, per the contract gaps — and mounted
-// turns serialize process-wide so parallel bridges cannot cross-expose.
+// them afterwards. WithAgyNativeToolsMode adds the workspace PreToolUse gate
+// for MCP-only or native read/search access; different mounted surfaces
+// serialize process-wide so parallel bridges cannot cross-expose.
 func WithAgyMCPConfig(configJSON string) llmtypes.CallOption {
 	return agycli.WithMCPConfig(configJSON)
+}
+
+// WithAgyNativeToolsMode selects mcp_only or hybrid for AGY's PreToolUse
+// execution gate. The MCP bridge stays available in either mode.
+func WithAgyNativeToolsMode(mode string) llmtypes.CallOption {
+	return agycli.WithNativeToolsMode(mode)
 }
 
 // WithMuseMCPConfig mounts the document's mcpServers in a per-launch private

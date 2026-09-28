@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
@@ -50,7 +51,12 @@ type agyInteractiveSession struct {
 	// releaseMounts drops this session's hold on the shared mount set
 	// (nil when unmounted); the last release unmounts and removes the
 	// permissions.allow entries.
-	releaseMounts func()
+	releaseMounts   func()
+	releaseToolHook func()
+	// A retained sidecar can yield its global MCP mount to a different
+	// surface only between turns. The next turn reboots from its native
+	// conversation when its mount was yielded.
+	turnLeases atomic.Int32
 	// conversationID is the TUI-native conversation, discovered by
 	// content match after the first turn; "" until then.
 	conversationID string
@@ -593,15 +599,41 @@ func CloseAgyCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	}
 }
 
-// agyReleaseSessionMounts drops a dead session's mount hold; the last
-// holder unmounts and removes permission entries. Best-effort teardown.
+// agyReleaseSessionMounts drops a dead session's workspace tool hook and
+// mount hold; the last holder unmounts and removes permission entries.
 func agyReleaseSessionMounts(session *agyInteractiveSession) {
-	if session == nil || session.releaseMounts == nil {
+	if session == nil {
 		return
 	}
-	release := session.releaseMounts
-	session.releaseMounts = nil
-	release()
+	if session.releaseToolHook != nil {
+		release := session.releaseToolHook
+		session.releaseToolHook = nil
+		release()
+	}
+	if session.releaseMounts != nil {
+		release := session.releaseMounts
+		session.releaseMounts = nil
+		release()
+	}
+}
+
+// agyYieldIdleMountedSessions releases global mounts held by retained chats
+// after their turn has finished. Removing them under the registry lock keeps
+// another turn from reserving a sidecar while it is being retired.
+func agyYieldIdleMountedSessions(fingerprint string) {
+	agyInteractiveRegistry.Lock()
+	var idle []*agyInteractiveSession
+	for owner, session := range agyInteractiveRegistry.sessions {
+		if session.mountFingerprint == fingerprint && session.turnLeases.Load() == 0 {
+			delete(agyInteractiveRegistry.sessions, owner)
+			idle = append(idle, session)
+		}
+	}
+	agyInteractiveRegistry.Unlock()
+	for _, session := range idle {
+		_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", session.tmuxSessionName).Run()
+		agyReleaseSessionMounts(session)
+	}
 }
 
 // SendAgyInteractiveInput sends one single-line follow-up to the owner's

@@ -19,9 +19,9 @@ import (
 //
 // Mount lifecycle is adapter-owned: `agy mcp add` before the turn under a
 // unique agentworks- name, `agy mcp remove` after, the turn itself approved
-// via --dangerously-skip-permissions. bridge_only_tools is NOT provable on
-// this lane (all-or-nothing tool switch) and is recorded in the contract's
-// ToolRestrictionGaps instead. Mounted turns serialize process-wide
+// via --dangerously-skip-permissions. The separate native-tool-mode test
+// proves the workspace PreToolUse gate keeps that bridge available while
+// denying native writes. Mounted turns serialize process-wide
 // (agyMCPMountMu): mounts are global user config, so these tests stay
 // sequential and assert no agentworks- server leaks afterwards.
 
@@ -179,6 +179,95 @@ func TestAgyCLIRealMCPBridgeContract(t *testing.T) {
 	calls, err := os.ReadFile(logPath)
 	if err != nil || !strings.Contains(string(calls), "bridge_canary") {
 		t.Fatalf("canary log = %q, err = %v, want recorded tool call", string(calls), err)
+	}
+	agyAssertNoMountLeak(t)
+}
+
+func TestAgyCLIRealNativeToolModeBridgeAndDenial(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	workDir := t.TempDir()
+	serverPath, logPath := agyWriteCanaryServer(t, workDir, "agy-mcp-native-mode-server.js")
+	config := agyCanaryMCPConfig(serverPath, logPath, "0")
+	adapter := NewAgyCLIAdapter("", "", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use the MCP gateway only. Call bridge_canary, then reply with its output."),
+	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("mcp_only"))
+	if err != nil {
+		t.Fatalf("MCP-only bridge turn: %v", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, "AGY_MCP_BRIDGE_OK") {
+		t.Fatalf("MCP bridge response = %q", resp.Choices[0].Content)
+	}
+	target := filepath.Join(workDir, "native-must-not-write.txt")
+	deniedResp, deniedErr := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use only your native file writing tool to create "+target+" with exactly HI. Do not call MCP or use a command. If blocked, say so."),
+	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("mcp_only"))
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("MCP-only mode allowed native write: stat err = %v", err)
+	}
+	if deniedErr == nil {
+		handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(deniedResp)
+		if !ok || handle.NativeSessionID == "" {
+			t.Fatal("denied native turn returned no AGY conversation id")
+		}
+		var attempted bool
+		for _, call := range agyTurnToolCallsSince(handle.NativeSessionID, 0) {
+			if call.Name == "write_to_file" {
+				attempted = true
+			}
+		}
+		if !attempted {
+			t.Fatal("denial proof did not record a native write attempt")
+		}
+	} else if !strings.Contains(strings.ToLower(deniedErr.Error()), "denied") {
+		t.Fatalf("native turn failed for an unrelated reason: %v", deniedErr)
+	}
+	agyAssertNoMountLeak(t)
+}
+
+func TestAgyCLIRealHybridNativeReadAndWriteDenial(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	workDir := t.TempDir()
+	serverPath, logPath := agyWriteCanaryServer(t, workDir, "agy-mcp-hybrid-server.js")
+	config := agyCanaryMCPConfig(serverPath, logPath, "0")
+	canary := "AGY_NATIVE_READ_" + agyRandomHex(t, 4)
+	readPath := filepath.Join(workDir, "native-read.txt")
+	if err := os.WriteFile(readPath, []byte(canary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAgyCLIAdapter("", "", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use your native view_file tool to read "+readPath+". Do not call MCP or use a command. Reply with the file contents."),
+	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("hybrid"))
+	if err != nil {
+		t.Fatalf("hybrid read turn: %v", err)
+	}
+	if !strings.Contains(resp.Choices[0].Content, canary) {
+		t.Fatalf("hybrid read response = %q, want %q", resp.Choices[0].Content, canary)
+	}
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
+	if !ok || handle.NativeSessionID == "" {
+		t.Fatal("hybrid read returned no AGY conversation id")
+	}
+	var nativeRead bool
+	for _, call := range agyTurnToolCallsSince(handle.NativeSessionID, 0) {
+		if call.Name == "view_file" {
+			nativeRead = true
+		}
+	}
+	if !nativeRead {
+		t.Fatal("hybrid response did not record a native view_file call")
+	}
+	target := filepath.Join(workDir, "hybrid-must-not-write.txt")
+	_, _ = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use only your native write_to_file tool to create "+target+" with exactly HI. Do not call MCP or use a command. If blocked, say so."),
+	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("hybrid"))
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("hybrid mode allowed native write: stat err = %v", err)
 	}
 	agyAssertNoMountLeak(t)
 }

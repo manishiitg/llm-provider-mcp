@@ -353,10 +353,10 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			RealE2E:     true,
 		},
 		{
-			ID:          CertBestEffortToolRestrictions,
+			ID:          CertBridgeOnlyTools,
 			TestFile:    "pkg/adapters/agycli/agycli_bridge_live_test.go",
-			TestName:    "TestAgyCLIRealBestEffortToolRestrictions",
-			Description: "unmounted native-tool attempt is auto-denied with the action named and nothing runs (no selective containment claimed)",
+			TestName:    "TestAgyCLIRealNativeToolModeBridgeAndDenial",
+			Description: "workspace PreToolUse hook blocks native writes while the MCP canary remains callable in mcp_only mode",
 			RealE2E:     true,
 		},
 		{

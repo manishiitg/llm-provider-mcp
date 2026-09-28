@@ -247,6 +247,40 @@ func TestAgyCLIRealInteractiveMCPBridgeContract(t *testing.T) {
 	}
 }
 
+func TestAgyCLIRealInteractiveNativeToolMode(t *testing.T) {
+	if !*codingCLIP0Live {
+		t.Skip("run through the live coding CLI P0 runner")
+	}
+	agyKeyModeForTest(t)
+	workDir := t.TempDir()
+	agyTrustWorkdirForTest(t, workDir)
+	serverPath, logPath := agyWriteCanaryServer(t, workDir, "sidecar-native-mode-server.js")
+	owner := "agy-sidecar-native-mode-" + agyRandomHex(t, 4)
+	t.Cleanup(func() { CloseAgyCLIInteractiveSessionForOwner(owner, "test done") })
+	config := agyCanaryMCPConfig(serverPath, logPath, "0")
+	adapter := NewAgyCLIAdapter("", "", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	bridge, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use the MCP gateway only. Call bridge_canary, then reply with its result."),
+	}, WithWorkingDir(workDir), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), WithMCPConfig(config), WithNativeToolsMode("mcp_only"))
+	if err != nil || !strings.Contains(agySidecarChoiceText(t, bridge), "AGY_MCP_BRIDGE_OK") {
+		t.Fatalf("sidecar MCP-only bridge turn: err=%v", err)
+	}
+	target := filepath.Join(workDir, "sidecar-native-must-not-write.txt")
+	_, _ = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use only your native write_to_file tool to create "+target+" with exactly HI. Do not call MCP or use a command. If blocked, say so."),
+	}, WithWorkingDir(workDir), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), WithMCPConfig(config), WithNativeToolsMode("mcp_only"))
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("MCP-only sidecar allowed native write: stat err = %v", err)
+	}
+	CloseAgyCLIInteractiveSessionForOwner(owner, "test done")
+	if _, err := os.Stat(filepath.Join(workDir, ".agents", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("sidecar hook file survived cleanup: %v", err)
+	}
+	agyAssertNoMountLeak(t)
+}
+
 func agySidecarPermissionAllows(t *testing.T) []string {
 	t.Helper()
 	home, err := os.UserHomeDir()

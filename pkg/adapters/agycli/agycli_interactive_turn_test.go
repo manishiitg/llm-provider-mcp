@@ -60,8 +60,19 @@ func TestAgyTurnRecordBindsMatchingUserAndWaitsForFinalAssistant(t *testing.T) {
 	}
 	insert(5, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "new answer"))
 	record, err = agyReadTurnRecord("turn", 2, "")
-	if err != nil || record.lastType != agyStepAssistant || record.lastStatus != 3 || record.answer != "new answer" {
+	if err != nil || record.lastType != agyStepAssistant || record.lastStatus != 3 || record.answer != "new answer" || record.finalAnswer != "new answer" {
 		t.Fatalf("completed record = %+v, err %v", record, err)
+	}
+	insert(6, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "tool prompt"))
+	insert(7, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "working on it"))
+	insert(8, agyStepToolCall, agyTestPayload(agyStepToolCall, 5, 2, "tool"))
+	insert(9, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "final answer"))
+	record, err = agyReadTurnRecord("turn", 6, "")
+	if err != nil || record.answer != "working on it\n\nfinal answer" || record.finalAnswer != "final answer" {
+		t.Fatalf("progress/final record = %+v, err %v", record, err)
+	}
+	if got := agyTurnReplySince("turn", 6); got != "final answer" {
+		t.Fatalf("final reply = %q, want final answer without progress", got)
 	}
 }
 

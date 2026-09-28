@@ -75,8 +75,13 @@ func agyHoldMounts(ctx context.Context, fingerprint string, servers []agyMCPServ
 			return names, func() { agyReleaseMounts(fingerprint) }, nil
 		default:
 			// A different surface is mounted, or a mount is in
-			// progress: wait for release.
+			// progress. Retained sidecars yield only between turns;
+			// their native conversation is available for the next boot.
+			activeFingerprint := agyMountActiveFingerprint
 			agyMCPMountMu.Unlock()
+			if activeFingerprint != "" {
+				agyYieldIdleMountedSessions(activeFingerprint)
+			}
 			select {
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()

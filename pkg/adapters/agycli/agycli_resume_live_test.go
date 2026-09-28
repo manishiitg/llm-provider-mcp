@@ -25,8 +25,8 @@ func TestAgyCLIRealResumeMultiTurnContract(t *testing.T) {
 	defer cancel()
 
 	turn1, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Do not use tools. Remember what the user tells you."),
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Remember this secret word: "+secret+". Reply with exactly the word STORED."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "This is a conversation memory exercise. Answer from the chat only; do not use tools, commands, files, or code."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "My secret word is "+secret+". Please remember it for my next question and acknowledge in a short sentence."),
 	}, WithWorkingDir(workDir))
 	if err != nil {
 		t.Fatalf("turn 1 error = %v", err)
@@ -37,7 +37,7 @@ func TestAgyCLIRealResumeMultiTurnContract(t *testing.T) {
 	}
 
 	turn2, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What was the secret word? Reply with exactly that word and nothing else."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "From our conversation, what was my secret word? Please answer in a short sentence without using tools."),
 	}, WithWorkingDir(workDir), WithResumeSessionID(handle1.NativeSessionID))
 	if err != nil {
 		t.Fatalf("turn 2 (resume) error = %v", err)
@@ -51,7 +51,7 @@ func TestAgyCLIRealResumeMultiTurnContract(t *testing.T) {
 	}
 
 	turn3, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Return the secret word as JSON. Reply with ONLY the raw JSON object: no code fences, no prose, no other text."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "From our conversation, return my secret word as JSON. Reply with ONLY the raw JSON object: no code fences, no prose, no tools, no other text."),
 	},
 		WithWorkingDir(workDir),
 		WithResumeSessionID(handle1.NativeSessionID),

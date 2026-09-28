@@ -78,20 +78,21 @@ func agyMountFingerprint(mcpJSON string) string {
 // resume conversation the live sidecar is not serving reboots with
 // --conversation (cross-process restore). Mounts and permission entries
 // are installed before boot and owned by the session until Close/Cleanup.
-func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, workingDir, model, mcpJSON, resumeConversation string) (*agyInteractiveSession, error) {
+func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, workingDir, model, mcpJSON, resumeConversation, toolMode string) (*agyInteractiveSession, error) {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	workingDir = strings.TrimSpace(workingDir)
 	model = strings.TrimSpace(model)
 	resumeConversation = strings.TrimSpace(resumeConversation)
-	fingerprint := agyMountFingerprint(mcpJSON)
-	if session, ok := activeAgyInteractiveSession(ownerSessionID); ok {
+	fingerprint := agyToolModeFingerprint(mcpJSON, toolMode)
+	if session, ok := agyReserveTurnSession(ownerSessionID); ok {
 		if agySidecarReusable(ctx, session, workingDir, model, fingerprint, resumeConversation) {
 			return session, nil
 		}
+		session.turnLeases.Add(-1)
 		CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, "sidecar tool surface changed")
 	}
 	var releaseMounts func()
-	if fingerprint != "unmounted" {
+	if strings.TrimSpace(mcpJSON) != "" {
 		servers, err := agyParseMCPServers(mcpJSON)
 		if err != nil {
 			return nil, err
@@ -106,16 +107,25 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		releaseMounts = holdRelease
 		// Re-check after acquiring: a concurrent turn for the same
 		// owner may have rebooted while this one waited.
-		if session, ok := activeAgyInteractiveSession(ownerSessionID); ok {
+		if session, ok := agyReserveTurnSession(ownerSessionID); ok {
 			if agySidecarReusable(ctx, session, workingDir, model, fingerprint, resumeConversation) {
 				releaseMounts()
 				return session, nil
 			}
+			session.turnLeases.Add(-1)
 			CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, "sidecar tool surface changed")
 		}
 	}
+	releaseToolHook, err := agyHoldToolModeHook(workingDir, toolMode)
+	if err != nil {
+		if releaseMounts != nil {
+			releaseMounts()
+		}
+		return nil, err
+	}
 	session, err := bootAgyInteractiveSession(ctx, ownerSessionID, workingDir, model, resumeConversation)
 	if err != nil {
+		releaseToolHook()
 		if releaseMounts != nil {
 			releaseMounts()
 		}
@@ -124,7 +134,18 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 	session.model = model
 	session.mountFingerprint = fingerprint
 	session.releaseMounts = releaseMounts
+	session.releaseToolHook = releaseToolHook
 	return session, nil
+}
+
+func agyReserveTurnSession(owner string) (*agyInteractiveSession, bool) {
+	agyInteractiveRegistry.Lock()
+	defer agyInteractiveRegistry.Unlock()
+	session, ok := agyInteractiveRegistry.sessions[owner]
+	if ok {
+		session.turnLeases.Add(1)
+	}
+	return session, ok
 }
 
 // agySidecarReusable reports whether the registered sidecar can serve the
@@ -186,6 +207,7 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 		createdAt:       time.Now(),
 		conversationID:  resumeConversation,
 	}
+	session.turnLeases.Store(1)
 	agyInteractiveRegistry.Lock()
 	agyInteractiveRegistry.sessions[ownerSessionID] = session
 	agyInteractiveRegistry.Unlock()
@@ -250,11 +272,12 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 // starts at its matching user row; rows before that receipt cannot satisfy
 // answer or completion, even in a resumed conversation.
 type agyTurnRecord struct {
-	userIdx    int
-	lastIdx    int
-	lastType   int
-	lastStatus int
-	answer     string
+	userIdx     int
+	lastIdx     int
+	lastType    int
+	lastStatus  int
+	answer      string
+	finalAnswer string
 }
 
 func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyTurnRecord, error) {
@@ -306,7 +329,9 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyT
 		}
 		record.lastIdx, record.lastType, record.lastStatus = idx, stepType, status
 		if stepType == agyStepAssistant {
+			record.finalAnswer = ""
 			if part, _, ok := agyTranscriptStepText(stepType, payload); ok && strings.TrimSpace(part) != "" {
+				record.finalAnswer = strings.TrimSpace(part)
 				if record.answer != "" {
 					record.answer += "\n\n"
 				}
@@ -377,9 +402,9 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
 		record, err := agyReadTurnRecord(session.conversationID, userIdx, "")
-		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.answer != "" {
-			if record.lastIdx != settledIdx || record.answer != settledAnswer {
-				settledIdx, settledAnswer, settledAt = record.lastIdx, record.answer, time.Now()
+		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
+			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
+				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
 			}
 			if time.Since(settledAt) >= 2*time.Second && PaneReadyForInput(pane) {
 				return nil
@@ -843,15 +868,16 @@ func agyTurnToolCallsSince(conversationID string, sinceIdx int) []agyTurnToolCal
 	return calls
 }
 
-// agyTurnReplySince returns the turn's user-visible assistant text: field
-// 20.1 across type-15 steps appended after sinceIdx, in idx order. Verified
+// agyTurnReplySince returns the turn's final assistant text: field 20.1
+// from the last type-15 step appended after sinceIdx. Earlier type-15 rows
+// are progress narration and must not be folded into unified_completion. Verified
 // live: 20.1 is the reply/narration text (duplicated at 20.8), 20.3 is
 // chain-of-thought (never user-visible), 20.7 the tool call. Pane scraping
 // cannot isolate the reply (the pane mixes prompt echo, thoughts, tool
 // renderings, and reply), so the .db is the source of truth; "" when
-// unattributable (callers fall back to the pane).
+// unattributable causes the turn to fail instead of inventing a pane reply.
 func agyTurnReplySince(conversationID string, sinceIdx int) string {
-	var parts []string
+	var final string
 	if strings.TrimSpace(conversationID) == "" {
 		return ""
 	}
@@ -887,9 +913,9 @@ func agyTurnReplySince(conversationID string, sinceIdx int) string {
 		if !ok || strings.TrimSpace(text) == "" {
 			continue
 		}
-		parts = append(parts, strings.TrimSpace(text))
+		final = strings.TrimSpace(text)
 	}
-	return strings.Join(parts, "\n\n")
+	return final
 }
 
 // agyMCPInnerToolName unwraps an MCP-dispatch step's argument JSON to the

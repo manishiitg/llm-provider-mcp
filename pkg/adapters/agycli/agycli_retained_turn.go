@@ -95,13 +95,13 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	if !state.sentAt.Equal(receipt.sentAt) {
 		*state = agyRetainedState{sentAt: receipt.sentAt}
 	}
-	if record.lastType != agyStepAssistant || record.lastStatus != 3 || record.answer == "" {
+	if record.lastType != agyStepAssistant || record.lastStatus != 3 || record.finalAnswer == "" {
 		state.settledAt = time.Time{}
 		session.retainedMu.Unlock()
 		return nil
 	}
-	if record.lastIdx != state.settledIdx || record.answer != state.settledAnswer {
-		state.settledIdx, state.settledAnswer, state.settledAt = record.lastIdx, record.answer, time.Now()
+	if record.lastIdx != state.settledIdx || record.finalAnswer != state.settledAnswer {
+		state.settledIdx, state.settledAnswer, state.settledAt = record.lastIdx, record.finalAnswer, time.Now()
 	}
 	settled := time.Since(state.settledAt) >= 2*time.Second
 	session.retainedMu.Unlock()
@@ -114,5 +114,5 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	if err != nil || agyApprovalMarkerShown(pane) != "" || !PaneReadyForInput(pane) {
 		return nil
 	}
-	return []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, record.answer)}
+	return []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, record.finalAnswer)}
 }

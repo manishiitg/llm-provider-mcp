@@ -11,6 +11,7 @@ const (
 	MetadataKeyPersistentInteractive = "agy_persistent_interactive"
 	MetadataKeyResumeSessionID       = "agy_resume_session_id"
 	MetadataKeyMCPConfig             = "agy_mcp_config"
+	MetadataKeyNativeToolsMode       = "agy_native_tools_mode"
 )
 
 func ensureMetadata(opts *llmtypes.CallOptions) {
@@ -63,14 +64,23 @@ func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 
 // WithMCPConfig mounts the document's stdio mcpServers for one turn via
 // `agy mcp add` (global user config: agy offers no scoped mount) and removes
-// them afterwards. Mounting is the explicit request for tool-capable
-// execution, so a mounted turn runs with --dangerously-skip-permissions —
-// natives approved alongside the bridge, per the contract gaps. Mounted
-// turns serialize process-wide: parallel mounts would expose each turn's
-// bridge to the others.
+// them afterwards. Mounted exec turns use --dangerously-skip-permissions;
+// WithNativeToolsMode installs a PreToolUse gate when the caller needs
+// MCP-only or native read/search mode. Mounted turns serialize different
+// tool surfaces process-wide because mounts are global user configuration.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMCPConfig] = configJSON
+	}
+}
+
+// WithNativeToolsMode applies AgentWorks' coding-agent tool setting. The
+// bridge remains available in both modes. "hybrid" admits AGY's native
+// read/search tools; "mcp_only" denies native tools at PreToolUse.
+func WithNativeToolsMode(mode string) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyNativeToolsMode] = mode
 	}
 }

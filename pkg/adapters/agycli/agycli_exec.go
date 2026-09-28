@@ -88,13 +88,14 @@ func agyBuildExecPrompt(messages []llmtypes.MessageContent, launchSystemPrompt s
 // agyBuildExecArgv builds the print-mode argv. agy quirk: bare `-p` consumes
 // the next argument as the prompt, so --output-format comes first and the
 // prompt rides on `-p=`; otherwise the flags are eaten as prompt text. The
-// default model rides the CLI default; resume pins --conversation; a schema
+// requested model is always explicit because AGY's API-key default differs
+// from its signed-in default; resume pins --conversation; a schema
 // string pins --json-schema. The exec lane never passes
 // --dangerously-skip-permissions: headless default-deny is the containment
 // posture the bridge proofs rely on.
 func agyBuildExecArgv(prompt, model, resumeID, schemaJSON string) []string {
 	argv := []string{"--output-format", "json", "-p=" + prompt}
-	if model = strings.TrimSpace(model); model != "" && model != DefaultModelID {
+	if model = strings.TrimSpace(model); model != "" {
 		argv = append(argv, "--model", model)
 	}
 	if resumeID = strings.TrimSpace(resumeID); resumeID != "" {
@@ -268,6 +269,10 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if effort != "" {
 		argv = append(argv, "--effort", effort)
 	}
+	toolMode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
+	if err != nil {
+		return nil, err
+	}
 	if agyStringMetadata(opts, agyTestOnlyMetadataKeySkipPermissions) == "true" {
 		argv = append(argv, "--dangerously-skip-permissions")
 	}
@@ -286,7 +291,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		if err != nil {
 			return nil, err
 		}
-		_, releaseMounts, err := agyHoldMounts(ctx, agyMountFingerprint(mcpJSON), servers)
+		_, releaseMounts, err := agyHoldMounts(ctx, agyToolModeFingerprint(mcpJSON, toolMode), servers)
 		if err != nil {
 			return nil, err
 		}
@@ -322,6 +327,11 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		}
 	}
 	cmd.Dir = workdir
+	releaseToolHook, err := agyHoldToolModeHook(workdir, toolMode)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseToolHook()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	stderrPipe, err := cmd.StderrPipe()

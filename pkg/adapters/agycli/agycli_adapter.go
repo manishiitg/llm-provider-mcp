@@ -107,10 +107,17 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 		}
 	}
 	resumeConversation := agyStringMetadata(opts, MetadataKeyResumeSessionID)
-	session, err := ensureAgyInteractiveSessionForTurn(ctx, owner, workdir, model, mcpJSON, resumeConversation)
+	toolMode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
 	if err != nil {
 		return nil, err
 	}
+	session, err := ensureAgyInteractiveSessionForTurn(ctx, owner, workdir, model, mcpJSON, resumeConversation, toolMode)
+	if err != nil {
+		return nil, err
+	}
+	defer session.turnLeases.Add(-1)
+	stopTerminal := streamAgyTerminal(ctx, session.tmuxSessionName, opts.StreamChan)
+	defer stopTerminal()
 	reply, usage, toolCalls, err := runAgyInteractiveTurn(ctx, owner, prompt)
 	if err != nil {
 		if ctx.Err() != nil {
