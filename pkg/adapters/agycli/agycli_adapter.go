@@ -60,9 +60,8 @@ func (a *AgyCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 
 // generateContentInteractive runs one turn in the owner's sidecar TUI:
 // same prompt fold as exec, reply extracted from the pane, usage summed
-// from the conversation .db steps the turn appended. Schema-mode and
-// explicit effort are exec-only and fail loudly here rather than silently
-// downgrading the turn.
+// from the conversation .db steps the turn appended. Schema-mode is exec-only.
+// Interactive effort must match the selected model's baked-in effort.
 func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
 	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
 		return nil, err
@@ -84,21 +83,26 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	} else if strings.TrimSpace(schemaJSON) != "" {
 		return nil, fmt.Errorf("agy schema-mode turns are exec-only; persistent interactive does not support --json-schema")
 	}
-	if effort, err := agyExecEffort(opts); err != nil {
-		return nil, err
-	} else if strings.TrimSpace(effort) != "" {
-		return nil, fmt.Errorf("agy explicit effort is exec-only; sidecar turns use the booted model's baked-in effort")
-	}
-	prompt, err := agyBuildExecPrompt(messages, llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts))
-	if err != nil {
-		return nil, err
-	}
 	model := strings.TrimSpace(a.modelID)
 	if opts != nil && strings.TrimSpace(opts.Model) != "" {
 		model = strings.TrimSpace(opts.Model)
 	}
 	if model == "" {
 		model = DefaultModelID
+	}
+	if effort, err := agyExecEffort(opts); err != nil {
+		return nil, err
+	} else if effort != "" && !strings.HasSuffix(model, "-"+effort) {
+		return nil, fmt.Errorf("agy interactive effort %q does not match the booted model %q; choose a model with that effort", effort, model)
+	}
+	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
+	prompt := ""
+	if !launchOnly {
+		var err error
+		prompt, err = agyBuildExecPrompt(messages, llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts))
+		if err != nil {
+			return nil, err
+		}
 	}
 	mcpJSON := agyStringMetadata(opts, MetadataKeyMCPConfig)
 	if mcpJSON != "" && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
@@ -116,6 +120,19 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 		return nil, err
 	}
 	defer session.turnLeases.Add(-1)
+	if launchOnly {
+		gi := &llmtypes.GenerationInfo{}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
+			Provider:        "agy-cli",
+			Transport:       llmtypes.CodingProviderTransportTmux,
+			NativeSessionID: session.conversationID,
+			TmuxSession:     session.tmuxSessionName,
+			WorkingDir:      workdir,
+			Model:           model,
+			Status:          llmtypes.CodingProviderSessionStatusIdle,
+		})
+		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{GenerationInfo: gi}}}, nil
+	}
 	stopTerminal := streamAgyTerminal(ctx, session.tmuxSessionName, opts.StreamChan)
 	defer stopTerminal()
 	reply, usage, toolCalls, err := runAgyInteractiveTurn(ctx, owner, prompt)

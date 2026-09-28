@@ -48,14 +48,10 @@ type agyInteractiveSession struct {
 	// mountFingerprint identifies the tool surface ("unmounted" or a
 	// mounted-<hash>); a changed fingerprint reboots the sidecar.
 	mountFingerprint string
-	// releaseMounts drops this session's hold on the shared mount set
-	// (nil when unmounted); the last release unmounts and removes the
-	// permissions.allow entries.
+	// releaseMounts removes this sidecar's private AGY home after it exits.
 	releaseMounts   func()
 	releaseToolHook func()
-	// A retained sidecar can yield its global MCP mount to a different
-	// surface only between turns. The next turn reboots from its native
-	// conversation when its mount was yielded.
+	// turnLeases tracks in-flight turns using this retained sidecar.
 	turnLeases atomic.Int32
 	// conversationID is the TUI-native conversation, discovered by
 	// content match after the first turn; "" until then.
@@ -267,6 +263,9 @@ func agyReleaseKeyMode(settingsPath string) {
 func AgyTestAuthMode() string {
 	if AgyKeyModeRequested() {
 		return "gemini_api_key (AGY_P0_KEY_MODE; subscription quota exhausted, transport mechanics unaffected)"
+	}
+	if os.Getenv("GEMINI_API_KEY") != "" {
+		return "gemini_api_key (isolated AGY home)"
 	}
 	return "stored_login (subscription OAuth)"
 }
@@ -614,25 +613,6 @@ func agyReleaseSessionMounts(session *agyInteractiveSession) {
 		release := session.releaseMounts
 		session.releaseMounts = nil
 		release()
-	}
-}
-
-// agyYieldIdleMountedSessions releases global mounts held by retained chats
-// after their turn has finished. Removing them under the registry lock keeps
-// another turn from reserving a sidecar while it is being retired.
-func agyYieldIdleMountedSessions(fingerprint string) {
-	agyInteractiveRegistry.Lock()
-	var idle []*agyInteractiveSession
-	for owner, session := range agyInteractiveRegistry.sessions {
-		if session.mountFingerprint == fingerprint && session.turnLeases.Load() == 0 {
-			delete(agyInteractiveRegistry.sessions, owner)
-			idle = append(idle, session)
-		}
-	}
-	agyInteractiveRegistry.Unlock()
-	for _, session := range idle {
-		_ = exec.CommandContext(context.Background(), "tmux", "kill-session", "-t", session.tmuxSessionName).Run()
-		agyReleaseSessionMounts(session)
 	}
 }
 

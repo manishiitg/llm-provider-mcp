@@ -74,6 +74,17 @@ func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	active, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activeHooks map[string]interface{}
+	if err := json.Unmarshal(active, &activeHooks); err != nil {
+		t.Fatal(err)
+	}
+	if len(activeHooks) != 1 || activeHooks[agyToolModeHookName] == nil {
+		t.Fatalf("foreign hooks remained executable during hold: %v", activeHooks)
+	}
 	if _, err := agyHoldToolModeHook(workDir, "mcp_only"); err == nil {
 		t.Fatal("conflicting workspace policy was accepted")
 	}

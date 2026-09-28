@@ -62,12 +62,11 @@ func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
-// WithMCPConfig mounts the document's stdio mcpServers for one turn via
-// `agy mcp add` (global user config: agy offers no scoped mount) and removes
-// them afterwards. Mounted exec turns use --dangerously-skip-permissions;
-// WithNativeToolsMode installs a PreToolUse gate when the caller needs
-// MCP-only or native read/search mode. Mounted turns serialize different
-// tool surfaces process-wide because mounts are global user configuration.
+// WithMCPConfig adds the document's stdio mcpServers to a private AGY home
+// for this run. Mounted exec turns use --dangerously-skip-permissions;
+// WithNativeToolsMode installs a PreToolUse gate for MCP-only or native
+// read/search mode. Distinct sessions keep separate credentials and run
+// concurrently.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

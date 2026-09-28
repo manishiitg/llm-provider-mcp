@@ -131,6 +131,9 @@ func agyParseExecEnvelope(data []byte) (*agyParsedExec, error) {
 		return nil, fmt.Errorf("agy exec envelope not JSON: %w (output: %s)", err, agyOutputTail(string(data)))
 	}
 	if !strings.EqualFold(strings.TrimSpace(env.Status), "SUCCESS") {
+		if quotaErr := agyQuotaFailureError("", env.Status, env.Response); quotaErr != nil {
+			return nil, quotaErr
+		}
 		return nil, fmt.Errorf("agy exec status %q (conversation %s, response: %s)", env.Status, env.ConversationID, agyOutputTail(env.Response))
 	}
 	if strings.TrimSpace(env.Response) == "" {
@@ -276,6 +279,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if agyStringMetadata(opts, agyTestOnlyMetadataKeySkipPermissions) == "true" {
 		argv = append(argv, "--dangerously-skip-permissions")
 	}
+	privateHome := ""
 	if mcpJSON := agyStringMetadata(opts, MetadataKeyMCPConfig); strings.TrimSpace(mcpJSON) != "" {
 		// Mounting the bridge is the explicit request for tool-capable
 		// execution, so this run only gets --dangerously-skip-permissions;
@@ -291,16 +295,34 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		if err != nil {
 			return nil, err
 		}
-		_, releaseMounts, err := agyHoldMounts(ctx, agyToolModeFingerprint(mcpJSON, toolMode), servers)
+		var releaseMounts func()
+		privateHome, releaseMounts, err = agyIsolatedHome(servers)
 		if err != nil {
 			return nil, err
 		}
 		defer releaseMounts()
 		argv = append(argv, "--dangerously-skip-permissions")
 	}
+	if privateHome == "" {
+		var cleanup func()
+		privateHome, cleanup, err = agyIsolatedHome(nil)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+	}
 
 	cmd := exec.CommandContext(ctx, "agy", argv...)
 	baseEnv := os.Environ()
+	if privateHome != "" {
+		filtered := make([]string, 0, len(baseEnv)+1)
+		for _, entry := range baseEnv {
+			if !strings.HasPrefix(entry, "HOME=") {
+				filtered = append(filtered, entry)
+			}
+		}
+		baseEnv = append(filtered, "HOME="+privateHome)
+	}
 	// NOTE: a.apiKey (config-supplied) is deliberately NOT exported: env is
 	// the only key path. A key WITHOUT the modelProvider "gemini" flip is
 	// ignored by design (that is what the earlier "ignores the key" probe
@@ -372,6 +394,9 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	default:
 	}
 	if waitErr != nil {
+		if quotaErr := agyQuotaFailureError(model, stderr.String(), stdout.String()); quotaErr != nil {
+			return nil, quotaErr
+		}
 		return nil, fmt.Errorf("agy exec failed: %w (stderr: %s)", waitErr, agyOutputTail(stderr.String()))
 	}
 	parsed, err := agyParseExecEnvelope(stdout.Bytes())

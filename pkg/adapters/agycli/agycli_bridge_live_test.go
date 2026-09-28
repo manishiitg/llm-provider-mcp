@@ -17,13 +17,9 @@ import (
 // WithMCPConfig and the model routes a call through it) and
 // slow_tool_false_idle (a 25s tool does not trip early completion).
 //
-// Mount lifecycle is adapter-owned: `agy mcp add` before the turn under a
-// unique agentworks- name, `agy mcp remove` after, the turn itself approved
-// via --dangerously-skip-permissions. The separate native-tool-mode test
-// proves the workspace PreToolUse gate keeps that bridge available while
-// denying native writes. Mounted turns serialize process-wide
-// (agyMCPMountMu): mounts are global user config, so these tests stay
-// sequential and assert no agentworks- server leaks afterwards.
+// Mount lifecycle is adapter-owned: each run writes a private 0600 MCP
+// config under its own HOME. The native-tool-mode test proves the workspace
+// PreToolUse gate keeps the bridge available while denying native writes.
 
 func agyMCPBridgeCanaryServerSource() string {
 	return `#!/usr/bin/env node
@@ -124,7 +120,9 @@ func agyAssertNoMountLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agy mcp list: %v\n%s", err, out)
 	}
-	if strings.Contains(string(out), "agentworks-") {
+	// A different live backend may still own a legacy global mount. This
+	// process must never add one: its mounts live only in private HOME dirs.
+	if strings.Contains(string(out), fmt.Sprintf("-%d-", os.Getpid())) {
 		t.Fatalf("mount leak: mounted server survived the turn:\n%s", out)
 	}
 }
@@ -274,9 +272,8 @@ func TestAgyCLIRealHybridNativeReadAndWriteDenial(t *testing.T) {
 
 func TestAgyCLIRealConcurrentMountIsolationContract(t *testing.T) {
 	requireRealAgyCLIE2E(t)
-	// Mounted turns serialize process-wide (mounts are global user config):
-	// two concurrent mounted turns must both route through their own
-	// bridge with no cross-talk and no mount leak.
+	// Two concurrent mounted turns must both route through their own bridge
+	// with no cross-talk or global mount leak.
 	adapter := NewAgyCLIAdapter("", "", nil)
 	type mountedResult struct {
 		content string

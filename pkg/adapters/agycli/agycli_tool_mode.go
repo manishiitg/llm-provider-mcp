@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 )
@@ -139,7 +138,11 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 			}},
 		}},
 	}
-	hooks[agyToolModeHookName] = entry
+	// AGY executes every workspace hook even with permissions skipped. A
+	// foreign hook can run arbitrary code before our tool gate, so the live
+	// file must contain only the managed gate. Preserve the user's bytes for
+	// restoration after the last holder releases it.
+	hooks = map[string]interface{}{agyToolModeHookName: entry}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -201,23 +204,17 @@ func agyReleaseToolModeHook(workingDir string) {
 	if json.Unmarshal(raw, &hooks) != nil || !agySameHookEntry(hooks[agyToolModeHookName], hold.entry) {
 		return // A user changed the entry; leave their edit intact.
 	}
-	delete(hooks, agyToolModeHookName)
-	if hold.hadFile {
-		var originalHooks map[string]interface{}
-		if json.Unmarshal(hold.original, &originalHooks) == nil && reflect.DeepEqual(hooks, originalHooks) {
-			_ = os.WriteFile(path, hold.original, 0o600)
-			_ = os.Chmod(path, hold.originalMode)
-			return
-		}
+	if len(hooks) != 1 {
+		return // A new hook appeared while held; do not overwrite it on release.
 	}
-	if len(hooks) == 0 && !hold.hadFile {
-		_ = os.Remove(path)
-		_ = os.Remove(filepath.Dir(path))
+	if hold.hadFile {
+		_ = os.WriteFile(path, hold.original, 0o600)
+		_ = os.Chmod(path, hold.originalMode)
 		return
 	}
-	_ = agyWriteHooksFile(path, hooks)
-	if hold.hadFile {
-		_ = os.Chmod(path, hold.originalMode)
+	if !hold.hadFile {
+		_ = os.Remove(path)
+		_ = os.Remove(filepath.Dir(path))
 	}
 }
 

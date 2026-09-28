@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -122,50 +121,5 @@ func TestAgyTurnUsageDecodesGoldenPayload(t *testing.T) {
 	}
 	if missing := agyTurnUsageSince("nope", -1); missing.TotalTokens != 0 {
 		t.Fatalf("usage for missing conversation = %+v, want zero", missing)
-	}
-}
-
-func TestAgyPermissionAllowRoundTrip(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".gemini", "antigravity-cli")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	settings := `{"modelProvider":"gemini","permissions":{"allow":["mcp(user-srv/tool)"]},"trustedWorkspaces":["/tmp"]}`
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := agyAllowMountedTools([]string{"agentworks-a-1", "agentworks-b-2"}); err != nil {
-		t.Fatalf("allow: %v", err)
-	}
-	raw, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
-	got := string(raw)
-	for _, want := range []string{"mcp(agentworks-a-1/*)", "mcp(agentworks-b-2/*)", "mcp(user-srv/tool)", "trustedWorkspaces", "modelProvider"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("settings after allow missing %q:\n%s", want, got)
-		}
-	}
-	// Idempotent: second add changes nothing.
-	if err := agyAllowMountedTools([]string{"agentworks-a-1"}); err != nil {
-		t.Fatalf("re-allow: %v", err)
-	}
-	again, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if string(again) != got {
-		t.Fatalf("re-allow changed settings:\n%s\nvs\n%s", again, got)
-	}
-	// Removal drops only our entries.
-	if err := agyRemoveAllowedTools([]string{"agentworks-a-1", "agentworks-b-2"}); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	after, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
-	final := string(after)
-	for _, gone := range []string{"agentworks-a-1", "agentworks-b-2"} {
-		if strings.Contains(final, gone) {
-			t.Fatalf("settings after remove still has %q:\n%s", gone, final)
-		}
-	}
-	if !strings.Contains(final, "mcp(user-srv/tool)") {
-		t.Fatalf("remove dropped foreign entry:\n%s", final)
 	}
 }

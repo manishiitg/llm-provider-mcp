@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -92,19 +91,18 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, "sidecar tool surface changed")
 	}
 	var releaseMounts func()
+	privateHome := ""
 	if strings.TrimSpace(mcpJSON) != "" {
 		servers, err := agyParseMCPServers(mcpJSON)
 		if err != nil {
 			return nil, err
 		}
-		// Hold before boot: permissions must exist when the TUI starts.
-		// A different surface waits here (ctx-bounded) for release.
-		var holdRelease func()
-		_, holdRelease, err = agyHoldMounts(ctx, fingerprint, servers)
+		// Each sidecar owns a private AGY home, so distinct users never
+		// share MCP credentials or block each other's turns.
+		privateHome, releaseMounts, err = agyIsolatedHome(servers)
 		if err != nil {
 			return nil, err
 		}
-		releaseMounts = holdRelease
 		// Re-check after acquiring: a concurrent turn for the same
 		// owner may have rebooted while this one waited.
 		if session, ok := agyReserveTurnSession(ownerSessionID); ok {
@@ -116,6 +114,13 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 			CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, "sidecar tool surface changed")
 		}
 	}
+	if privateHome == "" {
+		var err error
+		privateHome, releaseMounts, err = agyIsolatedHome(nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 	releaseToolHook, err := agyHoldToolModeHook(workingDir, toolMode)
 	if err != nil {
 		if releaseMounts != nil {
@@ -123,7 +128,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		}
 		return nil, err
 	}
-	session, err := bootAgyInteractiveSession(ctx, ownerSessionID, workingDir, model, resumeConversation)
+	session, err := bootAgyInteractiveSession(ctx, ownerSessionID, workingDir, model, resumeConversation, privateHome)
 	if err != nil {
 		releaseToolHook()
 		if releaseMounts != nil {
@@ -177,9 +182,12 @@ var agySidecarKeyEnvVars = []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
 // conversation (--conversation); otherwise the TUI starts fresh and the
 // conversation id is discovered by content match after the first turn.
 // Callers own mounts/permissions; this only starts the process.
-func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, model, resumeConversation string) (*agyInteractiveSession, error) {
+func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, model, resumeConversation, privateHome string) (*agyInteractiveSession, error) {
 	tmuxName := agySanitizeTmuxName(ownerSessionID)
 	args := []string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workingDir}
+	if privateHome != "" {
+		args = append(args, "-e", "HOME="+privateHome)
+	}
 	for _, key := range agySidecarKeyEnvVars {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			args = append(args, "-e", key+"="+value)
@@ -262,6 +270,9 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	reply := agyTurnReplySince(session.conversationID, userIdx)
 	if reply == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
+	}
+	if quotaErr := agyQuotaError(session.model, reply); quotaErr != nil {
+		return "", llmtypes.Usage{}, nil, quotaErr
 	}
 	usage := agyTurnUsageSince(session.conversationID, userIdx)
 	toolCalls := agyTurnToolCallsSince(session.conversationID, userIdx)
@@ -965,135 +976,6 @@ func agyProtoVarintField(msg []byte, num protowire.Number) (int, bool) {
 // agySettingsPath returns the CLI settings file under home.
 func agySettingsPath(home string) string {
 	return filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
-}
-
-// agyAllowBaseline captures permissions-key presence BEFORE a mount hold
-// adds entries, so the matching unmount can remove exactly what the hold
-// created (an unmount must not leave an explicit empty list behind, nor
-// delete a key the user already had). Written at add, read at remove, both
-// under agyMCPMountMu; one mount activation is live at a time.
-var agyAllowBaseline = struct {
-	valid    bool
-	hadPerms bool
-	hadAllow bool
-}{}
-
-// agyAllowMountedTools appends mcp(<mount>/*) entries to
-// permissions.allow, preserving every other key. Callers hold
-// agyMCPMountMu; entries are removed by agyRemoveAllowedTools at unmount.
-func agyAllowMountedTools(mounted []string) error {
-	return agyEditPermissionAllows(func(allows []string) []string {
-		have := map[string]bool{}
-		for _, a := range allows {
-			have[a] = true
-		}
-		for _, name := range mounted {
-			entry := "mcp(" + name + "/*)"
-			if !have[entry] {
-				allows = append(allows, entry)
-				have[entry] = true
-			}
-		}
-		sort.Strings(allows)
-		return allows
-	})
-}
-
-// agyRemoveAllowedTools drops this session's mcp(<mount>/*) entries,
-// leaving user and foreign entries untouched. Keys the matching hold
-// created are removed again (no explicit empty list left behind); keys the
-// user already had are preserved even when emptied.
-func agyRemoveAllowedTools(mounted []string) error {
-	drop := map[string]bool{}
-	for _, name := range mounted {
-		drop["mcp("+name+"/*)"] = true
-	}
-	return agyEditPermissionAllowsBaseline(func(allows []string) []string {
-		kept := allows[:0]
-		for _, a := range allows {
-			if !drop[a] {
-				kept = append(kept, a)
-			}
-		}
-		return kept
-	})
-}
-
-func agyEditPermissionAllows(edit func([]string) []string) error {
-	return agyEditPermissionAllowsInner(edit, false)
-}
-
-// agyEditPermissionAllowsBaseline is the unmount half: key presence is
-// judged against the pre-hold baseline captured at add time, not the
-// current file (which trivially "has" the keys the hold just created).
-func agyEditPermissionAllowsBaseline(edit func([]string) []string) error {
-	return agyEditPermissionAllowsInner(edit, true)
-}
-
-func agyEditPermissionAllowsInner(edit func([]string) []string, useBaseline bool) error {
-	// Whole-file write under the shared settings mutex (see agyTrustMu):
-	// trust/untrust/keymode RMWs race these otherwise.
-	agyTrustMu.Lock()
-	defer agyTrustMu.Unlock()
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return fmt.Errorf("agy settings home: %w", err)
-	}
-	path := agySettingsPath(home)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read agy settings: %w", err)
-	}
-	var settings map[string]interface{}
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return fmt.Errorf("parse agy settings: %w", err)
-	}
-	perms, _ := settings["permissions"].(map[string]interface{})
-	_, hadPerms := settings["permissions"]
-	_, hadAllow := perms["allow"]
-	if perms == nil {
-		perms = map[string]interface{}{}
-	}
-	if !useBaseline {
-		agyAllowBaseline = struct {
-			valid    bool
-			hadPerms bool
-			hadAllow bool
-		}{valid: true, hadPerms: hadPerms, hadAllow: hadAllow}
-	} else if agyAllowBaseline.valid {
-		hadPerms, hadAllow = agyAllowBaseline.hadPerms, agyAllowBaseline.hadAllow
-	}
-	var allows []string
-	if list, ok := perms["allow"].([]interface{}); ok {
-		for _, item := range list {
-			if s, ok := item.(string); ok {
-				allows = append(allows, s)
-			}
-		}
-	}
-	edited := edit(allows)
-	if len(edited) == 0 && !hadAllow {
-		// Presence-preserving: never create permissions.allow for an edit
-		// that nets to nothing (an unmount on a keyless file must leave no
-		// trace, not an explicit empty list).
-		if !hadPerms {
-			delete(settings, "permissions")
-		} else {
-			delete(perms, "allow")
-			settings["permissions"] = perms
-		}
-	} else {
-		perms["allow"] = edited
-		settings["permissions"] = perms
-	}
-	merged, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal agy settings: %w", err)
-	}
-	if err := os.WriteFile(path, append(merged, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write agy settings: %w", err)
-	}
-	return nil
 }
 
 // agyCopyDBFile copies a conversation .db plus its -wal companion (when
