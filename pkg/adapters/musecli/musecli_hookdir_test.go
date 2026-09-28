@@ -38,16 +38,21 @@ func TestMuseHookDirIsPerUserAndOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestMuseHookCommandPatternMatchesOldAndNewFolders(t *testing.T) {
+func TestMuseOwnHookCommandMatchesLegacyAndOwnFolderOnly(t *testing.T) {
 	for _, command := range []string{
 		"node '/tmp/muse-cli-hooks/native-tool-policy-deadbeef.js'",
-		"node '/tmp/muse-cli-hooks-990/native-tool-policy-deadbeef.js'",
+		fmt.Sprintf("node '/tmp/muse-cli-hooks-%d/native-tool-policy-deadbeef.js'", os.Getuid()),
 	} {
-		if !museHookCommandPattern.MatchString(command) {
+		if !museIsOwnHookCommand(command) {
 			t.Errorf("not recognised: %s", command)
 		}
 	}
-	if museHookCommandPattern.MatchString("node '/tmp/other/native-tool-policy-x.js'") {
-		t.Error("a foreign hook was recognised")
+	for _, command := range []string{
+		fmt.Sprintf("node '/tmp/muse-cli-hooks-%d/native-tool-policy-x.js'", os.Getuid()+1),
+		"node '/tmp/other/native-tool-policy-x.js'",
+	} {
+		if museIsOwnHookCommand(command) {
+			t.Errorf("another user's or a foreign hook was recognised: %s", command)
+		}
 	}
 }

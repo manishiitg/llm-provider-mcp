@@ -439,12 +439,16 @@ func museIsLegacyAgentWorksPolicyHook(raw json.RawMessage) bool {
 	if json.Unmarshal(raw, &entry) != nil || len(entry.Hooks) != 1 {
 		return false
 	}
-	return museHookCommandPattern.MatchString(entry.Hooks[0].Command)
+	return museIsOwnHookCommand(entry.Hooks[0].Command)
 }
 
-// museHookCommandPattern matches a hook command this adapter wrote, in the
-// shared legacy folder or a per-user one.
-var museHookCommandPattern = regexp.MustCompile(`/muse-cli-hooks(-\d+)?/native-tool-policy-`)
+// museIsOwnHookCommand reports whether a hook command is one this adapter
+// wrote for this OS user: in the legacy shared folder, or this user's own
+// folder -- never another user's.
+func museIsOwnHookCommand(command string) bool {
+	return strings.Contains(command, "/muse-cli-hooks/native-tool-policy-") ||
+		strings.Contains(command, fmt.Sprintf("/muse-cli-hooks-%d/native-tool-policy-", os.Getuid()))
+}
 
 // museHookDir is this OS user's own hook folder. One shared /tmp folder broke
 // on hosts with several service accounts: the first account to run Muse owned
