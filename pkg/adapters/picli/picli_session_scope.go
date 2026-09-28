@@ -27,9 +27,8 @@ func piSessionRuntimeDirs(workingDir, nativeSessionID string) (agentDir, session
 }
 
 // piRuntimeBaseDir resolves the directory Pi uses as its working directory.
-// pi-mcp-adapter also reads <base>/.pi/mcp.json as a project-level override,
-// so legacy platform configs left there must be purged before launch (see
-// removeStalePiProjectMCPConfig).
+// pi-mcp-adapter 3.0 no longer reads <base>/.pi/mcp.json, so legacy platform
+// configs left there must be purged (see removeStalePiProjectMCPConfig).
 func piRuntimeBaseDir(workingDir string) string {
 	base := strings.TrimSpace(workingDir)
 	if base == "" {
@@ -49,6 +48,12 @@ func preparePiExclusiveMCPConfig(workingDir, nativeSessionID string, opts *llmty
 	}
 	removeStalePiProjectMCPConfig(workingDir)
 	linkSharedPiExtensionCache(agentDir)
+	// Older launches wrote this session's bridge to mcp.json. The adapter now
+	// expects mcp-adapter.json; remove the stale file and its old credentials.
+	legacyPath := filepath.Join(agentDir, "mcp.json")
+	if err := os.Remove(legacyPath); err != nil && !os.IsNotExist(err) {
+		return "", "", nil, fmt.Errorf("failed to remove legacy Pi MCP config %s: %w", legacyPath, err)
+	}
 
 	mcpConfig := strings.TrimSpace(piMCPConfigFromOptions(opts))
 	if mcpConfig == "" {
@@ -58,7 +63,7 @@ func preparePiExclusiveMCPConfig(workingDir, nativeSessionID string, opts *llmty
 	if err != nil {
 		return "", "", nil, err
 	}
-	mcpPath := filepath.Join(agentDir, "mcp.json")
+	mcpPath := piExclusiveMCPConfigPath(agentDir)
 	if err := writePiPrivateFileAtomically(mcpPath, normalized); err != nil {
 		return "", "", nil, fmt.Errorf("failed to write exclusive Pi MCP config %s: %w", mcpPath, err)
 	}
@@ -68,10 +73,10 @@ func preparePiExclusiveMCPConfig(workingDir, nativeSessionID string, opts *llmty
 // removeStalePiProjectMCPConfig deletes a legacy platform config at
 // <workingDir>/.pi/mcp.json. The pre-session-scoping adapter wrote the bridge
 // config there, and persistent runtime directories retain it across restarts.
-// pi-mcp-adapter merges that project override AFTER the session agent config,
-// so a stale file shadows the fresh token with a dead one and every bridge
-// call fails with 401 invalid API token. Only files fingerprinting as
-// platform-written are removed; foreign or unparseable files are left alone.
+// Older pi-mcp-adapter releases merged that project override after the session
+// config, shadowing the fresh token. The current adapter ignores it and warns
+// about it. Only files fingerprinting as platform-written are removed; foreign
+// or unparseable files are left alone.
 // Best-effort: the session config write below is the essential step.
 func removeStalePiProjectMCPConfig(workingDir string) {
 	path := filepath.Join(piRuntimeBaseDir(workingDir), ".pi", "mcp.json")
@@ -129,6 +134,16 @@ func writePiPrivateFileAtomically(path string, content []byte) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func piExclusiveMCPConfigPath(agentDir string) string {
+	return filepath.Join(agentDir, "mcp-adapter.json")
+}
+
+func piExclusiveMCPArgs(agentDir, sessionDir string) []string {
+	// Select the private config explicitly so older and newer pi-mcp-adapter
+	// releases load the same file on startup and after /clear.
+	return []string{"--session-dir", sessionDir, "--mcp-config", piExclusiveMCPConfigPath(agentDir)}
 }
 
 func piExclusiveMCPEnv(agentDir, sessionDir string) []string {

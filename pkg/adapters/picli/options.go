@@ -73,7 +73,7 @@ func WithProvider(provider string) llmtypes.CallOption {
 }
 
 // WithMCPConfig records a Pi MCP config. The tmux adapter writes it to the
-// Pi session-scoped agent mcp.json before launching Pi with the MCP adapter
+// Pi session-scoped agent mcp-adapter.json before launching Pi with the MCP adapter
 // extension in exclusive config mode.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {

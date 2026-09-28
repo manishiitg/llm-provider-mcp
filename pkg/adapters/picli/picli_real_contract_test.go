@@ -595,9 +595,9 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 		t.Fatalf("persistent session %s should remain active before cleanup", ownerSessionID)
 	}
 	exclusiveAgentDir, _ := piSessionRuntimeDirs(workDir, persistentHandle.NativeSessionID)
-	exclusiveMCPPath := filepath.Join(exclusiveAgentDir, "mcp.json")
+	exclusiveMCPPath := piExclusiveMCPConfigPath(exclusiveAgentDir)
 	if _, err := os.Stat(exclusiveMCPPath); err != nil {
-		t.Fatalf("expected exclusive session mcp.json during persistent session: %v", err)
+		t.Fatalf("expected exclusive session mcp-adapter.json during persistent session: %v", err)
 	}
 	if err := CleanupPiCLIInteractiveSessions(ctx); err != nil {
 		t.Fatalf("CleanupPiCLIInteractiveSessions error = %v", err)
@@ -609,7 +609,7 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 		t.Fatalf("persistent tmux session %s still exists after cleanup", persistentHandle.TmuxSession)
 	}
 	if _, err := os.Stat(exclusiveMCPPath); !os.IsNotExist(err) {
-		t.Fatalf("exclusive session mcp.json should be removed after cleanup, err=%v", err)
+		t.Fatalf("exclusive session mcp-adapter.json should be removed after cleanup, err=%v", err)
 	}
 }
 

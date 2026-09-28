@@ -656,7 +656,7 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
 		}
-		args = append(args, "--session-dir", sessionDir)
+		args = append(args, piExclusiveMCPArgs(agentDir, sessionDir)...)
 		env = append(env, piExclusiveMCPEnv(agentDir, sessionDir)...)
 	} else if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {

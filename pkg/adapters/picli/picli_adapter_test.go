@@ -296,6 +296,7 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"--approve",
 		"--session-id\x00mlp-pi-test-123",
 		"--session-dir\x00" + wantSessionDir,
+		"--mcp-config\x00" + filepath.Join(wantAgentDir, "mcp-adapter.json"),
 		"--no-builtin-tools",
 	} {
 		if !strings.Contains(joined, want) {
@@ -875,7 +876,7 @@ func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testin
 		t.Fatalf("sessionDir = %q, want %q", sessionDir, want)
 	}
 
-	mcpPath := filepath.Join(agentDir, "mcp.json")
+	mcpPath := piExclusiveMCPConfigPath(agentDir)
 	body, err := os.ReadFile(mcpPath)
 	if err != nil {
 		t.Fatalf("read Pi MCP config: %v", err)
@@ -900,7 +901,7 @@ func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testin
 
 	cleanup()
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Fatalf("exclusive mcp.json should be removed after cleanup, err=%v", err)
+		t.Fatalf("exclusive mcp-adapter.json should be removed after cleanup, err=%v", err)
 	}
 	if got, err := os.ReadFile(projectMCPPath); err != nil || string(got) != string(projectMCP) {
 		t.Fatalf("project MCP config was mutated: got=%q err=%v", got, err)
@@ -913,7 +914,7 @@ func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	mcpPath := filepath.Join(agentDir, "mcp.json")
+	mcpPath := piExclusiveMCPConfigPath(agentDir)
 	original := []byte(`{"mcpServers":{"existing":{"command":"old"}}}` + "\n")
 	if err := os.WriteFile(mcpPath, original, 0o600); err != nil {
 		t.Fatal(err)
@@ -927,15 +928,15 @@ func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	}
 	active, err := os.ReadFile(mcpPath)
 	if err != nil {
-		t.Fatalf("read active mcp.json: %v", err)
+		t.Fatalf("read active mcp-adapter.json: %v", err)
 	}
 	if !strings.Contains(string(active), `"api-bridge"`) {
-		t.Fatalf("active mcp.json = %s, want session bridge config", active)
+		t.Fatalf("active mcp-adapter.json = %s, want session bridge config", active)
 	}
 
 	cleanup()
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Fatalf("stale session mcp.json must not be restored, err=%v", err)
+		t.Fatalf("stale session mcp-adapter.json must not be restored, err=%v", err)
 	}
 }
 

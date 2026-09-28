@@ -378,7 +378,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	provider, model := p.resolveStructuredProviderModel(opts)
 	args := buildPiStructuredArgs(provider, model, sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
 	if transcriptSessionDir != "" {
-		args = append(args, "--session-dir", transcriptSessionDir)
+		args = append(args, piExclusiveMCPArgs(agentDir, transcriptSessionDir)...)
 	}
 	if p.logger != nil {
 		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)

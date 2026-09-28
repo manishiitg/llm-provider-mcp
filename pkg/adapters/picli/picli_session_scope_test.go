@@ -20,6 +20,14 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	if err := os.WriteFile(legacyPath, []byte(stalePiProjectConfig), 0o600); err != nil {
 		t.Fatalf("write stale project config: %v", err)
 	}
+	legacyAgentDir, _ := piSessionRuntimeDirs(workDir, "mlp-pi-test-123")
+	if err := os.MkdirAll(legacyAgentDir, 0o700); err != nil {
+		t.Fatalf("create legacy agent config dir: %v", err)
+	}
+	legacyAgentPath := filepath.Join(legacyAgentDir, "mcp.json")
+	if err := os.WriteFile(legacyAgentPath, []byte(stalePiProjectConfig), 0o600); err != nil {
+		t.Fatalf("write legacy agent config: %v", err)
+	}
 
 	fresh := `{"mcpServers":{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"http://127.0.0.1:18743","MCP_API_TOKEN":"fresh-token"}}}}`
 	opts := &llmtypes.CallOptions{}
@@ -36,7 +44,10 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected stale project config %s to be removed, stat err: %v", legacyPath, err)
 	}
-	sessionConfig, err := os.ReadFile(filepath.Join(agentDir, "mcp.json"))
+	if _, err := os.Stat(legacyAgentPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy agent config %s to be removed, stat err: %v", legacyAgentPath, err)
+	}
+	sessionConfig, err := os.ReadFile(piExclusiveMCPConfigPath(agentDir))
 	if err != nil {
 		t.Fatalf("read session config: %v", err)
 	}

@@ -62,8 +62,8 @@ func TestPiCLIRealMCPBridgeOnlyToolsContract(t *testing.T) {
 	}
 	exclusiveAgentDir, _ := piSessionRuntimeDirs(workDir, liveSession.nativeSessionID)
 	ClosePiCLIInteractiveSessionForOwner(ownerSessionID, "test cleanup")
-	if _, err := os.Stat(filepath.Join(exclusiveAgentDir, "mcp.json")); !os.IsNotExist(err) {
-		t.Fatalf("exclusive session mcp.json should be removed after persistent cleanup, err=%v", err)
+	if _, err := os.Stat(piExclusiveMCPConfigPath(exclusiveAgentDir)); !os.IsNotExist(err) {
+		t.Fatalf("exclusive session mcp-adapter.json should be removed after persistent cleanup, err=%v", err)
 	}
 }
 

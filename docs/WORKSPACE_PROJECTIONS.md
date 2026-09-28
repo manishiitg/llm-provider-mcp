@@ -68,7 +68,7 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
 | Cursor      | `.cursor/rules/mlp-system.mdc`              | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
-| Pi          | n/a (`--append-system-prompt`)              | `.pi/mcp.json`                                  | n/a — use Pi's `--no-builtin-tools` flag                              |
+| Pi          | n/a (`--append-system-prompt`)              | private session `mcp-adapter.json` via `--mcp-config` | n/a — use Pi's `--no-builtin-tools` flag                         |
 
 ### Notes per CLI
 
@@ -80,11 +80,12 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 - **Cursor's `.cursor/rules/mlp-system.mdc`** is a fixed-filename file
   under the tool-specific rules dir, removed at session teardown. The
   one-chat-per-workdir assumption applies.
-- **Pi's `.pi/mcp.json`** is a Pi-owned project override consumed by
-  `pi-mcp-adapter`. The adapter restores any pre-existing bytes on
-  cleanup and removes the file only when it created it from nothing.
-  Bridge-only mode uses Pi's native `--no-builtin-tools` flag, so no
-  denial hook file is projected.
+- **Pi's `mcp-adapter.json`** is written under a private session agent
+  directory and passed to `pi-mcp-adapter` with `--mcp-config`. The file is
+  removed at session teardown. A legacy platform-owned `.pi/mcp.json` is
+  removed before launch so it cannot carry stale bridge credentials or trigger
+  the adapter's migration warning. Bridge-only mode uses Pi's native
+  `--no-builtin-tools` flag, so no denial hook file is projected.
 - **`AGENTS.md` / `GEMINI.md` / `CLAUDE.md`** are single-file
   conventions. Byte-restore captures any pre-existing operator content
   and writes it back at session teardown. If the orchestrator process
