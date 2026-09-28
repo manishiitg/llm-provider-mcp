@@ -174,9 +174,6 @@ func agyParseExecEnvelope(data []byte) (*agyParsedExec, error) {
 		if quotaErr := agyQuotaFailureError("", env.Status, string(env.Error)); quotaErr != nil {
 			return nil, quotaErr
 		}
-		if quotaErr := agyQuotaError("", env.Response); quotaErr != nil {
-			return nil, quotaErr
-		}
 		return nil, fmt.Errorf("agy exec status %q (conversation %s, response: %s)", env.Status, env.ConversationID, agyOutputTail(env.Response))
 	}
 	if strings.TrimSpace(env.Response) == "" {
