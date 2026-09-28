@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 const agyToolModeHookName = "agentworks-native-tool-mode"
@@ -73,6 +74,13 @@ type agyWorkspaceHookHold struct {
 	original     []byte
 	originalMode os.FileMode
 	entry        interface{}
+	lockFile     *os.File
+}
+
+type agyWorkspaceHookBackup struct {
+	HadFile  bool   `json:"had_file"`
+	Original []byte `json:"original"`
+	Mode     uint32 `json:"mode"`
 }
 
 var agyWorkspaceHooks = struct {
@@ -106,6 +114,42 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 		return agyToolModeReleaseFunc(workingDir), nil
 	}
 	path := filepath.Join(workingDir, ".agents", "hooks.json")
+	if err := agyEnsureHookDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(filepath.Dir(path), ".agentworks-agy-hooks.lock")
+	if err := agyRejectSymlink(lockPath); err != nil {
+		return nil, err
+	}
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile.Chmod(0o600); err != nil {
+		lockFile.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("agy workspace %q already has a hook holder in another process: %w", workingDir, err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			_ = lockFile.Close()
+		}
+	}()
+	backupPath := path + ".agentworks-backup"
+	if err := agyRejectSymlink(path); err != nil {
+		return nil, err
+	}
+	if err := agyRejectSymlink(backupPath); err != nil {
+		return nil, err
+	}
+	if err := agyRestoreStaleHookBackup(path, backupPath); err != nil {
+		return nil, err
+	}
 	original, err := os.ReadFile(path)
 	hadFile := err == nil
 	originalMode := os.FileMode(0o600)
@@ -153,14 +197,103 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	// file must contain only the managed gate. Preserve the user's bytes for
 	// restoration after the last holder releases it.
 	hooks = map[string]interface{}{agyToolModeHookName: entry}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	backup := agyWorkspaceHookBackup{HadFile: hadFile, Original: original, Mode: uint32(originalMode)}
+	if err := agyWriteHookBackup(backupPath, backup); err != nil {
 		return nil, err
 	}
 	if err := agyWriteHooksFile(path, hooks); err != nil {
+		_ = os.Remove(backupPath)
 		return nil, err
 	}
-	agyWorkspaceHooks.active[workingDir] = &agyWorkspaceHookHold{mode: mode, holders: 1, hadFile: hadFile, original: original, originalMode: originalMode, entry: entry}
+	agyWorkspaceHooks.active[workingDir] = &agyWorkspaceHookHold{mode: mode, holders: 1, hadFile: hadFile, original: original, originalMode: originalMode, entry: entry, lockFile: lockFile}
+	locked = false
 	return agyToolModeReleaseFunc(workingDir), nil
+}
+
+func agyEnsureHookDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("agy workspace hook directory %q must be a real directory", dir)
+	}
+	return nil
+}
+
+func agyRejectSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("agy workspace hook path %q must be a regular file", path)
+	}
+	return nil
+}
+
+func agyWriteHookBackup(path string, backup agyWorkspaceHookBackup) error {
+	raw, err := json.Marshal(backup)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agentworks-agy-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+func agyRestoreStaleHookBackup(path, backupPath string) error {
+	raw, err := os.ReadFile(backupPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var backup agyWorkspaceHookBackup
+	if err := json.Unmarshal(raw, &backup); err != nil {
+		return fmt.Errorf("parse agy workspace hook backup: %w", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var hooks map[string]interface{}
+	if json.Unmarshal(current, &hooks) == nil && agyIsManagedToolHook(hooks[agyToolModeHookName]) {
+		if backup.HadFile {
+			if err := agyWriteHookBytes(path, backup.Original, os.FileMode(backup.Mode)); err != nil {
+				return err
+			}
+		} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.Remove(backupPath)
 }
 
 func agyIsManagedToolHook(value interface{}) bool {
@@ -206,8 +339,17 @@ func agyReleaseToolModeHook(workingDir string) {
 	}
 	delete(agyWorkspaceHooks.active, workingDir)
 	path := filepath.Join(workingDir, ".agents", "hooks.json")
+	removeBackup := true
+	defer func() {
+		if removeBackup {
+			_ = os.Remove(path + ".agentworks-backup")
+		}
+		_ = syscall.Flock(int(hold.lockFile.Fd()), syscall.LOCK_UN)
+		_ = hold.lockFile.Close()
+	}()
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		removeBackup = false
 		return
 	}
 	hooks := map[string]interface{}{}
@@ -218,13 +360,15 @@ func agyReleaseToolModeHook(workingDir string) {
 		return // A new hook appeared while held; do not overwrite it on release.
 	}
 	if hold.hadFile {
-		_ = os.WriteFile(path, hold.original, 0o600)
-		_ = os.Chmod(path, hold.originalMode)
+		if err := agyWriteHookBytes(path, hold.original, hold.originalMode); err != nil {
+			removeBackup = false
+		}
 		return
 	}
 	if !hold.hadFile {
-		_ = os.Remove(path)
-		_ = os.Remove(filepath.Dir(path))
+		if err := os.Remove(path); err != nil {
+			removeBackup = false
+		}
 	}
 }
 
@@ -239,16 +383,20 @@ func agyWriteHooksFile(path string, hooks map[string]interface{}) error {
 	if err != nil {
 		return err
 	}
+	return agyWriteHookBytes(path, append(data, '\n'), 0o600)
+}
+
+func agyWriteHookBytes(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".agentworks-hooks-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}

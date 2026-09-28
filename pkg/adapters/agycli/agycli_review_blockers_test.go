@@ -72,7 +72,7 @@ func TestAgyQuotaFailureIsTyped(t *testing.T) {
 	for _, body := range []string{
 		`{"status":"FAILED","response":"RESOURCE_EXHAUSTED: quota exceeded"}`,
 		`{"status":"429","response":"rate limit exceeded"}`,
-		`{"status":"FAILED","response":"The provider says you have reached your quota for today"}`,
+		`{"status":"FAILED","error":{"message":"The provider says you have reached your quota for today"}}`,
 	} {
 		_, err := agyParseExecEnvelope([]byte(body))
 		if llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
@@ -81,6 +81,15 @@ func TestAgyQuotaFailureIsTyped(t *testing.T) {
 	}
 	if got := agyQuotaError("", "I can explain what quota exceeded means"); got != nil {
 		t.Fatalf("ordinary explanation classified as quota: %v", got)
+	}
+	for _, body := range []string{
+		`{"status":"FAILED","response":"I can explain what quota exceeded means"}`,
+		`{"status":"FAILED","response":"The provider says you have reached your quota for today"}`,
+	} {
+		_, err := agyParseExecEnvelope([]byte(body))
+		if llmerrors.KindOf(err) == llmerrors.KindQuotaExhausted {
+			t.Fatalf("assistant text classified as quota: %v", err)
+		}
 	}
 }
 

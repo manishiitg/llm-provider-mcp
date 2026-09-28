@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 )
@@ -19,10 +20,11 @@ import (
 // 1.2.7: status/response/usage plus denied_actions when headless mode
 // auto-denies a native tool it cannot prompt for.
 type agyExecEnvelope struct {
-	ConversationID string `json:"conversation_id"`
-	Status         string `json:"status"`
-	Response       string `json:"response"`
-	NumTurns       int    `json:"num_turns"`
+	ConversationID string          `json:"conversation_id"`
+	Status         string          `json:"status"`
+	Response       string          `json:"response"`
+	Error          json.RawMessage `json:"error"`
+	NumTurns       int             `json:"num_turns"`
 	Usage          struct {
 		InputTokens     int `json:"input_tokens"`
 		OutputTokens    int `json:"output_tokens"`
@@ -167,7 +169,12 @@ func agyParseExecEnvelope(data []byte) (*agyParsedExec, error) {
 		return nil, fmt.Errorf("agy exec envelope not JSON: %w (output: %s)", err, agyOutputTail(string(data)))
 	}
 	if !strings.EqualFold(strings.TrimSpace(env.Status), "SUCCESS") {
-		if quotaErr := agyQuotaFailureError("", env.Status, env.Response); quotaErr != nil {
+		// Response may contain ordinary assistant text even on a failed turn.
+		// Only an explicit error field is safe to scan for quota words anywhere.
+		if quotaErr := agyQuotaFailureError("", env.Status, string(env.Error)); quotaErr != nil {
+			return nil, quotaErr
+		}
+		if quotaErr := agyQuotaError("", env.Response); quotaErr != nil {
 			return nil, quotaErr
 		}
 		return nil, fmt.Errorf("agy exec status %q (conversation %s, response: %s)", env.Status, env.ConversationID, agyOutputTail(env.Response))
@@ -434,8 +441,15 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	default:
 	}
 	if waitErr != nil {
-		if quotaErr := agyQuotaFailureError(model, stderr.String(), stdout.String()); quotaErr != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if quotaErr := agyQuotaFailureError(model, stderr.String(), waitErr.Error()); quotaErr != nil {
 			return nil, quotaErr
+		}
+		// A failed result envelope is an error carrier; raw NDJSON stdout is not.
+		if _, parseErr := agyParseStreamExec(stdout.Bytes()); llmerrors.KindOf(parseErr) == llmerrors.KindQuotaExhausted {
+			return nil, parseErr
 		}
 		return nil, fmt.Errorf("agy exec failed: %w (stderr: %s)", waitErr, agyOutputTail(stderr.String()))
 	}

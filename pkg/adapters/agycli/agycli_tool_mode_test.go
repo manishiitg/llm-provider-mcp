@@ -166,6 +166,80 @@ func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	}
 }
 
+func TestAgyWorkspaceHookChildProcess(t *testing.T) {
+	dir := os.Getenv("AGY_TEST_HOOK_CHILD_DIR")
+	if dir == "" {
+		return
+	}
+	release, err := agyHoldToolModeHook(dir, "mcp_only")
+	switch os.Getenv("AGY_TEST_HOOK_CHILD_ACTION") {
+	case "expect-locked":
+		if err == nil {
+			release()
+			t.Fatal("second process acquired active workspace hook")
+		}
+	case "crash":
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0) // Simulate backend death without running the release callback.
+	default:
+		t.Fatal("unknown child action")
+	}
+}
+
+func TestAgyWorkspaceHookCrossProcessAndCrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".agents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\n  \"user-hook\": {\"enabled\": true}\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	child := func(action string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgyWorkspaceHookChildProcess$")
+		cmd.Env = append(os.Environ(), "AGY_TEST_HOOK_CHILD_DIR="+dir, "AGY_TEST_HOOK_CHILD_ACTION="+action)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("child %s failed: %v: %s", action, err, out)
+		}
+	}
+	release, err := agyHoldToolModeHook(dir, "mcp_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child("expect-locked")
+	release()
+	child("crash")
+	release, err = agyHoldToolModeHook(dir, "mcp_only")
+	if err != nil {
+		t.Fatalf("recover after crashed holder: %v", err)
+	}
+	release()
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("original hooks not recovered: %v, %q", err, got)
+	}
+}
+
+func TestAgyWorkspaceHookRejectsSymlinkedAgentsDir(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, ".agents")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(dir, "mcp_only"); err == nil {
+		t.Fatal("symlinked .agents directory was accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".agents")); err != nil {
+		t.Fatalf("user symlink was changed: %v", err)
+	}
+}
+
 func TestAgyToolModeValidationAndFingerprint(t *testing.T) {
 	for _, mode := range []string{"mcp_only", "hybrid"} {
 		if got, err := agyToolMode(mode); err != nil || got != mode {

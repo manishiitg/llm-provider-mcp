@@ -299,9 +299,6 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if reply == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
-	if quotaErr := agyQuotaError(session.model, reply); quotaErr != nil {
-		return "", llmtypes.Usage{}, nil, quotaErr
-	}
 	usage := agyTurnUsageSince(conversationID, userIdx)
 	toolCalls := agyTurnToolCallsSince(conversationID, userIdx)
 	return reply, usage, toolCalls, nil
