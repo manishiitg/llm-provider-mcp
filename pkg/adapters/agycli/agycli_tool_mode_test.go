@@ -53,6 +53,36 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 	}
 }
 
+func TestAgyToolModeHookFailsClosedOnParseOrInterpreterError(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	for _, tc := range []struct {
+		name, python, input string
+	}{
+		{"malformed input", python, "{"},
+		{"missing interpreter", filepath.Join(t.TempDir(), "missing-python"), `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", agyToolModeHookCommand(tc.python, "mcp_only"))
+			cmd.Stdin = strings.NewReader(tc.input)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decision struct {
+				Decision string `json:"decision"`
+			}
+			if err := json.Unmarshal(out, &decision); err != nil || decision.Decision != "deny" {
+				t.Fatalf("failed gate output = %q, parse error = %v", out, err)
+			}
+		})
+	}
+}
+
 func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 unavailable")
@@ -133,6 +163,135 @@ func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	release4()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("recovered stale hook file left behind: %v", err)
+	}
+}
+
+func TestAgyWorkspaceHookChildProcess(t *testing.T) {
+	dir := os.Getenv("AGY_TEST_HOOK_CHILD_DIR")
+	if dir == "" {
+		return
+	}
+	release, err := agyHoldToolModeHook(dir, "mcp_only")
+	switch os.Getenv("AGY_TEST_HOOK_CHILD_ACTION") {
+	case "expect-locked":
+		if err == nil {
+			release()
+			t.Fatal("second process acquired active workspace hook")
+		}
+	case "crash":
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0) // Simulate backend death without running the release callback.
+	default:
+		t.Fatal("unknown child action")
+	}
+}
+
+func TestAgyWorkspaceHookCrossProcessAndCrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".agents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\n  \"user-hook\": {\"enabled\": true}\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	child := func(action string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgyWorkspaceHookChildProcess$")
+		cmd.Env = append(os.Environ(), "AGY_TEST_HOOK_CHILD_DIR="+dir, "AGY_TEST_HOOK_CHILD_ACTION="+action)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("child %s failed: %v: %s", action, err, out)
+		}
+	}
+	release, err := agyHoldToolModeHook(dir, "mcp_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child("expect-locked")
+	release()
+	child("crash")
+	release, err = agyHoldToolModeHook(dir, "mcp_only")
+	if err != nil {
+		t.Fatalf("recover after crashed holder: %v", err)
+	}
+	release()
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("original hooks not recovered: %v, %q", err, got)
+	}
+}
+
+func TestAgyWorkspaceHookRejectsSymlinkedAgentsDir(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, ".agents")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(dir, "mcp_only"); err == nil {
+		t.Fatal("symlinked .agents directory was accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".agents")); err != nil {
+		t.Fatalf("user symlink was changed: %v", err)
+	}
+}
+
+func TestAgyWorkspaceHookRejectsAncestorHookFile(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "project")
+	if err := os.MkdirAll(filepath.Join(parent, ".agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".agents", "hooks.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(child, "mcp_only"); err == nil {
+		t.Fatal("nested AGY workspace accepted a parent hook")
+	}
+}
+
+func TestAgyWorkspaceHookAcceptsExactManagedAncestor(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	parent := t.TempDir()
+	child := filepath.Join(parent, ".agents", "delegated")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	releaseParent, err := agyHoldToolModeHook(parent, "mcp_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseParent()
+	releaseChild, err := agyHoldToolModeHook(child, "hybrid")
+	if err != nil {
+		t.Fatalf("managed ancestor blocked delegation: %v", err)
+	}
+	releaseChild()
+
+	path := filepath.Join(parent, ".agents", "hooks.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooks map[string]interface{}
+	if err := json.Unmarshal(raw, &hooks); err != nil {
+		t.Fatal(err)
+	}
+	hooks["foreign"] = map[string]interface{}{"PreToolUse": []interface{}{}}
+	if err := agyWriteHooksFile(path, hooks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(child, "mcp_only"); err == nil {
+		t.Fatal("managed ancestor with a foreign hook was accepted")
 	}
 }
 

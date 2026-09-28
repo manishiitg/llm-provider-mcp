@@ -26,8 +26,7 @@ import (
 //   - interrupt: "Interrupted · What should Antigravity CLI do instead?"
 //
 // Lane notes: turn prompts ride bracketed paste (multiline, proven live);
-// follow-up live input stays single-line keystrokes (Enter submits) and
-// multiline input is rejected loudly there. Each sidecar owns one
+// follow-up live input uses bracketed paste for multiline prompts. Each sidecar owns one
 // persistent TUI-native conversation across its turns.
 
 const (
@@ -55,6 +54,7 @@ type agyInteractiveSession struct {
 	turnLeases atomic.Int32
 	// conversationID is the TUI-native conversation, discovered by
 	// content match after the first turn; "" until then.
+	conversationMu sync.RWMutex
 	conversationID string
 	// Live-input sends are serialized so each durability receipt snapshots
 	// the conversation before its own Enter. The receipt watcher reads the
@@ -64,6 +64,21 @@ type agyInteractiveSession struct {
 	pendingDurable []agyPendingDurableAck
 	retainedMu     sync.Mutex
 	retainedState  agyRetainedState
+}
+
+func (session *agyInteractiveSession) getConversationID() string {
+	session.conversationMu.RLock()
+	defer session.conversationMu.RUnlock()
+	return session.conversationID
+}
+
+func (session *agyInteractiveSession) setConversationIDIfEmpty(id string) string {
+	session.conversationMu.Lock()
+	defer session.conversationMu.Unlock()
+	if session.conversationID == "" {
+		session.conversationID = id
+	}
+	return session.conversationID
 }
 
 var agyInteractiveRegistry = struct {
@@ -113,14 +128,25 @@ func captureAgyPane(ctx context.Context, sessionName string) (string, error) {
 	return tmuxexec.CapturePane(ctx, sessionName, 5000)
 }
 
+// agyPaneStatusRows excludes scrollback and earlier answer text. Status and
+// approval controls render at the bottom of the 50-row sidecar pane.
+func agyPaneStatusRows(captured string) string {
+	lines := strings.Split(strings.TrimRight(captured, "\n"), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // PaneReadyForInput reports whether a captured agy pane is settled at the
 // prompt: the ready bar is up and no busy/interrupt marker shows.
 func PaneReadyForInput(captured string) bool {
-	return strings.Contains(captured, agyPaneReadyMarker) && !strings.Contains(captured, agyPaneBusyMarker)
+	status := agyPaneStatusRows(captured)
+	return strings.Contains(status, agyPaneReadyMarker) && !strings.Contains(status, agyPaneBusyMarker)
 }
 
 func agyPaneShowsTrustGate(captured string) bool {
-	return strings.Contains(captured, agyPaneTrustGateMarker)
+	return strings.Contains(agyPaneStatusRows(captured), agyPaneTrustGateMarker)
 }
 
 // agyTrustMu serializes ALL settings.json read-modify-write: workspace trust,
@@ -194,7 +220,7 @@ func AgyEnsureKeyMode() (restore func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal agy settings: %w", err)
 	}
-	if err := os.WriteFile(settingsPath, append(merged, '\n'), 0o600); err != nil {
+	if err := agyWriteSettingsAtomic(settingsPath, append(merged, '\n')); err != nil {
 		return nil, fmt.Errorf("flip agy modelProvider: %w", err)
 	}
 	agyKeyModeState.holders++
@@ -246,7 +272,7 @@ func agyReleaseKeyMode(settingsPath string) {
 			currentTrusted, _ := settings["trustedWorkspaces"].([]interface{})
 			if agyStringListEqual(beforeTrusted, currentTrusted) {
 				agyTrustDebugf("keymode restore raw")
-				_ = os.WriteFile(settingsPath, raw, 0o600)
+				_ = agyWriteSettingsAtomic(settingsPath, raw)
 				return
 			}
 			agyTrustDebugf("keymode restore reformat (trust changed under flip)")
@@ -256,7 +282,7 @@ func agyReleaseKeyMode(settingsPath string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(settingsPath, append(merged, '\n'), 0o600)
+	_ = agyWriteSettingsAtomic(settingsPath, append(merged, '\n'))
 }
 
 // AgyTestAuthMode names the auth mode under test for review facts.
@@ -311,7 +337,7 @@ func TrustAgyWorkspaceDir(dir string) (restore func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal agy settings: %w", err)
 	}
-	if err := os.WriteFile(settingsPath, append(merged, '\n'), 0o600); err != nil {
+	if err := agyWriteSettingsAtomic(settingsPath, append(merged, '\n')); err != nil {
 		return nil, fmt.Errorf("trust agy workdir: %w", err)
 	}
 	agyTrustDebugf("trust +%s", dir)
@@ -358,7 +384,7 @@ func agyUntrustWorkspaceDir(settingsPath string, raw []byte, dir string) {
 	if json.Unmarshal(raw, &before) == nil && agySettingsEqualExceptTrust(before, settings) {
 		if beforeTrusted, _ := before["trustedWorkspaces"].([]interface{}); agyStringListEqual(beforeTrusted, kept) {
 			agyTrustDebugf("untrust -%s fastpath", dir)
-			_ = os.WriteFile(settingsPath, raw, 0o600)
+			_ = agyWriteSettingsAtomic(settingsPath, raw)
 			return
 		}
 	}
@@ -367,7 +393,7 @@ func agyUntrustWorkspaceDir(settingsPath string, raw []byte, dir string) {
 		return
 	}
 	agyTrustDebugf("untrust -%s slowpath kept=%d", dir, len(kept))
-	_ = os.WriteFile(settingsPath, append(merged, '\n'), 0o600)
+	_ = agyWriteSettingsAtomic(settingsPath, append(merged, '\n'))
 }
 
 func agySettingsEqualExceptTrust(a, b map[string]interface{}) bool {
@@ -431,7 +457,7 @@ func waitAgyPaneReady(ctx context.Context, sessionName string, timeout time.Dura
 			return last, fmt.Errorf("capture agy pane %s: %w", sessionName, err)
 		}
 		last = pane
-		if strings.Contains(pane, agyPaneApprovalMarker) {
+		if agyApprovalMarkerShown(pane) != "" {
 			return last, fmt.Errorf("agy pane blocked on a tool approval gate the unattended lane cannot answer; pane:\n%s", pane)
 		}
 		if agyPaneShowsTrustGate(pane) {
@@ -510,29 +536,31 @@ func ensureAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir
 	return session, nil
 }
 
-// sendAgyInteractiveMessage types one single-line prompt into the owner's
-// sidecar and submits it. Multiline is rejected: Enter submits in the agy
-// TUI, so embedded newlines would fragment into separate turns.
+// sendAgyInteractiveMessage submits one prompt into the owner's sidecar.
+// Multiline input uses bracketed paste so embedded newlines stay one turn.
 func sendAgyInteractiveMessage(ctx context.Context, ownerSessionID, message string) error {
 	session, ok := activeAgyInteractiveSession(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no agy interactive session for owner %q", ownerSessionID)
-	}
-	if strings.Contains(message, "\n") {
-		return fmt.Errorf("agy interactive input is single-line only (Enter submits); got %d lines", len(strings.Split(message, "\n")))
 	}
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("agy interactive input is empty")
 	}
 	session.sendMu.Lock()
 	defer session.sendMu.Unlock()
-	conversationID := session.conversationID
+	conversationID := session.getConversationID()
 	if conversationID == "" {
 		conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
 	}
 	baseline := agyConversationMaxIdx(conversationID)
-	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "-l", message); err != nil {
-		return err
+	if strings.Contains(message, "\n") {
+		if err := agyPasteToSidecar(ctx, session.tmuxSessionName, message); err != nil {
+			return err
+		}
+	} else {
+		if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "-l", message); err != nil {
+			return err
+		}
 	}
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
 		return err

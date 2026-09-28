@@ -127,6 +127,7 @@ var interactiveSessionPrefixes = []string{
 	"mlp-cursor-cli-int",
 	"mlp-claude-code",
 	"mlp-muse-",
+	"agy-int-",
 }
 
 // SweepOrphanedInteractiveTmuxSessions reaps and kills every coding-agent tmux

@@ -20,7 +20,7 @@ func TestAgyIsolatedHomesKeepSessionCredentialsSeparate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["view_file"]},"trustedWorkspaces":["/work"]}`), 0o600); err != nil {
+	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["view_file"]},"trustedWorkspaces":["/work"],"hooks":{"foreign":{"command":"/bin/false"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	server := func(token string) []agyMCPServer {
@@ -53,6 +53,10 @@ func TestAgyIsolatedHomesKeepSessionCredentialsSeparate(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "conversations")); err != nil {
 			t.Fatal(err)
 		}
+		privateSettings, err := os.ReadFile(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"))
+		if err != nil || strings.Contains(string(privateSettings), "foreign") {
+			t.Fatalf("user-level hooks copied into private home: %v, %s", err, privateSettings)
+		}
 		if _, err := exec.LookPath("agy"); err == nil {
 			cmd := exec.CommandContext(context.Background(), "agy", "mcp", "list")
 			cmd.Env = append(os.Environ(), "HOME="+home)
@@ -70,9 +74,9 @@ func TestAgyIsolatedHomesKeepSessionCredentialsSeparate(t *testing.T) {
 
 func TestAgyQuotaFailureIsTyped(t *testing.T) {
 	for _, body := range []string{
-		`{"status":"FAILED","response":"RESOURCE_EXHAUSTED: quota exceeded"}`,
-		`{"status":"429","response":"rate limit exceeded"}`,
-		`{"status":"FAILED","response":"The provider says you have reached your quota for today"}`,
+		`{"status":"FAILED","error":"RESOURCE_EXHAUSTED: quota exceeded"}`,
+		`{"status":"429","error":"rate limit exceeded"}`,
+		`{"status":"FAILED","error":{"message":"The provider says you have reached your quota for today"}}`,
 	} {
 		_, err := agyParseExecEnvelope([]byte(body))
 		if llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
@@ -81,6 +85,37 @@ func TestAgyQuotaFailureIsTyped(t *testing.T) {
 	}
 	if got := agyQuotaError("", "I can explain what quota exceeded means"); got != nil {
 		t.Fatalf("ordinary explanation classified as quota: %v", got)
+	}
+	for _, body := range []string{
+		`{"status":"FAILED","response":"I can explain what quota exceeded means"}`,
+		`{"status":"FAILED","response":"The provider says you have reached your quota for today"}`,
+		`{"status":"FAILED","response":"RESOURCE_EXHAUSTED: quota exceeded"}`,
+	} {
+		_, err := agyParseExecEnvelope([]byte(body))
+		if llmerrors.KindOf(err) == llmerrors.KindQuotaExhausted {
+			t.Fatalf("assistant text classified as quota: %v", err)
+		}
+	}
+}
+
+func TestAgyQuotaOnlyUsesExplicitStderrAndPaneErrors(t *testing.T) {
+	for _, output := range []string{
+		"MCP bridge child: HTTP 429 quota exceeded\n",
+		"The agent explained what rate limit exceeded means\n",
+		"Error: HTTP 429 quota exceeded in a child tool\n",
+	} {
+		if err := agyQuotaStderrError("", output); err != nil {
+			t.Fatalf("child output classified as quota: %v", err)
+		}
+	}
+	if err := agyQuotaStderrError("", "tool output: quota exceeded\nError: RESOURCE_EXHAUSTED: quota exceeded\n"); llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
+		t.Fatalf("explicit stderr error kind = %q, err=%v", llmerrors.KindOf(err), err)
+	}
+	if err := agyQuotaPaneError("", "Error: quota exceeded\n"+strings.Repeat("ordinary status\n", 12)); err != nil {
+		t.Fatalf("old pane text classified as quota: %v", err)
+	}
+	if err := agyQuotaPaneError("", strings.Repeat("ordinary status\n", 12)+"Error: quota exceeded\n"); llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
+		t.Fatalf("recent TUI error kind = %q, err=%v", llmerrors.KindOf(err), err)
 	}
 }
 

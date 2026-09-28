@@ -50,3 +50,26 @@ func agyQuotaFailureError(model string, values ...string) error {
 	}
 	return nil
 }
+
+// Stderr can include output from MCP bridge children. Only AGY-style error
+// lines can suspend a turn; unrelated tool output mentioning a quota cannot.
+func agyQuotaStderrError(model, stderr string) error {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if !strings.HasPrefix(lower, "error:") && !strings.HasPrefix(lower, "failed:") &&
+			!strings.HasPrefix(lower, "agy:") && !strings.HasPrefix(lower, "rpc error:") {
+			continue
+		}
+		if err := agyQuotaError(model, line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// The TUI has no structured failure envelope. Inspect only its recent status
+// rows, and only when the expected durable turn step did not arrive.
+func agyQuotaPaneError(model, pane string) error {
+	return agyQuotaStderrError(model, agyPaneStatusRows(pane))
+}

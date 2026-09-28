@@ -115,7 +115,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	if err != nil {
 		return nil, err
 	}
-	session, err := ensureAgyInteractiveSessionForTurn(ctx, owner, workdir, model, mcpJSON, resumeConversation, toolMode)
+	session, err := ensureAgyInteractiveSessionForTurn(ctx, owner, workdir, model, mcpJSON, resumeConversation, toolMode, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 			Provider:        "agy-cli",
 			Transport:       llmtypes.CodingProviderTransportTmux,
-			NativeSessionID: session.conversationID,
+			NativeSessionID: session.getConversationID(),
 			TmuxSession:     session.tmuxSessionName,
 			WorkingDir:      workdir,
 			Model:           model,
@@ -160,7 +160,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "agy-cli",
 		Transport:       llmtypes.CodingProviderTransportTmux,
-		NativeSessionID: session.conversationID,
+		NativeSessionID: session.getConversationID(),
 		TmuxSession:     session.tmuxSessionName,
 		WorkingDir:      workdir,
 		Model:           model,
