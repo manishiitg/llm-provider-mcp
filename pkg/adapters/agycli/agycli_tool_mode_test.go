@@ -240,6 +240,23 @@ func TestAgyWorkspaceHookRejectsSymlinkedAgentsDir(t *testing.T) {
 	}
 }
 
+func TestAgyWorkspaceHookRejectsAncestorHookFile(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "project")
+	if err := os.MkdirAll(filepath.Join(parent, ".agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".agents", "hooks.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agyHoldToolModeHook(child, "mcp_only"); err == nil {
+		t.Fatal("nested AGY workspace accepted a parent hook")
+	}
+}
+
 func TestAgyToolModeValidationAndFingerprint(t *testing.T) {
 	for _, mode := range []string{"mcp_only", "hybrid"} {
 		if got, err := agyToolMode(mode); err != nil || got != mode {

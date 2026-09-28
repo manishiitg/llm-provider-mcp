@@ -104,6 +104,9 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := agyRejectAncestorHooks(workingDir); err != nil {
+		return nil, err
+	}
 	agyWorkspaceHooks.Lock()
 	defer agyWorkspaceHooks.Unlock()
 	if hold := agyWorkspaceHooks.active[workingDir]; hold != nil {
@@ -208,6 +211,23 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	agyWorkspaceHooks.active[workingDir] = &agyWorkspaceHookHold{mode: mode, holders: 1, hadFile: hadFile, original: original, originalMode: originalMode, entry: entry, lockFile: lockFile}
 	locked = false
 	return agyToolModeReleaseFunc(workingDir), nil
+}
+
+// AGY's parent-directory hook discovery has not been certified. Refuse a
+// nested run beneath another hook file rather than assuming it is ignored.
+func agyRejectAncestorHooks(workingDir string) error {
+	for parent := filepath.Dir(workingDir); parent != workingDir; parent = filepath.Dir(parent) {
+		path := filepath.Join(parent, ".agents", "hooks.json")
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("agy workspace %q is below another hook file %q", workingDir, path)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if next := filepath.Dir(parent); next == parent {
+			break
+		}
+	}
+	return nil
 }
 
 func agyEnsureHookDir(dir string) error {

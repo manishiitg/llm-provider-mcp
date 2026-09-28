@@ -39,6 +39,7 @@ func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, fun
 		if err := agyCopyHomeTree(filepath.Join(baseGemini, subdir), filepath.Join(privateGemini, subdir), map[string]bool{
 			"mcp_config.json": true, "mcp": true, "conversations": true,
 			"crashes": true, "updater": true, "bin": true,
+			"hooks.json": true, "hooks": true,
 		}); err != nil {
 			cleanup()
 			return "", nil, err
@@ -69,6 +70,9 @@ func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, fun
 	if settings == nil {
 		settings = map[string]interface{}{}
 	}
+	// Only the managed workspace hook may execute during this run. Never copy
+	// user-level hooks into the private home.
+	delete(settings, "hooks")
 	// A supplied key opts this private run into Gemini API mode. This changes
 	// only the private copy; the user's global login settings stay untouched.
 	if os.Getenv("GEMINI_API_KEY") != "" {
