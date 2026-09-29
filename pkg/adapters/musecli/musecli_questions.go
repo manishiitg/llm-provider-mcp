@@ -514,3 +514,31 @@ func museSendQuestionKey(ctx context.Context, session, key string) error {
 	}
 	return nil
 }
+
+// InterruptPendingQuestion presses Esc on owner's open question widget, which
+// interrupts the Muse run. It is the last resort when not even the first
+// option can be entered, so the chat is never left hanging on the widget.
+func InterruptPendingQuestion(ctx context.Context, owner string) error {
+	key, err := musePersistentKey(owner)
+	if err != nil {
+		return err
+	}
+	musePersistentPool.Lock()
+	entry := musePersistentPool.m[key]
+	session := ""
+	if entry != nil {
+		session = entry.tmuxName
+	}
+	musePersistentPool.Unlock()
+	if session == "" || !museTmuxSessionAlive(ctx, session) {
+		return fmt.Errorf("Muse terminal is unavailable")
+	}
+	pane, err := museTmuxCapturePane(ctx, session)
+	if err != nil {
+		return err
+	}
+	if musePendingUserInputError(pane) == nil {
+		return nil
+	}
+	return museSendQuestionKey(ctx, session, "Escape")
+}

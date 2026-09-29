@@ -209,3 +209,81 @@ func TestMuseCLIRealStructuredQuestionChoiceP0(t *testing.T) {
 		t.Fatalf("multi-select answer not settled: %+v", rows)
 	}
 }
+
+// A chat question nobody answers must not hold the turn: after
+// museUserChoiceWait Muse takes the first option, as an unattended run does.
+func TestMuseCLIRealUserChoiceUnansweredFallsBackP0(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	previous := museUserChoiceWait
+	museUserChoiceWait = 20 * time.Second
+	t.Cleanup(func() { museUserChoiceWait = previous })
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	owner := "question-fallback-p0-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	adapter := museLiveAdapter()
+	opts := []llmtypes.CallOption{WithUserChoice(true), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low")}
+	prompt := "Integration test. Use your native request_user_input tool to ask ONE question: Choose a color? Provide exactly three options in this order: Red, Blue, Green. Wait for my selection. Then reply with ONLY the selected color. Do not use other tools."
+	started := time.Now()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("unanswered chat question did not fall back: %v", err)
+	}
+	reply := resp.Choices[0].Content
+	if !strings.Contains(reply, "Red") {
+		t.Fatalf("expected the first option after the wait, got %q", reply)
+	}
+	if elapsed := time.Since(started); elapsed < museUserChoiceWait {
+		t.Fatalf("answered after %s, before the %s wait for the person", elapsed, museUserChoiceWait)
+	}
+	t.Logf("PASS: fell back to the first option after %s: %q", time.Since(started).Round(time.Second), reply)
+}
+
+// The last resort: Esc on an open question ends the turn promptly, and the
+// same chat session still takes the next message.
+func TestMuseCLIRealInterruptPendingQuestionP0(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	owner := "question-interrupt-p0-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	adapter := museLiveAdapter()
+	opts := []llmtypes.CallOption{WithUserChoice(true), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low")}
+	if _, err := adapter.GenerateContent(ctx, nil, append(opts, llmtypes.WithCodingProviderLaunchOnly())...); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		prompt := "Integration test. Use your native request_user_input tool to ask ONE question: Choose a color? Options: Red, Blue, Green. Wait for my selection, then reply with the color. Do not use other tools."
+		_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+		result <- err
+	}()
+	deadline := time.After(3 * time.Minute)
+	for {
+		if prompt, err := PendingQuestion(owner); err == nil && prompt != nil {
+			break
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("turn ended before the question: %v", err)
+		case <-deadline:
+			t.Fatal("question did not arrive")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	time.Sleep(time.Second) // let the widget become interactive
+	if err := InterruptPendingQuestion(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		t.Logf("interrupted turn returned: %v", err)
+	case <-time.After(90 * time.Second):
+		t.Fatal("turn did not end after Esc")
+	}
+	token := "AFTER-ESC-" + museRandomHex(t, 3)
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply with exactly " + token + " and nothing else. Do not use tools."}}}}, opts...)
+	if err != nil || !strings.Contains(resp.Choices[0].Content, token) {
+		t.Fatalf("session unusable after Esc: %v %+v", err, resp)
+	}
+}

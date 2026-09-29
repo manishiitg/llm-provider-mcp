@@ -87,7 +87,7 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	// Always enable auto-answer here too, and persist it the same way so a
 	// later turn on this session reuses this state instead of re-creating it.
 	if userChoice {
-		ctx = context.WithValue(ctx, museUserChoiceKey{}, true)
+		ctx = museWithUserChoice(ctx)
 	} else {
 		ctx = museWithAutoAnswer(ctx, nil)
 		ctx = museBindPersistentAutoAnswer(ctx, entry)

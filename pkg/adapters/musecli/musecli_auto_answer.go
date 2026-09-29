@@ -3,11 +3,13 @@ package musecli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -110,7 +112,7 @@ func museWithAutoAnswer(ctx context.Context, opts *llmtypes.CallOptions) context
 			return ctx
 		}
 		if enabled, _ := opts.Metadata.Custom[metadataMuseUserChoice].(bool); enabled {
-			return context.WithValue(ctx, museUserChoiceKey{}, true)
+			return museWithUserChoice(ctx)
 		}
 	}
 	state := &museAutoAnswerState{}
@@ -120,6 +122,9 @@ func museWithAutoAnswer(ctx context.Context, opts *llmtypes.CallOptions) context
 // Returns pending=true while a widget exists, including after sending Enter.
 // Callers must wait for it to disappear before treating the pane as idle.
 func museHandlePendingQuestion(ctx context.Context, session, pane string) (pending bool, err error) {
+	if userChoice, _ := ctx.Value(museUserChoiceKey{}).(bool); userChoice {
+		return museHandleUserChoiceQuestion(ctx, session, pane)
+	}
 	state, _ := ctx.Value(museAutoAnswerKey{}).(*museAutoAnswerState)
 	if state != nil {
 		state.mu.Lock()
@@ -134,9 +139,6 @@ func museHandlePendingQuestion(ctx context.Context, session, pane string) (pendi
 		return false, nil
 	}
 	answer, ok := museRecommendedQuestion(pane)
-	if userChoice, _ := ctx.Value(museUserChoiceKey{}).(bool); userChoice {
-		return true, nil
-	}
 	if state == nil || !ok {
 		return true, pendingErr
 	}
@@ -317,4 +319,78 @@ func museRecommendedCheckbox(widget string) (museRecommendedAnswer, bool) {
 	}
 	result.key = "checkbox\n" + strings.Join(identity, "\n")
 	return result, true
+}
+
+// museUserChoiceWait is how long a chat question waits for the person before
+// Muse takes its first option, exactly as an unattended run does. A closed
+// tab or a missed card must not hold the turn forever.
+var museUserChoiceWait = 10 * time.Minute
+
+// museUserChoiceDismissAfter bounds that fallback: if even the first option
+// cannot be entered (the widget cannot be read), Esc interrupts the run so the
+// turn ends instead of hanging.
+var museUserChoiceDismissAfter = 2 * time.Minute
+
+type museUserChoiceGraceKey struct{}
+
+// museUserChoiceGrace tracks how long the current question has been open.
+type museUserChoiceGrace struct {
+	mu        sync.Mutex
+	since     time.Time
+	dismissed bool
+	auto      *museAutoAnswerState
+}
+
+func museWithUserChoice(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, museUserChoiceKey{}, true)
+	return context.WithValue(ctx, museUserChoiceGraceKey{}, &museUserChoiceGrace{auto: &museAutoAnswerState{}})
+}
+
+// museHandleUserChoiceQuestion leaves a question for the person, then falls
+// back to the unattended answer once museUserChoiceWait has passed.
+func museHandleUserChoiceQuestion(ctx context.Context, session, pane string) (bool, error) {
+	grace, _ := ctx.Value(museUserChoiceGraceKey{}).(*museUserChoiceGrace)
+	open := musePendingUserInputError(pane) != nil
+	if grace == nil {
+		return open, nil
+	}
+	grace.mu.Lock()
+	if !open {
+		grace.since, grace.dismissed = time.Time{}, false
+		grace.mu.Unlock()
+		return false, nil
+	}
+	if grace.since.IsZero() {
+		grace.since = time.Now()
+	}
+	waited := time.Since(grace.since)
+	grace.mu.Unlock()
+	if waited < museUserChoiceWait {
+		return true, nil
+	}
+	// A person's answer being typed right now wins; retry on the next poll.
+	if !questionSubmissionMu.TryLock() {
+		return true, nil
+	}
+	defer questionSubmissionMu.Unlock()
+	autoCtx := context.WithValue(ctx, museUserChoiceKey{}, false)
+	autoCtx = context.WithValue(autoCtx, museAutoAnswerKey{}, grace.auto)
+	pending, err := museHandlePendingQuestion(autoCtx, session, pane)
+	if err == nil && (!pending || waited < museUserChoiceWait+museUserChoiceDismissAfter) {
+		return pending, nil
+	}
+	if ctx.Err() != nil {
+		return true, ctx.Err()
+	}
+	grace.mu.Lock()
+	dismissed := grace.dismissed
+	grace.dismissed = true
+	grace.mu.Unlock()
+	if !dismissed {
+		log.Printf("[MUSE_QUESTION] session=%s question unanswered for %s and the first option could not be entered (%v); interrupting with Esc", session, waited.Round(time.Second), err)
+		if sendErr := museSendQuestionKey(ctx, session, "Escape"); sendErr != nil {
+			return true, sendErr
+		}
+	}
+	return true, nil
 }
