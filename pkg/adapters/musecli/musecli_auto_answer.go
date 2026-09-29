@@ -51,7 +51,13 @@ func museRecommendedQuestion(pane string) (museRecommendedAnswer, bool) {
 	if strings.Contains(strings.ToLower(widget), "review answers before submit") {
 		return museRecommendedReview(widget)
 	}
+	if museCheckboxWidget(strings.ToLower(widget)) {
+		return museRecommendedCheckbox(widget)
+	}
 	end := strings.Index(strings.ToLower(widget), "enter to select")
+	if end < 0 {
+		return museRecommendedAnswer{}, false
+	}
 	widget = widget[:end]
 	if musePaneShowsBlockingGate(widget) {
 		return museRecommendedAnswer{}, false
@@ -235,4 +241,60 @@ func museBindPersistentAutoAnswer(ctx context.Context, entry *musePersistentSess
 		entry.autoAnswer = requested
 	}
 	return context.WithValue(ctx, museAutoAnswerKey{}, entry.autoAnswer)
+}
+
+var museCheckboxStateRE = regexp.MustCompile(`^\[([ xX✓✔])\]\s*`)
+
+// museRecommendedCheckbox plans the next step on Muse's multi-select question:
+// with nothing checked, toggle the first option (the recommended one, as for a
+// single choice); once one is checked, move to the Submit row and submit. The
+// identity carries the checked state, so each step is a new action.
+func museRecommendedCheckbox(widget string) (museRecommendedAnswer, bool) {
+	result := museRecommendedAnswer{current: -1, target: -1}
+	lower := strings.ToLower(widget)
+	if end := strings.Index(lower, "enter to toggle"); end >= 0 {
+		widget = widget[:end]
+	}
+	var identity []string
+	rows, cursors, firstOption, submit, checked := 0, 0, -1, -1, 0
+	for _, line := range strings.Split(widget, "\n") {
+		match := museQuestionOptionRE.FindStringSubmatch(line)
+		if match == nil {
+			if museQuestionHeadingRE.MatchString(line) {
+				line = line[strings.Index(strings.ToLower(line), "request user input"):]
+			}
+			if text := museQuestionRunningRE.ReplaceAllString(strings.TrimSpace(line), ""); text != "" {
+				identity = append(identity, text)
+			}
+			continue
+		}
+		label := strings.TrimSpace(match[3])
+		if state := museCheckboxStateRE.FindStringSubmatch(label); state != nil {
+			if firstOption < 0 {
+				firstOption = rows
+				result.label = strings.TrimSpace(label[len(state[0]):])
+			}
+			if state[1] != " " {
+				checked++
+			}
+		} else if strings.HasPrefix(strings.ToLower(label), "submit") {
+			submit = rows
+		}
+		if match[1] != "" {
+			result.current = rows
+			cursors++
+		}
+		identity = append(identity, match[2]+". "+label)
+		rows++
+	}
+	if firstOption < 0 || submit < 0 || cursors != 1 {
+		return result, false
+	}
+	result.target = firstOption
+	if checked > 0 {
+		result.target = submit
+		result.label = "Submit answer"
+	}
+	result.key = "checkbox\n" + strings.Join(identity, "\n")
+	return result, true
 }

@@ -88,8 +88,10 @@ func musePendingUserInputError(pane string) error {
 	if start < 0 {
 		return nil
 	}
-	widget := strings.ToLower(pane[start:])
-	question := strings.Contains(widget, "enter to select") && strings.Contains(widget, "esc to interrupt")
+	// Collapse whitespace: a narrow pane wraps the hint line ("Esc\ninterrupt").
+	widget := strings.Join(strings.Fields(strings.ToLower(pane[start:])), " ")
+	interrupt := museEscInterruptRE.MatchString(widget)
+	question := (strings.Contains(widget, "enter to select") || museCheckboxWidget(widget)) && interrupt
 	review := strings.Contains(widget, "review answers before submit") && strings.Contains(widget, "enter to edit or submit") && strings.Contains(widget, "esc to go back")
 	if !question && !review {
 		return nil
@@ -100,6 +102,16 @@ func musePendingUserInputError(pane string) error {
 // Muse animates active tool rows through several diamond glyphs (◆, ◈, ◇).
 // Match the symbol category rather than a single animation frame, and use
 // the latest heading so older scrollback cannot win.
+// The hint reads "Esc to interrupt" (single choice) or "Esc interrupt"
+// (checkbox form), on whitespace-collapsed text.
+var museEscInterruptRE = regexp.MustCompile(`esc (to )?interrupt`)
+
+// museCheckboxWidget reports Muse's multi-select question ("Enter to toggle ·
+// Submit row to continue"), on lowercased text.
+func museCheckboxWidget(widget string) bool {
+	return strings.Contains(widget, "enter to toggle") && strings.Contains(widget, "submit")
+}
+
 var museQuestionHeadingRE = regexp.MustCompile(`(?mi)^[ \t]*\p{So}[ \t]+request user input\b`)
 var museToolRowRE = regexp.MustCompile(`(?m)^[ \t]*\p{So}[ \t]+`)
 

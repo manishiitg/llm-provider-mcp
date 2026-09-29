@@ -119,3 +119,42 @@ func TestMuseStoppedAutoAnswerCannotSendKeys(t *testing.T) {
 		t.Fatalf("stopped session: %v", err)
 	}
 }
+
+// The multi-select form from Excellence 2026-09-29 (a Code chat stuck on it):
+// the hint wraps ("Esc\ninterrupt") and reads "Enter to toggle".
+const museCheckboxFixture = "! Message not sent — another run is still starting\n" +
+	"◆ Request user input Features — running (44s)\n" +
+	"Which features should I add to startup-navigator? You can pick more than one.\n" +
+	"› 1. [ ] Security pack (Recommended)   Brute-force protection on login/register\n" +
+	"  2. [ ] Password reset                 Forgot-password flow with email reset links\n" +
+	"  3. [ ] Article reactions             Let readers react to articles\n" +
+	"  4. [ ] None of the above             Optionally, add details in notes (tab).\n" +
+	"  5. Submit answer (0 checked)\n" +
+	"Enter to toggle · Submit row to continue · ↑/↓ to move · Tab for an optional note · Esc\n" +
+	"interrupt\n" +
+	"❯"
+
+func TestMuseCheckboxQuestionIsDetectedAndAnswered(t *testing.T) {
+	var pending *llmerrors.Error
+	if err := musePendingUserInputError(museCheckboxFixture); !errors.As(err, &pending) || pending.Kind != llmerrors.KindUserInputRequired {
+		t.Fatalf("checkbox question not detected as waiting for input: %v", err)
+	}
+	// Nothing checked: toggle the first (recommended) option.
+	toggle, ok := museRecommendedQuestion(museCheckboxFixture)
+	if !ok || toggle.current != 0 || toggle.target != 0 || !strings.HasPrefix(toggle.label, "Security pack") {
+		t.Fatalf("first step = %+v %v", toggle, ok)
+	}
+	// Once checked: move to Submit and submit; a new identity, so it is a new action.
+	checked := strings.Replace(strings.Replace(museCheckboxFixture, "1. [ ] Security", "1. [x] Security", 1), "(0 checked)", "(1 checked)", 1)
+	submit, ok := museRecommendedQuestion(checked)
+	if !ok || submit.target != 4 || submit.key == toggle.key {
+		t.Fatalf("second step = %+v %v", submit, ok)
+	}
+	// The single-choice form still works and a widget without its hint is not answered.
+	if _, ok := museRecommendedQuestion(museQuestionFixture); !ok {
+		t.Fatal("single-choice question regressed")
+	}
+	if _, ok := museRecommendedQuestion(strings.Replace(museQuestionFixture, "Enter to select", "", 1)); ok {
+		t.Fatal("a question without its hint line must not be answered")
+	}
+}
