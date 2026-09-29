@@ -227,6 +227,7 @@ func newClaudeCodeInteractiveAdapterWithOAuthToken(modelID, oauthToken string, l
 	if modelID == "" {
 		modelID = "claude-code"
 	}
+	modelID = CurrentClaudeCodeModel(modelID)
 	oauthToken = strings.TrimSpace(oauthToken)
 	return &ClaudeCodeInteractiveAdapter{
 		modelID:         modelID,
@@ -791,6 +792,7 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelID() string {
 }
 
 func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
+	modelID = CurrentClaudeCodeModel(modelID)
 	if modelID == "" {
 		modelID = c.modelID
 	}
@@ -832,18 +834,16 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 			CachedInputCostPer1MTokens:      0.5,
 			CachedInputCostWritePer1MTokens: 6.25,
 		}, nil
-	case "claude-sonnet-5":
+	case "claude-sonnet-5-5":
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Sonnet 5",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  3.00,
-			OutputCostPer1MTokens: 15.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens:      0.3,
-			CachedInputCostWritePer1MTokens: 3.75,
+			ModelID:                         modelID,
+			Provider:                        "claude-code",
+			ModelName:                       "Claude Sonnet 5.5",
+			ContextWindow:                   200000,
+			InputCostPer1MTokens:            2.00,
+			OutputCostPer1MTokens:           10.00,
+			CachedInputCostPer1MTokens:      0.20,
+			CachedInputCostWritePer1MTokens: 2.50,
 		}, nil
 	case "claude-haiku-4-5-20251001":
 		return &llmtypes.ModelMetadata{

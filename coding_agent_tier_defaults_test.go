@@ -29,7 +29,7 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		{
 			name:          "claude code uses sonnet 5 high",
 			provider:      ProviderClaudeCode,
-			wantModelID:   "claude-sonnet-5",
+			wantModelID:   "claude-sonnet-5-5",
 			wantReasoning: "high",
 		},
 	}
@@ -59,13 +59,13 @@ func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
 		t.Fatal("GetCodingAgentDefaultTierModels(claude-code) ok = false")
 	}
 
-	if defaults.High.ModelID != "claude-sonnet-5" || defaults.High.Options["reasoning_effort"] != "high" {
+	if defaults.High.ModelID != "claude-sonnet-5-5" || defaults.High.Options["reasoning_effort"] != "high" {
 		t.Fatalf("high = %+v, want claude-sonnet-5/high", defaults.High)
 	}
-	if defaults.Medium.ModelID != "claude-sonnet-5" || defaults.Medium.Options["reasoning_effort"] != "medium" {
+	if defaults.Medium.ModelID != "claude-sonnet-5-5" || defaults.Medium.Options["reasoning_effort"] != "medium" {
 		t.Fatalf("medium = %+v, want claude-sonnet-5/medium", defaults.Medium)
 	}
-	if defaults.Low.ModelID != "claude-sonnet-5" || defaults.Low.Options["reasoning_effort"] != "low" {
+	if defaults.Low.ModelID != "claude-sonnet-5-5" || defaults.Low.Options["reasoning_effort"] != "low" {
 		t.Fatalf("low = %+v, want claude-sonnet-5/low", defaults.Low)
 	}
 }

@@ -58,14 +58,14 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   builder,
 		}, true
 	case ProviderClaudeCode:
-		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5")
-		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5", "medium")
+		high := codingAgentHighReasoningRef(providerID, "claude-sonnet-5-5")
+		medium := codingAgentReasoningRef(providerID, "claude-sonnet-5-5", "medium")
 		builder := codingAgentReasoningRef(providerID, "claude-opus-5-5", "medium")
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
 			High:    high,
 			Medium:  medium,
-			Low:     codingAgentReasoningRef(providerID, "claude-sonnet-5", "low"),
+			Low:     codingAgentReasoningRef(providerID, "claude-sonnet-5-5", "low"),
 			Pulse:   high,
 		}, true
 	case ProviderCursorCLI:

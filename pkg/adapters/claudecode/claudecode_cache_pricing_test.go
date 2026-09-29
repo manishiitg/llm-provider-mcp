@@ -15,7 +15,7 @@ import (
 var claudeCodeCachePricedModels = []string{
 	"claude-fable-5-1",
 	"claude-opus-5",
-	"claude-sonnet-5",
+	"claude-sonnet-5-5",
 	"claude-haiku-4-5-20251001",
 }
 
@@ -87,5 +87,20 @@ func TestClaudeCodeOpus55Pricing(t *testing.T) {
 		if input != 4 || output != 20 || cacheRead != 0.2 || cacheWrite != 5 {
 			t.Errorf("%s Opus 5.5 pricing = (%v, %v, %v, %v), want (4, 20, 0.2, 5)", name, input, output, cacheRead, cacheWrite)
 		}
+	}
+}
+
+// A retired model keeps working: saved configs run and are priced as its
+// replacement.
+func TestRetiredClaudeSonnet5RunsAsSonnet55(t *testing.T) {
+	if got := NewClaudeCodeInteractiveAdapter("claude-sonnet-5", &MockLogger{}).modelID; got != "claude-sonnet-5-5" {
+		t.Fatalf("interactive adapter model = %q, want claude-sonnet-5-5", got)
+	}
+	if got := NewClaudeCodeAdapter("", "claude-sonnet-5", &MockLogger{}).modelID; got != "claude-sonnet-5-5" {
+		t.Fatalf("compat adapter model = %q, want claude-sonnet-5-5", got)
+	}
+	meta, err := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata("claude-sonnet-5")
+	if err != nil || meta.ModelID != "claude-sonnet-5-5" || meta.InputCostPer1MTokens != 2.00 {
+		t.Fatalf("claude-sonnet-5 metadata = %+v, %v; want Sonnet 5.5 pricing", meta, err)
 	}
 }

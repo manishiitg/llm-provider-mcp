@@ -1,12 +1,32 @@
 package claudecode
 
-import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
+import (
+	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
+
+// claudeCodeRetiredModels maps a retired model to the one that replaced it.
+// Workflows and Crews keep the model they saved; the adapters run and price
+// the replacement, so a retirement never leaves a saved config broken or
+// unpriced. Claude Sonnet 5 was replaced by Claude Sonnet 5.5 (2026-09-29).
+var claudeCodeRetiredModels = map[string]string{
+	"claude-sonnet-5": "claude-sonnet-5-5",
+}
+
+// CurrentClaudeCodeModel returns modelID, or its replacement when retired.
+func CurrentClaudeCodeModel(modelID string) string {
+	if replacement, ok := claudeCodeRetiredModels[strings.ToLower(strings.TrimSpace(modelID))]; ok {
+		return replacement
+	}
+	return modelID
+}
 
 var knownClaudeCodeModels = []string{
 	"claude-code",
 	"claude-fable-5-1",
 	"claude-opus-5-5",
-	"claude-sonnet-5",
+	"claude-sonnet-5-5",
 	"claude-haiku-4-5-20251001",
 }
 
@@ -28,8 +48,8 @@ func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "Fable 5.1"
 		case "claude-opus-5-5":
 			meta.ModelName = "Opus 5.5"
-		case "claude-sonnet-5":
-			meta.ModelName = "Sonnet 5"
+		case "claude-sonnet-5-5":
+			meta.ModelName = "Sonnet 5.5"
 		case "claude-haiku-4-5-20251001":
 			meta.ModelName = "Haiku 4.5"
 		}
