@@ -255,6 +255,16 @@ func claudeCredentialFingerprint(oauthToken string) string {
 // login for subscription/account state; on a machine with multiple Claude
 // accounts that can charge or rate-limit the wrong account even though the
 // workflow token reached this adapter.
+// claudeSkillScopeEnv keeps a managed Claude to the skills the product
+// attaches. Claude also offers its own built-in skills (schedule, loop, run,
+// init, ...) and account-synced ones (artifact-*, dataviz, ...) which compete
+// with AgentWorks's own (schedules, triggers, dashboards) and are unrelated to
+// the product. Project skills in <cwd>/.claude/skills are unaffected (RTS,
+// 2026-09-29).
+func claudeSkillScopeEnv() []string {
+	return []string{"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1", "CLAUDE_CODE_DISABLE_POLICY_SKILLS=1"}
+}
+
 func claudeInteractiveFinalEnv(oauthToken string) []string {
 	oauthToken = strings.TrimSpace(oauthToken)
 	if oauthToken == "" {
@@ -1138,7 +1148,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
 		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	}
-	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
+	finalEnv := append(claudeInteractiveFinalEnv(c.oauthToken), claudeSkillScopeEnv()...)
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
 	// environment is a separate contract that the structured path applies when
 	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux

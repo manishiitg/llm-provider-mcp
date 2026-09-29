@@ -36,3 +36,20 @@ func TestClaudeMirrorLandlockReadsWritesArrays(t *testing.T) {
 		t.Fatalf("settings = %s", data)
 	}
 }
+
+// A managed Claude offers only the product's skills, not its own built-ins
+// (which compete with AgentWorks's schedules and dashboards).
+func TestClaudeSkillScopeEnvHidesBuiltInSkills(t *testing.T) {
+	env := claudeSkillScopeEnv()
+	want := map[string]bool{"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1": false, "CLAUDE_CODE_DISABLE_POLICY_SKILLS=1": false}
+	for _, entry := range env {
+		if _, ok := want[entry]; ok {
+			want[entry] = true
+		}
+	}
+	for entry, seen := range want {
+		if !seen {
+			t.Fatalf("missing %s in %v", entry, env)
+		}
+	}
+}

@@ -211,7 +211,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
-	cmd.Env = claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken)
+	cmd.Env = append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...)
 	cmd.Stdin = strings.NewReader(prompt) // prompt via stdin (--input-format text default)
 	cleanupSandbox, err := claudeLandlockCmd(opts, cmd, workingDir)
 	if err != nil {
