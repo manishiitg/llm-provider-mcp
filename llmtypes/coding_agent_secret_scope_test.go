@@ -320,3 +320,21 @@ func TestScopeFingerprintDoesNotLeakCredentialValues(t *testing.T) {
 		t.Fatalf("fingerprint leaks scope contents: %q", got)
 	}
 }
+
+// The host's Supabase admin key (used to email invitations) is in the
+// server's own environment, so a scoped agent that shares that environment
+// must have it removed, like any other credential it did not declare.
+func TestScopedPlanUnsetsTheHostsSupabaseAdminKey(t *testing.T) {
+	ambient := []string{"PATH=/usr/bin", "SUPABASE_SERVICE_ROLE_KEY=admin-key", "SUPABASE_URL=https://x.supabase.co"}
+	_, unset := ScopedCodingAgentEnvironmentPlan(ambient, nil, scopedEnvOpts(map[string]string{"SECRET_MINE": "v"}))
+	unsetSet := map[string]bool{}
+	for _, key := range unset {
+		unsetSet[key] = true
+	}
+	if !unsetSet["SUPABASE_SERVICE_ROLE_KEY"] {
+		t.Fatalf("the Supabase admin key reaches a scoped agent: %v", unset)
+	}
+	if unsetSet["SUPABASE_URL"] || unsetSet["PATH"] {
+		t.Fatalf("an address or unrelated variable was scrubbed: %v", unset)
+	}
+}

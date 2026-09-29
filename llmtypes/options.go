@@ -311,6 +311,10 @@ func isScopedCredentialEnvironmentKey(key string) bool {
 	switch key {
 	case "MCP_API_TOKEN", "MCP_AUTH", "MCP_SESSION_ID":
 		return true
+	// The host's admin key for its auth service (Supabase): it invites people
+	// by email and must never reach an agent that shares the host's environment.
+	case "SUPABASE_SERVICE_ROLE_KEY":
+		return true
 	default:
 		return false
 	}
