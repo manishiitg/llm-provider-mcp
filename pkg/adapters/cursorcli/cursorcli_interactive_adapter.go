@@ -840,20 +840,12 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	// in the workflow folder so Cursor treats this folder as the project root.
 	// workspace-docs is gitignored upstream, and cleanup removes the marker on
 	// session end.
-	if !cursorWorkingDirIsGitRoot(workingDir) {
-		if err := initCursorWorkspaceGitMarker(workingDir); err != nil {
-			return nil, err
-		}
-		gitDir := filepath.Join(workingDir, ".git")
-		created, _ := os.Lstat(gitDir)
-		addCleanup(func() {
-			// Do not remove a replacement installed by another owner.
-			current, err := os.Lstat(gitDir)
-			if err == nil && created != nil && os.SameFile(created, current) {
-				_ = os.RemoveAll(gitDir)
-			}
-		})
+	releaseGit, gitErr := acquireCursorGitMarker(workingDir)
+	if gitErr != nil {
+		cleanupAll()
+		return nil, gitErr
 	}
+	addCleanup(releaseGit)
 
 	cursorDir := filepath.Join(workingDir, ".cursor")
 	addCleanup(func() { _ = os.Remove(cursorDir) }) // Only remove when empty, after per-file cleanup.
@@ -890,14 +882,11 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				return nil, err
 			}
 			addCleanup(cleanup)
-		} else if !callerSuppliedCLI && !cursorRestoreProjectFilesFromOptions(opts) {
-			// Older adapter versions generated a deny-only .cursor/cli.json.
-			// Cursor Agent treats that file as a broad permission wall and can
-			// hide the api-bridge MCP tools from the actual chat session even
-			// though `cursor-agent mcp list-tools` works. Clear stale generated
-			// configs before launch unless the caller explicitly supplied one.
-			_ = os.Remove(filepath.Join(cursorDir, "cli.json"))
 		}
+		// An older adapter generated a deny-only .cursor/cli.json that hides the
+		// bridge tools. A cli.json in the project is never deleted here: when a
+		// session has bridge tools its own allowlist replaces the file for the
+		// session and the original is restored afterwards.
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {
 			normalizedMCPJSON, err := normalizeCursorMCPConfigForCLI(mcpJSON)
 			if err != nil {
@@ -1121,8 +1110,8 @@ cat <<'JSON'
 JSON
 exit 0
 `
-	previousScript, scriptExisted := readPreviousCursorFileIf(restorePrior, scriptPath)
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+	scriptToken, err := projectfile.AcquireOwnedLeaseMode(scriptPath, []byte(script), 0o755)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write cursor deny-builtin script: %w", err)
 	}
 	hooksConfig := `{
@@ -1134,41 +1123,27 @@ exit 0
 }
 `
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
-	previousHooks, hooksExisted := readPreviousCursorFileIf(restorePrior, hooksPath)
-	if err := os.WriteFile(hooksPath, []byte(hooksConfig), 0o600); err != nil {
-		_ = os.Remove(scriptPath)
-		if !scriptExisted {
-			_ = os.Remove(hooksDir)
-		}
+	hooksToken, err := projectfile.AcquireOwnedLease(hooksPath, []byte(hooksConfig))
+	if err != nil {
+		projectfile.ReleaseToken(scriptToken)
+		_ = os.Remove(hooksDir)
 		return nil, fmt.Errorf("failed to write cursor hooks.json: %w", err)
 	}
+	// Counted and always restoring (restorePrior is obsolete): a project's own
+	// hooks.json is put back by the last session, and overlapping sessions keep
+	// each other's hooks.
+	_ = restorePrior
 	return func() {
-		// Restore (or remove) hooks.json first so cursor stops obeying our
-		// deny verdict immediately, then clean the script + dirs.
-		if hooksExisted {
-			_ = os.WriteFile(hooksPath, previousHooks, 0o600)
-		} else {
-			_ = os.Remove(hooksPath)
+		projectfile.ReleaseToken(hooksToken)
+		projectfile.ReleaseToken(scriptToken)
+		if !projectfile.OwnedHeld(scriptPath) {
+			_ = os.Remove(logPath)
 		}
-		// logPath lives inside hooksDir, so remove it BEFORE attempting
-		// to remove hooksDir — otherwise hooksDir stays (not empty),
-		// which in turn keeps cursorDir non-empty and the final cleanup
-		// fails. Best-effort: ignore the error if the file isn't there.
-		_ = os.Remove(logPath)
-		if scriptExisted {
-			_ = os.WriteFile(scriptPath, previousScript, 0o755)
-		} else {
-			_ = os.Remove(scriptPath)
-			_ = os.Remove(hooksDir)
-		}
+		_ = os.Remove(hooksDir)
 		_ = os.Remove(cursorDir)
 	}, nil
 }
 
-// readPreviousCursorFile reads an existing file or returns nil + false if
-// it doesn't exist. Errors other than ENOENT are treated as "didn't exist"
-// — cleanup must be best-effort; we never want a hook-restore step to fail
-// session teardown.
 func readPreviousCursorFile(path string) ([]byte, bool) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -1188,31 +1163,15 @@ func readPreviousCursorFileIf(restore bool, path string) ([]byte, bool) {
 	return readPreviousCursorFile(path)
 }
 
-func writeCursorRestoredFile(path string, content []byte, restorePrior bool) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create Cursor config dir: %w", err)
-	}
-	var previous []byte
-	existed := false
-	if restorePrior {
-		data, readErr := os.ReadFile(path)
-		if readErr == nil {
-			previous, existed = data, true
-		} else if !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("failed to read existing Cursor config %s: %w", path, readErr)
-		}
-	}
-	if err := os.WriteFile(path, content, 0o600); err != nil {
+func writeCursorRestoredFile(path string, content []byte, _ bool) (func(), error) {
+	// Counted and always restoring: a project's own .cursor/mcp.json, cli.json or
+	// hooks.json is put back when the last session using it ends, and overlapping
+	// sessions never delete each other's file. (restorePrior is obsolete.)
+	token, err := projectfile.AcquireOwnedLease(path, content)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write Cursor config %s: %w", path, err)
 	}
-	return func() {
-		if existed {
-			_ = os.WriteFile(path, previous, 0o600)
-		} else {
-			_ = os.Remove(path)
-			_ = os.Remove(filepath.Dir(path))
-		}
-	}, nil
+	return func() { projectfile.ReleaseToken(token) }, nil
 }
 
 func releaseCursorInteractiveSession(session *cursorInteractiveSession, logger interfaces.Logger) {

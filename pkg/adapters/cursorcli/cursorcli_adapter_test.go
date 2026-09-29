@@ -886,7 +886,8 @@ func TestBuildCursorInteractiveLaunchUsesAutoForTestHarness(t *testing.T) {
 }
 
 // TestPrepareCursorProjectFilesRemovesGeneratedFilesOnCleanup verifies that
-// the default non-restoring projection removes its generated artifacts.
+// cleanup removes what the session generated and restores a project's own
+// .cursor/cli.json byte-for-byte (it is never lost).
 func TestPrepareCursorProjectFilesRemovesGeneratedFilesOnCleanup(t *testing.T) {
 	workDir := t.TempDir()
 	cursorDir := filepath.Join(workDir, ".cursor")
@@ -916,8 +917,16 @@ func TestPrepareCursorProjectFilesRemovesGeneratedFilesOnCleanup(t *testing.T) {
 
 	cleanup()
 
-	if _, err := os.Stat(cursorDir); !os.IsNotExist(err) {
-		t.Fatalf("cleanup must remove the empty generated .cursor/ directory; stat err = %v", err)
+	if got, err := os.ReadFile(cliPath); err != nil || string(got) != original {
+		t.Fatalf("project's own cli.json after cleanup = %q err=%v, want it restored byte-for-byte", string(got), err)
+	}
+	for _, generated := range []string{"mcp.json", filepath.Join("rules", "mlp-system.mdc")} {
+		if _, err := os.Stat(filepath.Join(cursorDir, generated)); !os.IsNotExist(err) {
+			t.Fatalf("cleanup must remove generated %s; stat err = %v", generated, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the generated .git marker; stat err = %v", err)
 	}
 }
 

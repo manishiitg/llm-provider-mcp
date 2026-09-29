@@ -166,7 +166,8 @@ func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(
 		t.Fatal(err)
 	}
 	staleCLI := filepath.Join(cursorDir, "cli.json")
-	if err := os.WriteFile(staleCLI, []byte(`{"permissions":{"allow":[],"deny":["Shell(*)"]}}`), 0o600); err != nil {
+	const staleBody = `{"permissions":{"allow":[],"deny":["Shell(*)"]}}`
+	if err := os.WriteFile(staleCLI, []byte(staleBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,8 +180,11 @@ func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(
 	}
 	defer cleanup()
 
-	if _, err := os.Stat(staleCLI); !os.IsNotExist(err) {
-		t.Fatalf("deny-builtin mode must remove stale .cursor/cli.json; it hides MCP tools from Cursor Agent, stat err=%v", err)
+	// Deny-builtin mode generates no cli.json of its own, and a cli.json in the
+	// project is never deleted (a session with bridge tools replaces it with its
+	// allowlist for the session and restores it afterwards).
+	if got, err := os.ReadFile(staleCLI); err != nil || string(got) != staleBody {
+		t.Fatalf("a project's cli.json must be left alone, got %q err=%v", string(got), err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".cursor", "hooks.json")); err != nil {
 		t.Fatalf("deny-builtin mode should install hooks.json: %v", err)

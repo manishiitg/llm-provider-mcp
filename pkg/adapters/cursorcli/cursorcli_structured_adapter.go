@@ -347,12 +347,8 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		// to appear at all or reports connection errors the model faithfully
 		// relays as "not connected". Same fix as the tmux/interactive adapter's
 		// prepareCursorProjectFiles; see its comment for the original diagnosis.
-		if !cursorWorkingDirIsGitRoot(workingDir) {
-			if mkErr := initCursorWorkspaceGitMarker(workingDir); mkErr == nil {
-				configCleanups = append(configCleanups, func() {
-					_ = os.RemoveAll(filepath.Join(workingDir, ".git"))
-				})
-			}
+		if releaseGit, gitErr := acquireCursorGitMarker(workingDir); gitErr == nil {
+			configCleanups = append(configCleanups, releaseGit)
 		}
 		cursorDir := filepath.Join(workingDir, ".cursor")
 		if mcpJSON, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpJSON) != "" {

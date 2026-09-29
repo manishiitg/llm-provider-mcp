@@ -237,12 +237,18 @@ var owned = map[string]*ownedHold{}
 // are counted; the first writes content, later ones rewrite it, and the last
 // release restores whatever was there before, or removes the file.
 func AcquireOwnedLease(path string, content []byte) (string, error) {
+	return AcquireOwnedLeaseMode(path, content, 0o600)
+}
+
+// AcquireOwnedLeaseMode is AcquireOwnedLease with the file mode of the written
+// file (for example an executable hook script).
+func AcquireOwnedLeaseMode(path string, content []byte, mode os.FileMode) (string, error) {
 	path = filepath.Clean(path)
 	mu.Lock()
 	defer mu.Unlock()
 	h := owned[path]
 	if h == nil {
-		h = &ownedHold{mode: 0o600}
+		h = &ownedHold{mode: mode}
 		if data, err := os.ReadFile(path); err == nil {
 			h.prior, h.hadPrior = data, true
 		}
@@ -277,4 +283,11 @@ func releaseOwned(path string) {
 	}
 	_ = os.Remove(path)
 	_ = os.Remove(filepath.Dir(path)) // only succeeds when now empty
+}
+
+// OwnedHeld reports whether a live session holds an owned-file lease on path.
+func OwnedHeld(path string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return owned[filepath.Clean(path)] != nil
 }
