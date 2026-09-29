@@ -45,6 +45,19 @@ func PrepareCodexCommandScoped(policy *llmtypes.CLISecurityPolicy, args []string
 		}
 		return shelllaunch.CommandWithScopedEnv(args, workingDir, scopedEnv, unset, scrub)
 	}
+	// Linux: the host's Landlock launcher confines Codex like every other CLI.
+	if policy.LandlockEnforced() {
+		wrapped, cleanupPolicy, err := LandlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), nil)
+		if err != nil {
+			return "", nil, err
+		}
+		command, cleanup, err := shelllaunch.CommandWithScopedEnv(wrapped, workingDir, scopedEnv, unset, scrub)
+		if err != nil {
+			cleanupPolicy()
+			return "", nil, err
+		}
+		return command, func() { cleanup(); cleanupPolicy() }, nil
+	}
 	if runtime.GOOS != "darwin" {
 		return "", nil, fmt.Errorf("%w: %s requires macOS sandbox-exec", ErrUnsupported, policy.Mode)
 	}

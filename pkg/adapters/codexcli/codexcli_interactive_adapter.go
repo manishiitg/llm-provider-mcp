@@ -579,7 +579,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 			ownerSessionID:         ownerSessionID,
 			tmuxSessionName:        newCodexTmuxSessionName(),
 			workingDir:             workingDir,
-			accountRoot:            llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"],
+			accountRoot:            llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"],
 			cliSecurityFingerprint: securityFingerprint,
 			createdAt:              now,
 			// A resumed conversation already has its Codex thread; pinning it
@@ -739,7 +739,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 			autoApproveMCPTools = strings.TrimSpace(policy) == "never"
 		}
 	}
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity, llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"])
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"])
 	if err != nil {
 		return nil, "", nil, err
 	}

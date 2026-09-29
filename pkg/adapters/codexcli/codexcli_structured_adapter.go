@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"os"
 	"os/exec"
 	"strings"
@@ -245,7 +246,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// tool schemas and bridge credentials belong in a profile file, never on
 	// the command line (see codexcli_interactive_adapter.go's identical
 	// rationale). The GLOBAL -p/--profile flag loads $CODEX_HOME/<name>.config.toml.
-	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity, llmtypes.ProviderAccountEnvironment(opts)["CODEX_HOME"])
+	sessionProfile, sessionProfileCleanup, err := writeCodexSessionMCPProfile(mcpServersJSON, autoApproveMCPTools, opts.CLISecurity, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"])
 	if err != nil {
 		return nil, fmt.Errorf("codex session MCP profile: %w", err)
 	}
@@ -286,6 +287,16 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)
 	cmd.Stdin = strings.NewReader("") // codex exec reads stdin unless explicitly closed/empty; avoid any hang
+	// A strict policy is enforced here or the run is refused: this lane never
+	// applied the policy, so a verified/isolated run used to start unconfined.
+	if llmtypes.NormalizeCLISecurityMode(policyMode(opts)) != llmtypes.CLISecurityModeCompatibility && !opts.CLISecurity.LandlockEnforced() {
+		return nil, fmt.Errorf("CLI security mode %q is not enforced by the Codex structured transport on this host", policyMode(opts))
+	}
+	cleanupSandbox, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("confine Codex: %w", err)
+	}
+	defer cleanupSandbox()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -581,4 +592,11 @@ func buildCodexStructuredEnv(apiKey string) []string {
 		env = append(env, "OPENAI_API_KEY="+strings.TrimSpace(apiKey))
 	}
 	return env
+}
+
+func policyMode(opts *llmtypes.CallOptions) llmtypes.CLISecurityMode {
+	if opts == nil || opts.CLISecurity == nil {
+		return llmtypes.CLISecurityModeCompatibility
+	}
+	return opts.CLISecurity.Mode
 }
