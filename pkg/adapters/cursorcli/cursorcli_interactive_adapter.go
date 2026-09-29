@@ -2286,6 +2286,11 @@ func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName,
 					// recover by asking the same native session for the missing final
 					// answer. The original baseline remains valid: the new User: boundary
 					// causes extraction to retain only this recovery turn's response.
+					// A spent plan returns to the prompt with only the limit
+					// notice: fail as quota exhaustion now, never as empty output.
+					if IsCursorUsageLimitText(delta) {
+						return captured, "", NewCursorUsageLimitError("", delta, time.Now())
+					}
 					if finalAnswerRecoveryCount == 0 && (storeAwaitingReply || cursorPaneContainsToolActivity(delta)) &&
 						time.Since(readyWithoutContentSince) >= cursorFinalAnswerRecoveryDelay {
 						if err := sendCursorInitialPromptToTmux(ctx, sessionName, cursorFinalAnswerRecoveryPrompt); err == nil {
