@@ -135,6 +135,14 @@ func (c *CursorCLIAdapter) GetModelID() string {
 // GetModelMetadata returns metadata for Cursor Agent CLI model selectors. Cursor
 // account model availability and pricing can vary, so unknown selectors are
 // exposed with conservative generic metadata.
+// The estimated average price of Cursor's Auto mode, in USD per million tokens
+// (its former flat rate; cache writes count as input).
+const (
+	cursorAutoEstimateInputPer1M     = 1.25
+	cursorAutoEstimateOutputPer1M    = 6.0
+	cursorAutoEstimateCacheReadPer1M = 0.25
+)
+
 func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	if modelID == "" {
 		modelID = c.modelID
@@ -157,6 +165,21 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			ModelName:         "Auto (Cursor Agent CLI)",
 			ContextWindow:     200000,
 			SupportsToolCalls: true,
+		}, nil
+	case "auto":
+		// Auto bills each request at the list price of whichever model it
+		// routes to, and the CLI does not say which. Until it does, this is an
+		// ESTIMATED average: Cursor's former flat Auto rate. It is reported as
+		// a plan-equivalent estimate, never as an invoice.
+		return &llmtypes.ModelMetadata{
+			ModelID:                    metadataModelID,
+			Provider:                   "cursor-cli",
+			ModelName:                  "Auto (Cursor Agent CLI, estimated average price)",
+			ContextWindow:              200000,
+			InputCostPer1MTokens:       cursorAutoEstimateInputPer1M,
+			OutputCostPer1MTokens:      cursorAutoEstimateOutputPer1M,
+			CachedInputCostPer1MTokens: cursorAutoEstimateCacheReadPer1M,
+			SupportsToolCalls:          true,
 		}, nil
 	case "composer-2.5":
 		return &llmtypes.ModelMetadata{

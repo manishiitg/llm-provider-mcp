@@ -2258,3 +2258,26 @@ func TestCursorLiveInputEmptyComposerDoesNotMatchFooter(t *testing.T) {
 		t.Fatal("real numeric live draft must still be detected while Cursor works")
 	}
 }
+
+// Auto has no fixed price (it bills the model each request is routed to), so
+// its calls are priced at a labelled estimated average rather than left
+// without any cost; Composer, with no rate we can verify, stays unpriced.
+func TestCursorAutoHasAnEstimatedAveragePrice(t *testing.T) {
+	adapter := &CursorCLIAdapter{}
+	meta, err := adapter.GetModelMetadata("auto")
+	if err != nil || meta == nil {
+		t.Fatalf("metadata: %v %v", meta, err)
+	}
+	if !strings.Contains(meta.ModelName, "estimated") || meta.InputCostPer1MTokens != 1.25 || meta.OutputCostPer1MTokens != 6 || meta.CachedInputCostPer1MTokens != 0.25 {
+		t.Fatalf("auto metadata = %+v", meta)
+	}
+	prompt, completion := 1_000_000, 100_000
+	cost := llmtypes.ComputeUSDCostFromMetadata(meta, &llmtypes.GenerationInfo{PromptTokens: &prompt, CompletionTokens: &completion, Additional: map[string]interface{}{"prompt_tokens_include_cache": false}})
+	if want := 1.25 + 0.6; cost < want-0.001 || cost > want+0.001 {
+		t.Fatalf("1M in + 100K out = $%.4f, want $%.2f", cost, want)
+	}
+	composer, _ := adapter.GetModelMetadata("composer-2.5")
+	if composer == nil || composer.InputCostPer1MTokens != 0 {
+		t.Fatalf("composer gained an unverified price: %+v", composer)
+	}
+}
