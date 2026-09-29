@@ -214,6 +214,11 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		_ = a.ProjectSkills(workdir, skills)
 	}
 	cmd.Dir = workdir
+	cleanupSandbox, err := museLandlockCmd(opts, cmd, workdir)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupSandbox()
 	if a.apiKey != "" {
 		cmd.Stdin = strings.NewReader(a.apiKey)
 	} else {

@@ -44,6 +44,13 @@ func (a *MuseCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	for _, opt := range options {
 		opt(opts)
 	}
+	// Every Muse lane (tmux, persistent, exec) starts under the Landlock
+	// launcher when the policy confines the CLI; any other strict policy is
+	// refused rather than run unconfined.
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
+		return nil, err
+	}
+
 	if museStructuredTransportRequested(opts) {
 		return a.generateContentExec(ctx, messages, options...)
 	}

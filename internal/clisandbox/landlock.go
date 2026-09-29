@@ -229,6 +229,7 @@ func ArgFilePaths(args []string) []string {
 		if _, value, ok := strings.Cut(arg, "="); ok && strings.HasPrefix(arg, "-") {
 			arg = value
 		}
+		arg = strings.Trim(arg, `'"`)
 		if !filepath.IsAbs(arg) {
 			continue
 		}

@@ -22,7 +22,8 @@ func museAccount(ctx context.Context) museAccountRuntime {
 	return value
 }
 func museAccountDataHome(ctx context.Context) string {
-	if root := llmtypes.ProviderAccountEnvironment(museAccount(ctx).opts)["XDG_DATA_HOME"]; root != "" {
+	// A confined Muse keeps its sessions in its private home.
+	if root := llmtypes.CLIHomeEnvironment(museAccount(ctx).opts)["XDG_DATA_HOME"]; root != "" {
 		return root
 	}
 	return museXDGDataHome()
@@ -42,5 +43,14 @@ func museAccountLaunch(ctx context.Context, argv []string, workdir string) (stri
 		env = append(env, "META_API_KEY="+runtime.apiKey)
 		unset = append(unset, "META_API_KEY")
 	}
-	return shelllaunch.CommandWithScopedEnv(argv, workdir, env, unset, nil)
+	argv, cleanupSandbox, err := museLandlockArgs(runtime.opts, argv, workdir)
+	if err != nil {
+		return "", nil, err
+	}
+	command, cleanup, err := shelllaunch.CommandWithScopedEnv(argv, workdir, env, unset, nil)
+	if err != nil {
+		cleanupSandbox()
+		return "", nil, err
+	}
+	return command, func() { cleanup(); cleanupSandbox() }, nil
 }
