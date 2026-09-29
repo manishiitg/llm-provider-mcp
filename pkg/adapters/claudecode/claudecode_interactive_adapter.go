@@ -33,6 +33,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxstartup"
 )
@@ -1115,25 +1116,13 @@ func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string, rest
 	if workingDir == "" {
 		return "", nil
 	}
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return "", fmt.Errorf("ensure claude working dir: %w", err)
-	}
-	path := filepath.Join(workingDir, "CLAUDE.md")
-	if restorePrior {
-		if prior, err := os.ReadFile(path); err == nil {
-			claudeProjectFileRestores.Store(path, prior)
-		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("read pre-existing CLAUDE.md: %w", err)
-		}
-	}
-	// The marker is only an ownership sentinel for cleanup. Put the real
-	// instructions first and do not claim restoration when it is opt-in.
-	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		claudeProjectFileRestores.Delete(path)
-		return "", fmt.Errorf("write CLAUDE.md: %w", err)
-	}
-	return path, nil
+	// AGENTS.md is the one project-instructions file for every CLI (Claude
+	// Code reads it natively). The prompt is added as a marked block, counted
+	// per session, so the user's own file and other sessions sharing this
+	// folder are never overwritten or deleted. restorePrior is obsolete: the
+	// user's content is never touched.
+	_ = restorePrior
+	return projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
 }
 
 func (c *ClaudeCodeInteractiveAdapter) shouldPassModelFlag() bool {
@@ -4793,6 +4782,10 @@ func writeTempFile(pattern, value string) (string, error) {
 
 func removeFiles(paths []string) {
 	for _, path := range paths {
+		if projectfile.IsLease(path) {
+			projectfile.ReleaseToken(path)
+			continue
+		}
 		// Honor byte-restore registrations from
 		// writeClaudeCodeProjectInstructionFile and
 		// writeClaudeCodeProjectMCPFile: if the path is in

@@ -1,8 +1,7 @@
 package musecli
 
 import (
-	"fmt"
-	"os"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"path/filepath"
 	"strings"
 )
@@ -23,33 +22,15 @@ func writeMuseProjectAgentsFile(workingDir, systemPrompt string, restorePrior bo
 	if workingDir == "" {
 		return func() {}, nil
 	}
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return nil, fmt.Errorf("ensure muse working dir: %w", err)
+	// The prompt is added to AGENTS.md as a marked block, counted per
+	// session: a project's own AGENTS.md and other sessions sharing the folder
+	// are never overwritten or deleted. restorePrior is obsolete.
+	_ = restorePrior
+	token, err := projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(workingDir, "AGENTS.md")
-	var previous []byte
-	existed := false
-	if restorePrior {
-		data, readErr := os.ReadFile(path)
-		if readErr == nil {
-			previous, existed = data, true
-		} else if !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
-		}
-	}
-	// The marker is only an ownership sentinel for cleanup. Put the real
-	// instructions first and do not claim restoration when it is opt-in.
-	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		return nil, fmt.Errorf("write AGENTS.md: %w", err)
-	}
-	return func() {
-		if existed {
-			_ = os.WriteFile(path, previous, 0o600)
-		} else {
-			_ = os.Remove(path)
-		}
-	}, nil
+	return func() { projectfile.ReleaseToken(token) }, nil
 }
 
 // museInlinePrompt is the legacy concatenation: system texts joined ahead

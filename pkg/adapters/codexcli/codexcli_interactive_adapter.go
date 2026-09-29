@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"io"
 	"log"
 	"os"
@@ -1054,34 +1055,15 @@ func writeCodexProjectAgentsFile(workingDir, systemPrompt string, restorePrior b
 	if workingDir == "" {
 		return func() {}, nil
 	}
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return nil, fmt.Errorf("ensure codex working dir: %w", err)
+	// The prompt is added to AGENTS.md as a marked block, counted per
+	// session: a project's own AGENTS.md and other sessions sharing the folder
+	// are never overwritten or deleted. restorePrior is obsolete.
+	_ = restorePrior
+	token, err := projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(workingDir, "AGENTS.md")
-	var previous []byte
-	existed := false
-	if restorePrior {
-		data, readErr := os.ReadFile(path)
-		if readErr == nil {
-			previous, existed = data, true
-		} else if !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("read existing AGENTS.md: %w", readErr)
-		}
-	}
-	// Keep the cleanup sentinel out of the instruction header. The CLI should
-	// encounter the actual system prompt first, and the marker must not make a
-	// false user-visible promise about restoration (which is opt-in).
-	body := systemPrompt + "\n\n<!-- mlp-session-instructions -->\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		return nil, fmt.Errorf("write AGENTS.md: %w", err)
-	}
-	return func() {
-		if existed {
-			_ = os.WriteFile(path, previous, 0o600)
-		} else {
-			_ = os.Remove(path)
-		}
-	}, nil
+	return func() { projectfile.ReleaseToken(token) }, nil
 }
 
 func markCodexInteractiveSessionFailedLocked(session *codexInteractiveSession, err error, logger interfaces.Logger) {

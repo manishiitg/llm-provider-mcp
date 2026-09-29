@@ -11,13 +11,13 @@ import (
 
 // TestBuildClaudeArgsProjectInstructionOnly covers WithProjectInstructionOnly:
 // by default the prompt is injected via --system-prompt-file (and also
-// projected to CLAUDE.md); with the flag on it is carried solely by CLAUDE.md;
-// and when the CLAUDE.md projection cannot run the adapter falls back to
+// projected to AGENTS.md); with the flag on it is carried solely by AGENTS.md;
+// and when the AGENTS.md projection cannot run the adapter falls back to
 // --system-prompt-file so the prompt is never dropped.
 func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 	const promptBody = "ORCHESTRATOR SYSTEM PROMPT BODY"
 
-	t.Run("default: --system-prompt-file present and CLAUDE.md also written", func(t *testing.T) {
+	t.Run("default: --system-prompt-file present and AGENTS.md also written", func(t *testing.T) {
 		adapter := NewClaudeCodeInteractiveAdapter("claude-sonnet-4-6", &MockLogger{})
 		dir := t.TempDir()
 		opts := &llmtypes.CallOptions{}
@@ -32,16 +32,16 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		if argValue(args, "--system-prompt-file") == "" {
 			t.Fatalf("default mode must pass --system-prompt-file, args=%v", args)
 		}
-		body, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+		body, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 		if err != nil {
-			t.Fatalf("default mode should also write CLAUDE.md: %v", err)
+			t.Fatalf("default mode should also write AGENTS.md: %v", err)
 		}
 		if !strings.Contains(string(body), promptBody) {
-			t.Fatalf("CLAUDE.md missing prompt body, got %q", string(body))
+			t.Fatalf("AGENTS.md missing prompt body, got %q", string(body))
 		}
 	})
 
-	t.Run("project-instruction-only: drops --system-prompt-file, keeps CLAUDE.md", func(t *testing.T) {
+	t.Run("project-instruction-only: drops --system-prompt-file, keeps AGENTS.md", func(t *testing.T) {
 		adapter := NewClaudeCodeInteractiveAdapter("claude-sonnet-4-6", &MockLogger{})
 		dir := t.TempDir()
 		opts := &llmtypes.CallOptions{}
@@ -57,19 +57,19 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		if containsArg(args, "--system-prompt-file") {
 			t.Fatalf("project-instruction-only must NOT pass --system-prompt-file, args=%v", args)
 		}
-		body, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+		body, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 		if err != nil {
-			t.Fatalf("project-instruction-only must still write CLAUDE.md: %v", err)
+			t.Fatalf("project-instruction-only must still write AGENTS.md: %v", err)
 		}
 		if !strings.Contains(string(body), promptBody) {
-			t.Fatalf("CLAUDE.md missing prompt body, got %q", string(body))
+			t.Fatalf("AGENTS.md missing prompt body, got %q", string(body))
 		}
 	})
 
 	t.Run("project-instruction-only with no working dir: falls back to --system-prompt-file", func(t *testing.T) {
 		adapter := NewClaudeCodeInteractiveAdapter("claude-sonnet-4-6", &MockLogger{})
 		opts := &llmtypes.CallOptions{}
-		// No working dir -> CLAUDE.md projection is a no-op, so the flag must
+		// No working dir -> AGENTS.md projection is a no-op, so the flag must
 		// not strand the session without a prompt.
 		WithProjectInstructionOnly(true)(opts)
 
@@ -80,7 +80,7 @@ func TestBuildClaudeArgsProjectInstructionOnly(t *testing.T) {
 		defer removeFiles(tempFiles)
 
 		if argValue(args, "--system-prompt-file") == "" {
-			t.Fatalf("must fall back to --system-prompt-file when CLAUDE.md projection is skipped, args=%v", args)
+			t.Fatalf("must fall back to --system-prompt-file when AGENTS.md projection is skipped, args=%v", args)
 		}
 	})
 

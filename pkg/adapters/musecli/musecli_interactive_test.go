@@ -344,40 +344,27 @@ func TestWriteMuseProjectAgentsFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(operator), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	restore, err := writeMuseProjectAgentsFile(workdir, "session instructions", true)
+	release, err := writeMuseProjectAgentsFile(workdir, "session instructions", false)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read projected: %v", err)
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "session instructions") || !strings.Contains(string(raw), "# operator rules") {
+		t.Fatalf("projected AGENTS.md missing prompt or operator content:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "session instructions") || !strings.Contains(string(raw), "mlp-session-instructions") {
-		t.Fatalf("projected AGENTS.md missing marker or content:\n%s", raw)
-	}
-	if !strings.HasPrefix(string(raw), "session instructions") {
-		t.Fatalf("projected AGENTS.md must start with the system prompt, not cleanup metadata:\n%s", raw)
-	}
-	if strings.Contains(string(raw), "Restored on cleanup") {
-		t.Fatalf("projected AGENTS.md must not claim opt-in restoration always occurs:\n%s", raw)
-	}
-	restore()
-	raw, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read restored: %v", err)
-	}
-	if string(raw) != operator {
-		t.Fatalf("restored = %q, want operator content byte-for-byte", raw)
+	release()
+	if raw, _ = os.ReadFile(path); string(raw) != operator {
+		t.Fatalf("after cleanup = %q, want operator content byte-for-byte", raw)
 	}
 
 	plain := t.TempDir()
-	restore, err = writeMuseProjectAgentsFile(plain, "session instructions", false)
+	release, err = writeMuseProjectAgentsFile(plain, "session instructions", false)
 	if err != nil {
-		t.Fatalf("write without restore: %v", err)
+		t.Fatalf("write in an empty folder: %v", err)
 	}
-	restore()
+	release()
 	if _, err := os.Stat(filepath.Join(plain, "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatal("projected AGENTS.md not removed on cleanup without restorePrior")
+		t.Fatal("projected AGENTS.md not removed on cleanup")
 	}
 }
 

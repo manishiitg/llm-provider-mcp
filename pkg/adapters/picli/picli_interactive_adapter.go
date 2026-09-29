@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -783,12 +784,14 @@ func preparePiProjectFiles(workingDir, systemPrompt string, opts *llmtypes.CallO
 	if strings.TrimSpace(systemPrompt) != "" {
 		promptPath := filepath.Join(workingDir, ".pi", "APPEND_SYSTEM.md")
 		content := "# MCP Agent System Instructions\n\n" + strings.TrimSpace(systemPrompt) + "\n"
-		cleanup, err := writePiRestoredFile(promptPath, []byte(content))
+		// A marked block, counted per session: the user's own file and other
+		// sessions sharing this folder are never overwritten or deleted.
+		token, err := projectfile.AcquireLease(promptPath, content)
 		if err != nil {
 			cleanupAll()
 			return nil, err
 		}
-		addCleanup(cleanup)
+		addCleanup(func() { projectfile.ReleaseToken(token) })
 	}
 
 	if len(cleanups) == 0 {
@@ -863,31 +866,6 @@ func normalizePiMCPConfig(configJSON string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode Pi MCP config: %w", err)
 	}
 	return append(body, '\n'), nil
-}
-
-func writePiRestoredFile(path string, content []byte) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create Pi config dir: %w", err)
-	}
-	var previous []byte
-	existed := false
-	if data, err := os.ReadFile(path); err == nil {
-		previous = data
-		existed = true
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to read existing Pi config %s: %w", path, err)
-	}
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to write Pi config %s: %w", path, err)
-	}
-	return func() {
-		if existed {
-			_ = os.WriteFile(path, previous, 0o600)
-		} else {
-			_ = os.Remove(path)
-			_ = os.Remove(filepath.Dir(path))
-		}
-	}, nil
 }
 
 func acquirePiWorkspaceMCPConfigLease(workingDir, mcpConfig string, session *piInteractiveSession) (func(), error) {

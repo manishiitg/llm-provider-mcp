@@ -123,3 +123,30 @@ func TestWriteSkipsEmpty(t *testing.T) {
 		t.Errorf("Write(nil entries): %v", err)
 	}
 }
+
+// A skill the project already has under the same name is never overwritten;
+// one this package wrote earlier is refreshed.
+func TestWriteNeverOverwritesUsersOwnSkill(t *testing.T) {
+	dir := t.TempDir()
+	own := filepath.Join(dir, "review")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(own, "SKILL.md"), []byte("MINE"), 0o644)
+	skill := &llmtypes.Skill{Name: "review", Content: "OURS"}
+	if err := Write(dir, []*llmtypes.Skill{skill}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(own, "SKILL.md")); string(b) != "MINE" {
+		t.Fatalf("user's skill overwritten: %q", b)
+	}
+	if err := Write(dir, []*llmtypes.Skill{{Name: "fresh", Content: "V1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(dir, []*llmtypes.Skill{{Name: "fresh", Content: "V2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "fresh", "SKILL.md")); !strings.Contains(string(b), "V2") {
+		t.Fatalf("our own skill not refreshed: %q", b)
+	}
+}

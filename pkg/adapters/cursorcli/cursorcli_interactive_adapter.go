@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"io"
 	"log"
 	"os"
@@ -862,19 +863,17 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			cleanupAll()
 			return nil, fmt.Errorf("failed to create Cursor rules dir: %w", err)
 		}
-		// Fixed filename — only one cursor chat owns a workflow folder
-		// at a time, so no need to disambiguate via per-session hex.
-		// The adapter's cleanup callback removes this file on session
-		// end; if a session crashed and left it behind, the next
-		// session overwrites it cleanly.
+		// Fixed filename shared by every Cursor session in this folder, so
+		// sessions are counted: the file is removed only when the last one
+		// ends, and a file that was there before is restored.
 		rulePath := filepath.Join(rulesDir, "mlp-system.mdc")
 		content := "---\nalwaysApply: true\n---\n\n" + systemPrompt
-		cleanup, err := writeCursorRestoredFile(rulePath, []byte(content), cursorRestoreProjectFilesFromOptions(opts))
+		token, err := projectfile.AcquireOwnedLease(rulePath, []byte(content))
 		if err != nil {
 			cleanupAll()
 			return nil, err
 		}
-		addCleanup(cleanup)
+		addCleanup(func() { projectfile.ReleaseToken(token) })
 	}
 
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {

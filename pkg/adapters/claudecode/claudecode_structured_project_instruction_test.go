@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,10 +50,11 @@ func TestStructuredProjectionWritesClaudeMdWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}
-	if path != filepath.Join(dir, "CLAUDE.md") {
-		t.Fatalf("projected to %q, want <workingDir>/CLAUDE.md", path)
+	if !projectfile.IsLease(path) {
+		t.Fatalf("projection returned %q, want a lease token", path)
 	}
-	body, err := os.ReadFile(path)
+	defer removeFiles([]string{path})
+	body, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 )
 
 // Write projects every skill into targetDir as <targetDir>/<skill.Name>/
@@ -46,8 +47,18 @@ func Write(targetDir string, skills []*llmtypes.Skill) error {
 			continue
 		}
 		skillDir := filepath.Join(targetDir, folder)
+		markerPath := filepath.Join(skillDir, projectfile.SkillMarkerFile)
+		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+			if _, markerErr := os.Stat(markerPath); markerErr != nil {
+				// The project's own skill of this name: never overwrite it.
+				continue
+			}
+		}
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
 			return fmt.Errorf("skillproject: create %s: %w", skillDir, err)
+		}
+		if err := os.WriteFile(markerPath, []byte("written by AgentWorks for a session; safe to remove\n"), 0o644); err != nil {
+			return fmt.Errorf("skillproject: write %s: %w", markerPath, err)
 		}
 		body := renderSkillMarkdown(skill, folder)
 		skillPath := filepath.Join(skillDir, "SKILL.md")
