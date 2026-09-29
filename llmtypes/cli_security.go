@@ -1,6 +1,10 @@
 package llmtypes
 
-import "strings"
+import (
+	"path/filepath"
+	"runtime"
+	"strings"
+)
 
 // CLISecurityMode describes how a coding CLI may access host filesystem state.
 // Compatibility is the backward-compatible default for callers that do not
@@ -81,6 +85,24 @@ type CLISecurityPolicy struct {
 	EnvironmentVariables []string        `json:"environment_variables,omitempty"`
 	PrivateHome          string          `json:"private_home,omitempty"`
 	ApprovedCapabilities []string        `json:"approved_capabilities,omitempty"`
+	// LandlockRunner is the host's Landlock launcher (absolute path). With a
+	// strict mode on Linux, the CLI starts under it: it can write only the
+	// workspace write paths and PrivateHome, read only the granted paths and
+	// the launcher's system baseline, and everything else is refused by the
+	// kernel for the CLI and every process it starts.
+	LandlockRunner string `json:"landlock_runner,omitempty"`
+	// CredentialHome is where the CLI's login lives: the provider account's
+	// home, or the server's HOME for the server account. Only the CLI's own
+	// credential files are linked from it into PrivateHome; the rest of that
+	// home (other people's sessions and history) stays outside the sandbox.
+	CredentialHome string `json:"credential_home,omitempty"`
+}
+
+// LandlockEnforced reports whether this policy confines the CLI with the
+// Landlock launcher on this host.
+func (p *CLISecurityPolicy) LandlockEnforced() bool {
+	return p != nil && runtime.GOOS == "linux" && strings.TrimSpace(p.LandlockRunner) != "" &&
+		strings.TrimSpace(p.PrivateHome) != "" && NormalizeCLISecurityMode(p.Mode) != CLISecurityModeCompatibility
 }
 
 // Clone returns a deep copy so a running session cannot observe later mutations
@@ -97,5 +119,48 @@ func (p CLISecurityPolicy) Clone() CLISecurityPolicy {
 	copyPolicy.HostWritePaths = append([]string(nil), p.HostWritePaths...)
 	copyPolicy.EnvironmentVariables = append([]string(nil), p.EnvironmentVariables...)
 	copyPolicy.ApprovedCapabilities = append([]string(nil), p.ApprovedCapabilities...)
+	copyPolicy.LandlockRunner = strings.TrimSpace(p.LandlockRunner)
+	copyPolicy.CredentialHome = strings.TrimSpace(p.CredentialHome)
 	return copyPolicy
+}
+
+// SandboxHomeEnvironment is the CLI's private home layout when the Landlock
+// launcher confines it, else nil. It replaces the account's (or server's)
+// home for the CLI and for every server-side reader of the CLI's files.
+func SandboxHomeEnvironment(opts *CallOptions) map[string]string {
+	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+		return nil
+	}
+	home := filepath.Clean(opts.CLISecurity.PrivateHome)
+	return map[string]string{
+		"HOME":              home,
+		"XDG_CONFIG_HOME":   filepath.Join(home, ".config"),
+		"XDG_DATA_HOME":     filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME":    filepath.Join(home, ".local", "state"),
+		"CODEX_HOME":        filepath.Join(home, ".codex"),
+		"CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude"),
+		// The shared /tmp is outside the sandbox; the CLI's temp files live
+		// in its private home.
+		"TMPDIR": filepath.Join(home, "tmp"),
+	}
+}
+
+// LandlockEnforcedModes lists the policy's mode when the Landlock launcher
+// enforces it, for ValidateCLISecurityLaunch: an adapter that wraps its
+// launch accepts the strict mode, and still refuses it when it cannot.
+func LandlockEnforcedModes(opts *CallOptions) []CLISecurityMode {
+	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+		return nil
+	}
+	return []CLISecurityMode{NormalizeCLISecurityMode(opts.CLISecurity.Mode)}
+}
+
+// CLIHomeEnvironment is where the CLI keeps its files for this call: the
+// sandbox's private home when confined, else the provider account's paths
+// (empty for the server account, meaning the process HOME).
+func CLIHomeEnvironment(opts *CallOptions) map[string]string {
+	if env := SandboxHomeEnvironment(opts); env != nil {
+		return env
+	}
+	return ProviderAccountEnvironment(opts)
 }

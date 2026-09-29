@@ -310,7 +310,7 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	for _, opt := range options {
 		opt(opts)
 	}
-	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
 		return nil, err
 	}
 
@@ -505,12 +505,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 
 	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
 	paneBaseline, _ := captureTmuxPane(callCtx, sessionName)
-	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
+	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	var transcriptOffset int64
 	if info, statErr := os.Stat(transcriptPath); statErr == nil {
 		transcriptOffset = info.Size()
 	}
-	if err := claudeConfirmInitialSubmitAfterPaneError(ctx, nativeSessionID, workingDir, llmtypes.ProviderAccountEnvironment(opts)["HOME"], prompt, turnStart, transcriptOffset,
+	if err := claudeConfirmInitialSubmitAfterPaneError(ctx, nativeSessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"], prompt, turnStart, transcriptOffset,
 		sendPromptToTmux(callCtx, sessionName, prompt)); err != nil {
 		discardPersistentSession(err)
 		return nil, err
@@ -523,7 +523,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// stops when this function returns. The completed JSONL end_turn below is the
 	// authoritative final response; the pane remains the completion/display rail.
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
-		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
+		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 		// streamClaudeTranscript performs one final transcript flush after its
 		// context is cancelled. It must finish that flush before this body
 		// returns: WithObservability owns (and immediately closes) StreamChan
@@ -537,7 +537,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// fallback when no transcript is readable. Whichever finishes first ends the
 	// wait. The structured waiter publishes its result before cancelling the
 	// pane wait, so a cancelled pane wait always finds that result here.
-	accountHome := llmtypes.ProviderAccountEnvironment(opts)["HOME"]
+	accountHome := llmtypes.CLIHomeEnvironment(opts)["HOME"]
 	paneCtx, cancelPaneWait := context.WithCancel(callCtx)
 	structuredEnd := make(chan claudeCompletedTranscriptResponse, 1)
 	go func() {
@@ -616,7 +616,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	}
 	finalExtractionSource := "tmux_pane"
 	turnText := ""
-	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
+	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	if transcriptResponse.Found {
 		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
 			if ctxErr := callCtx.Err(); ctxErr != nil {
@@ -699,7 +699,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// records `usage` on every assistant event.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	effectiveModel := c.modelID
-	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); usage != nil || transcriptModel != "" {
+	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"]); usage != nil || transcriptModel != "" {
 		if usage != nil {
 			gi.PromptTokens = usage.PromptTokens
 			gi.CompletionTokens = usage.CompletionTokens
@@ -743,7 +743,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// their persisted history. Best-effort: empty when the transcript
 	// is missing, unparsable, or only contains the final assistant
 	// text with no internal loop.
-	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); len(sidecarMsgs) > 0 {
+	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"]); len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "claude-code",
 			Transport: llmtypes.CodingProviderTransportTmux,
@@ -995,7 +995,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		// (e.g. a tmux send-keys post-launch dismissal).
 		if os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
 			if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
-				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles, llmtypes.ProviderAccountEnvironment(opts)["HOME"]); err != nil {
+				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles, llmtypes.CLIHomeEnvironment(opts)["HOME"]); err != nil {
 					_ = err
 				} else if mcpPath != "" {
 					tempFiles = append(tempFiles, mcpPath)
@@ -1136,7 +1136,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// Pre-trust the working directory so Claude Code does not show its
 		// interactive "Do you trust the files in this folder?" dialog, which
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
-		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.ProviderAccountEnvironment(opts)["HOME"])
+		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	}
 	finalEnv := claudeInteractiveFinalEnv(c.oauthToken)
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
@@ -1147,10 +1147,17 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	scopedScrub := scopedLaunchScrub(finalEnv, scopedEnv, opts)
 	finalEnv = append(finalEnv, scopedEnv...)
 	unsetKeys := append(append([]string(nil), claudeAmbientAuthEnvKeys...), scopedUnset...)
+	args, cleanupSandbox, err := claudeLandlockArgs(opts, args, workingDir, sessionName)
+	if err != nil {
+		return fmt.Errorf("confine Claude Code: %w", err)
+	}
 	shellCommand, cleanupLaunchScript, err := shelllaunch.CommandWithScopedEnv(args, workingDir, finalEnv, unsetKeys, scopedScrub)
 	if err != nil {
+		cleanupSandbox()
 		return fmt.Errorf("prepare Claude Code launch environment: %w", err)
 	}
+	// The launcher deletes its policy once read; this is the backstop.
+	time.AfterFunc(30*time.Second, cleanupSandbox)
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, claudePromptSuggestionEnvArgs()...)
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
@@ -4442,7 +4449,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 			authFingerprint:  c.authFingerprint,
 			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
 			workingDir:       strings.TrimSpace(workingDir),
-			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
+			accountHome:      llmtypes.CLIHomeEnvironment(opts)["HOME"],
 			createdAt:        now,
 		}
 		session.mu.Lock()

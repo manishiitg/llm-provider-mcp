@@ -24,7 +24,13 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 			opts.Metadata.Custom = map[string]interface{}{}
 		}
 		opts.Metadata.Custom[providerAccountEnvironmentKey] = copy
-		if opts.CLISecurity != nil && copy["HOME"] != "" {
+		if opts.CLISecurity != nil && copy["HOME"] != "" && opts.CLISecurity.LandlockEnforced() {
+			// Confined: the account home is only the credential source; the
+			// CLI's home is the sandbox's private one.
+			policy := opts.CLISecurity.Clone()
+			policy.CredentialHome = copy["HOME"]
+			opts.CLISecurity = &policy
+		} else if opts.CLISecurity != nil && copy["HOME"] != "" {
 			policy := opts.CLISecurity.Clone()
 			policy.PrivateHome = copy["HOME"]
 			policy.HostReadPaths = append(policy.HostReadPaths, copy["HOME"])
@@ -55,16 +61,22 @@ func ProviderAccountEnvironment(opts *CallOptions) map[string]string {
 }
 func mergeProviderAccountEnvironment(base []string, opts *CallOptions) []string {
 	env := ProviderAccountEnvironment(opts)
+	// Which credentials the CLI receives is decided by the real account alone.
+	accountBound := len(env) > 0
+	if accountBound {
+		for key, value := range providerAccountCredentials(opts) {
+			env[key] = value
+		}
+	}
+	// A confined CLI's home replaces the account's (or server's) paths.
+	for key, value := range SandboxHomeEnvironment(opts) {
+		env[key] = value
+	}
 	out := make([]string, 0, len(base)+len(env))
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
-		if env[key] == "" && !(len(env) > 0 && providerAccountCredentialKey(key)) {
+		if env[key] == "" && !(accountBound && providerAccountCredentialKey(key)) {
 			out = append(out, entry)
-		}
-	}
-	if len(env) > 0 {
-		for key, value := range providerAccountCredentials(opts) {
-			env[key] = value
 		}
 	}
 	keys := make([]string, 0, len(env))
