@@ -48,12 +48,11 @@ func Write(targetDir string, skills []*llmtypes.Skill) error {
 		}
 		skillDir := filepath.Join(targetDir, folder)
 		markerPath := filepath.Join(skillDir, projectfile.SkillMarkerFile)
-		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
-			if _, markerErr := os.Stat(markerPath); markerErr != nil {
-				// The project's own skill of this name: never overwrite it.
-				continue
-			}
-		}
+		// A folder of this name with no marker was written by an earlier
+		// version (before markers) or is the project's own skill. The skills
+		// we project have platform-specific names, and leaving old ones
+		// unmarked would keep them stale forever, so a same-named folder is
+		// taken over and marked. Anything with a different name is untouched.
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
 			return fmt.Errorf("skillproject: create %s: %w", skillDir, err)
 		}

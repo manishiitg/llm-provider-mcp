@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/projectfile"
 )
 
 func TestWriteBasicSkill(t *testing.T) {
@@ -124,29 +125,40 @@ func TestWriteSkipsEmpty(t *testing.T) {
 	}
 }
 
-// A skill the project already has under the same name is never overwritten;
-// one this package wrote earlier is refreshed.
-func TestWriteNeverOverwritesUsersOwnSkill(t *testing.T) {
+// A skill folder an earlier version wrote (no marker) is updated and marked,
+// so changed skills reach existing projects; a differently named skill of the
+// project's own is never touched.
+func TestWriteAdoptsOldSkillsAndKeepsOthers(t *testing.T) {
 	dir := t.TempDir()
-	own := filepath.Join(dir, "review")
+	old := filepath.Join(dir, "code-review")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("OLD VERSION"), 0o644)
+	own := filepath.Join(dir, "team-deploy")
 	if err := os.MkdirAll(own, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(own, "SKILL.md"), []byte("MINE"), 0o644)
-	skill := &llmtypes.Skill{Name: "review", Content: "OURS"}
-	if err := Write(dir, []*llmtypes.Skill{skill}); err != nil {
+
+	if err := Write(dir, []*llmtypes.Skill{{Name: "code-review", Content: "V2"}}); err != nil {
 		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(old, "SKILL.md")); !strings.Contains(string(b), "V2") {
+		t.Fatalf("old projected skill not updated: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(old, projectfile.SkillMarkerFile)); err != nil {
+		t.Fatalf("adopted skill not marked: %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(own, "SKILL.md")); string(b) != "MINE" {
-		t.Fatalf("user's skill overwritten: %q", b)
+		t.Fatalf("project's own skill changed: %q", b)
 	}
-	if err := Write(dir, []*llmtypes.Skill{{Name: "fresh", Content: "V1"}}); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(own, projectfile.SkillMarkerFile)); err == nil {
+		t.Fatal("project's own skill was marked as ours")
 	}
-	if err := Write(dir, []*llmtypes.Skill{{Name: "fresh", Content: "V2"}}); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "fresh", "SKILL.md")); !strings.Contains(string(b), "V2") {
-		t.Fatalf("our own skill not refreshed: %q", b)
+	// Later updates keep flowing.
+	Write(dir, []*llmtypes.Skill{{Name: "code-review", Content: "V3"}})
+	if b, _ := os.ReadFile(filepath.Join(old, "SKILL.md")); !strings.Contains(string(b), "V3") {
+		t.Fatalf("second update lost: %q", b)
 	}
 }
