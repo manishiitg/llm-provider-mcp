@@ -213,6 +213,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 	cmd.Env = claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken)
 	cmd.Stdin = strings.NewReader(prompt) // prompt via stdin (--input-format text default)
+	cleanupSandbox, err := claudeLandlockCmd(opts, cmd, workingDir)
+	if err != nil {
+		return nil, fmt.Errorf("confine Claude Code: %w", err)
+	}
+	defer cleanupSandbox()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

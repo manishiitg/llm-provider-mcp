@@ -81,3 +81,51 @@ func TestClaudeCodeTmuxRealLandlockConfinesNativeToolsP0(t *testing.T) {
 		t.Fatalf("no transcript in the private home %s", privateHome)
 	}
 }
+
+// The structured (stream-json) lane, used by workflow steps and background
+// turns, is confined the same way.
+func TestClaudeCodeStructuredRealLandlockConfinesNativeToolsP0(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+	runner := os.Getenv("AGENTWORKS_LANDLOCK_RUNNER")
+	if runtime.GOOS != "linux" || runner == "" {
+		t.Skip("needs Linux and AGENTWORKS_LANDLOCK_RUNNER")
+	}
+	workDir := t.TempDir()
+	otherDir := t.TempDir()
+	privateHome := filepath.Join(t.TempDir(), "cli-home")
+	own := "OWN-" + randomHex(4)
+	foreign := "FOREIGN-" + randomHex(4)
+	if err := os.WriteFile(filepath.Join(workDir, "own.txt"), []byte(own+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := filepath.Join(otherDir, "secret-test.txt")
+	if err := os.WriteFile(foreignPath, []byte(foreign+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy := llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner, PrivateHome: privateHome}
+	opts := []llmtypes.CallOption{
+		WithClaudeStructuredTransport(true),
+		WithWorkingDir(workDir),
+		WithClaudeCodeTools(claudeHybridLiveTools),
+		WithPermissionMode("auto"),
+		WithEffort("low"),
+		func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p },
+	}
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(defaultClaudeInteractiveTestModel, os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prompt := "Integration test in disposable scratch folders. Using ONLY your native Read tool, read own.txt, then read " + foreignPath +
+		". Reply on two lines: the first line of own.txt, and the result or exact error for the second file."
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("structured GenerateContent under Landlock: %v", err)
+	}
+	final := firstChoiceText(resp)
+	t.Logf("reply: %q", final)
+	if !strings.Contains(final, own) {
+		t.Fatalf("confined structured Claude lost its own folder: %q", final)
+	}
+	if strings.Contains(final, foreign) {
+		t.Fatalf("confined structured Claude read another folder: %q", final)
+	}
+}

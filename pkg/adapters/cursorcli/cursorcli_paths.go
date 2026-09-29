@@ -16,6 +16,11 @@ func cursorChatsRoots(home string) []string {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); filepath.IsAbs(xdg) {
 		roots = append(roots, filepath.Join(xdg, "cursor", "chats"))
 	}
+	// A confined or account-scoped Cursor has its own XDG config under its
+	// home, not the server's.
+	if strings.TrimSpace(home) != "" {
+		roots = append(roots, filepath.Join(home, ".config", "cursor", "chats"))
+	}
 	legacy := filepath.Join(home, ".cursor", "chats")
 	for _, root := range roots {
 		if filepath.Clean(root) == filepath.Clean(legacy) {

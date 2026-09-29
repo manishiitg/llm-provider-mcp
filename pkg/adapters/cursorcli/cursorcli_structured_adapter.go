@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -431,6 +432,11 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		cmd.Dir = workingDir
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts)
+	cleanupSandbox, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, cursorLandlockReads(cmd.Args, workingDir), nil)
+	if err != nil {
+		return nil, fmt.Errorf("confine Cursor: %w", err)
+	}
+	defer cleanupSandbox()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

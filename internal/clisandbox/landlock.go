@@ -311,3 +311,43 @@ func JSONFilePaths(configFiles []string) []string {
 	}
 	return paths
 }
+
+// LandlockCmd confines a structured-transport launch (exec.Cmd) the same way
+// LandlockArgs confines a tmux launch. cmd.Env already carries the private
+// home paths (MergeCodingAgentSecretEnvironment). It is a no-op when the
+// policy does not confine the CLI on this host.
+func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir string, runtimeReadPaths, runtimeWritePaths []string) (func(), error) {
+	if !policy.LandlockEnforced() {
+		return func() {}, nil
+	}
+	if cmd == nil || len(cmd.Args) == 0 {
+		return func() {}, errors.New("coding CLI command is empty")
+	}
+	if workingDir == "" {
+		workingDir = cmd.Dir
+	}
+	args := append([]string{cmd.Path}, cmd.Args[1:]...)
+	wrapped, cleanup, err := LandlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), runtimeWritePaths)
+	if err != nil {
+		return func() {}, err
+	}
+	cmd.Path = wrapped[0]
+	cmd.Args = wrapped
+	return cleanup, nil
+}
+
+// ConfigDirFiles lists the JSON files directly inside dir (e.g. a working
+// directory's .cursor/ or .claude/), for grants derived from project configs.
+func ConfigDirFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return files
+}

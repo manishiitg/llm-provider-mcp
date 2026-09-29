@@ -3,6 +3,7 @@ package claudecode
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
@@ -18,12 +19,7 @@ func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, s
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return args, func() {}, nil
 	}
-	read := clisandbox.ArgFilePaths(args)
-	configs := append(append([]string(nil), read...), filepath.Join(workingDir, ".mcp.json"))
-	read = append(read, clisandbox.MCPCommandPaths(configs)...)
-	// Settings name the status-line helper and hook scripts inside the JSON.
-	read = append(read, clisandbox.JSONFilePaths(configs)...)
-	read = append(read, filepath.Join(os.TempDir(), "claude-code-hooks"))
+	read := claudeLandlockReads(args, workingDir)
 	if err := claudeMirrorLandlockReads(opts.CLISecurity, workingDir); err != nil {
 		return nil, func() {}, err
 	}
@@ -72,4 +68,26 @@ func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir st
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+// claudeLandlockReads are the files a confined Claude launch needs outside
+// its granted folders: files named in argv, the MCP servers and the
+// status-line helper and hook scripts those configs name, and the hooks.
+func claudeLandlockReads(args []string, workingDir string) []string {
+	read := clisandbox.ArgFilePaths(args)
+	configs := append(append([]string(nil), read...), filepath.Join(workingDir, ".mcp.json"))
+	read = append(read, clisandbox.MCPCommandPaths(configs)...)
+	read = append(read, clisandbox.JSONFilePaths(configs)...)
+	return append(read, filepath.Join(os.TempDir(), "claude-code-hooks"))
+}
+
+// claudeLandlockCmd confines a structured (stream-json) Claude launch.
+func claudeLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir string) (func(), error) {
+	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+		return func() {}, nil
+	}
+	if err := claudeMirrorLandlockReads(opts.CLISecurity, workingDir); err != nil {
+		return func() {}, err
+	}
+	return clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, claudeLandlockReads(cmd.Args, workingDir), nil)
 }

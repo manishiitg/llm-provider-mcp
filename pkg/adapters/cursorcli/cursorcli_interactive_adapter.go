@@ -655,7 +655,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	session, created, ok := cursorPersistentRegistry.GetOrCreate(ownerSessionID, func() *cursorInteractiveSession {
 		session := &cursorInteractiveSession{
 			ownerSessionID:   ownerSessionID,
-			accountHome:      llmtypes.ProviderAccountEnvironment(opts)["HOME"],
+			accountHome:      llmtypes.CLIHomeEnvironment(opts)["HOME"],
 			tmuxSessionName:  newCursorTmuxSessionName(),
 			persistent:       persistent,
 			createdAt:        now,
@@ -708,6 +708,17 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	env = append(env, scopedEnv...)
 	env = append(env, cursorAmbientAPIKeyEnv(env, os.Getenv("CURSOR_API_KEY"), opts)...)
 
+	args, cleanupSandbox, err := cursorLandlockArgs(opts, args, workingDir)
+	if err != nil {
+		session.initErr = fmt.Errorf("confine Cursor: %w", err)
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
+		session.mu.Unlock()
+		removeCursorPersistentSession(ownerSessionID, session)
+		return nil, false, session.initErr
+	}
+	time.AfterFunc(30*time.Second, cleanupSandbox)
 	if err := startCursorTmuxSession(ctx, session.tmuxSessionName, args, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		session.initErr = err
 		if cleanupFiles != nil {
