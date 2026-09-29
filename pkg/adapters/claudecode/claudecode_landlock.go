@@ -47,7 +47,7 @@ func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir st
 	if permissions == nil {
 		permissions = map[string]any{}
 	}
-	var dirs []any
+	dirs := []any{} // Claude rejects the whole settings file when this is null
 	seen := map[string]bool{workingDir: true}
 	for _, list := range [][]string{policy.WorkspaceReadPaths, policy.WorkspaceWritePaths, policy.HostReadPaths, policy.HostWritePaths} {
 		for _, dir := range list {
