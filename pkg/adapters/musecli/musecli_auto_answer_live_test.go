@@ -72,3 +72,35 @@ func TestMuseCLIRealAutoFirstOptionThreeQuestionsP0(t *testing.T) {
 	}
 	t.Logf("PASS: auto-selected all three first options %q without selection announcements; final=%q", expected, final)
 }
+
+// Unattended runs must also move past Muse's multi-select (checkbox) widget:
+// it toggles the first option and submits (the 2026-09-29 stuck-chat bug).
+func TestMuseCLIRealAutoAnswerMultiSelectP0(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	owner := "auto-multiselect-p0-" + museRandomHex(t, 3)
+	t.Cleanup(func() { KillMusePersistentSession(owner) })
+	opts := []llmtypes.CallOption{WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), WithWorkingDir(t.TempDir()), llmtypes.WithReasoningEffort("low")}
+	prompt := "Integration test of your native request_user_input widget. Ask ONE question that lets me pick more than one answer: set its selection to {\"mode\": \"multiple\", \"min_selections\": 1, \"max_selections\": 3}. Question: Which fruits? Options: Apple, Banana, Cherry. You must call the native tool and wait for actual answers; do not select them yourself. Do not use other tools. Then report ONLY the selected fruit names separated by |."
+	resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("multi-select auto-answer round trip: %v", err)
+	}
+	handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle
+	if handle == nil {
+		t.Fatal("missing native Muse session handle")
+	}
+	transcript, err := os.ReadFile(museSessionLogPath(handle.NativeSessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var multiple, answered bool
+	for _, line := range strings.Split(string(transcript), "\n") {
+		multiple = multiple || (strings.Contains(line, `"user_input_prompt_requested"`) && strings.Contains(line, `"mode":"multiple"`))
+		answered = answered || (strings.Contains(line, `"user_input_prompt_settled"`) && strings.Contains(line, `"answered"`) && strings.Contains(line, `"Apple"`))
+	}
+	if !multiple || !answered {
+		t.Fatalf("multi-select not auto-answered with the first option (multiple=%v answered=%v); reply: %s", multiple, answered, resp.Choices[0].Content)
+	}
+}
