@@ -438,6 +438,11 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 		p.logger.Infof("Pi CLI structured: no resolved API key -- relying on ambient environment / local pi auth")
 	}
 	cmd.Stdin = strings.NewReader(prompt)
+	cleanupSandbox, err := piLandlockCmd(opts, cmd, workingDir, agentDir)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupSandbox()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -35,7 +35,9 @@ func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 	for _, opt := range options {
 		opt(opts)
 	}
-	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+	// Both Pi lanes (tmux and structured) start under the Landlock launcher
+	// when the policy confines the CLI.
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
 		return nil, err
 	}
 

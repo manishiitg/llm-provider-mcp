@@ -590,7 +590,12 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	defer release()
-	if err := startPiTmuxSession(ctx, sessionName, []string{launchScriptPath}, env, unsetEnv, scopedScrub, workingDir); err != nil {
+	launchArgs, cleanupSandbox, err := piLandlockArgs(opts, []string{launchScriptPath}, workingDir)
+	if err != nil {
+		return nil, err
+	}
+	time.AfterFunc(30*time.Second, cleanupSandbox)
+	if err := startPiTmuxSession(ctx, sessionName, launchArgs, env, unsetEnv, scopedScrub, workingDir); err != nil {
 		return nil, err
 	}
 	tmuxinput.MarkStartingForOwner(sessionName, ownerSessionID)
