@@ -2,9 +2,9 @@ package musecli
 
 import (
 	"context"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
