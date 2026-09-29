@@ -286,7 +286,7 @@ const agyLoginRequiredMarker = "Authentication required"
 // never closed here. Wire usage lands on the response (token_usage); the
 // CLI-native conversation id is attached as the session handle for resume.
 func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
-	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
 		return nil, err
 	}
 	prompt, err := agyBuildExecPrompt(messages, llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts))
@@ -393,6 +393,11 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	// conversation scoping), so pin it when the caller asks. Empty keeps
 	// the inherited cwd — the working_directory cert pins the explicit case.
 	cmd.Dir = workdir
+	cleanupSandbox, err := agyLandlockCmd(opts, cmd, workdir, privateHome)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupSandbox()
 	releaseToolHook, err := agyHoldToolModeHook(workdir, toolMode)
 	if err != nil {
 		return nil, err

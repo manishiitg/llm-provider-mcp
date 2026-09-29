@@ -223,6 +223,11 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 	// The private AGY home must win over a provider-account HOME overlay;
 	// account credentials still reach the child through their own variables.
 	launchEnv := append(append([]string(nil), scopedEnv...), baseEnv...)
+	cli, cleanupSandbox, err := agyLandlockArgs(opts, cli, workingDir, privateHome)
+	if err != nil {
+		return nil, err
+	}
+	time.AfterFunc(30*time.Second, cleanupSandbox)
 	command, cleanupScript, err := shelllaunch.CommandWithScopedEnv(cli, workingDir, launchEnv, unsetEnv, scrub)
 	if err != nil {
 		return nil, fmt.Errorf("prepare agy sidecar environment: %w", err)

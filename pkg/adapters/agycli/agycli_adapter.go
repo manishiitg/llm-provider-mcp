@@ -63,7 +63,7 @@ func (a *AgyCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 // from the conversation .db steps the turn appended. Schema-mode is exec-only.
 // Interactive effort must match the selected model's baked-in effort.
 func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
-	if err := llmtypes.ValidateCLISecurityLaunch(opts); err != nil {
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
 		return nil, err
 	}
 	owner := agyStringMetadata(opts, MetadataKeyInteractiveSessionID)

@@ -14,6 +14,8 @@ func TestCursorChatsRootsPrefersXDGAndKeepsLegacyFallback(t *testing.T) {
 
 	want := []string{
 		filepath.Join(xdg, "cursor", "chats"),
+		// The CLI's own XDG home (confined or account-scoped Cursor).
+		filepath.Join(home, ".config", "cursor", "chats"),
 		filepath.Join(home, ".cursor", "chats"),
 	}
 	if got := cursorChatsRoots(home); !reflect.DeepEqual(got, want) {
@@ -42,7 +44,7 @@ func TestCursorStoreDBForNativeSessionFindsXDGTranscript(t *testing.T) {
 
 func TestCursorChatsRootsUsesLegacyWhenXDGIsUnsetOrRelative(t *testing.T) {
 	home := t.TempDir()
-	want := []string{filepath.Join(home, ".cursor", "chats")}
+	want := []string{filepath.Join(home, ".config", "cursor", "chats"), filepath.Join(home, ".cursor", "chats")}
 	for _, xdg := range []string{"", "relative/config"} {
 		t.Run(xdg, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", xdg)
