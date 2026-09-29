@@ -129,3 +129,57 @@ func TestClaudeCodeStructuredRealLandlockConfinesNativeToolsP0(t *testing.T) {
 		t.Fatalf("confined structured Claude read another folder: %q", final)
 	}
 }
+
+// Full CLI (PLAT-364 phase 4): Claude's own Bash and file edits, confined by
+// the Landlock launcher: it writes and runs commands in its folder, and
+// cannot write another folder or read the service's real home.
+func TestClaudeCodeTmuxRealLandlockFullCLIP0(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+	runner := os.Getenv("AGENTWORKS_LANDLOCK_RUNNER")
+	if runtime.GOOS != "linux" || runner == "" {
+		t.Skip("needs Linux and AGENTWORKS_LANDLOCK_RUNNER")
+	}
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+	workDir := t.TempDir()
+	otherDir := t.TempDir()
+	realHome, _ := os.UserHomeDir()
+	policy := llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner, PrivateHome: filepath.Join(t.TempDir(), "cli-home")}
+	opts := []llmtypes.CallOption{
+		WithInteractiveSessionID("claude-fullcli-" + randomHex(4)),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithClaudeCodeTools(claudeHybridLiveTools + ",Bash,Write,Edit,MultiEdit"),
+		// Full CLI: the Landlock lock is the boundary, so Claude must not stop
+		// the turn to ask (mcpagent passes the same option in full mode).
+		WithDangerouslySkipPermissions(),
+		WithAllowedTools("Bash,Write,Edit,MultiEdit,Read,Glob,Grep"),
+		WithEffort("low"),
+		func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p },
+	}
+	token := "FULL-" + randomHex(4)
+	prompt := "Integration test in disposable scratch folders; this is authorised. Do each step with your own tools and report each outcome: " +
+		"1) Use Write to create note.txt here containing " + token + ". " +
+		"2) Use Bash to run: echo " + token + " > shell.txt && cat shell.txt. " +
+		"3) Use Bash to run: echo x > " + filepath.Join(otherDir, "escape.txt") + " ; and report the exact error. " +
+		"4) Use Write to create " + filepath.Join(otherDir, "escape2.txt") + " and report the exact error. " +
+		"5) Use Bash to run: ls " + filepath.Join(realHome, ".claude") + " ; and report the exact error."
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(defaultClaudeInteractiveTestModel, os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("Full CLI turn: %v", err)
+	}
+	t.Logf("reply: %.1200s", firstChoiceText(resp))
+	for _, name := range []string{"note.txt", "shell.txt"} {
+		data, readErr := os.ReadFile(filepath.Join(workDir, name))
+		if readErr != nil || !strings.Contains(string(data), token) {
+			t.Fatalf("Full CLI could not write %s in its own folder: %v %q", name, readErr, data)
+		}
+	}
+	for _, name := range []string{"escape.txt", "escape2.txt"} {
+		if _, statErr := os.Stat(filepath.Join(otherDir, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("Full CLI wrote %s outside its folder", name)
+		}
+	}
+}
