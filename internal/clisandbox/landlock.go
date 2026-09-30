@@ -98,12 +98,12 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	read = append(read, runtimeReadPaths...)
 	read = append(read, executableDirs(args)...)
 	write := []string{workingDir, home}
-	// Muse's startup needs directory listing, not shared temp-file access;
-	// it uses the private TMPDIR supplied by CLIHomeEnvironment. Keep other
-	// providers' existing /tmp compatibility grant (Cursor has fixed socket
-	// paths), without exposing other CLIs' temp files to a Muse session.
-	// The shared-temp limitation is recorded in the builder's docs/DECISIONS.md.
-	if strings.TrimSpace(policy.Provider) != "muse-cli" {
+	// Only Cursor gets the shared /tmp: it keeps sockets at fixed /tmp paths
+	// (cursor-askpass-*.sock, and .cursor/<project> when its home path is too long for a socket).
+	// Every other CLI uses the private TMPDIR from CLIHomeEnvironment and starts without it (Muse,
+	// Pi and Agy verified under the real launcher; Claude and Codex ran confined without it), so
+	// one CLI's temp files are not readable by another. See docs/DECISIONS.md in the builder.
+	if strings.EqualFold(strings.TrimSpace(policy.Provider), "cursor-cli") {
 		write = append(write, "/tmp")
 	}
 	write = append(write, policy.WorkspaceWritePaths...)
