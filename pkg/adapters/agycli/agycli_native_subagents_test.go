@@ -1,6 +1,7 @@
 package agycli
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestAgyNativeSubagentCompletionRequiresChildAndParentReceipt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err = db.Exec(`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+	if _, err = db.ExecContext(context.Background(), `CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
 		t.Fatal(err)
 	}
 	// A single launched child, followed by a completed interim assistant.
@@ -45,7 +46,7 @@ func TestAgyNativeSubagentCompletionRequiresChildAndParentReceipt(t *testing.T) 
 		payload = wrap(field, payload)
 	}
 	insert := func(idx, typ int, raw []byte) {
-		if _, err := db.Exec(`INSERT INTO steps VALUES (?, ?, 3, ?)`, idx, typ, raw); err != nil {
+		if _, err := db.ExecContext(context.Background(), `INSERT INTO steps VALUES (?, ?, 3, ?)`, idx, typ, raw); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,10 +67,10 @@ func TestAgyNativeSubagentCompletionRequiresChildAndParentReceipt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer child.Close()
-	if _, err := child.Exec(`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+	if _, err := child.ExecContext(context.Background(), `CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := child.Exec(`INSERT INTO steps VALUES (0, 15, 3, ?)`, agyTestPayload(15, 20, 1, "done")); err != nil {
+	if _, err := child.ExecContext(context.Background(), `INSERT INTO steps VALUES (0, 15, 3, ?)`, agyTestPayload(15, 20, 1, "done")); err != nil {
 		t.Fatal(err)
 	}
 	if !agyPendingNativeSubagents(read(), 0) {
@@ -80,7 +81,7 @@ func TestAgyNativeSubagentCompletionRequiresChildAndParentReceipt(t *testing.T) 
 	if agyPendingNativeSubagents(read(), 0) {
 		t.Fatal("completed, notified child still pending")
 	}
-	if _, err := child.Exec(`UPDATE steps SET status = 6`); err != nil {
+	if _, err := child.ExecContext(context.Background(), `UPDATE steps SET status = 6`); err != nil {
 		t.Fatal(err)
 	}
 	if !agyPendingNativeSubagents(read(), 0) {

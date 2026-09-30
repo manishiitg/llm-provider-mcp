@@ -84,7 +84,7 @@ func TestAgyFullNativeToolsLaunchPolicy(t *testing.T) {
 		t.Fatalf("full confinement on %s: %v", runtime.GOOS, err)
 	}
 	for _, mode := range []string{"full", "full_unconfined"} {
-		cmd := exec.Command("sh", "-c", agyToolModeHookCommand("python3", mode))
+		cmd := exec.CommandContext(context.Background(), "sh", "-c", agyToolModeHookCommand("python3", mode))
 		cmd.Stdin = strings.NewReader("{")
 		out, err := cmd.CombinedOutput()
 		if err != nil || !strings.Contains(string(out), `"deny"`) {
