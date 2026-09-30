@@ -44,7 +44,7 @@ func TestInteractiveDraftProtectsNativeComposer(t *testing.T) {
 
 func TestInteractivePasteAndReportsAreNotSubmissions(t *testing.T) {
 	b := NewBroker()
-	for _, report := range []string{"\x1b[1;3R", "\x1b[?1;2c", "\x1b[<0;1;1M", "\x1b[I", "\x1b[O", "\x1b[M !!", "\x1b]10;rgb:ffff/ffff/ffff\x1b\\"} {
+	for _, report := range []string{"\x1b[1;3R", "\x1b[?1;2c", "\x1b[<0;1;1M", "\x1b[I", "\x1b[O", "\x1b[M !!", "\x1b]10;rgb:ffff/ffff/ffff\x1b\\", "\x1b[?0u", "\x1b[?2026;2$y", "\x1b[8;24;80t", "\x1b[2;1;1;112;112;1;0x"} {
 		b.NoteInteractiveInput("pane", []byte(report))
 	}
 	if b.HasInteractiveDraft("pane") {
@@ -62,5 +62,16 @@ func TestInteractivePasteAndReportsAreNotSubmissions(t *testing.T) {
 	b.ClearInteractiveDraft("pane")
 	if b.HasInteractiveSubmissions("pane") {
 		t.Fatal("dead process retained submission state")
+	}
+}
+
+// Keys that look like reports are still input: arrows, function keys and a kitty key press.
+func TestInteractiveKeysAreNotMistakenForReports(t *testing.T) {
+	for _, key := range []string{"\x1b[A", "\x1b[15~", "\x1b[97u", "\x1b[1;5D", "hi"} {
+		b := NewBroker()
+		b.NoteInteractiveInput("pane", []byte(key))
+		if !b.HasInteractiveDraft("pane") {
+			t.Fatalf("%q was treated as a terminal report", key)
+		}
 	}
 }

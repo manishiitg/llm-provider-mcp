@@ -3,6 +3,7 @@ package tmuxinput
 import (
 	"bytes"
 	"errors"
+	"log"
 )
 
 // ErrInteractiveDraft proves no programmatic input was written. The caller
@@ -45,6 +46,7 @@ func (b *Broker) NoteInteractiveInput(sessionID string, data []byte) {
 	if draft == nil {
 		draft = &interactiveDraft{}
 		b.interactiveDrafts[sessionID] = draft
+		logInteractiveDraftStart(sessionID, data)
 	}
 	draft.version++
 	if bytes.ContainsAny(data, "\r\n") {
@@ -65,7 +67,19 @@ func isTerminalReport(data []byte) bool {
 		return false
 	}
 	last := data[len(data)-1]
-	return last == 'R' || last == 'c' || last == 'n' || (data[2] == '<' && (last == 'M' || last == 'm'))
+	switch last {
+	case 'R', 'c', 'n':
+		return true // cursor position, device attributes, status
+	case 't', 'x':
+		return true // window-size and terminal-parameter reports (\x1b[8;24;80t, \x1b[2;1;1;112;112;1;0x)
+	case 'y':
+		return len(data) >= 4 && data[len(data)-2] == '$' // mode report (\x1b[?2026;2$y)
+	case 'u':
+		return data[2] == '?' // kitty keyboard flags reply (\x1b[?0u); a plain \x1b[97u is a key press
+	case 'M', 'm':
+		return data[2] == '<' // mouse
+	}
+	return false
 }
 
 func (b *Broker) HasInteractiveSubmissions(sessionID string) bool {
@@ -105,4 +119,19 @@ func (b *Broker) ConfirmInteractiveSubmission(sessionID string) {
 	if draft := b.interactiveDrafts[sessionID]; draft != nil && draft.submitVersion == draft.version {
 		delete(b.interactiveDrafts, sessionID)
 	}
+}
+
+// logInteractiveDraftStart records what first reserved a session's composer, so a chat send refused
+// with "finish or clear the terminal draft" can be traced to its cause. Control sequences are logged
+// as they are (they are terminal traffic, not typing); typed text never is, only its length.
+func logInteractiveDraftStart(sessionID string, data []byte) {
+	if len(data) > 0 && data[0] == 0x1b {
+		shown := data
+		if len(shown) > 24 {
+			shown = shown[:24]
+		}
+		log.Printf("[INTERACTIVE_DRAFT] %s: draft started by an escape sequence %q (%d bytes)", sessionID, shown, len(data))
+		return
+	}
+	log.Printf("[INTERACTIVE_DRAFT] %s: draft started by typed input (%d bytes)", sessionID, len(data))
 }
