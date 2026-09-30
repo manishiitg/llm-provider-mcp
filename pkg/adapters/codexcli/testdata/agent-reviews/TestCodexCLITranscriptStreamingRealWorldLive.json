@@ -1,52 +1,46 @@
 {
   "test": "TestCodexCLITranscriptStreamingRealWorldLive",
-  "summary": "Codex bridge-only: web_search -\u003e write_file (to disk) -\u003e read_file, streamed live",
+  "summary": "Codex bridge-only: web_search -> write_file (to disk) -> read_file, streamed live",
   "review_criteria": [
     "no duplicated lines or chunks",
     "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
     "human-readable — reads like an assistant working, coherent and natural",
-    "correct text \u003c-\u003e tool interleaving order (narration then the tool it describes)",
+    "correct text <-> tool interleaving order (narration then the tool it describes)",
     "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
     "the final answer is coherent and matches the work performed",
     "real work actually happened (e.g. the file was written to disk)"
   ],
   "output": {
     "content_chunks": [
-      "I’ll search for the project code word now.",
-      "I found the code word and will save only it to result.txt.",
-      "I’ll write the code word alone into the requested file.",
-      "I’ll read result.txt to confirm the saved content.",
-      "I’ll confirm the file contents now.",
-      "ZEBRA_088ef247"
+      "I’ll search for the project code word.\n",
+      "I’ll save only the code word in result.txt.\n",
+      "I’ll write ZEBRA_5934f802 to result.txt.\n",
+      "I’ll read result.txt to confirm what was saved.\n",
+      "ZEBRA_5934f802"
     ],
-    "file_on_disk": "ZEBRA_088ef247",
-    "final": "ZEBRA_088ef247",
+    "file_on_disk": "ZEBRA_5934f802",
+    "final": "ZEBRA_5934f802",
     "stream_order": [
       "text",
       "tool",
       "tool",
-      "tool",
       "text",
       "tool",
       "text",
       "tool",
-      "tool",
-      "text",
       "tool",
       "text",
       "tool",
       "tool",
       "text"
     ],
-    "streamed_content": "I’ll search for the project code word now.I found the code word and will save only it to result.txt.I’ll write the code word alone into the requested file.I’ll read result.txt to confirm the saved content.I’ll confirm the file contents now.ZEBRA_088ef247",
+    "streamed_content": "I’ll search for the project code word.\nI’ll save only the code word in result.txt.\nI’ll write ZEBRA_5934f802 to result.txt.\nI’ll read result.txt to confirm what was saved.\nZEBRA_5934f802",
     "tool_names": [
-      "exec",
       "exec",
       "web_search",
       "exec",
       "exec",
       "write_file",
-      "exec",
       "exec",
       "read_file"
     ]
@@ -55,10 +49,8 @@
   "agent_review": {
     "verdict": "good",
     "reviewed_fingerprint": "71129177f5cefb9a",
-    "reviewer": "claude-opus-4-8 (agentic P0 review)",
-    "issues": [
-      "The summary says 'bridge-only', but codex's native exec (shell) tool was available and used 6x, interleaved around the three MCP tools (exec/exec/web_search, exec/exec/write_file, exec/exec/read_file). The realworld config does not disable codex's shell, so this run is MCP+shell, not strictly MCP-only. Non-blocking for the streaming contract (the intended MCP tools all ran and the file was written), but the summary wording overstates isolation."
-    ],
-    "notes": "Streaming contract met: 6 distinct block-level content chunks (no duplication, clean formatting, natural narration) interleaved correctly with the tool calls, streamed live from the rollout JSONL. All three intended MCP tools executed (web_search -> write_file -> read_file) and real work happened — result.txt on disk contains the searched code word ZEBRA_088ef247, which is also the coherent final answer. Signed good; the exec-usage observation above is a config/wording note to track, not a streaming defect."
+    "reviewer": "Codex (0.159.2 certification, 2026-09-30)",
+    "issues": [],
+    "notes": "Reviewed the actual Codex CLI 0.159.2 / GPT-6.1-Sol capture and corresponding rollout tool arguments. Five distinct text chunks are clean, readable and ordered around the MCP search/write/read calls; there is no duplicated narration or terminal chrome. The final code word matches result.txt on disk. The four exec calls are Codex code-mode JavaScript wrappers that discover and invoke the MCP tools, not shell execution; the semantic web_search, write_file and read_file events are all present."
   }
 }

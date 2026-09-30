@@ -41,9 +41,9 @@ func TestStreamCodexStatusLineEmitsChunk(t *testing.T) {
 		t.Fatalf("write rollout: %v", err)
 	}
 
-	// Register the session so codexWorkingDirForSession resolves the rollout.
+	// Register the session with its exact rollout, as submission does in production.
 	old := codexPersistentRegistry.Replace(map[string]*codexInteractiveSession{
-		sessionName: {tmuxSessionName: sessionName, workingDir: cwd},
+		sessionName: {tmuxSessionName: sessionName, workingDir: cwd, rolloutPath: rollout},
 	})
 	t.Cleanup(func() {
 		codexPersistentRegistry.Replace(old)
@@ -84,5 +84,39 @@ func TestStreamCodexStatusLineEmitsChunk(t *testing.T) {
 		}
 	default:
 		t.Fatal("no chunk emitted on streamChan")
+	}
+}
+
+func TestBuildCodexStatusLineUsesBoundConversation(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cwd := t.TempDir()
+	day := filepath.Join(os.Getenv("CODEX_HOME"), "sessions", "2026", "09", "30")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRollout := func(name, tokens string) string {
+		t.Helper()
+		path := filepath.Join(day, name)
+		lines := `{"type":"session_meta","payload":{"id":"` + name + `","cwd":"` + cwd + `"}}` + "\n" +
+			`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":` + tokens + `,"output_tokens":1}}}}` + "\n"
+		if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	own := writeRollout("rollout-own.jsonl", "100")
+	writeRollout("rollout-parallel.jsonl", "999")
+	const bound, cold = "bound-terminal", "cold-terminal"
+	old := codexPersistentRegistry.Replace(map[string]*codexInteractiveSession{
+		bound: {tmuxSessionName: bound, workingDir: cwd, rolloutPath: own},
+		cold:  {tmuxSessionName: cold, workingDir: cwd},
+	})
+	t.Cleanup(func() { codexPersistentRegistry.Replace(old) })
+	status := buildCodexStatusLine(bound, cwd)
+	if status == nil || status.InputTokens != 100 {
+		t.Fatalf("bound terminal must report its own usage, got %+v", status)
+	}
+	if status := buildCodexStatusLine(cold, cwd); status != nil {
+		t.Fatalf("unbound terminal must not borrow a parallel conversation's usage, got %+v", status)
 	}
 }

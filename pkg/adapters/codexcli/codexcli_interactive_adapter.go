@@ -300,8 +300,13 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	setCodexRolloutBindPrompt(session, prompt, bindSince)
 	promptSentAt := time.Now()
 	if initialPromptAtLaunch {
+		// The prompt was supplied when acquiring the process, so Codex may
+		// already have recorded task_started. Use the pre-launch boundary for
+		// completion and transcript streaming too; a post-launch timestamp can
+		// discard that event and let an idle loading pane end the turn early.
+		promptSentAt = bindSince
 		var err error
-		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan, codexInteractiveStreamTmuxScreenEnabled(opts))
+		baseline, err = waitForCodexInitialPromptAccepted(callCtx, session.tmuxSessionName, prompt, opts.StreamChan, codexInteractiveStreamTmuxScreenEnabled(opts), codexTurnStartOracle(session, turnStart))
 		if err != nil {
 			err = codexConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, err)
 		}
@@ -1534,7 +1539,11 @@ func waitForCodexInputPrompt(ctx context.Context, sessionName string, streamChan
 	return waitForCodexPromptMode(ctx, sessionName, streamChan, true, streamTerminalScreen)
 }
 
-func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
+func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, oracle codexSubmissionOracle) (string, error) {
+	return waitForCodexInitialPromptAcceptedWith(ctx, sessionName, prompt, streamChan, streamTerminalScreen, codexSubmissionWait{oracle: oracle})
+}
+
+func waitForCodexInitialPromptAcceptedWith(ctx context.Context, sessionName, prompt string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool, wait codexSubmissionWait) (string, error) {
 	maxWait := codexInteractivePromptMaxWait()
 	maxTimer := time.NewTimer(maxWait)
 	defer maxTimer.Stop()
@@ -1549,6 +1558,10 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var lastStartupCapture string
+	capture := wait.capture
+	if capture == nil {
+		capture = captureCodexPane
+	}
 
 	for {
 		select {
@@ -1561,7 +1574,18 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 			}
 			return lastStartupCapture, fmt.Errorf("timed out after %s waiting for Codex CLI launch prompt to start", maxWait)
 		case <-ticker.C:
-			captured, err := captureCodexPane(ctx, sessionName)
+			// The native rollout can accept a positional prompt before the TUI
+			// renders its echo or activity. Release the startup input lane as soon
+			// as this exact session records the turn, including capture failures.
+			strict := false
+			if wait.oracle != nil {
+				started, authoritative := wait.oracle()
+				if started {
+					return lastStartupCapture, nil
+				}
+				strict = authoritative
+			}
+			captured, err := capture(ctx, sessionName)
 			if err != nil {
 				continue
 			}
@@ -1598,9 +1622,9 @@ func waitForCodexInitialPromptAccepted(ctx context.Context, sessionName, prompt 
 			// A launch-time positional prompt is accepted once Codex shows active
 			// work, queued input, the echoed user prompt, or a completed answer.
 			// The last case covers very short turns that finish between captures.
-			if hasCodexActivity(captured) || hasCodexQueuedInput(captured) ||
+			if !strict && (hasCodexActivity(captured) || hasCodexQueuedInput(captured) ||
 				codexPaneShowsPromptDraft(captured, prompt) ||
-				(hasCodexReadyPrompt(captured) && strings.TrimSpace(parseCodexInteractiveResponse(captured, "", prompt, nil)) != "") ||
+				(hasCodexReadyPrompt(captured) && hasCodexExplicitCompletedMarker(captured))) ||
 				hasCodexPolicyInvalidPrompt(captured) {
 				return lastStartupCapture, nil
 			}
@@ -4013,9 +4037,9 @@ func streamCodexStatusLine(ctx context.Context, sessionName string, streamChan c
 	}
 }
 
-// buildCodexStatusLine reads the freshest rollout for workingDir and assembles a
-// generic StatusLine (codex-cli, real model, input/output/cached tokens) tagged
-// with the owning tmux session. Returns nil when no usage is available yet.
+// buildCodexStatusLine reads the owning terminal's bound rollout and assembles a
+// generic StatusLine (codex-cli, real model, input/output/cached tokens). Legacy
+// unregistered callers resolve by workingDir. Returns nil without current usage.
 func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 	// Require the session's working dir: readCodexTranscriptUsage with an empty
 	// dir would match ANY freshest rollout under ~/.codex/sessions (a different
@@ -4025,14 +4049,24 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 	if strings.TrimSpace(workingDir) == "" {
 		return nil
 	}
-	accountRoot := ""
 	_, session, found := codexPersistentRegistry.Find(func(session *codexInteractiveSession) bool {
 		return session != nil && session.tmuxSessionName == tmuxSession
 	})
+	var gi *llmtypes.GenerationInfo
+	var model string
 	if found {
-		accountRoot = session.accountRoot
+		// A live terminal's status belongs to its exact conversation. Until
+		// submission binds that rollout there is no usage to publish; scanning
+		// by cwd could attribute a parallel session's usage and, in a cold
+		// workspace, decode the account's entire history before rendering.
+		path, _ := codexRolloutIdentity(session)
+		if path == "" {
+			return nil
+		}
+		gi, model, _, _ = readCodexTranscriptUsageFile(path, time.Time{})
+	} else {
+		gi, model, _ = readCodexTranscriptUsage(time.Time{}, workingDir)
 	}
-	gi, model, _ := readCodexTranscriptUsage(time.Time{}, workingDir, accountRoot)
 	if gi == nil {
 		return nil
 	}

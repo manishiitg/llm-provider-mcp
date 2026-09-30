@@ -79,6 +79,12 @@ func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string, ac
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
 
 	for _, candidate := range cands {
+		// Check the small session header before decoding the conversation. A
+		// cold workspace may have no rollout yet; parsing every other workspace's
+		// full history here can block terminal startup for minutes.
+		if strings.TrimSpace(expectedWorkingDir) != "" && !sameCodexWorkingDir(readCodexRolloutWorkingDir(candidate.path), expectedWorkingDir) {
+			continue
+		}
 		usage, model, threadID, cwd := readCodexTranscriptUsageFile(candidate.path, turnStart)
 		if strings.TrimSpace(expectedWorkingDir) != "" && !sameCodexWorkingDir(cwd, expectedWorkingDir) {
 			continue
