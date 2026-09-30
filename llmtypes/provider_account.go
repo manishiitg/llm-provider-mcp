@@ -29,6 +29,10 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 			// CLI's home is the sandbox's private one.
 			policy := opts.CLISecurity.Clone()
 			policy.CredentialHome = copy["HOME"]
+			policy.CredentialEnv = map[string]string{}
+			for key, value := range copy {
+				policy.CredentialEnv[key] = value
+			}
 			opts.CLISecurity = &policy
 		} else if opts.CLISecurity != nil && copy["HOME"] != "" {
 			policy := opts.CLISecurity.Clone()

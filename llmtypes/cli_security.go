@@ -96,6 +96,11 @@ type CLISecurityPolicy struct {
 	// credential files are linked from it into PrivateHome; the rest of that
 	// home (other people's sessions and history) stays outside the sandbox.
 	CredentialHome string `json:"credential_home,omitempty"`
+	// CredentialEnv is the account's path environment (XDG_CONFIG_HOME,
+	// CODEX_HOME, CLAUDE_CONFIG_DIR) when it keeps logins somewhere other
+	// than under CredentialHome; empty for the server account, whose own
+	// process environment says where its logins are.
+	CredentialEnv map[string]string `json:"credential_env,omitempty"`
 }
 
 // LandlockEnforced reports whether this policy confines the CLI with the
@@ -121,6 +126,12 @@ func (p CLISecurityPolicy) Clone() CLISecurityPolicy {
 	copyPolicy.ApprovedCapabilities = append([]string(nil), p.ApprovedCapabilities...)
 	copyPolicy.LandlockRunner = strings.TrimSpace(p.LandlockRunner)
 	copyPolicy.CredentialHome = strings.TrimSpace(p.CredentialHome)
+	if p.CredentialEnv != nil {
+		copyPolicy.CredentialEnv = make(map[string]string, len(p.CredentialEnv))
+		for key, value := range p.CredentialEnv {
+			copyPolicy.CredentialEnv[key] = value
+		}
+	}
 	return copyPolicy
 }
 

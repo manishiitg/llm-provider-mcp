@@ -20,15 +20,43 @@ type landlockPolicy struct {
 	ReadPaths  []string `json:"read_paths"`
 	WritePaths []string `json:"write_paths"`
 	WorkDir    string   `json:"work_dir"`
+	// ListPaths may be listed (folder names) but not read. A confined CLI
+	// gets "/": Muse opens every folder from / down to its workspace at
+	// start, and Landlock cannot grant one folder without the ones below it.
+	ListPaths []string `json:"list_paths,omitempty"`
 }
 
-// credentialFiles are each CLI's login files, relative to its home. They are
-// the only part of the account (or server) home a confined CLI can reach.
-var credentialFiles = map[string][]string{
-	"claude-code": {".claude/.credentials.json"},
-	"codex-cli":   {".codex/auth.json"},
-	"cursor-cli":  {".config/cursor/auth.json", ".cursor/cli-config.json"},
-	"muse-cli":    {".config/muse/auth.json"},
+// credentialFile is one CLI login file: where it goes in the private home
+// (Rel, which the sandbox's HOME/XDG/CODEX_HOME/CLAUDE_CONFIG_DIR layout also
+// points at), and where the account keeps it: under the account's EnvKey
+// folder when that is set (a server whose XDG_CONFIG_HOME is not ~/.config),
+// else at Rel under the account home.
+type credentialFile struct {
+	Rel    string
+	EnvKey string
+	Sub    string
+}
+
+// credentialFiles are the only part of the account (or server) home a
+// confined CLI can reach.
+var credentialFiles = map[string][]credentialFile{
+	"claude-code": {{Rel: ".claude/.credentials.json", EnvKey: "CLAUDE_CONFIG_DIR", Sub: ".credentials.json"}},
+	"codex-cli":   {{Rel: ".codex/auth.json", EnvKey: "CODEX_HOME", Sub: "auth.json"}},
+	"cursor-cli": {
+		{Rel: ".config/cursor/auth.json", EnvKey: "XDG_CONFIG_HOME", Sub: "cursor/auth.json"},
+		{Rel: ".cursor/cli-config.json"},
+	},
+	"muse-cli": {{Rel: ".config/muse/auth.json", EnvKey: "XDG_CONFIG_HOME", Sub: "muse/auth.json"}},
+}
+
+// credentialSource is where the account keeps one login file.
+func credentialSource(file credentialFile, home string, env func(string) string) string {
+	if file.EnvKey != "" {
+		if root := strings.TrimSpace(env(file.EnvKey)); root != "" {
+			return filepath.Join(root, file.Sub)
+		}
+	}
+	return filepath.Join(home, file.Rel)
 }
 
 // LandlockArgs wraps a coding CLI's argv so it starts confined by the host's
@@ -66,7 +94,11 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	read = append(read, policy.HostReadPaths...)
 	read = append(read, runtimeReadPaths...)
 	read = append(read, executableDirs(args)...)
-	write := []string{workingDir, home}
+	// The shared /tmp is writable: Cursor keeps its sockets at fixed /tmp
+	// paths (cursor-askpass-*.sock, and .cursor/<project> when its home path
+	// is too long for a socket). The server keeps nothing there (its TMPDIR
+	// is private), and see docs/decisions/cli-sandbox.md for what remains.
+	write := []string{workingDir, home, "/tmp"}
 	write = append(write, policy.WorkspaceWritePaths...)
 	write = append(write, policy.HostWritePaths...)
 	write = append(write, runtimeWritePaths...)
@@ -75,6 +107,7 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		ReadPaths:  existing(canonicalUnique(read)),
 		WritePaths: existing(canonicalUnique(write)),
 		WorkDir:    canonical(workingDir),
+		ListPaths:  []string{"/"},
 	}
 	file, err := os.CreateTemp("", "agentworks-cli-landlock-*.json")
 	if err != nil {
@@ -116,9 +149,15 @@ func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]str
 		return nil, nil
 	}
 	var granted []string
-	for _, rel := range credentialFiles[strings.TrimSpace(policy.Provider)] {
-		src := filepath.Join(source, rel)
-		dst := filepath.Join(home, rel)
+	// The server account's logins are where this process's environment says;
+	// an account's are where its own path environment says.
+	env := os.Getenv
+	if strings.TrimSpace(policy.CredentialHome) != "" {
+		env = func(key string) string { return policy.CredentialEnv[key] }
+	}
+	for _, file := range credentialFiles[strings.TrimSpace(policy.Provider)] {
+		src := credentialSource(file, source, env)
+		dst := filepath.Join(home, file.Rel)
 		if info, err := os.Lstat(dst); err == nil && info.Mode().IsRegular() {
 			if srcInfo, err := os.Stat(src); err != nil || info.ModTime().After(srcInfo.ModTime()) {
 				if err := copyFileAtomic(dst, src); err != nil {
