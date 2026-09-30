@@ -19,6 +19,10 @@ type claudeRetainedProgress struct {
 // while a directly submitted turn is still running. It never decides whether
 // the turn is complete; ReadRetainedTurnMessages owns that separate decision.
 func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return llmtypes.TranscriptProgressText(ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart), false)
+}
+
+func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
 	if turnStart.IsZero() {
 		return nil
 	}
@@ -48,8 +52,8 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	progress.offset = next
 	var messages []llmtypes.MessageContent
 	for _, row := range rows {
-		if strings.TrimSpace(row.Text) != "" {
-			messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, row.Text))
+		if message, ok := llmtypes.TranscriptChunkMessage(transcriptEventToChunk(nativeSessionID, row)); ok {
+			messages = append(messages, message)
 		}
 	}
 	return messages

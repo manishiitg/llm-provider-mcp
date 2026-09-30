@@ -21,9 +21,9 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 6 sol medium",
+			name:          "codex uses gpt 6.1 sol medium",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-6-sol",
+			wantModelID:   "gpt-6.1-sol",
 			wantReasoning: "medium",
 		},
 		{
@@ -85,9 +85,9 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning:  "high",
 		},
 		{
-			name:          "codex uses gpt 6 sol high",
+			name:          "codex uses gpt 6.1 sol high",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-6-sol",
+			wantModelID:   "gpt-6.1-sol",
 			wantReasoning: "high",
 		},
 		{
@@ -135,7 +135,7 @@ func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
 		effort   string
 	}{
 		{provider: ProviderClaudeCode, model: "claude-opus-5-5", effort: "medium"},
-		{provider: ProviderCodexCLI, model: "gpt-6-sol", effort: "high"},
+		{provider: ProviderCodexCLI, model: "gpt-6.1-sol", effort: "high"},
 	} {
 		t.Run(string(tt.provider), func(t *testing.T) {
 			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
@@ -153,7 +153,7 @@ func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
 }
 
 // TestCodingAgentDefaultTierModelsCodexGPT6Family covers the execution tiers.
-// Builder and Pulse use GPT-6 Sol with high reasoning and are
+// Builder and Pulse use GPT-6.1 Sol with high reasoning and are
 // covered by TestCodingAgentDefaultTierModelsBuilder and the pulse test.
 func TestCodingAgentDefaultTierModelsCodexGPT6Family(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderCodexCLI)
@@ -166,7 +166,7 @@ func TestCodingAgentDefaultTierModelsCodexGPT6Family(t *testing.T) {
 		model  string
 		effort string
 	}{
-		"high":   {ref: defaults.High, model: "gpt-6-sol", effort: "medium"},
+		"high":   {ref: defaults.High, model: "gpt-6.1-sol", effort: "medium"},
 		"medium": {ref: defaults.Medium, model: "gpt-6-luna", effort: "high"},
 		"low":    {ref: defaults.Low, model: "gpt-6-luna", effort: "high"},
 	} {

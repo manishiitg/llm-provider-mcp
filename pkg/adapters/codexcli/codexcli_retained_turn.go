@@ -16,6 +16,10 @@ type codexRetainedProgress struct {
 // ReadRetainedTurnProgressMessages reads commentary from this terminal's exact
 // rollout without treating it as a completed answer.
 func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return llmtypes.TranscriptProgressText(ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart), false)
+}
+
+func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
 	if turnStart.IsZero() {
 		return nil
 	}
@@ -33,8 +37,8 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	}
 	var messages []llmtypes.MessageContent
 	for _, chunk := range progress.state.readChunks() {
-		if chunk.Type == llmtypes.StreamChunkTypeContent && strings.TrimSpace(chunk.Content) != "" {
-			messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk.Content))
+		if message, ok := llmtypes.TranscriptChunkMessage(chunk); ok {
+			messages = append(messages, message)
 		}
 	}
 	return messages

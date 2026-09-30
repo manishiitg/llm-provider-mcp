@@ -18,6 +18,10 @@ type piRetainedProgress struct {
 // including text alongside tool calls. Token fragments stay in Pi's native
 // stream; a completed block becomes one durable chat update.
 func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return llmtypes.TranscriptProgressText(ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart), false, true)
+}
+
+func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
 	if turnStart.IsZero() {
 		return nil
 	}
@@ -39,7 +43,7 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	if summary == nil {
 		return nil
 	}
-	messages := summary.ProgressMessages
+	messages := summary.StructuredProgressMessages
 	if len(messages) <= progress.messageCount {
 		return nil
 	}
@@ -47,11 +51,13 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	progress.messageCount = len(messages)
 	var updates []llmtypes.MessageContent
 	for _, message := range newMessages {
-		if message.Role != llmtypes.ChatMessageTypeAI {
+		if message.Role != llmtypes.ChatMessageTypeAI && message.Role != llmtypes.ChatMessageTypeTool {
 			continue
 		}
 		for _, part := range message.Parts {
 			switch part := part.(type) {
+			case llmtypes.ToolCall, llmtypes.ToolCallResponse:
+				updates = append(updates, llmtypes.MessageContent{Role: message.Role, Parts: []llmtypes.ContentPart{part}})
 			case llmtypes.TextContent:
 				if strings.TrimSpace(part.Text) != "" {
 					updates = append(updates, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, part.Text))

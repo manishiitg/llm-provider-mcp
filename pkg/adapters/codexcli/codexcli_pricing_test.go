@@ -8,6 +8,7 @@ func TestCodexCurrentModelPricing(t *testing.T) {
 		model                        string
 		input, cached, write, output float64
 	}{
+		{"gpt-6.1-sol", 2, 0.1, 2.5, 10},
 		{"gpt-6-sol", 2, 0.2, 2.5, 10},
 		{"gpt-6-luna", 0.1, 0.01, 0.125, 0.5},
 	} {

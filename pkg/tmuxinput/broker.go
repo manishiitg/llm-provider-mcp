@@ -22,6 +22,9 @@ type Request struct {
 	MessageID string
 	Source    string
 	Priority  Priority
+	// InteractiveInput is raw human input from the attached terminal. A draft
+	// reservation excludes programmatic pastes, but never blocks its author.
+	InteractiveInput bool
 	// BypassReadiness skips the WaitUntilReady gate, so this transaction may run
 	// before the provider's initial prompt has been confirmed. It is set by two
 	// classes of caller:
@@ -73,9 +76,11 @@ type sessionWorker struct {
 // paste-buffer, then Enter); no other source can interleave commands while it
 // is running.
 type Broker struct {
-	mu                sync.Mutex
-	workers           map[string]*sessionWorker
-	workerIdleTimeout time.Duration
+	mu                     sync.Mutex
+	workers                map[string]*sessionWorker
+	workerIdleTimeout      time.Duration
+	interactiveDrafts      map[string]*interactiveDraft
+	interactiveSubmissions map[string]uint64
 }
 
 func NewBroker() *Broker {
@@ -84,8 +89,10 @@ func NewBroker() *Broker {
 
 func newBrokerWithIdleTimeout(timeout time.Duration) *Broker {
 	return &Broker{
-		workers:           make(map[string]*sessionWorker),
-		workerIdleTimeout: timeout,
+		workers:                make(map[string]*sessionWorker),
+		workerIdleTimeout:      timeout,
+		interactiveDrafts:      make(map[string]*interactiveDraft),
+		interactiveSubmissions: make(map[string]uint64),
 	}
 }
 
@@ -246,6 +253,11 @@ func (w *sessionWorker) run() {
 		}
 
 		request.result.StartedAt = time.Now()
+		if !request.request.InteractiveInput && request.request.Priority != PriorityInterrupt && w.broker.HasInteractiveDraft(w.sessionID) {
+			request.result.CompletedAt = time.Now()
+			request.response <- response{result: request.result, err: ErrInteractiveDraft}
+			continue
+		}
 		err := request.operation(request.ctx)
 		request.result.CompletedAt = time.Now()
 		request.response <- response{result: request.result, err: err}

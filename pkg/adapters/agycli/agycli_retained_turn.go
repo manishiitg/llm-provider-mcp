@@ -14,6 +14,7 @@ type agyRetainedState struct {
 	settledIdx    int
 	settledAnswer string
 	settledAt     time.Time
+	seenTools     map[string]bool
 }
 
 func agyLatestRetainedRecord(session *agyInteractiveSession) (agyPendingDurableAck, agyTurnRecord, bool) {
@@ -48,23 +49,44 @@ func agyLatestRetainedRecord(session *agyInteractiveSession) (agyPendingDurableA
 
 // ReadRetainedTurnProgressMessages returns newly committed assistant text
 // from AGY's conversation record. The pane remains a terminal display only.
-func ReadRetainedTurnProgressMessages(ownerSessionID string, _ time.Time) []llmtypes.MessageContent {
+func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return llmtypes.TranscriptProgressText(ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart), false)
+}
+
+func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, _ time.Time) []llmtypes.MessageContent {
 	session, ok := activeAgyInteractiveSession(ownerSessionID)
 	if !ok {
 		return nil
 	}
 	receipt, record, ok := agyLatestRetainedRecord(session)
-	if !ok || record.answer == "" {
+	if !ok {
 		return nil
 	}
 	session.retainedMu.Lock()
 	defer session.retainedMu.Unlock()
 	state := &session.retainedState
 	if !state.sentAt.Equal(receipt.sentAt) {
-		*state = agyRetainedState{sentAt: receipt.sentAt}
+		*state = agyRetainedState{sentAt: receipt.sentAt, seenTools: map[string]bool{}}
+	}
+	var messages []llmtypes.MessageContent
+	// AGY stores tool results without a live result stream. Publish its tool
+	// pairs only once the native trail is settled, never while a tool runs.
+	var calls []agyTurnToolCall
+	if record.lastType == agyStepAssistant && record.lastStatus == 3 {
+		calls = agyTurnToolCallsSince(receipt.conversationID, record.userIdx)
+	}
+	for _, call := range calls {
+		if state.seenTools[call.CallID] {
+			continue
+		}
+		state.seenTools[call.CallID] = true
+		messages = append(messages,
+			llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.ToolCall{ID: call.CallID, Type: "function", FunctionCall: &llmtypes.FunctionCall{Name: call.Name, Arguments: call.Args}}}},
+			llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeTool, Parts: []llmtypes.ContentPart{llmtypes.ToolCallResponse{ToolCallID: call.CallID, Name: call.Name, Content: call.ErrorText, IsError: call.ErrorText != ""}}},
+		)
 	}
 	if state.progressText == record.answer {
-		return nil
+		return messages
 	}
 	chunk := strings.TrimPrefix(record.answer, state.progressText)
 	if !strings.HasPrefix(record.answer, state.progressText) {
@@ -72,9 +94,9 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, _ time.Time) []llmt
 	}
 	state.progressText = record.answer
 	if strings.TrimSpace(chunk) == "" {
-		return nil
+		return messages
 	}
-	return []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk)}
+	return append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk))
 }
 
 // ReadRetainedTurnMessages polls the current live-input turn's SQLite trail.

@@ -46,8 +46,8 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentReasoningRef(providerID, "gpt-6-sol", "medium")
-		builder := codingAgentReasoningRef(providerID, "gpt-6-sol", "high")
+		high := codingAgentReasoningRef(providerID, "gpt-6.1-sol", "medium")
+		builder := codingAgentReasoningRef(providerID, "gpt-6.1-sol", "high")
 		medium := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
 		low := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
 		return &CodingAgentDefaultTierModels{

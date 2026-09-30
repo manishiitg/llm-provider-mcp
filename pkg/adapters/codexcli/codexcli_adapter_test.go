@@ -205,7 +205,7 @@ func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 
 func TestCodexCLIAdapterGPT6MetadataAndAliases(t *testing.T) {
 	for alias, wantModel := range map[string]string{
-		"high":   "gpt-6-sol",
+		"high":   "gpt-6.1-sol",
 		"medium": "gpt-6-luna",
 		"low":    "gpt-6-luna",
 	} {
@@ -214,16 +214,18 @@ func TestCodexCLIAdapterGPT6MetadataAndAliases(t *testing.T) {
 		}
 	}
 
-	adapter := NewCodexCLIAdapter("", "gpt-6-sol", &MockLogger{})
-	meta, err := adapter.GetModelMetadata("gpt-6-sol")
-	if err != nil {
-		t.Fatalf("GetModelMetadata: %v", err)
-	}
-	if meta.ContextWindow != 1050000 || meta.InputCostPer1MTokens != 2 || meta.OutputCostPer1MTokens != 10 {
-		t.Fatalf("GPT-6 Sol metadata = %+v", meta)
-	}
-	if !slices.Contains(meta.ReasoningEffortLevels, "max") || !slices.Contains(meta.ReasoningEffortLevels, "ultra") {
-		t.Fatalf("GPT-6 Sol reasoning levels = %v, want max and ultra", meta.ReasoningEffortLevels)
+	for _, modelID := range []string{"gpt-6.1-sol", "gpt-6-sol"} {
+		adapter := NewCodexCLIAdapter("", modelID, &MockLogger{})
+		meta, err := adapter.GetModelMetadata(modelID)
+		if err != nil {
+			t.Fatalf("GetModelMetadata(%s): %v", modelID, err)
+		}
+		if meta.ModelID != modelID || meta.ContextWindow != 1050000 || meta.InputCostPer1MTokens != 2 || meta.OutputCostPer1MTokens != 10 {
+			t.Fatalf("%s metadata = %+v", modelID, meta)
+		}
+		if !slices.Contains(meta.ReasoningEffortLevels, "max") || !slices.Contains(meta.ReasoningEffortLevels, "ultra") {
+			t.Fatalf("%s reasoning levels = %v, want max and ultra", modelID, meta.ReasoningEffortLevels)
+		}
 	}
 }
 

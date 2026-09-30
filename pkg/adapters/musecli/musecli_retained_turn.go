@@ -12,14 +12,21 @@ import (
 )
 
 type museRetainedProgress struct {
-	mu        sync.Mutex
-	turnStart time.Time
-	lastSeq   int64
+	mu            sync.Mutex
+	turnStart     time.Time
+	lastSeq       int64
+	seenTools     map[string]bool
+	endedTools    map[string]bool
+	toolStartedAt map[string]time.Time
 }
 
 // ReadRetainedTurnProgressMessages exposes committed text and visible status
 // summaries even while the TUI is busy. Completion keeps its existing gate.
 func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return llmtypes.TranscriptProgressText(ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart), true)
+}
+
+func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
 	if turnStart.IsZero() {
 		return nil
 	}
@@ -43,6 +50,8 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 	defer progress.mu.Unlock()
 	if !progress.turnStart.Equal(turnStart) {
 		progress.turnStart, progress.lastSeq = turnStart, baseline
+		progress.seenTools, progress.endedTools = map[string]bool{}, map[string]bool{}
+		progress.toolStartedAt = map[string]time.Time{}
 	}
 	raw, err := os.ReadFile(path) //nolint:gosec // adapter-owned transcript path
 	if err != nil {
@@ -59,9 +68,9 @@ func ReadRetainedTurnProgressMessages(ownerSessionID string, turnStart time.Time
 			continue
 		}
 		progress.lastSeq = envelope.Sequence
-		for _, chunk := range museTranscriptLineToChunks(line, map[string]bool{}, map[string]bool{}, nil) {
-			if (chunk.Type == llmtypes.StreamChunkTypeContent || chunk.Metadata["presentation"] == "assistant_update") && strings.TrimSpace(chunk.Content) != "" {
-				messages = append(messages, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, chunk.Content))
+		for _, chunk := range museTranscriptLineToChunks(line, progress.seenTools, progress.endedTools, progress.toolStartedAt) {
+			if message, ok := llmtypes.TranscriptChunkMessage(chunk); ok {
+				messages = append(messages, message)
 			}
 		}
 	}

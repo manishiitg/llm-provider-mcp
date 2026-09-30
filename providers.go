@@ -411,6 +411,25 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 	}
 }
 
+// ReadCodingAgentRetainedTurnStructuredProgressMessages includes native tools
+// and thinking as well as narration, using each adapter's retained cursor.
+func ReadCodingAgentRetainedTurnStructuredProgressMessages(provider Provider, ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	switch provider {
+	case ProviderClaudeCode:
+		return claudecodeadapter.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
+	case ProviderCodexCLI:
+		return codexcli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
+	case ProviderMuseCLI:
+		return musecli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
+	case ProviderPiCLI:
+		return picli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
+	case ProviderAgyCLI:
+		return agycli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
+	default:
+		return ReadCodingAgentRetainedTurnProgressMessages(provider, ownerSessionID, turnStart)
+	}
+}
+
 // ReadCodingAgentRetainedTurnProgressMessages reads in-flight commentary without
 // asserting completion. This consumes provider progress cursors: callers must
 // serialize reads with delivery/publication and must not discard returned text.

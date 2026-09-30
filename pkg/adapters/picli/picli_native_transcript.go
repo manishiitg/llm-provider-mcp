@@ -62,7 +62,7 @@ func readNativeTranscriptPath(path string) (transcript NativeTranscript, ok bool
 			continue
 		}
 		role, ok := piTranscriptRole(ev.Message.Role)
-		if !ok || role == llmtypes.ChatMessageTypeSystem {
+		if !ok || (role != llmtypes.ChatMessageTypeHuman && role != llmtypes.ChatMessageTypeAI) {
 			continue
 		}
 		text := piTranscriptText(ev.Message.Content)

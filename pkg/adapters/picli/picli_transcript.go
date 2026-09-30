@@ -13,25 +13,26 @@ import (
 )
 
 type piTranscriptSummary struct {
-	Path                string
-	Messages            []llmtypes.MessageContent
-	ProgressMessages    []llmtypes.MessageContent
-	Provider            string
-	Model               string
-	API                 string
-	ResponseID          string
-	StopReason          string
-	InputTokens         int
-	OutputTokens        int
-	TotalTokens         int
-	CacheReadTokens     int
-	CacheWriteTokens    int
-	InputCostUSD        float64
-	OutputCostUSD       float64
-	TotalCostUSD        float64
-	CacheReadCostUSD    float64
-	CacheWriteCostUSD   float64
-	AssistantUsageCount int
+	Path                       string
+	Messages                   []llmtypes.MessageContent
+	ProgressMessages           []llmtypes.MessageContent
+	StructuredProgressMessages []llmtypes.MessageContent
+	Provider                   string
+	Model                      string
+	API                        string
+	ResponseID                 string
+	StopReason                 string
+	InputTokens                int
+	OutputTokens               int
+	TotalTokens                int
+	CacheReadTokens            int
+	CacheWriteTokens           int
+	InputCostUSD               float64
+	OutputCostUSD              float64
+	TotalCostUSD               float64
+	CacheReadCostUSD           float64
+	CacheWriteCostUSD          float64
+	AssistantUsageCount        int
 }
 
 func (s *piTranscriptSummary) hasUsage() bool {
@@ -148,6 +149,20 @@ func readPiTranscriptSummaryFile(path string, turnStart time.Time) *piTranscript
 		}
 		if role == llmtypes.ChatMessageTypeAI {
 			summary.ProgressMessages = append(summary.ProgressMessages, piTranscriptProgressMessages(ev.Message.Content)...)
+			summary.StructuredProgressMessages = append(summary.StructuredProgressMessages, piTranscriptProgressMessages(ev.Message.Content)...)
+			for _, part := range piTranscriptParts(ev.Message.Content) {
+				if _, ok := part.(llmtypes.ToolCall); ok {
+					summary.StructuredProgressMessages = append(summary.StructuredProgressMessages, llmtypes.MessageContent{Role: role, Parts: []llmtypes.ContentPart{part}})
+				}
+			}
+		} else if role == llmtypes.ChatMessageTypeTool {
+			var texts []string
+			for _, part := range ev.Message.Content {
+				if part.Type == "text" {
+					texts = append(texts, part.Text)
+				}
+			}
+			summary.StructuredProgressMessages = append(summary.StructuredProgressMessages, llmtypes.MessageContent{Role: role, Parts: []llmtypes.ContentPart{llmtypes.ToolCallResponse{ToolCallID: ev.Message.ToolCallID, Name: ev.Message.ToolName, IsError: ev.Message.IsError, Content: strings.Join(texts, "\n")}}})
 		}
 		if role != llmtypes.ChatMessageTypeAI || ev.Message.Usage == nil {
 			continue
@@ -195,6 +210,9 @@ type piTranscriptRecord struct {
 }
 
 type piTranscriptMessage struct {
+	ToolCallID string                `json:"toolCallId"`
+	ToolName   string                `json:"toolName"`
+	IsError    bool                  `json:"isError"`
 	Role       string                `json:"role"`
 	Content    []piTranscriptContent `json:"content"`
 	API        string                `json:"api"`
@@ -285,6 +303,8 @@ func piTranscriptRole(role string) (llmtypes.ChatMessageType, bool) {
 		return llmtypes.ChatMessageTypeHuman, true
 	case "assistant":
 		return llmtypes.ChatMessageTypeAI, true
+	case "toolresult":
+		return llmtypes.ChatMessageTypeTool, true
 	case "system":
 		return llmtypes.ChatMessageTypeSystem, true
 	default:
