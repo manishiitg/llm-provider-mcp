@@ -43,7 +43,7 @@ func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes
 		return "", "", nil, fmt.Errorf("failed to create Pi session runtime dir %s: %w", sessionDir, err)
 	}
 	removeStalePiProjectMCPConfig(workingDir)
-	linkSharedPiExtensionCache(agentDir)
+	linkSharedPiExtensionCache(agentDir, opts != nil && opts.CLISecurity.LandlockEnforced())
 	// Remove the retired plugin config and its credentials.
 	legacyPath := filepath.Join(agentDir, "mcp-adapter.json")
 	if err := os.Remove(legacyPath); err != nil && !os.IsNotExist(err) {
@@ -200,7 +200,21 @@ func piNativeMCPEnv(agentDir, sessionDir string) []string {
 // Keep npm extension installation shared while isolating every source of
 // configuration, auth and transcripts. Extension discovery is disabled, so
 // sharing this code cache does not load ambient extension declarations.
-func linkSharedPiExtensionCache(agentDir string) {
+//
+// A confined Pi does not share it: the cache is executable code that every user's Pi on the
+// server would load, so a writable shared copy would let one user's Pi plant code in another's;
+// and the confined Pi cannot write there anyway (npm's rename failed with EACCES, Confida
+// 2026-09-30). It gets its own folder, and npm installs into that. A link left by an earlier,
+// unconfined launch is replaced.
+func linkSharedPiExtensionCache(agentDir string, confined bool) {
+	if confined {
+		target := filepath.Join(agentDir, "tmp", "extensions")
+		if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(target)
+		}
+		_ = os.MkdirAll(target, 0o700)
+		return
+	}
 	sharedAgentDir := piAmbientAgentDir()
 	if sharedAgentDir == "" || filepath.Clean(sharedAgentDir) == filepath.Clean(agentDir) {
 		return
