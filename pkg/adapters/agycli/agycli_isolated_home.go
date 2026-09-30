@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // agyIsolatedHome gives one run its own MCP catalogue and permission list.
@@ -14,6 +16,32 @@ import (
 // Conversations are shared with the normal AGY home for durable transcript
 // reads and native --conversation resume.
 func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, func(), error) {
+	return agyIsolatedHomeWithConversations(servers, "", workingDirs...)
+}
+
+// Confined runs persist only in the chat's durable private home. Linking to
+// the server conversation directory would leave the kernel refusing SQLite
+// writes; granting that shared directory would expose other chats.
+func agyIsolatedHomeForCall(servers []agyMCPServer, workingDir string, opts *llmtypes.CallOptions) (string, func(), error) {
+	return agyIsolatedHomeWithConversations(servers, agyTranscriptHome(opts), workingDir)
+}
+
+func agyTranscriptHome(opts *llmtypes.CallOptions) string {
+	if opts != nil && opts.CLISecurity.LandlockEnforced() {
+		return opts.CLISecurity.PrivateHome
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+func agyHome(accountHome ...string) (string, error) {
+	if len(accountHome) > 0 && accountHome[0] != "" {
+		return accountHome[0], nil
+	}
+	return os.UserHomeDir()
+}
+
+func agyIsolatedHomeWithConversations(servers []agyMCPServer, conversationHome string, workingDirs ...string) (string, func(), error) {
 	base, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, err
@@ -53,7 +81,10 @@ func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, fun
 		cleanup()
 		return "", nil, err
 	}
-	baseConversations := filepath.Join(baseGemini, "antigravity-cli", "conversations")
+	if conversationHome == "" {
+		conversationHome = base
+	}
+	baseConversations := filepath.Join(conversationHome, ".gemini", "antigravity-cli", "conversations")
 	if err := os.MkdirAll(baseConversations, 0o700); err != nil {
 		cleanup()
 		return "", nil, err

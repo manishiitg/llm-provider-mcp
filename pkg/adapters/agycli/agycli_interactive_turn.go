@@ -100,7 +100,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 		}
 		// Each sidecar owns a private AGY home, so distinct users never
 		// share MCP credentials or block each other's turns.
-		privateHome, releaseMounts, err = agyIsolatedHome(servers, workingDir)
+		privateHome, releaseMounts, err = agyIsolatedHomeForCall(servers, workingDir, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -117,7 +117,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 	}
 	if privateHome == "" {
 		var err error
-		privateHome, releaseMounts, err = agyIsolatedHome(nil, workingDir)
+		privateHome, releaseMounts, err = agyIsolatedHomeForCall(nil, workingDir, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -247,6 +247,7 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 		workingDir:      workingDir,
 		createdAt:       time.Now(),
 		conversationID:  resumeConversation,
+		transcriptHome:  agyTranscriptHome(opts),
 	}
 	session.turnLeases.Store(1)
 	agyInteractiveRegistry.Lock()
@@ -283,7 +284,7 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if strings.TrimSpace(prompt) == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
 	}
-	idxBefore := agyConversationMaxIdx(session.getConversationID())
+	idxBefore := agyConversationMaxIdx(session.getConversationID(), session.transcriptHome)
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
 		return "", llmtypes.Usage{}, nil, err
 	}
@@ -303,12 +304,12 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	// prompt echo, thoughts and tool renderings, so it cannot repair an
 	// unattributable or missing assistant step.
 	conversationID := session.getConversationID()
-	reply := agyTurnReplySince(conversationID, userIdx)
+	reply := agyTurnReplySince(conversationID, userIdx, session.transcriptHome)
 	if reply == "" {
 		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
-	usage := agyTurnUsageSince(conversationID, userIdx)
-	toolCalls := agyTurnToolCallsSince(conversationID, userIdx)
+	usage := agyTurnUsageSince(conversationID, userIdx, session.transcriptHome)
+	toolCalls := agyTurnToolCallsSince(conversationID, userIdx, session.transcriptHome)
 	return reply, usage, toolCalls, nil
 }
 
@@ -316,16 +317,17 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 // starts at its matching user row; rows before that receipt cannot satisfy
 // answer or completion, even in a resumed conversation.
 type agyTurnRecord struct {
-	userIdx     int
-	lastIdx     int
-	lastType    int
-	lastStatus  int
-	answer      string
-	finalAnswer string
-	subagents   map[string]bool // native child id -> completion notification received
+	transcriptHome string
+	userIdx        int
+	lastIdx        int
+	lastType       int
+	lastStatus     int
+	answer         string
+	finalAnswer    string
+	subagents      map[string]bool // native child id -> completion notification received
 }
 
-func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyTurnRecord, error) {
+func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accountHome ...string) (agyTurnRecord, error) {
 	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}}
 	if prompt == "" {
 		record.userIdx = sinceIdx
@@ -333,10 +335,11 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyT
 	if conversationID == "" {
 		return record, nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := agyHome(accountHome...)
 	if err != nil {
 		return record, err
 	}
+	record.transcriptHome = home
 	path := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", conversationID+".db")
 	tmpPath, cleanup, err := agyCopyDBFile(path)
 	if os.IsNotExist(err) {
@@ -421,9 +424,9 @@ func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinc
 			conversationID = session.setConversationIDIfEmpty(agyConversationIDFromPane(ctx, session.tmuxSessionName))
 		}
 		if conversationID == "" {
-			conversationID = session.setConversationIDIfEmpty(agyDiscoverConversationID(session.createdAt, prompt))
+			conversationID = session.setConversationIDIfEmpty(agyDiscoverConversationID(session.createdAt, prompt, session.transcriptHome))
 		}
-		record, err := agyReadTurnRecord(conversationID, sinceIdx, prompt)
+		record, err := agyReadTurnRecord(conversationID, sinceIdx, prompt, session.transcriptHome)
 		if err == nil && record.userIdx >= 0 {
 			return record.userIdx, nil
 		}
@@ -466,7 +469,7 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 		if marker := agyApprovalMarkerShown(pane); marker != "" {
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
-		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "")
+		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "", session.transcriptHome)
 		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" && !agyPendingNativeSubagents(record, 0) {
 			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
 				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
@@ -697,8 +700,8 @@ func agyPaneTail(pane string, n int) string {
 // agyDiscoverConversationID finds the sidecar's TUI conversation by content:
 // the conversation whose latest user step carries our just-sent prompt, among
 // .dbs modified since boot. Empty when unattributable (never a guess).
-func agyDiscoverConversationID(booted time.Time, prompt string) string {
-	home, err := os.UserHomeDir()
+func agyDiscoverConversationID(booted time.Time, prompt string, accountHome ...string) string {
+	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
 		return ""
 	}
@@ -770,11 +773,11 @@ func agyLatestUserStep(path string) (string, bool) {
 
 // agyConversationMaxIdx returns the conversation's current max step idx, or
 // -1 when unknown (no conversation yet, or unreadable).
-func agyConversationMaxIdx(conversationID string) int {
+func agyConversationMaxIdx(conversationID string, accountHome ...string) int {
 	if strings.TrimSpace(conversationID) == "" {
 		return -1
 	}
-	home, err := os.UserHomeDir()
+	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
 		return -1
 	}
@@ -799,12 +802,12 @@ func agyConversationMaxIdx(conversationID string) int {
 // sinceIdx. Verified live: field 5.9 carries input (2), output (3), and
 // thinking (9) token counts equal to the exec JSON envelope for the same
 // turn shape; tool steps carry no usage section.
-func agyTurnUsageSince(conversationID string, sinceIdx int) llmtypes.Usage {
+func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...string) llmtypes.Usage {
 	var usage llmtypes.Usage
 	if strings.TrimSpace(conversationID) == "" {
 		return usage
 	}
-	home, err := os.UserHomeDir()
+	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
 		return usage
 	}
@@ -882,12 +885,12 @@ type agyTurnToolCall struct {
 // after the turn: real invocations, post-hoc delivery. The pairing is
 // per-call Start,End in completion order — each call completed before
 // the next began under sequential TUI execution.
-func agyTurnToolCallsSince(conversationID string, sinceIdx int) []agyTurnToolCall {
+func agyTurnToolCallsSince(conversationID string, sinceIdx int, accountHome ...string) []agyTurnToolCall {
 	var calls []agyTurnToolCall
 	if strings.TrimSpace(conversationID) == "" {
 		return nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
 		return nil
 	}
@@ -947,12 +950,12 @@ func agyTurnToolCallsSince(conversationID string, sinceIdx int) []agyTurnToolCal
 // cannot isolate the reply (the pane mixes prompt echo, thoughts, tool
 // renderings, and reply), so the .db is the source of truth; "" when
 // unattributable causes the turn to fail instead of inventing a pane reply.
-func agyTurnReplySince(conversationID string, sinceIdx int) string {
+func agyTurnReplySince(conversationID string, sinceIdx int, accountHome ...string) string {
 	var final string
 	if strings.TrimSpace(conversationID) == "" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
+	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
 		return ""
 	}

@@ -44,18 +44,18 @@ func agyLatestRetainedRecord(session *agyInteractiveSession) (agyPendingDurableA
 		cancel()
 	}
 	if conversationID == "" {
-		conversationID = agyDiscoverConversationID(session.createdAt, receipt.message)
+		conversationID = agyDiscoverConversationID(session.createdAt, receipt.message, session.transcriptHome)
 	}
 	if conversationID == "" {
 		return receipt, agyTurnRecord{}, false
 	}
-	indices, err := agyMatchingUserStepIndices(conversationID, receipt.baselineIdx, receipt.message)
+	indices, err := agyMatchingUserStepIndices(conversationID, receipt.baselineIdx, receipt.message, session.transcriptHome)
 	if err != nil || len(indices) < receipt.occurrence {
 		return receipt, agyTurnRecord{}, false
 	}
 	// The answer reader starts after the user row, never at the pre-send
 	// baseline where a prior turn's assistant may still be present.
-	answer, err := agyReadTurnRecord(conversationID, indices[receipt.occurrence-1], "")
+	answer, err := agyReadTurnRecord(conversationID, indices[receipt.occurrence-1], "", session.transcriptHome)
 	return receipt, answer, err == nil
 }
 
@@ -83,7 +83,7 @@ func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, _ time.Ti
 	// pairs only once the native trail is settled, never while a tool runs.
 	var calls []agyTurnToolCall
 	if record.lastType == agyStepAssistant && record.lastStatus == 3 {
-		calls = agyTurnToolCallsSince(receipt.conversationID, record.userIdx)
+		calls = agyTurnToolCallsSince(receipt.conversationID, record.userIdx, session.transcriptHome)
 	}
 	for _, call := range calls {
 		if state.seenTools[call.CallID] {

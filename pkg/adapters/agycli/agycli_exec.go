@@ -349,7 +349,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 			return nil, err
 		}
 		var releaseMounts func()
-		privateHome, releaseMounts, err = agyIsolatedHome(servers, workdir)
+		privateHome, releaseMounts, err = agyIsolatedHomeForCall(servers, workdir, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +358,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	}
 	if privateHome == "" {
 		var cleanup func()
-		privateHome, cleanup, err = agyIsolatedHome(nil, workdir)
+		privateHome, cleanup, err = agyIsolatedHomeForCall(nil, workdir, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -467,7 +467,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	// answer, just as it does for retained turns; fixtures without a trail keep
 	// the envelope fallback.
 	if schemaJSON == "" && agyFullNativeToolsMode(toolMode) {
-		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, ""); readErr == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
+		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, "", agyTranscriptHome(opts)); readErr == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
 			parsed.response = record.finalAnswer
 		}
 	}

@@ -51,7 +51,7 @@ func agyPendingNativeSubagents(record agyTurnRecord, depth int) bool {
 		if !notified {
 			return true
 		}
-		child, err := agyReadTurnRecord(id, -1, "")
+		child, err := agyReadTurnRecord(id, -1, "", record.transcriptHome)
 		if err != nil || child.lastType != agyStepAssistant || child.lastStatus != 3 || child.finalAnswer == "" || agyPendingNativeSubagents(child, depth+1) {
 			return true
 		}

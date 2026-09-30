@@ -41,6 +41,7 @@ type agyInteractiveSession struct {
 	ownerSessionID  string
 	tmuxSessionName string
 	workingDir      string
+	transcriptHome  string
 	createdAt       time.Time
 	// model is the --model the sidecar booted with ("" = CLI default).
 	model string
@@ -552,7 +553,7 @@ func sendAgyInteractiveMessage(ctx context.Context, ownerSessionID, message stri
 	if conversationID == "" {
 		conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
 	}
-	baseline := agyConversationMaxIdx(conversationID)
+	baseline := agyConversationMaxIdx(conversationID, session.transcriptHome)
 	if strings.Contains(message, "\n") {
 		if err := agyPasteToSidecar(ctx, session.tmuxSessionName, message); err != nil {
 			return err

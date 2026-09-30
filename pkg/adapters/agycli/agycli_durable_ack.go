@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -94,12 +93,12 @@ func AwaitAgyInputDurable(ctx context.Context, ownerSessionID, message string, t
 			conversationID = agyConversationIDFromPane(ctx, session.tmuxSessionName)
 		}
 		if conversationID == "" {
-			conversationID = agyDiscoverConversationID(session.createdAt, message)
+			conversationID = agyDiscoverConversationID(session.createdAt, message, session.transcriptHome)
 		}
 		if conversationID != "" {
-			count, err := agyCountUserSteps(conversationID, receipt.baselineIdx, message)
+			count, err := agyCountUserSteps(conversationID, receipt.baselineIdx, message, session.transcriptHome)
 			if err == nil && count >= receipt.occurrence {
-				home, err := os.UserHomeDir()
+				home, err := agyHome(session.transcriptHome)
 				if err != nil {
 					return AgyDurableAck{}, err
 				}
@@ -119,13 +118,13 @@ func AwaitAgyInputDurable(ctx context.Context, ownerSessionID, message string, t
 	}
 }
 
-func agyCountUserSteps(conversationID string, sinceIdx int, message string) (int, error) {
-	indices, err := agyMatchingUserStepIndices(conversationID, sinceIdx, message)
+func agyCountUserSteps(conversationID string, sinceIdx int, message string, accountHome ...string) (int, error) {
+	indices, err := agyMatchingUserStepIndices(conversationID, sinceIdx, message, accountHome...)
 	return len(indices), err
 }
 
-func agyMatchingUserStepIndices(conversationID string, sinceIdx int, message string) ([]int, error) {
-	home, err := os.UserHomeDir()
+func agyMatchingUserStepIndices(conversationID string, sinceIdx int, message string, accountHome ...string) ([]int, error) {
+	home, err := agyHome(accountHome...)
 	if err != nil {
 		return nil, err
 	}
