@@ -591,7 +591,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 		return nil, err
 	}
 	defer release()
-	launchArgs, cleanupSandbox, err := piLandlockArgs(opts, []string{launchScriptPath}, workingDir)
+	launchArgs, cleanupSandbox, err := piLandlockArgs(opts, []string{launchScriptPath}, workingDir, env...)
 	if err != nil {
 		return nil, err
 	}

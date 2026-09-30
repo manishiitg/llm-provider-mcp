@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -12,8 +13,16 @@ import (
 // piLandlockReads: Pi starts from a generated launch script in its own temp
 // folder (with its MCP config beside it), plus files named in argv and the
 // programs those configs name.
-func piLandlockReads(args []string) []string {
+func piLandlockReads(args []string, env ...string) []string {
 	read := clisandbox.ArgFilePaths(args)
+	// Pi's native MCP config (mcp.json, in its private agent folder) names the bridge program it
+	// spawns; without a read/exec grant on that program the bridge failed with "spawn
+	// .../mcpbridge EACCES" and Pi ran without its platform tools (Confida 2026-09-30).
+	if agentDir := piAgentDirFromEnv(env); agentDir != "" {
+		config := []string{piNativeMCPConfigPath(agentDir)}
+		read = append(read, clisandbox.MCPCommandPaths(config)...)
+		read = append(read, clisandbox.JSONFilePaths(config)...)
+	}
 	for _, file := range read {
 		if filepath.Base(file) == "launch-pi.sh" {
 			dir := filepath.Dir(file)
@@ -24,6 +33,16 @@ func piLandlockReads(args []string) []string {
 		}
 	}
 	return read
+}
+
+// piAgentDirFromEnv is the PI_CODING_AGENT_DIR of a launch's environment ("KEY=value" entries).
+func piAgentDirFromEnv(env []string) string {
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "PI_CODING_AGENT_DIR="); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // piLandlockWrites is the launch folder itself: Pi's marker extension there appends to
@@ -40,11 +59,11 @@ func piLandlockWrites(args []string) []string {
 	return write
 }
 
-func piLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string) ([]string, func(), error) {
+func piLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string, env ...string) ([]string, func(), error) {
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return args, func() {}, nil
 	}
-	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, piLandlockReads(args), piLandlockWrites(args))
+	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, piLandlockReads(args, env...), piLandlockWrites(args))
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("confine Pi: %w", err)
 	}
@@ -55,7 +74,7 @@ func piLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir string,
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return func() {}, nil
 	}
-	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, piLandlockReads(cmd.Args), runtimeDirs)
+	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, piLandlockReads(cmd.Args, cmd.Env...), runtimeDirs)
 	if err != nil {
 		return func() {}, fmt.Errorf("confine Pi: %w", err)
 	}
