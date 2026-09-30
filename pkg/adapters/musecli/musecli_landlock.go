@@ -1,7 +1,9 @@
 package musecli
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,7 @@ func museLandlockGrants(args []string, env []string) (read, write []string) {
 		settings := []string{filepath.Join(configHome, "muse", "settings.json")}
 		read = append(read, clisandbox.MCPCommandPaths(settings)...)
 		read = append(read, clisandbox.JSONFilePaths(settings)...)
+		read = append(read, museManagedHooksDirs(settings)...)
 		write = append(write, configHome)
 	}
 	if dir, err := museHookDir(); err == nil {
@@ -57,4 +60,25 @@ func museLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workdir string) 
 		return func() {}, fmt.Errorf("confine Muse: %w", err)
 	}
 	return cleanup, nil
+}
+
+// museManagedHooksDirs are the folders of the hook files the settings name in managed_hooks_path.
+// Muse runs those hook scripts for every prompt; without read access to their folder the lock made
+// each prompt fail with "Prompt blocked by hook ... Permission denied" (excellence 2026-09-30).
+func museManagedHooksDirs(settingsFiles []string) []string {
+	var dirs []string
+	for _, file := range settingsFiles {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		var settings struct {
+			ManagedHooksPath string `json:"managed_hooks_path"`
+		}
+		if json.Unmarshal(data, &settings) != nil || !filepath.IsAbs(settings.ManagedHooksPath) {
+			continue
+		}
+		dirs = append(dirs, filepath.Dir(settings.ManagedHooksPath))
+	}
+	return dirs
 }
