@@ -6,8 +6,8 @@ import (
 	"log"
 )
 
-// ErrInteractiveDraft proves no programmatic input was written. The caller
-// can safely retry after the human submits or clears the native composer.
+// ErrInteractiveDraft is no longer returned: a draft does not block sends (see broker.go). The
+// value stays for callers that still compare against it.
 var ErrInteractiveDraft = errors.New("finish or clear the terminal draft before sending another message")
 
 type interactiveDraft struct {

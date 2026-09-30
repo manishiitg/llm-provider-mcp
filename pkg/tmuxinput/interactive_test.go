@@ -2,17 +2,16 @@ package tmuxinput
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
-func TestInteractiveDraftProtectsNativeComposer(t *testing.T) {
+func TestInteractiveDraftDoesNotBlockASend(t *testing.T) {
 	b := NewBroker()
 	b.NoteInteractiveInput("pane", []byte("/model"))
 	called := false
 	_, err := b.Do(t.Context(), Request{SessionID: "pane", BypassReadiness: true}, func(context.Context) error { called = true; return nil })
-	if !errors.Is(err, ErrInteractiveDraft) || called {
-		t.Fatalf("automated paste crossed draft: called=%v err=%v", called, err)
+	if err != nil || !called {
+		t.Fatalf("a draft blocked the send: called=%v err=%v", called, err)
 	}
 	// Native navigation/interrupts still work while the composer is occupied.
 	_, err = b.Do(t.Context(), Request{SessionID: "pane", BypassReadiness: true, InteractiveInput: true}, func(context.Context) error { b.NoteInteractiveInput("pane", []byte("\x1b[A")); return nil })

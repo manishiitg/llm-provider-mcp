@@ -253,11 +253,9 @@ func (w *sessionWorker) run() {
 		}
 
 		request.result.StartedAt = time.Now()
-		if !request.request.InteractiveInput && request.request.Priority != PriorityInterrupt && w.broker.HasInteractiveDraft(w.sessionID) {
-			request.result.CompletedAt = time.Now()
-			request.response <- response{result: request.result, err: ErrInteractiveDraft}
-			continue
-		}
+		// Text typed in the CLI's own composer no longer blocks a send: only the person who owns the
+		// chat can reach that terminal, and refusing produced false "finish or clear the terminal
+		// draft" errors (Confida, 2026-09-30) for a case that is rare.
 		err := request.operation(request.ctx)
 		request.result.CompletedAt = time.Now()
 		request.response <- response{result: request.result, err: err}
