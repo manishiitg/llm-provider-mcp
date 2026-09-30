@@ -16,7 +16,7 @@ import (
 
 // TestMuseExecLaneMCPMountReachesCLIAndRestores proves the settings-merge
 // mount reaches the CLI and leaves no trace, using the CLI's own failure as
-// the witness: with an unreachable dummy bridge URL, the run must fail with
+// the witness: with an explicitly required unreachable dummy bridge URL, the run must fail with
 // "Required MCP server `api-bridge` failed during startup" (observed live
 // 2026-09-10) — proving muse read our merged settings — and the temp config
 // home must have no settings.json afterwards (restore runs on failure too).
@@ -34,7 +34,7 @@ func TestMuseExecLaneMCPMountReachesCLIAndRestores(t *testing.T) {
 	defer cancel()
 	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "say the word pineapple"}}},
-	}, WithMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge"}}}`), WithMuseStructuredTransport(true))
+	}, WithMCPConfig(`{"mcpServers": {"api-bridge": {"url": "http://127.0.0.1:9/bridge", "required": true}}}`), WithMuseStructuredTransport(true))
 	if err == nil {
 		t.Fatal("expected failure: dummy bridge URL cannot initialize")
 	}

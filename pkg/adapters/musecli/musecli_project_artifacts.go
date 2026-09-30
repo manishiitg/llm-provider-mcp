@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// Muse 1.4.1 truncates project rules after 32,000 UTF-8 bytes. Count the
+// complete projected file, including operator rules, before accepting it as
+// the sole instruction carrier. Oversized projections use the inline fallback.
+const museProjectRulesMaxBytes = 32000
+
 // Project-instruction projection for muse, mirroring codex's
 // writeCodexProjectAgentsFile: the per-session system prompt is written to
 // <workingDir>/AGENTS.md, which muse auto-loads as project instructions in
@@ -26,7 +31,7 @@ func writeMuseProjectAgentsFile(workingDir, systemPrompt string, restorePrior bo
 	// session: a project's own AGENTS.md and other sessions sharing the folder
 	// are never overwritten or deleted. restorePrior is obsolete.
 	_ = restorePrior
-	token, err := projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
+	token, err := projectfile.AcquireLeaseLimit(filepath.Join(workingDir, "AGENTS.md"), systemPrompt, museProjectRulesMaxBytes)
 	if err != nil {
 		return nil, err
 	}

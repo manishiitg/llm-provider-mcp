@@ -38,8 +38,8 @@ func museSettingsPath() (string, error) {
 
 // museApplyMCPConfig merges the "mcpServers" entries of configJSON (if any),
 // optionally installs a deny-by-default PreToolUse policy for the supplied
-// native-tool allowlist, disables native subagent delegation and workflow
-// triggering, and forces tui.voice_enabled to false. It returns a restore
+// native-tool allowlist, enables native delegation only when subagent_spawn
+// is allowlisted, disables workflow triggering, and forces tui.voice_enabled to false. It returns a restore
 // function that puts the previous settings back byte-exact. Voice input has no
 // CLI flag or launch argument (verified against `muse --help`/`muse exec
 // --help`) -- settings.json's

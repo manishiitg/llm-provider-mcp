@@ -415,9 +415,14 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		return nil, false, err
 	}
 	entry = &musePersistentSession{accountFingerprint: llmtypes.CodingAgentScopeFingerprint(museAccount(ctx).opts), accountDataHome: museAccountDataHome(ctx), nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID, museAccountDataHome(ctx)), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
+	if wantAgents {
+		// Remember the requested prompt even when projection fell back to
+		// inline. Otherwise an oversized prompt would relaunch the same
+		// retained terminal on every turn because agentsContent was empty.
+		entry.agentsContent = strings.TrimSpace(systemPrompt)
+	}
 	if projected {
-		entry.restoreAgents, entry.agentsContent, entry.agentsProjected =
-			restoreAgents, strings.TrimSpace(systemPrompt), true
+		entry.restoreAgents, entry.agentsProjected = restoreAgents, true
 	}
 	// A new terminal is not necessarily a new conversation: native resume
 	// replays history, which can scroll the startup banner off-screen before

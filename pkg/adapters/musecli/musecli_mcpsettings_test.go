@@ -513,3 +513,40 @@ func TestMuseToolPolicyDeniesMissingOrInvalidNames(t *testing.T) {
 		}
 	}
 }
+
+func TestMuseNativeSubagentsEnableDelegationAndRemainCallable(t *testing.T) {
+	path := redirectMuseConfigHome(t)
+	restore, err := museApplyMCPConfig("", []string{"subagent_spawn", "subagent_wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Run struct {
+			Delegation string `json:"subagent_delegation_mode"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.Run.Delegation != "auto" {
+		t.Fatalf("native subagents must be visible, got %q", settings.Run.Delegation)
+	}
+	hook, err := museWriteToolPolicyHook([]string{"subagent_spawn", "subagent_wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(hook) })
+	for _, name := range []string{"subagent_spawn", "subagent_wait"} {
+		cmd := exec.CommandContext(t.Context(), "node", hook)
+		cmd.Stdin = strings.NewReader(`{"tool_name":"` + name + `","tool_input":{}}`)
+		out, err := cmd.Output()
+		if err != nil || strings.Contains(string(out), `"permissionDecision":"deny"`) {
+			t.Fatalf("allowlisted native tool %s blocked: %s (%v)", name, out, err)
+		}
+	}
+}

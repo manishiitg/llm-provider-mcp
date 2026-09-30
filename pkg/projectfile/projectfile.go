@@ -46,6 +46,10 @@ type held struct {
 // most recent body wins while several are active. Pair every Acquire with one
 // Release.
 func Acquire(path, body string) error {
+	return acquire(path, body, 0)
+}
+
+func acquire(path, body string, maxBytes int) error {
 	path = filepath.Clean(path)
 	mu.Lock()
 	defer mu.Unlock()
@@ -54,13 +58,13 @@ func Acquire(path, body string) error {
 		h = &held{}
 		holders[path] = h
 	}
-	h.block = body
-	if err := writeBlock(path, body, h.count == 0); err != nil {
+	if err := writeBlock(path, body, h.count == 0, maxBytes); err != nil {
 		if h.count == 0 {
 			delete(holders, path)
 		}
 		return err
 	}
+	h.block = body
 	h.count++
 	return nil
 }
@@ -104,7 +108,7 @@ func StripStale(path string) {
 	_ = stripBlock(path)
 }
 
-func writeBlock(path, body string, first bool) error {
+func writeBlock(path, body string, first bool, maxBytes int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("projectfile: create %s: %w", filepath.Dir(path), err)
 	}
@@ -136,6 +140,9 @@ func writeBlock(path, body string, first bool) error {
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "%s created=%t -->\n%s\n%s\n", beginPrefix, created, strings.TrimRight(body, "\n"), endMarker)
+	if maxBytes > 0 && b.Len() > maxBytes {
+		return fmt.Errorf("projectfile: %s requires %d bytes, exceeding startup limit %d", path, b.Len(), maxBytes)
+	}
 	return os.WriteFile(path, []byte(b.String()), mode)
 }
 
@@ -192,7 +199,14 @@ func removeBlock(text string) (stripped string, created, had bool) {
 // returns a token to put in that list. ReleaseToken on the same token
 // releases the hold exactly once, however many times cleanup runs.
 func AcquireLease(path, body string) (string, error) {
-	if err := Acquire(path, body); err != nil {
+	return AcquireLeaseLimit(path, body, 0)
+}
+
+// AcquireLeaseLimit rejects a projection whose complete UTF-8 file, including
+// operator content and managed markers, exceeds maxBytes. Zero means unlimited.
+// Rejection leaves the existing file and live leases untouched.
+func AcquireLeaseLimit(path, body string, maxBytes int) (string, error) {
+	if err := acquire(path, body, maxBytes); err != nil {
 		return "", err
 	}
 	mu.Lock()

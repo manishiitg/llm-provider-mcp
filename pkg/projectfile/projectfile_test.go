@@ -142,3 +142,56 @@ func TestOwnedLeaseCountsSessionsAndRestoresPrior(t *testing.T) {
 		t.Fatalf("prior not restored: %q", got)
 	}
 }
+
+func TestLimitedLeaseRejectsWithoutChangingLiveFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "AGENTS.md")
+	token, err := AcquireLease(p, "active prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, p)
+	// Unicode must be counted as UTF-8 bytes, not characters. Include the
+	// managed markers in the budget and keep an existing lease untouched.
+	if rejected, err := AcquireLeaseLimit(p, strings.Repeat("界", 100), len(before)); err == nil || rejected != "" {
+		t.Fatalf("oversized lease accepted: token=%q err=%v", rejected, err)
+	}
+	if got := read(t, p); got != before || !Held(p) {
+		t.Fatalf("rejection changed live instructions: %q", got)
+	}
+	ReleaseToken(token)
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("failed lease leaked a holder: %v", err)
+	}
+}
+
+func TestLimitedLeaseCountsOperatorContentAndExactBoundary(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "AGENTS.md")
+	const operator = "# Operator rules\nKeep these.\n"
+	if err := os.WriteFile(p, []byte(operator), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	token, err := AcquireLease(p, "prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := len(read(t, p))
+	ReleaseToken(token)
+	if token, err = AcquireLeaseLimit(p, "prompt", limit-1); err == nil {
+		ReleaseToken(token)
+		t.Fatal("accepted file exceeding limit by one byte")
+	}
+	if got := read(t, p); got != operator || Held(p) {
+		t.Fatalf("rejected projection changed operator file: %q", got)
+	}
+	token, err = AcquireLeaseLimit(p, "prompt", limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ReleaseToken(token)
+	if got := read(t, p); got != operator {
+		t.Fatalf("operator content not restored: %q", got)
+	}
+	if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("operator mode changed: %v, %v", info, err)
+	}
+}

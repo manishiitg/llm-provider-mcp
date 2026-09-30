@@ -987,3 +987,29 @@ func TestMuseSessionStartedSinceSeesAStartedSessionForTheWorkdir(t *testing.T) {
 		t.Fatal("without a workdir the session cannot be attributed")
 	}
 }
+
+func TestMuseOversizedProjectRulesUseFullInlineFallback(t *testing.T) {
+	workdir := t.TempDir()
+	system := strings.Repeat("界", museProjectRulesMaxBytes/3) + "required final instruction"
+	if cleanup, projected := projectMuseAgentsForTurn(workdir, []string{system}, true, false); cleanup != nil || projected {
+		t.Fatal("oversized rules must use inline delivery")
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("oversized projected file left behind: %v", err)
+	}
+	if got := museInlinePrompt([]string{system}, "hello"); got != system+"\n\nhello" {
+		t.Fatal("inline fallback lost instructions")
+	}
+	// The operator's own rules count against the same startup limit.
+	path := filepath.Join(workdir, "AGENTS.md")
+	operator := strings.Repeat("x", museProjectRulesMaxBytes-100)
+	if err := os.WriteFile(path, []byte(operator), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cleanup, projected := projectMuseAgentsForTurn(workdir, []string{strings.Repeat("y", 101)}, true, false); cleanup != nil || projected {
+		t.Fatal("operator content was excluded from the startup budget")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != operator {
+		t.Fatalf("oversized projection altered operator rules: %v", err)
+	}
+}
