@@ -886,6 +886,17 @@ type agyTurnToolCall struct {
 // per-call Start,End in completion order — each call completed before
 // the next began under sequential TUI execution.
 func agyTurnToolCallsSince(conversationID string, sinceIdx int, accountHome ...string) []agyTurnToolCall {
+	return agyTurnToolCallsFrom(conversationID, sinceIdx, false, accountHome...)
+}
+
+// agyCompletedToolCallsSince is agyTurnToolCallsSince for a turn still running: only calls a
+// later step follows. The TUI runs tools one after another, so a call followed by another step
+// has finished; the newest step alone may still be executing and waits for the next poll.
+func agyCompletedToolCallsSince(conversationID string, sinceIdx int, accountHome ...string) []agyTurnToolCall {
+	return agyTurnToolCallsFrom(conversationID, sinceIdx, true, accountHome...)
+}
+
+func agyTurnToolCallsFrom(conversationID string, sinceIdx int, completedOnly bool, accountHome ...string) []agyTurnToolCall {
 	var calls []agyTurnToolCall
 	if strings.TrimSpace(conversationID) == "" {
 		return nil
@@ -904,7 +915,11 @@ func agyTurnToolCallsSince(conversationID string, sinceIdx int, accountHome ...s
 		return nil
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`SELECT step_payload, error_details FROM steps WHERE step_type = %d AND idx > ? ORDER BY idx`, agyStepToolCall), sinceIdx)
+	query := fmt.Sprintf(`SELECT step_payload, error_details FROM steps WHERE step_type = %d AND idx > ? ORDER BY idx`, agyStepToolCall)
+	if completedOnly {
+		query = fmt.Sprintf(`SELECT step_payload, error_details FROM steps WHERE step_type = %d AND idx > ? AND idx < (SELECT MAX(idx) FROM steps) ORDER BY idx`, agyStepToolCall)
+	}
+	rows, err := db.QueryContext(context.Background(), query, sinceIdx)
 	if err != nil {
 		return nil
 	}

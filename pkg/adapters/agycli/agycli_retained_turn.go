@@ -79,11 +79,14 @@ func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, _ time.Ti
 	state := &session.retainedState
 	state.beginTurn(receipt.sentAt)
 	var messages []llmtypes.MessageContent
-	// AGY stores tool results without a live result stream. Publish its tool
-	// pairs only once the native trail is settled, never while a tool runs.
+	// AGY stores tool results without a live result stream. A call is published once it has
+	// finished: when the turn settles, or earlier when a later step follows it. Publishing only
+	// at the end left a multi-minute turn showing no tool calls at all (Confida 2026-09-30).
 	var calls []agyTurnToolCall
 	if record.lastType == agyStepAssistant && record.lastStatus == 3 {
 		calls = agyTurnToolCallsSince(receipt.conversationID, record.userIdx, session.transcriptHome)
+	} else {
+		calls = agyCompletedToolCallsSince(receipt.conversationID, record.userIdx, session.transcriptHome)
 	}
 	for _, call := range calls {
 		if state.seenTools[call.CallID] {
