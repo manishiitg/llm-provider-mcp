@@ -24,6 +24,8 @@ type landlockPolicy struct {
 	// gets "/": Muse opens every folder from / down to its workspace at
 	// start, and Landlock cannot grant one folder without the ones below it.
 	ListPaths []string `json:"list_paths,omitempty"`
+	// Agy native shells require PTYs; only grant an isolated devpts instance.
+	PrivatePTS bool `json:"private_pts,omitempty"`
 }
 
 // credentialFile is one CLI login file: where it goes in the private home
@@ -113,6 +115,7 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		WritePaths: existing(canonicalUnique(write)),
 		WorkDir:    canonical(workingDir),
 		ListPaths:  []string{"/"},
+		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
 	}
 	file, err := os.CreateTemp("", "agentworks-cli-landlock-*.json")
 	if err != nil {

@@ -92,7 +92,7 @@ func TestAgyLandlockLiveConversationPersistence(t *testing.T) {
 	t.Cleanup(func() { CloseAgyCLIInteractiveSessionForOwner(owner, "test done") })
 	policy := &llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "agy-cli", LandlockRunner: runner, PrivateHome: home, CredentialHome: os.Getenv("HOME"), WorkspaceReadPaths: []string{work}, WorkspaceWritePaths: []string{work}}
 	security := func(o *llmtypes.CallOptions) { o.CLISecurity = policy }
-	opts := []llmtypes.CallOption{WithWorkingDir(work), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), llmtypes.WithModel("gemini-3.8-flash-high"), security}
+	opts := []llmtypes.CallOption{WithWorkingDir(work), WithPersistentInteractiveSession(true), WithInteractiveSessionID(owner), llmtypes.WithModel("gemini-3.8-flash-high"), WithNativeToolsMode("full_unconfined"), security}
 	adapter := NewAgyCLIAdapter("", "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -130,5 +130,24 @@ func TestAgyLandlockLiveConversationPersistence(t *testing.T) {
 			t.Fatalf("conversation changed: %+v", next)
 		}
 	}
-	t.Log("verified real first turn, retained follow-up, and resume inside Landlock")
+	response, err = adapter.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use native run_command to execute exactly: printf AGY_NATIVE_PTY_OK > native-shell-proof.txt . Do not write the file with another tool. After the command succeeds, reply only AGY_NATIVE_PTY_OK.")}, opts...)
+	if err != nil {
+		t.Fatalf("native PTY command: %v", err)
+	}
+	if text := agySidecarChoiceText(t, response); strings.TrimSpace(text) != "AGY_NATIVE_PTY_OK" {
+		t.Fatalf("native command reply: %q", text)
+	}
+	if raw, err := os.ReadFile(filepath.Join(work, "native-shell-proof.txt")); err != nil || string(raw) != "AGY_NATIVE_PTY_OK" {
+		t.Fatalf("native shell did not execute: %q %v", raw, err)
+	}
+	found := false
+	for _, call := range agyTurnToolCallsSince(handle.NativeSessionID, -1, home) {
+		if call.Name == "run_command" && call.ErrorText == "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("native trail has no successful run_command receipt")
+	}
+	t.Log("verified first turn, retained follow-up, resume, and actual native shell under Landlock")
 }
