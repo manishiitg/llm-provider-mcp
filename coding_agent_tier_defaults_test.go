@@ -134,7 +134,7 @@ func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
 		model    string
 		effort   string
 	}{
-		{provider: ProviderClaudeCode, model: "claude-opus-5-5", effort: "medium"},
+		{provider: ProviderClaudeCode, model: "claude-sonnet-5-5", effort: "medium"},
 		{provider: ProviderCodexCLI, model: "gpt-6.1-sol", effort: "high"},
 	} {
 		t.Run(string(tt.provider), func(t *testing.T) {
