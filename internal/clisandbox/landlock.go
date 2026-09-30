@@ -85,6 +85,7 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 			return nil, noop, fmt.Errorf("create private CLI home: %w", err)
 		}
 	}
+	adoptResumedSession(policy, args)
 	credentials, err := linkCredentialFiles(policy, home)
 	if err != nil {
 		return nil, noop, err
