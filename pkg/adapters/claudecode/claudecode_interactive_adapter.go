@@ -977,7 +977,11 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// <workingDir>/.mcp.json (Claude Code's project-scoped MCP
 	// convention) with byte-restore on cleanup so operator-owned
 	// .mcp.json content survives the session.
-	if writeProjectInstructionFromOptions(opts) && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+	// In project-instruction-only mode the AGENTS.md block is the only carrier, so it
+	// is used only when this claude reads AGENTS.md; an older (or unreadable-version)
+	// binary gets the prompt through --system-prompt-file below instead.
+	carrierOK := !projectInstructionOnlyFromOptions(opts) || claudeReadsAgentsMD()
+	if carrierOK && writeProjectInstructionFromOptions(opts) && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string)
 		restoreProjectFiles := restoreProjectFilesFromOptions(opts)
 		if strings.TrimSpace(systemPrompt) != "" {
