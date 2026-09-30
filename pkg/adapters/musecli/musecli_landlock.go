@@ -18,10 +18,22 @@ import (
 // settings with the MCP servers and hooks); it may write there, and it
 // reads the programs and hook scripts that settings name.
 func museLandlockGrants(args []string, env []string) (read, write []string) {
-	configHome := ""
+	configHome, dataHome := "", ""
 	for _, entry := range append(append([]string(nil), args...), env...) {
 		if value, ok := strings.CutPrefix(entry, "XDG_CONFIG_HOME="); ok {
 			configHome = value
+		}
+		if value, ok := strings.CutPrefix(entry, "XDG_DATA_HOME="); ok {
+			dataHome = value
+		}
+	}
+	// Muse keeps its local-messaging endpoint lease under <data>/muse/runtime.
+	// Without write access every launch warned "local session messaging unavailable:
+	// ... direct endpoint lease: Permission denied" (excellence 2026-09-30).
+	if dataHome != "" {
+		runtimeDir := filepath.Join(dataHome, "muse", "runtime")
+		if os.MkdirAll(runtimeDir, 0o700) == nil {
+			write = append(write, runtimeDir)
 		}
 	}
 	read = clisandbox.ArgFilePaths(args)
