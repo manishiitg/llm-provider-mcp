@@ -6,9 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 func TestAgyToolModeHookDecisions(t *testing.T) {
@@ -29,6 +32,15 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 		{"hybrid", "run_command", "deny"},
 		{"hybrid", "invoke_subagent", "deny"},
 		{"hybrid", "new_future_tool", "deny"},
+		{"full", "write_to_file", "allow"},
+		{"full", "run_command", "allow"},
+		{"full", "invoke_subagent", "allow"},
+		{"full", "call_mcp_tool", "allow"},
+		{"full", "new_future_tool", "allow"},
+		{"full", "", "deny"},
+		{"full_unconfined", "write_to_file", "allow"},
+		{"full_unconfined", "run_command", "allow"},
+		{"full_unconfined", "invoke_subagent", "allow"},
 	} {
 		t.Run(tc.mode+"/"+tc.tool, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -50,6 +62,34 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 				t.Fatalf("decision = %q, want %q", decision.Decision, tc.want)
 			}
 		})
+	}
+}
+
+func TestAgyFullNativeToolsLaunchPolicy(t *testing.T) {
+	for _, mode := range []string{"mcp_only", "hybrid", "full_unconfined"} {
+		opts := &llmtypes.CallOptions{}
+		WithNativeToolsMode(mode)(opts)
+		if got, err := agyToolModeForLaunch(opts); err != nil || got != mode {
+			t.Fatalf("mode %s: got %s, %v", mode, got, err)
+		}
+	}
+	opts := &llmtypes.CallOptions{}
+	WithNativeToolsMode("full")(opts)
+	if _, err := agyToolModeForLaunch(opts); err == nil {
+		t.Fatal("full launched without confinement")
+	}
+	opts.CLISecurity = &llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, LandlockRunner: "/bin/true", PrivateHome: t.TempDir()}
+	_, err := agyToolModeForLaunch(opts)
+	if (err == nil) != (runtime.GOOS == "linux") {
+		t.Fatalf("full confinement on %s: %v", runtime.GOOS, err)
+	}
+	for _, mode := range []string{"full", "full_unconfined"} {
+		cmd := exec.Command("sh", "-c", agyToolModeHookCommand("python3", mode))
+		cmd.Stdin = strings.NewReader("{")
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), `"deny"`) {
+			t.Fatalf("full mode accepted malformed hook input: %s, %v", out, err)
+		}
 	}
 }
 

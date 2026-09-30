@@ -92,8 +92,8 @@ func agyBuildExecPrompt(messages []llmtypes.MessageContent, launchSystemPrompt s
 // size limit. The requested model is always explicit because AGY's API-key default differs
 // from its signed-in default; resume pins --conversation; a schema
 // string pins --json-schema. The exec lane never passes
-// --dangerously-skip-permissions: headless default-deny is the containment
-// posture the bridge proofs rely on.
+// --dangerously-skip-permissions itself: the caller adds it only for mounted
+// MCP or explicit Full CLI turns, whose selected hook supplies the tool gate.
 func agyBuildExecArgv(model, resumeID, schemaJSON string) []string {
 	argv := []string{"--input-format", "stream-json", "--output-format", "stream-json"}
 	if model = strings.TrimSpace(model); model != "" {
@@ -323,11 +323,14 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if effort != "" {
 		argv = append(argv, "--effort", effort)
 	}
-	toolMode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
+	toolMode, err := agyToolModeForLaunch(opts)
 	if err != nil {
 		return nil, err
 	}
 	if agyStringMetadata(opts, agyTestOnlyMetadataKeySkipPermissions) == "true" {
+		argv = append(argv, "--dangerously-skip-permissions")
+	}
+	if agyFullNativeToolsMode(toolMode) && strings.TrimSpace(agyStringMetadata(opts, MetadataKeyMCPConfig)) == "" {
 		argv = append(argv, "--dangerously-skip-permissions")
 	}
 	privateHome := ""
@@ -458,6 +461,15 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	parsed, err := agyParseStreamExec(stdout.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("%w (stderr: %s)", err, agyOutputTail(stderr.String()))
+	}
+	// The result envelope can concatenate interim subagent-wait narration with
+	// the final answer. The completed native trail identifies the last authored
+	// answer, just as it does for retained turns; fixtures without a trail keep
+	// the envelope fallback.
+	if schemaJSON == "" && agyFullNativeToolsMode(toolMode) {
+		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, ""); readErr == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
+			parsed.response = record.finalAnswer
+		}
 	}
 	if schemaJSON != "" {
 		parsed.response = agyExtractFinalJSONObject(parsed.response)

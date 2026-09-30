@@ -210,6 +210,9 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 		}
 	}
 	cli := []string{"agy"}
+	if agyFullNativeToolsMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode)) {
+		cli = append(cli, "--dangerously-skip-permissions")
+	}
 	// Always explicit: the CLI default DIFFERS by auth mode (subscription:
 	// Gemini 3.8 Flash high; API key: Gemini 3.1 Pro low — verified live by
 	// boot-only probes), so eliding --model for DefaultModelID silently
@@ -319,10 +322,11 @@ type agyTurnRecord struct {
 	lastStatus  int
 	answer      string
 	finalAnswer string
+	subagents   map[string]bool // native child id -> completion notification received
 }
 
 func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyTurnRecord, error) {
-	record := agyTurnRecord{userIdx: -1, lastIdx: -1}
+	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}}
 	if prompt == "" {
 		record.userIdx = sinceIdx
 	}
@@ -358,7 +362,7 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyT
 		if err := rows.Scan(&idx, &stepType, &status, &payload); err != nil {
 			return record, err
 		}
-		if record.userIdx < 0 {
+		if prompt != "" && record.userIdx < 0 {
 			if stepType != agyStepUser {
 				continue
 			}
@@ -369,6 +373,22 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string) (agyT
 			record.userIdx = idx
 		}
 		record.lastIdx, record.lastType, record.lastStatus = idx, stepType, status
+		if stepType == agyStepToolCall {
+			for _, id := range agyNativeSubagentIDs(payload) {
+				record.subagents[id] = false
+			}
+		}
+		if stepType == 101 {
+			if notice, ok := agyProtoSubmessage(payload, 114); ok {
+				if message, ok := agyProtoSubmessage(notice, 4); ok {
+					if sender, ok := agyProtoStringField(message, 3); ok {
+						if _, spawned := record.subagents[sender]; spawned {
+							record.subagents[sender] = true
+						}
+					}
+				}
+			}
+		}
 		if stepType == agyStepAssistant {
 			record.finalAnswer = ""
 			if part, _, ok := agyTranscriptStepText(stepType, payload); ok && strings.TrimSpace(part) != "" {
@@ -447,7 +467,7 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
 		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "")
-		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
+		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" && !agyPendingNativeSubagents(record, 0) {
 			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
 				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
 			}

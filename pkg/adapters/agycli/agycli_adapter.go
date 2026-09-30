@@ -111,7 +111,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 		}
 	}
 	resumeConversation := agyStringMetadata(opts, MetadataKeyResumeSessionID)
-	toolMode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
+	toolMode, err := agyToolModeForLaunch(opts)
 	if err != nil {
 		return nil, err
 	}

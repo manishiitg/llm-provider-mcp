@@ -125,7 +125,7 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	session.retainedMu.Lock()
 	state := &session.retainedState
 	state.beginTurn(receipt.sentAt)
-	if record.lastType != agyStepAssistant || record.lastStatus != 3 || record.finalAnswer == "" {
+	if record.lastType != agyStepAssistant || record.lastStatus != 3 || record.finalAnswer == "" || agyPendingNativeSubagents(record, 0) {
 		state.settledAt = time.Time{}
 		session.retainedMu.Unlock()
 		return nil

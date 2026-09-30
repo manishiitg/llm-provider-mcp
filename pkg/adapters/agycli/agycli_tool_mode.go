@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 const agyToolModeHookName = "agentworks-native-tool-mode"
@@ -17,11 +19,29 @@ const agyToolModeHookName = "agentworks-native-tool-mode"
 // retains the adapter's legacy behavior for direct SDK callers.
 func agyToolMode(raw string) (string, error) {
 	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
-	case "", "mcp_only", "hybrid":
+	case "", "mcp_only", "hybrid", "full", "full_unconfined":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("agy native tools mode %q: want mcp_only or hybrid", raw)
+		return "", fmt.Errorf("agy native tools mode %q: want mcp_only, hybrid, full or full_unconfined", raw)
 	}
+}
+
+func agyFullNativeToolsMode(mode string) bool {
+	return mode == "full" || mode == "full_unconfined"
+}
+
+// A confined Full CLI request must never silently start with host rights.
+// full_unconfined is an explicit trusted caller opt-in; the platform limits it
+// to a single-user machine, matching its shared Full CLI rollout policy.
+func agyToolModeForLaunch(opts *llmtypes.CallOptions) (string, error) {
+	mode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
+	if err != nil {
+		return "", err
+	}
+	if mode == "full" && (opts == nil || !opts.CLISecurity.LandlockEnforced()) {
+		return "", fmt.Errorf("agy full native tools require an enforced Landlock launch; use full_unconfined only for an explicitly unconfined launch")
+	}
+	return mode, nil
 }
 
 func agyToolModeFingerprint(mcpJSON, mode string) string {
@@ -37,13 +57,16 @@ func agyShellQuote(s string) string {
 }
 
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
-// all unknown native tools fail closed, including newly added AGY tools.
-// Native writes, commands, browser actuation and subagents remain on the MCP
-// bridge; hybrid admits only known read/search tools.
+// restricted modes fail closed for unknown native tools. Hybrid admits only
+// known reads/searches; Full CLI admits the CLI's native toolset alongside MCP.
 func agyToolModeHookCommand(python, mode string) string {
 	readEnabled := "False"
 	if mode == "hybrid" {
 		readEnabled = "True"
+	}
+	fullEnabled := "False"
+	if agyFullNativeToolsMode(mode) {
+		fullEnabled = "True"
 	}
 	program := `import json,sys,signal
 def timeout(_signum,_frame):
@@ -59,7 +82,7 @@ if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
 read=name in {"view_file","list_dir","find_by_name","grep_search","search_web","read_url_content"}
-allowed=bridge or (` + readEnabled + ` and read)
+allowed=isinstance(name,str) and bool(name) and (bridge or (` + readEnabled + ` and read) or ` + fullEnabled + `)
 print(json.dumps({"decision":"allow" if allowed else "deny","reason":"Use the AgentWorks MCP bridge for this tool" if not allowed else ""}))`
 	// A missing or crashing interpreter still emits an explicit denial. The
 	// internal alarm returns before AGY's outer hook timeout fires.
