@@ -41,7 +41,7 @@ func TestPiCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	bridgeResp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, testcontracts.RuntimeSelfCheckSystemPrompt(c)),
 		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, testcontracts.RuntimeSelfCheckBridgePrompt(c,
-			fmt.Sprintf("Call the api-bridge MCP tool echo_contract with token %s. If direct api_bridge_echo_contract is unavailable, use mcp search/call for echo_contract.", bridgeToken),
+			fmt.Sprintf("Call the api-bridge MCP tool echo_contract with token %s.", bridgeToken),
 		)),
 	}, bridgeOpts...)
 	if err != nil {

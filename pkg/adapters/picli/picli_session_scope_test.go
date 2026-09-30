@@ -24,7 +24,7 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	if err := os.MkdirAll(legacyAgentDir, 0o700); err != nil {
 		t.Fatalf("create legacy agent config dir: %v", err)
 	}
-	legacyAgentPath := filepath.Join(legacyAgentDir, "mcp.json")
+	legacyAgentPath := filepath.Join(legacyAgentDir, "mcp-adapter.json")
 	if err := os.WriteFile(legacyAgentPath, []byte(stalePiProjectConfig), 0o600); err != nil {
 		t.Fatalf("write legacy agent config: %v", err)
 	}
@@ -33,9 +33,9 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(fresh)(opts)
 
-	agentDir, _, cleanup, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-test-123", opts)
+	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts)
 	if err != nil {
-		t.Fatalf("preparePiExclusiveMCPConfig: %v", err)
+		t.Fatalf("preparePiNativeMCPConfig: %v", err)
 	}
 	if cleanup == nil {
 		t.Fatalf("expected a session config cleanup func")
@@ -47,7 +47,7 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	if _, err := os.Stat(legacyAgentPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy agent config %s to be removed, stat err: %v", legacyAgentPath, err)
 	}
-	sessionConfig, err := os.ReadFile(piExclusiveMCPConfigPath(agentDir))
+	sessionConfig, err := os.ReadFile(piNativeMCPConfigPath(agentDir))
 	if err != nil {
 		t.Fatalf("read session config: %v", err)
 	}
@@ -79,8 +79,8 @@ func TestPreparePiExclusiveMCPConfigPreservesForeignProjectConfig(t *testing.T) 
 
 			opts := &llmtypes.CallOptions{}
 			WithMCPConfig(stalePiProjectConfig)(opts)
-			if _, _, _, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-test-123", opts); err != nil {
-				t.Fatalf("preparePiExclusiveMCPConfig: %v", err)
+			if _, _, _, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts); err != nil {
+				t.Fatalf("preparePiNativeMCPConfig: %v", err)
 			}
 
 			preserved, err := os.ReadFile(legacyPath)

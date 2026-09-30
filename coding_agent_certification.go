@@ -1530,7 +1530,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 			TestFile:    "pkg/adapters/picli/picli_mcp_bridge_real_test.go",
 			TestName:    "TestPiCLIRealMCPBridgeOnlyToolsContract",
 			Env:         []string{"RUN_PI_CLI_MCP_BRIDGE_E2E=1", "GEMINI_API_KEY or GOOGLE_API_KEY or PI_API_KEY"},
-			Description: "launches real Pi with pi-mcp-adapter and proves an MCP stdio canary tool is called",
+			Description: "launches real Pi with native MCP and proves an MCP stdio canary tool is called",
 			RealE2E:     true,
 		},
 		{

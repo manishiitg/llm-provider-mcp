@@ -494,20 +494,19 @@ func WithPiProvider(provider string) llmtypes.CallOption {
 	return picli.WithProvider(provider)
 }
 
-// WithPiMCPConfig writes a Pi project MCP config override into .pi/mcp.json
-// for the adapter-owned working directory.
+// WithPiMCPConfig writes native mcp.json in a private per-session agent directory.
 func WithPiMCPConfig(config string) llmtypes.CallOption {
 	return picli.WithMCPConfig(config)
 }
 
 // WithPiBridgeOnlyTools disables Pi's built-in tools while leaving explicit
-// extension/custom tools, including the MCP adapter, enabled.
+// extension/custom tools, including native MCP, enabled.
 func WithPiBridgeOnlyTools(enabled bool) llmtypes.CallOption {
 	return picli.WithBridgeOnlyTools(enabled)
 }
 
 // WithPiMCPExtension overrides the Pi extension source used for MCP support.
-// The default is npm:pi-mcp-adapter.
+// The default is builtin:mcp.
 func WithPiMCPExtension(source string) llmtypes.CallOption {
 	return picli.WithMCPExtension(source)
 }

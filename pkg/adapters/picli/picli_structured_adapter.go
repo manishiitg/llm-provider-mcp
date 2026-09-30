@@ -351,7 +351,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	transcriptSessionDir := ""
 	if mcpConfigSet {
 		var cleanup func()
-		agentDir, transcriptSessionDir, cleanup, err = preparePiExclusiveMCPConfig(workingDir, sessionID, opts)
+		agentDir, transcriptSessionDir, cleanup, err = preparePiNativeMCPConfig(workingDir, sessionID, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -378,7 +378,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	provider, model := p.resolveStructuredProviderModel(opts)
 	args := buildPiStructuredArgs(provider, model, sessionID, piBridgeOnlyToolsFromOptions(opts), mcpConfigSet, piMCPExtensionFromOptions(opts), workingDir != "", skillDir)
 	if transcriptSessionDir != "" {
-		args = append(args, piExclusiveMCPArgs(agentDir, transcriptSessionDir)...)
+		args = append(args, piNativeMCPArgs(agentDir, transcriptSessionDir)...)
 	}
 	if p.logger != nil {
 		p.logger.Infof("Pi CLI structured: running provider=%s model=%s session=%s", provider, model, sessionID)
@@ -420,7 +420,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
 	if mcpConfigSet {
-		cmd.Env = piOverrideEnv(cmd.Env, piExclusiveMCPEnv(agentDir, transcriptSessionDir))
+		cmd.Env = piOverrideEnv(cmd.Env, piNativeMCPEnv(agentDir, transcriptSessionDir))
 	}
 	// p.apiKey is the resolved key initializePiCLI already picked (workspace-
 	// scoped, then shared, then local pi auth) -- but until now nothing here

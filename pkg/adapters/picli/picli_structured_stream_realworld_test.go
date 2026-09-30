@@ -39,10 +39,10 @@ func collectPiStructuredStream(streamChan <-chan llmtypes.StreamChunk) <-chan pi
 				// boundaries) for reassembly — StreamAssistantText needs them to
 				// separate messages. Only skip whitespace for the display counts.
 				cap.contentRaw = append(cap.contentRaw, chunk)
+				cap.content.WriteString(chunk.Content)
 				if strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}
-				cap.content.WriteString(chunk.Content)
 				cap.contentTexts = append(cap.contentTexts, chunk.Content)
 				cap.contentChunks++
 				cap.order = append(cap.order, "text")
@@ -109,8 +109,7 @@ func TestPiCLIStructuredStreamingRealWorldLive(t *testing.T) {
 		"Do these steps in order, writing one short sentence of narration BEFORE each tool call:\n" +
 		"1. Narrate, then call echo_contract with token " + tokenA + ".\n" +
 		"2. Narrate, then call echo_contract with token " + tokenB + ".\n" +
-		"Finally, on one line, reply with both tool result strings exactly as returned. " +
-		"If direct api_bridge_echo_contract is unavailable, use mcp search/call for echo_contract."
+		"Finally, on one line, reply with both tool result strings exactly as returned."
 
 	resp, err := adapter.GenerateContent(ctx,
 		[]llmtypes.MessageContent{

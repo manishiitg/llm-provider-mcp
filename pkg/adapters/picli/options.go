@@ -24,7 +24,7 @@ const (
 	// WithPiStructuredTransport(true) to opt in.
 	MetadataKeyStructuredTransport = "pi_structured_transport"
 
-	defaultPiMCPExtension        = "npm:pi-mcp-adapter"
+	defaultPiMCPExtension        = "builtin:mcp"
 	defaultPiStatuslineExtension = "npm:@narumitw/pi-statusline@0.8.0"
 )
 
@@ -73,8 +73,7 @@ func WithProvider(provider string) llmtypes.CallOption {
 }
 
 // WithMCPConfig records a Pi MCP config. The tmux adapter writes it to the
-// Pi session-scoped agent mcp-adapter.json before launching Pi with the MCP adapter
-// extension in exclusive config mode.
+// private session agent mcp.json before launching Pi with native MCP support.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -83,7 +82,7 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 }
 
 // WithBridgeOnlyTools disables Pi's built-in tools while leaving explicit
-// extension/custom tools, including the MCP adapter, enabled.
+// extension/custom tools, including native MCP, enabled.
 func WithBridgeOnlyTools(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -92,7 +91,7 @@ func WithBridgeOnlyTools(enabled bool) llmtypes.CallOption {
 }
 
 // WithMCPExtension overrides the Pi extension source used for MCP support.
-// The default is npm:pi-mcp-adapter.
+// The default is builtin:mcp.
 func WithMCPExtension(source string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

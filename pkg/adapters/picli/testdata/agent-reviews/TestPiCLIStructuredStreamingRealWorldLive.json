@@ -5,42 +5,42 @@
     "no duplicated lines or chunks",
     "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
     "human-readable — reads like an assistant working, coherent and natural",
-    "correct text \u003c-\u003e tool interleaving order (narration then the tool it describes)",
+    "correct text <-> tool interleaving order (narration then the tool it describes)",
     "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
     "the final answer is coherent and matches the work performed",
     "real work actually happened (e.g. the file was written to disk)"
   ],
   "output": {
     "content_chunks": [
-      "Calling echo_contract with the first token.",
-      "Calling echo_contract with the second token.",
-      "PI_STREAM_A_7494e316 PI_",
-      "STREAM_B_d388b141"
+      "I will call echo_contract with token A_37f51400.",
+      "I will now call echo_contract with token B_82472",
+      "768.",
+      "PI_STREAM_A_37f51400 PI_STREAM_B_824",
+      "72768"
     ],
-    "final": "PI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
-    "reassembled_message": "Calling echo_contract with the first token.Calling echo_contract with the second token.\nPI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
+    "final": "PI_STREAM_A_37f51400 PI_STREAM_B_82472768",
+    "reassembled_message": "I will call echo_contract with token A_37f51400.\nI will now call echo_contract with token B_82472768.\nPI_STREAM_A_37f51400 PI_STREAM_B_82472768",
     "stream_order": [
       "text",
       "tool",
+      "text",
       "text",
       "tool",
       "text",
       "text"
     ],
-    "streamed_content": "Calling echo_contract with the first token.Calling echo_contract with the second token.PI_STREAM_A_7494e316 PI_STREAM_B_d388b141",
+    "streamed_content": "I will call echo_contract with token A_37f51400.\nI will now call echo_contract with token B_82472768.\nPI_STREAM_A_37f51400 PI_STREAM_B_82472768",
     "tool_names": [
-      "api-bridge_echo_contract",
-      "api-bridge_echo_contract"
+      "mcp__api-bridge__echo_contract",
+      "mcp__api-bridge__echo_contract"
     ]
   },
-  "fingerprint": "c7a041d495dacdc4",
+  "fingerprint": "1aaf789636dbcba5",
   "agent_review": {
     "verdict": "good",
-    "reviewed_fingerprint": "c7a041d495dacdc4",
-    "reviewer": "claude-opus-5-5 (independent P0 review, 2026-09-23)",
-    "issues": [
-      "Pre-existing, previously accepted: the text-only reassembled_message joins narration 1 and narration 2 with no separator ('first token.Calling echo_contract...') because no message-end boundary arrives between them and StreamAssistantText does not treat an intervening tool chunk as a block boundary. A streaming UI renders the tool card between them (stream_order text,tool,text,tool), so the user-visible transcript is not run-on; the old approved record had the same join ('A_a4abbf8a.Searching'). Candidate follow-up: flush delta runs on ToolCallStart in StreamAssistantText."
-    ],
-    "notes": "Reviewed 2026-09-23 against the prior approved output (fingerprint 4021cf6fe8615e9f). Change is a legitimate improvement, not a regression: tool_names are now the specific 'api-bridge_echo_contract' (x2) instead of the generic 'mcp' (x4) — the prior review's open issue is resolved — and the model called echo_contract directly, so the extra search step (and its narration) disappeared, giving the exact intended order text,tool,text,tool,text. Narration precedes each tool call; both real tool results appear exactly in final ('PI_STREAM_A_7494e316 PI_STREAM_B_d388b141'); the live mid-token split ('...PI_' + 'STREAM_B_d388b141') is reassembled verbatim with tokens intact; no duplication, no escape codes; streamed_content ends with exactly the final line."
+    "reviewed_fingerprint": "1aaf789636dbcba5",
+    "reviewer": "Codex",
+    "issues": [],
+    "notes": "Reviewed real Pi 0.99.1 native MCP output: each narration precedes its intended mcp__api-bridge__echo_contract call, both real results reach the final answer, and delta reassembly preserves tokens with clean newlines between tool-separated messages. No duplication, control characters, or proxy tool calls."
   }
 }

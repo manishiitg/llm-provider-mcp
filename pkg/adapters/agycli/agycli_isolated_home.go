@@ -38,6 +38,9 @@ func agyIsolatedHome(servers []agyMCPServer, workingDirs ...string) (string, fun
 	for _, subdir := range []string{"config", "antigravity-cli"} {
 		if err := agyCopyHomeTree(filepath.Join(baseGemini, subdir), filepath.Join(privateGemini, subdir), map[string]bool{
 			"mcp_config.json": true, "mcp": true, "conversations": true,
+			// Each private home creates its own conversation index. Copying
+			// an active SQLite index races with CLI checkpoint/sidecar cleanup.
+			"conversation_summaries.db": true, "conversation_summaries.db-wal": true, "conversation_summaries.db-shm": true,
 			"crashes": true, "updater": true, "bin": true,
 			"hooks.json": true, "hooks": true,
 		}); err != nil {

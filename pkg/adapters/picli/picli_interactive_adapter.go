@@ -553,7 +553,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	var transcriptSessionDir string
 	var cleanupMCP func()
 	if strings.TrimSpace(mcpConfig) != "" {
-		_, transcriptSessionDir, cleanupMCP, err = preparePiExclusiveMCPConfig(workingDir, nativeSessionID, opts)
+		_, transcriptSessionDir, cleanupMCP, err = preparePiNativeMCPConfig(workingDir, nativeSessionID, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -644,14 +644,8 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	args = append(args,
 		"--no-skills",
 		"--no-context-files",
-		// Trust project-local .pi resources for this run. Pi runs in dynamic temp
-		// workspaces with no persistent trust store, so per-run --approve is the
-		// right knob: without it pi treats the workspace as untrusted and silently
-		// ignores project-local .pi resources (settings, prompts, SYSTEM.md, etc.).
-		// The --no-extensions/--no-skills/--no-context-files flags above keep the
-		// launch hermetic for the categories we don't want; --approve only lets the
-		// remaining project-local resources load.
-		"--approve",
+		// Native MCP must ignore project configs; explicit --skill paths still load.
+		"--no-approve",
 		"--session-id", nativeSessionID,
 	)
 	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 && strings.TrimSpace(workingDir) != "" {
@@ -662,8 +656,8 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
 		}
-		args = append(args, piExclusiveMCPArgs(agentDir, sessionDir)...)
-		env = append(env, piExclusiveMCPEnv(agentDir, sessionDir)...)
+		args = append(args, piNativeMCPArgs(agentDir, sessionDir)...)
+		env = append(env, piNativeMCPEnv(agentDir, sessionDir)...)
 	} else if sessionDir := piConfiguredTranscriptSessionDir(); sessionDir != "" {
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("failed to create Pi session dir %s: %w", sessionDir, err)
@@ -828,38 +822,20 @@ func normalizePiMCPConfig(configJSON string) ([]byte, error) {
 	if !ok || len(servers) == 0 {
 		return nil, fmt.Errorf("pi MCP config must contain a non-empty mcpServers object")
 	}
-	if rawBridge, ok := servers["api-bridge"]; ok {
-		bridge, ok := rawBridge.(map[string]interface{})
+	// Native MCP discovers typed tools on every connection, without a plugin
+	// cache or proxy wrapper. Keep the small bridge directly declared.
+	delete(config, "settings") // retired pi-mcp-adapter settings
+	config["autoEnableCodemode"] = false
+	for name, rawServer := range servers {
+		server, ok := rawServer.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("pi MCP config api-bridge server must be an object")
+			return nil, fmt.Errorf("pi MCP config server %s must be an object", name)
 		}
-		if _, exists := bridge["directTools"]; !exists {
-			bridge["directTools"] = true
+		delete(server, "directTools")
+		delete(server, "lifecycle")
+		if _, exists := server["exposure"]; !exists {
+			server["exposure"] = "direct"
 		}
-		if _, exists := bridge["lifecycle"]; !exists {
-			bridge["lifecycle"] = "keep-alive"
-		}
-	}
-	// disableProxyTool hides pi-mcp-adapter's generic "mcp" proxy tool once
-	// directTools are fully resolved from cache -- confirmed safe by reading
-	// pi-mcp-adapter's own index.ts: shouldRegisterProxyTool still registers
-	// the proxy whenever directSpecs is empty or a configured server's direct
-	// tools are still missing from cache, so a cold cache (first launch,
-	// stale hash) still gets the proxy as a bootstrap path. Warm, it hides a
-	// tool the model has no legitimate use for: our only MCP server is
-	// api-bridge with directTools already covering its whole (small, fixed)
-	// tool set, and every other tool this platform exposes is a curl-only
-	// custom tool the proxy could never reach anyway (confirmed live: a
-	// model tried mcp({tool: "get_human_input_request", ...}) and got an
-	// instant "not found" -- pi-mcp-adapter had never even attempted a
-	// connection). Removing the option entirely removes the temptation.
-	settings, ok := config["settings"].(map[string]interface{})
-	if !ok {
-		settings = map[string]interface{}{}
-		config["settings"] = settings
-	}
-	if _, exists := settings["disableProxyTool"]; !exists {
-		settings["disableProxyTool"] = true
 	}
 	body, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -1784,15 +1760,11 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// alone run consecutive messages together) or, for models that expose only the
 	// complete message at message_end, emit that whole block.
 	streamedDeltaThisMessage := false
-	// toolCallSincePrevAssistantMsg tracks whether a real tool call happened
-	// since the last assistant message_end. Pi's own marker stream can split ONE
-	// continuous reply into several message_start/message_end pairs with NO tool
-	// call between them (confirmed live: a single markdown table's "| build_id |"
-	// row arrived split across two such pairs as "|\n build_id |" — the newline
-	// landed mid-content, not at any real boundary). The boundary "\n" below must
-	// only fire between GENUINELY separate messages (narration, a tool call, then
-	// more narration) — never between two chunks of what pi itself is streaming
-	// as one uninterrupted reply, or it corrupts the reassembled text.
+	// Only a tool call separates logical assistant messages. Pi can otherwise
+	// split a continuous reply across message_end pairs, including mid-word.
+	// Keep the tool boundary pending until the next text begins: Pi emits the
+	// narration's message_end BEFORE tool_execution_start, so inserting the
+	// separator at message_end places it one message too late.
 	toolCallSincePrevAssistantMsg := false
 	// lastProviderErrorStatus records the most recent non-2xx HTTP status pi's
 	// own after_provider_response hook observed this turn (see
@@ -1833,6 +1805,17 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			switch marker.Type {
 			case "message_update":
 				if marker.UpdateType == "text_delta" && marker.Delta != "" {
+					if !streamedDeltaThisMessage && toolCallSincePrevAssistantMsg {
+						if content.Len() > 0 {
+							content.WriteByte('\n')
+							boundaryMeta := piChunkMetadata(session)
+							boundaryMeta[llmtypes.ContentDeltaMetadataKey] = true
+							emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
+								Type: llmtypes.StreamChunkTypeContent, Content: "\n", Metadata: boundaryMeta,
+							})
+						}
+						toolCallSincePrevAssistantMsg = false
+					}
 					content.WriteString(marker.Delta)
 					streamedDeltaThisMessage = true
 					// Mark as a token-level DELTA: pi's marker stream emits
@@ -1925,18 +1908,6 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 				}
 				if isAssistant {
 					switch {
-					case streamedDeltaThisMessage && toolCallSincePrevAssistantMsg:
-						// A real tool call separated this message from the next one
-						// (narration -> tool -> narration); emit a newline boundary
-						// (as a delta so it concatenates verbatim) so the two don't
-						// run together in the reassembled text.
-						boundaryMeta := piChunkMetadata(session)
-						boundaryMeta[llmtypes.ContentDeltaMetadataKey] = true
-						emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
-							Type:     llmtypes.StreamChunkTypeContent,
-							Content:  "\n",
-							Metadata: boundaryMeta,
-						})
 					case streamedDeltaThisMessage:
 						// Pi split ONE continuous reply into multiple message_end
 						// pairs with no tool call between them. The deltas already
@@ -1947,6 +1918,10 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 						// Model exposed only the complete message here (no deltas):
 						// emit it as one clean BLOCK content chunk so a no-terminal
 						// UI still receives the assistant text.
+						if toolCallSincePrevAssistantMsg && content.Len() > 0 {
+							content.WriteByte('\n')
+						}
+						toolCallSincePrevAssistantMsg = false
 						content.WriteString(marker.Text)
 						emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 							Type:     llmtypes.StreamChunkTypeContent,
@@ -1954,7 +1929,6 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 							Metadata: piChunkMetadata(session),
 						})
 					}
-					toolCallSincePrevAssistantMsg = false
 				}
 				streamedDeltaThisMessage = false
 			case "provider_error":

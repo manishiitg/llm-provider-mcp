@@ -151,6 +151,28 @@ func TestAgyCLIRealReplyFormattingFidelityContract(t *testing.T) {
 		t.Fatalf("exec turn: %v", err)
 	}
 	extracted := resp.Choices[0].Content
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandle(resp.Choices[0].GenerationInfo)
+	if !ok || handle.NativeSessionID == "" {
+		t.Fatal("exec turn has no native conversation handle")
+	}
+	trail, ok, err := ReadNativeTranscript(handle.NativeSessionID)
+	if err != nil || !ok {
+		t.Fatalf("exec native transcript: found=%t err=%v", ok, err)
+	}
+	nativeFinal := ""
+	for _, message := range trail.Messages {
+		if message.Role == llmtypes.ChatMessageTypeAI {
+			nativeFinal = ""
+			for _, part := range message.Parts {
+				if text, ok := part.(llmtypes.TextContent); ok {
+					nativeFinal += text.Text
+				}
+			}
+		}
+	}
+	if nativeFinal == "" {
+		t.Fatal("exec native transcript has no final assistant text")
+	}
 
 	owner := "agy-fmt-" + agyRandomHex(t, 3)
 	session, err := ensureAgyInteractiveSession(ctx, owner, trusted)
@@ -173,10 +195,11 @@ func TestAgyCLIRealReplyFormattingFidelityContract(t *testing.T) {
 		Provider:       "agy-cli",
 		TmuxScreen:     pane,
 		Extracted:      extracted,
+		NativeFinal:    nativeFinal,
 		WantParagraphs: 2,
 		WantBullets:    3,
 		UserGoal:       "markdown with paragraphs + bullets survives to the caller",
-		ExpectedNote:   "exec-envelope text keeps model-authored structure; the 200-col sidecar pane wraps the same content",
+		ExpectedNote:   "exec-envelope text matches the same turn's saved native final byte-for-byte; the separate 200-col sidecar turn proves terminal wrapping",
 	})
 }
 

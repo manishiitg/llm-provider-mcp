@@ -250,7 +250,7 @@ func TestPiCLIRealWorkingDirectoryMCPContract(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Reply exactly with tool results."),
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text. If direct api_bridge_report_cwd is unavailable, use mcp({ search: \"report_cwd\" }) and mcp({ tool: \"api_bridge_report_cwd\", args: \"{}\" })."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text."),
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
@@ -297,7 +297,7 @@ func TestPiCLIRealMCPBridgeToolCallReportsRealToolName(t *testing.T) {
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Reply exactly with tool results."),
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text. If direct api_bridge_report_cwd is unavailable, use mcp({ search: \"report_cwd\" }) and mcp({ tool: \"api_bridge_report_cwd\", args: \"{}\" })."),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call the api-bridge MCP tool report_cwd, then reply exactly with the tool output text."),
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),
@@ -513,7 +513,7 @@ func TestPiCLIRealSharedWorkingDirMCPConfigConflictRejected(t *testing.T) {
 	alphaToken := "PI_SHARED_ALPHA_" + piRandomHex(5)
 	alpha, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Reply exactly with tool results."),
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, fmt.Sprintf("Call the api-bridge MCP tool echo_contract with token %s, then reply exactly with the tool output text. If direct api_bridge_echo_contract is unavailable, use mcp search/call for echo_contract.", alphaToken)),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, fmt.Sprintf("Call the api-bridge MCP tool echo_contract with token %s, then reply exactly with the tool output text.", alphaToken)),
 	},
 		WithInteractiveSessionID("pi-real-shared-alpha-"+piRandomHex(4)),
 		WithPersistentInteractiveSession(true),
@@ -595,9 +595,9 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 		t.Fatalf("persistent session %s should remain active before cleanup", ownerSessionID)
 	}
 	exclusiveAgentDir, _ := piSessionRuntimeDirs(workDir, persistentHandle.NativeSessionID)
-	exclusiveMCPPath := piExclusiveMCPConfigPath(exclusiveAgentDir)
+	exclusiveMCPPath := piNativeMCPConfigPath(exclusiveAgentDir)
 	if _, err := os.Stat(exclusiveMCPPath); err != nil {
-		t.Fatalf("expected exclusive session mcp-adapter.json during persistent session: %v", err)
+		t.Fatalf("expected exclusive session mcp.json during persistent session: %v", err)
 	}
 	if err := CleanupPiCLIInteractiveSessions(ctx); err != nil {
 		t.Fatalf("CleanupPiCLIInteractiveSessions error = %v", err)
@@ -609,7 +609,7 @@ func TestPiCLIRealCleanupAndBoundedRetentionContract(t *testing.T) {
 		t.Fatalf("persistent tmux session %s still exists after cleanup", persistentHandle.TmuxSession)
 	}
 	if _, err := os.Stat(exclusiveMCPPath); !os.IsNotExist(err) {
-		t.Fatalf("exclusive session mcp-adapter.json should be removed after cleanup, err=%v", err)
+		t.Fatalf("exclusive session mcp.json should be removed after cleanup, err=%v", err)
 	}
 }
 
@@ -629,7 +629,7 @@ func TestPiCLIRealSlowMCPToolDoneDetectionContract(t *testing.T) {
 	started := time.Now()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, "Use declared MCP tools when asked. Wait for slow tools to finish before replying. Reply exactly with tool results."),
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, fmt.Sprintf("Call the api-bridge MCP tool slow_contract with token %s and delay_ms %d. Then reply exactly with the tool output text. If direct api_bridge_slow_contract is unavailable, use mcp search/call for slow_contract.", token, delay.Milliseconds())),
+		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, fmt.Sprintf("Call the api-bridge MCP tool slow_contract with token %s and delay_ms %d. Then reply exactly with the tool output text.", token, delay.Milliseconds())),
 	},
 		WithInteractiveSessionID(ownerSessionID),
 		WithPersistentInteractiveSession(true),

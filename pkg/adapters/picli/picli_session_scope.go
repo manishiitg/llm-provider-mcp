@@ -9,10 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
-
-const piMCPConfigModeExclusive = "exclusive"
 
 // piSessionRuntimeDirs returns Pi's private agent and transcript directories
 // for one native session. In AgentWorks, workingDir is already scoped by user,
@@ -26,9 +25,7 @@ func piSessionRuntimeDirs(workingDir, nativeSessionID string) (agentDir, session
 	return agentDir, filepath.Join(agentDir, "sessions")
 }
 
-// piRuntimeBaseDir resolves the directory Pi uses as its working directory.
-// pi-mcp-adapter 3.0 no longer reads <base>/.pi/mcp.json, so legacy platform
-// configs left there must be purged (see removeStalePiProjectMCPConfig).
+// piRuntimeBaseDir resolves the managed session workspace.
 func piRuntimeBaseDir(workingDir string) string {
 	base := strings.TrimSpace(workingDir)
 	if base == "" {
@@ -37,20 +34,18 @@ func piRuntimeBaseDir(workingDir string) string {
 	return base
 }
 
-// preparePiExclusiveMCPConfig writes the complete MCP snapshot to the only
-// location pi-mcp-adapter reads in PI_MCP_CONFIG_MODE=exclusive. The directory
-// is owned by this adapter, so cleanup removes the credential-bearing config
-// rather than restoring a stale token from an earlier process.
-func preparePiExclusiveMCPConfig(workingDir, nativeSessionID string, opts *llmtypes.CallOptions) (agentDir, sessionDir string, cleanup func(), err error) {
+// preparePiNativeMCPConfig writes the complete native MCP snapshot to a private
+// agent directory. Managed launches use --no-approve so project mcp.json cannot
+// override this config. Cleanup removes the credential-bearing snapshot.
+func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes.CallOptions) (agentDir, sessionDir string, cleanup func(), err error) {
 	agentDir, sessionDir = piSessionRuntimeDirs(workingDir, nativeSessionID)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return "", "", nil, fmt.Errorf("failed to create Pi session runtime dir %s: %w", sessionDir, err)
 	}
 	removeStalePiProjectMCPConfig(workingDir)
 	linkSharedPiExtensionCache(agentDir)
-	// Older launches wrote this session's bridge to mcp.json. The adapter now
-	// expects mcp-adapter.json; remove the stale file and its old credentials.
-	legacyPath := filepath.Join(agentDir, "mcp.json")
+	// Remove the retired plugin config and its credentials.
+	legacyPath := filepath.Join(agentDir, "mcp-adapter.json")
 	if err := os.Remove(legacyPath); err != nil && !os.IsNotExist(err) {
 		return "", "", nil, fmt.Errorf("failed to remove legacy Pi MCP config %s: %w", legacyPath, err)
 	}
@@ -63,11 +58,62 @@ func preparePiExclusiveMCPConfig(workingDir, nativeSessionID string, opts *llmty
 	if err != nil {
 		return "", "", nil, err
 	}
-	mcpPath := piExclusiveMCPConfigPath(agentDir)
-	if err := writePiPrivateFileAtomically(mcpPath, normalized); err != nil {
-		return "", "", nil, fmt.Errorf("failed to write exclusive Pi MCP config %s: %w", mcpPath, err)
+	// MCP_TOOLS is literal JSON, including shell examples such as ${NAME}.
+	// Native Pi resolves env values as templates. Read the JSON from a private
+	// file instead so examples are neither expanded nor executed.
+	envDir := filepath.Join(agentDir, "mcp-env")
+	cleanup = func() {
+		_ = os.Remove(piNativeMCPConfigPath(agentDir))
+		_ = os.RemoveAll(envDir)
 	}
-	return agentDir, sessionDir, func() { _ = os.Remove(mcpPath) }, nil
+	normalized, err = protectPiMCPToolDefinitions(normalized, envDir)
+	if err != nil {
+		cleanup()
+		return "", "", nil, err
+	}
+	mcpPath := piNativeMCPConfigPath(agentDir)
+	if err := writePiPrivateFileAtomically(mcpPath, normalized); err != nil {
+		cleanup()
+		return "", "", nil, fmt.Errorf("failed to write native Pi MCP config %s: %w", mcpPath, err)
+	}
+	return agentDir, sessionDir, cleanup, nil
+}
+
+func protectPiMCPToolDefinitions(normalized []byte, envDir string) ([]byte, error) {
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(normalized, &config); err != nil {
+		return nil, err
+	}
+	var servers map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(config["mcpServers"], &servers); err != nil {
+		return nil, err
+	}
+	for name, server := range servers {
+		if len(server["env"]) == 0 {
+			continue
+		}
+		var env map[string]string
+		if err := json.Unmarshal(server["env"], &env); err != nil {
+			return nil, fmt.Errorf("Pi MCP server %s env: %w", name, err)
+		}
+		definitions, ok := env["MCP_TOOLS"]
+		if !ok {
+			continue
+		}
+		if err := os.MkdirAll(envDir, 0o700); err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256([]byte(name))
+		path := filepath.Join(envDir, hex.EncodeToString(sum[:12])+".json")
+		if err := writePiPrivateFileAtomically(path, []byte(definitions)); err != nil {
+			return nil, err
+		}
+		env["MCP_TOOLS"] = "!cat " + shelllaunch.Quote(path)
+		server["env"], _ = json.Marshal(env)
+	}
+	config["mcpServers"], _ = json.Marshal(servers)
+	body, err := json.MarshalIndent(config, "", "  ")
+	return append(body, '\n'), err
 }
 
 // removeStalePiProjectMCPConfig deletes a legacy platform config at
@@ -136,27 +182,24 @@ func writePiPrivateFileAtomically(path string, content []byte) error {
 	return os.Rename(tmpPath, path)
 }
 
-func piExclusiveMCPConfigPath(agentDir string) string {
-	return filepath.Join(agentDir, "mcp-adapter.json")
+func piNativeMCPConfigPath(agentDir string) string {
+	return filepath.Join(agentDir, "mcp.json")
 }
 
-func piExclusiveMCPArgs(agentDir, sessionDir string) []string {
-	// Select the private config explicitly so older and newer pi-mcp-adapter
-	// releases load the same file on startup and after /clear.
-	return []string{"--session-dir", sessionDir, "--mcp-config", piExclusiveMCPConfigPath(agentDir)}
+func piNativeMCPArgs(agentDir, sessionDir string) []string {
+	return []string{"--session-dir", sessionDir}
 }
 
-func piExclusiveMCPEnv(agentDir, sessionDir string) []string {
+func piNativeMCPEnv(agentDir, sessionDir string) []string {
 	return []string{
-		"PI_MCP_CONFIG_MODE=" + piMCPConfigModeExclusive,
 		"PI_CODING_AGENT_DIR=" + agentDir,
 		"PI_CODING_AGENT_SESSION_DIR=" + sessionDir,
 	}
 }
 
 // Keep npm extension installation shared while isolating every source of
-// configuration, auth and transcripts. Exclusive mode never reads package MCP
-// declarations, so sharing this code cache cannot reintroduce MCP inheritance.
+// configuration, auth and transcripts. Extension discovery is disabled, so
+// sharing this code cache does not load ambient extension declarations.
 func linkSharedPiExtensionCache(agentDir string) {
 	sharedAgentDir := piAmbientAgentDir()
 	if sharedAgentDir == "" || filepath.Clean(sharedAgentDir) == filepath.Clean(agentDir) {

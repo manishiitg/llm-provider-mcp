@@ -429,7 +429,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RuntimeBinary:               "pi",
 		InstallCommand:              "npm install -g @earendil-works/pi-coding-agent@latest",
 		VersionProbeArgs:            []string{"--version"},
-		MinCLIVersion:               "0.86.0",
+		MinCLIVersion:               "0.99.0",
 		RequiresWorkingDir:          true,
 		RequiresOwnerSessionID:      true,
 		UsesPersistentSession:       true,
@@ -458,12 +458,12 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		// Pi follows AGENTS.md-style project instructions, but this adapter
 		// injects per-session system guidance through --append-system-prompt
 		// rather than writing durable project files. MCP is provided through
-		// the pi-mcp-adapter extension and a private session-scoped
-		// mcp-adapter.json; --no-builtin-tools provides the bridge-only gate.
+		// native builtin:mcp extension and a private session-scoped
+		// mcp.json; --no-builtin-tools provides the bridge-only gate.
 		WorkingDirInstructionFile: "AGENTS.md",
 		UserInstructionFile:       "~/.pi/agent/AGENTS.md",
-		WorkingDirMCPConfigFile:   ".pi/mcp-adapter.json",
-		UserMCPConfigFile:         "~/.pi/agent/mcp-adapter.json",
+		WorkingDirMCPConfigFile:   ".pi/mcp.json",
+		UserMCPConfigFile:         "~/.pi/agent/mcp.json",
 		SupportsDurableAck:        true,
 	},
 	ProviderMuseCLI: {

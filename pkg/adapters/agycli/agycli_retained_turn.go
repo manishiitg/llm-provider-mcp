@@ -17,6 +17,18 @@ type agyRetainedState struct {
 	seenTools     map[string]bool
 }
 
+// Both the completion reader and the progress reader can observe a new turn
+// first. Initialize their shared state identically so completed tool receipts
+// can be deduplicated regardless of polling order.
+func (state *agyRetainedState) beginTurn(sentAt time.Time) {
+	if !state.sentAt.Equal(sentAt) {
+		*state = agyRetainedState{sentAt: sentAt, seenTools: map[string]bool{}}
+	}
+	if state.seenTools == nil {
+		state.seenTools = map[string]bool{}
+	}
+}
+
 func agyLatestRetainedRecord(session *agyInteractiveSession) (agyPendingDurableAck, agyTurnRecord, bool) {
 	session.durableMu.Lock()
 	if len(session.pendingDurable) == 0 {
@@ -65,9 +77,7 @@ func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, _ time.Ti
 	session.retainedMu.Lock()
 	defer session.retainedMu.Unlock()
 	state := &session.retainedState
-	if !state.sentAt.Equal(receipt.sentAt) {
-		*state = agyRetainedState{sentAt: receipt.sentAt, seenTools: map[string]bool{}}
-	}
+	state.beginTurn(receipt.sentAt)
 	var messages []llmtypes.MessageContent
 	// AGY stores tool results without a live result stream. Publish its tool
 	// pairs only once the native trail is settled, never while a tool runs.
@@ -114,9 +124,7 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	}
 	session.retainedMu.Lock()
 	state := &session.retainedState
-	if !state.sentAt.Equal(receipt.sentAt) {
-		*state = agyRetainedState{sentAt: receipt.sentAt}
-	}
+	state.beginTurn(receipt.sentAt)
 	if record.lastType != agyStepAssistant || record.lastStatus != 3 || record.finalAnswer == "" {
 		state.settledAt = time.Time{}
 		session.retainedMu.Unlock()

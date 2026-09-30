@@ -126,6 +126,54 @@ func TestGetAllPiCLIModelsUsesLatestCuratedModels(t *testing.T) {
 	}
 }
 
+func TestPiMarkerParserSeparatesNarrationAfterTools(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		markers []string
+		want    string
+	}{
+		{"tool-between-messages", []string{
+			`{"type":"message_update","updateType":"text_delta","delta":"Reading first."}`,
+			`{"type":"message_end","role":"assistant","text":"Reading first."}`,
+			`{"type":"tool_execution_start","toolCallId":"a","toolName":"mcp__api-bridge__echo_contract"}`,
+			`{"type":"tool_execution_end","toolCallId":"a","toolName":"mcp__api-bridge__echo_contract"}`,
+			`{"type":"message_update","updateType":"text_delta","delta":"Reading second."}`,
+			`{"type":"message_end","role":"assistant","text":"Reading second."}`,
+			`{"type":"tool_execution_start","toolCallId":"b","toolName":"mcp__api-bridge__echo_contract"}`,
+			`{"type":"tool_execution_end","toolCallId":"b","toolName":"mcp__api-bridge__echo_contract"}`,
+			`{"type":"message_update","updateType":"text_delta","delta":"Finished."}`,
+		}, "Reading first.\nReading second.\nFinished."},
+		{"continuous-word-split", []string{
+			`{"type":"message_update","updateType":"text_delta","delta":"uninter"}`,
+			`{"type":"message_end","role":"assistant","text":"uninter"}`,
+			`{"type":"message_update","updateType":"text_delta","delta":"rupted"}`,
+		}, "uninterrupted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			markerPath := filepath.Join(t.TempDir(), "markers.jsonl")
+			body := strings.Join(append(tc.markers, `{"type":"agent_settled"}`, ""), "\n")
+			if err := os.WriteFile(markerPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			stream := make(chan llmtypes.StreamChunk, 32)
+			_, err := waitForPiInteractiveResponse(ctx, &piInteractiveSession{markerPath: markerPath}, 0, stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			close(stream)
+			var chunks []llmtypes.StreamChunk
+			for chunk := range stream {
+				chunks = append(chunks, chunk)
+			}
+			if got := llmtypes.StreamAssistantText(chunks); got != tc.want {
+				t.Fatalf("streamed text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPiMarkerParserAggregatesTextDeltas(t *testing.T) {
 	dir := t.TempDir()
 	markerPath := dir + "/markers.jsonl"
@@ -267,7 +315,7 @@ func TestPiMarkerParserUsesCompletedAssistantMessageWithoutDeltas(t *testing.T) 
 	}
 }
 
-func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
+func TestPiLaunchArgsAddsNativeMCPAndBridgeOnly(t *testing.T) {
 	t.Setenv(EnvPiStatuslineExtension, "")
 	t.Setenv(EnvPiNodeOptions, "")
 	t.Setenv(EnvPiNodeMaxOldSpaceMB, "")
@@ -292,16 +340,18 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 		"-e\x00/tmp/marker.ts",
 		"-e\x00/tmp/mcp-output-guard.ts",
 		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
-		"-e\x00npm:pi-mcp-adapter",
-		"--approve",
+		"-e\x00builtin:mcp",
+		"--no-approve",
 		"--session-id\x00mlp-pi-test-123",
 		"--session-dir\x00" + wantSessionDir,
-		"--mcp-config\x00" + filepath.Join(wantAgentDir, "mcp-adapter.json"),
 		"--no-builtin-tools",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args = %#v, want %q", args, want)
 		}
+	}
+	if strings.Contains(joined, "--mcp-config") || strings.Contains(joined, "pi-mcp-adapter") || strings.Contains(joined, "--approve") {
+		t.Fatalf("legacy plugin/config or project trust leaked into launch: %v", args)
 	}
 	if strings.Contains(joined, "--no-session") {
 		t.Fatalf("args = %#v, must not include --no-session when native resume is enabled", args)
@@ -320,7 +370,6 @@ func TestPiLaunchArgsAddsMCPAdapterAndBridgeOnly(t *testing.T) {
 	}
 	envText := strings.Join(env, "\n")
 	for _, want := range []string{
-		"PI_MCP_CONFIG_MODE=exclusive",
 		"PI_CODING_AGENT_DIR=" + wantAgentDir,
 		"PI_CODING_AGENT_SESSION_DIR=" + wantSessionDir,
 	} {
@@ -865,35 +914,34 @@ func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testin
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	agentDir, sessionDir, cleanup, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-session-a", opts)
+	agentDir, sessionDir, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-a", opts)
 	if err != nil {
-		t.Fatalf("preparePiExclusiveMCPConfig() error = %v", err)
+		t.Fatalf("preparePiNativeMCPConfig() error = %v", err)
 	}
 	if cleanup == nil {
-		t.Fatal("preparePiExclusiveMCPConfig() cleanup = nil, want cleanup")
+		t.Fatal("preparePiNativeMCPConfig() cleanup = nil, want cleanup")
 	}
 	if want := filepath.Join(agentDir, "sessions"); sessionDir != want {
 		t.Fatalf("sessionDir = %q, want %q", sessionDir, want)
 	}
 
-	mcpPath := piExclusiveMCPConfigPath(agentDir)
+	mcpPath := piNativeMCPConfigPath(agentDir)
 	body, err := os.ReadFile(mcpPath)
 	if err != nil {
 		t.Fatalf("read Pi MCP config: %v", err)
 	}
 	var config struct {
 		MCPServers map[string]struct {
-			Command     string `json:"command"`
-			DirectTools bool   `json:"directTools"`
-			Lifecycle   string `json:"lifecycle"`
+			Command  string `json:"command"`
+			Exposure string `json:"exposure"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(body, &config); err != nil {
 		t.Fatalf("Pi MCP config invalid JSON: %v\n%s", err, body)
 	}
 	bridge := config.MCPServers["api-bridge"]
-	if bridge.Command != "node" || !bridge.DirectTools || bridge.Lifecycle != "keep-alive" {
-		t.Fatalf("api-bridge config = %#v, want node directTools keep-alive", bridge)
+	if bridge.Command != "node" || bridge.Exposure != "direct" {
+		t.Fatalf("api-bridge config = %#v, want node with direct exposure", bridge)
 	}
 	if len(config.MCPServers) != 1 {
 		t.Fatalf("exclusive config inherited ambient MCP servers: %#v", config.MCPServers)
@@ -901,7 +949,7 @@ func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testin
 
 	cleanup()
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Fatalf("exclusive mcp-adapter.json should be removed after cleanup, err=%v", err)
+		t.Fatalf("exclusive mcp.json should be removed after cleanup, err=%v", err)
 	}
 	if got, err := os.ReadFile(projectMCPPath); err != nil || string(got) != string(projectMCP) {
 		t.Fatalf("project MCP config was mutated: got=%q err=%v", got, err)
@@ -914,7 +962,7 @@ func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	mcpPath := piExclusiveMCPConfigPath(agentDir)
+	mcpPath := piNativeMCPConfigPath(agentDir)
 	original := []byte(`{"mcpServers":{"existing":{"command":"old"}}}` + "\n")
 	if err := os.WriteFile(mcpPath, original, 0o600); err != nil {
 		t.Fatal(err)
@@ -922,21 +970,21 @@ func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"new"}}}`)(opts)
 
-	_, _, cleanup, err := preparePiExclusiveMCPConfig(workDir, "mlp-pi-session-b", opts)
+	_, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-b", opts)
 	if err != nil {
-		t.Fatalf("preparePiExclusiveMCPConfig() error = %v", err)
+		t.Fatalf("preparePiNativeMCPConfig() error = %v", err)
 	}
 	active, err := os.ReadFile(mcpPath)
 	if err != nil {
-		t.Fatalf("read active mcp-adapter.json: %v", err)
+		t.Fatalf("read active mcp.json: %v", err)
 	}
 	if !strings.Contains(string(active), `"api-bridge"`) {
-		t.Fatalf("active mcp-adapter.json = %s, want session bridge config", active)
+		t.Fatalf("active mcp.json = %s, want session bridge config", active)
 	}
 
 	cleanup()
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Fatalf("stale session mcp-adapter.json must not be restored, err=%v", err)
+		t.Fatalf("stale session mcp.json must not be restored, err=%v", err)
 	}
 }
 
@@ -1007,7 +1055,7 @@ func TestPiProjectSkillsAndLaunchArgsLoadExplicitSkillPath(t *testing.T) {
 	joined := strings.Join(args, "\x00")
 	for _, want := range []string{
 		"--no-skills",
-		"--approve",
+		"--no-approve",
 		"--skill\x00" + filepath.Join(workDir, ".pi", "skills"),
 	} {
 		if !strings.Contains(joined, want) {

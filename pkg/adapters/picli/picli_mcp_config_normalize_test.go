@@ -6,68 +6,37 @@ import (
 	"testing"
 )
 
-func TestNormalizePiMCPConfigDefaultsDisableProxyTool(t *testing.T) {
-	input := `{"mcpServers":{"api-bridge":{"command":"mcpbridge"}}}`
-
-	out, err := normalizePiMCPConfig(input)
+func TestNormalizePiMCPConfigNativeDirectExposure(t *testing.T) {
+	out, err := normalizePiMCPConfig(`{"settings":{"disableProxyTool":false},"mcpServers":{"api-bridge":{"command":"mcpbridge","directTools":true,"lifecycle":"keep-alive","env":{"TOKEN":"session-token"},"timeout":123},"docs":{"url":"https://example.invalid/mcp","exposure":"hidden"}}}`)
 	if err != nil {
-		t.Fatalf("normalizePiMCPConfig: %v", err)
+		t.Fatal(err)
 	}
-
 	var got map[string]interface{}
 	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("unmarshal normalized config: %v", err)
+		t.Fatal(err)
 	}
-	settings, ok := got["settings"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected a settings object in normalized config, got: %s", out)
+	if got["autoEnableCodemode"] != false {
+		t.Fatalf("codemode unexpectedly enabled: %s", out)
 	}
-	if disable, _ := settings["disableProxyTool"].(bool); !disable {
-		t.Fatalf("expected settings.disableProxyTool=true by default, got: %s", out)
+	servers := got["mcpServers"].(map[string]interface{})
+	bridge := servers["api-bridge"].(map[string]interface{})
+	if bridge["exposure"] != "direct" || bridge["timeout"] != float64(123) || bridge["env"].(map[string]interface{})["TOKEN"] != "session-token" {
+		t.Fatalf("native settings or credentials lost: %s", out)
 	}
-}
-
-func TestNormalizePiMCPConfigPreservesExplicitDisableProxyToolFalse(t *testing.T) {
-	input := `{"settings":{"disableProxyTool":false},"mcpServers":{"api-bridge":{"command":"mcpbridge"}}}`
-
-	out, err := normalizePiMCPConfig(input)
-	if err != nil {
-		t.Fatalf("normalizePiMCPConfig: %v", err)
+	if servers["docs"].(map[string]interface{})["exposure"] != "hidden" {
+		t.Fatalf("explicit exposure lost: %s", out)
 	}
-	if !strings.Contains(string(out), `"disableProxyTool": false`) {
-		t.Fatalf("expected an explicit settings.disableProxyTool=false to survive normalization, got: %s", out)
+	for _, field := range []string{"directTools", "lifecycle", "disableProxyTool", "settings"} {
+		if strings.Contains(string(out), `"`+field+`"`) {
+			t.Fatalf("retired plugin setting %s survives: %s", field, out)
+		}
 	}
 }
 
-func TestNormalizePiMCPConfigStillDefaultsDirectToolsAndLifecycleAlongsideProxySetting(t *testing.T) {
-	input := `{"mcpServers":{"api-bridge":{"command":"mcpbridge"}}}`
-
-	out, err := normalizePiMCPConfig(input)
-	if err != nil {
-		t.Fatalf("normalizePiMCPConfig: %v", err)
-	}
-
-	var got struct {
-		Settings struct {
-			DisableProxyTool bool `json:"disableProxyTool"`
-		} `json:"settings"`
-		McpServers struct {
-			ApiBridge struct {
-				DirectTools interface{} `json:"directTools"`
-				Lifecycle   string      `json:"lifecycle"`
-			} `json:"api-bridge"`
-		} `json:"mcpServers"`
-	}
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("unmarshal normalized config: %v", err)
-	}
-	if got.McpServers.ApiBridge.DirectTools != true {
-		t.Fatalf("expected api-bridge.directTools=true, got: %s", out)
-	}
-	if got.McpServers.ApiBridge.Lifecycle != "keep-alive" {
-		t.Fatalf("expected api-bridge.lifecycle=keep-alive, got: %s", out)
-	}
-	if !got.Settings.DisableProxyTool {
-		t.Fatalf("expected settings.disableProxyTool=true, got: %s", out)
+func TestNormalizePiMCPConfigRejectsInvalidServers(t *testing.T) {
+	for _, input := range []string{`{`, `{}`, `{"mcpServers":{}}`, `{"mcpServers":{"api-bridge":"invalid"}}`} {
+		if _, err := normalizePiMCPConfig(input); err == nil {
+			t.Fatalf("accepted invalid config %s", input)
+		}
 	}
 }

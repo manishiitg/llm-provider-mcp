@@ -32,6 +32,9 @@ type ReplyFormattingCase struct {
 	TmuxScreen string
 	// Extracted is what the adapter actually returned to the caller.
 	Extracted string
+	// NativeFinal is the same turn's provider-authored answer, when available
+	// independently of the adapter's return value (for example its saved trail).
+	NativeFinal string
 	// WantParagraphs and WantBullets are the structures the prompt asked the
 	// model to produce, asserted deterministically before any judging.
 	WantParagraphs int
@@ -56,6 +59,9 @@ func AssertFinalAnswerPreservesStructure(t testing.TB, c ReplyFormattingCase) {
 	extracted := strings.TrimSpace(c.Extracted)
 	if extracted == "" {
 		t.Fatalf("%s returned an empty final answer", c.Provider)
+	}
+	if c.NativeFinal != "" && extracted != strings.TrimSpace(c.NativeFinal) {
+		t.Fatalf("%s changed the native final answer's text or formatting", c.Provider)
 	}
 	if strings.TrimSpace(c.TmuxScreen) == "" {
 		t.Fatalf("%s reply-formatting case has no pane capture to compare against", c.Provider)
@@ -93,6 +99,9 @@ func AssertFinalAnswerPreservesStructure(t testing.TB, c ReplyFormattingCase) {
 		"want_bullets":        c.WantBullets,
 		"raw_provider_output": truncateForJudge(c.TmuxScreen),
 		"extracted_final":     extracted,
+	}
+	if c.NativeFinal != "" {
+		output["native_final"] = c.NativeFinal
 	}
 	// Fingerprint over the STRUCTURAL outcome, never the reply text.
 	//

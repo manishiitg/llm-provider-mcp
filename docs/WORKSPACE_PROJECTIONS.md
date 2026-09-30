@@ -68,7 +68,7 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 | Codex       | `AGENTS.md`                                 | `.codex/config.toml` ([mcp_servers.*])          | n/a — use `WithDisableShellTool` / `WithDisableFeatures` CLI flags    |
 | Gemini      | `GEMINI.md`                                 | `.gemini/settings.json` (merged with hooks)     | `.gemini/settings.json` `hooks.BeforeTool` + `.gemini/hooks/deny-builtin.sh` |
 | Cursor      | `.cursor/rules/mlp-system.mdc`              | `.cursor/mcp.json`                              | `.cursor/hooks.json` + `.cursor/hooks/mlp-deny-builtin.sh`            |
-| Pi          | n/a (`--append-system-prompt`)              | private session `mcp-adapter.json` via `--mcp-config` | n/a — use Pi's `--no-builtin-tools` flag                         |
+| Pi          | n/a (`--append-system-prompt`)              | private session `mcp.json` via `PI_CODING_AGENT_DIR` | n/a — use Pi's `--no-builtin-tools` flag                         |
 
 ### Notes per CLI
 
@@ -80,8 +80,10 @@ see [Section 4](#4-the-mlp_enable_unsafe_workspace_projections-gate).
 - **Cursor's `.cursor/rules/mlp-system.mdc`** is a fixed-filename file
   under the tool-specific rules dir, removed at session teardown. The
   one-chat-per-workdir assumption applies.
-- **Pi's `mcp-adapter.json`** is written under a private session agent
-  directory and passed to `pi-mcp-adapter` with `--mcp-config`. The file is
+- **Pi's native `mcp.json`** is written under a private session agent
+  directory and read by `-e builtin:mcp` using `PI_CODING_AGENT_DIR`.
+  Managed launches pass `--no-approve` to ignore project MCP overrides;
+  explicitly supplied `--skill` paths still load. The file is
   removed at session teardown. A legacy platform-owned `.pi/mcp.json` is
   removed before launch so it cannot carry stale bridge credentials or trigger
   the adapter's migration warning. Bridge-only mode uses Pi's native

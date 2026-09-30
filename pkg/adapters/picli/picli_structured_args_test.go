@@ -28,7 +28,7 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 			"--no-extensions",
 			"-e", "mcp-ext",
 			"--no-builtin-tools",
-			"--approve",
+			"--no-approve",
 			"--skill", "/work/.pi/skills",
 		}
 		if !reflect.DeepEqual(got, want) {
@@ -79,7 +79,7 @@ func TestBuildPiStructuredArgs(t *testing.T) {
 
 	t.Run("no working dir, no skills: no --approve, no --skill", func(t *testing.T) {
 		got := buildPiStructuredArgs("google", "gemini-3.7-flash", "s", false, false, "", false, "")
-		if has(got, "--approve") || has(got, "--skill") {
+		if has(got, "--no-approve") || has(got, "--skill") {
 			t.Errorf("expected neither --approve nor --skill, got %v", got)
 		}
 	})
