@@ -1,13 +1,40 @@
-# Workflow Step Isolation (Per-Step Tmp Dir)
+# Workflow step runtimes with linked outputs
 
-Proposal for isolating coding-CLI workflow steps from each other and from
-the user's actual workflow directory by running each step in a fresh
-per-call tmp dir. Chat (multi-agent + builder) continues to use the
-user's workspace dir directly.
+Status: implemented in mcpagent and AgentWorks, 2026-09-30; not deployed.
+The provider adapters continue to receive a private CLI working directory.
+Workspace placement does not itself enforce access or enable native tools.
 
-Status: **per-session workspace support is implemented in mcpagent.** The
-cross-provider whole-process security model remains partially implemented and
-must fail closed where a provider has not been certified.
+## Current runtime contract
+
+- `mcpagent.WorkspaceRuntimeConfig.IsolatedSession` selects a private directory
+  keyed by the platform session ID. The cwd survives between turns for native
+  resume; `CloseSession` reclaims it. Without a session ID, `Agent.Close` reclaims
+  a random runtime. Generated prompts, skills and provider config stay here.
+- Trusted application code may supply `WorkspaceRuntimeConfig.OutputDir`, an
+  existing absolute artifact directory. It is linked as `output/` inside the
+  private runtime. AgentWorks supplies the exact current iteration/group/step
+  directory, including nested and message-sequence overrides. Deliverables
+  written through the link are authoritative immediately, without copying.
+- AgentWorks checks the target against the dedicated step session's write guard
+  before creating it. Its native security policy replaces parent-chat workspace
+  grants with that step's admitted grants. The CLI home is also per runtime;
+  existing DB/cache/KB/owning-subtree and host capabilities are preserved.
+- Link setup is checked on construction and before each provider integration.
+  Obstructing files/directories, wrong targets and state errors fail; linked
+  runtimes never fall back to the real working directory. Resume keeps the
+  same link target, and cleanup removes the link without following its target.
+- Native tools use `output/<file>` or `cd output`; bridge paths and
+  `STEP_OUTPUT_DIR` remain unchanged. This does not enable native editing/shell
+  tools, change `mcp_only` defaults or broaden permissions. All six coding
+  providers, including Agy, share the setup. API models and background reviews
+  do not receive a link implicitly from an inherited output environment.
+- Crew and workflow chats have separate Run/Builder runtimes with `project/`
+  linked to their real project. Code chats keep their existing placement.
+
+The security controls below still apply. Sections 1–9 preserve the historical
+proposal and rollout notes; references there to per-call directories, no resume,
+no symlinks, a shared chat cwd or old public option APIs are superseded by this
+current contract.
 
 ## 0. Scope: four controls that must not be conflated
 
