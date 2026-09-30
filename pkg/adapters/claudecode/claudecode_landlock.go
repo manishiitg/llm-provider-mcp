@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 // claudeLandlockArgs starts Claude Code confined to its folder when the
@@ -20,6 +22,7 @@ func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, s
 		return args, func() {}, nil
 	}
 	read := claudeLandlockReads(args, workingDir)
+	claudeAdoptResumedConversation(opts.CLISecurity, args, workingDir)
 	if err := claudeMirrorLandlockReads(opts.CLISecurity, workingDir); err != nil {
 		return nil, func() {}, err
 	}
@@ -28,6 +31,81 @@ func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, s
 		_ = f.Close()
 	}
 	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, read, []string{statusline})
+}
+
+// claudeAdoptResumedConversation copies the conversation a confined launch resumes into the
+// private home when only the unconfined home has it. A chat started before its CLI was confined
+// kept its conversation in the server's (or account's) ~/.claude; the confined launch reads the
+// private home, so --resume failed with "No conversation found" and the pane exited at once
+// (RTS 2026-09-30, a Crew chat after the lock was turned on). Only this folder's own
+// conversation is copied, never the rest of that home; an existing private copy is kept.
+func claudeAdoptResumedConversation(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string) {
+	resumeID := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--resume" {
+			resumeID = strings.TrimSpace(args[i+1])
+		}
+	}
+	if resumeID == "" || strings.ContainsAny(resumeID, `/\`) || policy == nil {
+		return
+	}
+	source := strings.TrimSpace(policy.CredentialHome)
+	if source == "" {
+		source, _ = os.UserHomeDir()
+	}
+	if source == "" || filepath.Clean(source) == filepath.Clean(policy.PrivateHome) {
+		return
+	}
+	for _, dir := range pathidentity.Candidates(workingDir) {
+		slug := claudeTranscriptProjectSlug(dir)
+		if slug == "" {
+			continue
+		}
+		target := filepath.Join(policy.PrivateHome, ".claude", "projects", slug, resumeID+".jsonl")
+		if _, err := os.Stat(target); err == nil {
+			return
+		}
+		from := filepath.Join(source, ".claude", "projects", slug, resumeID+".jsonl")
+		data, err := os.ReadFile(from)
+		if err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return
+		}
+		_ = os.WriteFile(target, data, 0o600)
+		// Subagent transcripts of this conversation, when Claude kept them beside it.
+		_ = copyDirIfMissing(filepath.Join(source, ".claude", "projects", slug, resumeID), filepath.Join(filepath.Dir(target), resumeID))
+		return
+	}
+}
+
+func copyDirIfMissing(from, to string) error {
+	if _, err := os.Stat(to); err == nil {
+		return nil
+	}
+	info, err := os.Stat(from)
+	if err != nil || !info.IsDir() {
+		return err
+	}
+	return filepath.Walk(from, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(from, path)
+		dest := filepath.Join(to, rel)
+		if fi.IsDir() {
+			return os.MkdirAll(dest, 0o700)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dest, data, 0o600)
+	})
 }
 
 // claudeMirrorLandlockReads makes Claude's own read rule match the Landlock
