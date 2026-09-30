@@ -52,6 +52,9 @@ func adoptResumedSession(policy *llmtypes.CLISecurityPolicy, args []string) {
 				continue
 			}
 			to := filepath.Join(targetRoot, rel)
+			if pattern.target != "" {
+				to = filepath.Join(home, pattern.target, filepath.Base(filepath.Dir(from)), filepath.Base(from))
+			}
 			if _, err := os.Stat(to); err == nil {
 				continue
 			}
@@ -85,6 +88,9 @@ type sessionPattern struct {
 	envKey   string
 	fallback string
 	glob     string
+	// target, when set, is where the match goes under the private home, keeping its
+	// <hash>/<id> tail (the source is somewhere Cursor no longer reads).
+	target string
 }
 
 func sessionPatterns(provider, id string) []sessionPattern {
@@ -97,7 +103,12 @@ func sessionPatterns(provider, id string) []sessionPattern {
 	case "codex-cli":
 		return []sessionPattern{{envKey: "CODEX_HOME", fallback: ".codex", glob: filepath.Join("sessions", "*", "*", "*", "rollout-*-"+id+".jsonl")}}
 	case "cursor-cli":
-		return []sessionPattern{{glob: filepath.Join(".cursor", "chats", "*", id)}}
+		// Cursor keeps chats under its XDG config folder (the account's own, or the server's),
+		// else ~/.cursor/chats; the private home's Cursor reads .config/cursor/chats.
+		return []sessionPattern{
+			{envKey: "XDG_CONFIG_HOME", fallback: ".config", glob: filepath.Join("cursor", "chats", "*", id)},
+			{glob: filepath.Join(".cursor", "chats", "*", id), target: filepath.Join(".config", "cursor", "chats")},
+		}
 	}
 	return nil
 }

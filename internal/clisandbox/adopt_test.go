@@ -54,11 +54,19 @@ func TestAdoptResumedSessionPerCLI(t *testing.T) {
 		t.Fatal("codex: another session was copied")
 	}
 
+	// Legacy ~/.cursor/chats goes where the private Cursor reads (.config/cursor/chats).
 	writeSessionFile(t, filepath.Join(account, ".cursor/chats/hash1/chat-1/store.db"))
 	writeSessionFile(t, filepath.Join(account, ".cursor/chats/hash1/chat-2/store.db"))
 	adoptResumedSession(policy("cursor-cli", nil), []string{"cursor-agent", "--resume", "chat-1"})
-	if !exists(filepath.Join(private, ".cursor/chats/hash1/chat-1/store.db")) || exists(filepath.Join(private, ".cursor/chats/hash1/chat-2")) {
-		t.Fatal("cursor: only chat-1 should be adopted")
+	if !exists(filepath.Join(private, ".config/cursor/chats/hash1/chat-1/store.db")) || exists(filepath.Join(private, ".config/cursor/chats/hash1/chat-2")) {
+		t.Fatal("cursor: only chat-1 should be adopted, into .config/cursor/chats")
+	}
+	// The account's XDG config folder (the server sets one on RTS) is where its chats really are.
+	xdg := filepath.Join(root, "xdg-config")
+	writeSessionFile(t, filepath.Join(xdg, "cursor/chats/hash2/chat-3/store.db"))
+	adoptResumedSession(policy("cursor-cli", map[string]string{"XDG_CONFIG_HOME": xdg}), []string{"cursor-agent", "--resume", "chat-3"})
+	if !exists(filepath.Join(private, ".config/cursor/chats/hash2/chat-3/store.db")) {
+		t.Fatal("cursor: a chat under the account's XDG config was not adopted")
 	}
 }
 
@@ -66,14 +74,14 @@ func TestAdoptResumedSessionKeepsAnExistingPrivateCopy(t *testing.T) {
 	root := t.TempDir()
 	account, private := filepath.Join(root, "account"), filepath.Join(root, "private")
 	writeSessionFile(t, filepath.Join(account, ".cursor/chats/h/c/store.db"))
-	if err := os.MkdirAll(filepath.Join(private, ".cursor/chats/h/c"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(private, ".config/cursor/chats/h/c"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(private, ".cursor/chats/h/c/mine.txt"), []byte("newer"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(private, ".config/cursor/chats/h/c/mine.txt"), []byte("newer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	adoptResumedSession(&llmtypes.CLISecurityPolicy{Provider: "cursor-cli", PrivateHome: private, CredentialHome: account}, []string{"--resume", "c"})
-	if exists(filepath.Join(private, ".cursor/chats/h/c/store.db")) {
+	if exists(filepath.Join(private, ".config/cursor/chats/h/c/store.db")) {
 		t.Fatal("an existing private session was overwritten")
 	}
 }
