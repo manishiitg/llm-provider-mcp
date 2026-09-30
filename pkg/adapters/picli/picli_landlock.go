@@ -26,11 +26,25 @@ func piLandlockReads(args []string) []string {
 	return read
 }
 
+// piLandlockWrites is the launch folder itself: Pi's marker extension there appends to
+// markers.jsonl, so read access alone made Pi exit at start with "Failed to load extension ...
+// EACCES ... markers.jsonl" once the server's temp folder moved out of the shared /tmp
+// (Confida 2026-09-30). The folder is created for this one launch and removed after it.
+func piLandlockWrites(args []string) []string {
+	var write []string
+	for _, file := range clisandbox.ArgFilePaths(args) {
+		if filepath.Base(file) == "launch-pi.sh" {
+			write = append(write, filepath.Dir(file))
+		}
+	}
+	return write
+}
+
 func piLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string) ([]string, func(), error) {
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return args, func() {}, nil
 	}
-	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, piLandlockReads(args), nil)
+	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, piLandlockReads(args), piLandlockWrites(args))
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("confine Pi: %w", err)
 	}
