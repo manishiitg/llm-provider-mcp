@@ -15,6 +15,10 @@ type agyRetainedState struct {
 	settledAnswer string
 	settledAt     time.Time
 	seenTools     map[string]bool
+	// toolsReadIdx is the newest step the running-turn tool read has covered, so a poll that
+	// finds no new step costs nothing extra.
+	toolsReadIdx int
+	toolsRead    bool
 }
 
 // Both the completion reader and the progress reader can observe a new turn
@@ -85,7 +89,9 @@ func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, _ time.Ti
 	var calls []agyTurnToolCall
 	if record.lastType == agyStepAssistant && record.lastStatus == 3 {
 		calls = agyTurnToolCallsSince(receipt.conversationID, record.userIdx, session.transcriptHome)
-	} else {
+	} else if !state.toolsRead || state.toolsReadIdx != record.lastIdx {
+		// Tool calls are secondary: read them only when the conversation has advanced.
+		state.toolsRead, state.toolsReadIdx = true, record.lastIdx
 		calls = agyCompletedToolCallsSince(receipt.conversationID, record.userIdx, session.transcriptHome)
 	}
 	for _, call := range calls {
