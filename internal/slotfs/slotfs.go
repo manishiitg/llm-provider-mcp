@@ -43,11 +43,47 @@ const (
 
 	sudoPath    = "/usr/bin/sudo"
 	slotctlPath = "/usr/local/libexec/agentworks/slotctl"
+	// EnvSlotctl overrides slotctlPath: a product that has its own slot accounts on a shared host.
+	EnvSlotctl = "AGENTWORKS_SLOTCTL"
+	// EnvPrefix names the slot accounts of this product (default "slot": slot01, slot02, ...).
+	EnvPrefix = "AGENTWORKS_SLOT_PREFIX"
 )
 
-var slotName = regexp.MustCompile(`^slot[0-9]{2,3}$`)
+// slotctl is the root-owned launcher this product's service account may run as a slot.
+func slotctl() string {
+	if override := strings.TrimSpace(os.Getenv(EnvSlotctl)); override != "" {
+		return override
+	}
+	return slotctlPath
+}
+
+var (
+	nameMu    sync.Mutex
+	nameCache = map[string]*regexp.Regexp{}
+)
+
+// slotNameMatches reports whether name is one of this product's slot accounts: the product's prefix (the
+// config's slot_prefix, else AGENTWORKS_SLOT_PREFIX, else "slot") followed by two or three digits.
+func slotNameMatches(name string) bool {
+	prefix := strings.TrimSpace(os.Getenv(EnvPrefix))
+	if cfg, ok := loadConfigUnchecked(); ok && cfg.SlotPrefix != "" {
+		prefix = cfg.SlotPrefix
+	}
+	if prefix == "" {
+		prefix = "slot"
+	}
+	nameMu.Lock()
+	re, ok := nameCache[prefix]
+	if !ok {
+		re = regexp.MustCompile("^" + regexp.QuoteMeta(prefix) + "[0-9]{2,3}$")
+		nameCache[prefix] = re
+	}
+	nameMu.Unlock()
+	return re.MatchString(name)
+}
 
 type config struct {
+	SlotPrefix    string `json:"slot_prefix"`
 	SlotRunRoot   string `json:"slot_run_root"`
 	SlotStateRoot string `json:"slot_state_root"`
 	DocsRoot      string `json:"docs_root"`
@@ -58,6 +94,11 @@ func loadConfig() (config, bool) {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv(EnvEnabled)), "on") {
 		return config{}, false
 	}
+	return loadConfigUnchecked()
+}
+
+// loadConfigUnchecked reads the allow-list whether or not CLI launches as slots are switched on.
+func loadConfigUnchecked() (config, bool) {
 	path := ConfigPath
 	if override := strings.TrimSpace(os.Getenv(EnvConfig)); override != "" {
 		path = override
@@ -84,7 +125,7 @@ func SlotOf(path string) (slot string, ok bool) {
 		prefix := filepath.Clean(root) + string(filepath.Separator)
 		if strings.HasPrefix(clean, prefix) {
 			first := strings.SplitN(strings.TrimPrefix(clean, prefix), string(filepath.Separator), 2)[0]
-			if slotName.MatchString(first) {
+			if slotNameMatches(first) {
 				return first, true
 			}
 		}
@@ -129,7 +170,7 @@ func slotOfUser(tablePath, userID string) string {
 		return ""
 	}
 	for slot, holder := range table.Slots {
-		if holder == userID && slotName.MatchString(slot) {
+		if holder == userID && slotNameMatches(slot) {
 			return slot
 		}
 	}
@@ -139,7 +180,7 @@ func slotOfUser(tablePath, userID string) string {
 // RunDir is a slot's run folder: group-writable for the platform, where launch files for that slot go.
 func RunDir(slot string) (string, bool) {
 	cfg, on := loadConfig()
-	if !on || !slotName.MatchString(slot) {
+	if !on || !slotNameMatches(slot) {
 		return "", false
 	}
 	return filepath.Join(cfg.SlotRunRoot, slot), true
@@ -254,7 +295,7 @@ func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err erro
 		return func() {}, err
 	}
 	cmd.Path = sudoPath
-	cmd.Args = []string{sudoPath, "-n", "-u", slot, slotctlPath, "exec", "--request-file", file}
+	cmd.Args = []string{sudoPath, "-n", "-u", slot, slotctl(), "exec", "--request-file", file}
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	cmd.Dir = "/"
 	return func() { _ = os.Remove(file) }, nil
@@ -324,7 +365,7 @@ func GrantRuntime(slot, path string, write bool) error {
 }
 
 func grant(slot, path string, write bool) error {
-	if !slotName.MatchString(slot) {
+	if !slotNameMatches(slot) {
 		return fmt.Errorf("invalid slot %q", slot)
 	}
 	clean := filepath.Clean(path)

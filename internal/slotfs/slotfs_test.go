@@ -163,3 +163,27 @@ func TestCanaryLimitsWhichUsersLaunchAsSlots(t *testing.T) {
 		t.Fatal("with no list every slot holder launches as a slot")
 	}
 }
+
+// A product with its own slot accounts on a shared host (prefix "cf") recognises only its own, and a
+// default-prefix account is not one of its slots.
+func TestSlotOfHonoursTheProductsSlotPrefix(t *testing.T) {
+	root := t.TempDir()
+	state, run := filepath.Join(root, "state"), filepath.Join(root, "run")
+	cfg := filepath.Join(root, "slotctl.json")
+	body := `{"slot_prefix":"cf","slot_run_root":"` + run + `","slot_state_root":"` + state + `"}`
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvConfig, cfg)
+	t.Setenv(EnvEnabled, "on")
+	if slot, ok := SlotOf(filepath.Join(state, "cf07", "cli", "x")); !ok || slot != "cf07" {
+		t.Fatalf("own slot: %q %v", slot, ok)
+	}
+	if _, ok := SlotOf(filepath.Join(state, "slot07", "cli", "x")); ok {
+		t.Fatal("another product's slot name must not be recognised")
+	}
+	t.Setenv(EnvSlotctl, "/usr/local/libexec/agentworks/confida/slotctl")
+	if slotctl() != "/usr/local/libexec/agentworks/confida/slotctl" {
+		t.Fatal("the slot program override is ignored")
+	}
+}
