@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 )
 
 // Muse has no --mcp-config CLI flag (verified against `muse exec --help`):
@@ -457,7 +459,13 @@ func museIsOwnHookCommand(command string) bool {
 // folder is per user, owner-only, and refused when it is not ours.
 func museHookDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("muse-cli-hooks-%d", os.Getuid()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// The hook is a fixed policy script, not a secret. With per-user accounts every user's Muse runs it,
+	// so the folder is readable by all of them; only this account can write it.
+	mode := os.FileMode(0o700)
+	if slotfs.On() {
+		mode = 0o755
+	}
+	if err := os.MkdirAll(dir, mode); err != nil {
 		return "", fmt.Errorf("create muse hook dir: %w", err)
 	}
 	info, err := os.Lstat(dir)
@@ -467,8 +475,8 @@ func museHookDir() (string, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(info) {
 		return "", fmt.Errorf("muse hook dir %s is not a directory owned by this user", dir)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		if err := os.Chmod(dir, 0o700); err != nil {
+	if (mode == 0o700 && info.Mode().Perm()&0o077 != 0) || (mode != 0o700 && info.Mode().Perm() != mode) {
+		if err := os.Chmod(dir, mode); err != nil {
 			return "", fmt.Errorf("secure muse hook dir: %w", err)
 		}
 	}
@@ -575,6 +583,11 @@ func museWriteToolPolicyHook(nativeAllowed []string) (string, error) {
 	}
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("close muse native-tool policy hook: %w", err)
+	}
+	if slotfs.On() {
+		if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+			return "", fmt.Errorf("share muse native-tool policy hook: %w", err)
+		}
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return "", fmt.Errorf("publish muse native-tool policy hook: %w", err)

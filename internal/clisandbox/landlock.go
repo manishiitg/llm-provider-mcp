@@ -102,6 +102,15 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 			}
 		}
 		for _, path := range runtimeWritePaths {
+			// A per-launch folder the platform built (an isolated CLI home, a config root) is made the
+			// slot group's to use, whatever mode its adapter gave it.
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				if own, owned := slotfs.SlotOf(path); !owned || own != slot {
+					if err := slotfs.ShareTree(home, path); err != nil {
+						return nil, noop, fmt.Errorf("give the user's account launch files: %w", err)
+					}
+				}
+			}
 			if err := slotfs.GrantRuntime(slot, path, true); err != nil {
 				return nil, noop, fmt.Errorf("give the user's account launch files: %w", err)
 			}

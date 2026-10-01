@@ -3,6 +3,7 @@ package musecli
 import (
 	"context"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"os"
 	"path/filepath"
@@ -33,7 +34,18 @@ func museAccountConfig(ctx context.Context, mcpJSON string, tools []string) (str
 	if root := llmtypes.ProviderAccountEnvironment(museAccount(ctx).opts)["XDG_CONFIG_HOME"]; root != "" {
 		source = filepath.Join(root, "muse", "settings.json")
 	}
-	return musePrepareIsolatedConfig(mcpJSON, tools, source)
+	configHome, cleanup, err := musePrepareIsolatedConfig(mcpJSON, tools, source)
+	if err != nil {
+		return configHome, cleanup, err
+	}
+	// The user's own Linux account runs Muse: it needs to read and write the config folder just built.
+	if opts := museAccount(ctx).opts; opts != nil && opts.CLISecurity != nil {
+		if shareErr := slotfs.ShareTree(opts.CLISecurity.PrivateHome, configHome); shareErr != nil {
+			cleanup()
+			return "", nil, shareErr
+		}
+	}
+	return configHome, cleanup, nil
 }
 func museAccountLaunch(ctx context.Context, argv []string, workdir string) (string, func(), error) {
 	runtime := museAccount(ctx)

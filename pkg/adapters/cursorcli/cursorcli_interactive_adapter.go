@@ -896,7 +896,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			// The bridge token goes to a private file, not the workspace
 			// (cursorcli_bridge_token.go). The tmux session's bridge may
 			// restart, so the file stays for the session.
-			normalizedMCPJSON, _, err = externalizeCursorBridgeTokens(normalizedMCPJSON)
+			normalizedMCPJSON, _, err = externalizeCursorBridgeTokens(normalizedMCPJSON, workingDir)
 			if err != nil {
 				cleanupAll()
 				return nil, err

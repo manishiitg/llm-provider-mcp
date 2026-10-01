@@ -17,10 +17,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -256,10 +259,7 @@ func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err erro
 	return func() { _ = os.Remove(file) }, nil
 }
 
-var (
-	grantMu sync.Mutex
-	granted = map[string]bool{}
-)
+var grantMu sync.Mutex
 
 func setfacl(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -306,12 +306,10 @@ func grant(slot, path string, write bool) error {
 		return fmt.Errorf("invalid slot %q", slot)
 	}
 	clean := filepath.Clean(path)
-	key := fmt.Sprintf("%s|%s|%v", slot, clean, write)
+	// Applied at every launch, never cached: an adapter that re-tightens its folder (chmod 0700) resets
+	// the ACL mask and cancels the entry, so a remembered grant would be wrong.
 	grantMu.Lock()
 	defer grantMu.Unlock()
-	if granted[key] {
-		return nil
-	}
 	info, err := os.Stat(clean)
 	if os.IsNotExist(err) && write {
 		f, cerr := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY, 0o600)
@@ -337,7 +335,6 @@ func grant(slot, path string, write bool) error {
 			perm = "rwX"
 		}
 		if !write && info.Mode().Perm()&0o005 == 0o005 {
-			granted[key] = true
 			return nil // a folder everyone can read and enter
 		}
 		if err := setfacl("-R", "-m", "u:"+slot+":"+perm, clean); err != nil {
@@ -348,13 +345,57 @@ func grant(slot, path string, write bool) error {
 		}
 	} else {
 		if !write && info.Mode().Perm()&0o004 != 0 {
-			granted[key] = true
 			return nil
 		}
 		if err := setfacl("-m", "u:"+slot+":"+perm, clean); err != nil {
 			return err
 		}
 	}
-	granted[key] = true
 	return nil
+}
+
+// On reports whether launches as slots are switched on for this process at all (the flag; the
+// allow-list and the user decide whether a given launch is one).
+func On() bool { return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvEnabled)), "on") }
+
+// ShareTree gives a slot launch's group full use of a tree the platform just prepared (a CLI's
+// config folder): the folder's files are made group-owned by the slot's group and group read-write
+// (and group-searchable for folders), with the setgid bit on folders so new files stay in that group.
+// Nothing for a launch that is not a slot's.
+func ShareTree(hint, root string) error {
+	slot, ok := SlotOf(hint)
+	if !ok {
+		return nil
+	}
+	group, err := user.LookupGroup(slot)
+	if err != nil {
+		return fmt.Errorf("group %s: %w", slot, err)
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if err := os.Lchown(path, -1, gid); err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm() | 0o060
+		if info.IsDir() {
+			return os.Chmod(path, mode|0o010|os.ModeSetgid)
+		}
+		if info.Mode().Perm()&0o100 != 0 {
+			mode |= 0o010
+		}
+		return os.Chmod(path, mode)
+	})
 }

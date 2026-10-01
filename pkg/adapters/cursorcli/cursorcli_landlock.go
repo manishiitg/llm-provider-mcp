@@ -16,7 +16,7 @@ func cursorLandlockReads(args []string, workingDir string) []string {
 	read := clisandbox.ArgFilePaths(args)
 	read = append(read, clisandbox.MCPCommandPaths(configs)...)
 	read = append(read, clisandbox.JSONFilePaths(configs)...)
-	return append(read, cursorBridgeTokenDir())
+	return append(read, cursorBridgeTokenDirFor(workingDir))
 }
 
 func cursorLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string) ([]string, func(), error) {

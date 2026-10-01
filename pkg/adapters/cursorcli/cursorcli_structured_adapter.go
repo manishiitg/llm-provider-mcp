@@ -355,7 +355,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			// The bridge token goes to a private file, not the workspace
 			// (cursorcli_bridge_token.go); this launch is one call, so the
 			// file goes when it ends.
-			safeMCPJSON, tokenFiles, terr := externalizeCursorBridgeTokens(mcpJSON)
+			safeMCPJSON, tokenFiles, terr := externalizeCursorBridgeTokens(mcpJSON, workingDir)
 			if terr != nil {
 				return nil, fmt.Errorf("cursor MCP config: %w", terr)
 			}

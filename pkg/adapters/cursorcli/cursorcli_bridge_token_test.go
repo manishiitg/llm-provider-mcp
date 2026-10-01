@@ -18,7 +18,7 @@ func TestCursorMCPConfigKeepsTheBridgeTokenOutOfTheWorkspace(t *testing.T) {
 	t.Cleanup(func() { cursorBridgeTokenRoot = old })
 
 	in := `{"mcpServers":{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"http://h/s/a","MCP_API_TOKEN":"mcps1.secret.value","MCP_AUTH":"Authorization: Bearer mcps1.secret.value","MCP_TOOLS":"[]"}}}}`
-	out, files, err := externalizeCursorBridgeTokens(in)
+	out, files, err := externalizeCursorBridgeTokens(in, "")
 	if err != nil || len(files) != 1 {
 		t.Fatalf("externalize: files=%v err=%v", files, err)
 	}
@@ -46,7 +46,7 @@ func TestCursorMCPConfigKeepsTheBridgeTokenOutOfTheWorkspace(t *testing.T) {
 	}
 	// No token: unchanged.
 	plain := `{"mcpServers":{"x":{"command":"y","env":{"A":"b"}}}}`
-	if got, files, _ := externalizeCursorBridgeTokens(plain); got != plain || len(files) != 0 {
+	if got, files, _ := externalizeCursorBridgeTokens(plain, ""); got != plain || len(files) != 0 {
 		t.Fatalf("a config without a token must be unchanged: %s %v", got, files)
 	}
 }
@@ -58,7 +58,7 @@ func TestSweepStaleBridgeTokenFilesKeepsLiveBackends(t *testing.T) {
 	old := cursorBridgeTokenRoot
 	cursorBridgeTokenRoot = func() string { return root }
 	t.Cleanup(func() { cursorBridgeTokenRoot = old })
-	if _, err := writeCursorBridgeTokenFile("mine"); err != nil {
+	if _, err := writeCursorBridgeTokenFile("mine", ""); err != nil {
 		t.Fatal(err)
 	}
 	dead := filepath.Join(root, "999999")

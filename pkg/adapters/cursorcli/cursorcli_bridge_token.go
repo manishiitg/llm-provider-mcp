@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,6 +34,18 @@ var cursorBridgeTokenRoot = func() string {
 // share a machine, so each keeps its own and only its own are swept.
 func cursorBridgeTokenDir() string {
 	return filepath.Join(cursorBridgeTokenRoot(), strconv.Itoa(os.Getpid()))
+}
+
+// cursorBridgeTokenDirFor is where a launch's token file goes. A slot's launch (a user's own Linux
+// account) keeps it in that slot's own folder: the shared folder would hand every slot read access to
+// every other session's token, and Cursor re-tightens that shared folder at each write.
+func cursorBridgeTokenDirFor(hint string) string {
+	if slot, ok := slotfs.SlotOf(hint); ok {
+		if run, ok := slotfs.RunDir(slot); ok {
+			return filepath.Join(run, "bridge-tokens")
+		}
+	}
+	return cursorBridgeTokenDir()
 }
 
 // SweepStaleBridgeTokenFiles removes the token folders of backend processes
@@ -72,7 +85,7 @@ func processAlive(pid int) bool {
 // externalizeCursorBridgeTokens returns mcpJSON with every bridge token moved
 // to a private file, and the paths of the files it wrote. A config it cannot
 // parse, or one with no token, is returned unchanged.
-func externalizeCursorBridgeTokens(mcpJSON string) (string, []string, error) {
+func externalizeCursorBridgeTokens(mcpJSON, hint string) (string, []string, error) {
 	var decoded map[string]interface{}
 	if err := json.Unmarshal([]byte(mcpJSON), &decoded); err != nil {
 		return mcpJSON, nil, nil
@@ -86,7 +99,7 @@ func externalizeCursorBridgeTokens(mcpJSON string) (string, []string, error) {
 		if strings.TrimSpace(token) == "" {
 			continue
 		}
-		path, err := writeCursorBridgeTokenFile(token)
+		path, err := writeCursorBridgeTokenFile(token, hint)
 		if err != nil {
 			return "", written, err
 		}
@@ -107,18 +120,23 @@ func externalizeCursorBridgeTokens(mcpJSON string) (string, []string, error) {
 
 // writeCursorBridgeTokenFile stores token in a 0600 file named by its hash, so
 // repeated launches of one session reuse the same file.
-func writeCursorBridgeTokenFile(token string) (string, error) {
-	dir := cursorBridgeTokenDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+func writeCursorBridgeTokenFile(token, hint string) (string, error) {
+	dir := cursorBridgeTokenDirFor(hint)
+	if err := os.MkdirAll(dir, slotfs.Mode(hint, 0o700)); err != nil {
 		return "", fmt.Errorf("bridge token dir: %w", err)
 	}
-	_ = os.Chmod(cursorBridgeTokenRoot(), 0o700)
-	_ = os.Chmod(dir, 0o700)
+	if slotfs.IsSlotLaunch(hint) {
+		_ = os.Chmod(dir, slotfs.Mode(hint, 0o700)|os.ModeSetgid)
+	} else {
+		_ = os.Chmod(cursorBridgeTokenRoot(), 0o700)
+		_ = os.Chmod(dir, 0o700)
+	}
 	sum := sha256.Sum256([]byte(token))
 	path := filepath.Join(dir, "cursor-"+hex.EncodeToString(sum[:12]))
-	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+	fileMode := slotfs.Mode(hint, 0o600)
+	if err := os.WriteFile(path, []byte(token), fileMode); err != nil {
 		return "", fmt.Errorf("bridge token file: %w", err)
 	}
-	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(path, fileMode)
 	return path, nil
 }
