@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -83,7 +84,7 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	}
 	home := canonical(policy.PrivateHome)
 	for _, dir := range []string{home, filepath.Join(home, ".config"), filepath.Join(home, ".local", "share"), filepath.Join(home, ".local", "state"), filepath.Join(home, ".cache"), filepath.Join(home, "tmp")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, slotfs.Mode(home, 0o700)); err != nil {
 			return nil, noop, fmt.Errorf("create private CLI home: %w", err)
 		}
 	}
@@ -91,6 +92,41 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	credentials, err := linkCredentialFiles(policy, home)
 	if err != nil {
 		return nil, noop, err
+	}
+
+	if slot, ok := slotfs.SlotOf(home); ok {
+		// The CLI runs as the user's own account: give it the files the adapter prepared for this launch.
+		for _, path := range runtimeReadPaths {
+			if err := slotfs.GrantRuntime(slot, path, false); err != nil {
+				return nil, noop, fmt.Errorf("give the user's account launch files: %w", err)
+			}
+		}
+		for _, path := range runtimeWritePaths {
+			if err := slotfs.GrantRuntime(slot, path, true); err != nil {
+				return nil, noop, fmt.Errorf("give the user's account launch files: %w", err)
+			}
+		}
+		for _, path := range executableDirs(args) {
+			if err := slotfs.GrantRuntime(slot, path, false); err != nil {
+				return nil, noop, fmt.Errorf("give the user's account its CLI install: %w", err)
+			}
+		}
+		// Folders other people share with this user (a shared Code, a Crew): the launch policy already
+		// lists exactly what this user may reach, so give this slot the same access at the file level.
+		// The user's own folders belong to the slot already.
+		for _, shared := range []struct {
+			paths []string
+			write bool
+		}{{policy.WorkspaceReadPaths, false}, {policy.WorkspaceWritePaths, true}} {
+			for _, path := range shared.paths {
+				if own, ok := slotfs.SlotOf(path); ok && own == slot {
+					continue
+				}
+				if err := slotfs.GrantRuntime(slot, path, shared.write); err != nil {
+					return nil, noop, fmt.Errorf("give the user's account a shared folder: %w", err)
+				}
+			}
+		}
 	}
 
 	read := append([]string{}, policy.WorkspaceReadPaths...)
@@ -117,13 +153,13 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		ListPaths:  []string{"/"},
 		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
 	}
-	file, err := os.CreateTemp("", "agentworks-cli-landlock-*.json")
+	file, err := slotfs.CreateTemp(home, "agentworks-cli-landlock-*.json")
 	if err != nil {
 		return nil, noop, fmt.Errorf("create CLI Landlock policy: %w", err)
 	}
 	path := file.Name()
 	cleanup := func() { _ = os.Remove(path) }
-	err = file.Chmod(0o600)
+	err = file.Chmod(slotfs.Mode(home, 0o600))
 	if err == nil {
 		err = json.NewEncoder(file).Encode(config)
 	}
@@ -168,7 +204,7 @@ func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]str
 		dst := filepath.Join(home, file.Rel)
 		if info, err := os.Lstat(dst); err == nil && info.Mode().IsRegular() {
 			if srcInfo, err := os.Stat(src); err != nil || info.ModTime().After(srcInfo.ModTime()) {
-				if err := copyFileAtomic(dst, src); err != nil {
+				if err := copyFileAtomic(dst, src, home); err != nil {
 					return nil, fmt.Errorf("return refreshed CLI login to its account: %w", err)
 				}
 			}
@@ -177,7 +213,7 @@ func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]str
 			continue
 		}
 		if target, err := os.Readlink(dst); err != nil || target != src {
-			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(dst), slotfs.Mode(home, 0o700)); err != nil {
 				return nil, err
 			}
 			_ = os.Remove(dst)
@@ -185,18 +221,23 @@ func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]str
 				return nil, fmt.Errorf("link CLI login into private home: %w", err)
 			}
 		}
+		if slot, ok := slotfs.SlotOf(home); ok {
+			if err := slotfs.GrantAccess(slot, src); err != nil {
+				return nil, fmt.Errorf("give the user's account access to the CLI login: %w", err)
+			}
+		}
 		granted = append(granted, src)
 	}
 	return granted, nil
 }
 
-func copyFileAtomic(from, to string) error {
+func copyFileAtomic(from, to, hint string) error {
 	in, err := os.Open(from)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(to), slotfs.Mode(hint, 0o700)); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(to), ".agentworks-login-*")
@@ -208,7 +249,7 @@ func copyFileAtomic(from, to string) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(slotfs.Mode(hint, 0o600)); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmp.Name())
 		return err
@@ -381,6 +422,17 @@ func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 	}
 	cmd.Path = wrapped[0]
 	cmd.Args = wrapped
+	if slotfs.IsSlotLaunch(policy.PrivateHome) {
+		// The user's own Linux account runs the CLI; the request travels in a file so the CLI keeps
+		// its standard input and output.
+		unwrap, wrapErr := slotfs.WrapCmd(cmd, policy.PrivateHome, cmd.Env)
+		if wrapErr != nil {
+			cleanup()
+			return func() {}, wrapErr
+		}
+		inner := cleanup
+		return func() { unwrap(); inner() }, nil
+	}
 	return cleanup, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -58,7 +59,7 @@ func adoptResumedSession(policy *llmtypes.CLISecurityPolicy, args []string) {
 			if _, err := os.Stat(to); err == nil {
 				continue
 			}
-			_ = copyTree(from, to)
+			_ = copyTree(from, to, home)
 		}
 	}
 }
@@ -113,13 +114,13 @@ func sessionPatterns(provider, id string) []sessionPattern {
 	return nil
 }
 
-func copyTree(from, to string) error {
+func copyTree(from, to, hint string) error {
 	info, err := os.Stat(from)
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
-		return copyRegular(from, to)
+		return copyRegular(from, to, hint)
 	}
 	return filepath.WalkDir(from, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -128,22 +129,22 @@ func copyTree(from, to string) error {
 		rel, _ := filepath.Rel(from, path)
 		dest := filepath.Join(to, rel)
 		if entry.IsDir() {
-			return os.MkdirAll(dest, 0o700)
+			return os.MkdirAll(dest, slotfs.Mode(hint, 0o700))
 		}
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		return copyRegular(path, dest)
+		return copyRegular(path, dest, hint)
 	})
 }
 
-func copyRegular(from, to string) error {
+func copyRegular(from, to, hint string) error {
 	data, err := os.ReadFile(from)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(to), slotfs.Mode(hint, 0o700)); err != nil {
 		return err
 	}
-	return os.WriteFile(to, data, 0o600)
+	return os.WriteFile(to, data, slotfs.Mode(hint, 0o600))
 }

@@ -3,6 +3,7 @@ package shelllaunch
 import (
 	"context"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -84,13 +85,13 @@ func CommandWithEnv(args []string, workingDir string, env []string) (string, fun
 	}
 
 	script := launchScript(args, workingDir, entries)
-	file, err := os.CreateTemp("", "mlp-coding-agent-launch-*.sh")
+	file, err := slotfs.CreateTemp(workingDir, "mlp-coding-agent-launch-*.sh")
 	if err != nil {
 		return "", nil, fmt.Errorf("create launch script: %w", err)
 	}
 	path := file.Name()
 	cleanup := func() { _ = os.Remove(path) }
-	if err := file.Chmod(0o600); err != nil {
+	if err := file.Chmod(slotfs.Mode(workingDir, 0o600)); err != nil {
 		_ = file.Close()
 		cleanup()
 		return "", nil, fmt.Errorf("chmod launch script: %w", err)
@@ -143,13 +144,13 @@ func CommandWithScopedEnv(args []string, workingDir string, env, unset []string,
 	}
 
 	script := launchScriptWithFinalEnv(args, workingDir, entries, unsetKeys, scrub)
-	file, err := os.CreateTemp("", "mlp-coding-agent-launch-*.sh")
+	file, err := slotfs.CreateTemp(workingDir, "mlp-coding-agent-launch-*.sh")
 	if err != nil {
 		return "", nil, fmt.Errorf("create launch script: %w", err)
 	}
 	path := file.Name()
 	cleanup := func() { _ = os.Remove(path) }
-	if err := file.Chmod(0o600); err != nil {
+	if err := file.Chmod(slotfs.Mode(workingDir, 0o600)); err != nil {
 		_ = file.Close()
 		cleanup()
 		return "", nil, fmt.Errorf("chmod launch script: %w", err)
