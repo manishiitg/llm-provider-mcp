@@ -187,3 +187,38 @@ func TestSlotOfHonoursTheProductsSlotPrefix(t *testing.T) {
 		t.Fatal("the slot program override is ignored")
 	}
 }
+
+func TestWithSlotDockerPointsTheCommandAtItsOwnSocket(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "slotctl.json")
+	t.Setenv(EnvConfig, cfg)
+	prior := lookupSlotUID
+	lookupSlotUID = func(string) (string, error) { return "1042", nil }
+	t.Cleanup(func() { lookupSlotUID = prior })
+	env := []string{"PATH=/usr/bin", "DOCKER_HOST=unix:///run/user/990/docker.sock", "HOME=/tmp"}
+
+	if err := os.WriteFile(cfg, []byte(`{"slot_run_root":"`+root+`/run","slot_state_root":"`+root+`/state","slot_docker":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := WithSlotDocker(env, "slot05")
+	var hosts []string
+	for _, e := range got {
+		if strings.HasPrefix(e, "DOCKER_HOST=") {
+			hosts = append(hosts, e)
+		}
+	}
+	if len(hosts) != 1 || hosts[0] != "DOCKER_HOST=unix:///run/user/1042/docker.sock" {
+		t.Fatalf("DOCKER_HOST = %v: the platform's socket must be replaced by the slot's own", hosts)
+	}
+	if len(got) != len(env) {
+		t.Fatalf("other entries must be kept: %v", got)
+	}
+
+	// without slot_docker the environment is untouched
+	if err := os.WriteFile(cfg, []byte(`{"slot_run_root":"`+root+`/run","slot_state_root":"`+root+`/state"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := WithSlotDocker(env, "slot05"); strings.Join(got, "|") != strings.Join(env, "|") {
+		t.Fatalf("a host without slot Docker must not change the environment: %v", got)
+	}
+}

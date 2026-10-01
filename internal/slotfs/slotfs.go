@@ -83,7 +83,10 @@ func slotNameMatches(name string) bool {
 }
 
 type config struct {
-	SlotPrefix    string `json:"slot_prefix"`
+	SlotPrefix string `json:"slot_prefix"`
+	// SlotDocker says every slot has its own rootless Docker (provision-slots.sh docker): a command run as the
+	// slot gets DOCKER_HOST pointing at it instead of the platform account's socket, which a slot cannot reach.
+	SlotDocker    bool   `json:"slot_docker"`
 	SlotRunRoot   string `json:"slot_run_root"`
 	SlotStateRoot string `json:"slot_state_root"`
 	DocsRoot      string `json:"docs_root"`
@@ -259,6 +262,36 @@ var ErrNotSlot = errors.New("not a slot launch")
 // its own standard input and output. env is the complete environment; when nil a minimal one is used
 // (cmd.Env nil would otherwise mean "the platform's whole environment"). It returns the cleanup that
 // removes the request file if the command never starts.
+// lookupSlotUID returns a slot account's numeric uid; a variable so tests can run without real accounts.
+var lookupSlotUID = func(name string) (string, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return "", err
+	}
+	return u.Uid, nil
+}
+
+// WithSlotDocker returns env with DOCKER_HOST set to the slot's own Docker socket when this host gives every slot
+// one (config slot_docker); otherwise env is unchanged. The platform's own DOCKER_HOST (its account's socket, in a
+// folder only that account can open) is replaced, never passed through.
+func WithSlotDocker(env []string, slot string) []string {
+	cfg, ok := loadConfigUnchecked()
+	if !ok || !cfg.SlotDocker {
+		return env
+	}
+	uid, err := lookupSlotUID(slot)
+	if err != nil || uid == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "DOCKER_HOST=") {
+			out = append(out, entry)
+		}
+	}
+	return append(out, "DOCKER_HOST=unix:///run/user/"+uid+"/docker.sock")
+}
+
 func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err error) {
 	slot, ok := SlotOf(hint)
 	if !ok {
@@ -274,6 +307,7 @@ func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err erro
 	if env == nil {
 		env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
 	}
+	env = WithSlotDocker(env, slot)
 	cwd := cmd.Dir
 	if cwd == "" {
 		cwd = runDir
