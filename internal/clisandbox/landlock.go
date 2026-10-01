@@ -186,7 +186,14 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		// The folders belong to the platform account with the slot's group, so git refuses them as
 		// "dubious ownership" (and a CLI such as Muse fails to find its project root). The folders a
 		// confined CLI can reach are only the ones it was granted.
-		wrapped = append(wrapped, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*")
+		// safe.directory=* (the folders are platform-owned), and the two repository settings that run code
+		// unasked, hooks and fsmonitor, switched off: a shared folder's author cannot get code run as the
+		// user through git (same set as the shell tool's; docs/DECISIONS.md in the builder).
+		wrapped = append(wrapped,
+			"GIT_CONFIG_COUNT=3",
+			"GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*",
+			"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
+			"GIT_CONFIG_KEY_2=core.fsmonitor", "GIT_CONFIG_VALUE_2=false")
 	}
 	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil

@@ -23,10 +23,23 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 			home = strings.TrimSpace(v)
 		}
 	}
-	if key == "" || home == "" {
+	if home == "" {
 		return nil
 	}
 	path := filepath.Join(home, "auth.json")
+	if key == "" {
+		// No key is configured any more: a key login this function saved earlier must not stay valid.
+		// A browser (OAuth) login is the user's own and is left alone.
+		if raw, err := os.ReadFile(path); err == nil {
+			var current struct {
+				Mode string `json:"auth_mode"`
+			}
+			if json.Unmarshal(raw, &current) == nil && current.Mode == "apikey" {
+				return os.Remove(path)
+			}
+		}
+		return nil
+	}
 	if raw, err := os.ReadFile(path); err == nil {
 		var current struct {
 			Mode string `json:"auth_mode"`

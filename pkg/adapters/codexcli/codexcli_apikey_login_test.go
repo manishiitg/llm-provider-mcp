@@ -27,9 +27,16 @@ func TestSeedCodexAPIKeyLogin(t *testing.T) {
 	if !strings.Contains(string(raw), "sk-new") {
 		t.Fatal("key not replaced")
 	}
+	// the key removed from the configuration: the saved key login goes too
 	_ = seedCodexAPIKeyLogin([]string{"CODEX_HOME=" + home}, "", "")
-	raw, _ = os.ReadFile(filepath.Join(home, "auth.json"))
-	if !strings.Contains(string(raw), "sk-new") {
-		t.Fatal("login removed")
+	if _, err := os.Stat(filepath.Join(home, "auth.json")); !os.IsNotExist(err) {
+		t.Fatal("stale key login kept")
+	}
+	// a browser login is never touched
+	oauth := `{"auth_mode":"chatgpt","tokens":{"access_token":"x"}}`
+	_ = os.WriteFile(filepath.Join(home, "auth.json"), []byte(oauth), 0o600)
+	_ = seedCodexAPIKeyLogin([]string{"CODEX_HOME=" + home}, "", "")
+	if raw, _ := os.ReadFile(filepath.Join(home, "auth.json")); string(raw) != oauth {
+		t.Fatal("browser login changed")
 	}
 }
