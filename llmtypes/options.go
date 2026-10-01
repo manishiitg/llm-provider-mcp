@@ -297,6 +297,22 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 // transport routes. Only this subset is scrubbed when a scoped environment is
 // declared -- see MergeCodingAgentSecretEnvironment for why the routes are
 // deliberately excluded.
+// isServerOwnedSecretKey names what the host process holds for its own use: the signing and encryption
+// secret, the app's login password and legacy user list, the server and bridge tokens, and the
+// deployment's global secrets. A coding agent launched from the host never inherits these, whether or not
+// a secret scope was declared for the call.
+func isServerOwnedSecretKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, "GLOBAL_SECRET_") {
+		return true
+	}
+	switch key {
+	case "AUTH_SECRET", "ACCESS_PASSWORD", "AUTH_USERS", "MCP_SERVER_API_TOKEN", "MCP_BRIDGE_TOKEN_SECRET", "WORKSPACE_API_TOKEN":
+		return true
+	}
+	return false
+}
+
 func isScopedCredentialEnvironmentKey(key string) bool {
 	key = strings.TrimSpace(key)
 	if strings.HasPrefix(key, "SECRET_") || strings.HasPrefix(key, "VAR_") {
@@ -379,7 +395,16 @@ func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOp
 	if key := codingAgentReleaseSessionKey(opts); key != "" {
 		export = append(export, "AGENTWORKS_CLI_SESSION_KEY="+key)
 	}
+	// Server-owned secrets are removed from every launch, scope declared or not.
+	serverOwned := map[string]bool{}
+	for _, entry := range ambient {
+		if key, _, found := strings.Cut(entry, "="); found && isServerOwnedSecretKey(key) && !serverOwned[key] {
+			serverOwned[key] = true
+			unset = append(unset, key)
+		}
+	}
 	if !CodingAgentScopeDeclared(opts) {
+		sort.Strings(unset)
 		return export, unset
 	}
 	declared := CodingAgentSecretEnvironmentFromOptions(opts)
@@ -409,7 +434,7 @@ func ScopedCodingAgentEnvironmentPlan(ambient, alreadySet []string, opts *CallOp
 		if _, isDeclared := declared[key]; isDeclared {
 			continue
 		}
-		if !isScopedCredentialEnvironmentKey(key) {
+		if !isScopedCredentialEnvironmentKey(key) || serverOwned[key] {
 			continue
 		}
 		seen[key] = true
