@@ -181,7 +181,14 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	}
 	// The launcher execs argv[0] without a PATH search; /usr/bin/env resolves
 	// the CLI (and `env VAR=… cli` forms) inside the sandbox.
-	wrapped := append([]string{runner, "--config", path, "--", "/usr/bin/env"}, args...)
+	wrapped := []string{runner, "--config", path, "--", "/usr/bin/env"}
+	if slotfs.IsSlotLaunch(home) {
+		// The folders belong to the platform account with the slot's group, so git refuses them as
+		// "dubious ownership" (and a CLI such as Muse fails to find its project root). The folders a
+		// confined CLI can reach are only the ones it was granted.
+		wrapped = append(wrapped, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*")
+	}
+	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil
 }
 
