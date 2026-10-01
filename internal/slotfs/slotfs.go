@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -281,11 +282,32 @@ func traverse(slot, path string) error {
 		if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o001 != 0 {
 			continue
 		}
+		if groupOwns(slot, dir) {
+			// The slot's group already has the folder (its own project or state folder). A named entry
+			// for the slot would override that group access with search-only, so none is added, and
+			// one left by an earlier launch is removed.
+			_ = setfacl("-x", "u:"+slot, dir)
+			continue
+		}
 		if err := setfacl("-m", "u:"+slot+":--x", dir); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// groupOwns reports whether dir belongs to the slot's own group with group search access.
+func groupOwns(slot, dir string) bool {
+	group, err := user.LookupGroup(slot)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o010 == 0 {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && strconv.Itoa(int(st.Gid)) == group.Gid
 }
 
 // GrantAccess gives one slot read and write on a shared file the platform owns (a CLI login that
