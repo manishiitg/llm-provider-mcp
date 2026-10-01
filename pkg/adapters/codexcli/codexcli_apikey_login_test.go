@@ -32,6 +32,13 @@ func TestSeedCodexAPIKeyLogin(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "auth.json")); !os.IsNotExist(err) {
 		t.Fatal("stale key login kept")
 	}
+	// a key the user pasted into Codex themselves (no marker) is never touched
+	own := `{"auth_mode":"apikey","OPENAI_API_KEY":"sk-theirs"}`
+	_ = os.WriteFile(filepath.Join(home, "auth.json"), []byte(own), 0o600)
+	_ = seedCodexAPIKeyLogin([]string{"CODEX_HOME=" + home}, "", "")
+	if raw, _ := os.ReadFile(filepath.Join(home, "auth.json")); string(raw) != own {
+		t.Fatal("the user's own key login changed")
+	}
 	// a browser login is never touched
 	oauth := `{"auth_mode":"chatgpt","tokens":{"access_token":"x"}}`
 	_ = os.WriteFile(filepath.Join(home, "auth.json"), []byte(oauth), 0o600)

@@ -27,16 +27,14 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 		return nil
 	}
 	path := filepath.Join(home, "auth.json")
+	marker := path + ".agentworks"
 	if key == "" {
-		// No key is configured any more: a key login this function saved earlier must not stay valid.
-		// A browser (OAuth) login is the user's own and is left alone.
-		if raw, err := os.ReadFile(path); err == nil {
-			var current struct {
-				Mode string `json:"auth_mode"`
-			}
-			if json.Unmarshal(raw, &current) == nil && current.Mode == "apikey" {
-				return os.Remove(path)
-			}
+		// No key is configured any more: a key login saved here earlier must not stay valid. Only a login
+		// this function wrote (it leaves a marker beside it) is removed; a key the user pasted into
+		// Codex themselves, or a browser login, is theirs and is left alone.
+		if _, err := os.Stat(marker); err == nil {
+			_ = os.Remove(marker)
+			return os.Remove(path)
 		}
 		return nil
 	}
@@ -56,5 +54,8 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 	if err := os.MkdirAll(home, slotfs.Mode(hint, 0o700)); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(body, '\n'), slotfs.Mode(hint, 0o600))
+	if err := os.WriteFile(path, append(body, '\n'), slotfs.Mode(hint, 0o600)); err != nil {
+		return err
+	}
+	return os.WriteFile(marker, nil, slotfs.Mode(hint, 0o600))
 }
