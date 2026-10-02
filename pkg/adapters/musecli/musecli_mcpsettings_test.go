@@ -550,3 +550,25 @@ func TestMuseNativeSubagentsEnableDelegationAndRemainCallable(t *testing.T) {
 		}
 	}
 }
+
+func TestMuseBridgeCallLimitIsAddedOnlyToTheBridgeEntry(t *testing.T) {
+	bridge := json.RawMessage(`{"command":"/x/mcpbridge","env":{"MCP_API_URL":"http://a","MCP_TOOLS":"[]"}}`)
+	var got struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(museBridgeCallLimit(bridge), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Env["MCP_BRIDGE_MAX_CALL_SECONDS"] != "270" || got.Env["MCP_API_URL"] != "http://a" || got.Env["MCP_TOOLS"] != "[]" {
+		t.Fatalf("env = %v", got.Env)
+	}
+	preset := json.RawMessage(`{"command":"/x/mcpbridge","env":{"MCP_API_URL":"http://a","MCP_BRIDGE_MAX_CALL_SECONDS":"60"}}`)
+	if string(museBridgeCallLimit(preset)) != string(preset) {
+		t.Fatal("an explicit limit must be kept")
+	}
+	for _, other := range []string{`{"url":"http://remote/mcp"}`, `{"command":"npx","env":{"TOKEN":"x"}}`, `"not an object"`} {
+		if string(museBridgeCallLimit(json.RawMessage(other))) != other {
+			t.Fatalf("%s must be unchanged", other)
+		}
+	}
+}

@@ -101,7 +101,7 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		if name == "" {
 			return nil, fmt.Errorf("muse MCP config has an empty server name")
 		}
-		merged[name] = entry
+		merged[name] = museBridgeCallLimit(entry)
 	}
 	if len(merged) > 0 {
 		mergedRaw, err := json.Marshal(merged)
@@ -593,4 +593,44 @@ func museWriteToolPolicyHook(nativeAllowed []string) (string, error) {
 		return "", fmt.Errorf("publish muse native-tool policy hook: %w", err)
 	}
 	return path, nil
+}
+
+// museBridgeCallSeconds is how long the bridge may spend on one call. Muse ends any tool call after 300 s and then
+// drops that MCP connection for the rest of the process (every later call fails with "MCP stdio connection is
+// closed"), so the bridge must answer first: a slow call then ends as an ordinary tool error.
+const museBridgeCallSeconds = "270"
+
+// museBridgeCallLimit adds MCP_BRIDGE_MAX_CALL_SECONDS to an MCP server entry's env unless it already sets one.
+// Entries that are not objects, or have no command (url servers), are returned unchanged.
+func museBridgeCallLimit(entry json.RawMessage) json.RawMessage {
+	var server map[string]json.RawMessage
+	if err := json.Unmarshal(entry, &server); err != nil {
+		return entry
+	}
+	if _, hasCommand := server["command"]; !hasCommand {
+		return entry
+	}
+	env := map[string]string{}
+	if raw, ok := server["env"]; ok {
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return entry
+		}
+	}
+	if _, set := env["MCP_BRIDGE_MAX_CALL_SECONDS"]; set {
+		return entry
+	}
+	if _, isBridge := env["MCP_API_URL"]; !isBridge {
+		return entry
+	}
+	env["MCP_BRIDGE_MAX_CALL_SECONDS"] = museBridgeCallSeconds
+	rawEnv, err := json.Marshal(env)
+	if err != nil {
+		return entry
+	}
+	server["env"] = rawEnv
+	out, err := json.Marshal(server)
+	if err != nil {
+		return entry
+	}
+	return out
 }
