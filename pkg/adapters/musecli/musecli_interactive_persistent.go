@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"reflect"
 	"slices"
@@ -366,6 +367,13 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)
 			entry = nil
+		} else if strings.Contains(entry.mcpJSON, "mcpbridge") && museBridgeGone(ctx, entry.tmuxName) {
+			// Muse drops its MCP connection for good once a tool call hits its own limit, and the bridge exits
+			// with it: this session would answer every call with "MCP stdio connection is closed" until someone
+			// reset it. Relaunch (native resume keeps the conversation) between turns, before the message is sent.
+			museKillPersistentLocked(ctx, entry)
+			delete(musePersistentPool.m, key)
+			entry = nil
 		} else if !museMCPConfigsEquivalent(entry.mcpJSON, mcpJSON) {
 			museKillPersistentLocked(ctx, entry)
 			delete(musePersistentPool.m, key)
@@ -503,4 +511,15 @@ func musePersistentReadyFile(opts *llmtypes.CallOptions) string {
 		return ""
 	}
 	return codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom)
+}
+
+// museBridgeGone is true only when the session's bridge is known to be missing; when that cannot be told the
+// session is left alone.
+func museBridgeGone(ctx context.Context, tmuxName string) bool {
+	alive, known := museBridgeAlive(ctx, tmuxName)
+	if !known || alive {
+		return false
+	}
+	log.Printf("[muse-cli] the MCP bridge of %s is gone (Muse closed it after a tool-call timeout); relaunching the session with native resume", tmuxName)
+	return true
 }
