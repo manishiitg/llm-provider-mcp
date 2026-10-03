@@ -196,6 +196,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		freshSessionID = newClaudeNativeSessionID()
 	}
 	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	args = append(args, claudeSeatbeltAddDirs(opts, workingDir)...)
 
 	if workingDir != "" {
 		if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {

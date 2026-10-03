@@ -946,6 +946,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		}
 	}
 	args := []string{"claude", "--permission-mode", permissionMode, "--no-chrome"}
+	args = append(args, claudeSeatbeltAddDirs(opts, claudeWorkingDirFromOptions(opts))...)
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	} else if nativeSessionID != "" {

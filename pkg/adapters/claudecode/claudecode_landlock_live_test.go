@@ -276,3 +276,79 @@ func TestClaudeCodeTmuxRealSeatbeltFullCLIP0(t *testing.T) {
 		t.Errorf("Claude did not start under Seatbelt: %v", err)
 	}
 }
+
+// A Builder chat runs from a private runtime folder with the workflow linked
+// in as project/. Under Seatbelt, Claude's own Edit must change a workflow
+// file through that link (the folder is granted), while the sandbox still
+// refuses the protected planning/ (owner test 2026-10-04: dontAsk refused every
+// edit outside the runtime folder before the sandbox decided).
+func TestClaudeCodeTmuxRealSeatbeltEditsLinkedProjectP0(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs macOS")
+	}
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	root, err := os.MkdirTemp(home, ".agentworks-seatbelt-link-")
+	if err != nil {
+		t.Skipf("cannot create a folder under the home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	workspace := filepath.Join(root, "workspace-docs")
+	workflow := filepath.Join(workspace, "Workflow", "mine")
+	planning := filepath.Join(workflow, "planning")
+	runtimeDir := filepath.Join(root, "state", "cli-runtimes", "v1", "abc")
+	for _, dir := range []string{filepath.Join(workflow, "soul"), planning, runtimeDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	soul := filepath.Join(workflow, "soul", "soul.md")
+	if err := os.WriteFile(soul, []byte("# Soul\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planning, "plan.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(workflow, filepath.Join(runtimeDir, "project")); err != nil {
+		t.Fatal(err)
+	}
+	policy := llmtypes.CLISecurityPolicy{
+		Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", Seatbelt: true,
+		PrivateHome:         filepath.Join(runtimeDir, ".sandbox-cache", "cli-home", "claude-code"),
+		WorkspaceWritePaths: []string{runtimeDir, workflow},
+		ProtectedRoots:      []string{workspace, filepath.Join(root, "state")},
+		BlockedWritePaths:   []string{planning},
+	}
+	token := "EDIT-" + randomHex(4)
+	opts := []llmtypes.CallOption{
+		WithInteractiveSessionID("claude-seatbelt-link-" + randomHex(4)),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(runtimeDir),
+		WithClaudeCodeTools(claudeHybridLiveTools + ",Bash,Write,Edit,MultiEdit"),
+		WithDangerouslySkipPermissions(),
+		WithAllowedTools("Bash,Write,Edit,MultiEdit,Read,Glob,Grep"),
+		WithEffort("low"),
+		func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p },
+	}
+	prompt := "Integration test in disposable scratch folders; this is authorised. " +
+		"1) Use your Edit tool to append the line " + token + " to project/soul/soul.md. " +
+		"2) Use Bash to run: echo x >> project/planning/plan.json . Report each outcome with the exact error."
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(defaultClaudeInteractiveTestModel, os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	t.Logf("reply: %.1200s", firstChoiceText(resp))
+	if data, _ := os.ReadFile(soul); !strings.Contains(string(data), token) {
+		t.Errorf("Claude's Edit did not change the linked workflow file: %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(planning, "plan.json")); strings.TrimSpace(string(data)) != "{}" {
+		t.Errorf("the protected planning/ was written: %q", data)
+	}
+}
