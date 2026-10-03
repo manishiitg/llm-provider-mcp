@@ -157,7 +157,12 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	write = append(write, credentials...)
 	// Blocked paths inside a grant (planning/, the raw database, AGENTS.md):
 	// Landlock cannot take them back, so the grants are split around them.
-	read, write = splitAroundBlocked(canonicalUnique(read), canonicalUnique(write), canonicalUnique(policy.BlockedPaths), canonicalUnique(policy.BlockedWritePaths))
+	// The CLI's own working folder is never split: for Code it is the project,
+	// and splitting it would stop the CLI creating files there. Its blocked
+	// entries are the CLI's managed instruction files, which the bridge guards.
+	cwd := canonical(workingDir)
+	read, write = splitAroundBlocked(canonicalUnique(read), canonicalUnique(write),
+		outside(canonicalUnique(policy.BlockedPaths), cwd), outside(canonicalUnique(policy.BlockedWritePaths), cwd))
 	config := landlockPolicy{
 		ReadPaths:  existing(canonicalUnique(read)),
 		WritePaths: existing(canonicalUnique(write)),

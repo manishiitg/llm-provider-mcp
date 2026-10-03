@@ -40,12 +40,17 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A managed instruction file in the CLI's own folder is blocked too; the
+	// folder must not be split, or the CLI could not create files in it.
+	if err := os.WriteFile(filepath.Join(workDir, "CLAUDE.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	policy := &llmtypes.CLISecurityPolicy{
 		Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner,
 		PrivateHome: filepath.Join(root, "home"), CredentialHome: root,
 		WorkspaceWritePaths: []string{wf},
 		BlockedPaths:        []string{filepath.Join(wf, "db", "db.sqlite")},
-		BlockedWritePaths:   []string{filepath.Join(wf, "planning")},
+		BlockedWritePaths:   []string{filepath.Join(wf, "planning"), filepath.Join(workDir, "CLAUDE.md")},
 	}
 	run := func(script string) error {
 		args, cleanup, err := LandlockArgs(policy, []string{"/bin/sh", "-c", script}, workDir, nil, nil)
@@ -72,7 +77,9 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 		"new file in planning": "echo y > " + filepath.Join(wf, "planning", "x.json"),
 		"read the database":    "cat " + filepath.Join(wf, "db", "db.sqlite"),
 		"write the database":   "echo y >> " + filepath.Join(wf, "db", "db.sqlite"),
-		"create a wal file":    "echo y > " + filepath.Join(wf, "db", "db.sqlite-wal"),
+		// Accepted limit (PLAT-385): no new entry directly in a split folder.
+		"new file in the workflow root": "echo y > " + filepath.Join(wf, "new.txt"),
+		"create a wal file":             "echo y > " + filepath.Join(wf, "db", "db.sqlite-wal"),
 	}
 	for name, script := range refused {
 		if err := run(script); err == nil {

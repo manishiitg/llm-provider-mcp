@@ -88,3 +88,18 @@ func entriesAround(root, blocked string) []string {
 	}
 	return out
 }
+
+// outside drops the paths equal to or inside root.
+func outside(paths []string, root string) []string {
+	if root == "" {
+		return paths
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
