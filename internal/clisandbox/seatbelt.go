@@ -47,6 +47,11 @@ func SeatbeltArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, noop, fmt.Errorf("create CLI sandbox folder: %w", err)
 	}
+	if strings.TrimSpace(policy.Provider) == "codex-cli" {
+		if err := prepareSeatbeltCodexHome(policy, args, home); err != nil {
+			return nil, noop, err
+		}
+	}
 	profile := seatbeltProfile(policy, args, workingDir, grants)
 	path := filepath.Join(home, "agentworks-cli-seatbelt.sb")
 	// A stable file, replaced atomically: sandbox-exec reads it as the CLI
@@ -159,4 +164,20 @@ func seatbeltProfile(policy *llmtypes.CLISecurityPolicy, args []string, workingD
 		b.WriteString(`(deny file-read* file-write* (subpath "` + sandboxQuote(path) + "\"))\n")
 	}
 	return b.String()
+}
+
+// prepareSeatbeltCodexHome builds the CODEX_HOME a Seatbelt-confined Codex runs
+// with (see llmtypes.SandboxHomeEnvironment): the folder itself, the person's
+// login linked in (never copied: logins rotate refresh tokens, so every session
+// shares the one file), and the native session a resumed chat continues, which
+// an earlier launch kept in the person's own ~/.codex.
+func prepareSeatbeltCodexHome(policy *llmtypes.CLISecurityPolicy, args []string, home string) error {
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		return fmt.Errorf("create Codex home: %w", err)
+	}
+	adoptResumedSession(policy, args)
+	if _, err := linkCredentialFiles(policy, home); err != nil {
+		return err
+	}
+	return nil
 }

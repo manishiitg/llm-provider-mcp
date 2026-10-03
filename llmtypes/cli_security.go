@@ -172,6 +172,14 @@ func (p CLISecurityPolicy) Clone() CLISecurityPolicy {
 // launcher confines it, else nil. It replaces the account's (or server's)
 // home for the CLI and for every server-side reader of the CLI's files.
 func SandboxHomeEnvironment(opts *CallOptions) map[string]string {
+	if opts != nil && opts.CLISecurity.SeatbeltEnforced() && strings.EqualFold(strings.TrimSpace(opts.CLISecurity.Provider), "codex-cli") {
+		// A Mac keeps the person's own home open to every CLI, but Codex reads its
+		// config, MCP servers, plugins and profile files from CODEX_HOME: left at
+		// the person's own ~/.codex it loaded their personal MCP servers next to the
+		// platform's, and could not see the session profile that carries the
+		// platform's tools. Codex gets a CODEX_HOME of its own; the login is linked in.
+		return map[string]string{"CODEX_HOME": filepath.Join(filepath.Clean(opts.CLISecurity.PrivateHome), ".codex")}
+	}
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return nil
 	}

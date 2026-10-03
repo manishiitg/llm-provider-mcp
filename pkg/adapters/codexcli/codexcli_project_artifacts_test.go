@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRenderCodexProjectConfigTOMLBasicShape locks in the exact TOML
@@ -281,4 +282,35 @@ func withoutPersonalCodexMCPServers(t *testing.T) {
 	orig := personalCodexMCPServers
 	t.Cleanup(func() { personalCodexMCPServers = orig })
 	personalCodexMCPServers = func(string) []string { return nil }
+}
+
+// Leftover session profiles older than a day are removed from a Codex home;
+// a young one (a live session), other files and non-profile names stay.
+func TestSweepStaleCodexProfiles(t *testing.T) {
+	home := t.TempDir()
+	old := filepath.Join(home, "agentworks-1234567890.config.toml")
+	young := filepath.Join(home, "agentworks-987.config.toml")
+	notProfile := filepath.Join(home, "agentworks-notes.config.toml")
+	config := filepath.Join(home, "config.toml")
+	for _, f := range []string{old, young, notProfile, config} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-48 * time.Hour)
+	for _, f := range []string{old, notProfile, config} {
+		if err := os.Chtimes(f, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	codexProfileSweeps.Delete(home)
+	sweepStaleCodexProfiles(home)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("an old session profile survived")
+	}
+	for _, keep := range []string{young, notProfile, config} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s must stay: %v", keep, err)
+		}
+	}
 }

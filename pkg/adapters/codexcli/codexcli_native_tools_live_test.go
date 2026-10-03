@@ -114,8 +114,17 @@ func TestCodexCLIRealNativeToolsSubagentP0(t *testing.T) {
 	}
 	// Prove a subagent actually ran: Codex records spawned agents in its
 	// rollouts (the spawn tool call in the parent's rollout).
+	// Under Seatbelt (and Landlock) Codex keeps its rollouts in the private
+	// CODEX_HOME the platform gave it; look there and in the person's own home.
 	home, _ := os.UserHomeDir()
-	rollouts, _ := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*.jsonl"))
+	var rollouts []string
+	for _, codexHome := range []string{
+		filepath.Join(workDir, ".agentworks-test-sandbox", "cli-home", "codex-cli", ".codex"),
+		filepath.Join(home, ".codex"),
+	} {
+		found, _ := filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*.jsonl"))
+		rollouts = append(rollouts, found...)
+	}
 	spawned := false
 	for _, f := range rollouts {
 		info, statErr := os.Stat(f)

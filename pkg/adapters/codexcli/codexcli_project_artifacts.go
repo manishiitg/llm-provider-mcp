@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -314,6 +317,7 @@ func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, p
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return "", noop, fmt.Errorf("create Codex home: %w", err)
 	}
+	sweepStaleCodexProfiles(codexHome)
 
 	profileFile, err := os.CreateTemp(codexHome, "agentworks-*.config.toml")
 	if err != nil {
@@ -541,4 +545,35 @@ func codexMCPServerNamesInConfig(config string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+var (
+	codexProfileName   = regexp.MustCompile(`^agentworks-[0-9]+\.config\.toml$`)
+	codexProfileSweeps sync.Map // codex home -> time of the last sweep
+)
+
+// sweepStaleCodexProfiles removes the session profile files (agentworks-<n>.config.toml)
+// that earlier sessions left in a Codex home: a launch whose cleanup never ran
+// (a crash, a restart) leaves its file behind, and a developer's own ~/.codex
+// held 229 of them. A profile is a few hundred bytes to several KB of MCP tool
+// descriptions; one younger than a day may belong to a live session and stays.
+// At most once a minute per folder.
+func sweepStaleCodexProfiles(codexHome string) {
+	now := time.Now()
+	if last, ok := codexProfileSweeps.Load(codexHome); ok && now.Sub(last.(time.Time)) < time.Minute {
+		return
+	}
+	codexProfileSweeps.Store(codexHome, now)
+	entries, err := os.ReadDir(codexHome)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !codexProfileName.MatchString(entry.Name()) {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > 24*time.Hour {
+			_ = os.Remove(filepath.Join(codexHome, entry.Name()))
+		}
+	}
 }
