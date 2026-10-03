@@ -26,6 +26,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
@@ -773,7 +774,27 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 
 	modelToUse = cursorModelWithReasoning(modelToUse, opts)
 
-	args := []string{"cursor-agent", "--workspace", workingDir}
+	// --trust: AgentWorks picks the working folder (a private runtime folder per
+	// chat), so Cursor must not stop on its "Workspace Trust Required" screen
+	// for each new one (found by the cross-CLI sandbox contract, 2026-10-04). A
+	// flag, not a key press on the screen.
+	args := []string{"cursor-agent", "--workspace", workingDir, "--trust"}
+	if opts != nil {
+		// Granted folders reached through links (project/) are outside Cursor's
+		// workspace; --add-dir makes them workspace roots (see SeatbeltGrantedDirs).
+		for _, dir := range clisandbox.SeatbeltGrantedDirs(opts.CLISecurity, workingDir) {
+			args = append(args, "--add-dir", dir)
+		}
+	}
+	if cursorFullNativeFromOptions(opts) {
+		// Full CLI: the platform's sandbox is the boundary. Without --force Cursor
+		// stops on "Run this command?" for any shell write that resolves outside
+		// its workspace folder, such as a redirect into the linked project/
+		// (contract test 2026-10-04). Checked live: --force does NOT switch the
+		// hooks off, so the hook-based denials (subagents, cloud agents, computer
+		// use) still apply, and an explicit deny still wins.
+		args = append(args, "--force")
+	}
 	if modelToUse != "" {
 		args = append(args, "--model", modelToUse)
 	}

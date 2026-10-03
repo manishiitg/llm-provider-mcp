@@ -321,7 +321,7 @@ func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, p
 	}
 	path := profileFile.Name()
 	cleanup := func() { _ = os.Remove(path) }
-	if _, err := profileFile.WriteString(renderCodexProjectConfigTOML(servers)); err != nil {
+	if _, err := profileFile.WriteString(renderCodexConfigTOML(servers, personalCodexMCPServers(codexHome))); err != nil {
 		_ = profileFile.Close()
 		cleanup()
 		return "", noop, fmt.Errorf("write Codex session MCP profile: %w", err)
@@ -342,6 +342,15 @@ func writeCodexSessionMCPProfile(mcpServersJSON string, autoApproveTools bool, p
 // AgentWorks sessions while still allowing explicit per-invocation -c
 // overrides to win.
 func renderCodexProjectConfigTOML(servers map[string]codexMCPServerSpec) string {
+	return renderCodexConfigTOML(servers, nil)
+}
+
+// renderCodexConfigTOML is renderCodexProjectConfigTOML plus "enabled = false"
+// for each name in personal: the person's own MCP servers, which Codex loads
+// from their config next to the bridge. A bare enabled=false is valid only
+// layered over a config that defines the server, so the names must come from
+// the Codex home this session actually uses.
+func renderCodexConfigTOML(servers map[string]codexMCPServerSpec, personal []string) string {
 	var b strings.Builder
 	b.WriteString("# mlp-session: orchestrator-generated Codex project config.\n")
 	b.WriteString("# Auto-removed at session cleanup. Pre-existing content is byte-restored.\n\n")
@@ -361,6 +370,24 @@ func renderCodexProjectConfigTOML(servers map[string]codexMCPServerSpec) string 
 	b.WriteString("[features]\n")
 	b.WriteString("remote_plugin = false\n")
 	b.WriteString("skill_mcp_dependency_install = false\n\n")
+
+	// The person's own MCP servers (their ~/.codex/config.toml: other
+	// AgentWorks servers, computer use, REPLs) are outside the AgentWorks tool
+	// boundary. Under Seatbelt Codex keeps that home for its login, so they
+	// loaded next to the bridge: a chat called another AgentWorks server and
+	// reported that its workflow did not exist (owner test 2026-10-04).
+	var off []string
+	for _, name := range personal {
+		if _, ours := servers[name]; !ours {
+			off = append(off, name)
+		}
+	}
+	if len(off) > 0 {
+		b.WriteString("# The person's own MCP servers stay off in AgentWorks sessions.\n")
+		for _, name := range off {
+			fmt.Fprintf(&b, "[mcp_servers.%s]\nenabled = false\n\n", tomlQuoteKey(name))
+		}
+	}
 
 	names := make([]string, 0, len(servers))
 	for name := range servers {
@@ -472,4 +499,46 @@ func dirIsEmptyOrJustCreated(dir string) bool {
 		return false
 	}
 	return len(entries) == 0
+}
+
+// personalCodexMCPServers lists the MCP servers in the config.toml of the
+// Codex home a session uses, sorted (a variable for tests).
+var personalCodexMCPServers = func(codexHome string) []string {
+	if strings.TrimSpace(codexHome) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(codexHome, "config.toml")) // #nosec G304 -- the session's own Codex config
+	if err != nil {
+		return nil
+	}
+	return codexMCPServerNamesInConfig(string(data))
+}
+
+// codexMCPServerNamesInConfig returns the server names of [mcp_servers.NAME]
+// tables (sub-tables such as [mcp_servers.NAME.env] count once).
+func codexMCPServerNamesInConfig(config string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, line := range strings.Split(config, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "[mcp_servers.") || !strings.HasSuffix(line, "]") || strings.HasPrefix(line, "[[") {
+			continue
+		}
+		rest := strings.TrimSuffix(strings.TrimPrefix(line, "[mcp_servers."), "]")
+		name := rest
+		if strings.HasPrefix(rest, `"`) {
+			if end := strings.Index(rest[1:], `"`); end >= 0 {
+				name = rest[1 : end+1]
+			}
+		} else if dot := strings.Index(rest, "."); dot >= 0 {
+			name = rest[:dot]
+		}
+		name = strings.TrimSpace(name)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }

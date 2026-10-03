@@ -176,31 +176,17 @@ func claudeLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir str
 	return clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, claudeLandlockReads(cmd.Args, workingDir), nil)
 }
 
-// claudeSeatbeltAddDirs are the chat's granted folders as --add-dir flags,
-// for a launch under Seatbelt. Claude keeps the person's own ~/.claude there,
-// so the Landlock approach (writing the folders into the private home's
-// settings) does not apply. Without them Claude treats the workflow linked
-// as project/ as outside its working folder and, in dontAsk mode, refuses
-// every edit there before the sandbox decides (owner test 2026-10-04).
+// claudeSeatbeltAddDirs are the chat's granted folders as --add-dir flags, for
+// a launch under Seatbelt (see clisandbox.SeatbeltGrantedDirs). Without them
+// Claude, in dontAsk mode, refuses every edit through the workflow linked as
+// project/ before the sandbox decides (owner test 2026-10-04).
 func claudeSeatbeltAddDirs(opts *llmtypes.CallOptions, workingDir string) []string {
-	if opts == nil || !opts.CLISecurity.SeatbeltEnforced() {
+	if opts == nil {
 		return nil
 	}
-	policy := opts.CLISecurity
 	var args []string
-	seen := map[string]bool{filepath.Clean(workingDir): true}
-	for _, list := range [][]string{policy.WorkspaceWritePaths, policy.HostWritePaths, policy.WorkspaceReadPaths, policy.HostReadPaths} {
-		for _, dir := range list {
-			dir = filepath.Clean(strings.TrimSpace(dir))
-			if dir == "." || seen[dir] {
-				continue
-			}
-			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-				continue
-			}
-			seen[dir] = true
-			args = append(args, "--add-dir", dir)
-		}
+	for _, dir := range clisandbox.SeatbeltGrantedDirs(opts.CLISecurity, workingDir) {
+		args = append(args, "--add-dir", dir)
 	}
 	return args
 }

@@ -11,6 +11,7 @@ import (
 // emitted for a typical MCP server map. Output must be deterministic
 // (keys sorted) so byte-compare assertions in cleanup tests are stable.
 func TestRenderCodexProjectConfigTOMLBasicShape(t *testing.T) {
+	withoutPersonalCodexMCPServers(t)
 	startup := 12
 	enabled := true
 	servers := map[string]codexMCPServerSpec{
@@ -90,6 +91,7 @@ func TestTomlQuoteKeyBareVsQuoted(t *testing.T) {
 // promise that pre-existing operator-owned .codex/config.toml is
 // restored byte-for-byte at cleanup.
 func TestWriteCodexProjectConfigTOMLRestoresOperatorContent(t *testing.T) {
+	withoutPersonalCodexMCPServers(t)
 	tmp := t.TempDir()
 	codexDir := filepath.Join(tmp, ".codex")
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
@@ -126,6 +128,7 @@ func TestWriteCodexProjectConfigTOMLRestoresOperatorContent(t *testing.T) {
 }
 
 func TestWriteCodexProjectConfigTOMLWithoutMCPUsesAgentWorksDefaults(t *testing.T) {
+	withoutPersonalCodexMCPServers(t)
 	tmp := t.TempDir()
 	cleanup, err := writeCodexProjectConfigTOML(tmp, "", false)
 	if err != nil {
@@ -181,6 +184,7 @@ func TestWriteCodexProjectConfigTOMLWithoutMCPUsesAgentWorksDefaults(t *testing.
 // cleanup tears both down. Hooks-projection-related expectations
 // have been removed.
 func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
+	withoutPersonalCodexMCPServers(t)
 	tmp := t.TempDir()
 	prompt := "Run cargo test before committing."
 	mcpJSON := `{"api-bridge":{"command":"/opt/mcpbridge"}}`
@@ -238,4 +242,43 @@ func TestWriteCodexProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
 			_ = os.RemoveAll(leak)
 		}
 	}
+}
+
+// The person's own MCP servers (from the config of the Codex home this session
+// uses) are switched off in the session profile, and the AgentWorks bridge is
+// never on that list.
+func TestCodexSessionProfileDisablesPersonalMCPServers(t *testing.T) {
+	home := t.TempDir()
+	config := "[mcp_servers.agentworks]\nurl = \"https://x\"\n[mcp_servers.computer-use]\ncommand = \"c\"\n[mcp_servers.computer-use.env]\nA = \"1\"\n[mcp_servers.api-bridge]\ncommand = \"b\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	personal := personalCodexMCPServers(home)
+	if strings.Join(personal, ",") != "agentworks,api-bridge,computer-use" {
+		t.Fatalf("personal servers = %v", personal)
+	}
+	got := renderCodexConfigTOML(map[string]codexMCPServerSpec{"api-bridge": {Command: "/bin/bridge"}}, personal)
+	for _, want := range []string{"[mcp_servers.agentworks]\nenabled = false", "[mcp_servers.computer-use]\nenabled = false"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "computer-use") != 1 {
+		t.Errorf("a sub-table must not become its own server:\n%s", got)
+	}
+	if strings.Contains(got, "api-bridge]\nenabled = false") {
+		t.Errorf("the bridge must never be disabled:\n%s", got)
+	}
+	if none := personalCodexMCPServers(t.TempDir()); len(none) != 0 {
+		t.Errorf("a home without a config disables nothing, got %v", none)
+	}
+}
+
+// withoutPersonalCodexMCPServers keeps a unit test independent of the
+// developer's own ~/.codex/config.toml.
+func withoutPersonalCodexMCPServers(t *testing.T) {
+	t.Helper()
+	orig := personalCodexMCPServers
+	t.Cleanup(func() { personalCodexMCPServers = orig })
+	personalCodexMCPServers = func(string) []string { return nil }
 }
