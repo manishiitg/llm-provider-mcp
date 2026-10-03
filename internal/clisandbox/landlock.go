@@ -155,6 +155,9 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	write = append(write, policy.HostWritePaths...)
 	write = append(write, runtimeWritePaths...)
 	write = append(write, credentials...)
+	// Blocked paths inside a grant (planning/, the raw database, AGENTS.md):
+	// Landlock cannot take them back, so the grants are split around them.
+	read, write = splitAroundBlocked(canonicalUnique(read), canonicalUnique(write), canonicalUnique(policy.BlockedPaths), canonicalUnique(policy.BlockedWritePaths))
 	config := landlockPolicy{
 		ReadPaths:  existing(canonicalUnique(read)),
 		WritePaths: existing(canonicalUnique(write)),
