@@ -15,8 +15,6 @@ var knownCodexCLIModels = []string{
 	"gpt-6.1-sol",
 	"gpt-6-sol",
 	"gpt-6-luna",
-	"gpt-5.5",
-	"gpt-5.4",
 	"gpt-5.3-codex-spark",
 }
 
@@ -48,10 +46,6 @@ func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "GPT-6 Sol"
 		case "gpt-6-luna":
 			meta.ModelName = "GPT-6 Luna"
-		case "gpt-5.5":
-			meta.ModelName = "GPT-5.5"
-		case "gpt-5.4":
-			meta.ModelName = "GPT-5.4"
 		case "gpt-5.3-codex-spark":
 			meta.ModelName = "GPT-5.3 Codex Spark"
 		}
