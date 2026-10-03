@@ -156,8 +156,11 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 
 	resolvedModelID := resolveCursorCLIModelID(modelID)
 	metadataSelector := resolvedModelID
-	if strings.HasPrefix(metadataSelector, "grok-4.7[") {
-		metadataSelector = "grok-4.7"
+	for _, base := range []string{"grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"} {
+		if strings.HasPrefix(metadataSelector, base+"[") {
+			metadataSelector = base
+			break
+		}
 	}
 	switch metadataSelector {
 	case "":
@@ -191,26 +194,51 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			ContextWindow:     200000,
 			SupportsToolCalls: true,
 		}, nil
-	case "grok-4.7":
+	case "grok-4.7", "grok-4.6":
 		fast := strings.Contains(strings.ToLower(strings.ReplaceAll(resolvedModelID, " ", "")), "fast=true")
 		inputRate, outputRate, cacheReadRate := 2.0, 6.0, 0.5
 		longContextMultiplier := 2.0
+		longContextThreshold := 256000
+		if metadataSelector == "grok-4.6" {
+			longContextMultiplier = 0
+			longContextThreshold = 0
+		}
 		if fast {
 			inputRate, outputRate, cacheReadRate = 4, 12, 1
-			longContextMultiplier = 1.5
+			if metadataSelector == "grok-4.7" {
+				longContextMultiplier = 1.5
+			}
 		}
 		return &llmtypes.ModelMetadata{
 			ModelID:                     metadataModelID,
 			Provider:                    "cursor-cli",
-			ModelName:                   "Grok 4.7 (Cursor Agent CLI)",
+			ModelName:                   "Grok " + strings.TrimPrefix(metadataSelector, "grok-") + " (Cursor Agent CLI)",
 			ContextWindow:               256000,
 			InputCostPer1MTokens:        inputRate,
 			OutputCostPer1MTokens:       outputRate,
 			CachedInputCostPer1MTokens:  cacheReadRate,
-			LongContextThresholdTokens:  256000,
+			LongContextThresholdTokens:  longContextThreshold,
 			LongContextInputMultiplier:  longContextMultiplier,
 			LongContextOutputMultiplier: longContextMultiplier,
 			SupportsToolCalls:           true,
+		}, nil
+	case "glm-5.3", "glm-5.3-flash":
+		// Cursor's official model pages, verified 2026-10-03:
+		// https://cursor.com/docs/models/glm-5-3
+		// https://cursor.com/docs/models/glm-5-3-flash
+		name, inputRate, outputRate, cacheReadRate := "GLM 5.3", 1.4, 4.4, 0.26
+		if metadataSelector == "glm-5.3-flash" {
+			name, inputRate, outputRate, cacheReadRate = "GLM 5.3 Flash", 0.15, 0.5, 0.029
+		}
+		return &llmtypes.ModelMetadata{
+			ModelID:                    metadataModelID,
+			Provider:                   "cursor-cli",
+			ModelName:                  name + " (Cursor Agent CLI)",
+			ContextWindow:              1000000,
+			InputCostPer1MTokens:       inputRate,
+			OutputCostPer1MTokens:      outputRate,
+			CachedInputCostPer1MTokens: cacheReadRate,
+			SupportsToolCalls:          true,
 		}, nil
 	case "gpt-5":
 		return &llmtypes.ModelMetadata{

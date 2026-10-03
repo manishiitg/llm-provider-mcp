@@ -30,10 +30,10 @@ func TestResolveCursorCLIModelIDKeepsExplicitModel(t *testing.T) {
 
 func TestGetAllCursorCLIModelsShowsSimpleChoices(t *testing.T) {
 	models := GetAllCursorCLIModels()
-	if len(models) != 3 {
-		t.Fatalf("GetAllCursorCLIModels returned %d models, want 3: %#v", len(models), models)
+	if len(models) != 6 {
+		t.Fatalf("GetAllCursorCLIModels returned %d models, want 6: %#v", len(models), models)
 	}
-	wantIDs := []string{"auto", "composer-2.5", "grok-4.7"}
+	wantIDs := []string{"auto", "composer-2.5", "grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"}
 	for i, want := range wantIDs {
 		if models[i].ModelID != want {
 			t.Fatalf("models[%d].ModelID = %q, want %q", i, models[i].ModelID, want)
@@ -58,6 +58,31 @@ func TestGrok47PricingModes(t *testing.T) {
 			meta.OutputCostPer1MTokens != tt.output || meta.LongContextThresholdTokens != 256000 ||
 			meta.LongContextInputMultiplier != tt.long || meta.LongContextOutputMultiplier != tt.long {
 			t.Errorf("%s metadata = %+v", tt.model, meta)
+		}
+	}
+}
+
+func TestNewCursorSelectorsKeepTheirModelAndPricing(t *testing.T) {
+	for _, tt := range []struct {
+		id                    string
+		input, cached, output float64
+		context               int
+	}{
+		{"glm-5.3", 1.4, 0.26, 4.4, 1000000},
+		{"glm-5.3-flash", 0.15, 0.029, 0.5, 1000000},
+		{"grok-4.6", 2, 0.5, 6, 256000},
+		{"grok-4.6[effort=high,fast=true]", 4, 1, 12, 256000},
+		{"glm-5.3[effort=max]", 1.4, 0.26, 4.4, 1000000},
+	} {
+		if got := cursorCLIModelForLaunch(tt.id); got != tt.id {
+			t.Fatalf("launch selector = %q, want %q", got, tt.id)
+		}
+		meta, err := (&CursorCLIAdapter{}).GetModelMetadata(tt.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.InputCostPer1MTokens != tt.input || meta.CachedInputCostPer1MTokens != tt.cached || meta.OutputCostPer1MTokens != tt.output || meta.ContextWindow != tt.context {
+			t.Errorf("%s metadata = %+v", tt.id, meta)
 		}
 	}
 }

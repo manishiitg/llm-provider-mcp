@@ -10,6 +10,9 @@ var knownCursorCLIModels = []string{
 	"auto",
 	"composer-2.5",
 	"grok-4.7",
+	"grok-4.6",
+	"glm-5.3",
+	"glm-5.3-flash",
 }
 
 // GetAllCursorCLIModels returns the frontend-visible Cursor Agent CLI models.
