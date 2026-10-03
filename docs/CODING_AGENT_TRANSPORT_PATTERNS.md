@@ -223,7 +223,7 @@ Provider-contract validation should include real provider E2E. These tests are
 environment-gated so normal CI does not spend credits accidentally:
 
 - Claude Code with Haiku
-- Codex CLI with the cheaper contract model, currently `gpt-5.3-codex-spark`
+- Codex CLI with the cheaper contract model, currently `gpt-5.4-mini`
 - Pi CLI with the selected low-cost model
 - multi-turn memory in the same persistent tmux session
 

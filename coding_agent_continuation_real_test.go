@@ -53,7 +53,7 @@ func TestCodingAgentContinuationRealE2EAfterTmuxLoss(t *testing.T) {
 		{
 			name:       "codex-cli",
 			provider:   ProviderCodexCLI,
-			model:      codingAgentContinuationE2EModel("CODEX_CLI_REAL_CONTRACT_MODEL", "gpt-5.3-codex-spark"),
+			model:      codingAgentContinuationE2EModel("CODEX_CLI_REAL_CONTRACT_MODEL", "gpt-5.4-mini"),
 			binaryName: "codex",
 			config: func(model string) Config {
 				return Config{

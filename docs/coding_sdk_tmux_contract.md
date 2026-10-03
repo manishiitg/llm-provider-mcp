@@ -1040,7 +1040,7 @@ and transport-change validation should run them alongside deterministic tests:
 
 - Claude Code: use Haiku unless explicitly testing another model.
 - Codex CLI: use the cheaper contract model, currently
-  `gpt-5.3-codex-spark`, unless explicitly testing another model.
+  `gpt-5.4-mini`, unless explicitly testing another model.
 - Cursor CLI: use the account/default selector (`cursor-cli`) for the default
   smoke unless explicitly testing a model available in that Cursor account.
 
@@ -1211,7 +1211,7 @@ Builder/workspace virtual-tool contract command:
 ```sh
 WORKSPACE_API_URL=http://127.0.0.1:8081 go run . test search-web-llm-providers \
   --providers codex-cli \
-  --models codex-cli=gpt-5.3-codex-spark \
+  --models codex-cli=gpt-5.4-mini \
   --provider-timeout 3m
 ```
 
@@ -1254,8 +1254,7 @@ Read-image provider/model semantics:
   Tmux chat must reject image parts until a reliable TUI attachment transport is
   implemented.
 - Codex CLI image input must use an image-capable model, currently
-  `gpt-5.4-mini` for the contract test. `gpt-5.3-codex-spark` is not a valid
-  image-read contract model.
+  `gpt-5.4-mini` for the contract test. (`gpt-5.3-codex-spark` is not offered any more: OpenAI refuses it for Codex with a ChatGPT account.)
 
 Current image-generation real contract commands:
 

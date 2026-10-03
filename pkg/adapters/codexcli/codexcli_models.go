@@ -15,8 +15,10 @@ var knownCodexCLIModels = []string{
 	"gpt-6.1-sol",
 	"gpt-6-sol",
 	"gpt-6-luna",
-	"gpt-5.3-codex-spark",
 }
+
+// gpt-5.3-codex-spark is not in this list on purpose (owner, 2026-10-04): OpenAI refuses it for Codex signed in with a ChatGPT account. Its pricing
+// metadata stays in GetModelMetadata so a saved selection still resolves.
 
 // GetAllCodexCLIModels returns the frontend-visible Codex CLI models.
 func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
@@ -46,8 +48,6 @@ func GetAllCodexCLIModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "GPT-6 Sol"
 		case "gpt-6-luna":
 			meta.ModelName = "GPT-6 Luna"
-		case "gpt-5.3-codex-spark":
-			meta.ModelName = "GPT-5.3 Codex Spark"
 		}
 
 		models = append(models, meta)
