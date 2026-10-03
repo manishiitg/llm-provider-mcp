@@ -761,6 +761,8 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		}
 	}
 
+	modelToUse = cursorModelWithReasoning(modelToUse, opts)
+
 	args := []string{"cursor-agent", "--workspace", workingDir}
 	if modelToUse != "" {
 		args = append(args, "--model", modelToUse)

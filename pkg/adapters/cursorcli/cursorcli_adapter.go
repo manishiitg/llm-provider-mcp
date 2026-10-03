@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -20,6 +21,33 @@ func cursorCLIModelForLaunch(modelID string) string {
 		return resolveCursorCLIModelID(testModel)
 	}
 	return resolveCursorCLIModelID(modelID)
+}
+
+// cursorModelWithReasoning applies effort only to models that declare supported
+// levels. Preserve the caller's context and speed settings when replacing effort.
+// Auto and Composer route/manage reasoning themselves; live CLI variants without
+// metadata keep their exact selector (including any effort encoded in that ID).
+func cursorModelWithReasoning(modelID string, opts *llmtypes.CallOptions) string {
+	if opts == nil || strings.TrimSpace(opts.ReasoningEffort) == "" {
+		return modelID
+	}
+	meta, err := (&CursorCLIAdapter{}).GetModelMetadata(modelID)
+	effort := strings.ToLower(strings.TrimSpace(opts.ReasoningEffort))
+	if err != nil || meta == nil || !slices.Contains(meta.ReasoningEffortLevels, effort) {
+		return modelID
+	}
+	base, parameters, hasParameters := strings.Cut(modelID, "[")
+	settings := []string{}
+	if hasParameters {
+		for _, setting := range strings.Split(strings.TrimSuffix(parameters, "]"), ",") {
+			key, _, _ := strings.Cut(strings.TrimSpace(setting), "=")
+			if key != "effort" && strings.TrimSpace(setting) != "" {
+				settings = append(settings, strings.TrimSpace(setting))
+			}
+		}
+	}
+	settings = append(settings, "effort="+effort)
+	return base + "[" + strings.Join(settings, ",") + "]"
 }
 
 func isCursorLegacyModelSelector(modelID string) bool {
@@ -221,6 +249,8 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			LongContextInputMultiplier:  longContextMultiplier,
 			LongContextOutputMultiplier: longContextMultiplier,
 			SupportsToolCalls:           true,
+			SupportsReasoningEffort:     true,
+			ReasoningEffortLevels:       []string{"low", "medium", "high", "xhigh"},
 		}, nil
 	case "glm-5.3", "glm-5.3-flash":
 		// Cursor's official model pages, verified 2026-10-03:
@@ -239,6 +269,8 @@ func (c *CursorCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMeta
 			OutputCostPer1MTokens:      outputRate,
 			CachedInputCostPer1MTokens: cacheReadRate,
 			SupportsToolCalls:          true,
+			SupportsReasoningEffort:    true,
+			ReasoningEffortLevels:      []string{"low", "high", "max"},
 		}, nil
 	case "gpt-5":
 		return &llmtypes.ModelMetadata{

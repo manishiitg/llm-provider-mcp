@@ -1,6 +1,9 @@
 package cursorcli
 
-import "testing"
+import (
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"testing"
+)
 
 func TestResolveCursorCLIModelIDPinsDefaultToComposer25(t *testing.T) {
 	for _, modelID := range []string{"", "cursor-cli", "high", "medium", "low"} {
@@ -83,6 +86,23 @@ func TestNewCursorSelectorsKeepTheirModelAndPricing(t *testing.T) {
 		}
 		if meta.InputCostPer1MTokens != tt.input || meta.CachedInputCostPer1MTokens != tt.cached || meta.OutputCostPer1MTokens != tt.output || meta.ContextWindow != tt.context {
 			t.Errorf("%s metadata = %+v", tt.id, meta)
+		}
+	}
+}
+
+func TestCursorModelReasoningPreservesOtherSettings(t *testing.T) {
+	for _, tt := range []struct{ model, effort, want string }{
+		{"grok-4.6", "low", "grok-4.6[effort=low]"},
+		{"grok-4.7[context=500k,effort=high,fast=false]", "xhigh", "grok-4.7[context=500k,fast=false,effort=xhigh]"},
+		{"glm-5.3-flash[effort=low]", "max", "glm-5.3-flash[effort=max]"},
+		{"glm-5.3", "medium", "glm-5.3"},
+		{"auto", "high", "auto"},
+		{"composer-2.5", "high", "composer-2.5"},
+		{"cursor-grok-4.6-low-fast", "high", "cursor-grok-4.6-low-fast"},
+		{"grok-4.6[effort=high,fast=true]", "", "grok-4.6[effort=high,fast=true]"},
+	} {
+		if got := cursorModelWithReasoning(tt.model, &llmtypes.CallOptions{ReasoningEffort: tt.effort}); got != tt.want {
+			t.Errorf("%s + %s = %s, want %s", tt.model, tt.effort, got, tt.want)
 		}
 	}
 }

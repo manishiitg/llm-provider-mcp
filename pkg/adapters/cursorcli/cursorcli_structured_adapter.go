@@ -420,6 +420,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		}
 	}
 
+	modelToUse = cursorModelWithReasoning(modelToUse, opts)
 	args := buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox, approveMCPs, hooksInstalled, force, autoReview, resumeID, prompt)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
