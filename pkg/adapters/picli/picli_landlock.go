@@ -60,7 +60,7 @@ func piLandlockWrites(args []string) []string {
 }
 
 func piLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string, env ...string) ([]string, func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return args, func() {}, nil
 	}
 	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, piLandlockReads(args, env...), piLandlockWrites(args))
@@ -71,7 +71,7 @@ func piLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string
 }
 
 func piLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir string, runtimeDirs ...string) (func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return func() {}, nil
 	}
 	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, piLandlockReads(cmd.Args, cmd.Env...), runtimeDirs)

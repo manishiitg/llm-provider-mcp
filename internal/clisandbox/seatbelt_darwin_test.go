@@ -13,9 +13,10 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// The real macOS sandbox, not just the profile text: a granted folder is
-// readable and writable, the rest of the home is not, and a blocked path
-// inside a granted folder is refused.
+// The real macOS sandbox, not just the profile text: the person's home stays
+// open (their settings, logins, other projects), AgentWorks' workspace data is
+// closed except the granted folders, a blocked path inside a granted folder is
+// refused, and the CLI cannot start or script other apps.
 func TestSeatbeltConfinesUnderTheRealSandbox(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -26,50 +27,61 @@ func TestSeatbeltConfinesUnderTheRealSandbox(t *testing.T) {
 		t.Skipf("cannot create a folder under the home: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	granted := filepath.Join(root, "project")
-	outside := filepath.Join(root, "secret")
+	workspace := filepath.Join(root, "workspace-docs")
+	granted := filepath.Join(workspace, "Workflow", "mine")
+	otherWorkflow := filepath.Join(workspace, "Workflow", "other")
+	personal := filepath.Join(root, "my-notes")
 	blockedDir := filepath.Join(granted, "planning")
-	for _, dir := range []string{granted, outside, blockedDir} {
+	blockedDB := filepath.Join(granted, "db.sqlite")
+	for _, dir := range []string{granted, otherWorkflow, personal, blockedDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, f := range []string{filepath.Join(granted, "ok.txt"), filepath.Join(outside, "key.txt"), filepath.Join(blockedDir, "plan.json")} {
+	for _, f := range []string{filepath.Join(granted, "ok.txt"), filepath.Join(otherWorkflow, "key.txt"), filepath.Join(personal, "note.txt"), filepath.Join(blockedDir, "plan.json"), blockedDB} {
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	policy := &llmtypes.CLISecurityPolicy{
 		Mode:              llmtypes.CLISecurityModeIsolated,
-		Provider:          "claude-code",
+		Provider:          "codex-cli",
 		Seatbelt:          true,
 		PrivateHome:       filepath.Join(granted, ".sandbox", "cli-home"),
+		ProtectedRoots:    []string{workspace},
+		BlockedPaths:      []string{blockedDB},
 		BlockedWritePaths: []string{blockedDir},
 	}
 	run := func(script string) error {
-		args, _, err := SeatbeltArgs(policy, []string{"/bin/sh", "-c", script}, granted, SeatbeltGrants{})
+		args, _, err := LandlockArgs(policy, []string{"/bin/sh", "-c", script}, granted, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return exec.CommandContext(context.Background(), args[0], args[1:]...).Run()
 	}
-	if err := run("cat " + filepath.Join(granted, "ok.txt")); err != nil {
-		t.Errorf("reading the granted folder failed: %v", err)
+	for name, script := range map[string]string{
+		"read the granted folder":      "cat " + filepath.Join(granted, "ok.txt"),
+		"write the granted folder":     "echo y > " + filepath.Join(granted, "new.txt"),
+		"read the person's own files":  "cat " + filepath.Join(personal, "note.txt"),
+		"write the person's own files": "echo y > " + filepath.Join(personal, "new.txt"),
+		"read a write-blocked path":    "cat " + filepath.Join(blockedDir, "plan.json"),
+		"list the workflow folder":     "ls " + granted,
+	} {
+		if err := run(script); err != nil {
+			t.Errorf("%s failed: %v", name, err)
+		}
 	}
-	if err := run("echo y > " + filepath.Join(granted, "new.txt")); err != nil {
-		t.Errorf("writing the granted folder failed: %v", err)
-	}
-	if err := run("cat " + filepath.Join(outside, "key.txt")); err == nil {
-		t.Error("read a file outside the grants")
-	}
-	if err := run("echo y > " + filepath.Join(outside, "new.txt")); err == nil {
-		t.Error("wrote outside the grants")
-	}
-	if err := run("echo y > " + filepath.Join(blockedDir, "plan.json")); err == nil {
-		t.Error("wrote a blocked path inside a granted folder")
-	}
-	if err := run("cat " + filepath.Join(blockedDir, "plan.json")); err != nil {
-		t.Errorf("a write-blocked path must stay readable: %v", err)
+	for name, script := range map[string]string{
+		"read another workflow":        "cat " + filepath.Join(otherWorkflow, "key.txt"),
+		"write another workflow":       "echo y > " + filepath.Join(otherWorkflow, "new.txt"),
+		"write a blocked path":         "echo y > " + filepath.Join(blockedDir, "plan.json"),
+		"read a read-blocked path":     "cat " + blockedDB,
+		"start an app with open":       "/usr/bin/open -g -a TextEdit",
+		"script an app with osascript": "/usr/bin/osascript -e 'return 1'",
+	} {
+		if err := run(script); err == nil {
+			t.Errorf("could %s", name)
+		}
 	}
 }
 

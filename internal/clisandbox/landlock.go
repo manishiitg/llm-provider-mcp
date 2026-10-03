@@ -62,13 +62,17 @@ func credentialSource(file credentialFile, home string, env func(string) string)
 	return filepath.Join(home, file.Rel)
 }
 
-// LandlockArgs wraps a coding CLI's argv so it starts confined by the host's
-// Landlock launcher. It returns args unchanged when the policy does not
-// confine the CLI on this host. runtimeReadPaths/runtimeWritePaths are files
-// the adapter prepared for this launch (MCP config, settings, hooks, status
-// files) that live outside the granted folders.
+// LandlockArgs wraps a coding CLI's argv so it starts confined: by the host's
+// Landlock launcher on Linux, or by Seatbelt on a Mac. It returns args
+// unchanged when the policy does not confine the CLI on this host.
+// runtimeReadPaths/runtimeWritePaths are files the adapter prepared for this
+// launch (MCP config, settings, hooks, status files) that live outside the
+// granted folders.
 func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths []string) ([]string, func(), error) {
 	noop := func() {}
+	if policy.SeatbeltEnforced() {
+		return SeatbeltArgs(policy, args, workingDir, SeatbeltGrants{ReadPaths: runtimeReadPaths, WritePaths: runtimeWritePaths})
+	}
 	if !policy.LandlockEnforced() {
 		return args, noop, nil
 	}
@@ -437,6 +441,9 @@ func JSONFilePaths(configFiles []string) []string {
 // home paths (MergeCodingAgentSecretEnvironment). It is a no-op when the
 // policy does not confine the CLI on this host.
 func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir string, runtimeReadPaths, runtimeWritePaths []string) (func(), error) {
+	if policy.SeatbeltEnforced() {
+		return SeatbeltCmd(policy, cmd, workingDir, SeatbeltGrants{ReadPaths: runtimeReadPaths, WritePaths: runtimeWritePaths})
+	}
 	if !policy.LandlockEnforced() {
 		return func() {}, nil
 	}

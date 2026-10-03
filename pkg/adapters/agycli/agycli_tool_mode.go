@@ -19,27 +19,26 @@ const agyToolModeHookName = "agentworks-native-tool-mode"
 // retains the adapter's legacy behavior for direct SDK callers.
 func agyToolMode(raw string) (string, error) {
 	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
-	case "", "mcp_only", "full", "full_unconfined":
+	case "", "mcp_only", "full":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("agy native tools mode %q: want mcp_only, full or full_unconfined", raw)
+		return "", fmt.Errorf("agy native tools mode %q: want mcp_only or full", raw)
 	}
 }
 
 func agyFullNativeToolsMode(mode string) bool {
-	return mode == "full" || mode == "full_unconfined"
+	return mode == "full"
 }
 
-// A confined Full CLI request must never silently start with host rights.
-// full_unconfined is an explicit trusted caller opt-in; the platform limits it
-// to a single-user machine, matching its shared Full CLI rollout policy.
+// Full CLI must never start with host rights: it needs the host's lock
+// (Landlock on Linux, Seatbelt on a Mac).
 func agyToolModeForLaunch(opts *llmtypes.CallOptions) (string, error) {
 	mode, err := agyToolMode(agyStringMetadata(opts, MetadataKeyNativeToolsMode))
 	if err != nil {
 		return "", err
 	}
-	if mode == "full" && (opts == nil || !opts.CLISecurity.LandlockEnforced()) {
-		return "", fmt.Errorf("agy full native tools require an enforced Landlock launch; use full_unconfined only for an explicitly unconfined launch")
+	if mode == "full" && (opts == nil || !opts.CLISecurity.Confined()) {
+		return "", fmt.Errorf("agy full native tools require a confined launch (Landlock on Linux, Seatbelt on a Mac)")
 	}
 	return mode, nil
 }

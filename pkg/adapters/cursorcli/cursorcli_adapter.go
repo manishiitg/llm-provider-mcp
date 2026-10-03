@@ -91,7 +91,7 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 	}
 	// Both Cursor lanes (tmux and structured) start under the Landlock
 	// launcher when the policy confines the CLI.
-	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.LandlockEnforcedModes(opts)...); err != nil {
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
 	}
 

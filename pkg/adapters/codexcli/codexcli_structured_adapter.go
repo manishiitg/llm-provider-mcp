@@ -218,6 +218,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
 			mcpServersJSON = v
 		}
+		sandboxMode = codexSandboxUnderSeatbelt(opts, sandboxMode)
 		if policy, ok := opts.Metadata.Custom[MetadataKeyApprovalPolicy].(string); ok {
 			approvalPolicy = strings.TrimSpace(policy)
 			autoApproveMCPTools = approvalPolicy == "never"
@@ -289,7 +290,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	cmd.Stdin = strings.NewReader("") // codex exec reads stdin unless explicitly closed/empty; avoid any hang
 	// A strict policy is enforced here or the run is refused: this lane never
 	// applied the policy, so a verified/isolated run used to start unconfined.
-	if llmtypes.NormalizeCLISecurityMode(policyMode(opts)) != llmtypes.CLISecurityModeCompatibility && !opts.CLISecurity.LandlockEnforced() {
+	if llmtypes.NormalizeCLISecurityMode(policyMode(opts)) != llmtypes.CLISecurityModeCompatibility && !opts.CLISecurity.Confined() {
 		return nil, fmt.Errorf("CLI security mode %q is not enforced by the Codex structured transport on this host", policyMode(opts))
 	}
 	cleanupSandbox, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, nil, nil)

@@ -832,7 +832,8 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 		// Interactive tmux mode applies MetadataKeyProjectDirID as the process cwd
 		// in startCodexTmuxSession. Do not rely on Codex's --cd flag here; the
 		// TUI header and all child behavior should see the caller-provided cwd.
-		if sandbox, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(sandbox) != "" {
+		sandbox, _ := opts.Metadata.Custom[MetadataKeySandbox].(string)
+		if sandbox = codexSandboxUnderSeatbelt(opts, strings.TrimSpace(sandbox)); sandbox != "" {
 			args = append(args, "--sandbox", sandbox)
 		}
 		if profile, ok := opts.Metadata.Custom[MetadataKeyConfigProfile].(string); ok && strings.TrimSpace(profile) != "" {

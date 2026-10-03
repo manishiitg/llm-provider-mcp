@@ -113,6 +113,11 @@ type CLISecurityPolicy struct {
 	// Linux the bridge tools still do.
 	BlockedPaths      []string `json:"blocked_paths,omitempty"`
 	BlockedWritePaths []string `json:"blocked_write_paths,omitempty"`
+	// ProtectedRoots are folders the CLI may use only where a grant reopens
+	// them (AgentWorks' workspace data: other workflows, users, config). On
+	// Linux the lock denies everything outside the grants anyway; Seatbelt on a
+	// Mac leaves the rest of the person's home open and closes these.
+	ProtectedRoots []string `json:"protected_roots,omitempty"`
 }
 
 // SeatbeltEnforced reports whether this policy confines the CLI with macOS
@@ -153,6 +158,7 @@ func (p CLISecurityPolicy) Clone() CLISecurityPolicy {
 	copyPolicy.CredentialHome = strings.TrimSpace(p.CredentialHome)
 	copyPolicy.BlockedPaths = append([]string(nil), p.BlockedPaths...)
 	copyPolicy.BlockedWritePaths = append([]string(nil), p.BlockedWritePaths...)
+	copyPolicy.ProtectedRoots = append([]string(nil), p.ProtectedRoots...)
 	if p.CredentialEnv != nil {
 		copyPolicy.CredentialEnv = make(map[string]string, len(p.CredentialEnv))
 		for key, value := range p.CredentialEnv {
@@ -183,21 +189,13 @@ func SandboxHomeEnvironment(opts *CallOptions) map[string]string {
 	}
 }
 
-// LandlockEnforcedModes lists the policy's mode when the Landlock launcher
-// enforces it, for ValidateCLISecurityLaunch: an adapter that wraps its
-// launch accepts the strict mode, and still refuses it when it cannot.
-func LandlockEnforcedModes(opts *CallOptions) []CLISecurityMode {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
-		return nil
-	}
-	return []CLISecurityMode{NormalizeCLISecurityMode(opts.CLISecurity.Mode)}
-}
-
-// SeatbeltEnforcedModes is LandlockEnforcedModes for macOS Seatbelt. Only an
-// adapter that wraps its launch with Seatbelt may pass these to
-// ValidateCLISecurityLaunch.
-func SeatbeltEnforcedModes(opts *CallOptions) []CLISecurityMode {
-	if opts == nil || !opts.CLISecurity.SeatbeltEnforced() {
+// ConfinedModes lists the policy's mode when the CLI is confined on this
+// host (the Landlock launcher on Linux, Seatbelt on a Mac), for
+// ValidateCLISecurityLaunch: every adapter wraps its launch through
+// clisandbox.LandlockArgs/LandlockCmd, which apply whichever applies, and a
+// strict mode that cannot be confined is still refused.
+func ConfinedModes(opts *CallOptions) []CLISecurityMode {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return nil
 	}
 	return []CLISecurityMode{NormalizeCLISecurityMode(opts.CLISecurity.Mode)}

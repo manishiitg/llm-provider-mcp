@@ -221,6 +221,10 @@ func strictCodexMCPRuntimePaths(opts *llmtypes.CallOptions) ([]string, error) {
 		return nil, fmt.Errorf("strict Codex CLI security requires the AgentWorks api-bridge")
 	}
 	raw, _ := opts.Metadata.Custom[MetadataKeyMCPServers].(string)
+	if strings.TrimSpace(raw) == "" {
+		// No MCP servers at all: nothing to grant, and nothing to escape through.
+		return nil, nil
+	}
 	var servers map[string]codexMCPServerSpec
 	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
 		return nil, fmt.Errorf("parse strict Codex MCP servers: %w", err)

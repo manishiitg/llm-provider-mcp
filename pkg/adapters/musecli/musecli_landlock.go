@@ -51,7 +51,7 @@ func museLandlockGrants(args []string, env []string) (read, write []string) {
 }
 
 func museLandlockArgs(opts *llmtypes.CallOptions, args []string, workdir string) ([]string, func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return args, func() {}, nil
 	}
 	read, write := museLandlockGrants(args, nil)
@@ -63,7 +63,7 @@ func museLandlockArgs(opts *llmtypes.CallOptions, args []string, workdir string)
 }
 
 func museLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workdir string) (func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return func() {}, nil
 	}
 	read, write := museLandlockGrants(cmd.Args, cmd.Env)

@@ -440,7 +440,7 @@ func WithAgyMCPConfig(configJSON string) llmtypes.CallOption {
 	return agycli.WithMCPConfig(configJSON)
 }
 
-// WithAgyNativeToolsMode selects mcp_only, full or full_unconfined for AGY's
+// WithAgyNativeToolsMode selects mcp_only or full for AGY's
 // PreToolUse execution gate. The MCP bridge stays available in every mode.
 func WithAgyNativeToolsMode(mode string) llmtypes.CallOption {
 	return agycli.WithNativeToolsMode(mode)

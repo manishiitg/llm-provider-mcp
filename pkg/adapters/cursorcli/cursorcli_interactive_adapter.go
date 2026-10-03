@@ -793,8 +793,9 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
 			args = append(args, "--approve-mcps")
 		}
-		if sandbox, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(sandbox) != "" {
-			args = append(args, "--sandbox", strings.TrimSpace(sandbox))
+		sandbox, _ := opts.Metadata.Custom[MetadataKeySandbox].(string)
+		if sandbox = cursorSandboxUnderSeatbelt(opts, strings.TrimSpace(sandbox)); sandbox != "" {
+			args = append(args, "--sandbox", sandbox)
 		}
 		if mode, ok := opts.Metadata.Custom[MetadataKeyMode].(string); ok && strings.TrimSpace(mode) != "" {
 			args = append(args, "--mode", strings.TrimSpace(mode))

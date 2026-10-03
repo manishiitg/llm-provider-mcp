@@ -296,6 +296,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 		if s, ok := opts.Metadata.Custom[MetadataKeySandbox].(string); ok && strings.TrimSpace(s) != "" {
 			sandbox = strings.TrimSpace(s)
 		}
+		sandbox = cursorSandboxUnderSeatbelt(opts, sandbox)
 		if approve, ok := opts.Metadata.Custom[MetadataKeyApproveMCPs].(bool); ok && approve {
 			approveMCPs = true
 		}

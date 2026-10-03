@@ -27,10 +27,11 @@ type SeatbeltGrants struct {
 
 // SeatbeltArgs wraps a coding CLI's argv so it starts under macOS sandbox-exec.
 // It returns args unchanged when the policy does not ask for Seatbelt on this
-// host. Everything outside /Users, /Volumes and /Network stays as it is (dyld,
-// networking, TTYs and system services have undocumented dependencies there);
-// under them only the granted folders can be read or written, and blocked
-// paths are refused even inside a granted folder.
+// host. The person's own Mac stays open to the CLI (their home, settings,
+// logins, terminal config); Seatbelt closes AgentWorks' workspace data except
+// the folders this chat is granted, refuses the workflow's blocked paths, and
+// blocks the ways out of the sandbox: starting apps (open, LaunchServices) and
+// scripting them (osascript, Apple Events).
 func SeatbeltArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, grants SeatbeltGrants) ([]string, func(), error) {
 	noop := func() {}
 	if !policy.SeatbeltEnforced() {
@@ -94,6 +95,11 @@ func SeatbeltCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 	return cleanup, nil
 }
 
+// seatbeltEscapes are programs that hand work to processes outside the
+// sandbox (apps started by LaunchServices, scripted apps), so nothing the CLI
+// does through them would be confined.
+var seatbeltEscapes = []string{"/usr/bin/open", "/usr/bin/osascript", "/usr/bin/osacompile", "/usr/bin/automator", "/usr/bin/shortcuts"}
+
 func seatbeltProfile(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, grants SeatbeltGrants) string {
 	write := []string{workingDir, policy.PrivateHome}
 	write = append(write, policy.WorkspaceWritePaths...)
@@ -108,37 +114,43 @@ func seatbeltProfile(policy *llmtypes.CLISecurityPolicy, args []string, workingD
 
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n")
-	// User data roots are closed; the grants below reopen exactly what this
-	// launch may use. Later rules win, so the order matters.
-	if userHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(userHome) != "" {
-		b.WriteString(`(deny file-read* file-write* (subpath "` + sandboxQuote(canonical(userHome)) + "\"))\n")
+	// AgentWorks' workspace data is closed; the grants below reopen exactly
+	// what this launch may use. Later rules win, so the order matters.
+	protected := canonicalUnique(policy.ProtectedRoots)
+	for _, root := range protected {
+		b.WriteString(`(deny file-read* file-write* (subpath "` + sandboxQuote(root) + "\"))\n")
 	}
-	for _, root := range []string{"/Users", "/Volumes", "/Network"} {
-		b.WriteString(`(deny file-read* file-write* (subpath "` + root + "\"))\n")
-	}
-	b.WriteString("(allow file-read-metadata\n")
-	for _, path := range ancestorPaths(append(append([]string(nil), read...), write...)) {
-		b.WriteString(`  (literal "` + sandboxQuote(path) + "\")\n")
-	}
-	b.WriteString(")\n")
-	if len(read) > 0 {
-		b.WriteString("(allow file-read*\n")
-		for _, path := range read {
-			b.WriteString(`  (subpath "` + sandboxQuote(path) + "\")\n")
+	if len(protected) > 0 {
+		b.WriteString("(allow file-read-metadata\n")
+		for _, path := range ancestorPaths(append(append([]string(nil), read...), write...)) {
+			b.WriteString(`  (literal "` + sandboxQuote(path) + "\")\n")
 		}
 		b.WriteString(")\n")
-	}
-	if len(write) > 0 || len(grants.WritePatterns) > 0 {
-		b.WriteString("(allow file-read* file-write*\n")
-		for _, path := range write {
-			b.WriteString(`  (subpath "` + sandboxQuote(path) + "\")\n")
+		if len(read) > 0 {
+			b.WriteString("(allow file-read*\n")
+			for _, path := range read {
+				b.WriteString(`  (subpath "` + sandboxQuote(path) + "\")\n")
+			}
+			b.WriteString(")\n")
 		}
-		for _, pattern := range grants.WritePatterns {
-			b.WriteString(`  (regex #"` + strings.ReplaceAll(pattern, `"`, `\"`) + "\")\n")
+		if len(write) > 0 || len(grants.WritePatterns) > 0 {
+			b.WriteString("(allow file-read* file-write*\n")
+			for _, path := range write {
+				b.WriteString(`  (subpath "` + sandboxQuote(path) + "\")\n")
+			}
+			for _, pattern := range grants.WritePatterns {
+				b.WriteString(`  (regex #"` + strings.ReplaceAll(pattern, `"`, `\"`) + "\")\n")
+			}
+			b.WriteString(")\n")
 		}
-		b.WriteString(")\n")
 	}
-	b.WriteString("(allow file-read* file-write* (subpath \"/dev\"))\n")
+	// No way out of the sandbox through another process.
+	b.WriteString("(deny process-exec\n")
+	for _, path := range seatbeltEscapes {
+		b.WriteString(`  (literal "` + path + "\")\n")
+	}
+	b.WriteString(")\n(deny appleevent-send)\n")
+	b.WriteString(`(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd"))` + "\n")
 	// Blocked paths last, so they win over the folder grants above.
 	for _, path := range canonicalUnique(policy.BlockedWritePaths) {
 		b.WriteString(`(deny file-write* (subpath "` + sandboxQuote(path) + "\"))\n")

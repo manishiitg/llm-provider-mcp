@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -67,7 +68,7 @@ func TestCursorCLIRealFullNativeP0(t *testing.T) {
 	resp, err := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "When the user asks you to use a built-in tool, your FIRST action must be to attempt that Cursor built-in tool. Do not refuse upfront; attempt the call and report whatever happens."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
-	}, WithInteractiveSessionID("cursor-full-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(tmp), WithFullNativeTools())
+	}, WithInteractiveSessionID("cursor-full-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(tmp), WithFullNativeTools(), liveConfined(t, "cursor-cli", tmp))
 	for _, created := range []string{"new-file.txt", "shell-file.txt"} {
 		if _, statErr := os.Stat(filepath.Join(tmp, created)); statErr != nil {
 			t.Fatalf("full-mode Cursor did not create %s natively: %v", created, statErr)
@@ -84,4 +85,25 @@ func TestCursorCLIRealFullNativeP0(t *testing.T) {
 	if !strings.Contains(final, secret) || !strings.Contains(final, hit) {
 		t.Fatalf("native read/search did not work: %q", final)
 	}
+}
+
+// liveConfined runs a Full CLI live test under the lock a real chat gets
+// (Seatbelt on a Mac, Landlock on Linux), or skips: Full CLI never runs
+// unconfined.
+func liveConfined(t *testing.T, provider, workDir string) llmtypes.CallOption {
+	t.Helper()
+	policy, ok := clisandbox.TestConfinement(provider, workDir)
+	if !ok {
+		t.Skip("this host cannot confine a coding CLI (set CODING_TEST_LANDLOCK_RUNNER on Linux)")
+	}
+	if policy.SeatbeltEnforced() {
+		// Only SeatbeltArgs writes this profile: proof the CLI started inside it.
+		profile := filepath.Join(policy.PrivateHome, "agentworks-cli-seatbelt.sb")
+		t.Cleanup(func() {
+			if _, err := os.Stat(profile); err != nil {
+				t.Errorf("the CLI did not start under Seatbelt: %v", err)
+			}
+		})
+	}
+	return func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p }
 }

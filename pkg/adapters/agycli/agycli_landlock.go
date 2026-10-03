@@ -12,7 +12,7 @@ import (
 // login and config, see agyIsolatedHome), which wins over any other home;
 // confined, that home is its only writable folder besides its working dir.
 func agyLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, agyHome string) ([]string, func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return args, func() {}, nil
 	}
 	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, clisandbox.ArgFilePaths(args), []string{agyHome})
@@ -23,7 +23,7 @@ func agyLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, agyH
 }
 
 func agyLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir, agyHome string) (func(), error) {
-	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+	if opts == nil || !opts.CLISecurity.Confined() {
 		return func() {}, nil
 	}
 	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, nil, []string{agyHome})

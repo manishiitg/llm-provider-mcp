@@ -321,7 +321,7 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	for _, opt := range options {
 		opt(opts)
 	}
-	if err := llmtypes.ValidateCLISecurityLaunch(opts, append(llmtypes.LandlockEnforcedModes(opts), llmtypes.SeatbeltEnforcedModes(opts)...)...); err != nil {
+	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
 	}
 

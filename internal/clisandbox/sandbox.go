@@ -45,8 +45,9 @@ func PrepareCodexCommandScoped(policy *llmtypes.CLISecurityPolicy, args []string
 		}
 		return shelllaunch.CommandWithScopedEnv(args, workingDir, scopedEnv, unset, scrub)
 	}
-	// Linux: the host's Landlock launcher confines Codex like every other CLI.
-	if policy.LandlockEnforced() {
+	// The host's lock (Landlock on Linux, Seatbelt on a Mac) confines Codex
+	// like every other CLI.
+	if policy.Confined() {
 		wrapped, cleanupPolicy, err := LandlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), nil)
 		if err != nil {
 			return "", nil, err

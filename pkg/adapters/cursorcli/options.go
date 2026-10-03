@@ -294,3 +294,13 @@ func ensureMetadata(opts *llmtypes.CallOptions) {
 		opts.Metadata.Custom = make(map[string]interface{})
 	}
 }
+
+// cursorSandboxUnderSeatbelt turns Cursor's own sandbox off when AgentWorks'
+// Seatbelt already confines it on a Mac: macOS refuses a sandbox inside a
+// sandbox. Seatbelt applies the folder limits from outside.
+func cursorSandboxUnderSeatbelt(opts *llmtypes.CallOptions, sandbox string) string {
+	if opts != nil && opts.CLISecurity.SeatbeltEnforced() {
+		return "disabled"
+	}
+	return sandbox
+}

@@ -75,9 +75,9 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 }
 
 // WithNativeToolsMode applies AgentWorks' coding-agent tool setting. The
-// bridge remains available in every mode. "mcp_only" denies native tools. "full" allows the native toolset under an
-// enforced Landlock launch. "full_unconfined" explicitly allows it with host
-// rights; trusted callers must restrict that option to single-user machines.
+// bridge remains available in every mode. "mcp_only" denies native tools.
+// "full" allows the native toolset under a confined launch (Landlock on Linux,
+// Seatbelt on a Mac).
 func WithNativeToolsMode(mode string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)

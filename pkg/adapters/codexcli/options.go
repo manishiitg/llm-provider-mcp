@@ -414,3 +414,14 @@ func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
 		opts.Metadata.Custom[MetadataKeyStreamTmuxScreen] = enabled
 	}
 }
+
+// codexSandboxUnderSeatbelt turns Codex's own sandbox off when AgentWorks'
+// Seatbelt already confines it on a Mac: Codex's sandbox is sandbox-exec too,
+// and macOS refuses a sandbox inside a sandbox, so every Codex command would
+// fail. Seatbelt applies the same folder limits from outside.
+func codexSandboxUnderSeatbelt(opts *llmtypes.CallOptions, sandbox string) string {
+	if opts != nil && opts.CLISecurity.SeatbeltEnforced() {
+		return "danger-full-access"
+	}
+	return sandbox
+}

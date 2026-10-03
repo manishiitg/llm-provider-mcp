@@ -183,3 +183,96 @@ func TestClaudeCodeTmuxRealLandlockFullCLIP0(t *testing.T) {
 		}
 	}
 }
+
+// Full CLI on a person's own Mac: Claude's own Bash and Write run under
+// Seatbelt. The person's home stays open (their files read fine), while
+// another workflow in AgentWorks' workspace data, a blocked path inside its
+// own folder, and scripting other apps are refused by the kernel.
+func TestClaudeCodeTmuxRealSeatbeltFullCLIP0(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs macOS")
+	}
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	root, err := os.MkdirTemp(home, ".agentworks-seatbelt-live-")
+	if err != nil {
+		t.Skipf("cannot create a folder under the home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	workspace := filepath.Join(root, "workspace-docs")
+	workDir := filepath.Join(workspace, "Workflow", "mine")
+	otherWorkflow := filepath.Join(workspace, "Workflow", "other")
+	personal := filepath.Join(root, "my-notes")
+	planning := filepath.Join(workDir, "planning")
+	for _, dir := range []string{workDir, otherWorkflow, personal, planning} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	note := "PERSONAL-" + randomHex(4)
+	foreign := "FOREIGN-" + randomHex(4)
+	for path, body := range map[string]string{
+		filepath.Join(personal, "note.txt"):     note,
+		filepath.Join(otherWorkflow, "key.txt"): foreign,
+		filepath.Join(planning, "plan.json"):    "{}",
+	} {
+		if err := os.WriteFile(path, []byte(body+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy := llmtypes.CLISecurityPolicy{
+		Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", Seatbelt: true,
+		PrivateHome:       filepath.Join(workDir, ".sandbox", "cli-home"),
+		ProtectedRoots:    []string{workspace},
+		BlockedWritePaths: []string{planning},
+	}
+	opts := []llmtypes.CallOption{
+		WithInteractiveSessionID("claude-seatbelt-" + randomHex(4)),
+		WithPersistentInteractiveSession(true),
+		WithWorkingDir(workDir),
+		WithClaudeCodeTools(claudeHybridLiveTools + ",Bash,Write,Edit,MultiEdit"),
+		WithDangerouslySkipPermissions(),
+		WithAllowedTools("Bash,Write,Edit,MultiEdit,Read,Glob,Grep"),
+		WithEffort("low"),
+		func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p },
+	}
+	token := "FULL-" + randomHex(4)
+	prompt := "Integration test in disposable scratch folders; this is authorised. Do each step with Bash and report each outcome with the exact error if any: " +
+		"1) echo " + token + " > shell.txt && cat shell.txt. " +
+		"2) cat " + filepath.Join(personal, "note.txt") + ". " +
+		"3) cat " + filepath.Join(otherWorkflow, "key.txt") + ". " +
+		"4) echo x > " + filepath.Join(otherWorkflow, "escape.txt") + ". " +
+		"5) echo x > " + filepath.Join(planning, "plan.json") + ". " +
+		"6) /usr/bin/osascript -e 'return 7'."
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(defaultClaudeInteractiveTestModel, os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
+	if err != nil {
+		t.Fatalf("Full CLI turn under Seatbelt: %v", err)
+	}
+	final := firstChoiceText(resp)
+	t.Logf("reply: %.1500s", final)
+	if data, err := os.ReadFile(filepath.Join(workDir, "shell.txt")); err != nil || !strings.Contains(string(data), token) {
+		t.Fatalf("Claude could not write its own folder: %v %q", err, data)
+	}
+	if !strings.Contains(final, note) {
+		t.Errorf("the person's own files must stay readable: %q", final)
+	}
+	if strings.Contains(final, foreign) {
+		t.Errorf("Claude read another workflow: %q", final)
+	}
+	if _, err := os.Stat(filepath.Join(otherWorkflow, "escape.txt")); !os.IsNotExist(err) {
+		t.Error("Claude wrote another workflow")
+	}
+	if data, _ := os.ReadFile(filepath.Join(planning, "plan.json")); strings.TrimSpace(string(data)) != "{}" {
+		t.Errorf("Claude wrote a blocked path: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(policy.PrivateHome, "agentworks-cli-seatbelt.sb")); err != nil {
+		t.Errorf("Claude did not start under Seatbelt: %v", err)
+	}
+}
