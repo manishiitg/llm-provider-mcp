@@ -198,6 +198,8 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(museEnvironmentWithConfigHome(configHome), opts)
 	// The per-turn MCP overlay takes precedence over the persistent account config.
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+configHome)
+	cmd.Env = append(cmd.Env, museRuntimeEnv(opts)...)
+	museSweepWorkspaceProbes(opts)
 	// The CLI treats the process cwd as the workspace root (skills, trust,
 	// transcript scoping), so pin it when the caller asks. Empty keeps the
 	// inherited cwd — the working_directory cert pins the explicit case.

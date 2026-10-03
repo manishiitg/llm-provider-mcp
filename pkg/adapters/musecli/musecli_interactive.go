@@ -439,6 +439,7 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 	prompt = museTerminalPrompt(prompt)
 	const maxSubmitAttempts = 3
 	start := time.Now()
+	rejections := 0
 	for attempt := 1; ; attempt++ {
 		stage := time.Now()
 		if err := museWaitLiveInputComposer(ctx, session); err != nil {
@@ -474,7 +475,34 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		log.Printf("[LATENCY_DEBUG] muse submit | session=%s attempt=%d composer=%dms draft=%dms settle=%dms settled=%v enter_confirm=%dms took=%v total=%dms runes=%d",
 			session, attempt, composer.Milliseconds(), draft.Milliseconds(), settle.Milliseconds(), settled, time.Since(stage).Milliseconds(), took, time.Since(start).Milliseconds(), utf8.RuneCountInString(prompt))
 		if took {
-			return nil
+			// A rejection ("Message not sent") also changes the pane, so it counts
+			// as having "taken effect"; look for the notice before trusting it.
+			rejected, rejErr := museSubmitRejected(ctx, session)
+			if rejErr != nil {
+				return rejErr
+			}
+			if !rejected {
+				return nil
+			}
+			rejections++
+			if rejections > museMaxSubmitRejections {
+				return fmt.Errorf("muse refused the message %d times (\"another run is still starting\")", rejections)
+			}
+			// The run behind a resume is still re-attaching. Wait it out (longer each
+			// time), clear the text it left in the input, and type it again; this
+			// does not use up a submit attempt.
+			delay := time.Duration(rejections) * 4 * time.Second
+			log.Printf("[MUSE_SUBMIT_REJECTED] session=%s rejection=%d waiting %s for the run to start", session, rejections, delay)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+			if out, err := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u").CombinedOutput(); err != nil {
+				return fmt.Errorf("tmux clear input after a rejected message: %w\n%s", err, out)
+			}
+			attempt--
+			continue
 		}
 		if attempt >= maxSubmitAttempts {
 			return fmt.Errorf("muse TUI did not act on Enter after %d submit attempts; the keystroke may have been swallowed mid-render", maxSubmitAttempts)
@@ -484,6 +512,32 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 			return fmt.Errorf("tmux clear input before resubmit retry: %w\n%s", err, out)
 		}
 	}
+}
+
+// museMaxSubmitRejections bounds how often a message Muse refuses ("Message not
+// sent -- another run is still starting") is retried: with the growing waits
+// that is about a minute of patience for a resumed run to finish starting.
+const museMaxSubmitRejections = 6
+
+// museRejectedNotice reports Muse's footer notice for a refused message: it
+// refuses a typed message while the run behind a resume is still starting, and
+// leaves the text in its input.
+func museRejectedNotice(pane string) bool {
+	return strings.Contains(strings.ToLower(pane), "message not sent")
+}
+
+// museSubmitRejected looks at the pane a moment after Enter for that notice.
+func museSubmitRejected(ctx context.Context, session string) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(1200 * time.Millisecond):
+	}
+	pane, err := museTmuxCapturePane(ctx, session)
+	if err != nil {
+		return false, fmt.Errorf("capture pane after Enter: %w", err)
+	}
+	return museRejectedNotice(pane), nil
 }
 
 func museSubmitKeys() []string {

@@ -50,6 +50,8 @@ func museAccountConfig(ctx context.Context, mcpJSON string, tools []string) (str
 func museAccountLaunch(ctx context.Context, argv []string, workdir string) (string, func(), error) {
 	runtime := museAccount(ctx)
 	env, unset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, runtime.opts)
+	env = append(env, museRuntimeEnv(runtime.opts)...)
+	museSweepWorkspaceProbes(runtime.opts)
 	// A selected key must override ambient login credentials without appearing in argv.
 	if runtime.apiKey != "" {
 		env = append(env, "META_API_KEY="+runtime.apiKey)
