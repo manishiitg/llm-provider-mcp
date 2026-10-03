@@ -218,7 +218,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		if v, ok := opts.Metadata.Custom[MetadataKeyMCPServers].(string); ok {
 			mcpServersJSON = v
 		}
-		sandboxMode = codexSandboxUnderSeatbelt(opts, sandboxMode)
+		sandboxMode = codexSandboxUnderConfinement(opts, sandboxMode)
 		if policy, ok := opts.Metadata.Custom[MetadataKeyApprovalPolicy].(string); ok {
 			approvalPolicy = strings.TrimSpace(policy)
 			autoApproveMCPTools = approvalPolicy == "never"

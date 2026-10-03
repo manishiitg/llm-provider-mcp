@@ -415,12 +415,14 @@ func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
 	}
 }
 
-// codexSandboxUnderSeatbelt turns Codex's own sandbox off when AgentWorks'
-// Seatbelt already confines it on a Mac: Codex's sandbox is sandbox-exec too,
-// and macOS refuses a sandbox inside a sandbox, so every Codex command would
-// fail. Seatbelt applies the same folder limits from outside.
-func codexSandboxUnderSeatbelt(opts *llmtypes.CallOptions, sandbox string) string {
-	if opts != nil && opts.CLISecurity.SeatbeltEnforced() {
+// codexSandboxUnderConfinement avoids nesting Codex's own sandbox inside the
+// platform's kernel sandbox. macOS refuses nested sandbox-exec; on Linux,
+// Bubblewrap cannot build its mount namespace under the Landlock grants.
+// The outer launcher still enforces workspace limits on every child process.
+// Keep Linux bridge-only sessions read-only as an additional write restriction.
+func codexSandboxUnderConfinement(opts *llmtypes.CallOptions, sandbox string) string {
+	if opts != nil && (opts.CLISecurity.SeatbeltEnforced() ||
+		(sandbox == "workspace-write" && opts.CLISecurity.LandlockEnforced())) {
 		return "danger-full-access"
 	}
 	return sandbox
