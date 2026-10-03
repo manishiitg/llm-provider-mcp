@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -71,33 +69,21 @@ func museRuntimeEnv(opts *llmtypes.CallOptions) []string {
 // and 1,286 in a developer's Mac temp folder.
 const museProbePrefix = "muse-workspace-probe-"
 
-var museProbeSweeps sync.Map // temp folder -> time of last sweep
+// museSweepScript removes Muse's old probe folders, then becomes the real
+// command. It runs inside the launch, as the user who runs Muse: on a slot that
+// is the slot user, who owns those folders (mode 700), so the server process
+// could not remove them itself. A probe younger than two minutes may belong to a
+// start in progress and stays.
+const museSweepScript = `d="$1"; shift; if [ -n "$d" ]; then find "$d" -maxdepth 1 -type d -name '` + museProbePrefix + `*' -mmin +2 -exec rm -rf {} + 2>/dev/null; fi; exec "$@"`
 
-// museSweepWorkspaceProbes removes Muse's old workspace-probe folders from the
-// temp folder it will use. A probe younger than two minutes may belong to a
-// start in progress and stays; the sweep runs at most once a minute per folder.
-func museSweepWorkspaceProbes(opts *llmtypes.CallOptions) {
+// musePreludeArgv puts the sweep in front of a Muse launch argv. The temp
+// folder is the one the CLI will use: its private home's tmp when confined,
+// else the system one.
+func musePreludeArgv(opts *llmtypes.CallOptions, argv []string) []string {
 	dir := llmtypes.CLIHomeEnvironment(opts)["TMPDIR"]
 	if strings.TrimSpace(dir) == "" {
 		dir = os.TempDir()
 	}
-	now := time.Now()
-	if last, ok := museProbeSweeps.Load(dir); ok && now.Sub(last.(time.Time)) < time.Minute {
-		return
-	}
-	museProbeSweeps.Store(dir, now)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), museProbePrefix) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || now.Sub(info.ModTime()) < 2*time.Minute {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
-	}
+	out := []string{"sh", "-c", museSweepScript, "muse-sweep", dir}
+	return append(out, argv...)
 }

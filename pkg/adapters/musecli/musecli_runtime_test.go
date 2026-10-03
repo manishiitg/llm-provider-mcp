@@ -1,7 +1,9 @@
 package musecli
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,8 +60,9 @@ func mustEval(t *testing.T, p string) string {
 	return r
 }
 
-// Old probe folders go; a fresh one (a start in progress) and other files stay.
-func TestMuseSweepWorkspaceProbes(t *testing.T) {
+// The launch prelude removes old probe folders and then becomes the real
+// command; a fresh probe (a start in progress) and other files stay.
+func TestMuseSweepPreludeRemovesOldProbesThenRunsTheCommand(t *testing.T) {
 	tmp := t.TempDir()
 	old := filepath.Join(tmp, museProbePrefix+"old")
 	fresh := filepath.Join(tmp, museProbePrefix+"fresh")
@@ -73,10 +76,16 @@ func TestMuseSweepWorkspaceProbes(t *testing.T) {
 	if err := os.Chtimes(old, past, past); err != nil {
 		t.Fatal(err)
 	}
-	opts := &llmtypes.CallOptions{}
 	t.Setenv("TMPDIR", tmp)
-	museProbeSweeps.Delete(tmp)
-	museSweepWorkspaceProbes(opts)
+	marker := filepath.Join(t.TempDir(), "ran")
+	argv := musePreludeArgv(&llmtypes.CallOptions{}, []string{"sh", "-c", "echo $1 > " + marker, "x", "real-command-ran"})
+	out, err := exec.CommandContext(context.Background(), argv[0], argv[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("prelude: %v\n%s", err, out)
+	}
+	if data, _ := os.ReadFile(marker); strings.TrimSpace(string(data)) != "real-command-ran" {
+		t.Errorf("the real command did not run with its own arguments: %q", data)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("an old probe folder survived the sweep")
 	}
@@ -84,6 +93,12 @@ func TestMuseSweepWorkspaceProbes(t *testing.T) {
 		if _, err := os.Stat(keep); err != nil {
 			t.Errorf("%s must stay: %v", keep, err)
 		}
+	}
+	// A missing temp folder must not stop the launch.
+	argv = musePreludeArgv(&llmtypes.CallOptions{}, []string{"true"})
+	argv[4] = filepath.Join(tmp, "does-not-exist")
+	if out, err := exec.CommandContext(context.Background(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Errorf("a missing temp folder broke the launch: %v\n%s", err, out)
 	}
 }
 
