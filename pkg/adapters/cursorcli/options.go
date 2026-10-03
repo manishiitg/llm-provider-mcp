@@ -242,7 +242,8 @@ func WithDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 }
 
 // WithFullNativeTools is the "Native agent tools" (Full CLI) variant of
-// WithDenyBuiltinTools: Cursor's own shell, reads, edits and deletes run, and
+// WithDenyBuiltinTools: Cursor's own shell, reads and edits run (the shell also
+// deletes; the Delete tool always asks, so it stays denied), and
 // its shell commands are approved by the hook (never --force, which would
 // switch every hook off). Computer use, screen recording, image generation and
 // every subagent, background or cloud agent stay denied: nested and remote

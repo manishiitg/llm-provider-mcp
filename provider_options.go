@@ -332,8 +332,8 @@ func WithCursorDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 }
 
 // WithCursorFullNativeTools is the "Native agent tools" (Full CLI) variant:
-// Cursor's own shell, reads, edits and deletes run (inside AgentWorks'
-// confinement); computer use, screen recording, image generation and every
+// Cursor's own shell, reads and edits run (inside AgentWorks' confinement);
+// its Delete tool, computer use, screen recording, image generation and every
 // subagent/background/cloud agent stay denied by the same hooks.
 func WithCursorFullNativeTools() llmtypes.CallOption {
 	return cursorcli.WithFullNativeTools()

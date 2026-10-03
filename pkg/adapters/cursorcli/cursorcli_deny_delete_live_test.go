@@ -40,7 +40,7 @@ func TestCursorCLIRealDenyBuiltinBlocksDelete(t *testing.T) {
 }
 
 // TestCursorCLIRealFullNativeP0: in "Native agent tools" (Full CLI) mode
-// Cursor's own Read/Grep, Write, Delete and Shell all run, with its shell
+// Cursor's own Read/Grep, Write and Shell (which also deletes) run, with its shell
 // approved by the hook (no --force, no approval prompt stalling the turn).
 func TestCursorCLIRealFullNativeP0(t *testing.T) {
 	requireRealCursorCLIE2E(t)
@@ -62,7 +62,7 @@ func TestCursorCLIRealFullNativeP0(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	prompt := "Integration test in a disposable directory. Use Cursor's built-in tools (not MCP): 1) Read witness.txt. 2) Grep this directory for " + needle + " and note the HIT token after it. " +
-		"3) Create new-file.txt with your built-in Write tool. 4) Delete victim.txt with your built-in Delete tool. 5) Run the shell command: touch shell-file.txt. " +
+		"3) Create new-file.txt with your built-in Write tool. 4) Run the shell command: rm victim.txt. 5) Run the shell command: touch shell-file.txt. " +
 		"Report each outcome, then end with one line: the witness contents and the HIT token."
 	resp, err := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "When the user asks you to use a built-in tool, your FIRST action must be to attempt that Cursor built-in tool. Do not refuse upfront; attempt the call and report whatever happens."}}},

@@ -1,8 +1,10 @@
 package cursorcli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,19 +37,23 @@ func TestCursorFullNativeHooks(t *testing.T) {
 		t.Error("full mode must not deny native reads")
 	}
 	shell := hooks.Hooks["beforeShellExecution"]
-	if len(shell) != 1 || shell[0].Command != `echo '{"permission":"allow"}'` {
-		t.Errorf("shell must be approved by the hook, got %+v", shell)
+	if len(shell) != 1 || shell[0].Command != "./.cursor/hooks/mlp-allow-shell.sh" {
+		t.Errorf("shell must be approved by the allow script, got %+v", shell)
+	}
+	out, err := exec.CommandContext(context.Background(), "/bin/bash", filepath.Join(cursorDir, "hooks", "mlp-allow-shell.sh")).Output()
+	if err != nil || strings.TrimSpace(string(out)) != `{"permission":"allow"}` {
+		t.Errorf("allow script output %q, %v", out, err)
 	}
 	denied := map[string]bool{}
 	for _, name := range strings.Split(hooks.Hooks["preToolUse"][0].Matcher, "|") {
 		denied[name] = true
 	}
-	for _, allowed := range []string{"Shell", "Read", "Edit", "Write", "Delete", "Grep"} {
+	for _, allowed := range []string{"Shell", "Read", "Edit", "Write", "Grep"} {
 		if denied[allowed] {
 			t.Errorf("%s is denied in full mode", allowed)
 		}
 	}
-	for _, blocked := range []string{"CloudAgent", "BackgroundAgent", "Task", "Subagent", "ComputerUse"} {
+	for _, blocked := range []string{"Delete", "CloudAgent", "BackgroundAgent", "Task", "Subagent", "ComputerUse"} {
 		if !denied[blocked] {
 			t.Errorf("%s must stay denied in full mode", blocked)
 		}

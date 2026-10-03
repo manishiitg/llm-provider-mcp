@@ -58,9 +58,9 @@ func buildCursorStructuredArgs(workingDir, modelToUse, mode, sandbox string, app
 // pre-approves every tool of every injected MCP server (Mcp(<server>:*)) --
 // the same file the tmux path writes, so bridge tools run unattended in
 // --print mode. ok is false when there is nothing to write.
-func cursorStructuredCLIConfig(mcpJSON, projectConfigJSON string) (string, bool, error) {
+func cursorStructuredCLIConfig(mcpJSON, projectConfigJSON string, fullNative ...bool) (string, bool, error) {
 	if strings.TrimSpace(projectConfigJSON) != "" {
 		return projectConfigJSON, true, nil
 	}
-	return cursorMCPAllowlistCLIConfig(mcpJSON)
+	return cursorMCPAllowlistCLIConfig(mcpJSON, fullNative...)
 }

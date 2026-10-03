@@ -111,14 +111,17 @@ var cursorBridgeOnlyDeniedTools = []string{
 }
 
 // cursorFullNativeAllowedTools run natively in Full CLI ("Native agent tools")
-// mode, inside AgentWorks' confinement; every other name above stays denied:
+// mode, inside AgentWorks' confinement. Delete stays denied: Cursor's own
+// Delete always asks "Delete this file?" and nothing pre-approves it, so the
+// turn would stop (live 2026-10-03); the shell (rm) deletes instead. Every
+// other name above stays denied too:
 // computer use, screen recording, image generation, and every subagent,
 // background, cloud or delegated agent (they run outside this session's
 // confinement and do not reliably inherit the bridge).
 var cursorFullNativeAllowedTools = map[string]bool{
 	"Shell": true, "WriteShellStdin": true,
 	"Read": true, "List": true, "ListDir": true, "Glob": true, "Grep": true, "Search": true,
-	"Edit": true, "Write": true, "Delete": true,
+	"Edit": true, "Write": true,
 }
 
 func cursorBridgeOnlyDeniedToolMatcher() string {
@@ -148,7 +151,7 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, fullNat
 - Built-in filesystem, shell, edit, search, and delegation tools are intentionally denied by the orchestrator.`)
 	if len(fullNative) > 0 && fullNative[0] {
 		guidance = strings.TrimSpace(`Cursor session rules:
-- Your own Shell, Read, List, Glob, Grep, Search, Edit, Write and Delete tools are enabled; use them directly for files and commands. They run inside this session's sandbox: only the folders granted to this chat are reachable, and protected files (a workflow's planning/, its raw database, instruction files) are refused even inside them.
+- Your own Shell, Read, List, Glob, Grep, Search, Edit and Write tools are enabled; use them directly for files and commands (delete files with the shell, e.g. rm; the Delete tool is denied). They run inside this session's sandbox: only the folders granted to this chat are reachable, and protected files (a workflow's planning/, its raw database, instruction files) are refused even inside them.
 - Use the api-bridge MCP tools for platform actions, integrations, the workflow database and anything outside your folders.
 - Computer use, screen recording and image tools are denied. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session.`)
 	}
@@ -917,7 +920,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			}
 			addCleanup(cleanup)
 			if !callerSuppliedCLI {
-				allowlistJSON, ok, err := cursorMCPAllowlistCLIConfig(normalizedMCPJSON)
+				allowlistJSON, ok, err := cursorMCPAllowlistCLIConfig(normalizedMCPJSON, cursorFullNativeFromOptions(opts))
 				if err != nil {
 					cleanupAll()
 					return nil, err
@@ -931,6 +934,21 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 					addCleanup(cleanup)
 				}
 			}
+		}
+		// Full CLI without a bridge config still needs Cursor's own tools
+		// pre-approved, or it stops on its own permission prompt.
+		if mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); fullNative && strings.TrimSpace(mcpJSON) == "" && !callerSuppliedCLI {
+			nativeJSON, err := json.Marshal(map[string]interface{}{"permissions": map[string]interface{}{"allow": cursorFullNativePermissions, "deny": []string{}}})
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), nativeJSON, cursorRestoreProjectFilesFromOptions(opts))
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			addCleanup(cleanup)
 		}
 		if denyBuiltin {
 			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts), fullNative)
@@ -1035,17 +1053,27 @@ func normalizeCursorMCPConfigForCLI(mcpJSON string) (string, error) {
 	return string(out), nil
 }
 
-func cursorMCPAllowlistCLIConfig(mcpJSON string) (string, bool, error) {
+// cursorFullNativePermissions pre-approve Cursor's own shell, reads and writes
+// in Full CLI mode. Cursor asks before every one of them otherwise (a hook
+// "allow" does not answer its own permission prompt), and nobody is there to
+// answer, so the turn stopped with no output.
+var cursorFullNativePermissions = []string{"Shell(*)", "Read(**)", "Write(**)"}
+
+func cursorMCPAllowlistCLIConfig(mcpJSON string, fullNative ...bool) (string, bool, error) {
 	names, err := cursorMCPServerNames(mcpJSON)
 	if err != nil {
 		return "", false, err
 	}
-	if len(names) == 0 {
+	full := len(fullNative) > 0 && fullNative[0]
+	if len(names) == 0 && !full {
 		return "", false, nil
 	}
-	allow := make([]string, 0, len(names))
+	allow := make([]string, 0, len(names)+len(cursorFullNativePermissions))
 	for _, name := range names {
 		allow = append(allow, fmt.Sprintf("Mcp(%s:*)", name))
+	}
+	if full {
+		allow = append(allow, cursorFullNativePermissions...)
 	}
 	out, err := json.Marshal(map[string]interface{}{
 		"permissions": map[string]interface{}{
@@ -1081,13 +1109,14 @@ func cursorBeforeReadFileHook(fullNative bool) string {
 }
 
 // cursorShellHookCommand answers Cursor's shell approval: denied in
-// bridge-only mode; in Full CLI mode approved by an inline allow (the command
-// runs inside AgentWorks' confinement), so the turn never waits on an
+// bridge-only mode; in Full CLI mode approved by a small allow script (the
+// command runs inside AgentWorks' confinement), so the turn never waits on an
 // approval prompt and --force (which turns every hook off) is never needed.
+// Cursor runs hook commands as programs, not through a shell, so the answer is
+// a script file like the deny one, never an inline shell command.
 func cursorShellHookCommand(fullNative bool) string {
 	if fullNative {
-		// JSON-escaped: hooks.json decodes it to echo '{"permission":"allow"}'.
-		return `echo '{\"permission\":\"allow\"}'`
+		return "./.cursor/hooks/mlp-allow-shell.sh"
 	}
 	return "./.cursor/hooks/mlp-deny-builtin.sh"
 }
@@ -1144,9 +1173,22 @@ exit 0
 }
 `
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	var allowToken string
+	if fullNative {
+		allowScript := "#!/bin/bash\n# Installed by the multi-llm-provider-go cursor adapter in Full CLI mode:\n# approves Cursor's own shell commands (they run inside AgentWorks' confinement).\ncat >/dev/null\nprintf '%s\\n' '{\"permission\":\"allow\"}'\nexit 0\n"
+		allowToken, err = projectfile.AcquireOwnedLeaseMode(filepath.Join(hooksDir, "mlp-allow-shell.sh"), []byte(allowScript), 0o755)
+		if err != nil {
+			projectfile.ReleaseToken(scriptToken)
+			_ = os.Remove(hooksDir)
+			return nil, fmt.Errorf("failed to write cursor shell allow script: %w", err)
+		}
+	}
 	hooksToken, err := projectfile.AcquireOwnedLease(hooksPath, []byte(hooksConfig))
 	if err != nil {
 		projectfile.ReleaseToken(scriptToken)
+		if allowToken != "" {
+			projectfile.ReleaseToken(allowToken)
+		}
 		_ = os.Remove(hooksDir)
 		return nil, fmt.Errorf("failed to write cursor hooks.json: %w", err)
 	}
@@ -1157,6 +1199,9 @@ exit 0
 	return func() {
 		projectfile.ReleaseToken(hooksToken)
 		projectfile.ReleaseToken(scriptToken)
+		if allowToken != "" {
+			projectfile.ReleaseToken(allowToken)
+		}
 		if !projectfile.OwnedHeld(scriptPath) {
 			_ = os.Remove(logPath)
 		}

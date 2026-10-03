@@ -377,7 +377,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 			// {"rejected":{"reason":"User rejected MCP: api-bridge-execute_shell_command"}}
 			// -- every bridge write/shell step was dead on arrival (RTS, 2026-09-03).
 			projectCfg, _ := opts.Metadata.Custom[MetadataKeyProjectConfig].(string)
-			cliJSON, ok, cerr := cursorStructuredCLIConfig(mcpJSON, projectCfg)
+			cliJSON, ok, cerr := cursorStructuredCLIConfig(mcpJSON, projectCfg, cursorFullNativeFromOptions(opts))
 			if cerr != nil {
 				return nil, fmt.Errorf("cursor CLI permissions config: %w", cerr)
 			}

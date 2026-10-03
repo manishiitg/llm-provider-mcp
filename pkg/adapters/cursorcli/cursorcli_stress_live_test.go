@@ -70,7 +70,7 @@ func TestCursorCLIStressFullNative(t *testing.T) {
 			prompt := "Stress test in a disposable directory. 1) Write a todo list for this task. " +
 				"2) With your built-in tools read part-a.txt, part-b.txt and part-c.txt, and grep the directory for " + needle + " noting the HIT token after it. " +
 				"3) Call the api-bridge MCP tool contract_echo_token with token " + bridgeToken + " and delay_ms 8000. " +
-				"4) Create new-file.txt with your built-in Write tool and delete victim.txt with your built-in Delete tool. " +
+				"4) Create new-file.txt with your built-in Write tool and delete victim.txt with the shell command rm victim.txt. " +
 				"5) Finally reply with exactly one line: A=<token> B=<token> C=<token> HIT=<hit token> MCP=<tool result>."
 			started := time.Now()
 			go func() {
