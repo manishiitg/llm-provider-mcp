@@ -101,6 +101,31 @@ type CLISecurityPolicy struct {
 	// than under CredentialHome; empty for the server account, whose own
 	// process environment says where its logins are.
 	CredentialEnv map[string]string `json:"credential_env,omitempty"`
+	// Seatbelt asks for macOS sandbox-exec confinement (a person's own Mac,
+	// which has no Landlock). The CLI keeps its real home, so its login (the
+	// macOS Keychain entry is tied to its config folder) still works; the
+	// profile limits reads and writes under /Users to the granted folders and
+	// the CLI's own config.
+	Seatbelt bool `json:"seatbelt,omitempty"`
+	// BlockedPaths may be neither read nor written, and BlockedWritePaths not
+	// written, even inside a granted folder (a workflow's planning/, its raw
+	// database). Seatbelt enforces them; Landlock cannot carve them out, so on
+	// Linux the bridge tools still do.
+	BlockedPaths      []string `json:"blocked_paths,omitempty"`
+	BlockedWritePaths []string `json:"blocked_write_paths,omitempty"`
+}
+
+// SeatbeltEnforced reports whether this policy confines the CLI with macOS
+// sandbox-exec on this host.
+func (p *CLISecurityPolicy) SeatbeltEnforced() bool {
+	return p != nil && runtime.GOOS == "darwin" && p.Seatbelt &&
+		strings.TrimSpace(p.PrivateHome) != "" && NormalizeCLISecurityMode(p.Mode) != CLISecurityModeCompatibility
+}
+
+// Confined reports whether the CLI starts under a kernel-enforced sandbox on
+// this host (Landlock on Linux, Seatbelt on macOS).
+func (p *CLISecurityPolicy) Confined() bool {
+	return p.LandlockEnforced() || p.SeatbeltEnforced()
 }
 
 // LandlockEnforced reports whether this policy confines the CLI with the
@@ -126,6 +151,8 @@ func (p CLISecurityPolicy) Clone() CLISecurityPolicy {
 	copyPolicy.ApprovedCapabilities = append([]string(nil), p.ApprovedCapabilities...)
 	copyPolicy.LandlockRunner = strings.TrimSpace(p.LandlockRunner)
 	copyPolicy.CredentialHome = strings.TrimSpace(p.CredentialHome)
+	copyPolicy.BlockedPaths = append([]string(nil), p.BlockedPaths...)
+	copyPolicy.BlockedWritePaths = append([]string(nil), p.BlockedWritePaths...)
 	if p.CredentialEnv != nil {
 		copyPolicy.CredentialEnv = make(map[string]string, len(p.CredentialEnv))
 		for key, value := range p.CredentialEnv {
@@ -161,6 +188,16 @@ func SandboxHomeEnvironment(opts *CallOptions) map[string]string {
 // launch accepts the strict mode, and still refuses it when it cannot.
 func LandlockEnforcedModes(opts *CallOptions) []CLISecurityMode {
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+		return nil
+	}
+	return []CLISecurityMode{NormalizeCLISecurityMode(opts.CLISecurity.Mode)}
+}
+
+// SeatbeltEnforcedModes is LandlockEnforcedModes for macOS Seatbelt. Only an
+// adapter that wraps its launch with Seatbelt may pass these to
+// ValidateCLISecurityLaunch.
+func SeatbeltEnforcedModes(opts *CallOptions) []CLISecurityMode {
+	if opts == nil || !opts.CLISecurity.SeatbeltEnforced() {
 		return nil
 	}
 	return []CLISecurityMode{NormalizeCLISecurityMode(opts.CLISecurity.Mode)}

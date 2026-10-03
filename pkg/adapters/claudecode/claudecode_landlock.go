@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
@@ -18,6 +19,15 @@ import (
 // settings, system prompt, status-line helper), the permission hooks, and the
 // status-line file Claude writes for this session.
 func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, sessionName string) ([]string, func(), error) {
+	if opts != nil && opts.CLISecurity.SeatbeltEnforced() {
+		statusline := claudeStatuslinePath(sessionName)
+		if f, err := os.OpenFile(statusline, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_ = f.Close()
+		}
+		grants := claudeSeatbeltGrants(args, workingDir)
+		grants.WritePaths = append(grants.WritePaths, statusline)
+		return clisandbox.SeatbeltArgs(opts.CLISecurity, args, workingDir, grants)
+	}
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return args, func() {}, nil
 	}
@@ -161,6 +171,9 @@ func claudeLandlockReads(args []string, workingDir string) []string {
 
 // claudeLandlockCmd confines a structured (stream-json) Claude launch.
 func claudeLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir string) (func(), error) {
+	if opts != nil && opts.CLISecurity.SeatbeltEnforced() {
+		return clisandbox.SeatbeltCmd(opts.CLISecurity, cmd, workingDir, claudeSeatbeltGrants(cmd.Args, workingDir))
+	}
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return func() {}, nil
 	}
@@ -168,4 +181,35 @@ func claudeLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir str
 		return func() {}, err
 	}
 	return clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, claudeLandlockReads(cmd.Args, workingDir), nil)
+}
+
+// claudeSeatbeltGrants are what Claude Code needs on a Mac beyond its folders.
+// It keeps its real home there: its login is a Keychain entry named after its
+// config folder, so moving the folder would sign it out. It gets its own
+// config (~/.claude and ~/.claude.json, which it replaces by write-and-rename),
+// its cache, and read access to the Keychain files; nothing else in the home.
+func claudeSeatbeltGrants(args []string, workingDir string) clisandbox.SeatbeltGrants {
+	grants := clisandbox.SeatbeltGrants{ReadPaths: claudeLandlockReads(args, workingDir)}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return grants
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	configDir := filepath.Join(home, ".claude")
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		configDir = dir
+	}
+	grants.WritePaths = append(grants.WritePaths,
+		configDir,
+		filepath.Join(home, ".local", "state", "claude"),
+		filepath.Join(home, "Library", "Caches", "claude-cli-nodejs"),
+	)
+	grants.ReadPaths = append(grants.ReadPaths,
+		filepath.Join(home, ".local", "share", "claude"),
+		filepath.Join(home, "Library", "Keychains"),
+	)
+	grants.WritePatterns = append(grants.WritePatterns, "^"+regexp.QuoteMeta(filepath.Join(home, ".claude.json"))+".*$")
+	return grants
 }
