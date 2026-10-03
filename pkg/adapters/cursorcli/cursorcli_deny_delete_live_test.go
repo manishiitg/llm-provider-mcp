@@ -39,10 +39,10 @@ func TestCursorCLIRealDenyBuiltinBlocksDelete(t *testing.T) {
 	t.Logf("final: %.400s", resp.Choices[0].Content)
 }
 
-// TestCursorCLIRealReadOnlyHybridP0: in "Native agent tools" mode Cursor's
-// native Read/List/Grep work, while native Write, Delete and Shell are denied
-// by the same hooks and leave the workspace untouched.
-func TestCursorCLIRealReadOnlyHybridP0(t *testing.T) {
+// TestCursorCLIRealFullNativeP0: in "Native agent tools" (Full CLI) mode
+// Cursor's own Read/Grep, Write, Delete and Shell all run, with its shell
+// approved by the hook (no --force, no approval prompt stalling the turn).
+func TestCursorCLIRealFullNativeP0(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 	tmp := t.TempDir()
@@ -62,19 +62,19 @@ func TestCursorCLIRealReadOnlyHybridP0(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	prompt := "Integration test in a disposable directory. Use Cursor's built-in tools (not MCP): 1) Read witness.txt. 2) Grep this directory for " + needle + " and note the HIT token after it. " +
-		"3) Try to create new-file.txt with your built-in Write tool. 4) Try to delete victim.txt with your built-in Delete tool. 5) Try to run the shell command: touch shell-file.txt. " +
+		"3) Create new-file.txt with your built-in Write tool. 4) Delete victim.txt with your built-in Delete tool. 5) Run the shell command: touch shell-file.txt. " +
 		"Report each outcome, then end with one line: the witness contents and the HIT token."
 	resp, err := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "When the user asks you to use a built-in tool, your FIRST action must be to attempt that Cursor built-in tool. Do not refuse upfront; attempt the call and report whatever happens."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
-	}, WithInteractiveSessionID("cursor-ro-hybrid-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(tmp), WithReadOnlyHybridTools())
-	for _, forbidden := range []string{"new-file.txt", "shell-file.txt"} {
-		if _, statErr := os.Stat(filepath.Join(tmp, forbidden)); !os.IsNotExist(statErr) {
-			t.Fatalf("hybrid Cursor created %s natively", forbidden)
+	}, WithInteractiveSessionID("cursor-full-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(tmp), WithFullNativeTools())
+	for _, created := range []string{"new-file.txt", "shell-file.txt"} {
+		if _, statErr := os.Stat(filepath.Join(tmp, created)); statErr != nil {
+			t.Fatalf("full-mode Cursor did not create %s natively: %v", created, statErr)
 		}
 	}
-	if _, statErr := os.Stat(victim); os.IsNotExist(statErr) {
-		t.Fatal("hybrid Cursor deleted a file natively")
+	if _, statErr := os.Stat(victim); !os.IsNotExist(statErr) {
+		t.Fatal("full-mode Cursor did not delete victim.txt natively")
 	}
 	if err != nil {
 		t.Fatalf("GenerateContent: %v", err)

@@ -25,13 +25,7 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 		{"mcp_only", "call_mcp_tool", "allow"},
 		{"mcp_only", "view_file", "deny"},
 		{"mcp_only", "write_to_file", "deny"},
-		{"hybrid", "call_mcp_tool", "allow"},
-		{"hybrid", "view_file", "allow"},
-		{"hybrid", "grep_search", "allow"},
-		{"hybrid", "write_to_file", "deny"},
-		{"hybrid", "run_command", "deny"},
-		{"hybrid", "invoke_subagent", "deny"},
-		{"hybrid", "new_future_tool", "deny"},
+		{"mcp_only", "grep_search", "deny"},
 		{"full", "write_to_file", "allow"},
 		{"full", "run_command", "allow"},
 		{"full", "invoke_subagent", "allow"},
@@ -66,7 +60,7 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 }
 
 func TestAgyFullNativeToolsLaunchPolicy(t *testing.T) {
-	for _, mode := range []string{"mcp_only", "hybrid", "full_unconfined"} {
+	for _, mode := range []string{"mcp_only", "full_unconfined"} {
 		opts := &llmtypes.CallOptions{}
 		WithNativeToolsMode(mode)(opts)
 		if got, err := agyToolModeForLaunch(opts); err != nil || got != mode {
@@ -136,11 +130,11 @@ func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	release1, err := agyHoldToolModeHook(workDir, "hybrid")
+	release1, err := agyHoldToolModeHook(workDir, "full_unconfined")
 	if err != nil {
 		t.Fatal(err)
 	}
-	release2, err := agyHoldToolModeHook(workDir, "hybrid")
+	release2, err := agyHoldToolModeHook(workDir, "full_unconfined")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +180,7 @@ func TestAgyWorkspaceToolHookPreservesUserHooks(t *testing.T) {
 	stale := map[string]interface{}{agyToolModeHookName: map[string]interface{}{
 		"PreToolUse": []interface{}{map[string]interface{}{
 			"matcher": "*", "hooks": []interface{}{map[string]interface{}{
-				"type": "command", "command": agyToolModeHookCommand(python, "hybrid"),
+				"type": "command", "command": agyToolModeHookCommand(python, "mcp_only"),
 			}},
 		}},
 	}}
@@ -311,7 +305,7 @@ func TestAgyWorkspaceHookAcceptsExactManagedAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer releaseParent()
-	releaseChild, err := agyHoldToolModeHook(child, "hybrid")
+	releaseChild, err := agyHoldToolModeHook(child, "full_unconfined")
 	if err != nil {
 		t.Fatalf("managed ancestor blocked delegation: %v", err)
 	}
@@ -336,15 +330,18 @@ func TestAgyWorkspaceHookAcceptsExactManagedAncestor(t *testing.T) {
 }
 
 func TestAgyToolModeValidationAndFingerprint(t *testing.T) {
-	for _, mode := range []string{"mcp_only", "hybrid"} {
+	for _, mode := range []string{"mcp_only", "full", "full_unconfined"} {
 		if got, err := agyToolMode(mode); err != nil || got != mode {
 			t.Fatalf("mode %q = %q, %v", mode, got, err)
 		}
 	}
+	if _, err := agyToolMode("hybrid"); err == nil {
+		t.Fatal("the retired hybrid mode was accepted")
+	}
 	if _, err := agyToolMode("native_everything"); err == nil {
 		t.Fatal("unknown tool mode accepted")
 	}
-	if agyToolModeFingerprint("{}", "mcp_only") == agyToolModeFingerprint("{}", "hybrid") {
+	if agyToolModeFingerprint("{}", "mcp_only") == agyToolModeFingerprint("{}", "full_unconfined") {
 		t.Fatal("different tool policies reused the same mount fingerprint")
 	}
 }

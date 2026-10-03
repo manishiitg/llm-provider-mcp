@@ -225,51 +225,6 @@ func TestAgyCLIRealNativeToolModeBridgeAndDenial(t *testing.T) {
 	agyAssertNoMountLeak(t)
 }
 
-func TestAgyCLIRealHybridNativeReadAndWriteDenial(t *testing.T) {
-	requireRealAgyCLIE2E(t)
-	workDir := t.TempDir()
-	serverPath, logPath := agyWriteCanaryServer(t, workDir, "agy-mcp-hybrid-server.js")
-	config := agyCanaryMCPConfig(serverPath, logPath, "0")
-	canary := "AGY_NATIVE_READ_" + agyRandomHex(t, 4)
-	readPath := filepath.Join(workDir, "native-read.txt")
-	if err := os.WriteFile(readPath, []byte(canary+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	adapter := NewAgyCLIAdapter("", "", nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use your native view_file tool to read "+readPath+". Do not call MCP or use a command. Reply with the file contents."),
-	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("hybrid"))
-	if err != nil {
-		t.Fatalf("hybrid read turn: %v", err)
-	}
-	if !strings.Contains(resp.Choices[0].Content, canary) {
-		t.Fatalf("hybrid read response = %q, want %q", resp.Choices[0].Content, canary)
-	}
-	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
-	if !ok || handle.NativeSessionID == "" {
-		t.Fatal("hybrid read returned no AGY conversation id")
-	}
-	var nativeRead bool
-	for _, call := range agyTurnToolCallsSince(handle.NativeSessionID, 0) {
-		if call.Name == "view_file" {
-			nativeRead = true
-		}
-	}
-	if !nativeRead {
-		t.Fatal("hybrid response did not record a native view_file call")
-	}
-	target := filepath.Join(workDir, "hybrid-must-not-write.txt")
-	_, _ = adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Use only your native write_to_file tool to create "+target+" with exactly HI. Do not call MCP or use a command. If blocked, say so."),
-	}, WithWorkingDir(workDir), WithMCPConfig(config), WithNativeToolsMode("hybrid"))
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("hybrid mode allowed native write: stat err = %v", err)
-	}
-	agyAssertNoMountLeak(t)
-}
-
 func TestAgyCLIRealConcurrentMountIsolationContract(t *testing.T) {
 	requireRealAgyCLIE2E(t)
 	// Two concurrent mounted turns must both route through their own bridge

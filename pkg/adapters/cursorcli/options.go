@@ -19,7 +19,7 @@ const (
 	MetadataKeyInteractiveSessionID  = "cursor_interactive_session_id"
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
-	MetadataKeyReadOnlyHybridTools   = "cursor_read_only_hybrid_tools"
+	MetadataKeyFullNativeTools       = "cursor_full_native_tools"
 	// MetadataKeyStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) mid-turn by polling Cursor's own
 	// store.db. Set via WithStreamTranscript (default OFF).
@@ -241,23 +241,26 @@ func WithDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 	}
 }
 
-// WithReadOnlyHybridTools is the "Native agent tools" (hybrid) variant of
-// WithDenyBuiltinTools: Cursor's native read/list/search tools run, while
-// shell, writes, deletes, computer use, image generation and subagents stay
-// denied by the same hooks. It implies WithDenyBuiltinTools(true).
-func WithReadOnlyHybridTools() llmtypes.CallOption {
+// WithFullNativeTools is the "Native agent tools" (Full CLI) variant of
+// WithDenyBuiltinTools: Cursor's own shell, reads, edits and deletes run, and
+// its shell commands are approved by the hook (never --force, which would
+// switch every hook off). Computer use, screen recording, image generation and
+// every subagent, background or cloud agent stay denied: nested and remote
+// agents would run outside the session's confinement and bridge. It implies
+// WithDenyBuiltinTools(true) so the hooks are installed.
+func WithFullNativeTools() llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyDenyBuiltinTools] = true
-		opts.Metadata.Custom[MetadataKeyReadOnlyHybridTools] = true
+		opts.Metadata.Custom[MetadataKeyFullNativeTools] = true
 	}
 }
 
-func cursorReadOnlyHybridFromOptions(opts *llmtypes.CallOptions) bool {
+func cursorFullNativeFromOptions(opts *llmtypes.CallOptions) bool {
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return false
 	}
-	enabled, _ := opts.Metadata.Custom[MetadataKeyReadOnlyHybridTools].(bool)
+	enabled, _ := opts.Metadata.Custom[MetadataKeyFullNativeTools].(bool)
 	return enabled
 }
 

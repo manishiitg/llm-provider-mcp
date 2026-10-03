@@ -16,14 +16,14 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-var codingCLIStress = flag.Bool("coding-cli-stress", false, "run the opt-in live hybrid-mode stress scenario")
+var codingCLIStress = flag.Bool("coding-cli-stress", false, "run the opt-in live native-tools stress scenario")
 
-// TestCursorCLIStressReadOnlyHybrid: Cursor in "Native agent tools" mode has
+// TestCursorCLIStressFullNative: Cursor in "Native agent tools" (Full CLI) mode has
 // no subagents, so the stress is breadth in one turn: a todo list, native
 // reads + a grep across several files, a slow MCP call, blocked native
 // write/delete attempts and a mid-turn steer, then a follow-up turn on the
 // retained session. Nothing may change on disk natively.
-func TestCursorCLIStressReadOnlyHybrid(t *testing.T) {
+func TestCursorCLIStressFullNative(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	if !*codingCLIStress {
 		t.Skip("opt-in: pass -coding-cli-stress")
@@ -61,7 +61,7 @@ func TestCursorCLIStressReadOnlyHybrid(t *testing.T) {
 			owner := "cursor-stress-" + cursorRandomHex(4)
 			opts := []llmtypes.CallOption{
 				WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithWorkingDir(workDir),
-				WithMCPConfig(mcpConfig), WithApproveMCPs(), WithReadOnlyHybridTools(),
+				WithMCPConfig(mcpConfig), WithApproveMCPs(), WithFullNativeTools(),
 			}
 			bridgeToken := "BRIDGE_" + cursorRandomHex(4)
 			steerToken := "STEER-" + cursorRandomHex(4)
@@ -70,7 +70,7 @@ func TestCursorCLIStressReadOnlyHybrid(t *testing.T) {
 			prompt := "Stress test in a disposable directory. 1) Write a todo list for this task. " +
 				"2) With your built-in tools read part-a.txt, part-b.txt and part-c.txt, and grep the directory for " + needle + " noting the HIT token after it. " +
 				"3) Call the api-bridge MCP tool contract_echo_token with token " + bridgeToken + " and delay_ms 8000. " +
-				"4) Try once to create new-file.txt with your built-in Write tool and to delete victim.txt with your built-in Delete tool (report if refused). " +
+				"4) Create new-file.txt with your built-in Write tool and delete victim.txt with your built-in Delete tool. " +
 				"5) Finally reply with exactly one line: A=<token> B=<token> C=<token> HIT=<hit token> MCP=<tool result>."
 			started := time.Now()
 			go func() {
@@ -83,11 +83,11 @@ func TestCursorCLIStressReadOnlyHybrid(t *testing.T) {
 			}()
 			adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 			resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
-			if _, statErr := os.Stat(filepath.Join(workDir, "new-file.txt")); !os.IsNotExist(statErr) {
-				t.Fatal("hybrid Cursor created a file natively")
+			if _, statErr := os.Stat(filepath.Join(workDir, "new-file.txt")); statErr != nil {
+				t.Fatalf("full-mode Cursor did not create a file natively: %v", statErr)
 			}
-			if _, statErr := os.Stat(victim); os.IsNotExist(statErr) {
-				t.Fatal("hybrid Cursor deleted a file natively")
+			if _, statErr := os.Stat(victim); !os.IsNotExist(statErr) {
+				t.Fatal("full-mode Cursor did not delete a file natively")
 			}
 			if err != nil {
 				t.Fatalf("turn 1: %v", err)

@@ -64,8 +64,8 @@ func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 
 // WithMCPConfig adds the document's stdio mcpServers to a private AGY home
 // for this run. Mounted exec turns use --dangerously-skip-permissions;
-// WithNativeToolsMode installs the selected MCP-only, hybrid read/search or
-// Full CLI PreToolUse gate. Distinct sessions keep separate credentials and run
+// WithNativeToolsMode installs the selected MCP-only or Full CLI PreToolUse
+// gate. Distinct sessions keep separate credentials and run
 // concurrently.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
@@ -75,8 +75,7 @@ func WithMCPConfig(configJSON string) llmtypes.CallOption {
 }
 
 // WithNativeToolsMode applies AgentWorks' coding-agent tool setting. The
-// bridge remains available in every mode. "hybrid" admits native reads/search;
-// "mcp_only" denies native tools. "full" allows the native toolset under an
+// bridge remains available in every mode. "mcp_only" denies native tools. "full" allows the native toolset under an
 // enforced Landlock launch. "full_unconfined" explicitly allows it with host
 // rights; trusted callers must restrict that option to single-user machines.
 func WithNativeToolsMode(mode string) llmtypes.CallOption {

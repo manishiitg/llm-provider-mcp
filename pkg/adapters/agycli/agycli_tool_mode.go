@@ -19,10 +19,10 @@ const agyToolModeHookName = "agentworks-native-tool-mode"
 // retains the adapter's legacy behavior for direct SDK callers.
 func agyToolMode(raw string) (string, error) {
 	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
-	case "", "mcp_only", "hybrid", "full", "full_unconfined":
+	case "", "mcp_only", "full", "full_unconfined":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("agy native tools mode %q: want mcp_only, hybrid, full or full_unconfined", raw)
+		return "", fmt.Errorf("agy native tools mode %q: want mcp_only, full or full_unconfined", raw)
 	}
 }
 
@@ -57,13 +57,9 @@ func agyShellQuote(s string) string {
 }
 
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
-// restricted modes fail closed for unknown native tools. Hybrid admits only
-// known reads/searches; Full CLI admits the CLI's native toolset alongside MCP.
+// mcp_only fails closed for every native tool; Full CLI admits the CLI's
+// native toolset alongside MCP.
 func agyToolModeHookCommand(python, mode string) string {
-	readEnabled := "False"
-	if mode == "hybrid" {
-		readEnabled = "True"
-	}
 	fullEnabled := "False"
 	if agyFullNativeToolsMode(mode) {
 		fullEnabled = "True"
@@ -81,8 +77,7 @@ except Exception:
 if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
-read=name in {"view_file","list_dir","find_by_name","grep_search","search_web","read_url_content"}
-allowed=isinstance(name,str) and bool(name) and (bridge or (` + readEnabled + ` and read) or ` + fullEnabled + `)
+allowed=isinstance(name,str) and bool(name) and (bridge or ` + fullEnabled + `)
 print(json.dumps({"decision":"allow" if allowed else "deny","reason":"Use the AgentWorks MCP bridge for this tool" if not allowed else ""}))`
 	// A missing or crashing interpreter still emits an explicit denial. The
 	// internal alarm returns before AGY's outer hook timeout fires.
@@ -275,7 +270,7 @@ func agyIsManagedAncestorHookFile(path, python string) bool {
 	if json.Unmarshal(raw, &hooks) != nil || len(hooks) != 1 {
 		return false
 	}
-	for _, mode := range []string{"mcp_only", "hybrid"} {
+	for _, mode := range []string{"mcp_only"} {
 		if agySameHookEntry(hooks[agyToolModeHookName], agyManagedToolHookEntry(python, mode)) {
 			return true
 		}

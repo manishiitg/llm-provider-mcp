@@ -530,7 +530,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresMCPBridgeConfig: true,
 		SupportsBridgeOnlyTools: true,
 		ToolRestrictionGaps: []string{
-			"Native tool mode uses a workspace PreToolUse hook because agy has no --tools flag. Hybrid admits native read/search only; native commands, writes and subagents stay bridge-routed.",
+			"Native tool mode uses a workspace PreToolUse hook because agy has no --tools flag. mcp_only denies every native tool; full (confined) admits the native toolset alongside the bridge.",
 			"MCP servers mount into global user config only (agy mcp add); no per-run or per-project scope, so parallel runs cannot hold different mounts.",
 		},
 		UsesNativeSystemPrompt:      false,

@@ -47,7 +47,7 @@ func TestCursorCLIRealLandlockConfinesNativeToolsP0(t *testing.T) {
 	resp, err := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "When the user asks you to use a built-in tool, your FIRST action must be to attempt that Cursor built-in tool. Do not refuse upfront; attempt the call and report whatever happens."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
-	}, WithInteractiveSessionID("cursor-landlock-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(workDir), WithReadOnlyHybridTools(), confine)
+	}, WithInteractiveSessionID("cursor-landlock-"+cursorRandomHex(4)), WithPersistentInteractiveSession(true), WithWorkingDir(workDir), WithFullNativeTools(), confine)
 	if err != nil {
 		t.Fatalf("GenerateContent under Landlock: %v", err)
 	}

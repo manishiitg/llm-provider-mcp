@@ -14,14 +14,14 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-var codingCLIStress = flag.Bool("coding-cli-stress", false, "run the opt-in live hybrid-mode stress scenario")
+var codingCLIStress = flag.Bool("coding-cli-stress", false, "run the opt-in live native-tools stress scenario")
 
-// TestCodexCLIStressReadOnlyHybrid: Codex in "Native agent tools" mode (shell
-// + subagents in the read-only sandbox): a todo plan, three parallel subagents
+// TestCodexCLIStressNativeTools: Codex in "Native agent tools" mode (shell
+// + subagents in the workspace-write sandbox): a todo plan, three parallel subagents
 // that each read a file the parent may not read, a slow MCP call and a
 // mid-turn steer must yield one final line only possible after every child
 // reported; nothing may be written natively; a follow-up turn stays consistent.
-func TestCodexCLIStressReadOnlyHybrid(t *testing.T) {
+func TestCodexCLIStressNativeTools(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	if !*codingCLIStress {
 		t.Skip("opt-in: pass -coding-cli-stress")
@@ -49,7 +49,7 @@ func TestCodexCLIStressReadOnlyHybrid(t *testing.T) {
 			owner := "codex-stress-" + codexRandomHex(4)
 			opts := []llmtypes.CallOption{
 				WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithProjectDirID(workDir),
-				WithSandbox("read-only"), WithReadOnlyHybridTools(), WithApprovalPolicy("never"),
+				WithSandbox("workspace-write"), WithNativeTools(), WithApprovalPolicy("never"),
 				WithReasoningEffort("low"), WithConfigOverrides([]string{mcpOverride}),
 			}
 			bridgeToken := "BRIDGE_" + codexRandomHex(4)
@@ -59,7 +59,7 @@ func TestCodexCLIStressReadOnlyHybrid(t *testing.T) {
 			prompt := "Stress test in a disposable directory. 1) Make a plan with your plan/todo tool. " +
 				"2) Spawn THREE subagents in parallel: one reads part-a.txt, one part-b.txt, one part-c.txt, and each reports the exact token in its file. Do NOT read those files yourself. " +
 				"3) While they run, call the api-bridge slow_contract MCP tool with token " + bridgeToken + " and delay_ms 8000. " +
-				"4) Also try once to create native-write.txt with your shell (report if refused). " +
+				"4) Also create native-write.txt with your shell. " +
 				"5) Only after all three subagents reported, reply with exactly one line: A=<token> B=<token> C=<token> MCP=<slow_contract result>."
 			started := time.Now()
 			go func() {
@@ -71,8 +71,8 @@ func TestCodexCLIStressReadOnlyHybrid(t *testing.T) {
 				}
 			}()
 			resp, err := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{}).GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)
-			if _, statErr := os.Stat(filepath.Join(workDir, "native-write.txt")); !os.IsNotExist(statErr) {
-				t.Fatal("read-only sandbox allowed a native write")
+			if _, statErr := os.Stat(filepath.Join(workDir, "native-write.txt")); statErr != nil {
+				t.Fatalf("workspace-write sandbox refused a native write: %v", statErr)
 			}
 			if err != nil {
 				t.Fatalf("turn 1: %v", err)

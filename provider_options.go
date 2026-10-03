@@ -221,10 +221,10 @@ func WithCodexReasoningEffort(effort string) llmtypes.CallOption {
 	return codexcli.WithReasoningEffort(effort)
 }
 
-// WithCodexReadOnlyHybridTools keeps Codex's shell and subagents and disables
-// its other native features; pair with WithCodexSandbox("read-only").
-func WithCodexReadOnlyHybridTools() llmtypes.CallOption {
-	return codexcli.WithReadOnlyHybridTools()
+// WithCodexNativeTools keeps Codex's shell and subagents and disables its
+// other native features ("Native agent tools", Full CLI).
+func WithCodexNativeTools() llmtypes.CallOption {
+	return codexcli.WithNativeTools()
 }
 
 // WithCodexDisableShellTool disables the built-in shell tool in Codex CLI.
@@ -331,11 +331,12 @@ func WithCursorDenyBuiltinTools(enabled bool) llmtypes.CallOption {
 	return cursorcli.WithDenyBuiltinTools(enabled)
 }
 
-// WithCursorReadOnlyHybridTools is the "Native agent tools" variant: Cursor's
-// native read/list/search tools run; shell, writes, deletes and subagents stay
-// denied by the same hooks.
-func WithCursorReadOnlyHybridTools() llmtypes.CallOption {
-	return cursorcli.WithReadOnlyHybridTools()
+// WithCursorFullNativeTools is the "Native agent tools" (Full CLI) variant:
+// Cursor's own shell, reads, edits and deletes run (inside AgentWorks'
+// confinement); computer use, screen recording, image generation and every
+// subagent/background/cloud agent stay denied by the same hooks.
+func WithCursorFullNativeTools() llmtypes.CallOption {
+	return cursorcli.WithFullNativeTools()
 }
 
 // WithCursorMode sets Cursor Agent CLI's --mode flag. "ask" and "plan" are
@@ -439,8 +440,8 @@ func WithAgyMCPConfig(configJSON string) llmtypes.CallOption {
 	return agycli.WithMCPConfig(configJSON)
 }
 
-// WithAgyNativeToolsMode selects mcp_only or hybrid for AGY's PreToolUse
-// execution gate. The MCP bridge stays available in either mode.
+// WithAgyNativeToolsMode selects mcp_only, full or full_unconfined for AGY's
+// PreToolUse execution gate. The MCP bridge stays available in every mode.
 func WithAgyNativeToolsMode(mode string) llmtypes.CallOption {
 	return agycli.WithNativeToolsMode(mode)
 }
