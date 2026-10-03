@@ -20,7 +20,7 @@ import (
 func TestCodexCLIRealNativeToolsP0(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
-	workDir := t.TempDir()
+	workDir := untrustedCodexDir(t)
 	secret := "CODEX-READ-" + codexRandomHex(4)
 	needle := "CODEX-NEEDLE-" + codexRandomHex(4)
 	if err := os.WriteFile(filepath.Join(workDir, "witness.txt"), []byte(secret+"\n"), 0o600); err != nil {
@@ -152,4 +152,21 @@ func liveConfined(t *testing.T, provider, workDir string) llmtypes.CallOption {
 		})
 	}
 	return func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p }
+}
+
+// untrustedCodexDir is a folder Codex has never trusted (temp folders may be
+// trusted by earlier runs), so a launch that does not pre-trust it in the
+// config Codex actually reads stops on Codex's "Trust this folder?" screen.
+func untrustedCodexDir(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp(home, ".agentworks-codex-untrusted-")
+	if err != nil {
+		return t.TempDir()
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

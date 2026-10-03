@@ -1400,7 +1400,9 @@ func startCodexTmuxSession(
 		}
 		if accountHome != "" {
 			preTrustCodexWorkingDirAtHome(workingDir, accountHome)
-		} else if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated {
+		} else if policy != nil && llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeIsolated && !policy.SeatbeltEnforced() {
+			// Isolated Codex reads its private home; under Seatbelt it keeps the
+			// person's own ~/.codex, so the trust goes there (below).
 			preTrustCodexWorkingDirAtHome(workingDir, policy.PrivateHome)
 		} else {
 			preTrustCodexWorkingDir(workingDir)
