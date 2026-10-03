@@ -320,3 +320,26 @@ func TestCodexTaskCompleteBelongsToTurnKeepsLegacyRollouts(t *testing.T) {
 		t.Fatal("a different turn's completion must be ignored")
 	}
 }
+
+// Codex 0.160 retains its startup screen above the newly rendered header.
+// A short conversation leaves that old banner within the last twelve lines.
+func TestCodex0160HistoricalResumeBannerDoesNotBlockReadyPane(t *testing.T) {
+	pane := `  >_ OpenAI Codex (v0.160.0)
+  /project
+  Resuming session…
+› Ask Codex to do anything
+  >_ OpenAI Codex (v0.160.0)
+  /project
+› Remember a code. Reply exactly FIRST_OK
+• FIRST_OK
+  Worked for 4s • 17:58
+› Ask Codex to do anything
+  GPT-6.1-Sol low · /project
+`
+	if codexPaneIsResuming(pane) {
+		t.Fatal("historical banner blocks a newly rendered ready pane")
+	}
+	if !hasCodexReadyPrompt(pane) || !codexPaneHasEmptyComposer(pane) {
+		t.Fatal("resumed pane must accept input")
+	}
+}

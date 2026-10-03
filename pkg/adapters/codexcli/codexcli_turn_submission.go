@@ -105,6 +105,12 @@ func codexPaneIsResuming(captured string) bool {
 			continue
 		}
 		seen++
+		// Codex 0.160 leaves its startup banner in scrollback and renders
+		// a new header when replay is ready. Do not let that older banner
+		// block short resumed conversations indefinitely.
+		if strings.HasPrefix(strings.ToLower(strings.TrimLeft(line, "│ ")), ">_ openai codex") {
+			return false
+		}
 		if strings.HasPrefix(strings.ToLower(line), "resuming session") {
 			return true
 		}
