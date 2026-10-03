@@ -76,9 +76,36 @@ func resumeSessionID(provider string, args []string) string {
 		return ""
 	}
 	for i := 0; i+1 < len(args); i++ {
-		if args[i] == flag {
+		if args[i] != flag {
+			continue
+		}
+		if provider != "codex-cli" {
 			return strings.TrimSpace(args[i+1])
 		}
+		// Codex's interactive argv is "resume [OPTIONS] SESSION_ID".
+		// Profiles, model and config flags precede the ID; their values
+		// are not native session IDs. Structured exec resume can put it first.
+		for j := i + 1; j < len(args); j++ {
+			arg := strings.TrimSpace(args[j])
+			if arg == "--" {
+				if j+1 < len(args) {
+					return strings.TrimSpace(args[j+1])
+				}
+				return ""
+			}
+			switch arg {
+			case "--profile", "-p", "--model", "-m", "--sandbox", "-s", "--config", "-c",
+				"--ask-for-approval", "-a", "--cd", "-C", "--disable", "--enable",
+				"--image", "-i", "--local-provider", "--add-dir":
+				j++
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			return arg
+		}
+		return ""
 	}
 	return ""
 }

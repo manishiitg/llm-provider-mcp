@@ -85,3 +85,40 @@ func TestAdoptResumedSessionKeepsAnExistingPrivateCopy(t *testing.T) {
 		t.Fatal("an existing private session was overwritten")
 	}
 }
+
+// The interactive adapter puts the resume ID after its profile, model and
+// config flags. Migration must parse that real argv, not the first option.
+func TestAdoptCodexInteractiveResumeWithOptionsBeforeID(t *testing.T) {
+	root := t.TempDir()
+	account, private := filepath.Join(root, "account"), filepath.Join(root, "private")
+	id := "01a0ced0-646a-7550-87d2-7d9a0f17da15"
+	rel := filepath.Join(".codex", "sessions", "2026", "09", "23", "rollout-2026-09-23T17-09-18-"+id+".jsonl")
+	writeSessionFile(t, filepath.Join(account, rel))
+	other := filepath.Join(".codex", "sessions", "2026", "09", "23", "rollout-2026-09-23T17-09-18-other.jsonl")
+	writeSessionFile(t, filepath.Join(account, other))
+	policy := &llmtypes.CLISecurityPolicy{Provider: "codex-cli", PrivateHome: private, CredentialHome: account}
+	args := []string{"codex", "resume", "--profile", "agentworks-test", "--no-alt-screen", "--model", "gpt-6.1-sol", "--sandbox", "danger-full-access", "--ask-for-approval", "never", "--disable", "shell_tool", "-c", `model_reasoning_effort="medium"`, id}
+	adoptResumedSession(policy, args)
+	if !exists(filepath.Join(private, rel)) {
+		t.Fatal("interactive Codex resume did not adopt its session")
+	}
+	if exists(filepath.Join(private, other)) {
+		t.Fatal("another Codex session was copied")
+	}
+}
+
+func TestCodexResumeSessionIDSkipsOptionValues(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"codex", "resume", "--profile", "profile-id", "--model=model-id", "thread-id"}, "thread-id"},
+		{[]string{"codex", "exec", "resume", "thread-id", "--json", "prompt"}, "thread-id"},
+		{[]string{"codex", "resume", "--profile", "profile-id"}, ""},
+		{[]string{"codex", "resume", "--last"}, ""},
+	} {
+		if got := resumeSessionID("codex-cli", test.args); got != test.want {
+			t.Fatalf("%v: got %q, want %q", test.args, got, test.want)
+		}
+	}
+}
