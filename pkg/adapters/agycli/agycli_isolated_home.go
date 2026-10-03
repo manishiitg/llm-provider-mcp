@@ -107,6 +107,10 @@ func agyIsolatedHomeWithConversations(servers []agyMCPServer, conversationHome s
 	// Only the managed workspace hook may execute during this run. Never copy
 	// user-level hooks into the private home.
 	delete(settings, "hooks")
+	// Same for the person's status line: it is a command from their own config,
+	// and a stale one (a temp script that is gone) made every start show a
+	// "Statusline Error" and never look ready (owner's Mac, 2026-10-04).
+	delete(settings, "statusLine")
 	// A supplied key opts this private run into Gemini API mode. This changes
 	// only the private copy; the user's global login settings stay untouched.
 	if os.Getenv("GEMINI_API_KEY") != "" {

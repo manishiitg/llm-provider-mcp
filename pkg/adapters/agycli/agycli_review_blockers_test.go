@@ -20,7 +20,7 @@ func TestAgyIsolatedHomesKeepSessionCredentialsSeparate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["view_file"]},"trustedWorkspaces":["/work"],"hooks":{"foreign":{"command":"/bin/false"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["view_file"]},"trustedWorkspaces":["/work"],"hooks":{"foreign":{"command":"/bin/false"}},"statusLine":{"type":"command","command":"sh /tmp/gone/statusline.sh"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	server := func(token string) []agyMCPServer {
@@ -56,6 +56,9 @@ func TestAgyIsolatedHomesKeepSessionCredentialsSeparate(t *testing.T) {
 		privateSettings, err := os.ReadFile(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"))
 		if err != nil || strings.Contains(string(privateSettings), "foreign") {
 			t.Fatalf("user-level hooks copied into private home: %v, %s", err, privateSettings)
+		}
+		if strings.Contains(string(privateSettings), "statusline.sh") {
+			t.Fatalf("the person's status line command was copied into the private home: %s", privateSettings)
 		}
 		if _, err := exec.LookPath("agy"); err == nil {
 			cmd := exec.CommandContext(context.Background(), "agy", "mcp", "list")
