@@ -480,9 +480,13 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 		// on approval while built-in shell tools do not.
 		argv = append(argv, museTUIApprovalArgv()...)
 	}
-	if toolAllowlist != nil {
-		argv = append(argv, museNativeContainmentArgv()...)
+	argv = append(argv, museToolArgv(toolAllowlist != nil)...)
+	effortArgv, err := museEffortArgv(ctx)
+	if err != nil {
+		restore()
+		return nil, err
 	}
+	argv = append(argv, effortArgv...)
 	cli := append([]string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museAccountDataHome(ctx), "muse"}, argv...)
 	if id := strings.TrimSpace(resumeNativeID); id != "" {
 		cli = []string{"env", "XDG_CONFIG_HOME=" + configHome, "XDG_DATA_HOME=" + museAccountDataHome(ctx), "muse", "resume", id}

@@ -228,6 +228,34 @@ func museNativeContainmentArgv() []string {
 	return []string{"--disable-shell", "--disable-write"}
 }
 
+// museToolArgv is the native-tool part of a Muse launch. With an allowlist
+// (bridge-only) its shell and writes are disabled. Without one (Full CLI) it
+// runs with --yolo: no approval prompts and no Muse sandbox, like Claude's
+// full mode. AgentWorks' confinement (Landlock, Seatbelt) is the boundary when
+// it applies; Muse's own Bubblewrap sandbox cannot start inside the lock and
+// the slot's user namespace, and the footer notice its failed probe left kept
+// the TUI from ever settling (Excellence 2026-10-03: the first prompt was never
+// typed in). Unconfined (a person's own Mac) Muse runs with the person's
+// rights, as every CLI does in full mode there.
+func museToolArgv(toolAllowlistSet bool) []string {
+	if toolAllowlistSet {
+		return museNativeContainmentArgv()
+	}
+	return []string{"--yolo"}
+}
+
+// museEffortArgv passes the chat's reasoning effort to an interactive (TUI)
+// launch, as the exec lane already does: without it a project set to "max"
+// ran at Muse's default (high). It is a top-level option, so it also applies
+// to `muse resume`. An unknown value is an error, never silently dropped.
+func museEffortArgv(ctx context.Context) ([]string, error) {
+	effort, err := museExecEffort(museAccount(ctx).opts)
+	if err != nil || effort == "" {
+		return nil, err
+	}
+	return []string{"--reasoning-effort", effort}, nil
+}
+
 // museLaunchTUI boots one bounded (one-turn) TUI and returns its isolated
 // config cleanup. mcpJSON mirrors the persistent lane: a mounted turn carries
 // museTUIApprovalArgv. Unmounted turns boot bare.
@@ -246,9 +274,13 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	if strings.TrimSpace(mcpJSON) != "" {
 		argv = append(argv, museTUIApprovalArgv()...)
 	}
-	if toolAllowlist != nil {
-		argv = append(argv, museNativeContainmentArgv()...)
+	argv = append(argv, museToolArgv(toolAllowlist != nil)...)
+	effortArgv, err := museEffortArgv(ctx)
+	if err != nil {
+		cleanup()
+		return nil, err
 	}
+	argv = append(argv, effortArgv...)
 	shell, cleanupLaunch, err := museAccountLaunch(ctx, argv, workdir)
 	if err != nil {
 		cleanup()

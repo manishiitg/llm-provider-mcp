@@ -191,9 +191,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		// --disable-approval; unmounted runs keep the CLI default.
 		argv = append(argv, "--disable-approval")
 	}
-	if toolAllowlistSet {
-		argv = append(argv, museNativeContainmentArgv()...)
-	}
+	argv = append(argv, museToolArgv(toolAllowlistSet)...)
 	argv = append(argv, prompt)
 
 	cmd := exec.CommandContext(ctx, "muse", argv...)
