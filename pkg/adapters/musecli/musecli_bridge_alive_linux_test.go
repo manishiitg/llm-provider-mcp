@@ -3,6 +3,7 @@
 package musecli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,4 +55,57 @@ func TestMuseReadProcessTableSeesARealBridgeChild(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("the bridge child of a real pane was never found in the process table")
+}
+
+// museBridgeAlive end to end with a real tmux session: a pane whose child is named mcpbridge reads as alive, and
+// once only that child is killed (the pane stays, as in a Muse that lost its bridge) it reads as gone.
+func TestMuseBridgeAliveWithARealTmuxPane(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("no tmux")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	dir := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", dir)
+	bridge := filepath.Join(dir, "mcpbridge")
+	data, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bridge, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const name = "muse-bridge-alive-test"
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "/bin/sh", "-c", bridge+" 60 & wait; sleep 60").CombinedOutput(); err != nil {
+		t.Skipf("tmux cannot start here: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if alive, known := museBridgeAlive(ctx, name); known && alive {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	alive, known := museBridgeAlive(ctx, name)
+	if !known || !alive {
+		t.Fatalf("a pane with a bridge child must read as alive (alive=%v known=%v)", alive, known)
+	}
+	procs, _ := museReadProcessTable()
+	for pid, p := range procs {
+		if p.comm == "mcpbridge" {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	for time.Now().Before(deadline.Add(5 * time.Second)) {
+		if alive, known := museBridgeAlive(ctx, name); known && !alive {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("after the bridge was killed the pane must read as gone while its session stays up")
 }
