@@ -3533,7 +3533,8 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				return "", err
 			}
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
-			errText := detectTmuxFatalStatus(delta)
+			quotaText := claudeUsageLimitTextForTurn(captured, paneBaseline)
+			errText := detectTmuxFatalStatusWithQuotaText(delta, quotaText)
 			authPending, authConfirmed := loggedOutStatus.observe(captured, errText == "not logged in", time.Now())
 			if errText != "" {
 				// A usage-limit wall is not the same failure as a dead pane or a
@@ -3541,9 +3542,9 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				// at which work can continue. Returning it typed lets the stack
 				// skip retries that cannot succeed and lets a workflow suspend
 				// on the stated reset instead of losing the run (PLAT-101).
-				if IsClaudeUsageLimitText(delta) {
-					if shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, delta, time.Now()) {
-						return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, captured, time.Now())
+				if IsClaudeUsageLimitText(quotaText) {
+					if shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, quotaText, time.Now()) {
+						return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, quotaText, time.Now())
 					}
 					// A pane phrase contradicted by the current structured statusline is
 					// stale transcript text, not a provider wall. Keep waiting for the
@@ -3725,8 +3726,12 @@ func hasClaudeLoggedOutStatus(captured string) bool {
 }
 
 func detectTmuxFatalStatus(captured string) string {
+	return detectTmuxFatalStatusWithQuotaText(captured, captured)
+}
+
+func detectTmuxFatalStatusWithQuotaText(captured, quotaText string) string {
 	switch {
-	case IsClaudeUsageLimitText(captured):
+	case IsClaudeUsageLimitText(quotaText):
 		return "rate limit reached"
 	case hasClaudeLoggedOutStatus(captured):
 		return "not logged in"

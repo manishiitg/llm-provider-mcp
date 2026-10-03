@@ -76,6 +76,28 @@ func IsClaudeUsageLimitText(text string) bool {
 	return false
 }
 
+// A resumed terminal redraw can defeat the byte/line baseline comparison and
+// return the entire scrollback as "new" output. A quota notice above the latest
+// nonempty user prompt belongs to an earlier turn, even if the statusline has
+// not been written yet. RTS 2026-10-03: an October 1 limit notice was read again
+// after resume, failing a healthy October 3 turn while Claude kept working.
+// Empty composer prompts are not boundaries: a fresh rejection is drawn just
+// above that empty prompt and must still be reported.
+func claudeUsageLimitTextForTurn(captured, baseline string) string {
+	lines := strings.Split(capturedAfterPaneBaseline(captured, baseline), "\n")
+	start := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for _, marker := range []string{"❯", ">"} {
+			if strings.HasPrefix(trimmed, marker) && strings.TrimSpace(strings.TrimPrefix(trimmed, marker)) != "" {
+				start = i + 1
+				break
+			}
+		}
+	}
+	return strings.Join(lines[start:], "\n")
+}
+
 func isClaudeUsageLimitLine(line string) bool {
 	line = strings.TrimLeft(line, claudeUsageLimitLineMarkers)
 	if line == "" {
