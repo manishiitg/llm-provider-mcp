@@ -302,9 +302,11 @@ exit 0
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMUX_TEST_ARGS", argsPath)
 
-	if err := startCodexTmuxSession(context.Background(), "history-session", []string{"codex"}, "", nil, nil, nil, nil, nil); err != nil {
+	cleanup, err := startCodexTmuxSession(context.Background(), "history-session", []string{"codex"}, "", nil, nil, nil, nil, nil)
+	if err != nil {
 		t.Fatalf("startCodexTmuxSession returned error: %v", err)
 	}
+	defer cleanup()
 	args, err := os.ReadFile(argsPath)
 	if err != nil {
 		t.Fatalf("read tmux args: %v", err)
@@ -829,9 +831,11 @@ func TestCodexInteractiveArgsKeepProductionSizedMCPConfigOutOfArgv(t *testing.T)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMUX_TEST_ARGS", tmuxArgsPath)
-	if err := startCodexTmuxSession(context.Background(), "large-mcp-profile", args, "", nil, nil, nil, nil, nil); err != nil {
+	launchCleanup, err := startCodexTmuxSession(context.Background(), "large-mcp-profile", args, "", nil, nil, nil, nil, nil)
+	if err != nil {
 		t.Fatalf("startCodexTmuxSession with production-sized MCP profile: %v", err)
 	}
+	defer launchCleanup()
 	launched, err := os.ReadFile(tmuxArgsPath)
 	if err != nil {
 		t.Fatalf("read fake tmux argv: %v", err)

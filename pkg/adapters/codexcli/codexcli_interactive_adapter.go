@@ -74,7 +74,10 @@ type codexInteractiveSession struct {
 	// any pre-existing operator AGENTS.md byte-for-byte. nil if the
 	// flag wasn't enabled for this session.
 	projectInstructionCleanup func()
-	workingDir                string
+	// launchCleanup owns sandbox policy and shell files until the detached pane
+	// has consumed them; tmux returning does not mean its child has started.
+	launchCleanup func()
+	workingDir    string
 	// rolloutPath and threadID pin this session to its EXACT Codex rollout.
 	// Resolving a retained answer by working directory + newest mtime is
 	// ambiguous whenever two sessions share a directory — a Chat and a Schedule
@@ -692,7 +695,8 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	if err := seedCodexAPIKeyLogin(scopedEnv, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"], workingDir); err != nil {
 		c.logger.Errorf("codex interactive could not save the API key login owner=%s: %v", ownerSessionID, err)
 	}
-	if err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths, scopedEnv, unsetEnv, scopedScrub); err != nil {
+	launchCleanup, err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths, scopedEnv, unsetEnv, scopedScrub)
+	if err != nil {
 		c.logger.Errorf("codex interactive failed to start tmux owner=%s tmux=%s: %v", ownerSessionID, session.tmuxSessionName, err)
 		session.initErr = err
 		if systemPromptTempFile != "" {
@@ -706,6 +710,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		removeCodexPersistentSession(ownerSessionID, session)
 		return nil, false, err
 	}
+	session.launchCleanup = launchCleanup
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
 	c.logger.Debugf("codex interactive startup timing owner=%s stage=start_tmux tmux=%s elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, time.Since(tmuxStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 	return session, true, nil
@@ -1003,6 +1008,14 @@ func closeCodexSessionLocked(session *codexInteractiveSession, reason string, lo
 		session.projectInstructionCleanup()
 		session.projectInstructionCleanup = nil
 	}
+	cleanupCodexLaunch(session)
+}
+
+func cleanupCodexLaunch(session *codexInteractiveSession) {
+	if session.launchCleanup != nil {
+		session.launchCleanup()
+		session.launchCleanup = nil
+	}
 }
 
 // writeProjectInstructionFromOptions reads the feature flag for writing
@@ -1095,6 +1108,7 @@ func cleanupFailedCodexInteractiveSession(session *codexInteractiveSession) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = killCodexTmuxSession(cleanupCtx, session.tmuxSessionName)
+	cleanupCodexLaunch(session)
 	unregisterCodexInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
 	if session.systemPromptTempFile != "" {
 		_ = os.Remove(session.systemPromptTempFile)
@@ -1133,6 +1147,7 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 		if err := killCodexTmuxSession(ctx, session.tmuxSessionName); err != nil {
 			failures = append(failures, err.Error())
 		}
+		cleanupCodexLaunch(session)
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("failed to clean up Codex interactive sessions: %s", strings.Join(failures, "; "))
@@ -1362,7 +1377,7 @@ func startCodexTmuxSession(
 	runtimeReadPaths []string,
 	scopedEnv, unsetEnv []string,
 	scrub *shelllaunch.ScopeScrub,
-) error {
+) (cleanup func(), err error) {
 	if workingDir != "" {
 		// Pre-trust workingDir in ~/.codex/config.toml so codex skips
 		// its interactive "Do you trust the contents of this
@@ -1392,26 +1407,30 @@ func startCodexTmuxSession(
 	}
 	shellCommand, cleanupSandbox, err := clisandbox.PrepareCodexCommandScoped(policy, args, workingDir, runtimeReadPaths, scopedEnv, unsetEnv, scrub)
 	if err != nil {
-		return fmt.Errorf("prepare Codex CLI security sandbox: %w", err)
+		return nil, fmt.Errorf("prepare Codex CLI security sandbox: %w", err)
 	}
-	defer cleanupSandbox()
+	defer func() {
+		if err != nil {
+			cleanupSandbox()
+		}
+	}()
 	tmuxArgs := []string{"new-session", "-d", "-s", sessionName}
 	tmuxArgs = append(tmuxArgs, tmuxsize.Args()...)
 	tmuxArgs = append(tmuxArgs, shellCommand)
 	tmuxArgs = tmuxlaunch.WithHistoryLimit(tmuxArgs, tmuxexec.DefaultHistoryLimit)
 	if err := runCodexCommand(ctx, nil, "tmux", tmuxArgs...); err != nil {
-		return fmt.Errorf("failed to start Codex interactive session %q: %w", sessionName, err)
+		return nil, fmt.Errorf("failed to start Codex interactive session %q: %w", sessionName, err)
 	}
 	_ = runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
 	if err := runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "history-limit", tmuxexec.DefaultHistoryLimit); err != nil {
-		return fmt.Errorf("failed to configure Codex tmux history for session %q: %w", sessionName, err)
+		return nil, fmt.Errorf("failed to configure Codex tmux history for session %q: %w", sessionName, err)
 	}
 	// Pin the window size to manual so the detached session keeps the size we
 	// launched at instead of collapsing to default-size (80x24), which reflows
 	// the TUI into half-width and makes the captured pane unreadable.
 	_ = runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "window-size", "manual")
 	_ = runCodexCommand(ctx, nil, "tmux", "set-option", "-t", sessionName, "focus-events", "on")
-	return nil
+	return cleanupSandbox, nil
 }
 
 var preTrustCodexMu sync.Mutex
