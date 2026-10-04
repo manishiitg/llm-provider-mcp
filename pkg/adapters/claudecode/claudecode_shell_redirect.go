@@ -32,13 +32,29 @@ const claudeShellRedirectScriptTemplate = `const fs = require('fs');
 let payload = {};
 try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}
 const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';
-if (name !== 'Bash') process.exit(0);
-const input = payload.tool_input;
-const command = input && typeof input.command === 'string' ? input.command : JSON.stringify(input || {});
-if (!/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|\/tools\/(custom|virtual|mcp)\//.test(command)) process.exit(0);
+if (!['Bash', 'PowerShell', 'Monitor', 'WebFetch'].includes(name)) process.exit(0);
+const input = payload.tool_input || {};
+const platformRoute = /\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|\/tools\/(custom|virtual|mcp)\//;
+let hit = false;
+if (name === 'WebFetch') {
+  const url = typeof input.url === 'string' ? input.url : JSON.stringify(input);
+  hit = platformRoute.test(url);
+  const api = process.env.MCP_API_URL;
+  if (!hit && api) {
+    try { hit = new URL(url).host === new URL(api).host; } catch (_) {}
+  }
+} else {
+  const command = typeof input.command === 'string' ? input.command : JSON.stringify(input);
+  hit = platformRoute.test(command);
+}
+if (!hit) process.exit(0);
 const tool = %s;
 process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through ' + tool + ': its shell has MCP_CUSTOM and MCP_AUTH.'}}) + '\n');
 `
+
+// claudeShellRedirectMatcher lists the native tools that run a command
+// (tool_input.command) or fetch a URL (tool_input.url).
+const claudeShellRedirectMatcher = "Bash|PowerShell|Monitor|WebFetch"
 
 // claudeMCPServerNameUnsafe mirrors how Claude Code normalises a server name
 // inside mcp__<server>__<tool> identifiers.
@@ -172,7 +188,7 @@ func claudeAddShellRedirectHook(settings map[string]any, mcpConfigJSON string) (
 		}
 	}
 	hooks["PreToolUse"] = append(pre, map[string]any{
-		"matcher": "Bash",
+		"matcher": claudeShellRedirectMatcher,
 		"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'",

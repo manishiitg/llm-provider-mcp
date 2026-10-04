@@ -52,6 +52,9 @@ func TestClaudeShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.
 		`{"tool_name":"Bash","tool_input":{"command":"curl -s \"${MCP_CUSTOM}/x\""}}`,
 		`{"tool_name":"Bash","tool_input":{"command":"curl http://127.0.0.1:18743/tools/custom/get_contract_upgrades --json '{}'"}}`,
 		`{"tool_name":"Bash","tool_input":{"command":"curl http://localhost:1/tools/virtual/get_api_spec"}}`,
+		`{"tool_name":"Monitor","tool_input":{"command":"until curl -s $MCP_CUSTOM/x; do sleep 2; done","description":"d"}}`,
+		`{"tool_name":"PowerShell","tool_input":{"command":"iwr http://127.0.0.1:1/tools/mcp/x"}}`,
+		`{"tool_name":"WebFetch","tool_input":{"url":"http://127.0.0.1:18743/tools/custom/get_x","prompt":"p"}}`,
 	}
 	for _, payload := range refused {
 		out := runClaudeShellRedirectHook(t, tool, payload)
@@ -77,6 +80,9 @@ func TestClaudeShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.
 		`{"tool_name":"Bash","tool_input":{"command":"curl -s https://example.com/api/tools-list"}}`,
 		`{"tool_name":"Bash","tool_input":{"command":"echo $HOME"}}`,
 		`{"tool_name":"mcp__api-bridge__execute_shell_command","tool_input":{"command":"curl \"$MCP_CUSTOM/get_contract_upgrades\" -H \"$MCP_AUTH\""}}`,
+		`{"tool_name":"Monitor","tool_input":{"command":"tail -F app.log | grep ERROR"}}`,
+		`{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/docs","prompt":"p"}}`,
+		`{"tool_name":"WebFetch","tool_input":{"url":"http://127.0.0.1:2/health","prompt":"p"}}`,
 		`{"tool_name":"Read","tool_input":{"file_path":"/tools/custom/x"}}`,
 		`not json at all`,
 		``,
@@ -85,6 +91,32 @@ func TestClaudeShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.
 		if out := runClaudeShellRedirectHook(t, tool, payload); out != "" {
 			t.Errorf("payload %q was refused: %s", payload, out)
 		}
+	}
+}
+
+func TestClaudeShellRedirectHookRefusesWebFetchToAPIHost(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	path, err := claudeWriteShellRedirectHook("mcp__api-bridge__execute_shell_command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(payload string) string {
+		cmd := exec.CommandContext(context.Background(), "node", path)
+		cmd.Env = append(os.Environ(), "MCP_API_URL=http://127.0.0.1:18743")
+		cmd.Stdin = strings.NewReader(payload)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if out := run(`{"tool_name":"WebFetch","tool_input":{"url":"http://127.0.0.1:18743/api/anything"}}`); !strings.Contains(out, `"deny"`) {
+		t.Errorf("API host fetch not refused: %q", out)
+	}
+	if out := run(`{"tool_name":"WebFetch","tool_input":{"url":"http://127.0.0.1:18744/api/anything"}}`); out != "" {
+		t.Errorf("other port refused: %q", out)
 	}
 }
 
@@ -120,7 +152,7 @@ func TestClaudeAddShellRedirectHookKeepsPersonsHooks(t *testing.T) {
 		t.Errorf("person's hook moved: %s", raw)
 	}
 	last := got.Hooks.PreToolUse[1]
-	if last.Matcher != "Bash" || len(last.Hooks) != 1 || !strings.Contains(last.Hooks[0].Command, "shell-redirect-") {
+	if last.Matcher != claudeShellRedirectMatcher || len(last.Hooks) != 1 || !strings.Contains(last.Hooks[0].Command, "shell-redirect-") {
 		t.Errorf("redirect hook missing: %s", raw)
 	}
 }
