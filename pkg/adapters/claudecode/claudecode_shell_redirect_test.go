@@ -232,3 +232,77 @@ func TestBuildClaudeArgsInstallsShellRedirectOnlyWithBridge(t *testing.T) {
 		t.Errorf("no bridge but settings were passed: %s", got)
 	}
 }
+
+func TestClaudeShellRedirectHookRefusesHostAndCredentialProbes(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	const tool = "mcp__api-bridge__execute_shell_command"
+	path, err := claudeWriteShellRedirectHook(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(command string) string {
+		payload, _ := json.Marshal(map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": command}})
+		cmd := exec.CommandContext(context.Background(), "node", path)
+		cmd.Env = append(os.Environ(), "MCP_API_URL=http://127.0.0.1:18743", "MCP_AGENT_SERVER_URL=https://agent.example.test:8443")
+		cmd.Stdin = strings.NewReader(string(payload))
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	refused := []string{
+		`for v in MCP_AUTH MCP_CUSTOM MCP_MCP MCP_API_TOKEN AGENTWORKS_TOKEN; do if [ -n "${!v}" ]; then echo "$v set"; else echo "$v unset"; fi; done; agentworks tools list; curl -sS -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18743/`,
+		`curl -sS http://127.0.0.1:18743/`,
+		`curl -sS http://localhost:18743/health`,
+		`curl https://agent.example.test:8443/x`,
+		`printenv MCP_AUTH`,
+		`env | grep MCP_CUSTOM`,
+		`echo $MCP_API_TOKEN`,
+		`test -n "$MCP_MCP" && echo yes`,
+		`[ -z "${MCP_AUTH}" ] && echo empty`,
+		`compgen -e | grep MCP_AUTH`,
+		`declare -p MCP_CUSTOM`,
+		`python3 -c "import os; print(os.environ.get('MCP_AUTH'))"`,
+	}
+	for _, c := range refused {
+		out := run(c)
+		var d struct {
+			Hook struct {
+				Decision string `json:"permissionDecision"`
+				Reason   string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal([]byte(out), &d); err != nil || d.Hook.Decision != "deny" {
+			t.Errorf("command %q not refused: %q", c, out)
+			continue
+		}
+		for _, want := range []string{tool, "mcp__api-bridge__search_tools", "mcp__api-bridge__get_api_spec", "MCP_API_TOKEN", "NOT mean the bridge is missing"} {
+			if !strings.Contains(d.Hook.Reason, want) {
+				t.Errorf("command %q: reason lacks %q: %s", c, want, d.Hook.Reason)
+			}
+		}
+		if len(d.Hook.Reason) > 700 {
+			t.Errorf("reason is %d chars", len(d.Hook.Reason))
+		}
+	}
+	allowed := []string{
+		`grep -rn MCP_AUTH code/`,
+		`cat code/x/agentworks_db.py`,
+		`python3 code/x/main.py`,
+		`ls`,
+		`git status`,
+		`curl -sS https://example.com/`,
+		`curl -sS http://127.0.0.1:18744/`,
+		`curl -sS http://127.0.0.1:187430/`,
+		`echo hello-ok && ls`,
+		`printenv HOME`,
+	}
+	for _, c := range allowed {
+		if out := run(c); out != "" {
+			t.Errorf("command %q was refused: %s", c, out)
+		}
+	}
+}

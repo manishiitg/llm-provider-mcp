@@ -35,21 +35,40 @@ const name = payload && typeof payload.tool_name === 'string' ? payload.tool_nam
 if (!['Bash', 'PowerShell', 'Monitor', 'WebFetch'].includes(name)) process.exit(0);
 const input = payload.tool_input || {};
 const platformRoute = /\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|\/tools\/(custom|virtual|mcp)\//;
+const credVar = /\bMCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b/;
+const envRead = /\$\{?[!A-Za-z_]|(^|[\s;|&(])(printenv|env|export|set)(\s|$)|compgen\s+-[a-zA-Z]*e|declare\s+-[a-zA-Z]*p|typeset\s+-[a-zA-Z]*p|\[\[?\s+-[nz]\s|\btest\s+-[nz]\s|os\.environ|getenv|process\.env|\$ENV\{|ENV\[/;
+const platformHosts = [];
+for (const key of ['MCP_API_URL', 'MCP_BRIDGE_API_URL', 'MCP_AGENT_SERVER_URL']) {
+  const raw = process.env[key];
+  if (!raw) continue;
+  try {
+    const u = new URL(raw);
+    if (u.port) {
+      platformHosts.push(u.host);
+      if (u.hostname === '127.0.0.1') platformHosts.push('localhost:' + u.port);
+      if (u.hostname === 'localhost') platformHosts.push('127.0.0.1:' + u.port);
+    }
+  } catch (_) {}
+}
+const hostRe = (h) => new RegExp('(^|[^A-Za-z0-9.])' + h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![0-9])', 'i');
+const mentionsPlatformHost = (text) => platformHosts.some((h) => hostRe(h).test(text));
 let hit = false;
 if (name === 'WebFetch') {
   const url = typeof input.url === 'string' ? input.url : JSON.stringify(input);
-  hit = platformRoute.test(url);
+  hit = platformRoute.test(url) || mentionsPlatformHost(url);
   const api = process.env.MCP_API_URL;
   if (!hit && api) {
     try { hit = new URL(url).host === new URL(api).host; } catch (_) {}
   }
 } else {
   const command = typeof input.command === 'string' ? input.command : JSON.stringify(input);
-  hit = platformRoute.test(command);
+  hit = platformRoute.test(command) || mentionsPlatformHost(command) || (credVar.test(command) && envRead.test(command));
 }
 if (!hit) process.exit(0);
 const tool = %s;
-process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through ' + tool + ': its shell has MCP_CUSTOM and MCP_AUTH.'}}) + '\n');
+const server = tool.replace(/__execute_shell_command$/, '');
+const reason = 'Refused: this shell is not the platform bridge. The variables MCP_AUTH, MCP_CUSTOM, MCP_MCP and MCP_API_TOKEN exist only inside the bridge shell, so their absence here is expected and does NOT mean the bridge is missing. The ' + server + '__* tools in your tool list are the working bridge. Run platform calls (including anything that needs those variables or the platform address) through ' + tool + '. To find a platform tool use ' + server + '__search_tools, then read its schema and route with ' + server + '__get_api_spec.';
+process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}) + '\n');
 `
 
 // claudeShellRedirectMatcher lists the native tools that run a command
