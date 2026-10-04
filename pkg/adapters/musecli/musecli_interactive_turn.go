@@ -418,6 +418,11 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		session = entry.tmuxName
 		musePersistentPool.Lock()
 		nativeIDAtLaunch = entry.nativeSessionID
+		// One-time resume note: only on the first real message after a `muse resume` launch of this terminal.
+		if entry.resumeNotePending && strings.TrimSpace(human) != "" {
+			entry.resumeNotePending = false
+			human = museWithResumeNote(human, true, entry.mcpJSON)
+		}
 		musePersistentPool.Unlock()
 		if nativeIDAtLaunch == "" {
 			human = museFreshHistoryPrompt(messages, human)

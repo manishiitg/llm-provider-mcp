@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,7 +204,7 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 			if err != nil {
 				return nil, err
 			}
-			if err := museAppendPreToolUseHook(settings, redirectPath); err != nil {
+			if err := museAppendPreToolUseHook(settings, redirectPath, museBridgeHostPorts(doc.MCPServers)...); err != nil {
 				return nil, err
 			}
 		}
@@ -645,7 +646,7 @@ func museBridgeCallLimit(entry json.RawMessage) json.RawMessage {
 
 // museAppendPreToolUseHook adds a node command hook for every tool to settings.hooks.PreToolUse,
 // keeping whatever the person already configured there.
-func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath string) error {
+func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath string, args ...string) error {
 	hooks := map[string]json.RawMessage{}
 	if rawHooks, ok := settings["hooks"]; ok {
 		if err := json.Unmarshal(rawHooks, &hooks); err != nil {
@@ -661,12 +662,16 @@ func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath stri
 			return fmt.Errorf("existing muse settings.json hooks.PreToolUse is not an array: %w", err)
 		}
 	}
+	command := "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'"
+	for _, arg := range args {
+		command += " '" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
 	hook, err := json.Marshal(map[string]interface{}{
 		"matcher": "*",
 		"hooks": []map[string]interface{}{
 			{
 				"type":    "command",
-				"command": "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'",
+				"command": command,
 				"timeout": 5,
 			},
 		},
@@ -687,6 +692,31 @@ func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath stri
 	return nil
 }
 
+// museBridgeHostPorts lists the platform's own host:port values the mounted bridge talks to. Muse starts
+// hooks with a scrubbed environment (proven live: no MCP_* variable reaches them), so the hosts travel as
+// command-line arguments. A host and port are not secrets; no token is ever passed.
+func museBridgeHostPorts(servers map[string]json.RawMessage) []string {
+	var out []string
+	for _, entry := range servers {
+		var server struct {
+			Env map[string]string `json:"env"`
+		}
+		if json.Unmarshal(entry, &server) != nil {
+			continue
+		}
+		if _, ok := server.Env["MCP_API_URL"]; !ok {
+			continue
+		}
+		for _, key := range []string{"MCP_API_URL", "MCP_BRIDGE_API_URL", "MCP_AGENT_SERVER_URL"} {
+			if u, err := url.Parse(strings.TrimSpace(server.Env[key])); err == nil && u.Host != "" && !slices.Contains(out, u.Host) {
+				out = append(out, u.Host)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // museHasBridgeServer reports whether the mounted servers include the AgentWorks bridge (the entry
 // whose env carries MCP_API_URL, as museBridgeCallLimit recognises it).
 func museHasBridgeServer(servers map[string]json.RawMessage) bool {
@@ -701,6 +731,26 @@ func museHasBridgeServer(servers map[string]json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// museResumeBridgeNote is delivered once with the first message of a resumed native conversation when the
+// bridge is mounted: the resumed history may say there is no bridge, which is out of date.
+const museResumeBridgeNote = "[AgentWorks note: the platform bridge is mounted for this run. Any earlier statement in this conversation that there is no bridge is out of date. Platform tools are the mcp__api_bridge__* tools in your tool list; call platform APIs through mcp__api_bridge__execute_shell_command, never in native bash.]"
+
+// museMCPJSONHasBridge reports whether an MCP config document mounts the AgentWorks bridge.
+func museMCPJSONHasBridge(mcpJSON string) bool {
+	var doc struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	return strings.TrimSpace(mcpJSON) != "" && json.Unmarshal([]byte(mcpJSON), &doc) == nil && museHasBridgeServer(doc.MCPServers)
+}
+
+// museWithResumeNote puts the note ahead of the user's text for a resumed run with the bridge mounted.
+func museWithResumeNote(human string, resumed bool, mcpJSON string) string {
+	if !resumed || !museMCPJSONHasBridge(mcpJSON) {
+		return human
+	}
+	return museResumeBridgeNote + "\n\n" + human
 }
 
 // museShellRedirectScript refuses a native bash/monitor/web_fetch call that targets the platform API and names the
@@ -719,18 +769,28 @@ const platformRoute = /\/tools\/(custom|virtual|mcp)\//;
 if (name === 'cron_create') {
   deny("Scheduling is done through the platform's Schedules, not with cron_create: a Muse cron runs unattended outside the platform's schedule controls and only while this session lives. Use the platform's schedule tools or ask the user.");
 }
-const shellRedirect = 'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.';
+const bridgeReason = 'Refused here: native tools have no platform credentials and no route to the platform. The variables MCP_AUTH, MCP_CUSTOM, MCP_MCP and MCP_API_TOKEN exist only inside the bridge shell, so their absence in this shell is expected and does NOT mean the bridge is missing. The tools in your tool list named mcp__api_bridge__* are the working bridge. Run platform calls through mcp__api_bridge__execute_shell_command (its shell has the credentials). To find a platform tool use mcp__api_bridge__search_tools, then read its schema and route with mcp__api_bridge__get_api_spec.';
+const credVar = /\bMCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b/;
+const envRead = /(^|[;&|(\x60]|\$\()\s*env\s*($|[;&|)\x60])|\bprintenv\b|\$\{!|\[\[?\s+-[nz]\b|\btest\s+-[nz]\b|\bcompgen\s+-[ev]\b|\b(declare|typeset)\s+-[pxg]+\b|\bexport\s+-p\b|\bos\.environ\b|\bos\.getenv\b|\bprocess\.env\b|\/proc\/[^\s]*\/environ|\b(echo|printf)\b[^\n]*\$/;
+const hostPorts = process.argv.slice(2).filter(function (a) { return a.length > 0; });
+for (const key of ['MCP_API_URL', 'MCP_BRIDGE_API_URL', 'MCP_AGENT_SERVER_URL']) {
+  const raw = process.env[key];
+  if (!raw) continue;
+  try { const h = new URL(raw).host; if (h) hostPorts.push(h); } catch (_) {}
+}
+function targetsPlatformHost(text) {
+  return hostPorts.some(function (h) { return text.indexOf(h) !== -1; });
+}
+function probesCredentials(command) {
+  return credVar.test(command) && envRead.test(command);
+}
 if (name === 'bash' || name === 'bash_input' || name === 'monitor') {
   const command = input && typeof input.command === 'string' ? input.command : JSON.stringify(input || {});
-  if (/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b/.test(command) || platformRoute.test(command)) deny(shellRedirect);
+  if (/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b/.test(command) || platformRoute.test(command) || targetsPlatformHost(command) || probesCredentials(command)) deny(bridgeReason);
 } else if (name === 'web_fetch') {
   const url = input && typeof input.url === 'string' ? input.url : JSON.stringify(input || {});
-  let hit = platformRoute.test(url);
-  const api = process.env.MCP_API_URL;
-  if (!hit && api) {
-    try { hit = new URL(url).host === new URL(api).host; } catch (_) {}
-  }
-  if (hit) deny('This fetch tool has no platform credentials, so a call to the platform API would fail with "missing or invalid Authorization header". Make the request through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.');
+  let hit = platformRoute.test(url) || targetsPlatformHost(url);
+  if (hit) deny(bridgeReason);
 }
 `
 

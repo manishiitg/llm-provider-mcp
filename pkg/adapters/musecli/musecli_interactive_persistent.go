@@ -71,7 +71,10 @@ type musePersistentSession struct {
 	mcpJSON            string
 	toolAllowlist      []string
 	nativeSessionID    string
-	logPath            string
+	// resumeNotePending: this terminal was launched with `muse resume` and the bridge is mounted; the next
+	// message carries museResumeBridgeNote once. Guarded by the pool lock.
+	resumeNotePending bool
+	logPath           string
 	// Stop can leave the interrupted prompt in Muse's composer. Record only
 	// our own last submission so the next turn can clear that exact draft.
 	lastSubmittedPrompt string
@@ -423,6 +426,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		return nil, false, err
 	}
 	entry = &musePersistentSession{accountFingerprint: llmtypes.CodingAgentScopeFingerprint(museAccount(ctx).opts), accountDataHome: museAccountDataHome(ctx), nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID, museAccountDataHome(ctx)), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
+	entry.resumeNotePending = strings.TrimSpace(resumeNativeID) != "" && museMCPJSONHasBridge(mcpJSON)
 	if wantAgents {
 		// Remember the requested prompt even when projection fell back to
 		// inline. Otherwise an oversized prompt would relaunch the same

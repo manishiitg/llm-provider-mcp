@@ -174,3 +174,126 @@ func TestApplyMCPConfigInstallsShellRedirectWithoutAnAllowlist(t *testing.T) {
 		t.Errorf("redirect hook installed without a bridge: %s", raw2)
 	}
 }
+
+func runHookWithEnv(t *testing.T, payload string, env ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	path, err := museWriteShellRedirectHook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), "node", path)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(payload)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func bashPayload(t *testing.T, tool, command string) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"tool_name": tool, "tool_input": map[string]string{"command": command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// A real jobsearch chat probed for the credentials in native bash, found none and concluded the bridge
+// was missing. Probing for them, or touching the platform host:port, is refused with the full reason.
+func TestShellRedirectHookRefusesCredentialProbingAndPlatformHost(t *testing.T) {
+	probe := `for v in MCP_AUTH MCP_CUSTOM MCP_MCP MCP_API_TOKEN AGENTWORKS_TOKEN; do if [ -n "${!v}" ]; then echo "$v set"; else echo "$v unset"; fi; done; agentworks tools list; curl -sS -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18743/`
+	refused := []string{
+		probe,
+		`printenv MCP_AUTH`,
+		`env | grep MCP_CUSTOM`,
+		`[ -z "$X" ] || test -n x; echo MCP_MCP`,
+		`test -n "${!name}" && echo MCP_API_TOKEN`,
+		`compgen -e | grep MCP_AUTH`,
+		`declare -p | grep MCP_MCP`,
+		`python3 -c 'import os; print(os.environ.get("MCP_AUTH"))'`,
+		`cat /proc/self/environ | tr '\0' '\n' | grep MCP_API_TOKEN`,
+		`curl -s http://127.0.0.1:18743/health`,
+		`agentworks tools list --server 127.0.0.1:18743`,
+	}
+	for _, tool := range []string{"bash", "bash_input", "monitor"} {
+		for _, command := range refused {
+			out := runHookWithEnv(t, bashPayload(t, tool, command), "MCP_API_URL=http://127.0.0.1:18743")
+			if !strings.Contains(out, `"deny"`) {
+				t.Errorf("%s %q was not refused: %q", tool, command, out)
+				continue
+			}
+			for _, want := range []string{"MCP_AUTH", "only inside the bridge shell", "mcp__api_bridge__execute_shell_command", "mcp__api_bridge__search_tools", "mcp__api_bridge__get_api_spec", "working bridge"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s %q: reason lacks %q: %s", tool, command, want, out)
+				}
+			}
+		}
+	}
+	var decision struct {
+		Hook struct {
+			Reason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	out := runHookWithEnv(t, bashPayload(t, "bash", probe))
+	if err := json.Unmarshal([]byte(out), &decision); err != nil {
+		t.Fatalf("probe without any URL env was not refused: %q", out)
+	}
+	if n := len(decision.Hook.Reason); n > 700 {
+		t.Errorf("reason is %d chars, want <= 700", n)
+	}
+	allowed := []string{
+		`grep -rn MCP_AUTH code/`,
+		`cat code/x/agentworks_db.py`,
+		`python3 code/x/main.py`,
+		`ls`,
+		`git status`,
+		`curl -s https://example.com/api`,
+		`curl -s http://127.0.0.1:9999/health`,
+		`env FOO=1 make build`,
+		`echo hello`,
+		`grep -n "MCP_CUSTOM" code/x/agentworks_db.py | head`,
+		`sed -n 1,20p README.md`,
+	}
+	for _, tool := range []string{"bash", "bash_input", "monitor"} {
+		for _, command := range allowed {
+			if out := runHookWithEnv(t, bashPayload(t, tool, command), "MCP_API_URL=http://127.0.0.1:18743"); out != "" {
+				t.Errorf("%s %q was refused: %s", tool, command, out)
+			}
+		}
+	}
+	// Each host variable counts, and web_fetch uses the same reason.
+	for _, key := range []string{"MCP_BRIDGE_API_URL", "MCP_AGENT_SERVER_URL"} {
+		out := runHookWithEnv(t, `{"tool_name":"web_fetch","tool_input":{"url":"http://localhost:4321/x"}}`, key+"=http://localhost:4321")
+		if !strings.Contains(out, "search_tools") {
+			t.Errorf("%s: web_fetch to the platform host not refused with the full reason: %q", key, out)
+		}
+	}
+}
+
+// A resumed conversation can carry old history that says there is no bridge. The note rides with the
+// message only for a resumed run with the bridge mounted, never for a fresh run or an unmounted one.
+func TestResumeBridgeNote(t *testing.T) {
+	bridge := `{"mcpServers":{"api-bridge":{"command":"/bin/true","env":{"MCP_API_URL":"http://127.0.0.1:1"}}}}`
+	other := `{"mcpServers":{"other":{"command":"/bin/true"}}}`
+	if got := museWithResumeNote("hello", true, bridge); got != museResumeBridgeNote+"\n\nhello" {
+		t.Errorf("resumed+bridge: %q", got)
+	}
+	for name, got := range map[string]string{
+		"fresh run":          museWithResumeNote("hello", false, bridge),
+		"no bridge mounted":  museWithResumeNote("hello", true, other),
+		"no mcp config":      museWithResumeNote("hello", true, ""),
+		"malformed mcp json": museWithResumeNote("hello", true, "{"),
+	} {
+		if got != "hello" {
+			t.Errorf("%s: prompt was altered: %q", name, got)
+		}
+	}
+	if !strings.Contains(museResumeBridgeNote, "out of date") || !strings.Contains(museResumeBridgeNote, "mcp__api_bridge__execute_shell_command") {
+		t.Errorf("note text changed: %q", museResumeBridgeNote)
+	}
+}

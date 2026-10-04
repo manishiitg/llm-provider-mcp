@@ -145,6 +145,8 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	if err != nil {
 		return nil, err
 	}
+	// exec resumes with --session-id: the old history may claim there is no bridge.
+	prompt = museWithResumeNote(prompt, museResumeSessionIDFromOptions(opts) != "", museMCPConfigFromOptions(opts))
 	model := strings.TrimSpace(a.modelID)
 	if strings.TrimSpace(opts.Model) != "" {
 		model = strings.TrimSpace(opts.Model)
