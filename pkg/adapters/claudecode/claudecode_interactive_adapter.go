@@ -902,7 +902,23 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 			tempFiles = append(tempFiles, sFiles...)
 			extraArgs = append(extraArgs, "--settings", settingsPath)
 		} else {
-			if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && strings.TrimSpace(settings) != "" {
+			mcpCfg, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
+			settings, _ := opts.Metadata.Custom[MetadataKeySettings].(string)
+			if claudeBridgeShellToolName(mcpCfg) != "" {
+				// Platform calls in the native Bash cannot work (no credentials);
+				// say so up front. Merged with the caller's own settings.
+				settingsMap := claudeLoadSettingsMap(settings)
+				if added, err := claudeAddShellRedirectHook(settingsMap, mcpCfg); err != nil {
+					return nil, nil, err
+				} else if added {
+					raw, err := json.Marshal(settingsMap)
+					if err != nil {
+						return nil, nil, err
+					}
+					settings = string(raw)
+				}
+			}
+			if strings.TrimSpace(settings) != "" {
 				settingsArg := settings
 				if strings.HasPrefix(strings.TrimSpace(settings), "{") {
 					settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", settings)
@@ -4926,6 +4942,14 @@ func (c *ClaudeCodeInteractiveAdapter) prepareStatusLineSettings(opts *llmtypes.
 					_ = json.Unmarshal(raw, &settingsMap)
 				}
 			}
+		}
+	}
+
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		mcpCfg, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
+		if _, err := claudeAddShellRedirectHook(settingsMap, mcpCfg); err != nil {
+			removeFiles(tempFiles)
+			return "", nil, err
 		}
 	}
 

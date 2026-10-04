@@ -163,6 +163,30 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		mcpConfigPath = configPath
 	}
 
+	// Full CLI mode keeps native Bash on, but only the bridge's shell has the
+	// platform credentials: refuse a platform call there and name the bridge
+	// shell tool. Settings go in a per-launch file, so nothing needs restoring.
+	var redirectSettingsPath string
+	if mcpConfigJSON != "" {
+		settingsMap := map[string]any{}
+		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+			if v, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok {
+				settingsMap = claudeLoadSettingsMap(v)
+			}
+		}
+		if added, hookErr := claudeAddShellRedirectHook(settingsMap, mcpConfigJSON); hookErr != nil {
+			return nil, fmt.Errorf("claude structured shell redirect: %w", hookErr)
+		} else if added {
+			raw, mErr := json.Marshal(settingsMap)
+			if mErr == nil {
+				if p, wErr := writeTempJSONConfig("claude-code-structured-settings-*.json", string(raw)); wErr == nil {
+					tempFiles = append(tempFiles, p)
+					redirectSettingsPath = p
+				}
+			}
+		}
+	}
+
 	// Project the system prompt into <workingDir>/CLAUDE.md, as the interactive
 	// adapter does. The prompt still goes through --append-system-prompt below:
 	// that is the structured transport's carrier and the stronger channel, so it
@@ -196,6 +220,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		freshSessionID = newClaudeNativeSessionID()
 	}
 	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	if redirectSettingsPath != "" {
+		args = append(args, "--settings", redirectSettingsPath)
+	}
 	args = append(args, claudeSeatbeltAddDirs(opts, workingDir)...)
 
 	if workingDir != "" {

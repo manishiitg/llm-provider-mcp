@@ -1,0 +1,202 @@
+package claudecode
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+)
+
+const redirectBridgeConfig = `{"mcpServers":{"api-bridge":{"command":"/bin/true","env":{"MCP_API_URL":"http://127.0.0.1:1"}}}}`
+
+func runClaudeShellRedirectHook(t *testing.T, toolName, payload string) string {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	path, err := claudeWriteShellRedirectHook(toolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), "node", path)
+	cmd.Stdin = strings.NewReader(payload)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hook exited with an error: %v", err)
+	}
+	return string(out)
+}
+
+func TestClaudeBridgeShellToolName(t *testing.T) {
+	if got := claudeBridgeShellToolName(redirectBridgeConfig); got != "mcp__api-bridge__execute_shell_command" {
+		t.Errorf("tool name = %q", got)
+	}
+	if got := claudeBridgeShellToolName(`{"mcpServers":{"my bridge.x":{"env":{"MCP_API_URL":"u"}}}}`); got != "mcp__my_bridge_x__execute_shell_command" {
+		t.Errorf("normalised tool name = %q", got)
+	}
+	for _, cfg := range []string{``, `not json`, `{"mcpServers":{"other":{"command":"x"}}}`} {
+		if got := claudeBridgeShellToolName(cfg); got != "" {
+			t.Errorf("config %q gave %q, want no bridge", cfg, got)
+		}
+	}
+}
+
+func TestClaudeShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.T) {
+	const tool = "mcp__api-bridge__execute_shell_command"
+	refused := []string{
+		`{"tool_name":"Bash","tool_input":{"command":"curl -s -X POST \"$MCP_CUSTOM/get_contract_upgrades\" -H \"$MCP_AUTH\" --json '{}'"}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"curl -s \"${MCP_CUSTOM}/x\""}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"curl http://127.0.0.1:18743/tools/custom/get_contract_upgrades --json '{}'"}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"curl http://localhost:1/tools/virtual/get_api_spec"}}`,
+	}
+	for _, payload := range refused {
+		out := runClaudeShellRedirectHook(t, tool, payload)
+		var decision struct {
+			Hook struct {
+				Event    string `json:"hookEventName"`
+				Decision string `json:"permissionDecision"`
+				Reason   string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal([]byte(out), &decision); err != nil {
+			t.Fatalf("payload %s: output %q is not a decision: %v", payload, out, err)
+		}
+		if decision.Hook.Event != "PreToolUse" || decision.Hook.Decision != "deny" {
+			t.Errorf("payload %s: decision = %+v, want a PreToolUse deny", payload, decision.Hook)
+		}
+		if !strings.Contains(decision.Hook.Reason, tool) {
+			t.Errorf("payload %s: reason %q does not name the bridge shell tool", payload, decision.Hook.Reason)
+		}
+	}
+	allowed := []string{
+		`{"tool_name":"Bash","tool_input":{"command":"ls -la && cat project/workflow.json"}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"curl -s https://example.com/api/tools-list"}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"echo $HOME"}}`,
+		`{"tool_name":"mcp__api-bridge__execute_shell_command","tool_input":{"command":"curl \"$MCP_CUSTOM/get_contract_upgrades\" -H \"$MCP_AUTH\""}}`,
+		`{"tool_name":"Read","tool_input":{"file_path":"/tools/custom/x"}}`,
+		`not json at all`,
+		``,
+	}
+	for _, payload := range allowed {
+		if out := runClaudeShellRedirectHook(t, tool, payload); out != "" {
+			t.Errorf("payload %q was refused: %s", payload, out)
+		}
+	}
+}
+
+func TestClaudeAddShellRedirectHookKeepsPersonsHooks(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	settings := claudeLoadSettingsMap(`{"model":"x","hooks":{"PreToolUse":[{"matcher":"Mine","hooks":[{"type":"command","command":"true"}]}],"Stop":[{"hooks":[]}]}}`)
+	added, err := claudeAddShellRedirectHook(settings, redirectBridgeConfig)
+	if err != nil || !added {
+		t.Fatalf("added=%v err=%v", added, err)
+	}
+	raw, _ := json.Marshal(settings)
+	var got struct {
+		Model string `json:"model"`
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+			Stop []json.RawMessage `json:"Stop"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "x" || len(got.Hooks.Stop) != 1 || len(got.Hooks.PreToolUse) != 2 {
+		t.Fatalf("settings not preserved: %s", raw)
+	}
+	if got.Hooks.PreToolUse[0].Matcher != "Mine" {
+		t.Errorf("person's hook moved: %s", raw)
+	}
+	last := got.Hooks.PreToolUse[1]
+	if last.Matcher != "Bash" || len(last.Hooks) != 1 || !strings.Contains(last.Hooks[0].Command, "shell-redirect-") {
+		t.Errorf("redirect hook missing: %s", raw)
+	}
+}
+
+func TestClaudeAddShellRedirectHookNeedsBridge(t *testing.T) {
+	settings := map[string]any{"model": "x"}
+	added, err := claudeAddShellRedirectHook(settings, `{"mcpServers":{"other":{"command":"x"}}}`)
+	if err != nil || added {
+		t.Fatalf("added=%v err=%v, want no hook without a bridge", added, err)
+	}
+	if _, ok := settings["hooks"]; ok {
+		t.Errorf("settings gained hooks without a bridge: %v", settings)
+	}
+}
+
+func TestClaudeAddShellRedirectHookRejectsMalformedHooks(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	if _, err := claudeAddShellRedirectHook(map[string]any{"hooks": "nope"}, redirectBridgeConfig); err == nil {
+		t.Error("expected an error for a non-object hooks value")
+	}
+}
+
+func TestClaudeLoadSettingsMapReadsFile(t *testing.T) {
+	path := t.TempDir() + "/s.json"
+	if err := os.WriteFile(path, []byte(`{"model":"y"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeLoadSettingsMap(path); got["model"] != "y" {
+		t.Errorf("got %v", got)
+	}
+	if got := claudeLoadSettingsMap(""); len(got) != 0 {
+		t.Errorf("got %v", got)
+	}
+}
+
+// The tmux launch carries the redirect in its --settings file, with or without
+// the status-line session, and a launch without a bridge gets no settings.
+func TestBuildClaudeArgsInstallsShellRedirectOnlyWithBridge(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	adapter := NewClaudeCodeInteractiveAdapter("claude-sonnet-4-6", &MockLogger{})
+	settingsOf := func(args []string) string {
+		for i, a := range args {
+			if a == "--settings" && i+1 < len(args) {
+				raw, err := os.ReadFile(args[i+1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(raw)
+			}
+		}
+		return ""
+	}
+	for _, session := range []string{"", "sess1"} {
+		opts := &llmtypes.CallOptions{}
+		WithMCPConfig(redirectBridgeConfig)(opts)
+		args, files, err := adapter.buildClaudeArgs(opts, session, "7aa21987-0003-4d71-b887-ad73e29d2faf", "p")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := settingsOf(args); !strings.Contains(got, "shell-redirect-") {
+			t.Errorf("session %q: settings %q lack the redirect hook", session, got)
+		}
+		removeFiles(files)
+	}
+	opts := &llmtypes.CallOptions{}
+	WithMCPConfig(`{"mcpServers":{"other":{"command":"x"}}}`)(opts)
+	args, files, err := adapter.buildClaudeArgs(opts, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer removeFiles(files)
+	if got := settingsOf(args); got != "" {
+		t.Errorf("no bridge but settings were passed: %s", got)
+	}
+}
