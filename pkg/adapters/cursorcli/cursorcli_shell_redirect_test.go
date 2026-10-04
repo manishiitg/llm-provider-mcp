@@ -49,7 +49,7 @@ func TestCursorShellRedirectHook(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &verdict); err != nil {
 			t.Fatalf("not JSON for %q: %q", command, out)
 		}
-		if verdict.Permission != "deny" || !strings.Contains(verdict.AgentMessage, "api-bridge-execute_shell_command") || !strings.Contains(verdict.AgentMessage, "missing or invalid Authorization header") {
+		if verdict.Permission != "deny" || !strings.Contains(verdict.AgentMessage, "api-bridge-execute_shell_command") || !strings.Contains(verdict.AgentMessage, "exist only in the api-bridge bridge shell") {
 			t.Errorf("%q not redirected: %q", command, out)
 		}
 	}
@@ -57,6 +57,57 @@ func TestCursorShellRedirectHook(t *testing.T) {
 		if out := runCursorShellHook(t, script, command); out != `{"permission":"allow"}` {
 			t.Errorf("%q must stay allowed, got %q", command, out)
 		}
+	}
+}
+
+func TestCursorShellRedirectProbesAndHostPort(t *testing.T) {
+	cursorDir := filepath.Join(t.TempDir(), ".cursor")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "api-bridge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	script := filepath.Join(cursorDir, "hooks", "mlp-allow-shell.sh")
+	run := func(command string, env ...string) string {
+		payload, _ := json.Marshal(map[string]interface{}{"command": command})
+		cmd := exec.CommandContext(context.Background(), "/bin/bash", script)
+		cmd.Env = append(os.Environ(), env...)
+		cmd.Stdin = strings.NewReader(string(payload))
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hook failed: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	probe := `for v in MCP_AUTH MCP_CUSTOM MCP_MCP MCP_API_TOKEN AGENTWORKS_TOKEN; do if [ -n "${!v}" ]; then echo "$v set"; else echo "$v unset"; fi; done; agentworks tools list; curl -sS -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18743/`
+	for _, command := range []string{
+		probe,
+		`printenv MCP_AUTH`,
+		`env | grep MCP_CUSTOM`,
+		`echo "$MCP_API_TOKEN"`,
+		`[ -z "$X" ] || test -n MCP_MCP`,
+		`compgen -e | grep MCP_AUTH`,
+		`declare -p MCP_CUSTOM`,
+		`curl http://127.0.0.1:18743/`,
+	} {
+		out := run(command, "MCP_API_URL=http://127.0.0.1:18743")
+		if !strings.Contains(out, `"permission":"deny"`) || !strings.Contains(out, "api-bridge-search_tools") || !strings.Contains(out, "api-bridge-get_api_spec") {
+			t.Errorf("%q must be refused, got %q", command, out)
+		}
+	}
+	for _, command := range []string{
+		"grep -rn MCP_AUTH code/", "cat code/x/agentworks_db.py", "python3 code/x/main.py",
+		"ls", "git status", "curl -s https://example.com/", "echo plainok", "env", "printenv HOME",
+	} {
+		if out := run(command, "MCP_API_URL=http://127.0.0.1:18743"); out != `{"permission":"allow"}` {
+			t.Errorf("%q must stay allowed, got %q", command, out)
+		}
+	}
+	if out := run("curl http://10.1.1.1:7/x", "MCP_BRIDGE_API_URL=http://10.1.1.1:7", "MCP_API_URL="); !strings.Contains(out, "deny") {
+		t.Errorf("MCP_BRIDGE_API_URL host:port not refused: %q", out)
+	}
+	if out := run("curl http://10.1.1.1:7/x", "MCP_AGENT_SERVER_URL=http://10.1.1.1:7"); !strings.Contains(out, "deny") {
+		t.Errorf("MCP_AGENT_SERVER_URL host:port not refused: %q", out)
 	}
 }
 

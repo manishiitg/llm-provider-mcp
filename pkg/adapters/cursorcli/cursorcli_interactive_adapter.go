@@ -1182,13 +1182,17 @@ func cursorShellAllowScript(bridgeName string) string {
 		return head + "cat >/dev/null\nprintf '%s\\n' '{\"permission\":\"allow\"}'\nexit 0\n"
 	}
 	tool := bridgeName + "-execute_shell_command"
-	msg := "This shell has no platform credentials, so this call would fail with \\\"missing or invalid Authorization header\\\". Run the same command through " + tool + " (the " + bridgeName + " MCP tool execute_shell_command): its shell has MCP_CUSTOM and MCP_AUTH."
+	msg := "This shell is not the platform shell: MCP_AUTH, MCP_CUSTOM, MCP_MCP and MCP_API_TOKEN exist only in the " + bridgeName + " bridge shell, so their absence here is expected and does not mean the bridge is missing. The " + bridgeName + " tools in your tool list are the working bridge. Run platform calls (and anything needing those variables or the platform address) through " + tool + ". Find a platform tool with " + bridgeName + "-search_tools, then read its schema and route with " + bridgeName + "-get_api_spec."
 	return head + `input=$(cat)
 cmd=$(printf '%s' "$input" | grep -oE '"(command|url)"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -2)
-hostport=$(printf '%s' "${MCP_API_URL:-}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
 hit=0
+for u in "${MCP_API_URL:-}" "${MCP_BRIDGE_API_URL:-}" "${MCP_AGENT_SERVER_URL:-}"; do
+  hostport=$(printf '%s' "$u" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
+  if [ -n "$hostport" ] && printf '%s' "$cmd" | grep -qF "$hostport"; then hit=1; fi
+done
+# Credential probing: names a platform variable AND reads the environment.
+if printf '%s' "$cmd" | grep -qE 'MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b' && printf '%s' "$cmd" | grep -qE 'printenv|(^|[^[:alnum:]_./-])env([^[:alnum:]_./=-]|$)|(echo|printf)[^|;&]*\$|\$\{![A-Za-z_]|\[+[[:space:]]*-[nz][[:space:]]|test[[:space:]]+-[nz][[:space:]]|compgen[[:space:]]+-e|declare[[:space:]]+-p'; then hit=1; fi
 if printf '%s' "$cmd" | grep -qE '\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/'; then hit=1; fi
-if [ -n "$hostport" ] && printf '%s' "$cmd" | grep -qF "$hostport"; then hit=1; fi
 if [ "$hit" = 1 ]; then
   printf '%s\n' '{"permission":"deny","user_message":"` + msg + `","agent_message":"` + msg + `"}'
   exit 0
