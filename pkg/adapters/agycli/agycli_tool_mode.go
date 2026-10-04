@@ -55,6 +55,13 @@ func agyShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
+// agyShellRedirectReason is shown to the agent when its native shell targets the
+// platform API. That shell has no platform credentials (they exist only in the
+// bridge's own shell), so the call could only fail; this names the tool that can
+// make it. It grants nothing and reveals nothing. No single quotes: it is
+// embedded in a quoted python literal.
+const agyShellRedirectReason = `This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through the call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) with ToolName execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.`
+
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
 // mcp_only fails closed for every native tool; Full CLI admits the CLI's
 // native toolset alongside MCP.
@@ -63,20 +70,25 @@ func agyToolModeHookCommand(python, mode string) string {
 	if agyFullNativeToolsMode(mode) {
 		fullEnabled = "True"
 	}
-	program := `import json,sys,signal
+	program := `import json,sys,signal,re
 def timeout(_signum,_frame):
     raise TimeoutError("AGY hook input timed out")
 if hasattr(signal,"SIGALRM"):
     signal.signal(signal.SIGALRM,timeout)
     signal.alarm(3)
+call={}
 try:
-    name=json.load(sys.stdin).get("toolCall",{}).get("name","")
+    call=json.load(sys.stdin).get("toolCall",{})
+    name=call.get("name","")
 except Exception:
     name=""
 if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
 allowed=isinstance(name,str) and bool(name) and (bridge or ` + fullEnabled + `)
+if ` + fullEnabled + ` and name=="run_command" and re.search(r'\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/',json.dumps(call)):
+    print(json.dumps({"decision":"deny","reason":'` + agyShellRedirectReason + `'}))
+    sys.exit(0)
 print(json.dumps({"decision":"allow" if allowed else "deny","reason":"Use the AgentWorks MCP bridge for this tool" if not allowed else ""}))`
 	// A missing or crashing interpreter still emits an explicit denial. The
 	// internal alarm returns before AGY's outer hook timeout fires.
