@@ -302,6 +302,11 @@ func copyFileAtomic(from, to, hint string) error {
 // binary's folder tree.
 func executableDirs(args []string) []string {
 	var dirs []string
+	// A launch may start with a shell prelude, `sh -c <script> <name> <arg> <real command...>` (Muse sweeps its probe folders first): the CLI is
+	// the command after it, not the shell, whose folder the baseline already grants.
+	if len(args) > 5 && args[0] == "sh" && args[1] == "-c" {
+		args = args[5:]
+	}
 	for _, arg := range args {
 		if arg == "env" || strings.Contains(arg, "=") {
 			continue

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -85,5 +86,23 @@ func musePreludeArgv(opts *llmtypes.CallOptions, argv []string) []string {
 		dir = os.TempDir()
 	}
 	out := []string{"sh", "-c", museSweepScript, "muse-sweep", dir}
-	return append(out, argv...)
+	return append(out, museArgvWithAbsoluteBinary(argv)...)
+}
+
+// museArgvWithAbsoluteBinary replaces the bare command name "muse" in argv with the path this process resolves it to. The sweep's `exec "$@"` runs inside the
+// slot, where sudo resets PATH to the system folders: a bare `muse` was not found there, so every confined Muse launch ended at once and the chat said
+// "muse tmux session died while waiting for muse TUI to settle" (Excellence, 2026-10-04). This process's PATH has the install folder. Without a match
+// argv is returned unchanged.
+func museArgvWithAbsoluteBinary(argv []string) []string {
+	out := append([]string(nil), argv...)
+	for i, arg := range out {
+		if arg != "muse" {
+			continue
+		}
+		if resolved, err := exec.LookPath("muse"); err == nil && filepath.IsAbs(resolved) {
+			out[i] = resolved
+		}
+		break
+	}
+	return out
 }
