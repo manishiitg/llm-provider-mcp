@@ -3,9 +3,11 @@ package agycli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,12 +62,17 @@ func agyShellQuote(s string) string {
 // bridge's own shell), so the call could only fail; this names the tool that can
 // make it. It grants nothing and reveals nothing. No single quotes: it is
 // embedded in a quoted python literal.
+const agyShellProbeReason = `Refused here: this shell has no platform credentials and no route to the platform. The variables MCP_AUTH, MCP_CUSTOM, MCP_MCP and MCP_API_TOKEN exist only inside the bridge shell, so their absence in this shell is expected and does NOT mean the bridge is missing. The call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) is the working bridge: run platform calls with ToolName execute_shell_command (its shell has the credentials).`
+
 const agyShellRedirectReason = `This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through the call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) with ToolName execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.`
 
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
 // mcp_only fails closed for every native tool; Full CLI admits the CLI's
 // native toolset alongside MCP.
-func agyToolModeHookCommand(python, mode string) string {
+//
+// hostPorts are the platform's own host:port values (not secrets); a native
+// shell command that names one is redirected like a credential use.
+func agyToolModeHookCommand(python, mode string, hostPorts ...string) string {
 	fullEnabled := "False"
 	if agyFullNativeToolsMode(mode) {
 		fullEnabled = "True"
@@ -86,13 +93,28 @@ if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
 allowed=isinstance(name,str) and bool(name) and (bridge or ` + fullEnabled + `)
-if ` + fullEnabled + ` and name=="run_command" and re.search(r'\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/',json.dumps(call)):
-    print(json.dumps({"decision":"deny","reason":'` + agyShellRedirectReason + `'}))
-    sys.exit(0)
+if ` + fullEnabled + ` and name=="run_command":
+    args=call.get("args")
+    command=args.get("CommandLine") if isinstance(args,dict) else None
+    if not isinstance(command,str):
+        command=json.dumps(call)
+    if re.search(r'\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/',command) or any(h in command for h in sys.argv[1:] if h):
+        print(json.dumps({"decision":"deny","reason":'` + agyShellRedirectReason + `'}))
+        sys.exit(0)
+    envread=r'(^|[;&|(\x60]|\$\()\s*env\s*($|[;&|)\x60])|\bprintenv\b|\$\{!|\[\[?\s+-[nz]\b|\btest\s+-[nz]\b|\bcompgen\s+-[ev]\b|\b(declare|typeset)\s+-[pxg]+\b|\bexport\s+-p\b|\bos\.environ\b|\bos\.getenv\b|\bprocess\.env\b|/proc/[^\s]*/environ|\b(echo|printf)\b[^\n]*\$'
+    if re.search(r'\bMCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b',command) and re.search(envread,command):
+        print(json.dumps({"decision":"deny","reason":'` + agyShellProbeReason + `'}))
+        sys.exit(0)
 print(json.dumps({"decision":"allow" if allowed else "deny","reason":"Use the AgentWorks MCP bridge for this tool" if not allowed else ""}))`
 	// A missing or crashing interpreter still emits an explicit denial. The
 	// internal alarm returns before AGY's outer hook timeout fires.
-	return agyShellQuote(python) + " -c " + agyShellQuote(program) +
+	command := agyShellQuote(python) + " -c " + agyShellQuote(program)
+	for _, hostPort := range hostPorts {
+		if hostPort = strings.TrimSpace(hostPort); hostPort != "" {
+			command += " " + agyShellQuote(hostPort)
+		}
+	}
+	return command +
 		" || printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"AGY tool gate failed\"}'"
 }
 
@@ -121,7 +143,7 @@ var agyWorkspaceHooks = struct {
 // removes only its own entry after the last turn/session releases it. AGY
 // 1.2.12 demonstrably runs workspace hooks with --dangerously-skip-permissions;
 // its global settings hooks were ignored in the same live probe.
-func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
+func agyHoldToolModeHook(workingDir, mode string, hostPorts ...string) (func(), error) {
 	if mode == "" {
 		return func() {}, nil
 	}
@@ -216,7 +238,7 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 			original = nil
 		}
 	}
-	entry := agyManagedToolHookEntry(python, mode)
+	entry := agyManagedToolHookEntry(python, mode, hostPorts...)
 	// AGY executes every workspace hook even with permissions skipped. A
 	// foreign hook can run arbitrary code before our tool gate, so the live
 	// file must contain only the managed gate. Preserve the user's bytes for
@@ -235,12 +257,12 @@ func agyHoldToolModeHook(workingDir, mode string) (func(), error) {
 	return agyToolModeReleaseFunc(workingDir), nil
 }
 
-func agyManagedToolHookEntry(python, mode string) map[string]interface{} {
+func agyManagedToolHookEntry(python, mode string, hostPorts ...string) map[string]interface{} {
 	return map[string]interface{}{
 		"PreToolUse": []interface{}{map[string]interface{}{
 			"matcher": "*",
 			"hooks": []interface{}{map[string]interface{}{
-				"type": "command", "command": agyToolModeHookCommand(python, mode), "timeout": 10,
+				"type": "command", "command": agyToolModeHookCommand(python, mode, hostPorts...), "timeout": 10,
 			}},
 		}},
 	}
@@ -483,4 +505,26 @@ func agyWriteHookBytes(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// agyBridgeHostPorts lists the platform host:port values the mounted bridge talks
+// to (a host and port are not secrets; no token is ever read).
+func agyBridgeHostPorts(mcpJSON string) []string {
+	servers, err := agyParseMCPServers(mcpJSON)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, server := range servers {
+		if _, ok := server.env["MCP_API_URL"]; !ok {
+			continue
+		}
+		for _, key := range []string{"MCP_API_URL", "MCP_BRIDGE_API_URL", "MCP_AGENT_SERVER_URL"} {
+			if u, err := url.Parse(strings.TrimSpace(server.env[key])); err == nil && u.Host != "" && !slices.Contains(out, u.Host) {
+				out = append(out, u.Host)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }

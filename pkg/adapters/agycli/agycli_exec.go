@@ -401,7 +401,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		return nil, err
 	}
 	defer cleanupSandbox()
-	releaseToolHook, err := agyHoldToolModeHook(workdir, toolMode)
+	releaseToolHook, err := agyHoldToolModeHook(workdir, toolMode, agyBridgeHostPorts(agyStringMetadata(opts, MetadataKeyMCPConfig))...)
 	if err != nil {
 		return nil, err
 	}

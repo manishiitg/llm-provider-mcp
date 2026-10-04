@@ -122,7 +122,7 @@ func ensureAgyInteractiveSessionForTurn(ctx context.Context, ownerSessionID, wor
 			return nil, err
 		}
 	}
-	releaseToolHook, err := agyHoldToolModeHook(workingDir, toolMode)
+	releaseToolHook, err := agyHoldToolModeHook(workingDir, toolMode, agyBridgeHostPorts(mcpJSON)...)
 	if err != nil {
 		if releaseMounts != nil {
 			releaseMounts()
