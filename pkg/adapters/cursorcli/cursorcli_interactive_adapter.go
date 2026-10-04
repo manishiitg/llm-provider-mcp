@@ -1184,14 +1184,31 @@ func cursorShellAllowScript(bridgeName string) string {
 	tool := bridgeName + "-execute_shell_command"
 	msg := "This shell has no platform credentials, so this call would fail with \\\"missing or invalid Authorization header\\\". Run the same command through " + tool + " (the " + bridgeName + " MCP tool execute_shell_command): its shell has MCP_CUSTOM and MCP_AUTH."
 	return head + `input=$(cat)
-cmd=$(printf '%s' "$input" | grep -oE '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -1)
-if printf '%s' "$cmd" | grep -qE '\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/'; then
+cmd=$(printf '%s' "$input" | grep -oE '"(command|url)"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -2)
+hostport=$(printf '%s' "${MCP_API_URL:-}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
+hit=0
+if printf '%s' "$cmd" | grep -qE '\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/'; then hit=1; fi
+if [ -n "$hostport" ] && printf '%s' "$cmd" | grep -qF "$hostport"; then hit=1; fi
+if [ "$hit" = 1 ]; then
   printf '%s\n' '{"permission":"deny","user_message":"` + msg + `","agent_message":"` + msg + `"}'
   exit 0
 fi
 printf '%s\n' '{"permission":"allow"}'
 exit 0
 `
+}
+
+// cursorPreToolRedirectEntry adds a second preToolUse entry (Full CLI + bridge
+// only) that runs the same redirect script for Shell, WebFetch and WebSearch.
+// Checked live (cursor-agent 2026.10.01): Cursor fires preToolUse for Shell
+// (also inside a Task subagent) but does NOT fire any hook for WebFetch or
+// WebSearch, so the web part is inert until Cursor does; the Shell part is
+// redundant with beforeShellExecution and harmless.
+func cursorPreToolRedirectEntry(fullNative bool, bridgeName string) string {
+	if !fullNative || bridgeName == "" {
+		return ""
+	}
+	return `, {"command": "./.cursor/hooks/mlp-allow-shell.sh", "matcher": "Shell|WebFetch|WebSearch", "failClosed": true}`
 }
 
 func writeCursorDenyBuiltinHooksWithBridge(cursorDir string, restorePrior, fullNative bool, bridgeName string) (func(), error) {
@@ -1239,7 +1256,7 @@ exit 0
 	hooksConfig := `{
   "version": 1,
   "hooks": {
-    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "` + cursorDeniedToolMatcher(fullNative) + `", "failClosed": true}],
+    "preToolUse": [{"command": "./.cursor/hooks/mlp-deny-builtin.sh", "matcher": "` + cursorDeniedToolMatcher(fullNative) + `", "failClosed": true}` + cursorPreToolRedirectEntry(fullNative, bridgeName) + `],
     "beforeShellExecution": [{"command": "` + cursorShellHookCommand(fullNative) + `", "failClosed": true}]` + cursorBeforeReadFileHook(fullNative) + `
   }
 }

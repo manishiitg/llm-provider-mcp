@@ -105,3 +105,73 @@ func TestCursorShellRedirectKeepsPersonsHooks(t *testing.T) {
 		t.Error("redirect script left behind")
 	}
 }
+
+func runCursorToolHook(t *testing.T, script string, toolInput map[string]interface{}, env ...string) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]interface{}{"tool_name": "WebFetch", "tool_input": toolInput, "hook_event_name": "preToolUse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), "/bin/bash", script)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(string(payload))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hook failed: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestCursorPreToolRedirectHookURLs(t *testing.T) {
+	cursorDir := filepath.Join(t.TempDir(), ".cursor")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "api-bridge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	raw, err := os.ReadFile(filepath.Join(cursorDir, "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Hooks map[string][]struct {
+			Command string `json:"command"`
+			Matcher string `json:"matcher"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("hooks.json invalid: %v\n%s", err, raw)
+	}
+	var redirect bool
+	for _, h := range cfg.Hooks["preToolUse"] {
+		if strings.HasSuffix(h.Command, "mlp-allow-shell.sh") && strings.Contains(h.Matcher, "WebFetch") {
+			redirect = true
+		}
+	}
+	if !redirect {
+		t.Fatalf("preToolUse redirect entry missing: %s", raw)
+	}
+	script := filepath.Join(cursorDir, "hooks", "mlp-allow-shell.sh")
+	for _, tc := range []struct {
+		in   map[string]interface{}
+		env  []string
+		deny bool
+	}{
+		{map[string]interface{}{"url": "https://rts.example.com/tools/custom/get_x"}, nil, true},
+		{map[string]interface{}{"url": "http://h/tools/mcp/x"}, nil, true},
+		{map[string]interface{}{"url": "http://10.0.0.5:8443/health"}, []string{"MCP_API_URL=http://10.0.0.5:8443"}, true},
+		{map[string]interface{}{"command": "curl $MCP_CUSTOM/x"}, nil, true},
+		{map[string]interface{}{"url": "http://10.0.0.5:8443/health"}, nil, false},
+		{map[string]interface{}{"url": "https://example.com/docs"}, []string{"MCP_API_URL=http://10.0.0.5:8443"}, false},
+		{map[string]interface{}{"query": "golang hooks"}, nil, false},
+	} {
+		out := runCursorToolHook(t, script, tc.in, tc.env...)
+		if tc.deny {
+			if !strings.Contains(out, `"permission":"deny"`) || !strings.Contains(out, "api-bridge-execute_shell_command") {
+				t.Errorf("%v not redirected: %q", tc.in, out)
+			}
+		} else if out != `{"permission":"allow"}` {
+			t.Errorf("%v must stay allowed, got %q", tc.in, out)
+		}
+	}
+}
