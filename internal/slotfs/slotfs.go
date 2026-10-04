@@ -496,3 +496,39 @@ func ShareTree(hint, root string) error {
 		return os.Chmod(path, mode)
 	})
 }
+
+// LatestLaunchStderrLine is the first line of the newest <slot run folder>/last-launch.stderr
+// written within maxAge, or "" (no slots, no such file, an empty one). The slot
+// launcher records there why a command it was asked to start did not run.
+func LatestLaunchStderrLine(maxAge time.Duration) string {
+	cfg, on := loadConfig()
+	if !on {
+		return ""
+	}
+	return latestLaunchStderrLineIn(cfg.SlotRunRoot, maxAge, time.Now())
+}
+
+func latestLaunchStderrLineIn(root string, maxAge time.Duration, now time.Time) string {
+	matches, _ := filepath.Glob(filepath.Join(root, "*", "last-launch.stderr"))
+	var newest string
+	var newestTime time.Time
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil || now.Sub(info.ModTime()) > maxAge || !info.ModTime().After(newestTime) {
+			continue
+		}
+		newest, newestTime = match, info.ModTime()
+	}
+	if newest == "" {
+		return ""
+	}
+	data, err := os.ReadFile(newest) // #nosec G304 -- the slot launcher's own log
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	if len(line) > 300 {
+		line = line[:300]
+	}
+	return strings.TrimSpace(line)
+}

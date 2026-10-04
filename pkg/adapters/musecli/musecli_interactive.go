@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"log"
 	"os/exec"
 	"regexp"
@@ -319,6 +320,11 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 			return "", err
 		}
 		if !museTmuxSessionAlive(ctx, session) {
+			if hint := slotfs.LatestLaunchStderrLine(2 * time.Minute); hint != "" {
+				// A session that dies at once is usually a command that never started
+				// (not found, permission denied); the slot launcher records why.
+				return "", fmt.Errorf("muse tmux session %q died while waiting for %s (launcher: %s)", session, waitDescription, hint)
+			}
 			return "", fmt.Errorf("muse tmux session %q died while waiting for %s", session, waitDescription)
 		}
 		p, err := museTmuxCapturePane(ctx, session)
