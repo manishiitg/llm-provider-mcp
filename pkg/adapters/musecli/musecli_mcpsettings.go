@@ -169,45 +169,24 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		if err != nil {
 			return nil, err
 		}
-		hooks := map[string]json.RawMessage{}
-		if rawHooks, ok := settings["hooks"]; ok {
-			if err := json.Unmarshal(rawHooks, &hooks); err != nil {
-				return nil, fmt.Errorf("existing muse settings.json hooks is not an object: %w", err)
+		if err := museAppendPreToolUseHook(settings, hookPath); err != nil {
+			return nil, err
+		}
+	}
+	// The bridge's credentials exist only in the bridge's own shell. Muse's native
+	// shell has none, so a platform call made there can only fail; the hook turns
+	// that failure into the instruction the agent needs (Full CLI mode has no
+	// allowlist hook, so this is installed on its own whenever the bridge is mounted).
+	if museHasBridgeServer(doc.MCPServers) {
+		if _, err := exec.LookPath("node"); err == nil {
+			redirectPath, err := museWriteShellRedirectHook()
+			if err != nil {
+				return nil, err
+			}
+			if err := museAppendPreToolUseHook(settings, redirectPath); err != nil {
+				return nil, err
 			}
 		}
-		if hooks == nil {
-			hooks = map[string]json.RawMessage{}
-		}
-		var preToolUse []json.RawMessage
-		if rawPreToolUse, ok := hooks["PreToolUse"]; ok {
-			if err := json.Unmarshal(rawPreToolUse, &preToolUse); err != nil {
-				return nil, fmt.Errorf("existing muse settings.json hooks.PreToolUse is not an array: %w", err)
-			}
-		}
-		policyHook, err := json.Marshal(map[string]interface{}{
-			"matcher": "*",
-			"hooks": []map[string]interface{}{
-				{
-					"type":    "command",
-					"command": "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'",
-					"timeout": 5,
-				},
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("marshal muse PreToolUse policy hook: %w", err)
-		}
-		preToolUse = append(preToolUse, policyHook)
-		preToolUseRaw, err := json.Marshal(preToolUse)
-		if err != nil {
-			return nil, fmt.Errorf("marshal muse settings.json hooks.PreToolUse: %w", err)
-		}
-		hooks["PreToolUse"] = preToolUseRaw
-		hooksRaw, err := json.Marshal(hooks)
-		if err != nil {
-			return nil, fmt.Errorf("marshal muse settings.json hooks: %w", err)
-		}
-		settings["hooks"] = hooksRaw
 	}
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
@@ -633,4 +612,107 @@ func museBridgeCallLimit(entry json.RawMessage) json.RawMessage {
 		return entry
 	}
 	return out
+}
+
+// museAppendPreToolUseHook adds a node command hook for every tool to settings.hooks.PreToolUse,
+// keeping whatever the person already configured there.
+func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath string) error {
+	hooks := map[string]json.RawMessage{}
+	if rawHooks, ok := settings["hooks"]; ok {
+		if err := json.Unmarshal(rawHooks, &hooks); err != nil {
+			return fmt.Errorf("existing muse settings.json hooks is not an object: %w", err)
+		}
+	}
+	if hooks == nil {
+		hooks = map[string]json.RawMessage{}
+	}
+	var preToolUse []json.RawMessage
+	if rawPreToolUse, ok := hooks["PreToolUse"]; ok {
+		if err := json.Unmarshal(rawPreToolUse, &preToolUse); err != nil {
+			return fmt.Errorf("existing muse settings.json hooks.PreToolUse is not an array: %w", err)
+		}
+	}
+	hook, err := json.Marshal(map[string]interface{}{
+		"matcher": "*",
+		"hooks": []map[string]interface{}{
+			{
+				"type":    "command",
+				"command": "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'",
+				"timeout": 5,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal muse PreToolUse hook: %w", err)
+	}
+	preToolUseRaw, err := json.Marshal(append(preToolUse, hook))
+	if err != nil {
+		return fmt.Errorf("marshal muse settings.json hooks.PreToolUse: %w", err)
+	}
+	hooks["PreToolUse"] = preToolUseRaw
+	hooksRaw, err := json.Marshal(hooks)
+	if err != nil {
+		return fmt.Errorf("marshal muse settings.json hooks: %w", err)
+	}
+	settings["hooks"] = hooksRaw
+	return nil
+}
+
+// museHasBridgeServer reports whether the mounted servers include the AgentWorks bridge (the entry
+// whose env carries MCP_API_URL, as museBridgeCallLimit recognises it).
+func museHasBridgeServer(servers map[string]json.RawMessage) bool {
+	for _, entry := range servers {
+		var server struct {
+			Env map[string]string `json:"env"`
+		}
+		if json.Unmarshal(entry, &server) == nil {
+			if _, ok := server.Env["MCP_API_URL"]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// museShellRedirectScript refuses a native `bash` call that targets the platform API and names the
+// tool that can make it. It never blocks anything else, reveals no secret and grants nothing.
+const museShellRedirectScript = `const fs = require('fs');
+let payload = {};
+try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}
+const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';
+if (name !== 'bash' && name !== 'bash_input') process.exit(0);
+const input = payload.tool_input;
+const command = input && typeof input.command === 'string' ? input.command : JSON.stringify(input || {});
+if (!/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|\/tools\/(custom|virtual|mcp)\//.test(command)) process.exit(0);
+process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.'}}) + '\n');
+`
+
+func museWriteShellRedirectHook() (string, error) {
+	digest := sha256.Sum256([]byte(museShellRedirectScript))
+	dir, err := museHookDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("shell-redirect-%x.js", digest[:8]))
+	tmp, err := os.CreateTemp(dir, ".shell-redirect-*")
+	if err != nil {
+		return "", fmt.Errorf("create muse shell redirect hook: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(museShellRedirectScript); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write muse shell redirect hook: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close muse shell redirect hook: %w", err)
+	}
+	if slotfs.On() {
+		if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+			return "", fmt.Errorf("share muse shell redirect hook: %w", err)
+		}
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return "", fmt.Errorf("publish muse shell redirect hook: %w", err)
+	}
+	return path, nil
 }
