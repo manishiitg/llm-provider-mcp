@@ -154,7 +154,8 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, fullNat
 		guidance = strings.TrimSpace(`Cursor session rules:
 - Your own Shell, Read, List, Glob, Grep, Search, Edit and Write tools are enabled; use them directly for files and commands (delete files with the shell, e.g. rm; the Delete tool is denied). They run inside this session's sandbox: only the folders granted to this chat are reachable, and protected files (a workflow's planning/, its raw database, instruction files) are refused even inside them.
 - Use the api-bridge MCP tools for platform actions, integrations, the workflow database and anything outside your folders.
-- Computer use, screen recording and image tools are denied. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session.`)
+- Computer use, screen recording and image tools are denied. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session.
+- Do not use Cursor's own goal tools (CreateGoal, UpdateGoal) or its AskQuestion tool. Goals and scheduling belong to the platform. When you need a decision from the person, ask in your reply, or call the clarification tool if one is in your tool list; a chat nobody is watching must never wait on a question.`)
 	}
 	if strings.TrimSpace(systemPrompt) == "" {
 		return guidance

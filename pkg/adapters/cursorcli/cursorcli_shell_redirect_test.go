@@ -226,3 +226,18 @@ func TestCursorPreToolRedirectHookURLs(t *testing.T) {
 		}
 	}
 }
+
+// Cursor's own goal tools and AskQuestion fire no hook, so they cannot be refused; the Full-mode guidance
+// tells the agent not to use them (goals and scheduling are the platform's, and an unwatched chat must
+// never wait on a question).
+func TestCursorFullModeGuidanceTellsTheAgentNotToUseGoalsOrAskQuestion(t *testing.T) {
+	full := cursorBridgeOnlySystemPrompt("", true, true)
+	for _, want := range []string{"CreateGoal", "UpdateGoal", "AskQuestion", "nobody is watching"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("Full-mode guidance does not mention %q: %s", want, full)
+		}
+	}
+	if bridgeOnly := cursorBridgeOnlySystemPrompt("", true); strings.Contains(bridgeOnly, "CreateGoal") {
+		t.Errorf("bridge-only guidance should be unchanged: %s", bridgeOnly)
+	}
+}
