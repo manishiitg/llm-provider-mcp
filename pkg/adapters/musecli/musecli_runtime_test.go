@@ -116,3 +116,10 @@ func TestMuseRejectedNotice(t *testing.T) {
 		}
 	}
 }
+
+func TestMuseRuntimeEnvDisablesAutoUpdateWhenConfined(t *testing.T) {
+	opts := &llmtypes.CallOptions{}
+	if env := museRuntimeEnv(opts); env != nil {
+		t.Fatalf("an unconfined launch keeps Muse's defaults, got %v", env)
+	}
+}

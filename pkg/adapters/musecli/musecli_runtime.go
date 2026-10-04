@@ -52,8 +52,11 @@ func museRuntimeDirFor(privateHome string) (string, error) {
 	return link, nil
 }
 
-// museRuntimeEnv is the XDG_RUNTIME_DIR entry for a Landlock-confined launch
-// ("" elsewhere: on a Mac or an unconfined run Muse's own default works).
+// museRuntimeEnv is the environment of a Landlock-confined launch ("" elsewhere:
+// on a Mac or an unconfined run Muse's own defaults work): XDG_RUNTIME_DIR, and
+// MUSE_NO_AUTO_UPDATE, because the wrapper's update-check stamp lives beside the
+// shared binary, which the slot cannot write. The platform updates Muse itself;
+// without this every start prints "Permission denied" from the wrapper.
 func museRuntimeEnv(opts *llmtypes.CallOptions) []string {
 	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
 		return nil
@@ -62,7 +65,7 @@ func museRuntimeEnv(opts *llmtypes.CallOptions) []string {
 	if err != nil || dir == "" {
 		return nil
 	}
-	return []string{"XDG_RUNTIME_DIR=" + dir}
+	return []string{"XDG_RUNTIME_DIR=" + dir, "MUSE_NO_AUTO_UPDATE=1"}
 }
 
 // museProbePrefix is the folder Muse creates in its temp folder at every start
