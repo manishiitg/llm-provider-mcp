@@ -483,7 +483,7 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		if took {
 			// A rejection ("Message not sent") also changes the pane, so it counts
 			// as having "taken effect"; look for the notice before trusting it.
-			rejected, rejErr := museSubmitRejected(ctx, session)
+			rejected, rejErr := museSubmitRejected(ctx, session, beforePane)
 			if rejErr != nil {
 				return rejErr
 			}
@@ -532,8 +532,10 @@ func museRejectedNotice(pane string) bool {
 	return strings.Contains(strings.ToLower(pane), "message not sent")
 }
 
-// museSubmitRejected looks at the pane a moment after Enter for that notice.
-func museSubmitRejected(ctx context.Context, session string) (bool, error) {
+// museSubmitRejected looks at the pane a moment after Enter for that notice. beforePane is the pane just before Enter: a notice left on screen by an
+// EARLIER refusal must not count, or an accepted message is judged refused, cleared and typed again, and every copy then runs (the same message ran
+// three times or more on Excellence, 2026-10-04).
+func museSubmitRejected(ctx context.Context, session, beforePane string) (bool, error) {
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -543,7 +545,43 @@ func museSubmitRejected(ctx context.Context, session string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("capture pane after Enter: %w", err)
 	}
-	return museRejectedNotice(pane), nil
+	return museRefusedThisSubmit(beforePane, pane), nil
+}
+
+// museRefusedThisSubmit decides whether the Enter just sent was refused. A refusal shows the notice and leaves the text in the input box, so the notice
+// must be there and either be new (more of them than before Enter) or the input box must still hold text. A stale notice above an empty input is an
+// accepted message.
+func museRefusedThisSubmit(before, after string) bool {
+	if !museRejectedNotice(after) {
+		return false
+	}
+	return museNoticeCount(after) > museNoticeCount(before) || museInputBoxHasText(after)
+}
+
+func museNoticeCount(pane string) int {
+	return strings.Count(strings.ToLower(pane), "message not sent")
+}
+
+// museInputBoxHasText reports whether the input box (the area between the last two horizontal rules above the status line) holds more than its prompt
+// marker. A pane without two rules reports false.
+func museInputBoxHasText(pane string) bool {
+	lines := strings.Split(pane, "\n")
+	var rules []int
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("─", 8)) {
+			rules = append(rules, i)
+		}
+	}
+	if len(rules) < 2 {
+		return false
+	}
+	for _, line := range lines[rules[len(rules)-2]+1 : rules[len(rules)-1]] {
+		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯"))
+		if text != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func museSubmitKeys() []string {
