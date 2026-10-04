@@ -674,17 +674,35 @@ func museHasBridgeServer(servers map[string]json.RawMessage) bool {
 	return false
 }
 
-// museShellRedirectScript refuses a native `bash` call that targets the platform API and names the
-// tool that can make it. It never blocks anything else, reveals no secret and grants nothing.
+// museShellRedirectScript refuses a native bash/monitor/web_fetch call that targets the platform API and names the
+// tool that can make it, and refuses cron_create outright (scheduling belongs to the platform). It
+// blocks nothing else, reveals no secret and grants nothing.
 const museShellRedirectScript = `const fs = require('fs');
 let payload = {};
 try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}
 const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';
-if (name !== 'bash' && name !== 'bash_input') process.exit(0);
-const input = payload.tool_input;
-const command = input && typeof input.command === 'string' ? input.command : JSON.stringify(input || {});
-if (!/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|\/tools\/(custom|virtual|mcp)\//.test(command)) process.exit(0);
-process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.'}}) + '\n');
+const input = payload && payload.tool_input;
+function deny(reason) {
+  process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}) + '\n');
+  process.exit(0);
+}
+const platformRoute = /\/tools\/(custom|virtual|mcp)\//;
+if (name === 'cron_create') {
+  deny("Scheduling is done through the platform's Schedules, not with cron_create: a Muse cron runs unattended outside the platform's schedule controls and only while this session lives. Use the platform's schedule tools or ask the user.");
+}
+const shellRedirect = 'This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.';
+if (name === 'bash' || name === 'bash_input' || name === 'monitor') {
+  const command = input && typeof input.command === 'string' ? input.command : JSON.stringify(input || {});
+  if (/\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b/.test(command) || platformRoute.test(command)) deny(shellRedirect);
+} else if (name === 'web_fetch') {
+  const url = input && typeof input.url === 'string' ? input.url : JSON.stringify(input || {});
+  let hit = platformRoute.test(url);
+  const api = process.env.MCP_API_URL;
+  if (!hit && api) {
+    try { hit = new URL(url).host === new URL(api).host; } catch (_) {}
+  }
+  if (hit) deny('This fetch tool has no platform credentials, so a call to the platform API would fail with "missing or invalid Authorization header". Make the request through mcp__api_bridge__execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.');
+}
 `
 
 func museWriteShellRedirectHook() (string, error) {

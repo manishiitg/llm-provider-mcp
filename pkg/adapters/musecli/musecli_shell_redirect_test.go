@@ -36,6 +36,9 @@ func TestShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.T) {
 		`{"tool_name":"bash","tool_input":{"command":"curl -s \"${MCP_CUSTOM}/x\""}}`,
 		`{"tool_name":"bash","tool_input":{"command":"curl http://127.0.0.1:18743/tools/custom/get_contract_upgrades --json '{}'"}}`,
 		`{"tool_name":"bash_input","tool_input":{"command":"curl http://localhost:1/tools/virtual/get_api_spec"}}`,
+		`{"tool_name":"monitor","tool_input":{"command":"while true; do curl -s \"$MCP_CUSTOM/poll\"; sleep 5; done"}}`,
+		`{"tool_name":"web_fetch","tool_input":{"url":"http://127.0.0.1:1/tools/custom/get_contract_upgrades"}}`,
+		`{"tool_name":"cron_create","tool_input":{"cron":"* * * * *","prompt":"echo hi"}}`,
 	}
 	for _, payload := range refused {
 		out := runShellRedirectHook(t, payload)
@@ -52,8 +55,12 @@ func TestShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.T) {
 		if decision.Hook.Event != "PreToolUse" || decision.Hook.Decision != "deny" {
 			t.Errorf("payload %s: decision = %+v, want a PreToolUse deny", payload, decision.Hook)
 		}
-		if !strings.Contains(decision.Hook.Reason, "mcp__api_bridge__execute_shell_command") {
-			t.Errorf("payload %s: reason %q does not name the bridge shell tool", payload, decision.Hook.Reason)
+		want := "mcp__api_bridge__execute_shell_command"
+		if strings.Contains(payload, "cron_create") {
+			want = "platform's Schedules"
+		}
+		if !strings.Contains(decision.Hook.Reason, want) {
+			t.Errorf("payload %s: reason %q does not contain %q", payload, decision.Hook.Reason, want)
 		}
 	}
 	allowed := []string{
@@ -61,6 +68,10 @@ func TestShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.T) {
 		`{"tool_name":"bash","tool_input":{"command":"curl -s https://example.com/api/tools-list"}}`,
 		`{"tool_name":"bash","tool_input":{"command":"echo $HOME"}}`,
 		`{"tool_name":"mcp__api_bridge__execute_shell_command","tool_input":{"command":"curl \"$MCP_CUSTOM/get_contract_upgrades\" -H \"$MCP_AUTH\""}}`,
+		`{"tool_name":"monitor","tool_input":{"command":"tail -f build.log"}}`,
+		`{"tool_name":"web_fetch","tool_input":{"url":"https://example.com/tools-list"}}`,
+		`{"tool_name":"cron_list","tool_input":{}}`,
+		`{"tool_name":"cron_delete","tool_input":{"id":"1"}}`,
 		`{"tool_name":"read_file","tool_input":{"path":"/tools/custom/x"}}`,
 		`not json at all`,
 		``,
@@ -69,6 +80,33 @@ func TestShellRedirectHookRefusesOnlyPlatformCallsInNativeBash(t *testing.T) {
 		if out := runShellRedirectHook(t, payload); out != "" {
 			t.Errorf("payload %q was refused: %s", payload, out)
 		}
+	}
+}
+
+// web_fetch to the host:port of MCP_API_URL is refused too, when the hook process has it.
+func TestShellRedirectHookRefusesWebFetchToTheAPIHost(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	path, err := museWriteShellRedirectHook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(url string) string {
+		cmd := exec.CommandContext(context.Background(), "node", path)
+		cmd.Env = append(os.Environ(), "MCP_API_URL=http://127.0.0.1:18743")
+		cmd.Stdin = strings.NewReader(`{"tool_name":"web_fetch","tool_input":{"url":"` + url + `"}}`)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if out := run("http://127.0.0.1:18743/api/anything"); !strings.Contains(out, `"deny"`) {
+		t.Errorf("API host fetch not refused: %q", out)
+	}
+	if out := run("http://127.0.0.1:9999/api/anything"); out != "" {
+		t.Errorf("other port refused: %q", out)
 	}
 }
 
