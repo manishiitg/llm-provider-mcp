@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,13 +148,16 @@ type claudeInteractivePersistentSession struct {
 	// LAUNCHED with. A retained CLI applies its environment once, so without
 	// this a later turn's narrower scope never reaches the running process.
 	scopeFingerprint string
-	workingDir       string
-	tempFiles        []string
-	idleLease        sessionlease.Lease
-	initErr          error
-	createdAt        time.Time
-	mu               sync.Mutex
-	retainedProgress claudeRetainedProgress
+	// Native tools and hooks are also fixed at launch. Attended turns must
+	// replace an older process before enabling or removing question handling.
+	toolConfigFingerprint string
+	workingDir            string
+	tempFiles             []string
+	idleLease             sessionlease.Lease
+	initErr               error
+	createdAt             time.Time
+	mu                    sync.Mutex
+	retainedProgress      claudeRetainedProgress
 	// pendingDurable scopes durability proofs per send; guarded by
 	// durableMu (never session.mu — the watcher runs concurrent with
 	// a turn that owns mu for its full lifetime).
@@ -2628,9 +2632,9 @@ func clearClaudePromptDraftBeforePaste(ctx context.Context, sessionName string) 
 			captured = recaptured
 		}
 	}
-	// Claude's question-menu tool (AskUserQuestion) is not in the session's
-	// --tools list in either agent-tools mode, so no question menu can be
-	// open here; nothing is cancelled with Escape.
+	// Attended AgentWorks chats route AskUserQuestion through a PreToolUse
+	// hook that waits for the chat UI's answers. Never cancel a question with
+	// Escape merely to clear the composer.
 	draft, shouldClear := claudePromptDraftToClearBeforePaste(captured)
 	if !shouldClear {
 		// Only the ❯ line is read, so blank lines left in a multi-line
@@ -4455,6 +4459,45 @@ func claudeWorkingDirFromOptions(opts *llmtypes.CallOptions) string {
 	return ""
 }
 
+func claudeToolConfigFingerprint(opts *llmtypes.CallOptions) string {
+	config := map[string]string{}
+	if opts != nil && opts.Metadata != nil {
+		for _, key := range []string{MetadataKeyTools, MetadataKeyAllowedTools, MetadataKeySettings} {
+			if value, ok := opts.Metadata.Custom[key].(string); ok {
+				value = strings.TrimSpace(value)
+				if key == MetadataKeySettings && value != "" {
+					if !strings.HasPrefix(value, "{") {
+						if data, err := os.ReadFile(value); err == nil {
+							value = string(data)
+						}
+					}
+					var settings map[string]interface{}
+					if json.Unmarshal([]byte(value), &settings) == nil {
+						data, _ := json.Marshal(settings)
+						value = string(data)
+					}
+				}
+				config[key] = value
+			}
+		}
+	}
+	data, _ := json.Marshal(config)
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+func claudeOptionsResumingNativeSession(opts *llmtypes.CallOptions, sessionID string) *llmtypes.CallOptions {
+	copy := *opts
+	metadata := llmtypes.Metadata{}
+	if opts.Metadata != nil {
+		metadata = *opts.Metadata
+		metadata.Custom = maps.Clone(opts.Metadata.Custom)
+	}
+	copy.Metadata = &metadata
+	WithResumeSessionID(sessionID)(&copy)
+	return &copy
+}
+
 // acquirePersistentInteractiveSession returns with session.mu held. The caller
 // must releaseClaudePersistentInteractiveSession on normal completion, or mark,
 // unlock, and clean up the session on a ready-prompt failure.
@@ -4468,14 +4511,15 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	session, created, ok := claudeInteractivePersistentRegistry.GetOrCreate(ownerSessionID, func() *claudeInteractivePersistentSession {
 		sessionName := newTmuxSessionName()
 		session := &claudeInteractivePersistentSession{
-			ownerSessionID:   ownerSessionID,
-			tmuxSessionName:  sessionName,
-			nativeSessionID:  nativeSessionID,
-			authFingerprint:  c.authFingerprint,
-			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
-			workingDir:       strings.TrimSpace(workingDir),
-			accountHome:      llmtypes.CLIHomeEnvironment(opts)["HOME"],
-			createdAt:        now,
+			ownerSessionID:        ownerSessionID,
+			tmuxSessionName:       sessionName,
+			nativeSessionID:       nativeSessionID,
+			authFingerprint:       c.authFingerprint,
+			scopeFingerprint:      llmtypes.CodingAgentScopeFingerprint(opts),
+			toolConfigFingerprint: claudeToolConfigFingerprint(opts),
+			workingDir:            strings.TrimSpace(workingDir),
+			accountHome:           llmtypes.CLIHomeEnvironment(opts)["HOME"],
+			createdAt:             now,
 		}
 		session.mu.Lock()
 		return session
@@ -4501,6 +4545,18 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
 			session.mu.Unlock()
 			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code credential scope changed", c.logger)
+			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
+		}
+		if session.toolConfigFingerprint != claudeToolConfigFingerprint(opts) {
+			// Resume the same transcript after changing launch settings. Copy the
+			// options because callers may reuse them for another turn.
+			resumeSessionID := session.nativeSessionID
+			session.mu.Unlock()
+			closeClaudePersistentInteractiveSession(ownerSessionID, "Claude Code native tools or hooks changed", c.logger)
+			if resumeSessionID != "" {
+				opts = claudeOptionsResumingNativeSession(opts, resumeSessionID)
+				nativeSessionID = resumeSessionID
+			}
 			return c.acquirePersistentInteractiveSession(ctx, ownerSessionID, nativeSessionID, opts, systemPrompt, workingDir)
 		}
 		if session.initErr != nil {
