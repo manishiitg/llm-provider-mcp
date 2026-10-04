@@ -445,7 +445,6 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 	prompt = museTerminalPrompt(prompt)
 	const maxSubmitAttempts = 3
 	start := time.Now()
-	rejections := 0
 	for attempt := 1; ; attempt++ {
 		stage := time.Now()
 		if err := museWaitLiveInputComposer(ctx, session); err != nil {
@@ -481,34 +480,15 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		log.Printf("[LATENCY_DEBUG] muse submit | session=%s attempt=%d composer=%dms draft=%dms settle=%dms settled=%v enter_confirm=%dms took=%v total=%dms runes=%d",
 			session, attempt, composer.Milliseconds(), draft.Milliseconds(), settle.Milliseconds(), settled, time.Since(stage).Milliseconds(), took, time.Since(start).Milliseconds(), utf8.RuneCountInString(prompt))
 		if took {
-			// A rejection ("Message not sent") also changes the pane, so it counts
-			// as having "taken effect"; look for the notice before trusting it.
-			rejected, rejErr := museSubmitRejected(ctx, session, beforePane)
-			if rejErr != nil {
-				return rejErr
+			// Durable-ack P0 (docs/refactor/durable_ack_p0.md in the builder, PLAT-352): attempt once, report the truth. Once Enter took effect nothing is
+			// typed or submitted again from here, and the pane never decides delivery. A footer notice ("Message not sent -- another run is still
+			// starting") also changes the pane; it is only logged. museWaitIntake observes the native session.jsonl for the intake record, with its
+			// slow-start allowance, and says "unconfirmed" if it never comes. Retyping on that notice ran one message three or more times
+			// (Excellence, 2026-10-04), the duplicate-submission risk the document records.
+			if pane, paneErr := museTmuxCapturePane(ctx, session); paneErr == nil && museRejectedNotice(pane) {
+				log.Printf("[MUSE_SUBMIT_NOTICE] session=%s Muse showed \"Message not sent\"; not retyping, waiting for durable intake", session)
 			}
-			if !rejected {
-				return nil
-			}
-			rejections++
-			if rejections > museMaxSubmitRejections {
-				return fmt.Errorf("muse refused the message %d times (\"another run is still starting\")", rejections)
-			}
-			// The run behind a resume is still re-attaching. Wait it out (longer each
-			// time), clear the text it left in the input, and type it again; this
-			// does not use up a submit attempt.
-			delay := time.Duration(rejections) * 4 * time.Second
-			log.Printf("[MUSE_SUBMIT_REJECTED] session=%s rejection=%d waiting %s for the run to start", session, rejections, delay)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
-			if out, err := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u").CombinedOutput(); err != nil {
-				return fmt.Errorf("tmux clear input after a rejected message: %w\n%s", err, out)
-			}
-			attempt--
-			continue
+			return nil
 		}
 		if attempt >= maxSubmitAttempts {
 			return fmt.Errorf("muse TUI did not act on Enter after %d submit attempts; the keystroke may have been swallowed mid-render", maxSubmitAttempts)
@@ -520,68 +500,10 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 	}
 }
 
-// museMaxSubmitRejections bounds how often a message Muse refuses ("Message not
-// sent -- another run is still starting") is retried: with the growing waits
-// that is about a minute of patience for a resumed run to finish starting.
-const museMaxSubmitRejections = 6
-
-// museRejectedNotice reports Muse's footer notice for a refused message: it
-// refuses a typed message while the run behind a resume is still starting, and
-// leaves the text in its input.
+// museRejectedNotice reports Muse's footer notice for a refused message ("Message not sent -- another run is still starting"). It is only logged:
+// delivery is decided by the native intake record, never by this text.
 func museRejectedNotice(pane string) bool {
 	return strings.Contains(strings.ToLower(pane), "message not sent")
-}
-
-// museSubmitRejected looks at the pane a moment after Enter for that notice. beforePane is the pane just before Enter: a notice left on screen by an
-// EARLIER refusal must not count, or an accepted message is judged refused, cleared and typed again, and every copy then runs (the same message ran
-// three times or more on Excellence, 2026-10-04).
-func museSubmitRejected(ctx context.Context, session, beforePane string) (bool, error) {
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-time.After(1200 * time.Millisecond):
-	}
-	pane, err := museTmuxCapturePane(ctx, session)
-	if err != nil {
-		return false, fmt.Errorf("capture pane after Enter: %w", err)
-	}
-	return museRefusedThisSubmit(beforePane, pane), nil
-}
-
-// museRefusedThisSubmit decides whether the Enter just sent was refused. A refusal shows the notice and leaves the text in the input box, so the notice
-// must be there and either be new (more of them than before Enter) or the input box must still hold text. A stale notice above an empty input is an
-// accepted message.
-func museRefusedThisSubmit(before, after string) bool {
-	if !museRejectedNotice(after) {
-		return false
-	}
-	return museNoticeCount(after) > museNoticeCount(before) || museInputBoxHasText(after)
-}
-
-func museNoticeCount(pane string) int {
-	return strings.Count(strings.ToLower(pane), "message not sent")
-}
-
-// museInputBoxHasText reports whether the input box (the area between the last two horizontal rules above the status line) holds more than its prompt
-// marker. A pane without two rules reports false.
-func museInputBoxHasText(pane string) bool {
-	lines := strings.Split(pane, "\n")
-	var rules []int
-	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("─", 8)) {
-			rules = append(rules, i)
-		}
-	}
-	if len(rules) < 2 {
-		return false
-	}
-	for _, line := range lines[rules[len(rules)-2]+1 : rules[len(rules)-1]] {
-		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯"))
-		if text != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func museSubmitKeys() []string {

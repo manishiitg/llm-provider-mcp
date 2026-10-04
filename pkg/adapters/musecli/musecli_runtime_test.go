@@ -123,30 +123,3 @@ func TestMuseRuntimeEnvDisablesAutoUpdateWhenConfined(t *testing.T) {
 		t.Fatalf("an unconfined launch keeps Muse's defaults, got %v", env)
 	}
 }
-
-// The footer notice of an earlier refusal stays on screen. Only a refusal of THIS Enter counts: the notice is new, or the draft is still in the
-// input box. Panes below are shaped like the live one captured on Excellence (2026-10-04).
-func TestMuseRefusedThisSubmit(t *testing.T) {
-	rule := strings.Repeat("─", 40)
-	box := func(input string) string {
-		return rule + "\n❯ " + input + "\n" + rule + "\n  muse-spark-1.3-contributor · max · /srv/x · YOLO\n"
-	}
-	stale := "◆ Hello!\n\n  ! Message not sent — another run is still starting\n\n❯ [AGENTWORKS CONVERSATION CONTINUITY] ... hi\n\n◆ Hi there!\n\n"
-	fresh := "◆ Hello!\n\n  ! Message not sent — another run is still starting\n"
-	for name, tc := range map[string]struct {
-		before, after string
-		want          bool
-	}{
-		"no notice":                            {box(""), "◆ ok\n" + box(""), false},
-		"stale notice, input empty (accepted)": {stale + box(""), stale + "◆ Hi!\n" + box(""), false},
-		"new notice":                           {"◆ Hello!\n" + box("hi"), fresh + box("hi"), true},
-		"new notice, input empty":              {"◆ Hello!\n" + box("hi"), fresh + box(""), true},
-		"stale notice scrolled, draft left":    {stale + box("hi"), "! Message not sent — another run is still starting\n" + box("[AGENTWORKS CONTINUITY]\n  hi"), true},
-		"stale notice, draft still in box":     {stale + box("hi"), stale + box("hi"), true},
-		"no rules in pane":                     {stale, stale, false},
-	} {
-		if got := museRefusedThisSubmit(tc.before, tc.after); got != tc.want {
-			t.Errorf("%s: museRefusedThisSubmit = %v, want %v", name, got, tc.want)
-		}
-	}
-}
