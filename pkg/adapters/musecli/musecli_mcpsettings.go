@@ -753,6 +753,12 @@ func museWithResumeNote(human string, resumed bool, mcpJSON string) string {
 	return museResumeBridgeNote + "\n\n" + human
 }
 
+// museStripResumeNote removes the note museWithResumeNote prepended, so a user message read back from the Muse
+// transcript is what the person (or an automatic notification) actually sent. The note is for the model only.
+func museStripResumeNote(text string) string {
+	return strings.TrimPrefix(text, museResumeBridgeNote+"\n\n")
+}
+
 // museShellRedirectScript refuses a native bash/monitor/web_fetch call that targets the platform API and names the
 // tool that can make it, and refuses cron_create outright (scheduling belongs to the platform). It
 // blocks nothing else, reveals no secret and grants nothing.

@@ -266,7 +266,7 @@ func readMuseTranscriptMessages(logPath, runID string) ([]llmtypes.MessageConten
 			if runID != "" && museLogString(rec, "payload", "record", "command_id") != runID {
 				continue
 			}
-			if text := museLogString(rec, "payload", "record", "command", "prompt"); strings.TrimSpace(text) != "" {
+			if text := museStripResumeNote(museLogString(rec, "payload", "record", "command", "prompt")); strings.TrimSpace(text) != "" {
 				out = append(out, llmtypes.MessageContent{
 					Role:  llmtypes.ChatMessageTypeHuman,
 					Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}},
@@ -286,7 +286,8 @@ func readMuseTranscriptMessages(logPath, runID string) ([]llmtypes.MessageConten
 			}
 			if blocks, _ := payload["refill_blocks"].([]any); len(blocks) > 0 {
 				if block, _ := blocks[0].(map[string]any); block != nil {
-					if text, _ := block["text"].(string); strings.TrimSpace(text) != "" {
+					if text, _ := block["text"].(string); strings.TrimSpace(museStripResumeNote(text)) != "" {
+						text = museStripResumeNote(text)
 						out = append(out, llmtypes.MessageContent{
 							Role:  llmtypes.ChatMessageTypeHuman,
 							Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}},

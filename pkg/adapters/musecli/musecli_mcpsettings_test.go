@@ -572,3 +572,17 @@ func TestMuseBridgeCallLimitIsAddedOnlyToTheBridgeEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestMuseStripResumeNoteReturnsTheOriginalMessage(t *testing.T) {
+	bridge := `{"mcpServers":{"api-bridge":{"command":"x","env":{"MCP_API_URL":"http://127.0.0.1:1"}}}}`
+	sent := museWithResumeNote("Run finished: 3 jobs.", true, bridge)
+	if !strings.HasPrefix(sent, "[AgentWorks note:") {
+		t.Fatalf("resumed run with the bridge should carry the note, got %q", sent)
+	}
+	if got := museStripResumeNote(sent); got != "Run finished: 3 jobs." {
+		t.Fatalf("note leaked into the shown message: %q", got)
+	}
+	if got := museStripResumeNote("plain message"); got != "plain message" {
+		t.Fatalf("a message without the note changed: %q", got)
+	}
+}
