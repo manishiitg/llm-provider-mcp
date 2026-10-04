@@ -118,6 +118,8 @@ type CLISecurityPolicy struct {
 	// Linux the lock denies everything outside the grants anyway; Seatbelt on a
 	// Mac leaves the rest of the person's home open and closes these.
 	ProtectedRoots []string `json:"protected_roots,omitempty"`
+	// RunAs is the application's explicit decision of the account this launch runs as (see RunAs).
+	RunAs RunAs `json:"run_as,omitempty"`
 }
 
 // SeatbeltEnforced reports whether this policy confines the CLI with macOS

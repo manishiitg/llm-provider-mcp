@@ -94,6 +94,8 @@ func WithCLISecurityPolicy(policy llmtypes.CLISecurityPolicy) llmtypes.CallOptio
 	resolved := policy.Clone()
 	return func(opts *llmtypes.CallOptions) {
 		copyPolicy := resolved.Clone()
+		// The application's run-as decision covers every launch file and folder of this call.
+		copyPolicy.DeclareRunAs()
 		opts.CLISecurity = &copyPolicy
 	}
 }

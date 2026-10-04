@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -28,6 +29,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 const (
@@ -133,19 +136,73 @@ func SlotOf(path string) (slot string, ok bool) {
 			}
 		}
 	}
-	// A user's own tree, <docs root>/_users/<user id>/..., belongs to the slot that user holds.
-	if cfg.DocsRoot != "" && cfg.SlotTable != "" {
-		prefix := filepath.Join(filepath.Clean(cfg.DocsRoot), "_users") + string(filepath.Separator)
-		if strings.HasPrefix(clean, prefix) {
-			userID := strings.SplitN(strings.TrimPrefix(clean, prefix), string(filepath.Separator), 2)[0]
-			if canaryAllows(userID) {
-				if slot := slotOfUser(cfg.SlotTable, userID); slot != "" {
-					return slot, true
-				}
-			}
+	// The application's explicit decision for this launch (PLAT-442): the owner's slot, or none.
+	if declared, ok := llmtypes.DeclaredRunAs(path); ok {
+		return explicitSlot(cfg, declared)
+	}
+	// Fallback while launches that do not declare one remain: a user's own tree,
+	// <docs root>/_users/<user id>/..., belongs to the slot that user holds. Logged, so any remaining
+	// path-guessing is visible.
+	if slot, ok := pathInferredSlot(cfg, clean); ok {
+		logFallback(clean, slot)
+		return slot, true
+	}
+	return "", false
+}
+
+// explicitSlot is the slot the application named, checked against the host's slot table. The table is the host's
+// truth: where it says something different the table wins and the disagreement is logged.
+func explicitSlot(cfg config, declared llmtypes.RunAs) (string, bool) {
+	user := strings.TrimSpace(declared.User)
+	if user == "" {
+		return "", false // declared: the app account
+	}
+	if !canaryAllows(user) {
+		return "", false
+	}
+	slot := ""
+	if cfg.SlotTable != "" {
+		slot = slotOfUser(cfg.SlotTable, user)
+		if slot != "" && declared.Slot != "" && declared.Slot != slot {
+			log.Printf("[SLOT_EXPLICIT_MISMATCH] application named %q for user %s, the slot table says %q: using the table", declared.Slot, user, slot)
+		}
+		if slot == "" && declared.Slot != "" {
+			log.Printf("[SLOT_EXPLICIT_MISMATCH] application named %q for user %s, the slot table has none: running as the app account", declared.Slot, user)
+		}
+	} else if slotNameMatches(declared.Slot) {
+		slot = declared.Slot
+	}
+	if slot == "" {
+		return "", false
+	}
+	return slot, true
+}
+
+// pathInferredSlot is the old folder rule: the slot of the user whose tree <docs root>/_users/<id>/ holds path.
+func pathInferredSlot(cfg config, clean string) (string, bool) {
+	if cfg.DocsRoot == "" || cfg.SlotTable == "" {
+		return "", false
+	}
+	prefix := filepath.Join(filepath.Clean(cfg.DocsRoot), "_users") + string(filepath.Separator)
+	if !strings.HasPrefix(clean, prefix) {
+		return "", false
+	}
+	userID := strings.SplitN(strings.TrimPrefix(clean, prefix), string(filepath.Separator), 2)[0]
+	if canaryAllows(userID) {
+		if slot := slotOfUser(cfg.SlotTable, userID); slot != "" {
+			return slot, true
 		}
 	}
 	return "", false
+}
+
+var fallbackLogged sync.Map
+
+// logFallback says once per folder that the slot came from the path.
+func logFallback(path, slot string) {
+	if _, seen := fallbackLogged.LoadOrStore(path+"\x00"+slot, true); !seen {
+		log.Printf("[SLOT_FALLBACK] path-inferred slot %s for %s: the application did not declare a run-as identity for this launch", slot, path)
+	}
 }
 
 func canaryAllows(userID string) bool {
