@@ -120,11 +120,51 @@ func loadConfigUnchecked() (config, bool) {
 	return cfg, true
 }
 
-// SlotOf returns the slot a path belongs to (a path inside <state root>/<slot> or <run root>/<slot>).
+// ErrLaunchBlocked is what a launch gets when the application named a user and a slot for it and the host's slot
+// table does not confirm them (PLAT-451). Running such a launch as the app account would silently drop the
+// isolation the application asked for, so it is refused: callers must stop the launch, never treat it as "no slot".
+var ErrLaunchBlocked = errors.New("slot launch blocked")
+
+// LaunchBlockedError says what the application declared and what the host says.
+type LaunchBlockedError struct {
+	Path, User, DeclaredSlot, TableSlot string
+}
+
+func (e *LaunchBlockedError) Error() string {
+	if e.TableSlot == "" {
+		return fmt.Sprintf("[SLOT_EXPLICIT_MISMATCH] launch refused for %s: the application named slot %q for user %s and the host has no confirmed slot for that user", e.Path, e.DeclaredSlot, e.User)
+	}
+	return fmt.Sprintf("[SLOT_EXPLICIT_MISMATCH] launch refused for %s: the application named slot %q for user %s but the host's slot table says %q", e.Path, e.DeclaredSlot, e.User, e.TableSlot)
+}
+
+// Is makes errors.Is(err, ErrLaunchBlocked) true for a *LaunchBlockedError.
+func (e *LaunchBlockedError) Is(target error) bool { return target == ErrLaunchBlocked }
+
+// SlotOf returns the slot a path belongs to (a path inside <state root>/<slot> or <run root>/<slot>). A launch
+// the policy blocks (see SlotOfChecked) reports no slot here: every launch path must call CheckLaunch (or
+// SlotOfChecked) first, which the launch functions in this module do, so that "blocked" is never run as "no slot".
 func SlotOf(path string) (slot string, ok bool) {
+	slot, ok, err := SlotOfChecked(path)
+	if err != nil {
+		log.Print(err.Error())
+		return "", false
+	}
+	return slot, ok
+}
+
+// CheckLaunch returns a *LaunchBlockedError (errors.Is ErrLaunchBlocked) when a launch in path must not run, nil
+// otherwise (including every launch that is simply not a slot's).
+func CheckLaunch(path string) error {
+	_, _, err := SlotOfChecked(path)
+	return err
+}
+
+// SlotOfChecked is SlotOf with the refusal made explicit: err is non-nil when the application declared a user and
+// slot for this launch that the host's table does not confirm and the canary allows that user.
+func SlotOfChecked(path string) (slot string, ok bool, err error) {
 	cfg, on := loadConfig()
 	if !on || strings.TrimSpace(path) == "" {
-		return "", false
+		return "", false, nil
 	}
 	clean := filepath.Clean(path)
 	for _, root := range []string{cfg.SlotStateRoot, cfg.SlotRunRoot} {
@@ -132,50 +172,57 @@ func SlotOf(path string) (slot string, ok bool) {
 		if strings.HasPrefix(clean, prefix) {
 			first := strings.SplitN(strings.TrimPrefix(clean, prefix), string(filepath.Separator), 2)[0]
 			if slotNameMatches(first) {
-				return first, true
+				return first, true, nil
 			}
 		}
 	}
-	// The application's explicit decision for this launch (PLAT-442): the owner's slot, or none.
-	if declared, ok := llmtypes.DeclaredRunAs(path); ok {
-		return explicitSlot(cfg, declared)
+	// The application's explicit decision for this launch (PLAT-442): the owner's slot, none, or a refusal.
+	if declared, found := llmtypes.DeclaredRunAs(path); found {
+		slot, ok, err := explicitSlot(cfg, declared)
+		if err != nil {
+			err.Path = path
+			return "", false, err
+		}
+		return slot, ok, nil
 	}
 	// Fallback while launches that do not declare one remain: a user's own tree,
 	// <docs root>/_users/<user id>/..., belongs to the slot that user holds. Logged, so any remaining
 	// path-guessing is visible.
 	if slot, ok := pathInferredSlot(cfg, clean); ok {
 		logFallback(clean, slot)
-		return slot, true
+		return slot, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // explicitSlot is the slot the application named, checked against the host's slot table. The table is the host's
-// truth: where it says something different the table wins and the disagreement is logged.
-func explicitSlot(cfg config, declared llmtypes.RunAs) (string, bool) {
+// truth. A declared app account, or a user the canary does not cover, or a user named without a slot that the host
+// does not hold one for, is "no slot". When the application named a slot for a covered user and the table disagrees
+// or has none, the launch is refused (PLAT-451) instead of falling back to the app account.
+func explicitSlot(cfg config, declared llmtypes.RunAs) (string, bool, *LaunchBlockedError) {
 	user := strings.TrimSpace(declared.User)
 	if user == "" {
-		return "", false // declared: the app account
+		return "", false, nil // declared: the app account
 	}
 	if !canaryAllows(user) {
-		return "", false
+		return "", false, nil
 	}
 	slot := ""
 	if cfg.SlotTable != "" {
 		slot = slotOfUser(cfg.SlotTable, user)
-		if slot != "" && declared.Slot != "" && declared.Slot != slot {
-			log.Printf("[SLOT_EXPLICIT_MISMATCH] application named %q for user %s, the slot table says %q: using the table", declared.Slot, user, slot)
+		if declared.Slot != "" && slot != declared.Slot {
+			return "", false, &LaunchBlockedError{User: user, DeclaredSlot: declared.Slot, TableSlot: slot}
 		}
-		if slot == "" && declared.Slot != "" {
-			log.Printf("[SLOT_EXPLICIT_MISMATCH] application named %q for user %s, the slot table has none: running as the app account", declared.Slot, user)
+	} else if declared.Slot != "" {
+		if !slotNameMatches(declared.Slot) {
+			return "", false, &LaunchBlockedError{User: user, DeclaredSlot: declared.Slot}
 		}
-	} else if slotNameMatches(declared.Slot) {
 		slot = declared.Slot
 	}
 	if slot == "" {
-		return "", false
+		return "", false, nil
 	}
-	return slot, true
+	return slot, true, nil
 }
 
 // pathInferredSlot is the old folder rule: the slot of the user whose tree <docs root>/_users/<id>/ holds path.
@@ -274,6 +321,9 @@ func Mode(hint string, mode os.FileMode) os.FileMode {
 
 // CreateTemp is os.CreateTemp for hint's launch files, readable by the slot when it is one.
 func CreateTemp(hint, pattern string) (*os.File, error) {
+	if err := CheckLaunch(hint); err != nil {
+		return nil, err
+	}
 	f, err := os.CreateTemp(TempDir(hint), pattern)
 	if err != nil {
 		return nil, err
@@ -290,6 +340,9 @@ func CreateTemp(hint, pattern string) (*os.File, error) {
 
 // MkdirTemp is os.MkdirTemp for hint's launch files, enterable by the slot when it is one.
 func MkdirTemp(hint, pattern string) (string, error) {
+	if err := CheckLaunch(hint); err != nil {
+		return "", err
+	}
 	dir, err := os.MkdirTemp(TempDir(hint), pattern)
 	if err != nil {
 		return "", err
@@ -350,7 +403,10 @@ func WithSlotDocker(env []string, slot string) []string {
 }
 
 func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err error) {
-	slot, ok := SlotOf(hint)
+	slot, ok, blocked := SlotOfChecked(hint)
+	if blocked != nil {
+		return func() {}, blocked
+	}
 	if !ok {
 		return func() {}, ErrNotSlot
 	}

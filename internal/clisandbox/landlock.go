@@ -87,6 +87,11 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		return nil, noop, fmt.Errorf("%w: Landlock launcher unavailable: %w", ErrUnsupported, err)
 	}
 	home := canonical(policy.PrivateHome)
+	// A launch the application declared for a slot the host does not confirm is refused here, before any file is
+	// prepared: it must not run as the app account instead (PLAT-451).
+	if err := slotfs.CheckLaunch(home); err != nil {
+		return nil, noop, err
+	}
 	for _, dir := range []string{home, filepath.Join(home, ".config"), filepath.Join(home, ".local", "share"), filepath.Join(home, ".local", "state"), filepath.Join(home, ".cache"), filepath.Join(home, "tmp")} {
 		if err := os.MkdirAll(dir, slotfs.Mode(home, 0o700)); err != nil {
 			return nil, noop, fmt.Errorf("create private CLI home: %w", err)

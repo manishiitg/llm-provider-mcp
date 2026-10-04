@@ -2,8 +2,11 @@ package slotfs
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,16 +124,64 @@ func TestExplicitRunAsIgnoresTheFolder(t *testing.T) {
 	if slot, ok := SlotOf(inTree); ok {
 		t.Fatalf("a folder declared app-account ran as %q", slot)
 	}
-	// The host's slot table wins over a wrong name.
-	wrong := h.dir("Crew", "crew-2")
-	llmtypes.DeclareRunAs(wrong, llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot09"})
-	if slot, ok := SlotOf(wrong); !ok || slot != "slot08" {
-		t.Fatalf("table must win: %q %v", slot, ok)
-	}
-	// A user with no slot is the app account even if the application names one.
-	llmtypes.DeclareRunAs(h.dir("Crew", "crew-3"), llmtypes.RunAs{Declared: true, User: "user-c", Slot: "slot09"})
+	// A user with no slot, named without one, is the app account.
+	llmtypes.DeclareRunAs(h.dir("Crew", "crew-3"), llmtypes.RunAs{Declared: true, User: "user-c"})
 	if slot, ok := SlotOf(h.dir("Crew", "crew-3")); ok {
 		t.Fatalf("a user without a slot ran as %q", slot)
+	}
+}
+
+// PLAT-451: the application named a user and a slot the host does not confirm. That is a refusal, never a launch as
+// the app account (and never the table's different slot): SlotOfChecked says so, and so does every launch function.
+func TestExplicitMismatchIsARefusalNotNoSlot(t *testing.T) {
+	h := newIdentityHost(t)
+	t.Cleanup(llmtypes.ResetDeclaredRunAsForTest)
+	for _, tc := range []struct {
+		name, canary string
+		decl         llmtypes.RunAs
+		wantBlocked  bool
+		wantSlot     string
+	}{
+		{"table says another slot", "", llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot09"}, true, ""},
+		{"table has no slot for the user", "", llmtypes.RunAs{Declared: true, User: "user-c", Slot: "slot09"}, true, ""},
+		{"declared slot is not a slot name", "", llmtypes.RunAs{Declared: true, User: "user-a", Slot: "root"}, true, ""},
+		{"table confirms the slot", "", llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot08"}, false, "slot08"},
+		{"user named, no slot named: the table's", "", llmtypes.RunAs{Declared: true, User: "user-a"}, false, "slot08"},
+		{"user with no slot, none named: app account", "", llmtypes.RunAs{Declared: true, User: "user-c"}, false, ""},
+		{"declared app account", "", llmtypes.RunAs{Declared: true}, false, ""},
+		{"canary does not cover the user: no slot, no refusal", "user-b", llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot09"}, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvUsers, tc.canary)
+			llmtypes.ResetDeclaredRunAsForTest()
+			dir := h.dir("Crew", "crew-x")
+			llmtypes.DeclareRunAs(dir, tc.decl)
+			slot, ok, err := SlotOfChecked(dir)
+			if (err != nil) != tc.wantBlocked || errors.Is(err, ErrLaunchBlocked) != tc.wantBlocked {
+				t.Fatalf("err = %v, want blocked=%v", err, tc.wantBlocked)
+			}
+			if slot != tc.wantSlot || ok != (tc.wantSlot != "") {
+				t.Fatalf("slot = %q,%v, want %q", slot, ok, tc.wantSlot)
+			}
+			if got := CheckLaunch(dir); (got != nil) != tc.wantBlocked {
+				t.Fatalf("CheckLaunch = %v", got)
+			}
+			if !tc.wantBlocked && tc.wantSlot != "" {
+				return // a real slot launch needs the run folder and sudo; the refusals are what is pinned here
+			}
+			f, ferr := CreateTemp(dir, "x-*")
+			if f != nil {
+				_ = f.Close()
+				_ = os.Remove(f.Name())
+			}
+			if tc.wantBlocked != errors.Is(ferr, ErrLaunchBlocked) {
+				t.Fatalf("CreateTemp err = %v, want blocked=%v", ferr, tc.wantBlocked)
+			}
+			_, werr := WrapCmd(exec.CommandContext(context.Background(), "/bin/true"), dir, nil)
+			if tc.wantBlocked != errors.Is(werr, ErrLaunchBlocked) {
+				t.Fatalf("WrapCmd err = %v, want blocked=%v", werr, tc.wantBlocked)
+			}
+		})
 	}
 }
 

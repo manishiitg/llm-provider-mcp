@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -41,6 +42,9 @@ func PrepareCodexCommand(policy *llmtypes.CLISecurityPolicy, args []string, work
 func PrepareCodexCommandScoped(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths []string, scopedEnv, unset []string, scrub *shelllaunch.ScopeScrub) (string, func(), error) {
 	if policy == nil || llmtypes.NormalizeCLISecurityMode(policy.Mode) == llmtypes.CLISecurityModeCompatibility {
 		if len(scopedEnv) == 0 && len(unset) == 0 && scrub == nil {
+			if err := slotfs.CheckLaunch(strings.TrimSpace(workingDir)); err != nil {
+				return "", nil, err // PLAT-451: never the app account instead of the declared slot
+			}
 			return shelllaunch.Command(args, workingDir), func() {}, nil
 		}
 		return shelllaunch.CommandWithScopedEnv(args, workingDir, scopedEnv, unset, scrub)

@@ -71,6 +71,9 @@ func DirectCommand(args []string, workingDir string) string {
 // exports, then runs that script via /bin/sh. Call cleanup if tmux fails before
 // the script starts; on successful launch the script removes itself.
 func CommandWithEnv(args []string, workingDir string, env []string) (string, func(), error) {
+	if err := slotfs.CheckLaunch(strings.TrimSpace(workingDir)); err != nil {
+		return "", nil, err // a slot the host does not confirm: never the app account instead (PLAT-451)
+	}
 	entries, err := parseEnvEntries(env)
 	if err != nil {
 		return "", nil, err
@@ -126,6 +129,9 @@ func CommandWithFinalEnv(args []string, workingDir string, env, unset []string) 
 // evaluated against the environment that actually exists at exec time. See
 // ScopeScrub for why an explicit unset list cannot cover tmux-server drift.
 func CommandWithScopedEnv(args []string, workingDir string, env, unset []string, scrub *ScopeScrub) (string, func(), error) {
+	if err := slotfs.CheckLaunch(strings.TrimSpace(workingDir)); err != nil {
+		return "", nil, err // a slot the host does not confirm: never the app account instead (PLAT-451)
+	}
 	entries, err := parseEnvEntries(env)
 	if err != nil {
 		return "", nil, err
