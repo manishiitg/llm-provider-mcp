@@ -288,7 +288,8 @@ See [Installation](docs/installation.md) and
   MCP server, but it does not create an operating-system sandbox.
 
 Read [Security and trust](docs/security-and-trust.md) before enabling unattended
-coding-agent execution in sensitive repositories.
+coding-agent execution in sensitive repositories. On a shared Linux host, run
+each user's CLI as their own Linux account: [Slot launches](docs/slot-launches.md).
 
 ## Testing And Coverage
 
