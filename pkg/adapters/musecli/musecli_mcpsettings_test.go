@@ -392,7 +392,7 @@ func TestMuseApplyMCPConfigInstallsToolPolicyAndRestores(t *testing.T) {
 }
 
 func TestMuseToolPolicyHookAllowsOnlyWebAndMCP(t *testing.T) {
-	path, err := museWriteToolPolicyHook([]string{"web_search"})
+	path, err := museWriteToolPolicyHook([]string{"web_search"}, "")
 	if err != nil {
 		t.Fatalf("write hook: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestMuseExplicitEmptyAllowlistStillInstallsPolicy(t *testing.T) {
 }
 
 func TestMuseToolPolicyDeniesMissingOrInvalidNames(t *testing.T) {
-	path, err := museWriteToolPolicyHook([]string{"web_search"})
+	path, err := museWriteToolPolicyHook([]string{"web_search"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestMuseNativeSubagentsEnableDelegationAndRemainCallable(t *testing.T) {
 	if settings.Run.Delegation != "auto" {
 		t.Fatalf("native subagents must be visible, got %q", settings.Run.Delegation)
 	}
-	hook, err := museWriteToolPolicyHook([]string{"subagent_spawn", "subagent_wait"})
+	hook, err := museWriteToolPolicyHook([]string{"subagent_spawn", "subagent_wait"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,6 +38,19 @@ func museSettingsPath() (string, error) {
 	return filepath.Join(home, ".config", "muse", "settings.json"), nil
 }
 
+// museFullNativeTools is the deny-by-default policy of Full CLI mode: the native tools a chat may use next to
+// the bridge. Everything else Muse ships (its own cron, goals, memory, messaging of other sessions, reminders,
+// named workflows) and anything a later Muse update adds is refused until it is added here on purpose; the
+// platform has its own scheduling, Goals, knowledge and sessions. MCP tools (mcp__*) are always allowed.
+var museFullNativeTools = []string{
+	"read_file", "search", "write_file", "edit_file", "bash", "bash_input", "monitor",
+	"web_fetch", "web_search", "read_skill", "write_todos",
+	"subagent_spawn", "subagent_status", "subagent_send_message", "subagent_wait", "subagent_read_result", "subagent_cancel",
+	"work_status", "work_list", "work_stop", "request_user_input",
+}
+
+const museFullPolicyReason = "This Muse tool is not available in AgentWorks chats. Scheduling, goals, memory and other sessions are handled by the platform: use its schedules, Goals and knowledge tools, or ask the user."
+
 // museApplyMCPConfig merges the "mcpServers" entries of configJSON (if any),
 // optionally installs a deny-by-default PreToolUse policy for the supplied
 // native-tool allowlist, enables native delegation only when subagent_spawn
@@ -128,6 +141,13 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		return nil, fmt.Errorf("marshal muse settings.json tui: %w", err)
 	}
 	settings["tui"] = tuiRaw
+	// Full CLI mode passes no allowlist (the launch keeps --yolo); with the bridge mounted it still gets the
+	// default-refuse policy, through the same hook, without the bridge-only launch switches.
+	denyReason := ""
+	if toolAllowlist == nil && museHasBridgeServer(doc.MCPServers) {
+		toolAllowlist = museFullNativeTools
+		denyReason = museFullPolicyReason
+	}
 	if toolAllowlist != nil {
 		if _, err := exec.LookPath("node"); err != nil {
 			return nil, fmt.Errorf("Muse native-tool policy requires Node.js: %w", err)
@@ -165,7 +185,7 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		}
 		settings["run"] = runRaw
 
-		hookPath, err := museWriteToolPolicyHook(cleaned)
+		hookPath, err := museWriteToolPolicyHook(cleaned, denyReason)
 		if err != nil {
 			return nil, err
 		}
@@ -529,20 +549,29 @@ func museCleanToolAllowlist(toolAllowlist []string) ([]string, error) {
 // data or the host, and denying it makes Muse's observer retry indefinitely.
 // The caller controls the exact native work-tool allowlist (web_search in
 // mcpagent).
-func museWriteToolPolicyHook(nativeAllowed []string) (string, error) {
+func museWriteToolPolicyHook(nativeAllowed []string, denyReason string) (string, error) {
 	allowed := append([]string(nil), nativeAllowed...)
 	allowed = append(allowed, "tool_search", "submit_reminder_decision")
 	allowedJSON, err := json.Marshal(allowed)
 	if err != nil {
 		return "", fmt.Errorf("marshal muse hook allowlist: %w", err)
 	}
+	reason := denyReason
+	if reason == "" {
+		reason = "Muse internal tools are disabled for this session; use web search or an AgentWorks MCP tool."
+	}
+	reasonBytes, err := json.Marshal(reason)
+	if err != nil {
+		return "", fmt.Errorf("marshal muse hook reason: %w", err)
+	}
+	reasonJSON := string(reasonBytes)
 	body := "const fs = require('fs');\n" +
 		"let payload = {};\n" +
 		"try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}\n" +
 		"const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';\n" +
 		"const allowed = new Set(" + string(allowedJSON) + ");\n" +
 		"if (allowed.has(name) || name.startsWith('mcp__')) process.exit(0);\n" +
-		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'Muse internal tools are disabled for this session; use web search or an AgentWorks MCP tool.'}}) + '\\n');\n"
+		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:" + reasonJSON + "}}) + '\\n');\n"
 	digest := sha256.Sum256([]byte(body))
 	dir, err := museHookDir()
 	if err != nil {
