@@ -3,6 +3,7 @@ package agycli
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -15,7 +16,8 @@ func agyLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, agyH
 	if opts == nil || !opts.CLISecurity.Confined() {
 		return args, func() {}, nil
 	}
-	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, clisandbox.ArgFilePaths(args), []string{agyHome})
+	read := append(clisandbox.ArgFilePaths(args), agyMCPLaunchReadPaths(agyHome)...)
+	wrapped, cleanup, err := clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, read, []string{agyHome})
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("confine agy: %w", err)
 	}
@@ -26,9 +28,17 @@ func agyLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir, agyHo
 	if opts == nil || !opts.CLISecurity.Confined() {
 		return func() {}, nil
 	}
-	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, nil, []string{agyHome})
+	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workingDir, agyMCPLaunchReadPaths(agyHome), []string{agyHome})
 	if err != nil {
 		return func() {}, fmt.Errorf("confine agy: %w", err)
 	}
 	return cleanup, nil
+}
+
+// Like the other native adapters, admit only the programs and file arguments
+// in this launch's private MCP catalog. The bridge commonly lives outside both
+// the CLI install and the granted project; without this it cannot start under
+// Landlock/Seatbelt and AGY silently presents a native-only tool inventory.
+func agyMCPLaunchReadPaths(agyHome string) []string {
+	return clisandbox.MCPCommandPaths([]string{filepath.Join(agyHome, ".gemini", "config", "mcp_config.json")})
 }
