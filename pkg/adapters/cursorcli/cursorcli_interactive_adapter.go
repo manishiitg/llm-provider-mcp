@@ -23,10 +23,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
-	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
@@ -973,7 +973,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			addCleanup(cleanup)
 		}
 		if denyBuiltin {
-			cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, cursorRestoreProjectFilesFromOptions(opts), fullNative)
+			cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, cursorRestoreProjectFilesFromOptions(opts), fullNative, cursorBridgeServerNameFromOptions(opts))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -1144,7 +1144,57 @@ func cursorShellHookCommand(fullNative bool) string {
 }
 
 func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool, fullNativeMode ...bool) (func(), error) {
-	fullNative := len(fullNativeMode) > 0 && fullNativeMode[0]
+	return writeCursorDenyBuiltinHooksWithBridge(cursorDir, restorePrior, len(fullNativeMode) > 0 && fullNativeMode[0], "")
+}
+
+// cursorBridgeServerName returns the name of the mounted AgentWorks bridge
+// server (the entry whose env carries MCP_API_URL), or "" when there is none.
+func cursorBridgeServerName(mcpJSON string) string {
+	var parsed struct {
+		MCPServers map[string]struct {
+			Env map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if strings.TrimSpace(mcpJSON) == "" || json.Unmarshal([]byte(mcpJSON), &parsed) != nil {
+		return ""
+	}
+	names := make([]string, 0, len(parsed.MCPServers))
+	for name, server := range parsed.MCPServers {
+		if _, ok := server.Env["MCP_API_URL"]; ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+// cursorShellAllowScript approves Cursor's own shell in Full CLI mode. When the
+// bridge is mounted it first refuses a command that calls the platform API: the
+// credentials exist only in the bridge's own shell, so that call would fail with
+// "missing or invalid Authorization header" here. The refusal grants nothing and
+// reveals nothing; every other command is approved as before.
+func cursorShellAllowScript(bridgeName string) string {
+	head := "#!/bin/bash\n# Installed by the multi-llm-provider-go cursor adapter in Full CLI mode:\n# approves Cursor's own shell commands (they run inside AgentWorks' confinement).\n"
+	if bridgeName == "" {
+		return head + "cat >/dev/null\nprintf '%s\\n' '{\"permission\":\"allow\"}'\nexit 0\n"
+	}
+	tool := bridgeName + "-execute_shell_command"
+	msg := "This shell has no platform credentials, so this call would fail with \\\"missing or invalid Authorization header\\\". Run the same command through " + tool + " (the " + bridgeName + " MCP tool execute_shell_command): its shell has MCP_CUSTOM and MCP_AUTH."
+	return head + `input=$(cat)
+cmd=$(printf '%s' "$input" | grep -oE '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -1)
+if printf '%s' "$cmd" | grep -qE '\$\{?MCP_(CUSTOM|AUTH|MCP|API_TOKEN)\b|/tools/(custom|virtual|mcp)/'; then
+  printf '%s\n' '{"permission":"deny","user_message":"` + msg + `","agent_message":"` + msg + `"}'
+  exit 0
+fi
+printf '%s\n' '{"permission":"allow"}'
+exit 0
+`
+}
+
+func writeCursorDenyBuiltinHooksWithBridge(cursorDir string, restorePrior, fullNative bool, bridgeName string) (func(), error) {
 	hooksDir := filepath.Join(cursorDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cursor hooks dir: %w", err)
@@ -1197,7 +1247,7 @@ exit 0
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
 	var allowToken string
 	if fullNative {
-		allowScript := "#!/bin/bash\n# Installed by the multi-llm-provider-go cursor adapter in Full CLI mode:\n# approves Cursor's own shell commands (they run inside AgentWorks' confinement).\ncat >/dev/null\nprintf '%s\\n' '{\"permission\":\"allow\"}'\nexit 0\n"
+		allowScript := cursorShellAllowScript(bridgeName)
 		allowToken, err = projectfile.AcquireOwnedLeaseMode(filepath.Join(hooksDir, "mlp-allow-shell.sh"), []byte(allowScript), 0o755)
 		if err != nil {
 			projectfile.ReleaseToken(scriptToken)

@@ -304,3 +304,12 @@ func cursorSandboxUnderSeatbelt(opts *llmtypes.CallOptions, sandbox string) stri
 	}
 	return sandbox
 }
+
+// cursorBridgeServerNameFromOptions names the bridge server mounted for this call, or "".
+func cursorBridgeServerNameFromOptions(opts *llmtypes.CallOptions) string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return ""
+	}
+	mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
+	return cursorBridgeServerName(mcpJSON)
+}
