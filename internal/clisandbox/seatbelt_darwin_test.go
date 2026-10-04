@@ -92,3 +92,58 @@ func TestSeatbeltArgsIsANoOpWithoutTheRequest(t *testing.T) {
 		t.Fatalf("args = %v, err = %v", args, err)
 	}
 }
+
+// Muse walks up from its working folder reading every folder on the way; a
+// refused read there fails its whole MCP startup and the chat gets no bridge.
+// Only Muse gets the listing grant, and nothing inside a closed folder opens.
+func TestSeatbeltLetsMuseListFoldersAboveItsWorkingFolder(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	root, err := os.MkdirTemp(home, ".agentworks-seatbelt-muse-test-")
+	if err != nil {
+		t.Skipf("cannot create a folder under the home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	state := filepath.Join(root, "state")
+	granted := filepath.Join(state, "cli-runtimes", "v1", "mine")
+	other := filepath.Join(state, "cli-runtimes", "v1", "other")
+	for _, dir := range []string{granted, other} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secret := filepath.Join(other, "key.txt")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runAs := func(provider, script string) error {
+		policy := &llmtypes.CLISecurityPolicy{
+			Mode:           llmtypes.CLISecurityModeIsolated,
+			Provider:       provider,
+			Seatbelt:       true,
+			PrivateHome:    filepath.Join(granted, ".sandbox", "cli-home"),
+			ProtectedRoots: []string{state},
+		}
+		args, _, err := LandlockArgs(policy, []string{"/bin/sh", "-c", script}, granted, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return exec.CommandContext(context.Background(), args[0], args[1:]...).Run()
+	}
+	for _, folder := range []string{state, filepath.Join(state, "cli-runtimes"), filepath.Join(state, "cli-runtimes", "v1")} {
+		if err := runAs("muse-cli", "ls "+folder); err != nil {
+			t.Errorf("muse cannot list %s: %v", folder, err)
+		}
+		if err := runAs("codex-cli", "ls "+folder); err == nil {
+			t.Errorf("codex could list %s: only Muse gets the grant", folder)
+		}
+	}
+	if err := runAs("muse-cli", "ls "+other); err == nil {
+		t.Error("muse could list another runtime's contents")
+	}
+	if err := runAs("muse-cli", "cat "+secret); err == nil {
+		t.Error("muse could read a file in another runtime")
+	}
+}

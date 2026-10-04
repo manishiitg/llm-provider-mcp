@@ -126,11 +126,24 @@ func seatbeltProfile(policy *llmtypes.CLISecurityPolicy, args []string, workingD
 		b.WriteString(`(deny file-read* file-write* (subpath "` + sandboxQuote(root) + "\"))\n")
 	}
 	if len(protected) > 0 {
+		ancestors := ancestorPaths(append(append([]string(nil), read...), write...))
 		b.WriteString("(allow file-read-metadata\n")
-		for _, path := range ancestorPaths(append(append([]string(nil), read...), write...)) {
+		for _, path := range ancestors {
 			b.WriteString(`  (literal "` + sandboxQuote(path) + "\")\n")
 		}
 		b.WriteString(")\n")
+		// Muse walks up from its working folder looking for project sources
+		// (.mcp.json, rules) and must be able to read every folder on the way.
+		// Refused, the whole MCP startup fails ("source_reservation") and the
+		// chat has no bridge. A literal grant lists names only; nothing inside
+		// the closed folders becomes readable.
+		if strings.TrimSpace(policy.Provider) == "muse-cli" && len(ancestors) > 0 {
+			b.WriteString("(allow file-read-data\n")
+			for _, path := range ancestors {
+				b.WriteString(`  (literal "` + sandboxQuote(path) + "\")\n")
+			}
+			b.WriteString(")\n")
+		}
 		if len(read) > 0 {
 			b.WriteString("(allow file-read*\n")
 			for _, path := range read {
