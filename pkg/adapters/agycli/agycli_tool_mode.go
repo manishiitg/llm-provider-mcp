@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 const agyToolModeHookName = "agentworks-native-tool-mode"
@@ -66,6 +67,10 @@ const agyShellProbeReason = `Refused here: this shell has no platform credential
 
 const agyShellRedirectReason = `This shell has no platform credentials, so this call would fail with "missing or invalid Authorization header". Run the same command through the call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) with ToolName execute_shell_command: its shell has MCP_CUSTOM and MCP_AUTH.`
 
+// agyNativeShellOffReason is shown to the agent when it tries the CLI's own
+// shell in Full mode. No single quotes: it is embedded in a python literal.
+const agyNativeShellOffReason = `The built-in shell is turned off in this chat. Run shell commands through the call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) with ToolName execute_shell_command. File read and edit tools still work.`
+
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
 // mcp_only fails closed for every native tool; Full CLI admits the CLI's
 // native toolset alongside MCP.
@@ -76,6 +81,13 @@ func agyToolModeHookCommand(python, mode string, hostPorts ...string) string {
 	fullEnabled := "False"
 	if agyFullNativeToolsMode(mode) {
 		fullEnabled = "True"
+	}
+	// Owner decision 2026-10-05 (PLAT-491): in Full mode the CLI's own shell is
+	// refused unless the nativeshell escape hatch is on. The bridge shell
+	// (execute_shell_command) is an MCP tool and is not affected.
+	shellOff := "False"
+	if agyFullNativeToolsMode(mode) && !nativeshell.Enabled() {
+		shellOff = "True"
 	}
 	program := `import json,sys,signal,re
 def timeout(_signum,_frame):
@@ -93,6 +105,9 @@ if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
 allowed=isinstance(name,str) and bool(name) and (bridge or ` + fullEnabled + `)
+if ` + shellOff + ` and name in ("run_command","send_command_input"):
+    print(json.dumps({"decision":"deny","reason":'` + agyNativeShellOffReason + `'}))
+    sys.exit(0)
 if ` + fullEnabled + ` and name=="run_command":
     args=call.get("args")
     command=args.get("CommandLine") if isinstance(args,dict) else None

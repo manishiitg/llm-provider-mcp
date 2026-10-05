@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 func agyRunHook(t *testing.T, python, mode string, payload map[string]interface{}, hostPorts ...string) (decision, reason string) {
@@ -34,6 +36,7 @@ func agyRunHook(t *testing.T, python, mode string, payload map[string]interface{
 }
 
 func TestAgyShellRedirectHook(t *testing.T) {
+	t.Setenv(nativeshell.EnvVar, "on") // the redirect only matters while the native shell is on
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 unavailable")

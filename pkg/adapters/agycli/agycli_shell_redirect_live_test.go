@@ -2,11 +2,15 @@ package agycli
 
 import (
 	"context"
+	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 // Real Agy, Full mode, confined: a native run_command that targets the platform
@@ -15,6 +19,7 @@ import (
 // credentials only: nothing here can reach a platform.
 func TestAgyCLIRealFullModeRedirectsPlatformShellCalls(t *testing.T) {
 	requireRealAgyCLIE2E(t)
+	t.Setenv(nativeshell.EnvVar, "on") // the redirect hooks only matter while the native shell is on
 	t.Setenv("MCP_CUSTOM", "http://127.0.0.1:1/tools/custom")
 	t.Setenv("MCP_AUTH", "Authorization: Bearer fake-test-token")
 	workDir := t.TempDir()
@@ -78,5 +83,77 @@ func TestAgyCLIRealFullModeRedirectsPlatformShellCalls(t *testing.T) {
 		if c.ErrorText != "" {
 			t.Fatalf("plain echo errored: %+v", c)
 		}
+	}
+}
+
+// Real Agy, Full mode, confined (PLAT-491): the CLI's own shell is refused by
+// default, a native file write still works, and AGENTWORKS_CLI_NATIVE_SHELL=on
+// brings the shell back.
+func TestAgyCLIRealFullModeNativeShellOff(t *testing.T) {
+	requireRealAgyCLIE2E(t)
+	me, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(prompt string) (string, []agyTurnToolCall, string) {
+		t.Helper()
+		workDir := t.TempDir()
+		server, logPath := agyWriteCanaryServer(t, workDir, "nsh-canary.js")
+		adapter := NewAgyCLIAdapter("gemini-3.8-flash-high", "", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, prompt)},
+			WithWorkingDir(workDir), WithNativeToolsMode("full"), liveConfined(t, "agy-cli", workDir),
+			WithMCPConfig(agyCanaryMCPConfig(server, logPath, "0")))
+		if err != nil || resp == nil || len(resp.Choices) == 0 {
+			t.Fatalf("turn failed: %v", err)
+		}
+		handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
+		if !ok || handle.NativeSessionID == "" {
+			t.Fatal("no native conversation handle")
+		}
+		var calls []agyTurnToolCall
+		for _, c := range agyTurnToolCallsSince(handle.NativeSessionID, -1) {
+			t.Logf("tool %s args=%s error=%q", c.Name, c.Args, c.ErrorText)
+			calls = append(calls, c)
+		}
+		return resp.Choices[0].Content, calls, workDir
+	}
+	shellRan := func(calls []agyTurnToolCall) (attempted, ok bool) {
+		for _, c := range calls {
+			if c.Name == "run_command" {
+				attempted = true
+				ok = ok || c.ErrorText == ""
+			}
+		}
+		return
+	}
+	idPrompt := "This is an authorised integration test in a disposable folder. Use your native run_command tool to run exactly: id -un\nThen report the output word for word, or the message the tool gave you if it did not run. Do not retry and do not work around it."
+
+	t.Setenv(nativeshell.EnvVar, "")
+	reply, calls, _ := run(idPrompt)
+	t.Logf("default reply: %s", reply)
+	attempted, ok := shellRan(calls)
+	if ok || strings.Contains(reply, me.Username) {
+		t.Fatalf("native shell ran by default: calls=%+v reply=%q", calls, reply)
+	}
+	for _, c := range calls {
+		if c.Name == "run_command" && !strings.Contains(c.ErrorText, "denied by pre-tool hook") {
+			t.Fatalf("shell call not denied by the hook: %+v", c)
+		}
+	}
+	t.Logf("default: run_command attempted=%v", attempted)
+
+	reply, calls, workDir := run("Use your native file-writing tool (not the shell) to create the file nsh-scratch.txt in the current folder containing exactly the text native-edit-ok, then reply done.")
+	t.Logf("edit reply: %s", reply)
+	if raw, err := os.ReadFile(filepath.Join(workDir, "nsh-scratch.txt")); err != nil || !strings.Contains(string(raw), "native-edit-ok") {
+		t.Fatalf("native file write did not work: %v %q calls=%+v", err, raw, calls)
+	}
+
+	t.Setenv(nativeshell.EnvVar, "on")
+	reply, calls, _ = run(idPrompt)
+	t.Logf("escape-hatch reply: %s", reply)
+	if _, ok := shellRan(calls); !ok || !strings.Contains(reply, me.Username) {
+		t.Fatalf("native shell did not run with the escape hatch on: calls=%+v reply=%q", calls, reply)
 	}
 }

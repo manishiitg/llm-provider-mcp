@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 func TestAgyToolModeHookDecisions(t *testing.T) {
@@ -37,6 +38,7 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 		{"full", "invoke_subagent", "allow"},
 	} {
 		t.Run(tc.mode+"/"+tc.tool, func(t *testing.T) {
+			t.Setenv(nativeshell.EnvVar, "on")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "sh", "-c", agyToolModeHookCommand(python, tc.mode))
@@ -56,6 +58,26 @@ func TestAgyToolModeHookDecisions(t *testing.T) {
 				t.Fatalf("decision = %q, want %q", decision.Decision, tc.want)
 			}
 		})
+	}
+}
+
+// PLAT-491: Full mode refuses the CLI's own shell unless the escape hatch is on.
+func TestAgyFullModeNativeShellOffByDefault(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	call := map[string]interface{}{"toolCall": map[string]interface{}{"name": "run_command", "args": map[string]string{"CommandLine": "id -un"}}}
+	t.Setenv(nativeshell.EnvVar, "")
+	if decision, reason := agyRunHook(t, python, "full", call); decision != "deny" || !strings.Contains(reason, "execute_shell_command") {
+		t.Fatalf("default: decision=%q reason=%q", decision, reason)
+	}
+	if decision, _ := agyRunHook(t, python, "full", map[string]interface{}{"toolCall": map[string]string{"name": "write_to_file"}}); decision != "allow" {
+		t.Fatalf("native file tool decision = %q, want allow", decision)
+	}
+	t.Setenv(nativeshell.EnvVar, "on")
+	if decision, _ := agyRunHook(t, python, "full", call); decision != "allow" {
+		t.Fatalf("escape hatch on: decision=%q, want allow", decision)
 	}
 }
 
