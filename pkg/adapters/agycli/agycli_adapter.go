@@ -135,7 +135,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	}
 	stopTerminal := streamAgyTerminal(ctx, session.tmuxSessionName, opts.StreamChan)
 	defer stopTerminal()
-	reply, usage, toolCalls, err := runAgyInteractiveTurn(ctx, owner, prompt)
+	reply, usage, toolCalls, compactions, err := runAgyInteractiveTurn(ctx, owner, prompt)
 	if err != nil {
 		if ctx.Err() != nil {
 			// A cancellation can land before the sidecar reaches its busy
@@ -149,7 +149,11 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	if opts != nil && opts.StreamChan != nil {
 		// Post-hoc tool events: the sidecar never streams live, so each
 		// real invocation from the .db goes out as a Start,End pair in
-		// completion order, ahead of the final content chunk.
+		// completion order, ahead of the final content chunk. Context
+		// compactions recorded during the turn go first, the same way.
+		for _, compaction := range compactions {
+			opts.StreamChan <- llmtypes.ContextCompactionChunk(compaction)
+		}
 		for _, call := range toolCalls {
 			opts.StreamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: call.Name, ToolArgs: call.Args, ToolCallID: call.CallID}
 			opts.StreamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolName: call.Name, ToolCallID: call.CallID, ToolResult: call.ErrorText}

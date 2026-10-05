@@ -65,6 +65,9 @@ type agyInteractiveSession struct {
 	pendingDurable []agyPendingDurableAck
 	retainedMu     sync.Mutex
 	retainedState  agyRetainedState
+	// compactionScanIdx is one past the newest step already scanned for
+	// context compactions (0 = not scanned yet), so each emits once.
+	compactionScanIdx atomic.Int64
 }
 
 func (session *agyInteractiveSession) getConversationID() string {

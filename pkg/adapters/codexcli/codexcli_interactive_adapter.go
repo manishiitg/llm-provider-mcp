@@ -4126,6 +4126,9 @@ func buildCodexStatusLine(tmuxSession, workingDir string) *llmtypes.StatusLine {
 		if windows, ok := gi.Additional[llmtypes.RateLimitWindowsMetaKey].([]llmtypes.RateLimitWindow); ok {
 			status.SetRateLimitWindows(windows)
 		}
+		used, _ := gi.Additional[llmtypes.ContextUsedTokensMetaKey].(int)
+		window, _ := gi.Additional[llmtypes.ContextWindowTokensMetaKey].(int)
+		status.SetContextUsage(used, window)
 	}
 	return status
 }

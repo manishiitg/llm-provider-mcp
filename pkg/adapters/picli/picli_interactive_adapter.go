@@ -1628,6 +1628,9 @@ type piMarker struct {
 	Args       json.RawMessage `json:"args,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	Status     int             `json:"status,omitempty"`
+	// compaction_start / compaction_end / compaction_failed (piCompactionTracker).
+	TokensBefore int   `json:"tokensBefore,omitempty"`
+	Aborted      *bool `json:"aborted,omitempty"`
 }
 
 // piGenericBridgeToolName reports whether name is pi's own generic wrapper
@@ -1775,6 +1778,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// tool call; if pi's own auto-retry recovered and produced real output
 	// afterward, that output wins and this is never consulted.
 	lastProviderErrorStatus := 0
+	var compaction piCompactionTracker
 	// agent_end is only a candidate: it can fire mid-run. The turn ends on
 	// agent_settled, or -- for a Pi build that never emits it -- on
 	// agent_end followed by piAgentEndQuietFallback with no further markers.
@@ -1843,6 +1847,11 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 						Content:  marker.Delta,
 						Metadata: deltaMeta,
 					})
+				}
+			case "compaction_start", "compaction_end", "compaction_failed":
+				if chunk, ok := compaction.fromMarker(marker); ok {
+					chunk.Metadata = piChunkMetadata(session)
+					emitPiChunkBlocking(ctx, streamChan, chunk)
 				}
 			case "tool_execution_start":
 				toolStart[marker.ToolCallID] = time.Now()
@@ -3089,6 +3098,29 @@ export default function mlpMarkerExtension(pi: any) {
 		if (typeof event?.status === "number" && event.status >= 400) {
 			emit("provider_error", { status: event.status });
 		}
+	});
+	// Context compaction lifecycle. Only the reason, outcome flags and token
+	// counts are written -- never the summary or the messages being compacted.
+	pi.on("session_before_compact", async (event: any) => {
+		emit("compaction_start", {
+			reason: event?.reason,
+			tokensBefore: event?.preparation?.tokensBefore,
+			willRetry: event?.willRetry
+		});
+	});
+	pi.on("session_compact", async (event: any) => {
+		emit("compaction_end", {
+			reason: event?.reason,
+			tokensBefore: event?.compactionEntry?.tokensBefore,
+			willRetry: event?.willRetry
+		});
+	});
+	pi.on("session_compact_failed", async (event: any) => {
+		emit("compaction_failed", {
+			reason: event?.reason,
+			aborted: event?.aborted,
+			willRetry: event?.willRetry
+		});
 	});
 }
 `

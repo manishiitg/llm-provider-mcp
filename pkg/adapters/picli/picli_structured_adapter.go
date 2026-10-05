@@ -33,6 +33,9 @@ type piJSONEvent struct {
 	Result              json.RawMessage   `json:"result,omitempty"`
 	IsError             bool              `json:"isError,omitempty"`
 	Message             *piJSONMessage    `json:"message,omitempty"`
+	// compaction_start / compaction_end (see piCompactionTracker).
+	Reason  string `json:"reason,omitempty"`
+	Aborted bool   `json:"aborted,omitempty"`
 }
 
 type piStructuredToolCall struct {
@@ -523,6 +526,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	// generation-bound even when real tool time was part of its wall clock.
 	toolStartedAt := map[string]time.Time{}
 	toolCalls := map[string]piStructuredToolCall{}
+	var compaction piCompactionTracker
 	// Both are set by the scanner goroutine and read by the wait loop's stall
 	// logger, so they must be race-safe.
 	var sawTerminal atomic.Bool
@@ -619,6 +623,10 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 					toolclock.Elapsed(toolStartedAt, event.ToolCallID),
 				))
 				delete(toolCalls, event.ToolCallID)
+			case "compaction_start", "compaction_end":
+				if chunk, ok := compaction.fromStructuredEvent(event, time.Now()); ok {
+					emitChunk(chunk)
+				}
 			case "turn_end":
 				// The LAST turn_end's accumulated text is the real final answer —
 				// a tool-use turn's turn_end has empty/no final text (the follow-up

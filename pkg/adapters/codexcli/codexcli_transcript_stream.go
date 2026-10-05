@@ -45,6 +45,57 @@ type codexTranscriptEvent struct {
 	IsToolEnd    bool
 	ToolResult   string
 	ToolDuration time.Duration
+	// Compaction is set for Codex's own ContextCompaction item (end only:
+	// Codex writes no start record).
+	Compaction *llmtypes.ContextCompaction
+	// Usage is set for a token_count record: the prompt size of the latest
+	// model call, the context window and the plan windows.
+	Usage *codexLiveUsage
+}
+
+// codexLiveUsage is one token_count record, reduced to what a live meter needs.
+type codexLiveUsage struct {
+	Model        string
+	InputTokens  int // prompt side, cached included: the context fill
+	CachedTokens int
+	OutputTokens int
+	// TotalTokens matters for one record: right after a compaction Codex
+	// writes a token_count with zero input and total = the size of the
+	// compacted context (verified on real 0.160 rollouts).
+	TotalTokens   int
+	ContextWindow int
+	RateLimits    *codexRateLimits
+}
+
+// contextTokens is the context fill this record reports.
+func (u *codexLiveUsage) contextTokens() int {
+	if u.InputTokens > 0 {
+		return u.InputTokens
+	}
+	return u.TotalTokens
+}
+
+func (u *codexLiveUsage) statusLine() *llmtypes.StatusLine {
+	if u == nil || u.contextTokens() <= 0 {
+		return nil
+	}
+	uncached := u.InputTokens - u.CachedTokens
+	if uncached < 0 {
+		uncached = u.InputTokens
+	}
+	status := &llmtypes.StatusLine{
+		Provider:             "codex-cli",
+		Model:                u.Model,
+		InputTokens:          uncached,
+		OutputTokens:         u.OutputTokens,
+		CacheReadInputTokens: u.CachedTokens,
+		TotalInputTokens:     u.InputTokens,
+		TotalOutputTokens:    u.OutputTokens,
+	}
+	status.SetContextUsage(u.contextTokens(), u.ContextWindow)
+	status.SetRateLimitWindows(codexStructuredRateLimitWindows(u.RateLimits))
+	status.SetStatusExtras(codexStatusExtras(u.RateLimits, u.contextTokens(), u.ContextWindow, "", time.Now()))
+	return status
 }
 
 // codexTranscriptStreamState tails the current turn's rollout JSONL and emits
@@ -70,6 +121,22 @@ type codexTranscriptStreamState struct {
 	// different polls) so the matching end can compute a real duration
 	// instead of reporting zero.
 	pendingToolStarts map[string]time.Time
+	// sideOnly drops assistant text and tool rows: the structured transport
+	// already streams those from stdout and reads only compaction and usage
+	// from the rollout.
+	sideOnly bool
+	// liveUsage, when set, turns token_count rows into throttled status_line
+	// chunks. Nil for the tmux transport, which already publishes the same
+	// rollout usage with its terminal snapshots (streamCodexStatusLine).
+	liveUsage *llmtypes.LiveUsageThrottle
+	// lastContextTokens is the newest prompt size seen, used as a
+	// compaction's tokens-before.
+	lastContextTokens int
+	// compactedTokens is the post-compaction context size from the zero-input
+	// token_count Codex writes between `compacted` and the item record.
+	compactedTokens int
+	model           string
+	seenCompaction  map[string]bool
 }
 
 func newCodexTranscriptStreamState(turnStart time.Time, workingDir string, resolveRollout func(time.Time) string) *codexTranscriptStreamState {
@@ -80,6 +147,7 @@ func newCodexTranscriptStreamState(turnStart time.Time, workingDir string, resol
 		seenTool:          map[string]bool{},
 		seenContent:       map[string]bool{},
 		pendingToolStarts: map[string]time.Time{},
+		seenCompaction:    map[string]bool{},
 	}
 }
 
@@ -101,6 +169,23 @@ func (s *codexTranscriptStreamState) poll(ctx context.Context, streamChan chan<-
 // Both normal streaming and retained follow-ups consume the same decoder and
 // dedup rules. Reading progress never invokes the final-answer classifier.
 func (s *codexTranscriptStreamState) readChunks() []llmtypes.StreamChunk {
+	return s.readChunksAt(time.Now(), false)
+}
+
+// readChunksAt is readChunks with the clock and the usage-throttle flush made
+// explicit: flush releases the newest usage snapshot regardless of the
+// interval (the last read of a turn).
+func (s *codexTranscriptStreamState) readChunksAt(now time.Time, flush bool) []llmtypes.StreamChunk {
+	chunks := s.readRolloutChunks()
+	if s.liveUsage != nil {
+		if status := s.liveUsage.Take(now, flush); status != nil {
+			chunks = append(chunks, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeStatusLine, StatusLine: status})
+		}
+	}
+	return chunks
+}
+
+func (s *codexTranscriptStreamState) readRolloutChunks() []llmtypes.StreamChunk {
 	if s.path == "" {
 		if s.resolveRollout != nil {
 			s.path = s.resolveRollout(s.turnStart)
@@ -118,6 +203,45 @@ func (s *codexTranscriptStreamState) readChunks() []llmtypes.StreamChunk {
 	s.offset = next
 	var chunks []llmtypes.StreamChunk
 	for _, e := range events {
+		if e.Usage != nil {
+			if e.Usage.Model == "" {
+				e.Usage.Model = s.model
+			} else {
+				s.model = e.Usage.Model
+			}
+			if e.Usage.InputTokens > 0 {
+				s.lastContextTokens = e.Usage.InputTokens
+				s.compactedTokens = 0
+			} else if e.Usage.TotalTokens > 0 {
+				s.compactedTokens = e.Usage.TotalTokens
+			}
+			if s.liveUsage != nil && e.Usage.contextTokens() > 0 {
+				s.liveUsage.Offer(e.Usage.statusLine())
+			}
+			continue
+		}
+		if e.Compaction != nil {
+			if e.Compaction.ID != "" {
+				if s.seenCompaction[e.Compaction.ID] {
+					continue
+				}
+				s.seenCompaction[e.Compaction.ID] = true
+			}
+			compaction := *e.Compaction
+			if compaction.TokensBefore == 0 {
+				compaction.TokensBefore = s.lastContextTokens
+			}
+			if compaction.TokensAfter == 0 && s.compactedTokens > 0 {
+				compaction.TokensAfter = s.compactedTokens
+				s.lastContextTokens = s.compactedTokens
+				s.compactedTokens = 0
+			}
+			chunks = append(chunks, llmtypes.ContextCompactionChunk(compaction))
+			continue
+		}
+		if s.sideOnly {
+			continue
+		}
 		// Defensive: emit a given tool call's start only once, keyed by
 		// call_id, in case a row is ever re-observed.
 		if e.ToolName != "" && e.ToolCallID != "" {
@@ -264,6 +388,22 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		// event. The surrounding response_item is only the generic JavaScript
 		// `exec` transport, so this item is the authoritative tool identity.
 		Item *completedItem `json:"item"`
+		// item_completed timing (Codex 0.15x+; older builds omit started_at_ms).
+		StartedAtMs   int64 `json:"started_at_ms"`
+		CompletedAtMs int64 `json:"completed_at_ms"`
+		// turn_context: the effective model.
+		Model string `json:"model"`
+		// event_msg: token_count, written after every model call.
+		Info *struct {
+			LastTokenUsage struct {
+				InputTokens       int `json:"input_tokens"`
+				CachedInputTokens int `json:"cached_input_tokens"`
+				OutputTokens      int `json:"output_tokens"`
+				TotalTokens       int `json:"total_tokens"`
+			} `json:"last_token_usage"`
+			ModelContextWindow int `json:"model_context_window"`
+		} `json:"info"`
+		RateLimits *codexRateLimits `json:"rate_limits"`
 	}
 	type ev struct {
 		Type      string         `json:"type"` // "event_msg" | "response_item"
@@ -284,6 +424,26 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		var rowTime time.Time
 		if e.Timestamp != "" {
 			rowTime, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
+		}
+		// Usage rows are read even before the turn: the context fill is the
+		// conversation's current state, and the newest one is a compaction's
+		// tokens-before.
+		if e.Type == "turn_context" && e.Payload.Model != "" {
+			events = append(events, codexTranscriptEvent{Usage: &codexLiveUsage{Model: e.Payload.Model}})
+			continue
+		}
+		if e.Type == "event_msg" && e.Payload.Type == "token_count" {
+			if info := e.Payload.Info; info != nil {
+				events = append(events, codexTranscriptEvent{Usage: &codexLiveUsage{
+					InputTokens:   info.LastTokenUsage.InputTokens,
+					CachedTokens:  info.LastTokenUsage.CachedInputTokens,
+					OutputTokens:  info.LastTokenUsage.OutputTokens,
+					TotalTokens:   info.LastTokenUsage.TotalTokens,
+					ContextWindow: info.ModelContextWindow,
+					RateLimits:    e.Payload.RateLimits,
+				}})
+			}
+			continue
 		}
 		if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
 			continue
@@ -334,6 +494,10 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 					})
 				}
 			case "item_completed":
+				if item := e.Payload.Item; item != nil && item.Type == "ContextCompaction" {
+					events = append(events, codexTranscriptEvent{Compaction: codexCompactionFromItem(item.ID, e.Payload.StartedAtMs, e.Payload.CompletedAtMs, rowTime)})
+					continue
+				}
 				if item := e.Payload.Item; item != nil && item.Type == "McpToolCall" && item.ID != "" && item.Tool != "" {
 					// This shape has no separate start row. Emit an adjacent
 					// start/end pair so downstream consumers see the real MCP
@@ -474,4 +638,28 @@ func codexRolloutText(raw json.RawMessage) string {
 	}
 	// An unrecognised shape is still better surfaced verbatim than dropped.
 	return string(raw)
+}
+
+// codexCompactionFromItem maps Codex's ContextCompaction item_completed record
+// to the shared end event. Codex writes no start record and no token counts;
+// tokens-before is filled by the caller from the preceding token_count.
+func codexCompactionFromItem(id string, startedAtMs, completedAtMs int64, rowTime time.Time) *llmtypes.ContextCompaction {
+	c := &llmtypes.ContextCompaction{
+		Provider: "codex-cli",
+		Phase:    llmtypes.ContextCompactionPhaseEnd,
+		ID:       id,
+		Outcome:  llmtypes.ContextCompactionOutcomeSuccess,
+	}
+	if completedAtMs > 0 {
+		c.EndedAt = time.UnixMilli(completedAtMs).UTC()
+	} else if !rowTime.IsZero() {
+		c.EndedAt = rowTime.UTC()
+	}
+	if startedAtMs > 0 {
+		c.StartedAt = time.UnixMilli(startedAtMs).UTC()
+		if !c.EndedAt.IsZero() && c.EndedAt.After(c.StartedAt) {
+			c.DurationMs = c.EndedAt.Sub(c.StartedAt).Milliseconds()
+		}
+	}
+	return c
 }

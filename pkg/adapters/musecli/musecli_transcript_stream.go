@@ -50,6 +50,22 @@ type museTranscriptEvent struct {
 		ToolCallID string `json:"tool_call_id"`
 		Text       string `json:"text"`
 	} `json:"results"`
+	// Context compaction (context_compaction_candidate / _installed).
+	CandidateID     string                `json:"candidate_id"`
+	Trigger         string                `json:"trigger"`
+	Status          string                `json:"status"`
+	BudgetBefore    *museCompactionBudget `json:"budget_before"`
+	BudgetAfter     *museCompactionBudget `json:"budget_after"`
+	SummarizerUsage *struct {
+		DurationMs int64 `json:"duration_ms"`
+	} `json:"summarizer_usage"`
+}
+
+// museCompactionBudget is Muse's prompt-size estimate around a compaction:
+// estimated_prompt_tokens is the conversation's prompt size in tokens
+// (estimate_source "heuristic_estimate", not a provider count).
+type museCompactionBudget struct {
+	EstimatedPromptTokens int `json:"estimated_prompt_tokens"`
 }
 
 // museTranscriptRecord is the record-shaped tool effect inside a
@@ -70,6 +86,7 @@ type museTranscriptRecord struct {
 func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool, toolStartedAt map[string]time.Time) []llmtypes.StreamChunk {
 	var env struct {
 		PayloadType string          `json:"payload_type"`
+		RecordedAt  int64           `json:"recorded_at"` // unix microseconds
 		Payload     json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal([]byte(line), &env); err != nil || len(env.Payload) == 0 {
@@ -127,6 +144,10 @@ func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool
 		for _, r := range evt.Results {
 			emitEnd(r.ToolCallID, r.Text)
 		}
+	case "context_compaction_candidate", "context_compaction_installed":
+		if c, ok := museCompactionFromEvent(evt, env.RecordedAt, seenTool); ok {
+			out = append(out, llmtypes.ContextCompactionChunk(c))
+		}
 	}
 	switch rec.Kind {
 	case "started":
@@ -139,6 +160,62 @@ func museTranscriptLineToChunks(line string, seenTool, endedTool map[string]bool
 		}
 	}
 	return out
+}
+
+// museCompactionFromEvent maps Muse's compaction lifecycle records to the
+// shared ContextCompaction contract. Muse writes, per compaction:
+//
+//	context_compaction_candidate status=running   -> start
+//	context_compaction_candidate status=succeeded -> (nothing; the install is the end)
+//	context_compaction_installed                  -> end, success, tokens + duration
+//
+// A candidate that ends in any other status (failed/error, or abandoned)
+// closes the start as failed/aborted. candidate_id is the correlation ID on
+// both phases. tool_results_cleared is a light prune of old tool output, not
+// a compaction, and is deliberately not mapped. Dedup shares seen (keyed
+// apart from call ids) so a re-read record never emits twice and a start
+// gets at most one end.
+func museCompactionFromEvent(evt museTranscriptEvent, recordedAtMicros int64, seen map[string]bool) (llmtypes.ContextCompaction, bool) {
+	c := llmtypes.ContextCompaction{Provider: "muse-cli", ID: strings.TrimSpace(evt.CandidateID), Trigger: strings.TrimSpace(evt.Trigger)}
+	var at time.Time
+	if recordedAtMicros > 0 {
+		at = time.UnixMicro(recordedAtMicros).UTC()
+	}
+	if evt.BudgetBefore != nil {
+		c.TokensBefore = evt.BudgetBefore.EstimatedPromptTokens
+	}
+	status := strings.ToLower(strings.TrimSpace(evt.Status))
+	switch {
+	case evt.Kind == "context_compaction_installed":
+		c.Phase, c.Outcome, c.EndedAt = llmtypes.ContextCompactionPhaseEnd, llmtypes.ContextCompactionOutcomeSuccess, at
+		if evt.BudgetAfter != nil {
+			c.TokensAfter = evt.BudgetAfter.EstimatedPromptTokens
+		}
+		if evt.SummarizerUsage != nil && evt.SummarizerUsage.DurationMs > 0 {
+			c.DurationMs = evt.SummarizerUsage.DurationMs
+		}
+	case status == "running":
+		c.Phase, c.StartedAt = llmtypes.ContextCompactionPhaseStart, at
+	case status == "succeeded" || status == "":
+		return c, false
+	default:
+		c.Phase, c.EndedAt = llmtypes.ContextCompactionPhaseEnd, at
+		c.Outcome = llmtypes.ContextCompactionOutcomeAborted
+		if status == "failed" || status == "error" || status == "errored" {
+			c.Outcome = llmtypes.ContextCompactionOutcomeFailed
+		}
+	}
+	if seen != nil {
+		key := "\x00compaction:" + string(c.Phase) + ":" + c.ID
+		if c.ID == "" {
+			key += ":" + at.Format(time.RFC3339Nano)
+		}
+		if seen[key] {
+			return c, false
+		}
+		seen[key] = true
+	}
+	return c, true
 }
 
 // museTranscriptStreamState tails one turn's session.jsonl by sequence and

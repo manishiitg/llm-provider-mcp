@@ -59,6 +59,8 @@ type claudeTranscriptEvent struct {
 	IsToolEnd    bool
 	ToolResult   string
 	ToolDuration time.Duration
+	// Compaction is set for a system/compact_boundary row.
+	Compaction *llmtypes.ContextCompaction
 }
 
 // streamClaudeTranscript tails the claude-code JSONL transcript for `sessionID`
@@ -248,6 +250,11 @@ func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.
 		"claude_code_session_id":    sessionID,
 		"claude_code_stream_source": "transcript",
 	}
+	if e.Compaction != nil {
+		chunk := llmtypes.ContextCompactionChunk(*e.Compaction)
+		chunk.Metadata = meta
+		return chunk
+	}
 	if e.IsToolEnd {
 		return llmtypes.StreamChunk{
 			Type:         llmtypes.StreamChunkTypeToolCallEnd,
@@ -318,11 +325,23 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 			continue
 		}
 		var e struct {
-			Type      string          `json:"type"`
-			Timestamp string          `json:"timestamp"`
-			Message   json.RawMessage `json:"message"`
+			Type            string                 `json:"type"`
+			Subtype         string                 `json:"subtype"`
+			UUID            string                 `json:"uuid"`
+			Timestamp       string                 `json:"timestamp"`
+			Message         json.RawMessage        `json:"message"`
+			CompactMetadata *claudeCompactMetadata `json:"compactMetadata"`
 		}
 		if err := json.Unmarshal(line, &e); err != nil {
+			continue
+		}
+		if e.Type == "system" && e.Subtype == "compact_boundary" {
+			rowTime, _ := time.Parse(time.RFC3339Nano, e.Timestamp)
+			if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
+				continue
+			}
+			c := claudeCompactionFromBoundary(e.UUID, e.CompactMetadata, rowTime)
+			events = append(events, claudeTranscriptEvent{Compaction: &c})
 			continue
 		}
 		if e.Type != "assistant" && e.Type != "user" {

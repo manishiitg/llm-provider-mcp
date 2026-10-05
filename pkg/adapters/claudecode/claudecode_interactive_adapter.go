@@ -5198,6 +5198,9 @@ func parseClaudeStatusLineJSON(raw []byte, defaultModel string) (*llmtypes.Statu
 				if n := claudeIntFromAny(current["cache_read_input_tokens"]); n > 0 {
 					status.CacheReadInputTokens = n
 				}
+				// The prompt of the latest API call is what occupies the window.
+				used := claudeIntFromAny(current["input_tokens"]) + claudeIntFromAny(current["cache_creation_input_tokens"]) + claudeIntFromAny(current["cache_read_input_tokens"])
+				status.SetContextUsage(used, claudeIntFromAny(contextWindow["context_window_size"]))
 			}
 		}
 		switch cost := rawMap["cost"].(type) {

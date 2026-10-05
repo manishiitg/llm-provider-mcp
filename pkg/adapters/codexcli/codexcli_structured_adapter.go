@@ -396,6 +396,51 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		}()
 	}
 
+	// Side channel: compaction and live usage exist only in the rollout
+	// (`codex exec --json` has neither). Tail this thread's rollout for those
+	// two record kinds while stdout carries text and tools. The goroutine sends
+	// on StreamChan, so it must finish before any return closes it: every
+	// return after this point first waits on sideDone.
+	sideDone := make(chan struct{})
+	if opts != nil && opts.StreamChan != nil {
+		side := newCodexTranscriptStreamState(turnStart, workingDir, codexOwnThreadRolloutResolver(func() string {
+			id, _ := ownThreadID.Load().(string)
+			return id
+		}))
+		side.sideOnly = true
+		side.liveUsage = &llmtypes.LiveUsageThrottle{}
+		go func() {
+			defer close(sideDone)
+			send := func(chunks []llmtypes.StreamChunk) bool {
+				for _, chunk := range chunks {
+					select {
+					case opts.StreamChan <- chunk:
+					case <-ctx.Done():
+						return false
+					}
+				}
+				return true
+			}
+			ticker := time.NewTicker(codexRolloutPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-scannerDone:
+					send(side.readChunksAt(time.Now(), true))
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if !send(side.readChunks()) {
+						return
+					}
+				}
+			}
+		}()
+	} else {
+		close(sideDone)
+	}
+
 	go func() {
 		defer close(scannerDone)
 		for scanner.Scan() {
@@ -496,6 +541,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		}
 	}()
 	<-scannerDone
+	<-sideDone
 
 	// A scan failure is not EOF. The process is very likely still running with
 	// nobody left to read its stdout, so say so and force teardown — otherwise

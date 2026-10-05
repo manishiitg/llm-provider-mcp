@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"google.golang.org/protobuf/encoding/protowire"
 	_ "modernc.org/sqlite"
 )
 
@@ -121,5 +124,73 @@ func TestAgyTurnUsageDecodesGoldenPayload(t *testing.T) {
 	}
 	if missing := agyTurnUsageSince("nope", -1); missing.TotalTokens != 0 {
 		t.Fatalf("usage for missing conversation = %+v, want zero", missing)
+	}
+}
+
+// A real CHECKPOINT row (captured 2026-06-10, conversation 0370df02 idx 4) is
+// the intent-only title checkpoint AGY writes after every first answer: it must
+// not read as a compaction. The same row with intent_only cleared is what a
+// real compaction records, and becomes one End chunk timed from its metadata.
+func TestAgyCheckpointStepCompaction(t *testing.T) {
+	raw, err := os.ReadFile("testdata/checkpoint_step_intent_only.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compacting []byte
+	for rest := raw; len(rest) > 0; {
+		num, typ, n := protowire.ConsumeTag(rest)
+		m := protowire.ConsumeFieldValue(num, typ, rest[n:])
+		if n < 0 || m < 0 {
+			t.Fatal("bad fixture")
+		}
+		field := rest[:n+m]
+		if num == 30 {
+			inner, _ := protowire.ConsumeBytes(rest[n:])
+			var kept []byte
+			for r := inner; len(r) > 0; {
+				in, it, k := protowire.ConsumeTag(r)
+				l := protowire.ConsumeFieldValue(in, it, r[k:])
+				if in != 9 {
+					kept = append(kept, r[:k+l]...)
+				}
+				r = r[k+l:]
+			}
+			field = protowire.AppendBytes(protowire.AppendTag(nil, 30, protowire.BytesType), kept)
+		}
+		compacting = append(compacting, field...)
+		rest = rest[n+m:]
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "c1.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	for idx, payload := range [][]byte{raw, compacting} {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO steps VALUES (?, 23, 3, ?)`, idx, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, err := agyReadTurnRecord("c1", -1, "", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.compactions) != 1 {
+		t.Fatalf("want only the non-intent checkpoint, got %+v", record.compactions)
+	}
+	chunk := llmtypes.ContextCompactionChunk(record.compactions[0])
+	got := chunk.ContextCompaction
+	if chunk.Type != llmtypes.StreamChunkTypeContextCompaction || got.Provider != "agy-cli" || got.Phase != llmtypes.ContextCompactionPhaseEnd ||
+		got.ID != "c1:1" || got.Outcome != llmtypes.ContextCompactionOutcomeSuccess ||
+		!got.StartedAt.Equal(time.Unix(1781070351, 779980000)) || !got.EndedAt.Equal(time.Unix(1781070352, 571718000)) ||
+		got.DurationMs != 791 || got.TokensBefore != 0 || got.TokensAfter != 0 {
+		t.Fatalf("unexpected compaction chunk %+v", got)
 	}
 }

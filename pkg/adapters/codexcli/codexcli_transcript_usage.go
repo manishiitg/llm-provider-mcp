@@ -227,6 +227,11 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		}
 		gi.Additional[codexMaxUsedPercentKey] = used
 	}
+	// The numbers behind the "ctx N%" segment, for a meter.
+	gi.Additional[llmtypes.ContextUsedTokensMetaKey] = latest.InputTokens
+	if latestContextWindow > 0 {
+		gi.Additional[llmtypes.ContextWindowTokensMetaKey] = latestContextWindow
+	}
 	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort, time.Now()); len(extras) > 0 {
 		if gi.Additional == nil {
 			gi.Additional = map[string]interface{}{}

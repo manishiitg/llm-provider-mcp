@@ -136,6 +136,9 @@ type StreamChunk struct {
 	ToolResult   string        // Tool execution result (when Type is "tool_call_end")
 	ToolDuration time.Duration // Duration of the tool call (when Type is "tool_call_end")
 	StatusLine   *StatusLine   // Generic statusline snapshot (when Type is "status_line")
+	// ContextCompaction is the CLI's compaction record (when Type is
+	// "context_compaction").
+	ContextCompaction *ContextCompaction
 }
 
 // ToolCall represents a tool/function call request

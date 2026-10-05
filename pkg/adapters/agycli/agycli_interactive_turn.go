@@ -275,30 +275,30 @@ func agyTmuxSessionAlive(ctx context.Context, tmuxName string) bool {
 // summed from the conversation .db, and the turn's tool invocations in
 // completion order. An unexpected approval prompt fails loudly: bridge
 // tools are pre-approved, so anything asking is native.
-func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (string, llmtypes.Usage, []agyTurnToolCall, error) {
+func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (string, llmtypes.Usage, []agyTurnToolCall, []llmtypes.ContextCompaction, error) {
 	session, ok := activeAgyInteractiveSession(ownerSessionID)
 	if !ok {
-		return "", llmtypes.Usage{}, nil, fmt.Errorf("no agy interactive session for owner %q", ownerSessionID)
+		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("no agy interactive session for owner %q", ownerSessionID)
 	}
 	prompt = strings.Trim(prompt, "\n")
 	if strings.TrimSpace(prompt) == "" {
-		return "", llmtypes.Usage{}, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
+		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
 	}
 	idxBefore := agyConversationMaxIdx(session.getConversationID(), session.transcriptHome)
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
-		return "", llmtypes.Usage{}, nil, err
+		return "", llmtypes.Usage{}, nil, nil, err
 	}
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
-		return "", llmtypes.Usage{}, nil, fmt.Errorf("submit sidecar prompt: %w", err)
+		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("submit sidecar prompt: %w", err)
 	}
 	// The pane can echo a draft before Enter, so only the conversation's
 	// matching user step proves that this prompt was taken in.
 	userIdx, err := agyWaitTurnIntake(ctx, session, idxBefore, prompt)
 	if err != nil {
-		return "", llmtypes.Usage{}, nil, err
+		return "", llmtypes.Usage{}, nil, nil, err
 	}
 	if err := agyWaitTurnAnswer(ctx, session, userIdx); err != nil {
-		return "", llmtypes.Usage{}, nil, err
+		return "", llmtypes.Usage{}, nil, nil, err
 	}
 	// Only the structured record supplies the answer. The pane includes
 	// prompt echo, thoughts and tool renderings, so it cannot repair an
@@ -306,11 +306,35 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	conversationID := session.getConversationID()
 	reply := agyTurnReplySince(conversationID, userIdx, session.transcriptHome)
 	if reply == "" {
-		return "", llmtypes.Usage{}, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
+		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
 	usage := agyTurnUsageSince(conversationID, userIdx, session.transcriptHome)
 	toolCalls := agyTurnToolCallsSince(conversationID, userIdx, session.transcriptHome)
-	return reply, usage, toolCalls, nil
+	return reply, usage, toolCalls, agyTurnCompactions(session, conversationID, idxBefore), nil
+}
+
+// agyTurnCompactions returns the context compactions AGY recorded since the
+// previous turn's scan (or this turn's pre-send baseline on the first turn).
+// A compaction can land before the turn's user row or after the previous
+// answer settled, so the scan starts at the session's watermark rather than
+// at userIdx; the watermark makes each checkpoint row emit exactly once.
+func agyTurnCompactions(session *agyInteractiveSession, conversationID string, idxBefore int) []llmtypes.ContextCompaction {
+	scanFrom := idxBefore
+	if mark := session.compactionScanIdx.Load(); mark > 0 && int(mark-1) < scanFrom {
+		scanFrom = int(mark - 1)
+	}
+	record, err := agyReadTurnRecord(conversationID, scanFrom, "", session.transcriptHome)
+	if err != nil || record.lastIdx < 0 {
+		return nil
+	}
+	next := record.lastIdx
+	if record.compactionPendingIdx >= 0 {
+		next = record.compactionPendingIdx - 1
+	}
+	if next >= scanFrom {
+		session.compactionScanIdx.Store(int64(next) + 1)
+	}
+	return record.compactions
 }
 
 // agyTurnRecord is a single snapshot of the CLI's own SQLite steps. A turn
@@ -325,10 +349,15 @@ type agyTurnRecord struct {
 	answer         string
 	finalAnswer    string
 	subagents      map[string]bool // native child id -> completion notification received
+	// compactions are the finished context compactions (CHECKPOINT steps
+	// that are not intent-only) in idx order.
+	compactions []llmtypes.ContextCompaction
+	// compactionPendingIdx is the first CHECKPOINT row still running, or -1.
+	compactionPendingIdx int
 }
 
 func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accountHome ...string) (agyTurnRecord, error) {
-	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}}
+	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}, compactionPendingIdx: -1}
 	if prompt == "" {
 		record.userIdx = sinceIdx
 	}
@@ -390,6 +419,15 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accou
 						}
 					}
 				}
+			}
+		}
+		if stepType == agyStepCheckpoint {
+			if status != agyStepStatusDone {
+				if record.compactionPendingIdx < 0 {
+					record.compactionPendingIdx = idx
+				}
+			} else if compaction, ok := agyCheckpointCompaction(conversationID, idx, payload); ok {
+				record.compactions = append(record.compactions, compaction)
 			}
 		}
 		if stepType == agyStepAssistant {
@@ -852,6 +890,68 @@ func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...strin
 		usage.ThoughtsTokens = &thinking
 	}
 	return usage
+}
+
+// agyStepCheckpoint is CORTEX_STEP_TYPE_CHECKPOINT; agyStepStatusDone is a
+// step's finished status (the same 3 the answer wait keys on).
+const (
+	agyStepCheckpoint = 23
+	agyStepStatusDone = 3
+)
+
+// agyCheckpointCompaction decodes a finished CHECKPOINT step into a context
+// compaction. Field numbers come from the CLI's own descriptor
+// (exa.cortex_pb.CortexStepCheckpoint, payload field 30): 9 intent_only,
+// 16 model_summarization_failed, 17 used_fallback_summary. Step metadata
+// (payload field 5) carries the start (1) and end (8) Timestamps.
+//
+// AGY also writes an intent_only checkpoint after the first answer of every
+// conversation: it only generates the title and user intent and compacts
+// nothing (all 36 local conversations on 2026-10-06 had exactly one, at idx
+// 3-4). Those are skipped. Token counts are not set: metadata field 9 is the
+// summarizer call's own usage, not the context size before and after.
+func agyCheckpointCompaction(conversationID string, idx int, payload []byte) (llmtypes.ContextCompaction, bool) {
+	checkpoint, ok := agyProtoSubmessage(payload, 30)
+	if !ok {
+		return llmtypes.ContextCompaction{}, false
+	}
+	if intentOnly, _ := agyProtoVarintField(checkpoint, 9); intentOnly != 0 {
+		return llmtypes.ContextCompaction{}, false
+	}
+	compaction := llmtypes.ContextCompaction{
+		Provider: "agy-cli",
+		Phase:    llmtypes.ContextCompactionPhaseEnd,
+		ID:       fmt.Sprintf("%s:%d", conversationID, idx),
+		Outcome:  llmtypes.ContextCompactionOutcomeSuccess,
+	}
+	failed, _ := agyProtoVarintField(checkpoint, 16)
+	fallback, _ := agyProtoVarintField(checkpoint, 17)
+	if failed != 0 && fallback == 0 {
+		compaction.Outcome = llmtypes.ContextCompactionOutcomeFailed
+	}
+	if meta, ok := agyProtoSubmessage(payload, 5); ok {
+		compaction.StartedAt = agyProtoTimestampField(meta, 1)
+		compaction.EndedAt = agyProtoTimestampField(meta, 8)
+		if !compaction.StartedAt.IsZero() && !compaction.EndedAt.IsZero() && !compaction.EndedAt.Before(compaction.StartedAt) {
+			compaction.DurationMs = compaction.EndedAt.Sub(compaction.StartedAt).Milliseconds()
+		}
+	}
+	return compaction, true
+}
+
+// agyProtoTimestampField decodes a google.protobuf.Timestamp submessage
+// (seconds 1, nanos 2); zero time when absent.
+func agyProtoTimestampField(msg []byte, num protowire.Number) time.Time {
+	ts, ok := agyProtoSubmessage(msg, num)
+	if !ok {
+		return time.Time{}
+	}
+	seconds, ok := agyProtoVarintField(ts, 1)
+	if !ok || seconds <= 0 {
+		return time.Time{}
+	}
+	nanos, _ := agyProtoVarintField(ts, 2)
+	return time.Unix(int64(seconds), int64(nanos)).UTC()
 }
 
 // agyStepToolCall is the conversation step type for a tool invocation

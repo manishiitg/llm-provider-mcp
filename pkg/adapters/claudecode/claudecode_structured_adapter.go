@@ -32,9 +32,18 @@ type claudeStreamEvent struct {
 	Result    string               `json:"result,omitempty"`
 	IsError   bool                 `json:"is_error,omitempty"`
 	Usage     *claudeStreamUsage   `json:"usage,omitempty"`
+	// system/status: "compacting" while compaction runs, null afterwards
+	// with compact_result. system/compact_boundary: compact_metadata.
+	Status          *string                `json:"status,omitempty"`
+	CompactResult   string                 `json:"compact_result,omitempty"`
+	CompactMetadata *claudeCompactMetadata `json:"compact_metadata,omitempty"`
+	// rate_limit_event: plan window usage.
+	RateLimitInfo *claudeRateLimitInfo `json:"rate_limit_info,omitempty"`
+	Model         string               `json:"model,omitempty"`
 }
 
 type claudeStreamMessage struct {
+	Model   string                     `json:"model,omitempty"`
 	Content []claudeStreamContentBlock `json:"content,omitempty"`
 	Usage   *claudeStreamUsage         `json:"usage,omitempty"`
 }
@@ -297,6 +306,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		startedAt time.Time
 	}{}
 	scannerDone := make(chan struct{})
+	var compaction claudeStructuredCompaction
+	liveUsage := &claudeLiveUsage{}
+	usageThrottle := &llmtypes.LiveUsageThrottle{}
+	emitLiveUsage := func(force bool) {
+		usageThrottle.Offer(liveUsage.statusLine())
+		if status := usageThrottle.Take(time.Now(), force); status != nil {
+			emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeStatusLine, StatusLine: status})
+		}
+	}
 
 	go func() {
 		defer close(scannerDone)
@@ -315,7 +333,24 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				sessionID = ev.SessionID
 			}
 			switch ev.Type {
+			case "system":
+				if ev.Subtype == "init" && ev.Model != "" {
+					liveUsage.model = ev.Model
+				}
+				for _, c := range compaction.observe(ev, time.Now()) {
+					emitChunk(llmtypes.ContextCompactionChunk(c))
+				}
+			case "rate_limit_event":
+				if liveUsage.observeRateLimit(ev.RateLimitInfo) {
+					emitLiveUsage(false)
+				}
 			case "assistant":
+				if ev.Message != nil && liveUsage.observeUsage(ev.Message.Usage) {
+					if ev.Message.Model != "" {
+						liveUsage.model = ev.Message.Model
+					}
+					emitLiveUsage(false)
+				}
 				if ev.Message != nil {
 					for _, block := range ev.Message.Content {
 						if block.Type == "text" && block.Text != "" {
@@ -384,6 +419,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 			case "result":
+				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
 				if strings.TrimSpace(ev.Result) != "" {
