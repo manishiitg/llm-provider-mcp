@@ -194,12 +194,20 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 // The message is often a JSON-serialized API error; the nested
 // error.message is returned when it parses, the raw text otherwise.
 func readCodexRolloutTurnError(path string, turnStart time.Time) string {
+	message, _ := readCodexRolloutTurnFailure(path, turnStart)
+	return message
+}
+
+// readCodexRolloutTurnFailure is readCodexRolloutTurnError plus the machine-readable
+// error.codex_error_info Codex writes next to the message ("server_overloaded" when the
+// selected model is at capacity).
+func readCodexRolloutTurnFailure(path string, turnStart time.Time) (string, string) {
 	if strings.TrimSpace(path) == "" {
-		return ""
+		return "", ""
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
 
@@ -214,7 +222,7 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 			Reason           string          `json:"reason"`
 		} `json:"payload"`
 	}
-	var last string
+	var last, lastInfo string
 	var startedTurnID string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
@@ -247,18 +255,29 @@ func readCodexRolloutTurnError(path string, turnStart time.Time) string {
 			continue
 		}
 		if e.Payload.Type == "turn_aborted" {
-			last = codexTurnAbortedMessage(e.Payload.Reason)
+			last, lastInfo = codexTurnAbortedMessage(e.Payload.Reason), ""
 			continue
 		}
 		// A later successful completion in the same window supersedes an
 		// earlier failure (Codex retried and the answer arrived).
 		if strings.TrimSpace(e.Payload.LastAgentMessage) != "" {
-			last = ""
+			last, lastInfo = "", ""
 			continue
 		}
-		last = codexTurnErrorMessage(e.Payload.Error)
+		last, lastInfo = codexTurnErrorMessage(e.Payload.Error), codexTurnErrorInfo(e.Payload.Error)
 	}
-	return last
+	return last, lastInfo
+}
+
+// codexTurnErrorInfo returns error.codex_error_info from task_complete's error object.
+func codexTurnErrorInfo(raw json.RawMessage) string {
+	var asObject struct {
+		Info string `json:"codex_error_info"`
+	}
+	if json.Unmarshal(raw, &asObject) == nil {
+		return strings.TrimSpace(asObject.Info)
+	}
+	return ""
 }
 
 // codexTurnAbortedMessage is the failure reported for a turn Codex recorded as

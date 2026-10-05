@@ -44,6 +44,9 @@ type codexExecEvent struct {
 	ThreadID string          `json:"thread_id,omitempty"`
 	Item     *codexExecItem  `json:"item,omitempty"`
 	Usage    *codexExecUsage `json:"usage,omitempty"`
+	// `error` events carry a top-level message; `turn.failed` carries {"error":{"message":...}}.
+	Message string          `json:"message,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
 }
 
 type codexExecItem struct {
@@ -334,7 +337,8 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		args string
 	}{}
 	scannerDone := make(chan struct{})
-	var ownThreadID atomic.Value // string: this run's Codex thread id, set by the scanner
+	var ownThreadID atomic.Value                    // string: this run's Codex thread id, set by the scanner
+	var turnFailedMessage, errorEventMessage string // structured stdout failure; read after scannerDone
 
 	// Teardown must be reachable from more than one place. It used to live
 	// only inside the `turn.completed` branch below, so a turn whose terminal
@@ -408,6 +412,18 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			if event.ThreadID != "" {
 				threadID = event.ThreadID
 				ownThreadID.Store(event.ThreadID)
+			}
+			switch event.Type {
+			case "turn.failed":
+				// Terminal: the turn ended with a provider error (kept for the final result).
+				if m := codexTurnErrorMessage(event.Error); m != "" {
+					turnFailedMessage = m
+				}
+			case "error":
+				// Reported before turn.failed; only used when no turn.failed arrives.
+				if m := unwrapCodexAPIErrorMessage(strings.TrimSpace(event.Message)); m != "" {
+					errorEventMessage = m
+				}
 			}
 			switch event.Type {
 			case "item.started":
@@ -504,6 +520,27 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			if c.logger != nil {
 				c.logger.Infof("codex: recovered final assistant text from the rollout after stdout produced none")
 			}
+		}
+	}
+
+	// A turn Codex itself failed (model at capacity, unsupported model, a 4xx) is reported on
+	// stdout as turn.failed and in the rollout as task_complete.error with a machine code.
+	// Return that as the reason instead of "exit status 1: Reading additional input from stdin".
+	if content == "" {
+		message, info := turnFailedMessage, ""
+		if message == "" {
+			message = errorEventMessage
+		}
+		if threadID != "" {
+			if rolloutMessage, rolloutInfo := readCodexRolloutTurnFailure(findCodexRolloutForThread(threadID), turnStart); rolloutMessage != "" {
+				info = rolloutInfo
+				if message == "" {
+					message = rolloutMessage
+				}
+			}
+		}
+		if message != "" {
+			return nil, &CodexTurnError{Message: message, Info: info}
 		}
 	}
 

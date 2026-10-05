@@ -416,16 +416,19 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// 4xx) completes with no final message and the reason on task_complete.
 	// That is an error for the caller, not an empty answer: an empty reply
 	// with a session handle attached reads as a launch-only success upstream.
-	if strings.TrimSpace(content) == "" {
-		if turnErr := readCodexRolloutTurnError(sessionRolloutPath, promptSentAt.UTC()); turnErr != "" {
-			err := fmt.Errorf("codex-cli turn failed: %s", turnErr)
-			inspector.EmitError(err, map[string]interface{}{
-				"phase":      "rollout_turn_error",
-				"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
-			})
-			closeStream("rollout_turn_error")
-			return nil, err
-		}
+	// The rollout's own record decides, not the pane text: when the turn failed (for example
+	// "Selected model is at capacity"), the pane's last lines are the error banner, which must
+	// not be taken for an answer, and the chat must get a real error event.
+	if turnErr, turnInfo := readCodexRolloutTurnFailure(sessionRolloutPath, promptSentAt.UTC()); turnErr != "" {
+		err := &CodexTurnError{Message: turnErr, Info: turnInfo}
+		inspector.EmitError(err, map[string]interface{}{
+			"phase":      "rollout_turn_error",
+			"elapsed_ms": time.Since(promptSentAt).Milliseconds(),
+			"capacity":   err.Capacity(),
+			"codex_info": turnInfo,
+		})
+		closeStream("rollout_turn_error")
+		return nil, err
 	}
 	if err := codexPolicyInvalidPromptTextError(content); err != nil {
 		inspector.EmitError(err, map[string]interface{}{

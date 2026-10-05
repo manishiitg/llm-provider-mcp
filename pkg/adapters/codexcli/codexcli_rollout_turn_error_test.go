@@ -71,3 +71,24 @@ func TestCodexTurnErrorMessageShapes(t *testing.T) {
 		}
 	}
 }
+
+// Captured from a real rollout on 2026-10-05 (Codex 0.160, gpt-6.1-sol): the model was at capacity.
+// The machine-readable code is error.codex_error_info; no terminal text is involved.
+const codexCapacityTurnRollout = `{"timestamp":"2026-10-05T05:01:21.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-05T05:01:41.077Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":null,"error":{"message":"Selected model is at capacity. Please try a different model.","codex_error_info":"server_overloaded"},"duration_ms":19445}}
+`
+
+func TestModelAtCapacityIsReadFromTheRolloutAsACapacityError(t *testing.T) {
+	path := writeRolloutFixture(t, codexCapacityTurnRollout)
+	message, info := readCodexRolloutTurnFailure(path, time.Date(2026, 10, 5, 5, 0, 0, 0, time.UTC))
+	err := &CodexTurnError{Message: message, Info: info}
+	if message != "Selected model is at capacity. Please try a different model." || !err.Capacity() {
+		t.Fatalf("message=%q info=%q capacity=%v", message, info, err.Capacity())
+	}
+	if got := err.Error(); got != "codex-cli model at capacity: Selected model is at capacity. Please try a different model. (try again shortly or pick a different model)" {
+		t.Fatalf("error text = %q", got)
+	}
+	if other := (&CodexTurnError{Message: "x"}).Error(); other != "codex-cli turn failed: x" {
+		t.Fatalf("non-capacity text changed: %q", other)
+	}
+}
