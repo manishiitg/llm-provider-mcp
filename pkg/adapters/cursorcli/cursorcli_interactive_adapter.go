@@ -33,6 +33,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingtimeout"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
@@ -125,6 +126,12 @@ var cursorFullNativeAllowedTools = map[string]bool{
 	"Edit": true, "Write": true,
 }
 
+// cursorShellTools are Cursor's command-execution tools. In Full mode they are
+// denied unless the native-shell escape hatch is on (PLAT-491): the bridge
+// shell (execute_shell_command) runs as the user's slot, Cursor's own shell
+// runs as the app account.
+var cursorShellTools = map[string]bool{"Shell": true, "WriteShellStdin": true}
+
 func cursorBridgeOnlyDeniedToolMatcher() string {
 	return strings.Join(cursorBridgeOnlyDeniedTools, "|")
 }
@@ -135,7 +142,7 @@ func cursorDeniedToolMatcher(fullNative bool) string {
 	}
 	denied := make([]string, 0, len(cursorBridgeOnlyDeniedTools))
 	for _, tool := range cursorBridgeOnlyDeniedTools {
-		if !cursorFullNativeAllowedTools[tool] {
+		if !cursorFullNativeAllowedTools[tool] || (cursorShellTools[tool] && !nativeshell.Enabled()) {
 			denied = append(denied, tool)
 		}
 	}
@@ -961,7 +968,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		// Full CLI without a bridge config still needs Cursor's own tools
 		// pre-approved, or it stops on its own permission prompt.
 		if mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); fullNative && strings.TrimSpace(mcpJSON) == "" && !callerSuppliedCLI {
-			nativeJSON, err := json.Marshal(map[string]interface{}{"permissions": map[string]interface{}{"allow": cursorFullNativePermissions, "deny": []string{}}})
+			nativeJSON, err := json.Marshal(map[string]interface{}{"permissions": map[string]interface{}{"allow": cursorFullNativeAllow(), "deny": []string{}}})
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -1082,6 +1089,15 @@ func normalizeCursorMCPConfigForCLI(mcpJSON string) (string, error) {
 // answer, so the turn stopped with no output.
 var cursorFullNativePermissions = []string{"Shell(*)", "Read(**)", "Write(**)"}
 
+// cursorFullNativeAllow is cursorFullNativePermissions without Shell(*) when
+// the built-in shell is off.
+func cursorFullNativeAllow() []string {
+	if nativeshell.Enabled() {
+		return cursorFullNativePermissions
+	}
+	return []string{"Read(**)", "Write(**)"}
+}
+
 func cursorMCPAllowlistCLIConfig(mcpJSON string, fullNative ...bool) (string, bool, error) {
 	names, err := cursorMCPServerNames(mcpJSON)
 	if err != nil {
@@ -1096,7 +1112,7 @@ func cursorMCPAllowlistCLIConfig(mcpJSON string, fullNative ...bool) (string, bo
 		allow = append(allow, fmt.Sprintf("Mcp(%s:*)", name))
 	}
 	if full {
-		allow = append(allow, cursorFullNativePermissions...)
+		allow = append(allow, cursorFullNativeAllow()...)
 	}
 	out, err := json.Marshal(map[string]interface{}{
 		"permissions": map[string]interface{}{
@@ -1138,7 +1154,7 @@ func cursorBeforeReadFileHook(fullNative bool) string {
 // Cursor runs hook commands as programs, not through a shell, so the answer is
 // a script file like the deny one, never an inline shell command.
 func cursorShellHookCommand(fullNative bool) string {
-	if fullNative {
+	if fullNative && nativeshell.Enabled() {
 		return "./.cursor/hooks/mlp-allow-shell.sh"
 	}
 	return "./.cursor/hooks/mlp-deny-builtin.sh"
