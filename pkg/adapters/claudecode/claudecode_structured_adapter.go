@@ -236,6 +236,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.KillGroupOnCancel(cmd)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}

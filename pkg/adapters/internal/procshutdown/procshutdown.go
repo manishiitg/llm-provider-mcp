@@ -201,3 +201,23 @@ type noopLogger struct{}
 func (noopLogger) Infof(string, ...any)  {}
 func (noopLogger) Errorf(string, ...any) {}
 func (noopLogger) Debugf(string, ...any) {}
+
+// KillGroupOnCancel makes a cancelled context kill the CLI's whole process group, not only the process Go
+// started. exec.CommandContext's default sends SIGKILL to that one pid; when the command is a launcher (the
+// npm `codex` and `cursor-agent` wrappers start the real binary as a child), the launcher dies and the real CLI
+// keeps running. A stopped workflow step kept driving the browser for 2.5 minutes that way (Upwork, 2026-10-05).
+// Requires SysProcAttr.Setpgid, so the group id is the started process's pid.
+func KillGroupOnCancel(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
+		return nil
+	}
+}

@@ -426,6 +426,7 @@ func (c *CursorCLIAdapter) generateContentStructured(ctx context.Context, messag
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.KillGroupOnCancel(cmd)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
