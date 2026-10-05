@@ -57,7 +57,10 @@ func TestCursorCLIRealFullModeNativeShellOff(t *testing.T) {
 				}
 				out, statErr := os.ReadFile(filepath.Join(tmp, "id-out.txt"))
 				ran := statErr == nil && strings.TrimSpace(string(out)) != ""
-				if shellOn && !ran {
+				// Structured (--print) mode never ran the built-in shell in Full mode, even before the
+				// switch existed: Cursor asks for an approval nobody can give ("Rejected"). Only the
+				// interactive transport is expected to run it with the switch on.
+				if shellOn && !ran && transport != "structured" {
 					t.Errorf("shell on: the built-in shell did not run (%v)", statErr)
 				}
 				if !shellOn && ran {
