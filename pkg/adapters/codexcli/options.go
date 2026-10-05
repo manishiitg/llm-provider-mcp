@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 // Constants for custom metadata keys
@@ -106,22 +107,34 @@ var codexBridgeOnlyDisabledFeatures = []string{
 // the bridge-only list (browser/computer use, apps, plugins, hooks, image
 // generation, dependency installs, tool search) stays off. The caller picks
 // the sandbox (workspace-write inside AgentWorks' own confinement).
-var codexNativeEnabledFeatures = map[string]bool{"shell_tool": true, "unified_exec": true, "multi_agent": true}
+//
+// shell_tool and unified_exec (the command-running tools) are re-enabled only
+// when the nativeshell escape hatch is on (PLAT-491): by default the CLI's
+// built-in shell stays off in Full mode and shell work goes through the bridge.
+func codexNativeEnabledFeatures() map[string]bool {
+	enabled := map[string]bool{"multi_agent": true}
+	if nativeshell.Enabled() {
+		enabled["shell_tool"] = true
+		enabled["unified_exec"] = true
+	}
+	return enabled
+}
 
 // CodexNativeDisabledFeatures is codexBridgeOnlyDisabledFeatures minus the
 // shell and multi_agent.
 func CodexNativeDisabledFeatures() []string {
+	enabled := codexNativeEnabledFeatures()
 	out := make([]string, 0, len(codexBridgeOnlyDisabledFeatures))
 	for _, feature := range codexBridgeOnlyDisabledFeatures {
-		if !codexNativeEnabledFeatures[feature] {
+		if !enabled[feature] {
 			out = append(out, feature)
 		}
 	}
 	return out
 }
 
-// WithNativeTools disables every Codex native feature except its shell and
-// subagents.
+// WithNativeTools disables every Codex native feature except subagents (and
+// the shell when nativeshell.Enabled()).
 func WithNativeTools() llmtypes.CallOption {
 	return WithDisableFeatures(strings.Join(CodexNativeDisabledFeatures(), ","))
 }

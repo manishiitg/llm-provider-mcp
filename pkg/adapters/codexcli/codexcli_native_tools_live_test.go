@@ -11,6 +11,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 // TestCodexCLIRealNativeToolsP0 certifies Codex's "Native agent tools" (Full
@@ -19,6 +20,7 @@ import (
 // directory must work, and the MCP bridge must keep working for everything else.
 func TestCodexCLIRealNativeToolsP0(t *testing.T) {
 	requireRealCodexCLIE2E(t)
+	t.Setenv(nativeshell.EnvVar, "on") // this test exercises the CLI's own shell
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 	workDir := untrustedCodexDir(t)
 	secret := "CODEX-READ-" + codexRandomHex(4)
@@ -78,6 +80,7 @@ func TestCodexCLIRealNativeToolsP0(t *testing.T) {
 // read and write in the working directory (it inherits workspace-write).
 func TestCodexCLIRealNativeToolsSubagentP0(t *testing.T) {
 	requireRealCodexCLIE2E(t)
+	t.Setenv(nativeshell.EnvVar, "on") // this test exercises the subagent's own shell
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 	workDir := t.TempDir()
 	secret := "CODEX-CHILD-" + codexRandomHex(4)
@@ -178,4 +181,80 @@ func untrustedCodexDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+// TestCodexCLIRealFullModeNativeShellOff pins PLAT-491 on the real CLI: in Full
+// mode the CLI's own shell is gone by default (a `touch` through it must not
+// happen) while native file edits still work, and AGENTWORKS_CLI_NATIVE_SHELL=on
+// brings the shell back.
+func TestCodexCLIRealFullModeNativeShellOff(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	run := func(t *testing.T, shellOn bool) (final, workDir string) {
+		if shellOn {
+			t.Setenv(nativeshell.EnvVar, "on")
+		} else {
+			t.Setenv(nativeshell.EnvVar, "")
+		}
+		t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
+		workDir = untrustedCodexDir(t)
+		adapter := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		prompt := "Integration test in a disposable directory. Step 1: run the shell command `id -un > shell-ran.txt` with your own shell/command tool; if you have no such tool, say NO_SHELL. " +
+			"Step 2: create the file edit-ok.txt containing exactly EDIT_OK using your file edit/patch tool (not the shell). Reply on one line: step 1 outcome (the user name, or NO_SHELL), step 2 outcome."
+		resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+			WithInteractiveSessionID("codex-nsh-"+codexRandomHex(4)),
+			WithPersistentInteractiveSession(true),
+			WithProjectDirID(workDir),
+			WithSandbox("workspace-write"),
+			WithNativeTools(),
+			liveConfined(t, "codex-cli", workDir),
+			WithApprovalPolicy("never"),
+			WithReasoningEffort("low"),
+		)
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+		final = strings.TrimSpace(resp.Choices[0].Content)
+		t.Logf("shellOn=%v final: %s", shellOn, final)
+		return final, workDir
+	}
+	t.Run("default off", func(t *testing.T) {
+		final, dir := run(t, false)
+		if _, err := os.Stat(filepath.Join(dir, "shell-ran.txt")); err == nil {
+			t.Fatalf("the CLI's built-in shell ran in Full mode by default; final: %s", final)
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, "edit-ok.txt")); err != nil || !strings.Contains(string(b), "EDIT_OK") {
+			t.Fatalf("native file edit did not work with the shell off: %v", err)
+		}
+	})
+	t.Run("escape hatch on", func(t *testing.T) {
+		final, dir := run(t, true)
+		if _, err := os.Stat(filepath.Join(dir, "shell-ran.txt")); err != nil {
+			t.Fatalf("the CLI's shell did not run with %s=on: %v; final: %s", nativeshell.EnvVar, err, final)
+		}
+	})
+}
+
+// TestCodexNativeToolsShellFeaturesFollowSwitch pins the decision: Full mode
+// keeps shell_tool/unified_exec disabled unless the escape hatch is on.
+func TestCodexNativeToolsShellFeaturesFollowSwitch(t *testing.T) {
+	has := func(list []string, f string) bool {
+		for _, x := range list {
+			if x == f {
+				return true
+			}
+		}
+		return false
+	}
+	t.Setenv(nativeshell.EnvVar, "")
+	off := CodexNativeDisabledFeatures()
+	if !has(off, "shell_tool") || !has(off, "unified_exec") || has(off, "multi_agent") {
+		t.Fatalf("default: %v", off)
+	}
+	t.Setenv(nativeshell.EnvVar, "on")
+	on := CodexNativeDisabledFeatures()
+	if has(on, "shell_tool") || has(on, "unified_exec") {
+		t.Fatalf("escape hatch on: %v", on)
+	}
 }
