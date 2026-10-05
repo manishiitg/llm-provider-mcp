@@ -79,8 +79,9 @@ func TestBuildClaudeStructuredArgs(t *testing.T) {
 		if !has(got, "--tools") || !has(got, "default") {
 			t.Fatalf("hybrid argv missing --tools default: %v", got)
 		}
-		if has(got, "--dangerously-skip-permissions") || has(got, "--disallowedTools") {
-			t.Fatalf("hybrid provider_auto must not bypass approvals or deny native tools: %v", got)
+		// PLAT-491: only the native shell tools are denied (escape hatch off).
+		if has(got, "--dangerously-skip-permissions") || !has(got, claudeNativeShellDisallowed("default")) {
+			t.Fatalf("provider_auto must not bypass approvals and may deny only the native shell: %v", got)
 		}
 	})
 }

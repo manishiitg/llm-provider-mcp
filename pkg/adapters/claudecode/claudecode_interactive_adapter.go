@@ -1069,7 +1069,10 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		}
 	}
 
-	args = append(args, "--tools", toolsArg)
+	if denied := claudeNativeShellDisallowed(toolsArg); denied != "" {
+		extraArgs = append(extraArgs, "--disallowedTools", denied)
+	}
+	args = append(args, "--tools", claudeEffectiveTools(toolsArg))
 	args = append(args, extraArgs...)
 
 	return args, tempFiles, nil
@@ -4465,6 +4468,9 @@ func claudeToolConfigFingerprint(opts *llmtypes.CallOptions) string {
 		for _, key := range []string{MetadataKeyTools, MetadataKeyAllowedTools, MetadataKeySettings} {
 			if value, ok := opts.Metadata.Custom[key].(string); ok {
 				value = strings.TrimSpace(value)
+				if key == MetadataKeyTools {
+					value = claudeEffectiveTools(value)
+				}
 				if key == MetadataKeySettings && value != "" {
 					if !strings.HasPrefix(value, "{") {
 						if data, err := os.ReadFile(value); err == nil {

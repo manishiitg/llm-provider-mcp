@@ -39,7 +39,11 @@ func buildClaudeStructuredArgs(modelID, systemPrompt, tools, allowedTools, permi
 		args = append(args, "--append-system-prompt", systemPrompt)
 	}
 	if tools != "" {
-		args = append(args, "--tools", tools)
+		args = append(args, "--tools", claudeEffectiveTools(tools))
+		// The hard denylist below already covers Bash when it applies.
+		if denied := claudeNativeShellDisallowed(tools); denied != "" && !(allowedTools != "" && strings.TrimSpace(permissionMode) == "") {
+			args = append(args, "--disallowedTools", denied)
+		}
 	}
 	if allowedTools != "" {
 		args = append(args, "--allowedTools", allowedTools)

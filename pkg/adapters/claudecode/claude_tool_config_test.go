@@ -115,3 +115,20 @@ func TestClaudeRetainedProcessReloadsQuestionConfiguration(t *testing.T) {
 		t.Fatal("removing question support reused the enabled process or lost native history")
 	}
 }
+
+// PLAT-491: Full mode drops Claude's own shell tools unless the escape hatch is
+// on; reads, edits, skills and subagents stay.
+func TestClaudeFullModeNativeShellOffByDefault(t *testing.T) {
+	full := "WebSearch,Read,Skill,Agent,Bash,Write,Edit,Monitor,PowerShell,BashOutput,KillShell"
+	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "")
+	if got := claudeEffectiveTools(full); got != "WebSearch,Read,Skill,Agent,Write,Edit" {
+		t.Fatalf("default: %q", got)
+	}
+	if got := claudeNativeShellDisallowed("default"); got == "" {
+		t.Fatal("default tool set must deny the shell tools")
+	}
+	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "on")
+	if got := claudeEffectiveTools(full); got != full {
+		t.Fatalf("escape hatch: %q", got)
+	}
+}
