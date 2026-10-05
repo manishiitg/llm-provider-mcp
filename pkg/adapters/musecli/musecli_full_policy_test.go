@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 func runFullPolicyHook(t *testing.T, path, payload string) string {
@@ -124,5 +127,36 @@ func TestApplyMCPConfigInstallsFullModePolicyOnlyWithABridge(t *testing.T) {
 	defer restore2()
 	if strings.Contains(read(path2), "native-tool-policy-") {
 		t.Errorf("a policy hook was installed without a bridge: %s", read(path2))
+	}
+}
+
+// PLAT-491: Full mode drops Muse's shell tools unless the escape hatch is on; the hook names the bridge shell.
+func TestFullModeShellToolsFollowTheNativeShellSwitch(t *testing.T) {
+	t.Setenv(nativeshell.EnvVar, "")
+	for _, name := range museShellTools {
+		if slices.Contains(museFullAllowedTools(), name) {
+			t.Errorf("%s allowed with the switch off", name)
+		}
+	}
+	if !slices.Contains(museFullAllowedTools(), "edit_file") {
+		t.Error("edit_file was dropped")
+	}
+	t.Setenv(nativeshell.EnvVar, "on")
+	if !slices.Equal(museFullAllowedTools(), museFullNativeTools) {
+		t.Error("switch on must keep the full list")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	t.Setenv(nativeshell.EnvVar, "")
+	path, err := museWriteToolPolicyHookShell(museFullAllowedTools(), museFullPolicyReason, museShellOffReason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := runFullPolicyHook(t, path, `{"tool_name":"bash","tool_input":{}}`); !strings.Contains(out, "execute_shell_command") {
+		t.Errorf("bash refusal does not point at the bridge shell: %q", out)
+	}
+	if out := runFullPolicyHook(t, path, `{"tool_name":"cron_create","tool_input":{}}`); !strings.Contains(out, "handled by the platform") {
+		t.Errorf("other refusals changed: %q", out)
 	}
 }

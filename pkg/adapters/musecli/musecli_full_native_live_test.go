@@ -11,6 +11,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 // Full CLI Muse (no allowlist, --yolo): the TUI must settle and take the first
@@ -20,6 +21,7 @@ import (
 // settling and the prompt was never typed in.
 func TestMuseCLIRealFullNative(t *testing.T) {
 	requireMetaMuseCLIE2E(t)
+	t.Setenv(nativeshell.EnvVar, "on") // this test drives Muse's own shell
 	for _, structured := range []bool{false, true} {
 		name := "tmux"
 		if structured {
@@ -80,4 +82,61 @@ func liveConfined(t *testing.T, provider, workDir string) llmtypes.CallOption {
 		})
 	}
 	return func(o *llmtypes.CallOptions) { p := policy.Clone(); o.CLISecurity = &p }
+}
+
+// PLAT-491: in Full mode Muse's own shell (bash, bash_input, monitor) is refused unless the escape hatch is on,
+// while native file edit stays. The bridge is simulated by the env marker the policy keys on (MCP_API_URL).
+func TestMuseCLIRealFullModeNativeShellOff(t *testing.T) {
+	requireMetaMuseCLIE2E(t)
+	run := func(t *testing.T, prompt string, workDir string) string {
+		var called atomic.Int32
+		stub := museProbeMCPStub(&called)
+		defer stub.Close()
+		cfg := `{"mcpServers":{"api-bridge":{"url":"` + stub.URL + `/mcp","env":{"MCP_API_URL":"http://127.0.0.1:1"}}}}`
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		defer cancel()
+		resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
+			WithMCPConfig(cfg), WithWorkingDir(workDir), WithMuseStructuredTransport(true), llmtypes.WithReasoningEffort("low"), liveConfined(t, "muse-cli", workDir))
+		if err != nil {
+			t.Fatalf("round trip: %v", err)
+		}
+		if handle := resp.Choices[0].GenerationInfo.CodingProviderSessionHandle; handle != nil && handle.TmuxSession != "" {
+			t.Cleanup(func() { CloseMuseCLIInteractiveSessionByTmux(handle.TmuxSession, "native shell probe complete") })
+		}
+		t.Logf("final answer: %s", resp.Choices[0].Content)
+		return resp.Choices[0].Content
+	}
+	shellPrompt := "Integration test in a disposable directory. Step 1: use your own built-in bash tool (not any MCP tool) to run: touch shell-made.txt. " +
+		"Step 2: use your write_file tool to create native-made.txt containing the word EDITOK. " +
+		"Report exactly what happened for each step, quoting any refusal message verbatim."
+	t.Run("off", func(t *testing.T) {
+		t.Setenv(nativeshell.EnvVar, "")
+		dir := t.TempDir()
+		final := run(t, shellPrompt, dir)
+		if _, err := os.Stat(filepath.Join(dir, "shell-made.txt")); err == nil {
+			t.Fatalf("Muse's own shell ran with the escape hatch off")
+		}
+		if raw, err := os.ReadFile(filepath.Join(dir, "native-made.txt")); err != nil || !strings.Contains(string(raw), "EDITOK") {
+			t.Fatalf("native file write did not work: %v %q", err, raw)
+		}
+		if !strings.Contains(final, "execute_shell_command") {
+			t.Errorf("the refusal did not point at execute_shell_command: %q", final)
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		t.Setenv(nativeshell.EnvVar, "on")
+		dir := t.TempDir()
+		run(t, shellPrompt, dir)
+		if _, err := os.Stat(filepath.Join(dir, "shell-made.txt")); err != nil {
+			t.Fatalf("Muse's own shell did not run with the escape hatch on: %v", err)
+		}
+	})
+	t.Run("on_platform_call_still_redirected", func(t *testing.T) {
+		t.Setenv(nativeshell.EnvVar, "on")
+		dir := t.TempDir()
+		final := run(t, "Use your own built-in bash tool to run exactly: curl -s http://127.0.0.1:1/tools/custom/x ; then report verbatim what the tool returned or why it was refused.", dir)
+		if !strings.Contains(final, "execute_shell_command") {
+			t.Errorf("the platform-call redirect did not fire: %q", final)
+		}
+	})
 }

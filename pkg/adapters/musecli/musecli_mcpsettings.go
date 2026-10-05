@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
 // Muse has no --mcp-config CLI flag (verified against `muse exec --help`):
@@ -48,6 +49,29 @@ var museFullNativeTools = []string{
 	"web_fetch", "web_search", "read_skill", "write_todos",
 	"subagent_spawn", "subagent_status", "subagent_send_message", "subagent_wait", "subagent_read_result", "subagent_cancel",
 	"work_status", "work_list", "work_stop", "request_user_input",
+}
+
+// museShellTools are Muse's command-running native tools: bash, its stdin companion and monitor (which runs a
+// command and streams its output). Full mode drops them unless nativeshell.Enabled() (PLAT-491): the CLI's own
+// shell runs as the app account with the platform environment; the bridge shell runs as the user's slot.
+var museShellTools = []string{"bash", "bash_input", "monitor"}
+
+const museShellOffReason = "Muse's own shell is turned off in AgentWorks chats. Run commands with mcp__api_bridge__execute_shell_command instead: it runs as your user account with your files and credentials. Native file tools (read_file, write_file, edit_file, search) still work."
+
+// museFullAllowedTools is the native allowlist of a Full-mode launch: museFullNativeTools, minus the shell tools
+// unless the escape hatch is on. The result is baked into the generated hook at launch, so the hook never reads
+// its own (scrubbed) environment.
+func museFullAllowedTools() []string {
+	if nativeshell.Enabled() {
+		return museFullNativeTools
+	}
+	out := make([]string, 0, len(museFullNativeTools))
+	for _, name := range museFullNativeTools {
+		if !slices.Contains(museShellTools, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 const museFullPolicyReason = "This Muse tool is not available in AgentWorks chats. Scheduling, goals, memory and other sessions are handled by the platform: use its schedules, Goals and knowledge tools, or ask the user."
@@ -144,10 +168,13 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 	settings["tui"] = tuiRaw
 	// Full CLI mode passes no allowlist (the launch keeps --yolo); with the bridge mounted it still gets the
 	// default-refuse policy, through the same hook, without the bridge-only launch switches.
-	denyReason := ""
+	denyReason, shellReason := "", ""
 	if toolAllowlist == nil && museHasBridgeServer(doc.MCPServers) {
-		toolAllowlist = museFullNativeTools
+		toolAllowlist = museFullAllowedTools()
 		denyReason = museFullPolicyReason
+		if !nativeshell.Enabled() {
+			shellReason = museShellOffReason
+		}
 	}
 	if toolAllowlist != nil {
 		if _, err := exec.LookPath("node"); err != nil {
@@ -186,7 +213,7 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		}
 		settings["run"] = runRaw
 
-		hookPath, err := museWriteToolPolicyHook(cleaned, denyReason)
+		hookPath, err := museWriteToolPolicyHookShell(cleaned, denyReason, shellReason)
 		if err != nil {
 			return nil, err
 		}
@@ -551,6 +578,12 @@ func museCleanToolAllowlist(toolAllowlist []string) ([]string, error) {
 // The caller controls the exact native work-tool allowlist (web_search in
 // mcpagent).
 func museWriteToolPolicyHook(nativeAllowed []string, denyReason string) (string, error) {
+	return museWriteToolPolicyHookShell(nativeAllowed, denyReason, "")
+}
+
+// museWriteToolPolicyHookShell is museWriteToolPolicyHook with a separate refusal for the shell tools, so a
+// refused bash names the tool to use instead of the generic reason.
+func museWriteToolPolicyHookShell(nativeAllowed []string, denyReason, shellReason string) (string, error) {
 	allowed := append([]string(nil), nativeAllowed...)
 	allowed = append(allowed, "tool_search", "submit_reminder_decision")
 	allowedJSON, err := json.Marshal(allowed)
@@ -566,12 +599,23 @@ func museWriteToolPolicyHook(nativeAllowed []string, denyReason string) (string,
 		return "", fmt.Errorf("marshal muse hook reason: %w", err)
 	}
 	reasonJSON := string(reasonBytes)
+	shellBranch := ""
+	if shellReason != "" {
+		shellBytes, err := json.Marshal(shellReason)
+		if err != nil {
+			return "", fmt.Errorf("marshal muse hook shell reason: %w", err)
+		}
+		toolsBytes, _ := json.Marshal(museShellTools)
+		shellBranch = "const reason = new Set(" + string(toolsBytes) + ").has(name) ? " + string(shellBytes) + " : " + reasonJSON + ";\n"
+		reasonJSON = "reason"
+	}
 	body := "const fs = require('fs');\n" +
 		"let payload = {};\n" +
 		"try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}\n" +
 		"const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';\n" +
 		"const allowed = new Set(" + string(allowedJSON) + ");\n" +
 		"if (allowed.has(name) || name.startsWith('mcp__')) process.exit(0);\n" +
+		shellBranch +
 		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:" + reasonJSON + "}}) + '\\n');\n"
 	digest := sha256.Sum256([]byte(body))
 	dir, err := museHookDir()
