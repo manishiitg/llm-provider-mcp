@@ -200,3 +200,31 @@ func TestResolveBindsThreadIDOnFirstUseAndStaysStable(t *testing.T) {
 		t.Fatalf("resolve after a newer foreign rollout = %q, want the pinned %q", got, path)
 	}
 }
+
+// A structured run must not be completed by ANOTHER Codex run's finished turn in the same folder
+// (the schedule's own chat session next to a step run: step failed with "exit status 1", 2026-10-05).
+func TestStructuredCompletionIgnoresAnotherRunInTheSameFolder(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CODEX_HOME", root)
+	sessionsRoot := filepath.Join(root, "sessions")
+	const sharedWorkingDir = "/workspace/Workflow/websiteaeo"
+	const ownID = "33333333-3333-4333-8333-333333333333"
+	turnStart := time.Now().Add(-time.Minute)
+
+	// The neighbour (chat session) finished a turn in the same folder after our run started.
+	writeRollout(t, sessionsRoot, "44444444-4444-4444-8444-444444444444", sharedWorkingDir, "neighbour", time.Now())
+
+	ownID_ := ""
+	tracker := newCodexTurnCompletionTracker(turnStart, sharedWorkingDir, codexOwnThreadRolloutResolver(func() string { return ownID_ }))
+	if tracker.completed() {
+		t.Fatal("completed before the run announced its thread id")
+	}
+	ownID_ = ownID
+	if tracker.completed() {
+		t.Fatal("the neighbour's finished turn completed this run")
+	}
+	writeRollout(t, sessionsRoot, ownID, sharedWorkingDir, "own answer", time.Now())
+	if !tracker.completed() {
+		t.Fatal("the run's own task_complete was not seen")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -333,6 +334,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		args string
 	}{}
 	scannerDone := make(chan struct{})
+	var ownThreadID atomic.Value // string: this run's Codex thread id, set by the scanner
 
 	// Teardown must be reachable from more than one place. It used to live
 	// only inside the `turn.completed` branch below, so a turn whose terminal
@@ -356,11 +358,18 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	// Requires a working dir: the rollout is matched by its session_meta.cwd.
 	if workingDir != "" {
 		go func() {
-			// nil resolver: the structured transport is a one-shot `--json`
-			// process with no entry in the persistent session registry, so it
-			// has no thread identity to bind to. Remaining PLAT-108 gap — still
-			// exposed if two structured runs share a working directory.
-			tracker := newCodexTurnCompletionTracker(turnStart, workingDir, nil)
+			// Bind to THIS process's own thread: stdout announces its thread id
+			// at the start, and the rollout is the one whose session_meta id
+			// matches. Matching by working directory alone took another Codex
+			// run's completed turn in the same folder (the schedule's own chat
+			// session) for this one, tore the process down mid-turn and failed
+			// the step with "exit status 1" (website workflow, 2026-10-05).
+			// Until the thread id is known nothing can complete, which is safe:
+			// the stdout turn.completed path stays the primary signal.
+			tracker := newCodexTurnCompletionTracker(turnStart, workingDir, codexOwnThreadRolloutResolver(func() string {
+				id, _ := ownThreadID.Load().(string)
+				return id
+			}))
 			ticker := time.NewTicker(codexRolloutPollInterval)
 			defer ticker.Stop()
 			for {
@@ -398,6 +407,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 			}
 			if event.ThreadID != "" {
 				threadID = event.ThreadID
+				ownThreadID.Store(event.ThreadID)
 			}
 			switch event.Type {
 			case "item.started":

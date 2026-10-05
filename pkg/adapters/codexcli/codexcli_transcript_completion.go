@@ -438,6 +438,21 @@ func codexRolloutCandidatesInWorkingDir(turnStart time.Time, expectedWorkingDir 
 	return out
 }
 
+// codexOwnThreadRolloutResolver returns a resolver for a one-shot structured run that finds
+// ONLY the rollout of the thread the run announced on stdout. Until the thread id is known (or
+// its rollout exists) it returns "", so nothing can complete. Matching by working directory
+// alone let another Codex run in the same folder complete this one (website workflow,
+// 2026-10-05). The stdout turn.completed path stays the primary signal.
+func codexOwnThreadRolloutResolver(threadID func() string, accountRoot ...string) func(time.Time) string {
+	return func(time.Time) string {
+		id := threadID()
+		if id == "" {
+			return ""
+		}
+		return findCodexRolloutForThread(id, accountRoot...)
+	}
+}
+
 // findCodexRolloutForThread resolves the rollout for an EXACT Codex thread ID.
 // Codex names each rollout `rollout-<timestamp>-<thread-id>.jsonl` and repeats
 // the same value in `session_meta.payload.id`, so the filename is a cheap
