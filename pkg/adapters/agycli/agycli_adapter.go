@@ -121,6 +121,12 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	}
 	defer session.turnLeases.Add(-1)
 	if launchOnly {
+		// Warmup is followed by Session live input, which reads structured
+		// progress rather than running this adapter's terminal stream. Publish
+		// the ready pane now so the host can register and attach the main view.
+		if err := emitAgyTerminalSnapshot(ctx, session.tmuxSessionName, opts.StreamChan); err != nil {
+			return nil, fmt.Errorf("publish agy launch terminal: %w", err)
+		}
 		gi := &llmtypes.GenerationInfo{}
 		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 			Provider:        "agy-cli",
