@@ -39,6 +39,13 @@ func TestPiAgentTemplateStagedIntoSessionDirAndRefusesLiteralKeys(t *testing.T) 
 			t.Fatalf("%s mode %v, want 0600", name, info.Mode().Perm())
 		}
 	}
+	listed := false
+	for _, meta := range GetAllPiCLIModels() {
+		listed = listed || meta.ModelID == "citymall/gpt-6-luna"
+	}
+	if !listed {
+		t.Fatal("the template's model is not in the Pi model list")
+	}
 	if env := piAPIKeyEnv("citymall", "k"); len(env) != 1 || env[0] != "CITYMALL_API_KEY=k" {
 		t.Fatalf("key env = %v", env)
 	}

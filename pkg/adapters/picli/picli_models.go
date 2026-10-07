@@ -56,5 +56,26 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 		models = append(models, meta)
 	}
 
+	// A deployment's own Pi providers (PI_CLI_AGENT_TEMPLATE_DIR) are real choices on that server: list them, so
+	// catalogs built from this list (model pickers, "is this model offered" checks) accept them. A broken template
+	// lists nothing extra; launching then reports the template error.
+	if tmpl, err := LoadPiAgentTemplate(); err == nil && tmpl != nil {
+		for _, model := range tmpl.Models {
+			name := model.Name
+			if name == "" {
+				name = model.ModelID()
+			}
+			models = append(models, &llmtypes.ModelMetadata{
+				ModelID:                 model.ModelID(),
+				Provider:                "pi-cli",
+				ModelName:               "Pi CLI (" + name + ")",
+				ContextWindow:           model.ContextWindow,
+				SupportsToolCalls:       true,
+				SupportsReasoningEffort: true,
+				ReasoningEffortLevels:   []string{"low", "medium", "high", "xhigh"},
+				ModelSelectionMode:      "dynamic",
+			})
+		}
+	}
 	return models
 }
