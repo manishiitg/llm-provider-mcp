@@ -349,6 +349,12 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 		Arguments json.RawMessage `json:"arguments"`
 		Result    json.RawMessage `json:"result"`
 		Duration  itemDuration    `json:"duration"`
+		// Native web search: {"type":"Extension","kind":"web.search"} (0.160)
+		// or {"type":"WebSearch"} (older, no results). See codexcli_web_search.go.
+		Kind    string                 `json:"kind"`
+		Query   string                 `json:"query"`
+		Action  json.RawMessage        `json:"action"`
+		Results []codexWebSearchResult `json:"results"`
 	}
 	type rolloutPayload struct {
 		Type string `json:"type"`
@@ -496,6 +502,26 @@ func readCodexTranscriptEventsFromFile(path string, offset int64, turnStart time
 			case "item_completed":
 				if item := e.Payload.Item; item != nil && item.Type == "ContextCompaction" {
 					events = append(events, codexTranscriptEvent{Compaction: codexCompactionFromItem(item.ID, e.Payload.StartedAtMs, e.Payload.CompletedAtMs, rowTime)})
+					continue
+				}
+				if item := e.Payload.Item; item != nil && item.ID != "" && (item.Type == "WebSearch" || (item.Type == "Extension" && item.Kind == "web.search")) {
+					// One completed row per search and no start row: emit the
+					// pair so the chat's search card gets the query and sources.
+					var duration time.Duration
+					if e.Payload.StartedAtMs > 0 && e.Payload.CompletedAtMs >= e.Payload.StartedAtMs {
+						duration = time.Duration(e.Payload.CompletedAtMs-e.Payload.StartedAtMs) * time.Millisecond
+					}
+					args := codexWebSearchArgs(item.Query, item.Action)
+					events = append(events,
+						codexTranscriptEvent{ToolName: "web_search", ToolCallID: item.ID, ToolArgs: args},
+						codexTranscriptEvent{
+							IsToolEnd:    true,
+							ToolCallID:   item.ID,
+							ToolArgs:     args,
+							ToolResult:   codexWebSearchResultText(item.Query, item.Action, item.Results),
+							ToolDuration: duration,
+						},
+					)
 					continue
 				}
 				if item := e.Payload.Item; item != nil && item.Type == "McpToolCall" && item.ID != "" && item.Tool != "" {

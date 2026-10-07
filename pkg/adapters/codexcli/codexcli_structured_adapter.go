@@ -67,6 +67,11 @@ type codexExecItem struct {
 	// item.completed carries the real one (codex fills it in once the search
 	// actually runs).
 	Query string `json:"query,omitempty"`
+	// web_search action ({"type":"search","query","queries"} or an opened
+	// page's {"type":"open_page","url"}) and, on item.completed, the result
+	// list ({"title","url","domain","snippet"}). See codexcli_web_search.go.
+	Action  json.RawMessage        `json:"action,omitempty"`
+	Results []codexWebSearchResult `json:"results,omitempty"`
 }
 
 // isCodexToolItem reports whether an item type represents a real tool
@@ -124,11 +129,8 @@ func codexToolItemArgs(item *codexExecItem) string {
 			return string(args)
 		}
 	}
-	if item.Type == "web_search" && item.Query != "" {
-		args, err := json.Marshal(map[string]string{"query": item.Query})
-		if err == nil {
-			return string(args)
-		}
+	if item.Type == "web_search" {
+		return codexWebSearchArgs(item.Query, item.Action)
 	}
 	return ""
 }
@@ -139,6 +141,11 @@ func codexToolItemResult(item *codexExecItem) string {
 	}
 	if item.Type == "command_execution" {
 		return item.AggregatedOutput
+	}
+	if item.Type == "web_search" {
+		if text := codexWebSearchResultText(item.Query, item.Action, item.Results); text != "" {
+			return text
+		}
 	}
 	if result := compactCodexJSON(item.Result); result != "" {
 		return result
