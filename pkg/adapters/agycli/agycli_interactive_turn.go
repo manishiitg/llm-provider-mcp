@@ -16,6 +16,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -237,6 +238,7 @@ func bootAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir, 
 	}
 	args = append(args, command)
 	launch := exec.CommandContext(ctx, "tmux", args...)
+	launch.Env = tmuxlaunch.CleanClientEnv()
 	if out, err := launch.CombinedOutput(); err != nil {
 		cleanupScript()
 		return nil, fmt.Errorf("tmux new-session %s: %w\n%s", tmuxName, err, out)

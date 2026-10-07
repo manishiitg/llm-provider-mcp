@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 // Interactive tmux lane for agy. Turns normally run headless through the
@@ -521,6 +522,7 @@ func ensureAgyInteractiveSession(ctx context.Context, ownerSessionID, workingDir
 	tmuxName := agySanitizeTmuxName(ownerSessionID)
 	launch := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", tmuxName,
 		"-x", "200", "-y", "50", "-c", workingDir, "agy")
+	launch.Env = tmuxlaunch.CleanClientEnv()
 	if out, err := launch.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux new-session %s: %w\n%s", tmuxName, err, out)
 	}

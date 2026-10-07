@@ -2,7 +2,11 @@ package tmuxlaunch
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,5 +110,42 @@ func TestWithHistoryLimitRunsBeforeNewSession(t *testing.T) {
 	}
 	if !reflect.DeepEqual(newSession, []string{"new-session", "-d", "-s", "test-session", "agent"}) {
 		t.Fatalf("WithHistoryLimit mutated input: %#v", newSession)
+	}
+}
+
+// PLAT-663: a tmux server started by a launch from the service (full environment) must not keep the
+// service's own tokens in its global environment, which every pane inherits and `show-environment -g`
+// prints. Real tmux on a private socket.
+func TestLaunchLeavesNoServiceTokensInTmuxServer(t *testing.T) {
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("GLOBAL_SECRET_PLAT663", "x")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "x")
+	t.Setenv("PLAT663_ORDINARY", "kept")
+	dir, err := os.MkdirTemp("/tmp", "p663") // a unix socket path must stay short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
+	args := WithHistoryLimit([]string{"new-session", "-d", "-s", "plat663", "sleep 30"}, "1000")
+	if out, err := exec.Command(tmux, append([]string{"-f", "/dev/null", "-S", sock}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("start: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command(tmux, "-S", sock, "kill-server").Run() })
+	out, err := exec.Command(tmux, "-S", sock, "show-environment", "-g").Output()
+	if err != nil {
+		t.Fatalf("show-environment: %v", err)
+	}
+	env := "\n" + string(out)
+	for _, name := range []string{"GLOBAL_SECRET_PLAT663", "SUPABASE_SERVICE_ROLE_KEY"} {
+		if strings.Contains(env, "\n"+name+"=") {
+			t.Errorf("tmux global environment still has %s", name)
+		}
+	}
+	if !strings.Contains(env, "\nPLAT663_ORDINARY=kept") {
+		t.Errorf("ordinary variables must stay in the tmux environment")
 	}
 }

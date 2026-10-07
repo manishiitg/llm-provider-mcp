@@ -15,6 +15,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 )
 
 // Interactive (tmux) lane for muse-cli. v1 covers session lifecycle —
@@ -290,6 +291,7 @@ func museLaunchTUI(ctx context.Context, workdir, session, provider, mcpJSON stri
 	defer func() { time.AfterFunc(30*time.Second, cleanupLaunch) }()
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", session,
 		"-x", "200", "-y", "50", "-c", workdir}, shell)...)
+	launch.Env = tmuxlaunch.CleanClientEnv()
 	if out, err := launch.CombinedOutput(); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("tmux new-session: %w\n%s", err, out)

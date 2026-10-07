@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 )
 
@@ -503,6 +504,7 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 	}
 	defer func() { time.AfterFunc(30*time.Second, cleanupLaunch) }()
 	launch := exec.CommandContext(ctx, "tmux", append([]string{"new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", "-c", workdir}, shell)...)
+	launch.Env = tmuxlaunch.CleanClientEnv()
 	if out, err := launch.CombinedOutput(); err != nil {
 		if restore != nil {
 			restore()
