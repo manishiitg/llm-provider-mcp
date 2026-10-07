@@ -72,8 +72,11 @@ const agyShellRedirectReason = `This shell has no platform credentials, so this 
 const agyNativeShellOffReason = `The built-in shell is turned off in this chat. Run shell commands through the call_mcp_tool tool on the api-bridge MCP server (ServerName starting with agentworks-api-bridge) with ToolName execute_shell_command. File read and edit tools still work.`
 
 // AGY has no --tools allowlist. Its PreToolUse hook is the execution gate:
-// mcp_only fails closed for every native tool; Full CLI admits the CLI's
-// native toolset alongside MCP.
+// mcp_only fails closed for every native tool except search_web; Full CLI
+// admits the CLI's native toolset alongside MCP. search_web is read-only and
+// is the agent's own web search: the platform's search tool was removed
+// (PLAT-508), so without it a workflow step on AGY could not search at all
+// (owner, 2026-10-07). Claude keeps WebSearch the same way.
 //
 // hostPorts are the platform's own host:port values (not secrets); a native
 // shell command that names one is redirected like a credential use.
@@ -104,7 +107,7 @@ except Exception:
 if hasattr(signal,"SIGALRM"):
     signal.alarm(0)
 bridge=name=="call_mcp_tool" or name.startswith("mcp__")
-allowed=isinstance(name,str) and bool(name) and (bridge or ` + fullEnabled + `)
+allowed=isinstance(name,str) and bool(name) and (bridge or name=="search_web" or ` + fullEnabled + `)
 if ` + shellOff + ` and name in ("run_command","send_command_input"):
     print(json.dumps({"decision":"deny","reason":'` + agyNativeShellOffReason + `'}))
     sys.exit(0)

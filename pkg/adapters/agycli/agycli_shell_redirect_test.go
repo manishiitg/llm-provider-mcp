@@ -101,6 +101,15 @@ func TestAgyShellRedirectHook(t *testing.T) {
 	if decision, _ := agyRunHook(t, python, "mcp_only", shell(`echo hello`)); decision != "deny" {
 		t.Fatalf("mcp_only native shell decision = %q, want deny", decision)
 	}
+	// Its own web search is the one native tool mcp_only keeps (PLAT-508 removed the platform's).
+	search := map[string]interface{}{"toolCall": map[string]interface{}{"name": "search_web", "args": map[string]string{"query": "agentworks"}}}
+	if decision, _ := agyRunHook(t, python, "mcp_only", search); decision != "allow" {
+		t.Fatalf("mcp_only search_web decision = %q, want allow", decision)
+	}
+	view := map[string]interface{}{"toolCall": map[string]interface{}{"name": "view_file", "args": map[string]string{"path": "x"}}}
+	if decision, _ := agyRunHook(t, python, "mcp_only", view); decision != "deny" {
+		t.Fatalf("mcp_only view_file decision = %q, want deny", decision)
+	}
 }
 
 func TestAgyShellRedirectKeepsManagedHookRestore(t *testing.T) {
