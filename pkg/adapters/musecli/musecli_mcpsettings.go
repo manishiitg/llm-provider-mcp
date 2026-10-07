@@ -706,7 +706,7 @@ func museAppendPreToolUseHook(settings map[string]json.RawMessage, hookPath stri
 			return fmt.Errorf("existing muse settings.json hooks.PreToolUse is not an array: %w", err)
 		}
 	}
-	command := "node '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'"
+	command := shellQuoteMuseArg(museHookNode()) + " '" + strings.ReplaceAll(hookPath, "'", "'\\''") + "'"
 	for _, arg := range args {
 		command += " '" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 	}
@@ -872,4 +872,51 @@ func museWriteShellRedirectHook() (string, error) {
 		return "", fmt.Errorf("publish muse shell redirect hook: %w", err)
 	}
 	return path, nil
+}
+
+// museHookNode is the node that runs Muse's PreToolUse hooks: an absolute path
+// any account can execute. On a slot host Muse runs as the person's own Linux
+// account, and the PATH node there was the service account's nvm install,
+// which slots cannot enter, so every hook failed with "Permission denied" and
+// the tool policy never ran (Excellence, 2026-10-07). "node" is the fallback
+// when no such path exists.
+func museHookNode() string {
+	candidates := []string{}
+	if found, err := exec.LookPath("node"); err == nil {
+		if abs, err := filepath.Abs(found); err == nil {
+			candidates = append(candidates, abs)
+		}
+	}
+	candidates = append(candidates, "/usr/local/bin/node", "/usr/bin/node")
+	for _, candidate := range candidates {
+		if everyoneCanExecute(candidate) {
+			return candidate
+		}
+	}
+	return "node"
+}
+
+// everyoneCanExecute reports whether a file is executable by any account:
+// the file has o+x and every folder above it has o+x.
+func everyoneCanExecute(file string) bool {
+	info, err := os.Stat(file)
+	if err != nil || info.IsDir() || info.Mode().Perm()&0o001 == 0 {
+		return false
+	}
+	for dir := filepath.Dir(file); ; dir = filepath.Dir(dir) {
+		dirInfo, err := os.Stat(dir)
+		if err != nil || dirInfo.Mode().Perm()&0o001 == 0 {
+			return false
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return true
+		}
+	}
+}
+
+func shellQuoteMuseArg(value string) string {
+	if value == "node" {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
