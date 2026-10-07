@@ -577,6 +577,18 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}, nil
 }
 
+type relaunchedForScopeKey struct{}
+
+// relaunchedForScope bounds the scope-change relaunch to one attempt per call.
+func relaunchedForScope(ctx context.Context) bool {
+	done, _ := ctx.Value(relaunchedForScopeKey{}).(bool)
+	return done
+}
+
+func withRelaunchedForScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, relaunchedForScopeKey{}, true)
+}
+
 // acquireCodexInteractiveSession returns with session.mu held. The caller must
 // either releaseCodexInteractiveSession on normal completion or mark, unlock,
 // and clean up the session on a startup/ready-prompt failure.
@@ -620,8 +632,19 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 		sessionLockStart := time.Now()
 		session.mu.Lock()
 		if session.cliSecurityFingerprint != securityFingerprint {
+			// The retained process was launched under another sandbox policy or
+			// credential scope and must not serve this turn. Holding session.mu
+			// means no turn is running in it, so close it and launch a fresh one
+			// under the new scope; it resumes the same Codex thread. Refusing
+			// instead left the chat unusable until someone closed it by hand
+			// (a queued turn rebuilt its scope differently, 2026-10-07).
+			c.logger.Infof("codex interactive scope changed owner=%s tmux=%s: relaunching under the new scope", ownerSessionID, session.tmuxSessionName)
+			closeCodexSessionLocked(session, "security policy changed", c.logger)
 			session.mu.Unlock()
-			return nil, false, errors.New("Codex session security policy changed; close the existing session before continuing")
+			if relaunchedForScope(ctx) {
+				return nil, false, errors.New("Codex session security policy changed; close the existing session before continuing")
+			}
+			return c.acquireCodexInteractiveSession(withRelaunchedForScope(ctx), ownerSessionID, opts, systemPrompt, initialPrompt)
 		}
 		if session.initErr != nil {
 			err := session.initErr
