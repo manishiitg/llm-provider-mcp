@@ -44,6 +44,11 @@ func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes
 	}
 	removeStalePiProjectMCPConfig(workingDir)
 	linkSharedPiExtensionCache(agentDir, opts != nil && opts.CLISecurity.LandlockEnforced())
+	// The deployment's own Pi providers/models (PI_CLI_AGENT_TEMPLATE_DIR): a
+	// session agent dir otherwise knows only Pi's built-in providers.
+	if err := stagePiAgentTemplate(agentDir); err != nil {
+		return "", "", nil, err
+	}
 	// Remove the retired plugin config and its credentials.
 	legacyPath := filepath.Join(agentDir, "mcp-adapter.json")
 	if err := os.Remove(legacyPath); err != nil && !os.IsNotExist(err) {

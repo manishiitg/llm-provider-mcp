@@ -2680,6 +2680,10 @@ func piRedactArgs(args []string) string {
 				redacted[i] = key + "<redacted>"
 			}
 		}
+		// A deployment's own Pi provider (PI_CLI_AGENT_TEMPLATE_DIR) gets <PROVIDER>_API_KEY.
+		if name, _, ok := strings.Cut(arg, "="); ok && strings.HasSuffix(name, "_API_KEY") && strings.ToUpper(name) == name {
+			redacted[i] = name + "=<redacted>"
+		}
 	}
 	return strings.Join(redacted, " ")
 }
