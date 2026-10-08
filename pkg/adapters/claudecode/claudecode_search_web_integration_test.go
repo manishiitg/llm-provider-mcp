@@ -14,7 +14,7 @@ import (
 func TestClaudeCodeRealSearchWeb(t *testing.T) {
 	requireRealClaudeCodeSearchWebE2E(t)
 
-	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-5-5", quietClaudeSearchLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -43,7 +43,7 @@ func TestClaudeCodeRealSearchWeb(t *testing.T) {
 func TestClaudeCodeRealSearchWebStructured(t *testing.T) {
 	requireRealClaudeCodeSearchWebE2E(t)
 
-	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-5-5", quietClaudeSearchLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -78,7 +78,7 @@ func requireRealClaudeCodeSearchWebE2E(t *testing.T) {
 func TestClaudeCodeRealSearchWebLiveData(t *testing.T) {
 	requireRealClaudeCodeSearchWebE2E(t)
 
-	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-5-5", quietClaudeSearchLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 

@@ -23,7 +23,7 @@ const (
 	defaultClaudeInteractiveTestModel = "claude-sonnet-5-5"
 	// claudeHaikuRegressionModel keeps Haiku for the test that caught the
 	// pasted-content refusal: a stronger model can hide that production bug.
-	claudeHaikuRegressionModel = "claude-haiku-4-5-20251001"
+	claudeHaikuRegressionModel = "claude-haiku-5-5"
 )
 
 func TestClaudeCodeTmuxIntegrationNoInternalTools(t *testing.T) {

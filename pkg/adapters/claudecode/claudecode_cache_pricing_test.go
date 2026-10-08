@@ -16,7 +16,7 @@ var claudeCodeCachePricedModels = []string{
 	"claude-fable-5-1",
 	"claude-opus-5",
 	"claude-sonnet-5-5",
-	"claude-haiku-4-5-20251001",
+	"claude-haiku-5-5",
 }
 
 // These older Anthropic models price a cache read at 10% of the base input
@@ -91,16 +91,25 @@ func TestClaudeCodeOpus55Pricing(t *testing.T) {
 }
 
 // A retired model keeps working: saved configs run and are priced as its
-// replacement.
-func TestRetiredClaudeSonnet5RunsAsSonnet55(t *testing.T) {
-	if got := NewClaudeCodeInteractiveAdapter("claude-sonnet-5", &MockLogger{}).modelID; got != "claude-sonnet-5-5" {
-		t.Fatalf("interactive adapter model = %q, want claude-sonnet-5-5", got)
-	}
-	if got := NewClaudeCodeAdapter("", "claude-sonnet-5", &MockLogger{}).modelID; got != "claude-sonnet-5-5" {
-		t.Fatalf("compat adapter model = %q, want claude-sonnet-5-5", got)
-	}
-	meta, err := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata("claude-sonnet-5")
-	if err != nil || meta.ModelID != "claude-sonnet-5-5" || meta.InputCostPer1MTokens != 2.00 {
-		t.Fatalf("claude-sonnet-5 metadata = %+v, %v; want Sonnet 5.5 pricing", meta, err)
+// replacement (Sonnet 5 -> 5.5; Haiku 4.5 -> 5.5, 2026-10-08).
+func TestRetiredClaudeModelsRunAsTheirReplacement(t *testing.T) {
+	for retired, want := range map[string]struct {
+		id    string
+		input float64
+	}{
+		"claude-sonnet-5":           {"claude-sonnet-5-5", 2.00},
+		"claude-haiku-4-5-20251001": {"claude-haiku-5-5", 0.10},
+		"claude-haiku-4-5":          {"claude-haiku-5-5", 0.10},
+	} {
+		if got := NewClaudeCodeInteractiveAdapter(retired, &MockLogger{}).modelID; got != want.id {
+			t.Fatalf("%s: interactive adapter model = %q, want %s", retired, got, want.id)
+		}
+		if got := NewClaudeCodeAdapter("", retired, &MockLogger{}).modelID; got != want.id {
+			t.Fatalf("%s: compat adapter model = %q, want %s", retired, got, want.id)
+		}
+		meta, err := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata(retired)
+		if err != nil || meta.ModelID != want.id || meta.InputCostPer1MTokens != want.input {
+			t.Fatalf("%s metadata = %+v, %v; want %s pricing", retired, meta, err, want.id)
+		}
 	}
 }

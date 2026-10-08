@@ -9,9 +9,12 @@ import (
 // claudeCodeRetiredModels maps a retired model to the one that replaced it.
 // Workflows and Crews keep the model they saved; the adapters run and price
 // the replacement, so a retirement never leaves a saved config broken or
-// unpriced. Claude Sonnet 5 was replaced by Claude Sonnet 5.5 (2026-09-29).
+// unpriced. Claude Sonnet 5 was replaced by Claude Sonnet 5.5 (2026-09-29);
+// Claude Haiku 4.5 by Claude Haiku 5.5 (2026-10-08, owner).
 var claudeCodeRetiredModels = map[string]string{
-	"claude-sonnet-5": "claude-sonnet-5-5",
+	"claude-sonnet-5":           "claude-sonnet-5-5",
+	"claude-haiku-4-5":          "claude-haiku-5-5",
+	"claude-haiku-4-5-20251001": "claude-haiku-5-5",
 }
 
 // CurrentClaudeCodeModel returns modelID, or its replacement when retired.
@@ -27,7 +30,7 @@ var knownClaudeCodeModels = []string{
 	"claude-fable-5-1",
 	"claude-opus-5-5",
 	"claude-sonnet-5-5",
-	"claude-haiku-4-5-20251001",
+	"claude-haiku-5-5",
 }
 
 // GetAllClaudeCodeModels returns the frontend-visible Claude Code CLI models.
@@ -50,8 +53,8 @@ func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 			meta.ModelName = "Opus 5.5"
 		case "claude-sonnet-5-5":
 			meta.ModelName = "Sonnet 5.5"
-		case "claude-haiku-4-5-20251001":
-			meta.ModelName = "Haiku 4.5"
+		case "claude-haiku-5-5":
+			meta.ModelName = "Haiku 5.5"
 		}
 
 		meta.SupportsReasoningEffort = true

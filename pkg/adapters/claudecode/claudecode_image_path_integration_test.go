@@ -27,7 +27,7 @@ func TestClaudeCodeRealImagePathAnalysis(t *testing.T) {
 	imagePath := filepath.Join(workspaceDir, "sample.png")
 	writeSolidClaudeTestPNG(t, imagePath, color.RGBA{R: 255, A: 255})
 
-	adapter := NewClaudeCodeAdapter("", "claude-haiku-4-5-20251001", quietClaudeSearchLogger{})
+	adapter := NewClaudeCodeAdapter("", "claude-haiku-5-5", quietClaudeSearchLogger{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

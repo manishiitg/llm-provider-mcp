@@ -432,17 +432,17 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			CachedInputCostPer1MTokens:      0.20,
 			CachedInputCostWritePer1MTokens: 2.50,
 		}, nil
-	case "claude-haiku-4-5-20251001":
+	case "claude-haiku-5-5":
+		// Prompts over 100K tokens cost $0.50 / $2.50 per 1M (cache read $0.05); the base tier is listed here.
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              providerName,
-			ModelName:             "Claude Haiku 4.5",
-			ContextWindow:         200000,
-			InputCostPer1MTokens:  1.00,
-			OutputCostPer1MTokens: 5.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 0.1,
+			ModelID:                         modelID,
+			Provider:                        providerName,
+			ModelName:                       "Claude Haiku 5.5",
+			ContextWindow:                   200000,
+			InputCostPer1MTokens:            0.10,
+			OutputCostPer1MTokens:           0.50,
+			CachedInputCostPer1MTokens:      0.01,
+			CachedInputCostWritePer1MTokens: 0.125,
 		}, nil
 	default:
 		return &llmtypes.ModelMetadata{
