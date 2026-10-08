@@ -46,7 +46,7 @@ func TestPiNativeMCPRuntimeIsolation(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q],"env":{"MCP_TOOLS":%q}}}}`, serverPath, literalDefinitions))(opts)
 	WithBridgeOnlyTools(true)(opts)
-	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-native-isolation", opts)
+	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-native-isolation", opts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

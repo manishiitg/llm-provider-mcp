@@ -33,7 +33,7 @@ func TestPreparePiExclusiveMCPConfigRemovesStaleProjectConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(fresh)(opts)
 
-	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts)
+	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts, nil)
 	if err != nil {
 		t.Fatalf("preparePiNativeMCPConfig: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestPreparePiExclusiveMCPConfigPreservesForeignProjectConfig(t *testing.T) 
 
 			opts := &llmtypes.CallOptions{}
 			WithMCPConfig(stalePiProjectConfig)(opts)
-			if _, _, _, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts); err != nil {
+			if _, _, _, err := preparePiNativeMCPConfig(workDir, "mlp-pi-test-123", opts, nil); err != nil {
 				t.Fatalf("preparePiNativeMCPConfig: %v", err)
 			}
 

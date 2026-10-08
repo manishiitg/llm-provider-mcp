@@ -37,16 +37,17 @@ func piRuntimeBaseDir(workingDir string) string {
 // preparePiNativeMCPConfig writes the complete native MCP snapshot to a private
 // agent directory. Managed launches use --no-approve so project mcp.json cannot
 // override this config. Cleanup removes the credential-bearing snapshot.
-func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes.CallOptions) (agentDir, sessionDir string, cleanup func(), err error) {
+func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes.CallOptions, custom *PiCustomProvider) (agentDir, sessionDir string, cleanup func(), err error) {
 	agentDir, sessionDir = piSessionRuntimeDirs(workingDir, nativeSessionID)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return "", "", nil, fmt.Errorf("failed to create Pi session runtime dir %s: %w", sessionDir, err)
 	}
 	removeStalePiProjectMCPConfig(workingDir)
 	linkSharedPiExtensionCache(agentDir, opts != nil && opts.CLISecurity.LandlockEnforced())
-	// The deployment's own Pi providers/models (PI_CLI_AGENT_TEMPLATE_DIR): a
-	// session agent dir otherwise knows only Pi's built-in providers.
-	if err := stagePiAgentTemplate(agentDir); err != nil {
+	// The deployment's own Pi providers/models (PI_CLI_AGENT_TEMPLATE_DIR) and
+	// the account's own endpoint (custom): a session agent dir otherwise knows
+	// only Pi's built-in providers.
+	if err := stagePiAgentTemplate(agentDir, custom); err != nil {
 		return "", "", nil, err
 	}
 	// Remove the retired plugin config and its credentials.

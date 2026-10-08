@@ -553,7 +553,7 @@ func (p *PiCLIAdapter) startPiInteractiveSession(ctx context.Context, ownerSessi
 	var transcriptSessionDir string
 	var cleanupMCP func()
 	if strings.TrimSpace(mcpConfig) != "" {
-		_, transcriptSessionDir, cleanupMCP, err = preparePiNativeMCPConfig(workingDir, nativeSessionID, opts)
+		_, transcriptSessionDir, cleanupMCP, err = preparePiNativeMCPConfig(workingDir, nativeSessionID, opts, p.customProvider)
 		if err != nil {
 			return nil, err
 		}

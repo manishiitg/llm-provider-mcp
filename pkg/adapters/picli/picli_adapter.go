@@ -18,6 +18,9 @@ type PiCLIAdapter struct {
 	apiKey  string
 	modelID string
 	logger  interfaces.Logger
+	// customProvider is the account's own OpenAI-compatible endpoint, staged
+	// into each session's models.json (SetCustomProvider).
+	customProvider *PiCustomProvider
 }
 
 // NewPiCLIAdapter creates a new Pi CLI adapter.

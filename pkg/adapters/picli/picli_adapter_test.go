@@ -914,7 +914,7 @@ func TestPreparePiExclusiveMCPConfigWritesOnlySessionConfigAndCleansUp(t *testin
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"node","args":["server.js"]}}}`)(opts)
 
-	agentDir, sessionDir, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-a", opts)
+	agentDir, sessionDir, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-a", opts, nil)
 	if err != nil {
 		t.Fatalf("preparePiNativeMCPConfig() error = %v", err)
 	}
@@ -970,7 +970,7 @@ func TestPreparePiExclusiveMCPConfigReplacesStaleSessionConfig(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"api-bridge":{"command":"new"}}}`)(opts)
 
-	_, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-b", opts)
+	_, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-session-b", opts, nil)
 	if err != nil {
 		t.Fatalf("preparePiNativeMCPConfig() error = %v", err)
 	}

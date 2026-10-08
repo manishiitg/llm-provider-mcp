@@ -23,7 +23,7 @@ func TestPiAgentTemplateStagedIntoSessionDirAndRefusesLiteralKeys(t *testing.T) 
 	}
 	t.Setenv(EnvPiAgentTemplateDir, template)
 
-	agentDir, _, cleanup, err := preparePiNativeMCPConfig(t.TempDir(), "session-1", nil)
+	agentDir, _, cleanup, err := preparePiNativeMCPConfig(t.TempDir(), "session-1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +59,44 @@ func TestPiAgentTemplateStagedIntoSessionDirAndRefusesLiteralKeys(t *testing.T) 
 		if err := os.WriteFile(filepath.Join(template, "models.json"), []byte(bad), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, err := preparePiNativeMCPConfig(t.TempDir(), "session-2", nil); err == nil {
+		if _, _, _, err := preparePiNativeMCPConfig(t.TempDir(), "session-2", nil, nil); err == nil {
 			t.Fatalf("template accepted: %s", bad)
+		}
+	}
+}
+
+// A person's own OpenAI-compatible endpoint (an AgentWorks "bring your own key" account) is staged into that
+// session's models.json by env reference only: the key itself never lands on disk, and a bad base URL is refused.
+func TestPiCustomProviderStagedByKeyReference(t *testing.T) {
+	t.Setenv(EnvPiAgentTemplateDir, "")
+	custom := &PiCustomProvider{Name: "openai-compatible", BaseURL: "https://llm.example.com/v1/", Models: []string{"qwen3-coder"}}
+	agentDir, _, cleanup, err := preparePiNativeMCPConfig(t.TempDir(), "session-c", nil, custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+	got, err := os.ReadFile(filepath.Join(agentDir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"baseUrl": "https://llm.example.com/v1"`, `"apiKey": "$OPENAI_COMPATIBLE_API_KEY"`, `"api": "openai-completions"`, `"id": "qwen3-coder"`} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("models.json lacks %s:\n%s", want, got)
+		}
+	}
+	if env := piAPIKeyEnv("openai-compatible", "k"); len(env) != 1 || env[0] != "OPENAI_COMPATIBLE_API_KEY=k" {
+		t.Fatalf("key env = %v", env)
+	}
+	for _, bad := range []*PiCustomProvider{
+		{Name: "openai-compatible", BaseURL: "file:///etc/passwd", Models: []string{"m"}},
+		{Name: "openai-compatible", BaseURL: "https://u:p@host/v1", Models: []string{"m"}},
+		{Name: "openai-compatible", BaseURL: "https://host/v1", Models: []string{"!cat /secret"}},
+		{Name: "Bad Name", BaseURL: "https://host/v1", Models: []string{"m"}},
+	} {
+		if (&PiCLIAdapter{}).SetCustomProvider(bad) == nil {
+			t.Fatalf("accepted %+v", bad)
 		}
 	}
 }

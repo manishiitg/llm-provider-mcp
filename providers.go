@@ -546,7 +546,11 @@ type ProviderAPIKeys struct {
 	// PiProviderKeys stores Pi sub-provider API keys keyed by Pi provider id
 	// (for example "google", "zai", "zai-coding-cn", "deepseek").
 	PiProviderKeys map[string]string
-	Bedrock        *BedrockConfig
+	// PiCustomProvider is the account's own OpenAI-compatible endpoint for
+	// Pi (base URL and model ids, never the key: that is in PiProviderKeys
+	// under the same provider name).
+	PiCustomProvider *picli.PiCustomProvider
+	Bedrock          *BedrockConfig
 	Azure          *AzureAPIConfig
 }
 
@@ -618,6 +622,11 @@ func (k *ProviderAPIKeys) Clone() *ProviderAPIKeys {
 	if k.Azure != nil {
 		a := *k.Azure
 		out.Azure = &a
+	}
+	if k.PiCustomProvider != nil {
+		custom := *k.PiCustomProvider
+		custom.Models = append([]string(nil), k.PiCustomProvider.Models...)
+		out.PiCustomProvider = &custom
 	}
 	if k.PiProviderKeys != nil {
 		out.PiProviderKeys = make(map[string]string, len(k.PiProviderKeys))

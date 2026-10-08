@@ -1211,6 +1211,11 @@ func initializePiCLI(config Config) (llmtypes.Model, error) {
 	}
 
 	llm := picli.NewPiCLIAdapter(apiKey, modelID, logger)
+	if config.APIKeys != nil && config.APIKeys.PiCustomProvider != nil && config.APIKeys.PiCustomProvider.Name == piProvider {
+		if err := llm.SetCustomProvider(config.APIKeys.PiCustomProvider); err != nil {
+			return nil, err
+		}
+	}
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,

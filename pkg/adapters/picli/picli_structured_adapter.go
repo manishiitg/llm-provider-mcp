@@ -354,7 +354,7 @@ func (p *PiCLIAdapter) generateContentStructured(ctx context.Context, messages [
 	transcriptSessionDir := ""
 	if mcpConfigSet {
 		var cleanup func()
-		agentDir, transcriptSessionDir, cleanup, err = preparePiNativeMCPConfig(workingDir, sessionID, opts)
+		agentDir, transcriptSessionDir, cleanup, err = preparePiNativeMCPConfig(workingDir, sessionID, opts, p.customProvider)
 		if err != nil {
 			return nil, err
 		}

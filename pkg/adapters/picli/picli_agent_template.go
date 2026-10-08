@@ -232,15 +232,29 @@ func validatePiTemplateSettings(raw []byte) error {
 // stagePiAgentTemplate writes the deployment template into a session's
 // private agent dir. A broken template fails the launch rather than starting
 // Pi without the deployment's providers.
-func stagePiAgentTemplate(agentDir string) error {
+//
+// custom is the account's own OpenAI-compatible endpoint (PiCustomProvider),
+// merged into the template's models.json; nil when the account has none.
+func stagePiAgentTemplate(agentDir string, custom *PiCustomProvider) error {
 	tmpl, err := LoadPiAgentTemplate()
-	if err != nil || tmpl == nil {
+	if err != nil {
 		return err
 	}
-	if err := writePiPrivateFileAtomically(filepath.Join(agentDir, "models.json"), tmpl.ModelsJSON); err != nil {
+	if tmpl == nil && custom == nil {
+		return nil
+	}
+	var templateModels []byte
+	if tmpl != nil {
+		templateModels = tmpl.ModelsJSON
+	}
+	models, err := mergePiModelsJSON(templateModels, custom)
+	if err != nil {
+		return err
+	}
+	if err := writePiPrivateFileAtomically(filepath.Join(agentDir, "models.json"), models); err != nil {
 		return fmt.Errorf("failed to stage Pi models.json: %w", err)
 	}
-	if tmpl.SettingsJSON != nil {
+	if tmpl != nil && tmpl.SettingsJSON != nil {
 		if err := writePiPrivateFileAtomically(filepath.Join(agentDir, "settings.json"), tmpl.SettingsJSON); err != nil {
 			return fmt.Errorf("failed to stage Pi settings.json: %w", err)
 		}
