@@ -1649,6 +1649,12 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 	var lastTerminalStreamedAt time.Time
 
 	lastActivityAt := time.Now()
+	// Activity only counts when the screen changed since the last poll: a
+	// real spinner or progress line animates, while a frozen redraw that
+	// happens to contain such text does not. A resumed session froze mid-
+	// redraw and was counted as busy for the whole 40-minute ceiling
+	// (local 2026-10-08, salesoutreach Builder chat).
+	lastActivityScreen := ""
 	for {
 		select {
 		case <-deadline.Done():
@@ -1757,7 +1763,8 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			// Reset the inactivity window while Claude is busy (compacting,
 			// thinking, running tools) so a slow-but-progressing resume isn't
 			// aborted before the input prompt appears.
-			if hasClaudeActivity(captured) || isClaudeCompactionInProgress(captured) {
+			if (hasClaudeActivity(captured) || isClaudeCompactionInProgress(captured)) && captured != lastActivityScreen {
+				lastActivityScreen = captured
 				lastActivityAt = time.Now()
 				continue
 			}
@@ -4230,7 +4237,10 @@ func promptReadyMaxWait(idleWait time.Duration) time.Duration {
 	if parsed, ok := claudePositiveDurationFromEnv(EnvClaudeTmuxPromptMaxWaitSeconds); ok {
 		return parsed
 	}
-	maxWait := idleWait * 8
+	// A real compaction finishes well inside this; a pane that looks busy
+	// longer is treated as hung (it was 8x, 40 minutes by default, which held
+	// a chat for 40 minutes on 2026-10-08).
+	maxWait := idleWait * 3
 	if maxWait < 15*time.Minute {
 		maxWait = 15 * time.Minute
 	}
