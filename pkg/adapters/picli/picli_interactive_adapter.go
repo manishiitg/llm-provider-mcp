@@ -1801,8 +1801,15 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 			return finalAssistantText, nil
 		}
 		trimmed := strings.TrimSpace(content.String())
-		if trimmed == "" && len(toolStart) == 0 && lastProviderErrorStatus != 0 {
-			return "", fmt.Errorf("pi-cli provider request failed: HTTP %d", lastProviderErrorStatus)
+		if trimmed == "" && len(toolStart) == 0 {
+			// Nothing was said and nothing was run: if the provider rejected the request, say why (the pane has the status and
+			// the provider's message even when Pi's hook did not report it).
+			if err := piTurnProviderError(session.tmuxSessionName); err != nil {
+				return "", err
+			}
+			if lastProviderErrorStatus != 0 {
+				return "", fmt.Errorf("pi-cli provider request failed: HTTP %d", lastProviderErrorStatus)
+			}
 		}
 		return trimmed, nil
 	}
