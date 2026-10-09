@@ -65,7 +65,7 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 			if name == "" {
 				name = model.ModelID()
 			}
-			models = append(models, &llmtypes.ModelMetadata{
+			meta := &llmtypes.ModelMetadata{
 				ModelID:                 model.ModelID(),
 				Provider:                "pi-cli",
 				ModelName:               "Pi CLI (" + name + ")",
@@ -74,7 +74,12 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 				SupportsReasoningEffort: true,
 				ReasoningEffortLevels:   []string{"low", "medium", "high", "xhigh"},
 				ModelSelectionMode:      "dynamic",
-			})
+			}
+			// A model the deployment pins to "off" offers no reasoning levels: choosing one would only make the gateway fail.
+			if pinned, ok := tmpl.PinnedThinkingLevel("", model.ModelID()); ok && pinned == "off" {
+				meta.SupportsReasoningEffort, meta.ReasoningEffortLevels = false, nil
+			}
+			models = append(models, meta)
 		}
 	}
 	return models

@@ -261,3 +261,24 @@ func stagePiAgentTemplate(agentDir string, custom *PiCustomProvider) error {
 	}
 	return nil
 }
+
+// PinnedThinkingLevel is the thinking level a deployment's own settings.json fixes for a model (modelThinkingLevels, keyed
+// "provider/model"), when it fixes one. A gateway that rejects tool calls together with reasoning pins its model to "off";
+// a person's chosen level (the project default is "high") must not override that, or every turn fails with the gateway's 400.
+func (t *PiAgentTemplate) PinnedThinkingLevel(provider, model string) (string, bool) {
+	if t == nil || len(t.SettingsJSON) == 0 {
+		return "", false
+	}
+	var settings struct {
+		ModelThinkingLevels map[string]string `json:"modelThinkingLevels"`
+	}
+	if json.Unmarshal(t.SettingsJSON, &settings) != nil {
+		return "", false
+	}
+	for _, key := range []string{provider + "/" + model, model} {
+		if level := strings.ToLower(strings.TrimSpace(settings.ModelThinkingLevels[key])); level != "" {
+			return level, true
+		}
+	}
+	return "", false
+}
