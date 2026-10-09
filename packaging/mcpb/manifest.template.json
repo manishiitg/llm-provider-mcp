@@ -57,7 +57,7 @@
     "pi",
     "tmux"
   ],
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "privacy_policies": [
     "https://github.com/manishiitg/llm-provider-mcp/blob/main/PRIVACY.md"
   ],

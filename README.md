@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/manishiitg/llm-provider-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/manishiitg/llm-provider-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/manishiitg/llm-provider-mcp)](https://github.com/manishiitg/llm-provider-mcp/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 
 `multi-llm-provider-go` is a Go library for using hosted LLM APIs and local
 coding agents through a shared set of provider interfaces.
@@ -400,4 +400,4 @@ security issues using [SECURITY.md](SECURITY.md), not a public issue.
 
 ## License
 
-[MIT](LICENSE)
+multi-llm-provider-go is source-available under the [Business Source License 1.1](LICENSE), from 2026-10-09. You may read, modify and run it for personal projects, development, testing, evaluation, education and research. Using it in the operation of a business, or offering it to others, needs a commercial license: contact us through [agentworkshq.com/about](https://agentworkshq.com/about/). Each version converts to the Apache License 2.0 on the Change Date in the license. Versions published before 2026-10-09 remain available under the MIT License.
