@@ -657,8 +657,8 @@ func TestMuseTranscriptLineToChunks(t *testing.T) {
 			ends++
 			endIDs = append(endIDs, c.ToolCallID)
 		case llmtypes.StreamChunkTypeReasoning:
-			if c.Metadata["presentation"] != "assistant_update" {
-				t.Fatal("Muse summary must render as an assistant update")
+			if c.Metadata["presentation"] != nil {
+				t.Fatal("Muse reasoning summary must be compact thinking, not an assistant update (PLAT-781)")
 			}
 			reasoning++
 			if !strings.Contains(c.Content, "Checking") {
