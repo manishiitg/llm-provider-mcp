@@ -88,6 +88,13 @@ type museIntakeRecord struct {
 			Kind string `json:"kind"`
 			Text string `json:"text"`
 		} `json:"refill_blocks"`
+		// Muse collapses a long prompt that reaches the TUI as a paste to "[Pasted Content N chars]" in refill_blocks and
+		// keeps the real text here, which is what the model received.
+		ModelMessages []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"model_messages"`
 	} `json:"payload"`
 }
 
@@ -122,6 +129,16 @@ func museAcceptedIntentSince(path string, since time.Time, snippet string) (stri
 		for _, block := range row.Payload.RefillBlocks {
 			if block.Kind == "text" && strings.HasPrefix(block.Text, snippet) {
 				return row.Payload.IntentID, row.Sequence, true
+			}
+		}
+		// A prompt between Muse's paste-collapse size and the adapter's atomic-paste size (about 1.6k characters, one line) is
+		// recorded as a placeholder in refill_blocks, so the text it started with is only in model_messages. Without this every
+		// such turn was reported "intake unconfirmed" although Muse ran it (a scheduled run that failed 4 of 5 ticks).
+		for _, message := range row.Payload.ModelMessages {
+			for _, part := range message.Content {
+				if strings.HasPrefix(part.Text, snippet) {
+					return row.Payload.IntentID, row.Sequence, true
+				}
 			}
 		}
 	}

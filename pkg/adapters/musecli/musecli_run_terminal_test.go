@@ -109,3 +109,20 @@ func TestMuseRunTerminalIncrementalPartialRow(t *testing.T) {
 		t.Fatalf("completed append: status=%q found=%v err=%v", status, found, err)
 	}
 }
+
+// Muse records a long prompt that reached it as a paste as "[Pasted Content N chars]" in refill_blocks and the real text in
+// model_messages; intake must still be confirmed from the real text (the turn ran, the old check called it unconfirmed).
+func TestMuseAcceptedIntentWhenMuseCollapsesALongPrompt(t *testing.T) {
+	at := time.Now().UnixMicro()
+	prompt := "Webhook receipt watch. Post everything to Slack using the slack tool and list the unseen deliveries."
+	path := museTerminalFixture(t,
+		fmt.Sprintf(`{"sequence":25,"recorded_at":%d,"payload_type":"runtime.user_intent.accepted","payload":{"intent_id":"run-1","refill_blocks":[{"kind":"text","text":"[Pasted Content %d chars]"}],"model_messages":[{"content":[{"text":%q}]}]}}`, at, len(prompt), prompt),
+	)
+	runID, seq, ok := museAcceptedIntentSince(path, time.UnixMicro(at), promptSnippet(prompt))
+	if !ok || runID != "run-1" || seq != 25 {
+		t.Fatalf("accepted intent = (%q, %d, %v), want run-1 at 25", runID, seq, ok)
+	}
+	if _, _, ok := museAcceptedIntentSince(path, time.UnixMicro(at), "A different prompt entirely"); ok {
+		t.Fatal("a placeholder record matched a prompt it does not hold")
+	}
+}
