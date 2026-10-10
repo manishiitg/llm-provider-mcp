@@ -1859,7 +1859,7 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 					// type silently dropped by this switch. Keep it on the
 					// reasoning stream so it remains separate from the final answer,
 					// while marking it as narrated progress for the UI.
-					deltaMeta := piAssistantUpdateChunkMetadata(session)
+					deltaMeta := piThinkingDeltaChunkMetadata(session)
 					emitPiChunkBlocking(ctx, streamChan, llmtypes.StreamChunk{
 						Type:     llmtypes.StreamChunkTypeReasoning,
 						Content:  marker.Delta,
@@ -2429,10 +2429,11 @@ func piChunkMetadata(session *piInteractiveSession) map[string]interface{} {
 	}
 }
 
-func piAssistantUpdateChunkMetadata(session *piInteractiveSession) map[string]interface{} {
+func piThinkingDeltaChunkMetadata(session *piInteractiveSession) map[string]interface{} {
 	metadata := piChunkMetadata(session)
 	metadata[llmtypes.ContentDeltaMetadataKey] = true
-	metadata["presentation"] = "assistant_update"
+	// Pi's thinking is thinking, like every other agent's: the compact muted line. As an assistant update it showed as large
+	// message blocks that a reload or a terminal/chat switch then lost (PLAT-832, as for Muse in PLAT-781).
 	return metadata
 }
 

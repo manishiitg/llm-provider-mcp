@@ -7,15 +7,15 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-func TestPiThinkingDeltaUsesAssistantUpdatePresentation(t *testing.T) {
-	metadata := piAssistantUpdateChunkMetadata(&piInteractiveSession{
+func TestPiThinkingDeltaIsPlainReasoningNotAnAssistantUpdate(t *testing.T) {
+	metadata := piThinkingDeltaChunkMetadata(&piInteractiveSession{
 		tmuxSessionName: "pi-test",
 		nativeSessionID: "native-test",
 		modelID:         "test-model",
 	})
 
-	if got := metadata["presentation"]; got != "assistant_update" {
-		t.Fatalf("presentation = %v, want assistant_update", got)
+	if got, present := metadata["presentation"]; present {
+		t.Fatalf("presentation = %v, want none: Pi thinking is compact reasoning, not an assistant update", got)
 	}
 	if got := metadata[llmtypes.ContentDeltaMetadataKey]; got != true {
 		t.Fatalf("%s = %v, want true", llmtypes.ContentDeltaMetadataKey, got)
