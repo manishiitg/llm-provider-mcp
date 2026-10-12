@@ -341,7 +341,7 @@ func TestPiLaunchArgsAddsNativeMCPAndBridgeOnly(t *testing.T) {
 		"-e\x00/tmp/mcp-output-guard.ts",
 		"-e\x00npm:@narumitw/pi-statusline@0.8.0",
 		"-e\x00builtin:mcp",
-		"--no-approve",
+		"--approve",
 		"--session-id\x00mlp-pi-test-123",
 		"--session-dir\x00" + wantSessionDir,
 		"--no-builtin-tools",
@@ -350,8 +350,8 @@ func TestPiLaunchArgsAddsNativeMCPAndBridgeOnly(t *testing.T) {
 			t.Fatalf("args = %#v, want %q", args, want)
 		}
 	}
-	if strings.Contains(joined, "--mcp-config") || strings.Contains(joined, "pi-mcp-adapter") || strings.Contains(joined, "--approve") {
-		t.Fatalf("legacy plugin/config or project trust leaked into launch: %v", args)
+	if strings.Contains(joined, "--mcp-config") || strings.Contains(joined, "pi-mcp-adapter") || strings.Contains(joined, "--no-approve") {
+		t.Fatalf("legacy plugin/config or --no-approve leaked into launch: %v", args)
 	}
 	if strings.Contains(joined, "--no-session") {
 		t.Fatalf("args = %#v, must not include --no-session when native resume is enabled", args)
@@ -1055,7 +1055,7 @@ func TestPiProjectSkillsAndLaunchArgsLoadExplicitSkillPath(t *testing.T) {
 	joined := strings.Join(args, "\x00")
 	for _, want := range []string{
 		"--no-skills",
-		"--no-approve",
+		"--approve",
 		"--skill\x00" + filepath.Join(workDir, ".pi", "skills"),
 	} {
 		if !strings.Contains(joined, want) {

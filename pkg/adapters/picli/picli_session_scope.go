@@ -35,8 +35,9 @@ func piRuntimeBaseDir(workingDir string) string {
 }
 
 // preparePiNativeMCPConfig writes the complete native MCP snapshot to a private
-// agent directory. Managed launches use --no-approve so project mcp.json cannot
-// override this config. Cleanup removes the credential-bearing snapshot.
+// agent directory. Managed launches use --approve (owner decision), so Pi trusts
+// a project .pi/mcp.json; only a platform-written legacy one is removed below.
+// Cleanup removes the credential-bearing snapshot.
 func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes.CallOptions, custom *PiCustomProvider) (agentDir, sessionDir string, cleanup func(), err error) {
 	agentDir, sessionDir = piSessionRuntimeDirs(workingDir, nativeSessionID)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {

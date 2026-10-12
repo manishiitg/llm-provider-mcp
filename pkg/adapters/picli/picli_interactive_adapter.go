@@ -644,8 +644,9 @@ func (p *PiCLIAdapter) piLaunchArgs(provider, model, extensionPath, outputGuardE
 	args = append(args,
 		"--no-skills",
 		"--no-context-files",
-		// Native MCP must ignore project configs; explicit --skill paths still load.
-		"--no-approve",
+		// Owner decision: trust project-local .pi resources. This also silences Pi's
+		// "project is not trusted" notice for the managed .pi/skills folder.
+		"--approve",
 		"--session-id", nativeSessionID,
 	)
 	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 && strings.TrimSpace(workingDir) != "" {

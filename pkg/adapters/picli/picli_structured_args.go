@@ -13,9 +13,9 @@ package picli
 // turn 2 recall turn 1 instead of starting blank. bridgeOnly maps to
 // --no-builtin-tools (disables pi's native bash/edit/write). Default extensions
 // are always disabled; when MCP is configured, native support is loaded explicitly
-// with `-e builtin:mcp`. --no-approve ignores ambient project configuration,
-// so project MCP cannot override the private session config. Explicit projected
-// skills still load with --skill.
+// with `-e builtin:mcp`. --approve trusts project-local .pi resources (owner decision;
+// it also silences Pi's "project is not trusted" notice for the managed
+// .pi/skills folder). Explicit projected skills still load with --skill.
 //
 // provider/model are required, not optional: without them pi silently falls
 // back to whatever provider/model its own local session/settings last used
@@ -36,7 +36,7 @@ func buildPiStructuredArgs(provider, model, sessionID string, bridgeOnly, mcpCon
 		args = append(args, "--no-builtin-tools")
 	}
 	if hasWorkingDir || mcpConfigSet {
-		args = append(args, "--no-approve")
+		args = append(args, "--approve")
 	}
 	if skillDir != "" {
 		args = append(args, "--skill", skillDir)
