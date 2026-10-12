@@ -533,6 +533,12 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	preSubmitSeq := museTranscriptMaxSequence(preSubmitLogPath)
 	turnStart := time.Now()
 	submitErr := museSendPrompt(ctx, session, prompt)
+	// A genuinely refused submit (notice, no intake) is resubmitted here,
+	// intake-gated and bounded; anything else falls through to the long
+	// authoritative wait below.
+	if err := museConfirmSubmitOrResubmit(ctx, museAccountDataHome(ctx), session, prompt, turnStart, workdir); err != nil {
+		return nil, err
+	}
 	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
 		if submitErr != nil {

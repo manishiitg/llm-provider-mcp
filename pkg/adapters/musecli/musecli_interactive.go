@@ -452,6 +452,9 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		if err := museWaitLiveInputComposer(ctx, session); err != nil {
 			return err
 		}
+		// A resume boots through an "Initializing runtime" window where
+		// keystrokes are swallowed; wait it out before typing.
+		museWaitInitializingClear(ctx, session)
 		composer := time.Since(stage)
 		stage = time.Now()
 		if musePromptNeedsAtomicPaste(prompt) {
@@ -484,9 +487,10 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 		if took {
 			// Durable-ack P0 (docs/refactor/durable_ack_p0.md in the builder, PLAT-352): attempt once, report the truth. Once Enter took effect nothing is
 			// typed or submitted again from here, and the pane never decides delivery. A footer notice ("Message not sent -- another run is still
-			// starting") also changes the pane; it is only logged. museWaitIntake observes the native session.jsonl for the intake record, with its
-			// slow-start allowance, and says "unconfirmed" if it never comes. Retyping on that notice ran one message three or more times
-			// (Excellence, 2026-10-04), the duplicate-submission risk the document records.
+			// starting") also changes the pane; it is only logged. Recovery from a genuine refusal lives in museConfirmSubmitOrResubmit, which resubmits
+			// only with a run-started signal plus a still-absent intake record — a stale notice over a landed message (PLAT-422, one message ran three
+			// or more times on Excellence, 2026-10-04) resubmits nothing. museWaitIntake observes the native session.jsonl for the intake record, with
+			// its slow-start allowance, and says "unconfirmed" if it never comes.
 			if pane, paneErr := museTmuxCapturePane(ctx, session); paneErr == nil && museRejectedNotice(pane) {
 				log.Printf("[MUSE_SUBMIT_NOTICE] session=%s Muse showed \"Message not sent\"; not retyping, waiting for durable intake", session)
 			}
