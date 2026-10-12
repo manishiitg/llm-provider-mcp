@@ -87,16 +87,16 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
 		}, true
 	case ProviderMuseCLI:
-		// Single model for now (2026-09-10): every tier runs
-		// muse-spark-1.3-contributor, with max for the long-horizon Builder
-		// and Pulse roles, xhigh for High, high for Medium, and medium for Low.
+		// Long-running Builder and Pulse tiers run Muse Wonder at max;
+		// the shorter High, Medium, and Low tiers keep Spark Contributor.
 		const museModel = "muse-spark-1.3-contributor"
+		const museLongModel = "muse-wonder-1.0"
 		return &CodingAgentDefaultTierModels{
-			Builder: codingAgentReasoningRef(providerID, museModel, "max"),
+			Builder: codingAgentReasoningRef(providerID, museLongModel, "max"),
 			High:    codingAgentReasoningRef(providerID, museModel, "xhigh"),
 			Medium:  codingAgentReasoningRef(providerID, museModel, "high"),
 			Low:     codingAgentReasoningRef(providerID, museModel, "medium"),
-			Pulse:   codingAgentReasoningRef(providerID, museModel, "max"),
+			Pulse:   codingAgentReasoningRef(providerID, museLongModel, "max"),
 		}, true
 	case ProviderAgyCLI:
 		// Effort is baked into agy's model slugs (high/medium/low); Builder
