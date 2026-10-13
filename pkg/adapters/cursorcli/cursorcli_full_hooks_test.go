@@ -39,6 +39,13 @@ func TestCursorFullNativeHooks(t *testing.T) {
 				t.Errorf("Shell must not be pre-approved: %v", p)
 			}
 		}
+		prompt := cursorBridgeOnlySystemPrompt("", true, true)
+		if !strings.Contains(prompt, "Native Shell and the Delete tool are disabled") || strings.Contains(prompt, "Your own Shell, Read") || strings.Contains(prompt, "delete files with the shell, e.g. rm") {
+			t.Errorf("prompt contradicts the shell-denying hooks: %s", prompt)
+		}
+		if !strings.Contains(prompt, "MCP shell for commands and file deletion") || !strings.Contains(prompt, "Read, List, Glob") {
+			t.Errorf("prompt lost the permitted command route or native file tools: %s", prompt)
+		}
 	})
 	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "on")
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
