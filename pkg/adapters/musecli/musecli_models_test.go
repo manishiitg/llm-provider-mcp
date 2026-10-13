@@ -1,6 +1,9 @@
 package musecli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMuseWonderModelsPublishedWithEfforts(t *testing.T) {
 	models := GetAllMuseCLIModels()
@@ -12,6 +15,12 @@ func TestMuseWonderModelsPublishedWithEfforts(t *testing.T) {
 	}
 	if models[1].ModelID != "muse-wonder-full-1.0" || models[1].ModelName != "Muse Wonder Full (Muse Code subscribers)" {
 		t.Fatalf("second model = %q/%q, want Muse Wonder Full label", models[1].ModelID, models[1].ModelName)
+	}
+	// Muse Spark 1.2 is retired: it must not be listed or priced.
+	for _, model := range models {
+		if strings.HasPrefix(model.ModelID, "muse-spark-1.2") {
+			t.Fatalf("retired model still listed: %q", model.ModelID)
+		}
 	}
 	wantEfforts := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 	for _, model := range models[:2] {

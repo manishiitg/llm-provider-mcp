@@ -32,8 +32,6 @@ var knownMuseCLIModels = []knownMuseModel{
 	{id: "muse-wonder-full-1.0", name: "Muse Wonder Full (Muse Code subscribers)"},
 	{id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", context: 1007997, output: 128000, input: 0.10, out: 0.20, cached: 0.002},
 	{id: "muse-spark-1.3", name: "Muse Spark 1.3", context: 1007997, output: 128000, input: 1.25, out: 4.25, cached: 0.15},
-	{id: "muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", context: 1007997, output: 128000, input: 0.10, out: 0.20, cached: 0.002},
-	{id: "muse-spark-1.2", name: "Muse Spark 1.2", context: 1007997, output: 128000, input: 1.25, out: 4.25, cached: 0.15},
 }
 
 // museReasoningEffortLevels mirrors `muse exec --help`: Meta reasoning

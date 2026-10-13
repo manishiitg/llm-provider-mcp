@@ -15,9 +15,7 @@ func TestMuseModelRateCard(t *testing.T) {
 		input, output, cached float64
 	}{
 		{"muse-spark-1.3-contributor", 0.10, 0.20, 0.002},
-		{"muse-spark-1.2-contributor", 0.10, 0.20, 0.002},
 		{"muse-spark-1.3", 1.25, 4.25, 0.15},
-		{"muse-spark-1.2", 1.25, 4.25, 0.15},
 	}
 	for _, c := range cases {
 		meta, err := GetMuseModelMetadata(c.model)
