@@ -1995,6 +1995,16 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
 	draftVisible := waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, 5*time.Second, liveInput)
+	if !draftVisible {
+		// Say what the screen was doing (never its text), so a stall explains itself in the log.
+		if captured, capErr := captureCursorPane(context.WithoutCancel(ctx), sessionName); capErr == nil {
+			log.Printf("[CURSOR_DRAFT_MISS] session=%s transport=%s live_input=%t runes=%d lines=%d since_last_accepted_ms=%d pane=%s",
+				sessionName, transport, liveInput, runeCount, lineCount, cursorSinceLastAcceptedMS(sessionName), cursorPaneStateSummary(captured))
+		} else {
+			log.Printf("[CURSOR_DRAFT_MISS] session=%s transport=%s live_input=%t runes=%d lines=%d since_last_accepted_ms=%d pane=unreadable(%v)",
+				sessionName, transport, liveInput, runeCount, lineCount, cursorSinceLastAcceptedMS(sessionName), capErr)
+		}
+	}
 	if !draftVisible && transport != "atomic-paste" {
 		return fmt.Errorf("typed Cursor input did not appear in the prompt before submit (transport=%s runes=%d lines=%d)", transport, runeCount, lineCount)
 	}
@@ -2011,7 +2021,43 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 	if err := runCursorCommand(ctx, nil, "tmux", args...); err != nil {
 		return fmt.Errorf("failed to submit typed input to Cursor interactive session: %w", err)
 	}
-	return ensureCursorInputSubmittedWithMode(ctx, sessionName, message, liveInput)
+	if err := ensureCursorInputSubmittedWithMode(ctx, sessionName, message, liveInput); err != nil {
+		return err
+	}
+	noteCursorInputAccepted(sessionName)
+	return nil
+}
+
+var (
+	cursorLastAcceptedMu sync.Mutex
+	cursorLastAccepted   = map[string]time.Time{}
+)
+
+// noteCursorInputAccepted records when Cursor last took an input for this session, so a later miss can tell "Cursor stopped
+// echoing" (a recent accepted input) from "nothing has gone in for a long time".
+func noteCursorInputAccepted(sessionName string) {
+	cursorLastAcceptedMu.Lock()
+	defer cursorLastAcceptedMu.Unlock()
+	if len(cursorLastAccepted) > 512 {
+		cutoff := time.Now().Add(-24 * time.Hour)
+		for name, at := range cursorLastAccepted {
+			if at.Before(cutoff) {
+				delete(cursorLastAccepted, name)
+			}
+		}
+	}
+	cursorLastAccepted[sessionName] = time.Now()
+}
+
+// cursorSinceLastAcceptedMS is milliseconds since the last accepted input for the session, or -1 if none is recorded.
+func cursorSinceLastAcceptedMS(sessionName string) int64 {
+	cursorLastAcceptedMu.Lock()
+	defer cursorLastAcceptedMu.Unlock()
+	at, ok := cursorLastAccepted[sessionName]
+	if !ok {
+		return -1
+	}
+	return time.Since(at).Milliseconds()
 }
 
 func cursorSubmitKeys() []string {
@@ -3712,4 +3758,59 @@ func stripCursorANSI(s string) string {
 // is dropped because ansi_up does not emulate VT100 movement.
 func stripCursorANSIPreserveColors(s string) string {
 	return paneview.StripANSIPreserveColors(s)
+}
+
+// cursorPaneStateSummary names the states a Cursor screen is in, as yes/no flags and sizes only. It is for logs when typed
+// input did not show up: it contains none of the screen's text.
+func cursorPaneStateSummary(captured string) string {
+	visible := cursorVisiblePaneText(captured)
+	cleaned := stripCursorANSI(visible)
+	flags := []struct {
+		name string
+		on   bool
+	}{
+		{"ready", hasCursorReadyPrompt(captured)},
+		{"generating", hasCursorLiveGenerationActivity(cleaned)},
+		{"activity", hasCursorActivity(captured)},
+		{"busy_followup", hasCursorBusyFollowupPrompt(visible)},
+		{"queued_send", hasCursorQueuedFollowupsSendPrompt(visible)},
+		{"boot", hasCursorBootBanner(cleaned)},
+		{"trust", hasCursorTrustPrompt(visible)},
+		{"auth", hasCursorAuthPrompt(visible)},
+		{"mode_switch", hasCursorModeSwitchPrompt(visible)},
+		{"web_approval", hasCursorWebSearchApprovalPrompt(visible) || hasCursorWebAccessApprovalPrompt(visible)},
+		{"mcp_approval", hasCursorMCPToolApprovalPrompt(visible) || hasCursorMCPServerApprovalPrompt(visible)},
+	}
+	var on []string
+	for _, f := range flags {
+		if f.on {
+			on = append(on, f.name)
+		}
+	}
+	if len(on) == 0 {
+		on = []string{"none"}
+	}
+	lines := strings.Split(strings.TrimRight(captured, "\n"), "\n")
+	return fmt.Sprintf("states=%s composer=%s lines=%d bytes=%d", strings.Join(on, ","), cursorComposerState(visible), len(lines), len(captured))
+}
+
+// cursorComposerState says whether the composer (the line after the last "→" marker) is absent from the screen, empty
+// (including Cursor's placeholders) or holds some text. It never returns the text.
+func cursorComposerState(visible string) string {
+	lines := strings.Split(strings.ToLower(stripCursorANSI(visible)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		idx := strings.Index(lines[i], "→")
+		if idx < 0 {
+			continue
+		}
+		line := strings.TrimSpace(lines[i][idx+len("→"):])
+		if hint := strings.Index(line, "ctrl+c to stop"); hint >= 0 {
+			line = strings.TrimSpace(line[:hint])
+		}
+		if line == "" || line == "add a follow-up" || line == "type your message" {
+			return "empty"
+		}
+		return "nonempty"
+	}
+	return "absent"
 }
