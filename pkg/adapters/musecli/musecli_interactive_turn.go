@@ -632,9 +632,19 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		StopReason:     "completed",
 		GenerationInfo: gi,
 	}}}
-	if usage, ok := readMuseTranscriptUsage(logPath, finalRunID); ok {
+	usage, usageOK := readMuseTranscriptUsage(logPath, finalRunID)
+	// Native subagents this turn started spent tokens in their own logs; they are part of the turn's cost.
+	subagentsPriced := false
+	for _, sub := range museSubagentUsage(logPath, turnStart) {
+		addMuseUsage(&usage, sub.Usage)
+		usageOK, subagentsPriced = true, true
+	}
+	if usageOK {
 		resp.Usage = &usage
 		museAttachTurnCost(gi, strings.TrimSpace(a.modelID), &usage)
+		if subagentsPriced {
+			gi.Additional["usage_rate_assumed"] = "parent" // one event per turn: the subagents' tokens are priced at the turn's model
+		}
 	}
 	return resp, nil
 }

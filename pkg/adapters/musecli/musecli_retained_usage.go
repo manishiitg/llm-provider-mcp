@@ -55,7 +55,7 @@ func ReadRetainedTurnUsage(ownerSessionID, modelID string) []llmtypes.RetainedTu
 		log.Printf("[RETAINED_USAGE] muse owner=%s skipped: no terminal registered for this owner", ownerSessionID)
 		return nil
 	}
-	path, floor := entry.logPath, entry.usageFloorSequence
+	path, floor, floorAt := entry.logPath, entry.usageFloorSequence, entry.usageFloorAt
 	if path == "" && entry.nativeSessionID != "" {
 		path = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
 	}
@@ -141,6 +141,12 @@ func ReadRetainedTurnUsage(ownerSessionID, modelID string) []llmtypes.RetainedTu
 		item := llmtypes.RetainedTurnUsage{ID: fmt.Sprintf("%s#%d-%d", id, one.first, one.last), Usage: one.usage}
 		museAttachTurnCost(&item.Info, modelID, &item.Usage)
 		log.Printf("[RETAINED_USAGE] muse owner=%s run=%s rows=%d-%d input=%d output=%d cached=%d reported", ownerSessionID, id, one.first, one.last, one.usage.InputTokens, one.usage.OutputTokens, museCacheValue(one.usage))
+		out = append(out, item)
+	}
+	for _, sub := range museSubagentUsage(path, floorAt) {
+		item := llmtypes.RetainedTurnUsage{ID: fmt.Sprintf("subagent-%s#%d-%d", sub.ID, sub.First, sub.Last), Usage: sub.Usage}
+		museAttachSubagentCost(&item.Info, sub.Model, modelID, &item.Usage)
+		item.Info.Additional["subagent_id"] = sub.ID
 		out = append(out, item)
 	}
 	if len(out) == 0 {

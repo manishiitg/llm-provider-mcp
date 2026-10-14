@@ -89,6 +89,8 @@ type musePersistentSession struct {
 	// the retained-turn usage reader only considers runs after it, so a restart never re-reports earlier runs.
 	usageFloorSequence int64
 	usageFloorSet      bool
+	// usageFloorAt is when the transcript was bound; native subagent usage recorded before it is never reported.
+	usageFloorAt time.Time
 	// pendingDurable holds one pre-send snapshot per recent live-input
 	// send so the transcript arbiter and AwaitMuseInputDurable scope
 	// their match above the baseline that send could have produced.
@@ -120,6 +122,7 @@ func museRecordPersistentTranscript(owner, tmuxName, nativeSessionID, logPath st
 	if !entry.usageFloorSet && entry.logPath != "" {
 		entry.usageFloorSet = true
 		entry.usageFloorSequence = museTranscriptMaxSequence(entry.logPath)
+		entry.usageFloorAt = time.Now()
 	}
 }
 
