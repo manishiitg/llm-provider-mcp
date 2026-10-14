@@ -32,9 +32,9 @@ func TestCodexTurnUsageIsTheGrowthOfTheCumulativeTotal(t *testing.T) {
 	if gi == nil || gi.PromptTokens == nil || gi.CompletionTokens == nil || *gi.PromptTokens != 6300 || *gi.CompletionTokens != 200 {
 		t.Fatalf("the turn spent 6300 in / 200 out across three requests, got %+v", gi)
 	}
-	// Reading the same turn again reports nothing new beyond the last request (never the whole turn twice).
-	again, _, _, _ := readCodexTranscriptUsageFile(path, turnStart)
-	if again != nil && again.PromptTokens != nil && *again.PromptTokens > 2200 {
+	// Reading the same turn again reports nothing: everything up to the cumulative total was already reported, and the
+	// last request must not be reported a second time.
+	if again, _, _, _ := readCodexTranscriptUsageFile(path, turnStart); again != nil {
 		t.Fatalf("a second read repeated reported usage: %+v", again)
 	}
 }

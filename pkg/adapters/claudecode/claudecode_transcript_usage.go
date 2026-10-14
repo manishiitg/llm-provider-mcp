@@ -78,7 +78,11 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 				continue
 			}
 			seenMessageID[dedupKey] = struct{}{}
-			claudeMarkUsageReported(transcriptPath, dedupKey) // the Run reports this call: the retained-turn reader must not repeat it
+			// First reporter wins: a call a retained-turn read already took is not counted again here, and a call
+			// taken here is not taken by that reader. (A read with no turn start is a status read, not accounting.)
+			if !turnStart.IsZero() && !claudeMarkUsageReported(transcriptPath, dedupKey) {
+				continue
+			}
 		}
 		input += ev.Message.Usage.InputTokens
 		output += ev.Message.Usage.OutputTokens

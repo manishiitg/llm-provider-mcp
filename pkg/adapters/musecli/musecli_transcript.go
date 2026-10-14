@@ -142,6 +142,11 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 		if quantity == nil || !museLogBool(quantity, "reported") {
 			continue
 		}
+		if runID != "" {
+			if sequence, _ := rec["sequence"].(float64); !museMarkUsageReported(logPath, int64(sequence)) {
+				continue // a retained-turn read already reported this row: the first reporter wins
+			}
+		}
 		matched = true
 		usage.InputTokens += museLogInt(quantity, "input_tokens")
 		usage.OutputTokens += museLogInt(quantity, "output_tokens")
@@ -161,9 +166,6 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 		}
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	if matched && runID != "" {
-		museMarkUsageReported(logPath, runID) // the Run reports this one: the retained-turn reader must not repeat it
-	}
 	return usage, matched
 }
 

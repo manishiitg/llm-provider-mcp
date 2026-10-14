@@ -236,10 +236,20 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	// below that last request, and never repeating what an earlier read of this rollout already reported).
 	spent := *latest
 	if haveFinalTotal && !turnStart.IsZero() { // a read of the whole file (no turn) is a status read, not accounting
+		promoted := false
 		if reported, ok := codexReportedTotal(path); ok && reported.TotalTokens > baselineTotal.TotalTokens {
-			baselineTotal = reported
+			baselineTotal, promoted = reported, true
 		}
-		if delta := codexSnapshotDelta(finalTotal, baselineTotal); delta.InputTokens+delta.OutputTokens > 0 && delta.TotalTokens >= latest.TotalTokens {
+		delta := codexSnapshotDelta(finalTotal, baselineTotal)
+		switch {
+		case promoted:
+			// An earlier read of this rollout already reported everything up to its total: only what came after is new,
+			// and when nothing did there is nothing to report (never the last request again).
+			if delta.InputTokens+delta.OutputTokens == 0 {
+				return nil, latestModel, threadID, sessionCWD
+			}
+			spent = delta
+		case delta.InputTokens+delta.OutputTokens > 0 && delta.TotalTokens >= latest.TotalTokens:
 			spent = delta
 		}
 		codexMarkReportedTotal(path, finalTotal)

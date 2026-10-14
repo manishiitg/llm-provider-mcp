@@ -2,6 +2,7 @@ package musecli
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"sort"
@@ -13,28 +14,29 @@ import (
 
 // Muse usage reaches the host in two ways: the bounded Run reads the usage of its own final run id from the session
 // log, and every other run (a follow-up typed into the running terminal, or a later turn) was never read by anyone.
-// This registry remembers which run ids a session log's usage was already handed out for, from either path, so each
-// run is reported once.
+// This registry remembers which usage rows (one per model call, keyed by their log sequence) were already handed out
+// for a session log, from either path: the first reporter of a row wins, whichever path it is, so a row is never
+// counted twice and a run still in progress never loses its later rows.
 var museReportedUsage = struct {
 	sync.Mutex
-	runs map[string]map[string]bool
-}{runs: map[string]map[string]bool{}}
+	rows map[string]map[int64]bool
+}{rows: map[string]map[int64]bool{}}
 
-func museMarkUsageReported(logPath, runID string) bool {
-	if logPath == "" || runID == "" {
+func museMarkUsageReported(logPath string, sequence int64) bool {
+	if logPath == "" || sequence <= 0 {
 		return false
 	}
 	museReportedUsage.Lock()
 	defer museReportedUsage.Unlock()
-	set := museReportedUsage.runs[logPath]
+	set := museReportedUsage.rows[logPath]
 	if set == nil {
-		set = map[string]bool{}
-		museReportedUsage.runs[logPath] = set
+		set = map[int64]bool{}
+		museReportedUsage.rows[logPath] = set
 	}
-	if set[runID] {
+	if set[sequence] {
 		return false
 	}
-	set[runID] = true
+	set[sequence] = true
 	return true
 }
 
@@ -64,8 +66,8 @@ func ReadRetainedTurnUsage(ownerSessionID, modelID string) []llmtypes.RetainedTu
 		return nil
 	}
 	type runUsage struct {
-		first int64
-		usage llmtypes.Usage
+		first, last int64
+		usage       llmtypes.Usage
 	}
 	byRun := map[string]*runUsage{}
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -101,11 +103,15 @@ func ReadRetainedTurnUsage(ownerSessionID, modelID string) []llmtypes.RetainedTu
 		if runID == "" {
 			continue
 		}
+		if !museMarkUsageReported(path, int64(sequence)) {
+			continue // this row was already reported by the Run or an earlier read
+		}
 		one := byRun[runID]
 		if one == nil {
 			one = &runUsage{first: int64(sequence)}
 			byRun[runID] = one
 		}
+		one.last = int64(sequence)
 		one.usage.InputTokens += museLogInt(quantity, "input_tokens")
 		one.usage.OutputTokens += museLogInt(quantity, "output_tokens")
 		if cached := museLogInt(quantity, "cached_tokens"); cached > 0 {
@@ -132,12 +138,9 @@ func ReadRetainedTurnUsage(ownerSessionID, modelID string) []llmtypes.RetainedTu
 	for _, id := range ids {
 		one := byRun[id]
 		one.usage.TotalTokens = one.usage.InputTokens + one.usage.OutputTokens
-		if !museMarkUsageReported(path, id) {
-			continue // already reported by the Run or an earlier read
-		}
-		item := llmtypes.RetainedTurnUsage{ID: id, Usage: one.usage}
+		item := llmtypes.RetainedTurnUsage{ID: fmt.Sprintf("%s#%d-%d", id, one.first, one.last), Usage: one.usage}
 		museAttachTurnCost(&item.Info, modelID, &item.Usage)
-		log.Printf("[RETAINED_USAGE] muse owner=%s run=%s input=%d output=%d cached=%d reported", ownerSessionID, id, one.usage.InputTokens, one.usage.OutputTokens, museCacheValue(one.usage))
+		log.Printf("[RETAINED_USAGE] muse owner=%s run=%s rows=%d-%d input=%d output=%d cached=%d reported", ownerSessionID, id, one.first, one.last, one.usage.InputTokens, one.usage.OutputTokens, museCacheValue(one.usage))
 		out = append(out, item)
 	}
 	if len(out) == 0 {
