@@ -473,6 +473,9 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	var nativeChildren []llmtypes.NativeSubagentTranscript
 	if agyFullNativeToolsMode(toolMode) {
 		if record, readErr := agyReadTurnRecord(parsed.conversationID, turnStartIdx, prompt, agyTranscriptHome(opts)); readErr == nil {
+			if agyTurnEndedByExecutorError(record) {
+				return nil, agyExecutorTurnError(record.executorError)
+			}
 			if schemaJSON == "" && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
 				parsed.response = record.finalAnswer
 			}

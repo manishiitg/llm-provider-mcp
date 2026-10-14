@@ -2,11 +2,14 @@ package agycli
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"google.golang.org/protobuf/encoding/protowire"
 	_ "modernc.org/sqlite"
@@ -192,5 +195,65 @@ func TestAgyCheckpointStepCompaction(t *testing.T) {
 		!got.StartedAt.Equal(time.Unix(1781070351, 779980000)) || !got.EndedAt.Equal(time.Unix(1781070352, 571718000)) ||
 		got.DurationMs != 791 || got.TokensBefore != 0 || got.TokensAfter != 0 {
 		t.Fatalf("unexpected compaction chunk %+v", got)
+	}
+}
+
+// AGY ends a turn it cannot finish by writing an error step (type 17) and
+// nothing after it. Live 2026-10-14: an upstream 500 left the app waiting ten
+// minutes for an answer that was never coming.
+func TestAgyTurnEndedByExecutorErrorFailsFastAndOnlyAfterTheFloor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "exec-error.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(idx, stepType int, payload []byte) {
+		t.Helper()
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO steps VALUES (?, ?, 3, ?)`, idx, stepType, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errorPayload := []byte("\x0a\x10trajectory-id-xyz\x12\x80Agent execution terminated due to error. agent executor error: generating and executing: Error 500, Message: Internal error encountered., Status: INTERNAL, Details: [] (1) attached stack trace -- stack trace: agentexecutor.go:353")
+	// An older turn that ended in an error, then a new turn that is still working.
+	insert(0, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "first prompt"))
+	insert(1, agyStepExecutorError, errorPayload)
+	insert(2, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "second prompt"))
+	insert(3, agyStepToolCall, agyTestPayload(agyStepToolCall, 5, 2, "tool"))
+	record, err := agyReadTurnRecord("exec-error", 2, "")
+	if err != nil || agyTurnEndedByExecutorError(record) {
+		t.Fatalf("an error step before the turn's floor failed the new turn: %+v err %v", record, err)
+	}
+	// The new turn then ends in an error step: it fails at once with AGY's own text.
+	insert(4, agyStepExecutorError, errorPayload)
+	record, err = agyReadTurnRecord("exec-error", 2, "")
+	if err != nil || !agyTurnEndedByExecutorError(record) {
+		t.Fatalf("an error step after the floor did not end the turn: %+v err %v", record, err)
+	}
+	failure := agyExecutorTurnError(record.executorError)
+	var typed *llmerrors.Error
+	if !errors.As(failure, &typed) || typed.Kind != llmerrors.KindServerError || typed.Provider != "agy-cli" || !strings.HasPrefix(typed.Err.Error(), agyExecutorErrorPrefix) ||
+		!strings.Contains(failure.Error(), "Error 500, Message: Internal error encountered.") || strings.Contains(failure.Error(), "stack trace") {
+		t.Fatalf("failure = %v kind %v", failure, llmerrors.KindOf(failure))
+	}
+	// A notice step after the error (type 101) does not hide it.
+	insert(5, 101, []byte("notice"))
+	record, err = agyReadTurnRecord("exec-error", 2, "")
+	if err != nil || !agyTurnEndedByExecutorError(record) {
+		t.Fatalf("a notice after the error step hid it: %+v err %v", record, err)
+	}
+	// An assistant step after it means the turn went on: not failed.
+	insert(6, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "recovered"))
+	record, err = agyReadTurnRecord("exec-error", 2, "")
+	if err != nil || agyTurnEndedByExecutorError(record) {
+		t.Fatalf("a turn that went on after an error step was failed: %+v err %v", record, err)
 	}
 }
