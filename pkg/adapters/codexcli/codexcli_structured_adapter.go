@@ -359,6 +359,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 	var totalUsage llmtypes.Usage
 	var cacheWriteTokens int
 	var threadID string
+	sawNativeSubagent := false
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -572,6 +573,7 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 						ToolDuration: toolclock.Elapsed(toolStartedAt, event.Item.ID),
 					})
 					if event.Item.Type == "collab_tool_call" {
+						sawNativeSubagent = true
 						children := readCodexNativeSubagents(threadID, workingDir, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"])
 						if len(children) > 0 {
 							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeSubagentTranscript, Metadata: map[string]interface{}{"native_subagents": children}})
@@ -664,8 +666,10 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		"codex_model":                modelToUse,
 		"context_window_usage_known": false,
 	}
-	if children := readCodexNativeSubagents(threadID, workingDir, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"]); len(children) > 0 {
-		additional["native_subagents"] = children
+	if sawNativeSubagent {
+		if children := readCodexNativeSubagents(threadID, workingDir, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"]); len(children) > 0 {
+			additional["native_subagents"] = children
+		}
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZero(totalUsage.InputTokens),

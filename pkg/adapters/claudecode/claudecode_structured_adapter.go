@@ -278,6 +278,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	var finalText strings.Builder
 	var resultText string
+	sawNativeSubagent := false
 	// totalUsage is fed ONLY from the terminal result event's usage, which
 	// Anthropic documents as the per-run cumulative total — NOT summed with
 	// each intermediate assistant event's own usage. Verified live: summing
@@ -362,6 +363,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
 						}
 						if block.Type == "tool_use" && block.Name != "" {
+							if block.Name == "Agent" || block.Name == "Task" {
+								sawNativeSubagent = true
+							}
 							if block.ID != "" {
 								pendingToolCalls[block.ID] = struct {
 									name      string
@@ -493,8 +497,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if turnText := strings.TrimSpace(finalText.String()); turnText != "" && turnText != content {
 		additional["assistant_turn_text"] = turnText
 	}
-	if children := readClaudeNativeSubagents(sessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"]); len(children) > 0 {
-		additional["native_subagents"] = children
+	if sawNativeSubagent {
+		if children := readClaudeNativeSubagents(sessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"]); len(children) > 0 {
+			additional["native_subagents"] = children
+		}
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZeroClaude(totalUsage.InputTokens),

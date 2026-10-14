@@ -466,9 +466,15 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	// the final answer. The completed native trail identifies the last authored
 	// answer, just as it does for retained turns; fixtures without a trail keep
 	// the envelope fallback.
-	if schemaJSON == "" && agyFullNativeToolsMode(toolMode) {
-		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, "", agyTranscriptHome(opts)); readErr == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
-			parsed.response = record.finalAnswer
+	var nativeChildren []llmtypes.NativeSubagentTranscript
+	if agyFullNativeToolsMode(toolMode) {
+		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, "", agyTranscriptHome(opts)); readErr == nil {
+			if schemaJSON == "" && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
+				parsed.response = record.finalAnswer
+			}
+			if len(record.subagents) > 0 {
+				nativeChildren = readAgyNativeSubagents(parsed.conversationID, agyTranscriptHome(opts))
+			}
 		}
 	}
 	if schemaJSON != "" {
@@ -477,7 +483,10 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if opts != nil && opts.StreamChan != nil {
 		opts.StreamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: parsed.response}
 	}
-	gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"native_subagents": readAgyNativeSubagents(parsed.conversationID, agyTranscriptHome(opts))}}
+	gi := &llmtypes.GenerationInfo{}
+	if len(nativeChildren) > 0 {
+		gi.Additional = map[string]interface{}{"native_subagents": nativeChildren}
+	}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "agy-cli",
 		Transport:       llmtypes.CodingProviderTransportStructured,

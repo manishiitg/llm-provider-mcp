@@ -244,6 +244,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	sessionID := ""
 	commandID := ""
 	unparsed := 0
+	sawNativeSubagent := false
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
@@ -266,6 +267,9 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 				commandID = ev.CausationID
 			}
 		}
+		if strings.HasPrefix(ev.PayloadType, "subagent.") {
+			sawNativeSubagent = true
+		}
 		switch ev.PayloadType {
 		case "run.output.delta":
 			deltas.WriteString(ev.Payload.Text)
@@ -283,8 +287,11 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 				failedReason = ev.Payload.Text
 			}
 		case "tool.result":
-			if opts.StreamChan != nil {
-				for _, chunk := range museToolStreamChunks(line) {
+			for _, chunk := range museToolStreamChunks(line) {
+				if strings.HasPrefix(chunk.ToolName, "subagent_") {
+					sawNativeSubagent = true
+				}
+				if opts.StreamChan != nil {
 					opts.StreamChan <- *chunk
 				}
 			}
@@ -321,7 +328,12 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("muse exec returned no text (session %s, %d unparsed lines, stderr: %s)", sessionID, unparsed, museStderrTail(stderr.String()))
 	}
 	turnUsage, hasTurnUsage := museUsageForTurn(sessionID, commandID)
-	gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"native_subagents": readMuseNativeSubagents(sessionID)}}
+	gi := &llmtypes.GenerationInfo{}
+	if sawNativeSubagent {
+		if children := readMuseNativeSubagents(sessionID); len(children) > 0 {
+			gi.Additional = map[string]interface{}{"native_subagents": children}
+		}
+	}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "muse-cli",
 		Transport:       llmtypes.CodingProviderTransportStructured,
