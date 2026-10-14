@@ -406,6 +406,10 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		return nil, err
 	}
 	defer releaseToolHook()
+	turnStartIdx := -1
+	if agyFullNativeToolsMode(toolMode) {
+		turnStartIdx = agyConversationMaxIdx(agyStringMetadata(opts, MetadataKeyResumeSessionID), agyTranscriptHome(opts))
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	stderrPipe, err := cmd.StderrPipe()
@@ -468,9 +472,14 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	// the envelope fallback.
 	var nativeChildren []llmtypes.NativeSubagentTranscript
 	if agyFullNativeToolsMode(toolMode) {
-		if record, readErr := agyReadTurnRecord(parsed.conversationID, -1, "", agyTranscriptHome(opts)); readErr == nil {
+		if record, readErr := agyReadTurnRecord(parsed.conversationID, turnStartIdx, prompt, agyTranscriptHome(opts)); readErr == nil {
 			if schemaJSON == "" && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" {
 				parsed.response = record.finalAnswer
+			}
+			if opts != nil && opts.StreamChan != nil && record.userIdx >= 0 {
+				for _, chunk := range agyExecRecordedToolChunks(parsed.conversationID, record.userIdx, agyTranscriptHome(opts)) {
+					opts.StreamChan <- chunk
+				}
 			}
 			if len(record.subagents) > 0 {
 				nativeChildren = readAgyNativeSubagents(parsed.conversationID, agyTranscriptHome(opts))
@@ -502,4 +511,19 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		}},
 		Usage: &parsed.usage,
 	}, nil
+}
+
+// Headless exec records native invocations in the same trail as the TUI. Emit
+// only calls after this run's intake, so resuming never replays old tool rows.
+func agyExecRecordedToolChunks(conversationID string, userIdx int, home string) []llmtypes.StreamChunk {
+	if userIdx < 0 {
+		return nil
+	}
+	var chunks []llmtypes.StreamChunk
+	for _, call := range agyTurnToolCallsSince(conversationID, userIdx, home) {
+		chunks = append(chunks,
+			llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: call.Name, ToolArgs: call.Args, ToolCallID: call.CallID},
+			llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolName: call.Name, ToolCallID: call.CallID, ToolResult: call.ErrorText})
+	}
+	return chunks
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"google.golang.org/protobuf/encoding/protowire"
 	_ "modernc.org/sqlite"
 )
@@ -60,4 +61,17 @@ func TestAgyCompletedToolCallsExcludeTheNewestStep(t *testing.T) {
 	if calls := agyCompletedToolCallsSince("c1", 0, home); len(calls) != 2 {
 		t.Fatalf("both calls are finished once a step follows, got %+v", calls)
 	}
+
+	t.Run("headless resume excludes the earlier turn", func(t *testing.T) {
+		insert(4, agyStepUser, agyTestPayload(agyStepUser, 19, 2, "next task"))
+		insert(5, agyStepToolCall, agyToolStepPayload("call_3", "view_file", `{"path":"output/evidence.json"}`))
+		insert(6, agyStepAssistant, agyTestPayload(agyStepAssistant, 20, 1, "verified"))
+		chunks := agyExecRecordedToolChunks("c1", 4, home)
+		if len(chunks) != 2 || chunks[0].Type != llmtypes.StreamChunkTypeToolCallStart || chunks[1].Type != llmtypes.StreamChunkTypeToolCallEnd || chunks[0].ToolCallID != "call_3" || chunks[1].ToolCallID != "call_3" || chunks[0].ToolArgs != `{"path":"output/evidence.json"}` {
+			t.Fatalf("headless tool capture must retain this turn's call only: %+v", chunks)
+		}
+		if got := agyExecRecordedToolChunks("c1", -1, home); len(got) != 0 {
+			t.Fatal("missing intake must not replay all calls")
+		}
+	})
 }
