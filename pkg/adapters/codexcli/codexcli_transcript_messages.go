@@ -367,7 +367,7 @@ func normalizeCodexFinalAssistantText(raw string) string {
 	return strings.Join(parts, "\n")
 }
 
-func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtypes.MessageContent, string) {
+func readCodexTranscriptMessagesFile(path string, turnStart time.Time, includeInputs ...bool) ([]llmtypes.MessageContent, string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, ""
@@ -382,7 +382,10 @@ func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtyp
 		// shared
 		Type string `json:"type"`
 		// session_meta
-		CWD string `json:"cwd"`
+		CWD              string `json:"cwd"`
+		BaseInstructions struct {
+			Text string `json:"text"`
+		} `json:"base_instructions"`
 		// message
 		Role    string         `json:"role"`
 		Content []contentBlock `json:"content"`
@@ -412,6 +415,9 @@ func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtyp
 		}
 		if e.Type == "session_meta" && e.Payload.CWD != "" {
 			sessionCWD = e.Payload.CWD
+			if len(includeInputs) > 0 && includeInputs[0] && e.Payload.BaseInstructions.Text != "" {
+				out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: e.Payload.BaseInstructions.Text}}})
+			}
 		}
 		if !turnStart.IsZero() && e.Timestamp != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && ts.Before(turnStart) {
@@ -424,7 +430,7 @@ func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtyp
 
 		switch e.Payload.Type {
 		case "message":
-			if e.Payload.Role != "assistant" {
+			if e.Payload.Role != "assistant" && !(len(includeInputs) > 0 && includeInputs[0]) {
 				// skip user / developer / system rows; the outer
 				// conversation already carries the user prompt.
 				continue
@@ -433,7 +439,7 @@ func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtyp
 			for _, b := range e.Payload.Content {
 				// codex uses "output_text" for assistant content;
 				// "input_text" appears on user / developer rows.
-				if b.Type != "output_text" && b.Type != "text" {
+				if b.Type != "output_text" && b.Type != "text" && !(len(includeInputs) > 0 && includeInputs[0] && b.Type == "input_text") {
 					continue
 				}
 				if b.Text == "" {
@@ -444,10 +450,14 @@ func readCodexTranscriptMessagesFile(path string, turnStart time.Time) ([]llmtyp
 			if len(parts) == 0 {
 				continue
 			}
-			out = append(out, llmtypes.MessageContent{
-				Role:  llmtypes.ChatMessageTypeAI,
-				Parts: parts,
-			})
+			role := llmtypes.ChatMessageTypeAI
+			if e.Payload.Role == "user" {
+				role = llmtypes.ChatMessageTypeHuman
+			}
+			if e.Payload.Role == "system" || e.Payload.Role == "developer" {
+				role = llmtypes.ChatMessageTypeSystem
+			}
+			out = append(out, llmtypes.MessageContent{Role: role, Parts: parts})
 
 		case "function_call":
 			args := e.Payload.Arguments

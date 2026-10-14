@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -247,8 +248,10 @@ func museAttachTurnCost(gi *llmtypes.GenerationInfo, model string, usage *llmtyp
 // readMuseTranscriptMessages maps one run's committed prompts and assistant
 // texts to message content (file order). System rows, non-run envelopes,
 // and empty texts are skipped. ok=false only when the log is unreadable.
-func readMuseTranscriptMessages(logPath, runID string) ([]llmtypes.MessageContent, bool) {
+func readMuseTranscriptMessages(logPath, runID string, includeTools ...bool) ([]llmtypes.MessageContent, bool) {
 	var out []llmtypes.MessageContent
+	seen, ended := map[string]bool{}, map[string]bool{}
+	starts := map[string]time.Time{}
 	raw, err := os.ReadFile(logPath)
 	if err != nil {
 		return nil, false
@@ -296,6 +299,16 @@ func readMuseTranscriptMessages(logPath, runID string) ([]llmtypes.MessageConten
 				}
 			}
 			continue
+		}
+		if len(includeTools) > 0 && includeTools[0] {
+			for _, chunk := range museTranscriptLineToChunks(line, seen, ended, starts) {
+				if chunk.Type == llmtypes.StreamChunkTypeToolCallStart {
+					out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.ToolCall{ID: chunk.ToolCallID, Type: "function", FunctionCall: &llmtypes.FunctionCall{Name: chunk.ToolName, Arguments: chunk.ToolArgs}}}})
+				}
+				if chunk.Type == llmtypes.StreamChunkTypeToolCallEnd {
+					out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeTool, Parts: []llmtypes.ContentPart{llmtypes.ToolCallResponse{ToolCallID: chunk.ToolCallID, Content: chunk.ToolResult}}})
+				}
+			}
 		}
 		payload, _ := rec["payload"].(map[string]any)
 		if payload == nil || museLogString(payload, "kind") != "run" {

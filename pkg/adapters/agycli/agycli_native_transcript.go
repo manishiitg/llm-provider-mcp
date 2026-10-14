@@ -59,6 +59,10 @@ const (
 // a state mode=ro refuses to open; the reader copies to a temp file and
 // opens the copy instead. No file is ever created inside the user's config.
 func ReadNativeTranscript(nativeSessionID string, accountHome ...string) (NativeTranscript, bool, error) {
+	return readAgyNativeTranscript(nativeSessionID, false, accountHome...)
+}
+
+func readAgyNativeTranscript(nativeSessionID string, includeTools bool, accountHome ...string) (NativeTranscript, bool, error) {
 	id := strings.TrimSpace(nativeSessionID)
 	if id == "" || strings.ContainsAny(id, `/\`) {
 		return NativeTranscript{}, false, nil
@@ -90,7 +94,11 @@ func ReadNativeTranscript(nativeSessionID string, accountHome ...string) (Native
 		return NativeTranscript{}, false, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.QueryContext(context.Background(), `SELECT step_type, step_payload FROM steps ORDER BY idx`)
+	query := `SELECT step_type, step_payload, 0 FROM steps ORDER BY idx`
+	if includeTools {
+		query = `SELECT step_type, step_payload, status FROM steps ORDER BY idx`
+	}
+	rows, err := db.QueryContext(context.Background(), query)
 	if err != nil {
 		return NativeTranscript{}, false, nil
 	}
@@ -99,12 +107,25 @@ func ReadNativeTranscript(nativeSessionID string, accountHome ...string) (Native
 	var messages []llmtypes.MessageContent
 	sawSteps := false
 	for rows.Next() {
-		var stepType int
+		var stepType, status int
 		var payload []byte
-		if err := rows.Scan(&stepType, &payload); err != nil {
+		if err := rows.Scan(&stepType, &payload, &status); err != nil {
 			continue
 		}
 		sawSteps = true
+		if includeTools && stepType == agyStepToolCall {
+			if section, ok := agyProtoSubmessage(payload, 5); ok {
+				if call, ok := agyProtoSubmessage(section, 4); ok {
+					id, _ := agyProtoStringField(call, 1)
+					name, _ := agyProtoStringField(call, 2)
+					args, _ := agyProtoStringField(call, 3)
+					messages = append(messages, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeAI, Parts: []llmtypes.ContentPart{llmtypes.ToolCall{ID: id, Type: "function", FunctionCall: &llmtypes.FunctionCall{Name: name, Arguments: args}}}})
+					if status == 3 {
+						messages = append(messages, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeTool, Parts: []llmtypes.ContentPart{llmtypes.ToolCallResponse{ToolCallID: id, Name: name}}})
+					}
+				}
+			}
+		}
 		text, role, ok := agyTranscriptStepText(stepType, payload)
 		if !ok || strings.TrimSpace(text) == "" {
 			continue

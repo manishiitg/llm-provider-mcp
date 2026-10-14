@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -50,8 +51,11 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 		return nil
 	}
 	defer f.Close()
+	return parseClaudeTranscriptMessages(f, turnStart, false)
+}
 
-	scanner := bufio.NewScanner(f)
+func parseClaudeTranscriptMessages(reader io.Reader, turnStart time.Time, includeInputs bool) []llmtypes.MessageContent {
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
 	type ev struct {
@@ -65,6 +69,7 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 	}
 	type userContentBlock struct {
 		Type      string          `json:"type"`
+		Text      string          `json:"text"`
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
 	}
@@ -143,9 +148,16 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 			// outer conversation_history.
 			var blocks []userContentBlock
 			if err := json.Unmarshal(um.Content, &blocks); err != nil {
+				var text string
+				if includeInputs && json.Unmarshal(um.Content, &text) == nil && text != "" {
+					out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: text}}})
+				}
 				continue
 			}
 			for _, b := range blocks {
+				if includeInputs && b.Type == "text" && b.Text != "" {
+					out = append(out, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: b.Text}}})
+				}
 				if b.Type != "tool_result" {
 					continue
 				}

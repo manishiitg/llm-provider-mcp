@@ -477,7 +477,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 	if opts != nil && opts.StreamChan != nil {
 		opts.StreamChan <- llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: parsed.response}
 	}
-	gi := &llmtypes.GenerationInfo{}
+	gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"native_subagents": readAgyNativeSubagents(parsed.conversationID, agyTranscriptHome(opts))}}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "agy-cli",
 		Transport:       llmtypes.CodingProviderTransportStructured,

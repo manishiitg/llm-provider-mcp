@@ -70,8 +70,14 @@ type codexExecItem struct {
 	// web_search action ({"type":"search","query","queries"} or an opened
 	// page's {"type":"open_page","url"}) and, on item.completed, the result
 	// list ({"title","url","domain","snippet"}). See codexcli_web_search.go.
-	Action  json.RawMessage        `json:"action,omitempty"`
-	Results []codexWebSearchResult `json:"results,omitempty"`
+	Action            json.RawMessage        `json:"action,omitempty"`
+	Results           []codexWebSearchResult `json:"results,omitempty"`
+	Changes           json.RawMessage        `json:"changes,omitempty"`
+	NativeArguments   string                 `json:"-"`
+	SenderThreadID    string                 `json:"sender_thread_id,omitempty"`
+	ReceiverThreadIDs []string               `json:"receiver_thread_ids,omitempty"`
+	Prompt            string                 `json:"prompt,omitempty"`
+	AgentsStates      json.RawMessage        `json:"agents_states,omitempty"`
 }
 
 // isCodexToolItem reports whether an item type represents a real tool
@@ -82,7 +88,7 @@ type codexExecItem struct {
 // final agent_message still fires normally) but no tool-call signal ever
 // reached callers relying on the stream to know a search happened.
 func isCodexToolItem(itemType string) bool {
-	return itemType == "command_execution" || itemType == "mcp_tool_call" || itemType == "web_search"
+	return itemType == "command_execution" || itemType == "mcp_tool_call" || itemType == "web_search" || itemType == "file_change" || itemType == "collab_tool_call"
 }
 
 // codexToolItemLabel renders a human-readable label for a tool-call chunk.
@@ -113,12 +119,28 @@ func codexToolItemName(item *codexExecItem) string {
 	if item.Type == "web_search" {
 		return "web_search"
 	}
+	if item.Type == "file_change" {
+		return "apply_patch"
+	}
+	if item.Type == "collab_tool_call" {
+		return item.Tool
+	}
 	return ""
 }
 
 func codexToolItemArgs(item *codexExecItem) string {
 	if item == nil {
 		return ""
+	}
+	if item.Type == "file_change" {
+		if item.NativeArguments != "" {
+			return item.NativeArguments
+		}
+		return compactCodexJSON(item.Changes)
+	}
+	if item.Type == "collab_tool_call" {
+		raw, _ := json.Marshal(map[string]interface{}{"receiver_thread_ids": item.ReceiverThreadIDs, "prompt": item.Prompt})
+		return string(raw)
 	}
 	if item.Type == "mcp_tool_call" {
 		return compactCodexJSON(item.Arguments)
@@ -138,6 +160,13 @@ func codexToolItemArgs(item *codexExecItem) string {
 func codexToolItemResult(item *codexExecItem) string {
 	if item == nil {
 		return ""
+	}
+	if item.Type == "file_change" {
+		raw, _ := json.Marshal(map[string]interface{}{"status": item.Status, "changes": json.RawMessage(item.Changes)})
+		return string(raw)
+	}
+	if item.Type == "collab_tool_call" {
+		return compactCodexJSON(item.AgentsStates)
 	}
 	if item.Type == "command_execution" {
 		return item.AggregatedOutput
@@ -500,6 +529,16 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 				if event.Item == nil {
 					continue
 				}
+				if event.Item.Type == "file_change" {
+					messages, _ := readCodexTranscriptMessagesFile(findCodexRolloutForThread(threadID, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"]), turnStart)
+					for _, message := range messages {
+						for _, part := range message.Parts {
+							if call, ok := part.(llmtypes.ToolCall); ok && call.FunctionCall != nil && call.FunctionCall.Name == "apply_patch" {
+								event.Item.NativeArguments = call.FunctionCall.Arguments
+							}
+						}
+					}
+				}
 				switch {
 				case event.Item.Type == "agent_message":
 					if event.Item.Text != "" {
@@ -510,7 +549,10 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 						})
 					}
 				case isCodexToolItem(event.Item.Type):
-					pending := pendingToolCalls[event.Item.ID]
+					pending, hadStart := pendingToolCalls[event.Item.ID]
+					if !hadStart {
+						emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolName: codexToolItemName(event.Item), ToolCallID: event.Item.ID, ToolArgs: codexToolItemArgs(event.Item)})
+					}
 					delete(pendingToolCalls, event.Item.ID)
 					name := codexToolItemName(event.Item)
 					if name == "" {
@@ -529,6 +571,12 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 						ToolResult:   codexToolItemResult(event.Item),
 						ToolDuration: toolclock.Elapsed(toolStartedAt, event.Item.ID),
 					})
+					if event.Item.Type == "collab_tool_call" {
+						children := readCodexNativeSubagents(threadID, workingDir, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"])
+						if len(children) > 0 {
+							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeSubagentTranscript, Metadata: map[string]interface{}{"native_subagents": children}})
+						}
+					}
 				}
 			case "turn.completed":
 				// End-of-turn teardown per the structured-CLI shutdown contract
@@ -615,6 +663,9 @@ func (c *CodexCLIAdapter) generateContentStructured(ctx context.Context, message
 		"codex_thread_id":            threadID,
 		"codex_model":                modelToUse,
 		"context_window_usage_known": false,
+	}
+	if children := readCodexNativeSubagents(threadID, workingDir, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"]); len(children) > 0 {
+		additional["native_subagents"] = children
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZero(totalUsage.InputTokens),

@@ -25,13 +25,14 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // assistant events (message.content text/tool_use blocks), then a terminal
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
-	Type      string               `json:"type"`
-	Subtype   string               `json:"subtype,omitempty"`
-	SessionID string               `json:"session_id,omitempty"`
-	Message   *claudeStreamMessage `json:"message,omitempty"`
-	Result    string               `json:"result,omitempty"`
-	IsError   bool                 `json:"is_error,omitempty"`
-	Usage     *claudeStreamUsage   `json:"usage,omitempty"`
+	ParentToolUseID string               `json:"parent_tool_use_id,omitempty"`
+	Type            string               `json:"type"`
+	Subtype         string               `json:"subtype,omitempty"`
+	SessionID       string               `json:"session_id,omitempty"`
+	Message         *claudeStreamMessage `json:"message,omitempty"`
+	Result          string               `json:"result,omitempty"`
+	IsError         bool                 `json:"is_error,omitempty"`
+	Usage           *claudeStreamUsage   `json:"usage,omitempty"`
 	// system/status: "compacting" while compaction runs, null afterwards
 	// with compact_result. system/compact_boundary: compact_metadata.
 	Status          *string                `json:"status,omitempty"`
@@ -329,6 +330,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if jErr := json.Unmarshal([]byte(line), &ev); jErr != nil {
 				continue
 			}
+			if ev.ParentToolUseID != "" {
+				continue
+			}
 			if ev.SessionID != "" {
 				sessionID = ev.SessionID
 			}
@@ -416,6 +420,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 							ToolResult:   result,
 							ToolDuration: toolclock.Since(pending.startedAt),
 						})
+						if pending.name == "Agent" || pending.name == "Task" {
+							children := readClaudeNativeSubagents(sessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"])
+							if len(children) > 0 {
+								emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeSubagentTranscript, Metadata: map[string]interface{}{"native_subagents": children}})
+							}
+						}
 					}
 				}
 			case "result":
@@ -482,6 +492,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// the turn, for surfaces that show the conversation rather than a result.
 	if turnText := strings.TrimSpace(finalText.String()); turnText != "" && turnText != content {
 		additional["assistant_turn_text"] = turnText
+	}
+	if children := readClaudeNativeSubagents(sessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"]); len(children) > 0 {
+		additional["native_subagents"] = children
 	}
 	genInfo := &llmtypes.GenerationInfo{
 		InputTokens:  intPtrIfNonZeroClaude(totalUsage.InputTokens),

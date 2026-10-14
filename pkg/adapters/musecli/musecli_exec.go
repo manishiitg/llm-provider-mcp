@@ -321,7 +321,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("muse exec returned no text (session %s, %d unparsed lines, stderr: %s)", sessionID, unparsed, museStderrTail(stderr.String()))
 	}
 	turnUsage, hasTurnUsage := museUsageForTurn(sessionID, commandID)
-	gi := &llmtypes.GenerationInfo{}
+	gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"native_subagents": readMuseNativeSubagents(sessionID)}}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "muse-cli",
 		Transport:       llmtypes.CodingProviderTransportStructured,
