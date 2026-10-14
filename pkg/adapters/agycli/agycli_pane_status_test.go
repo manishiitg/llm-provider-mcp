@@ -3,6 +3,7 @@ package agycli
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAgyPaneStatusIgnoresOldAnswerText(t *testing.T) {
@@ -23,5 +24,23 @@ func TestAgyPaneStatusIgnoresOldAnswerText(t *testing.T) {
 	}
 	if PaneReadyForInput(blocked) {
 		t.Fatal("approval pane appeared ready")
+	}
+}
+
+// PLAT-861-116: the folded prompt was pasted while AGY still worked on a live
+// steer; AGY queued it and recorded it 24 minutes later. A busy pane keeps the
+// intake wait going; an idle pane (or the answer ceiling) still fails it.
+func TestAgyIntakeKeepsWaitingWhileAgyWorksOnEarlierInput(t *testing.T) {
+	started := time.Now().Add(-5 * time.Minute)
+	busy := strings.Repeat("old output\n", 30) + "esc to cancel\n> "
+	idle := strings.Repeat("old output\n", 30) + "? for shortcuts\n> "
+	if !agyIntakeShouldKeepWaiting(busy, started, time.Now()) {
+		t.Fatal("busy pane must keep waiting for natively queued input")
+	}
+	if agyIntakeShouldKeepWaiting(idle, started, time.Now()) {
+		t.Fatal("idle pane without the user step must fail the intake")
+	}
+	if agyIntakeShouldKeepWaiting(busy, time.Now().Add(-agySidecarTurnTimeout-time.Second), time.Now()) {
+		t.Fatal("wait must stay bounded by the answer ceiling")
 	}
 }

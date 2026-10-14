@@ -286,13 +286,20 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if strings.TrimSpace(prompt) == "" {
 		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
 	}
+	// Live steers (sendAgyInteractiveMessage) hold sendMu around baseline,
+	// paste and Enter; the folded turn prompt must too, or the two can
+	// interleave in the one input box and share a baseline.
+	session.sendMu.Lock()
 	idxBefore := agyConversationMaxIdx(session.getConversationID(), session.transcriptHome)
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
+		session.sendMu.Unlock()
 		return "", llmtypes.Usage{}, nil, nil, err
 	}
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
+		session.sendMu.Unlock()
 		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("submit sidecar prompt: %w", err)
 	}
+	session.sendMu.Unlock()
 	// The pane can echo a draft before Enter, so only the conversation's
 	// matching user step proves that this prompt was taken in.
 	userIdx, err := agyWaitTurnIntake(ctx, session, idxBefore, prompt)
@@ -446,8 +453,23 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accou
 	return record, rows.Err()
 }
 
+// agyIntakeShouldKeepWaiting reports whether an intake wait that passed its
+// 90 s window must continue. When the pane still shows AGY working on earlier
+// input, AGY's own input queue holds the pasted prompt and records it as a user
+// step only after that work ends (observed: a folded prompt landed 24 minutes
+// after its paste). That is a late delivery, not a lost one, so failing it
+// invites a Resend and a real duplicate. The wait stays bounded by the same
+// ceiling as the answer wait; once the pane is idle the usual failure applies.
+func agyIntakeShouldKeepWaiting(pane string, started, now time.Time) bool {
+	if now.Sub(started) >= agySidecarTurnTimeout {
+		return false
+	}
+	return strings.Contains(agyPaneStatusRows(pane), agyPaneBusyMarker)
+}
+
 func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinceIdx int, prompt string) (int, error) {
-	deadline := time.Now().Add(90 * time.Second)
+	started := time.Now()
+	deadline := started.Add(90 * time.Second)
 	for {
 		if err := ctx.Err(); err != nil {
 			return -1, err
@@ -470,7 +492,7 @@ func agyWaitTurnIntake(ctx context.Context, session *agyInteractiveSession, sinc
 		if err == nil && record.userIdx >= 0 {
 			return record.userIdx, nil
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) && !agyIntakeShouldKeepWaiting(pane, started, time.Now()) {
 			readError := "none"
 			if err != nil {
 				readError = err.Error()
