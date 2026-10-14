@@ -884,32 +884,59 @@ func agyConversationMaxIdx(conversationID string, accountHome ...string) int {
 // turn shape; tool steps carry no usage section.
 func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...string) llmtypes.Usage {
 	var usage llmtypes.Usage
+	var thinking int
+	last := -1
+	for _, step := range agyUsageSteps(conversationID, sinceIdx, accountHome...) {
+		usage.InputTokens += step.input
+		usage.OutputTokens += step.output
+		thinking += step.thinking
+		last = step.idx
+	}
+	if last >= 0 {
+		agyMarkUsageReported(conversationID, last) // the Run reports these steps: the retained-turn reader must not repeat them
+	}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	if thinking > 0 {
+		usage.ThoughtsTokens = &thinking
+	}
+	return usage
+}
+
+// agyStepUsage is the usage one finished assistant step reports (field 5.9 of the step payload).
+type agyStepUsage struct {
+	idx, input, output, thinking int
+}
+
+// agyUsageSteps reads, from a snapshot copy of the conversation database, the usage of every assistant (type-15) step
+// after sinceIdx, oldest first. Tool steps carry no usage.
+func agyUsageSteps(conversationID string, sinceIdx int, accountHome ...string) []agyStepUsage {
 	if strings.TrimSpace(conversationID) == "" {
-		return usage
+		return nil
 	}
 	home, err := agyHome(accountHome...)
 	if err != nil || home == "" {
-		return usage
+		return nil
 	}
 	tmpPath, cleanup, err := agyCopyDBFile(filepath.Join(home, ".gemini", "antigravity-cli", "conversations", conversationID+".db"))
 	if err != nil {
-		return usage
+		return nil
 	}
 	defer cleanup()
 	db, err := sql.Open("sqlite", "file:"+tmpPath)
 	if err != nil {
-		return usage
+		return nil
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`SELECT step_payload FROM steps WHERE step_type = %d AND idx > ? ORDER BY idx`, agyStepAssistant), sinceIdx)
+	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`SELECT idx, step_payload FROM steps WHERE step_type = %d AND idx > ? ORDER BY idx`, agyStepAssistant), sinceIdx)
 	if err != nil {
-		return usage
+		return nil
 	}
 	defer func() { _ = rows.Close() }()
-	var thinking int
+	var out []agyStepUsage
 	for rows.Next() {
+		var idx int
 		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
+		if err := rows.Scan(&idx, &payload); err != nil {
 			continue
 		}
 		meta, ok := agyProtoSubmessage(payload, 5)
@@ -923,15 +950,9 @@ func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...strin
 		input, _ := agyProtoVarintField(usection, 2)
 		output, _ := agyProtoVarintField(usection, 3)
 		think, _ := agyProtoVarintField(usection, 9)
-		usage.InputTokens += input
-		usage.OutputTokens += output
-		thinking += think
+		out = append(out, agyStepUsage{idx: idx, input: input, output: output, thinking: think})
 	}
-	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	if thinking > 0 {
-		usage.ThoughtsTokens = &thinking
-	}
-	return usage
+	return out
 }
 
 // agyStepExecutorError is the step AGY writes when its agent executor gives up

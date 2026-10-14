@@ -85,6 +85,10 @@ type musePersistentSession struct {
 	// only accepts assistant commits after this cursor, so an older completed
 	// reply cannot settle a newly submitted follow-up.
 	retainedBaselineSequence int64
+	// usageFloorSequence is the last durable event that existed when the transcript was first bound in this process:
+	// the retained-turn usage reader only considers runs after it, so a restart never re-reports earlier runs.
+	usageFloorSequence int64
+	usageFloorSet      bool
 	// pendingDurable holds one pre-send snapshot per recent live-input
 	// send so the transcript arbiter and AwaitMuseInputDurable scope
 	// their match above the baseline that send could have produced.
@@ -113,6 +117,10 @@ func museRecordPersistentTranscript(owner, tmuxName, nativeSessionID, logPath st
 	}
 	entry.nativeSessionID = strings.TrimSpace(nativeSessionID)
 	entry.logPath = strings.TrimSpace(logPath)
+	if !entry.usageFloorSet && entry.logPath != "" {
+		entry.usageFloorSet = true
+		entry.usageFloorSequence = museTranscriptMaxSequence(entry.logPath)
+	}
 }
 
 var musePersistentPool = struct {

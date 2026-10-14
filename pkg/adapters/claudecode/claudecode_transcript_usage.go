@@ -29,7 +29,7 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 	if !isClaudeTranscriptSessionID(sessionID) {
 		return nil, ""
 	}
-	f, _, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
+	f, transcriptPath, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
 	if err != nil {
 		return nil, ""
 	}
@@ -78,6 +78,7 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 				continue
 			}
 			seenMessageID[dedupKey] = struct{}{}
+			claudeMarkUsageReported(transcriptPath, dedupKey) // the Run reports this call: the retained-turn reader must not repeat it
 		}
 		input += ev.Message.Usage.InputTokens
 		output += ev.Message.Usage.OutputTokens
@@ -91,6 +92,13 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 		return nil, latestModel
 	}
 
+	gi := claudeGenerationInfo(input, output, cacheCreate, cacheRead)
+	return gi, latestModel
+}
+
+// claudeGenerationInfo maps Anthropic usage components onto GenerationInfo the way every Claude transcript reader
+// must, so a normal turn and a retained turn price identically.
+func claudeGenerationInfo(input, output, cacheCreate, cacheRead int) *llmtypes.GenerationInfo {
 	// GenerationInfo's cross-provider contract defines PromptTokens as all
 	// input consumed by the model, including the cache-served subset. Keep the
 	// raw Anthropic components in Additional below. Returning only fresh/cache-
@@ -130,7 +138,7 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 			gi.Additional["cache_creation_input_tokens"] = cacheCreate
 		}
 	}
-	return gi, latestModel
+	return gi
 }
 
 func intRef(v int) *int { return &v }

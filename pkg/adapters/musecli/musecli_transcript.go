@@ -161,6 +161,9 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 		}
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	if matched && runID != "" {
+		museMarkUsageReported(logPath, runID) // the Run reports this one: the retained-turn reader must not repeat it
+	}
 	return usage, matched
 }
 

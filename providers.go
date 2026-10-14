@@ -411,6 +411,28 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 	}
 }
 
+// ReadCodingAgentRetainedTurnUsage returns the usage a coding CLI reported in its own transcript for model runs nobody
+// has reported yet, for turns typed into an already-running terminal (they never pass through GenerateContent). Each
+// run, message or step is returned once, with the CLI's own id, so a caller can record it once. turnStart bounds the
+// read for the CLIs that timestamp their records; modelID prices Muse. Cursor's transcript carries no usage, so it
+// returns nothing (callers must not guess a number). Read-only apart from remembering what it returned.
+func ReadCodingAgentRetainedTurnUsage(provider Provider, ownerSessionID, modelID string, turnStart time.Time) []llmtypes.RetainedTurnUsage {
+	switch Provider(strings.ToLower(strings.TrimSpace(string(provider)))) {
+	case ProviderClaudeCode:
+		return claudecodeadapter.ReadRetainedTurnUsage(ownerSessionID, turnStart)
+	case ProviderCodexCLI:
+		return codexcli.ReadRetainedTurnUsage(ownerSessionID, turnStart)
+	case ProviderPiCLI:
+		return picli.ReadRetainedTurnUsage(ownerSessionID, turnStart)
+	case ProviderMuseCLI:
+		return musecli.ReadRetainedTurnUsage(ownerSessionID, modelID)
+	case ProviderAgyCLI:
+		return agycli.ReadRetainedTurnUsage(ownerSessionID, turnStart)
+	default:
+		return nil
+	}
+}
+
 // ReadCodingAgentRetainedTurnStructuredProgressMessages includes native tools
 // and thinking as well as narration, using each adapter's retained cursor.
 func ReadCodingAgentRetainedTurnStructuredProgressMessages(provider Provider, ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {

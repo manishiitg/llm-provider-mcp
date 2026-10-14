@@ -168,6 +168,7 @@ func readPiTranscriptSummaryFile(path string, turnStart time.Time) *piTranscript
 			continue
 		}
 		summary.AssistantUsageCount++
+		piMarkUsageReported(path, piUsageKey(ev))
 		usage := ev.Message.Usage
 		summary.InputTokens += usage.Input
 		summary.OutputTokens += usage.Output

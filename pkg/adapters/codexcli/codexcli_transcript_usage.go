@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -94,6 +95,53 @@ func readCodexTranscriptUsage(turnStart time.Time, expectedWorkingDir string, ac
 	return nil, "", ""
 }
 
+// tokenSnapshot is one usage block of a Codex token_count event.
+type tokenSnapshot struct {
+	InputTokens           int `json:"input_tokens"`
+	CachedInputTokens     int `json:"cached_input_tokens"`
+	OutputTokens          int `json:"output_tokens"`
+	ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+	TotalTokens           int `json:"total_tokens"`
+}
+
+func codexSnapshotDelta(a, b tokenSnapshot) tokenSnapshot {
+	sub := func(x, y int) int {
+		if x < y {
+			return 0
+		}
+		return x - y
+	}
+	return tokenSnapshot{
+		InputTokens:           sub(a.InputTokens, b.InputTokens),
+		CachedInputTokens:     sub(a.CachedInputTokens, b.CachedInputTokens),
+		OutputTokens:          sub(a.OutputTokens, b.OutputTokens),
+		ReasoningOutputTokens: sub(a.ReasoningOutputTokens, b.ReasoningOutputTokens),
+		TotalTokens:           sub(a.TotalTokens, b.TotalTokens),
+	}
+}
+
+// codexReportedTotals remembers, per rollout file, the cumulative total usage already handed to the host (by the
+// bounded Run or by a retained-turn read), so no model request is reported twice.
+var codexReportedTotals = struct {
+	sync.Mutex
+	m map[string]tokenSnapshot
+}{m: map[string]tokenSnapshot{}}
+
+func codexReportedTotal(path string) (tokenSnapshot, bool) {
+	codexReportedTotals.Lock()
+	defer codexReportedTotals.Unlock()
+	v, ok := codexReportedTotals.m[path]
+	return v, ok
+}
+
+func codexMarkReportedTotal(path string, total tokenSnapshot) {
+	codexReportedTotals.Lock()
+	defer codexReportedTotals.Unlock()
+	if old, ok := codexReportedTotals.m[path]; !ok || total.TotalTokens > old.TotalTokens {
+		codexReportedTotals.m[path] = total
+	}
+}
+
 func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.GenerationInfo, string, string, string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -102,13 +150,6 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	defer f.Close()
 	threadID := codexThreadIDFromRolloutPath(path)
 
-	type tokenSnapshot struct {
-		InputTokens           int `json:"input_tokens"`
-		CachedInputTokens     int `json:"cached_input_tokens"`
-		OutputTokens          int `json:"output_tokens"`
-		ReasoningOutputTokens int `json:"reasoning_output_tokens"`
-		TotalTokens           int `json:"total_tokens"`
-	}
 	type eventPayload struct {
 		Type  string `json:"type"`
 		ID    string `json:"id"`
@@ -119,6 +160,9 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		Effort string `json:"effort"`
 		Info   struct {
 			LastTokenUsage tokenSnapshot `json:"last_token_usage"`
+			// TotalTokenUsage is cumulative over the whole rollout; the difference between two of them is the usage
+			// of every model request between, which is what a turn spent (last_token_usage is only one request).
+			TotalTokenUsage tokenSnapshot `json:"total_token_usage"`
 			// ModelContextWindow is the model's max context size, reported on
 			// token_count events — the denominator for context-fill percentage.
 			ModelContextWindow int `json:"model_context_window"`
@@ -134,6 +178,8 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	}
 
 	var latest *tokenSnapshot
+	var baselineTotal, finalTotal tokenSnapshot
+	var haveFinalTotal bool
 	var latestRateLimits *codexRateLimits
 	var latestModel string
 	var latestEffort string
@@ -154,6 +200,9 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		}
 		if !turnStart.IsZero() && ev.Timestamp != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, ev.Timestamp); err == nil && ts.Before(turnStart) {
+				if ev.Type == "event_msg" && ev.Payload.Type == "token_count" && ev.Payload.Info.TotalTokenUsage.TotalTokens > 0 {
+					baselineTotal = ev.Payload.Info.TotalTokenUsage // the running total just before this turn started
+				}
 				continue
 			}
 		}
@@ -168,6 +217,9 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		case ev.Type == "event_msg" && ev.Payload.Type == "token_count":
 			snap := ev.Payload.Info.LastTokenUsage
 			latest = &snap
+			if ev.Payload.Info.TotalTokenUsage.TotalTokens > 0 {
+				finalTotal, haveFinalTotal = ev.Payload.Info.TotalTokenUsage, true
+			}
 			if ev.Payload.Info.ModelContextWindow > 0 {
 				latestContextWindow = ev.Payload.Info.ModelContextWindow
 			}
@@ -179,6 +231,21 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 	if latest == nil || (latest.InputTokens+latest.OutputTokens+latest.CachedInputTokens) == 0 {
 		return nil, latestModel, threadID, sessionCWD
 	}
+	// A turn with tools makes several model requests and Codex writes one token_count per request: last_token_usage
+	// is only the last of them. What the turn spent is the growth of the cumulative total over the turn (never
+	// below that last request, and never repeating what an earlier read of this rollout already reported).
+	spent := *latest
+	if haveFinalTotal && !turnStart.IsZero() { // a read of the whole file (no turn) is a status read, not accounting
+		if reported, ok := codexReportedTotal(path); ok && reported.TotalTokens > baselineTotal.TotalTokens {
+			baselineTotal = reported
+		}
+		if delta := codexSnapshotDelta(finalTotal, baselineTotal); delta.InputTokens+delta.OutputTokens > 0 && delta.TotalTokens >= latest.TotalTokens {
+			spent = delta
+		}
+		codexMarkReportedTotal(path, finalTotal)
+	}
+	latestForContext := latest
+	latest = &spent
 
 	// codex reports `input_tokens` as the total prompt-side count
 	// (uncached + cached). Surface uncached + cached separately so cost
@@ -228,11 +295,11 @@ func readCodexTranscriptUsageFile(path string, turnStart time.Time) (*llmtypes.G
 		gi.Additional[codexMaxUsedPercentKey] = used
 	}
 	// The numbers behind the "ctx N%" segment, for a meter.
-	gi.Additional[llmtypes.ContextUsedTokensMetaKey] = latest.InputTokens
+	gi.Additional[llmtypes.ContextUsedTokensMetaKey] = latestForContext.InputTokens
 	if latestContextWindow > 0 {
 		gi.Additional[llmtypes.ContextWindowTokensMetaKey] = latestContextWindow
 	}
-	if extras := codexStatusExtras(latestRateLimits, latest.InputTokens, latestContextWindow, latestEffort, time.Now()); len(extras) > 0 {
+	if extras := codexStatusExtras(latestRateLimits, latestForContext.InputTokens, latestContextWindow, latestEffort, time.Now()); len(extras) > 0 {
 		if gi.Additional == nil {
 			gi.Additional = map[string]interface{}{}
 		}
