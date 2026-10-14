@@ -92,11 +92,26 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 			latestModel = m
 		}
 	}
+	// Native subagents this turn started made model calls in their own transcripts; they are part of the turn's
+	// cost (read only for accounting, like the parent calls above).
+	subagents := 0
+	if !turnStart.IsZero() {
+		for _, sub := range claudeSubagentCalls(transcriptPath, turnStart) {
+			input += sub.Input
+			output += sub.Output
+			cacheCreate += sub.CacheCreate
+			cacheRead += sub.CacheRead
+			subagents++
+		}
+	}
 	if input+output+cacheCreate+cacheRead == 0 {
 		return nil, latestModel
 	}
 
 	gi := claudeGenerationInfo(input, output, cacheCreate, cacheRead)
+	if subagents > 0 {
+		gi.Additional["usage_rate_assumed"] = "parent" // one event per turn: subagent calls are priced at the turn's model
+	}
 	return gi, latestModel
 }
 

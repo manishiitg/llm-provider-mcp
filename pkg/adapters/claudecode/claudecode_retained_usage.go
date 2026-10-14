@@ -119,6 +119,20 @@ func ReadRetainedTurnUsage(ownerSessionID string, turnStart time.Time) []llmtype
 		log.Printf("[RETAINED_USAGE] claude-code owner=%s message=%s input=%d output=%d cache_read=%d reported", ownerSessionID, id, c.input+c.cacheCreate+c.cacheRead, c.output, c.cacheRead)
 		out = append(out, item)
 	}
+	for _, sub := range claudeSubagentCalls(path, turnStart) {
+		info := claudeGenerationInfo(sub.Input, sub.Output, sub.CacheCreate, sub.CacheRead)
+		usage := llmtypes.Usage{InputTokens: sub.Input + sub.CacheCreate + sub.CacheRead, OutputTokens: sub.Output}
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		if sub.CacheRead > 0 {
+			usage.CacheTokens = intRef(sub.CacheRead)
+		}
+		item := llmtypes.RetainedTurnUsage{ID: "subagent-" + sub.AgentID + "-" + sub.ID, Usage: usage, Info: *info}
+		item.Info.Additional["subagent_id"] = sub.AgentID
+		if sub.Model != "" && sub.Model != "<synthetic>" {
+			item.Info.Additional["claude_code_model"] = sub.Model
+		}
+		out = append(out, item)
+	}
 	if len(out) == 0 {
 		log.Printf("[RETAINED_USAGE] claude-code owner=%s no new model-call usage since %s (calls_seen=%d)", ownerSessionID, turnStart.UTC().Format(time.RFC3339), len(calls))
 	}
