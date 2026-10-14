@@ -6,15 +6,18 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxlaunch"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -357,7 +360,11 @@ type agyTurnRecord struct {
 	lastStatus     int
 	answer         string
 	finalAnswer    string
-	subagents      map[string]bool // native child id -> completion notification received
+	// executorError is the text of a finished AGY error step (type 17,
+	// "Agent execution terminated due to error ..."): AGY itself ended the
+	// turn, for example on an upstream 500. Empty when there is none.
+	executorError string
+	subagents     map[string]bool // native child id -> completion notification received
 	// compactions are the finished context compactions (CHECKPOINT steps
 	// that are not intent-only) in idx order.
 	compactions []llmtypes.ContextCompaction
@@ -438,6 +445,9 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accou
 			} else if compaction, ok := agyCheckpointCompaction(conversationID, idx, payload); ok {
 				record.compactions = append(record.compactions, compaction)
 			}
+		}
+		if stepType == agyStepExecutorError && status == agyStepStatusDone {
+			record.executorError = agyExecutorErrorText(payload)
 		}
 		if stepType == agyStepAssistant {
 			record.finalAnswer = ""
@@ -532,6 +542,9 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
 		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "", session.transcriptHome)
+		if err == nil && agyTurnEndedByExecutorError(record) {
+			return agyExecutorTurnError(record.executorError)
+		}
 		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" && !agyPendingNativeSubagents(record, 0) {
 			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
 				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
@@ -914,6 +927,57 @@ func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...strin
 		usage.ThoughtsTokens = &thinking
 	}
 	return usage
+}
+
+// agyStepExecutorError is the step AGY writes when its agent executor gives up
+// on a turn ("Agent execution terminated due to error. agent executor error:
+// generating and executing: Error 500 ..."). Observed live 2026-10-14: the turn
+// stopped there, no assistant step followed, and the app waited ~10 minutes
+// before a no-progress cancel.
+const agyStepExecutorError = 17
+
+// agyExecutorErrorPrefix starts the text of the error a turn ended by AGY returns.
+const agyExecutorErrorPrefix = "Antigravity ended the turn: "
+
+var agyPrintableRun = regexp.MustCompile(`[\x20-\x7e]{12,}`)
+
+// agyExecutorErrorText is the readable error in an error step's payload (a
+// protobuf): the first printable run that mentions an error, without the Go
+// stack trace after it.
+func agyExecutorErrorText(payload []byte) string {
+	for _, run := range agyPrintableRun.FindAll(payload, -1) {
+		text := string(run)
+		if !strings.Contains(strings.ToLower(text), "error") {
+			continue
+		}
+		for _, cut := range []string{"(1) attached stack trace", " -- stack trace"} {
+			if i := strings.Index(text, cut); i >= 0 {
+				text = text[:i]
+			}
+		}
+		text = strings.TrimSpace(text)
+		if len(text) > 500 {
+			text = text[:500]
+		}
+		if text != "" {
+			return text
+		}
+	}
+	return "the agent executor reported an error"
+}
+
+// agyTurnEndedByExecutorError reports whether the turn's last recorded step is
+// a finished AGY error step: AGY ended the turn and nothing followed it.
+func agyTurnEndedByExecutorError(record agyTurnRecord) bool {
+	return record.executorError != "" && record.lastType == agyStepExecutorError && record.lastStatus == agyStepStatusDone
+}
+
+// agyExecutorTurnError is the failure of a turn AGY itself ended. It is a
+// provider-side server error (not auth, not a timeout), and its text starts with
+// agyExecutorErrorPrefix so the caller can recognise it and never replay the
+// prompt: tools may already have run.
+func agyExecutorTurnError(text string) error {
+	return &llmerrors.Error{Kind: llmerrors.KindServerError, Provider: "agy-cli", Err: errors.New(agyExecutorErrorPrefix + text)}
 }
 
 // agyStepCheckpoint is CORTEX_STEP_TYPE_CHECKPOINT; agyStepStatusDone is a
