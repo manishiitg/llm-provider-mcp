@@ -23,7 +23,8 @@ func TestClassifyKinds(t *testing.T) {
 		// Quota exhaustion (must win over rate-limit patterns in the same message)
 		{"gemini daily quota", errors.New("googleapi: Error 429: Quota exceeded for metric generate_requests_per_model_per_day"), KindQuotaExhausted},
 		{"openai quota", errors.New("429: You exceeded your current quota, please check your plan and billing details"), KindQuotaExhausted},
-		{"claude login is not billing quota", errors.New("failed to clear stale prompt; latest pane tail: Select login method: 1. Claude account with subscription 2. Anthropic Console account · API usage billing"), KindAuth},
+		{"claude historical login is not current auth", errors.New("failed to clear stale prompt; latest pane tail: Select login method: 1. Claude account with subscription 2. Anthropic Console account · API usage billing"), KindUnknown},
+		{"claude current login is not billing quota", errors.New("Select login method: 1. Claude account with subscription 2. Anthropic Console account · API usage billing"), KindAuth},
 		{"claude pane billing text is not quota", errors.New("failed to clear stale prompt; latest pane tail: API usage billing"), KindUnknown},
 		{"claude code usage", errors.New("you've hit your usage limit, resets at 3pm"), KindQuotaExhausted},
 		{"muse usage", errors.New("Usage limit reached · /upgrade; wait for usage to reset at Sep 14 at 5:30 AM"), KindQuotaExhausted},
@@ -116,6 +117,31 @@ func TestClassifyIgnoresCapturedPaneConversation(t *testing.T) {
 	}
 	if !strings.Contains(classified.Error(), "latest pane:") {
 		t.Fatal("classification must retain the captured pane in the surfaced diagnostic")
+	}
+}
+
+func TestClassifyAGYTimeoutIgnoresHistoricalPane(t *testing.T) {
+	for _, marker := range []string{"pane tail:", "latest pane tail:", "latest pane:", "AGY pane tail:"} {
+		t.Run(marker, func(t *testing.T) {
+			pane := marker + "\nstatus code: 403 PERMISSION_DENIED\nSelect login method: Claude account with subscription"
+			for _, err := range []error{
+				errors.New("sidecar prompt timed out after 90s; " + pane),
+				fmt.Errorf("sidecar prompt has no matching user step after 90s (conversation %q, read error none); %s", "test-conversation", pane),
+				errors.New("sidecar turn has no settled recorded answer within 15m0s (read error none); " + pane),
+			} {
+				classified := Classify("agy-cli", "test-model", err)
+				var typed *Error
+				if !errors.As(classified, &typed) || typed.Kind != KindTimeout || typed.Status != 0 {
+					t.Fatalf("classification = %+v, want timeout without historical HTTP status", classified)
+				}
+				if !errors.Is(classified, err) || !strings.Contains(classified.Error(), pane) {
+					t.Fatal("classification must preserve the original error and historical pane for diagnosis")
+				}
+				if errors.Is(classified, context.DeadlineExceeded) || errors.Is(classified, context.Canceled) {
+					t.Fatal("a sidecar timeout must not carry caller cancellation semantics")
+				}
+			}
+		})
 	}
 }
 

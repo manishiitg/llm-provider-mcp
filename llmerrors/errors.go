@@ -149,7 +149,7 @@ func Classify(provider, model string, err error) error {
 		Kind:     classifyKind(err),
 		Provider: provider,
 		Model:    model,
-		Status:   extractStatusCode(err.Error()),
+		Status:   extractStatusCode(diagnosticPrefix(err.Error())),
 		Err:      err,
 	}
 }
@@ -180,6 +180,19 @@ func containsAny(msg string, patterns ...string) bool {
 	return false
 }
 
+// diagnosticPrefix excludes captured conversation text from error metadata.
+// Keep the original error intact so logs still carry the diagnostic pane.
+func diagnosticPrefix(msg string) string {
+	lower := strings.ToLower(msg)
+	end := len(msg)
+	for _, marker := range []string{"pane tail:", "latest pane:"} {
+		if pane := strings.Index(lower, marker); pane >= 0 && pane < end {
+			end = pane
+		}
+	}
+	return msg[:end]
+}
+
 // classifyKind applies ordered heuristics. Order matters: cancellation first
 // (its text can look like anything), then permanent quota (its text often
 // also matches rate-limit patterns), then the rest.
@@ -191,7 +204,7 @@ func classifyKind(err error) Kind {
 		return KindTimeout
 	}
 
-	msg := strings.ToLower(err.Error())
+	msg := strings.ToLower(diagnosticPrefix(err.Error()))
 	// Interactive coding-agent adapters include a captured terminal pane to
 	// make failures diagnosable. That pane is user/model conversation, not
 	// error metadata: words such as "EOF", "rate limit", or "unauthorized"
@@ -200,12 +213,6 @@ func classifyKind(err error) Kind {
 	// returned error for logs and support.
 	if strings.Contains(msg, "select login method:") && strings.Contains(msg, "claude account with subscription") {
 		return KindAuth
-	}
-	if pane := strings.Index(msg, "latest pane tail:"); pane >= 0 {
-		msg = msg[:pane]
-	}
-	if pane := strings.Index(msg, "latest pane:"); pane >= 0 {
-		msg = msg[:pane]
 	}
 	status := extractStatusCode(msg)
 
@@ -282,7 +289,11 @@ func classifyKind(err error) Kind {
 		return KindNetwork
 	}
 
-	if containsAny(msg, "deadline exceeded", "timeout", "timed out") {
+	if containsAny(msg,
+		"deadline exceeded", "timeout", "timed out",
+		"sidecar prompt has no matching user step after",
+		"sidecar turn has no settled recorded answer within",
+	) {
 		return KindTimeout
 	}
 
