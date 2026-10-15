@@ -1,7 +1,10 @@
 package codexcli
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +31,13 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 	}
 	path := filepath.Join(home, "auth.json")
 	marker := path + ".agentworks"
+	// The login may be LINKED in from an account's own home (a shared or a personal connection). It belongs to that
+	// account: writing through the link would replace its key with this session's, for everyone using the account
+	// (Excellence 2026-10-15). A linked login is never written, replaced or removed here.
+	if reason := codexAuthLinkedReason(home, path); reason != "" {
+		log.Printf("[CODEX_AUTH] skipped_linked home_hash=%s reason=%s", codexAuthPathHash(home), reason)
+		return nil
+	}
 	if key == "" {
 		// No key is configured any more: a key login saved here earlier must not stay valid. Only a login
 		// this function wrote (it leaves a marker beside it) is removed; a key the user pasted into
@@ -65,6 +75,7 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 	if err := os.WriteFile(path, append(body, '\n'), slotfs.Mode(hint, 0o600)); err != nil {
 		return err
 	}
+	log.Printf("[CODEX_AUTH] seeded home_hash=%s", codexAuthPathHash(home))
 	return os.WriteFile(marker, nil, slotfs.Mode(hint, 0o600))
 }
 
@@ -83,4 +94,22 @@ func codexLoginEnv(env []string, configuredKey string) []string {
 		}
 	}
 	return append(append([]string(nil), env...), "CODEX_API_KEY="+configuredKey)
+}
+
+// codexAuthLinkedReason says why auth.json in home is not this session's own file: it is a symlink, or the .codex
+// folder itself is one. "" means it is the session's own (or does not exist yet).
+func codexAuthLinkedReason(home, path string) string {
+	if info, err := os.Lstat(home); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "home_is_symlink"
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "auth_is_symlink"
+	}
+	return ""
+}
+
+// codexAuthPathHash names a home in the log without printing a path.
+func codexAuthPathHash(home string) string {
+	sum := sha256.Sum256([]byte(home))
+	return fmt.Sprintf("%x", sum[:4])
 }
