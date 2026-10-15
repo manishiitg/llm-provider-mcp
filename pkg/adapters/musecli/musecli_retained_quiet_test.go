@@ -30,3 +30,9 @@ func TestMuseNewestLogSequenceAndSignal(t *testing.T) {
 		t.Fatal("the signal must change when Muse appends")
 	}
 }
+
+func TestRetainedTurnDiagnosticsWithoutAPoolEntry(t *testing.T) {
+	if got := RetainedTurnDiagnostics("no-such-owner"); got != "pool=missing" {
+		t.Fatalf("diagnostics = %q", got)
+	}
+}

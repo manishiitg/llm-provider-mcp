@@ -223,3 +223,31 @@ func museNewestLogSequence(path string) int64 {
 	}
 	return newest
 }
+
+// RetainedTurnDiagnostics describes a retained Muse turn for the server's still_running heartbeat, numbers and fixed
+// words only: the newest sequence in Muse's session log, the last sequence the app's progress reader consumed, the
+// sequence when the turn started, and whether the pool entry exists. Equal numbers mean Muse itself is quiet; a log
+// sequence far ahead of the cursor means we stopped reading.
+func RetainedTurnDiagnostics(ownerSessionID string) string {
+	key, err := musePersistentKey(ownerSessionID)
+	if err != nil {
+		return "pool=missing"
+	}
+	musePersistentPool.Lock()
+	entry := musePersistentPool.m[key]
+	if entry == nil {
+		musePersistentPool.Unlock()
+		return "pool=missing"
+	}
+	logPath := entry.logPath
+	if logPath == "" && entry.nativeSessionID != "" {
+		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
+	}
+	baseline := entry.retainedBaselineSequence
+	tmuxName := entry.tmuxName
+	musePersistentPool.Unlock()
+	entry.retainedProgress.mu.Lock()
+	cursor := entry.retainedProgress.lastSeq
+	entry.retainedProgress.mu.Unlock()
+	return fmt.Sprintf("muse_log_seq=%d app_cursor=%d baseline=%d pool=present alive=%t", museNewestLogSequence(logPath), cursor, baseline, museTmuxSessionAliveQuick(tmuxName))
+}
