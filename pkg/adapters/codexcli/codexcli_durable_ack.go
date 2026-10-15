@@ -513,7 +513,8 @@ func AwaitCodexInputDurable(ctx context.Context, ownerSessionID, message string,
 		return CodexDurableAck{}, fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)
 	}
 	receipt, ok := takeCodexDurableReceipt(session, message)
-	since := time.Now().Add(-2 * time.Minute)
+	awaitStart := time.Now()
+	since := awaitStart.Add(-2 * time.Minute)
 	var minOffset int64
 	occurrence := 1
 	if ok {
@@ -530,6 +531,13 @@ func AwaitCodexInputDurable(ctx context.Context, ownerSessionID, message string,
 	})
 	if err != nil {
 		return CodexDurableAck{}, err
+	}
+	// With no pending receipt the search window starts two minutes back, so the poll reports that offset as
+	// latency (a constant 120 s on every receipt); report the time actually waited.
+	if !ok {
+		if waited := time.Since(awaitStart); ack.Latency > waited {
+			ack.Latency = waited
+		}
 	}
 	if ack.Outcome == CodexDurableAckConfirmed {
 		log.Printf("[codex-durable-ack] owner=%s latency=%dms proof=%s", ownerSessionID, ack.Latency.Milliseconds(), ack.ProofPath)

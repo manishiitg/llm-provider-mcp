@@ -500,7 +500,8 @@ func AwaitMuseInputDurable(ctx context.Context, ownerSessionID, message string, 
 	tmuxName := entry.tmuxName
 	musePersistentPool.Unlock()
 	receipt, ok := takeMuseDurableReceipt(ownerSessionID, message)
-	since := time.Now().Add(-2 * time.Minute)
+	awaitStart := time.Now()
+	since := awaitStart.Add(-2 * time.Minute)
 	var minSeq int64
 	occurrence := 1
 	if ok {
@@ -516,6 +517,13 @@ func AwaitMuseInputDurable(ctx context.Context, ownerSessionID, message string, 
 	})
 	if err != nil {
 		return MuseDurableAck{}, err
+	}
+	// With no pending receipt the search window starts two minutes back, so the poll reports that offset as
+	// latency (a constant 120 s on every receipt); report the time actually waited.
+	if !ok {
+		if waited := time.Since(awaitStart); ack.Latency > waited {
+			ack.Latency = waited
+		}
 	}
 	if ack.Outcome == MuseDurableAckConfirmed {
 		log.Printf("[muse-durable-ack] owner=%s latency=%dms proof=%s", ownerSessionID, ack.Latency.Milliseconds(), ack.ProofPath)
