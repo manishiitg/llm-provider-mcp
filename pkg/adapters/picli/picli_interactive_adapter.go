@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -1418,6 +1419,7 @@ func waitForPiPromptReadyWithMarkers(ctx context.Context, sessionName, markerPat
 	var lastErr error
 	var markerOffset int64
 	markerSettled := false
+	promptQuiet := &stalldiag.Watch{Provider: "pi-cli", Session: sessionName}
 	for {
 		if markerPath != "" {
 			if markers, nextOffset, err := readPiMarkersSince(markerPath, markerOffset); err == nil {
@@ -1427,6 +1429,7 @@ func waitForPiPromptReadyWithMarkers(ctx context.Context, sessionName, markerPat
 		}
 		captured, err := capturePiPaneANSI(waitCtx, sessionName)
 		if err == nil {
+			promptQuiet.Observe(time.Now(), captured, true)
 			if piPaneReadyForInputWithMarkerState(captured, markerSettled) {
 				return nil
 			}
@@ -1796,6 +1799,9 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 	// agent_end followed by piAgentEndQuietFallback with no further markers.
 	agentEndPending := false
 	lastMarkerAt := time.Now()
+	// Silence recording (PLAT-861-220): after 2 quiet minutes, one "[TURN] silent" line with the screen's known prompt
+	// names, never its text. The signal is how far the marker file has grown.
+	quiet := &stalldiag.Watch{Provider: "pi-cli", Session: session.tmuxSessionName}
 	finish := func(source string) (string, error) {
 		session.completionSource = source
 		if finalAssistantText != "" {
@@ -1824,6 +1830,12 @@ func waitForPiInteractiveResponse(ctx context.Context, session *piInteractiveSes
 		if len(markers) > 0 {
 			lastMarkerAt = time.Now()
 		}
+		quiet.ObserveSignal(time.Now(), fmt.Sprint(currentOffset), true, func() string {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel2()
+			pane, _ := capturePiPaneANSI(ctx2, session.tmuxSessionName)
+			return stalldiag.Summary(pane)
+		})
 		for _, marker := range markers {
 			switch marker.Type {
 			case "message_update":
