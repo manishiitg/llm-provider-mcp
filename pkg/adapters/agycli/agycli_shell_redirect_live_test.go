@@ -130,7 +130,7 @@ func TestAgyCLIRealFullModeNativeShellOff(t *testing.T) {
 	}
 	idPrompt := "This is an authorised integration test in a disposable folder. Use your native run_command tool to run exactly: id -un\nThen report the output word for word, or the message the tool gave you if it did not run. Do not retry and do not work around it."
 
-	t.Setenv(nativeshell.EnvVar, "")
+	t.Setenv(nativeshell.EnvVar, "off")
 	reply, calls, _ := run(idPrompt)
 	t.Logf("default reply: %s", reply)
 	attempted, ok := shellRan(calls)

@@ -193,7 +193,7 @@ func TestCodexCLIRealFullModeNativeShellOff(t *testing.T) {
 		if shellOn {
 			t.Setenv(nativeshell.EnvVar, "on")
 		} else {
-			t.Setenv(nativeshell.EnvVar, "")
+			t.Setenv(nativeshell.EnvVar, "off")
 		}
 		t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 		workDir = untrustedCodexDir(t)
@@ -247,7 +247,7 @@ func TestCodexNativeToolsShellFeaturesFollowSwitch(t *testing.T) {
 		}
 		return false
 	}
-	t.Setenv(nativeshell.EnvVar, "")
+	t.Setenv(nativeshell.EnvVar, "off")
 	off := CodexNativeDisabledFeatures()
 	if !has(off, "shell_tool") || !has(off, "unified_exec") || has(off, "multi_agent") {
 		t.Fatalf("default: %v", off)

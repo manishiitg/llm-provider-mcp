@@ -31,7 +31,7 @@ func TestClaudeCodeTmuxRealFullModeNativeShellOffP0(t *testing.T) {
 		if on {
 			t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "on")
 		} else {
-			t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "")
+			t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 		}
 		root, err := os.MkdirTemp(home, ".agentworks-nsh-live-")
 		if err != nil {

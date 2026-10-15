@@ -120,7 +120,7 @@ func TestClaudeRetainedProcessReloadsQuestionConfiguration(t *testing.T) {
 // on; reads, edits, skills and subagents stay.
 func TestClaudeFullModeNativeShellOffByDefault(t *testing.T) {
 	full := "WebSearch,Read,Skill,Agent,Bash,Write,Edit,Monitor,PowerShell,BashOutput,KillShell"
-	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "")
+	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 	if got := claudeEffectiveTools(full); got != "WebSearch,Read,Skill,Agent,Write,Edit" {
 		t.Fatalf("default: %q", got)
 	}

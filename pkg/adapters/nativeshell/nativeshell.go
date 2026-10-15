@@ -1,10 +1,10 @@
 // Package nativeshell holds the one switch that decides whether a coding CLI
 // keeps its own built-in shell in Full mode.
 //
-// Owner decision 2026-10-05 (PLAT-491): the built-in shell runs as the app
-// account with the platform's environment, so it is OFF by default. Shell work
-// goes through the bridge shell (execute_shell_command), which runs as the
-// user's slot. File read/edit, skills and the CLI's other native tools stay.
+// Owner decision 2026-10-05 (PLAT-491) turned the CLI's built-in shell off by
+// default because it runs as the app account with the platform's environment.
+// Owner decision 2026-10-15 (PLAT-861-202): it is ON by default everywhere;
+// AGENTWORKS_CLI_NATIVE_SHELL=off turns it off for a deployment that needs to.
 package nativeshell
 
 import (
@@ -12,14 +12,15 @@ import (
 	"strings"
 )
 
-// EnvVar turns the CLI's built-in shell back on for Full mode when set to on.
+// EnvVar switches the CLI's built-in shell in Full mode: off/0/false/no turns
+// it off; anything else (including unset) leaves it on.
 const EnvVar = "AGENTWORKS_CLI_NATIVE_SHELL"
 
-// Enabled reports whether the escape hatch is set. The default is false.
+// Enabled reports whether the CLI keeps its built-in shell. The default is true.
 func Enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvVar))) {
-	case "on", "1", "true", "yes":
-		return true
+	case "off", "0", "false", "no":
+		return false
 	}
-	return false
+	return true
 }

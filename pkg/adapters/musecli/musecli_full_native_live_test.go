@@ -110,7 +110,7 @@ func TestMuseCLIRealFullModeNativeShellOff(t *testing.T) {
 		"Step 2: use your write_file tool to create native-made.txt containing the word EDITOK. " +
 		"Report exactly what happened for each step, quoting any refusal message verbatim."
 	t.Run("off", func(t *testing.T) {
-		t.Setenv(nativeshell.EnvVar, "")
+		t.Setenv(nativeshell.EnvVar, "off")
 		dir := t.TempDir()
 		final := run(t, shellPrompt, dir)
 		if _, err := os.Stat(filepath.Join(dir, "shell-made.txt")); err == nil {

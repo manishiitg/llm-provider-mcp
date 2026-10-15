@@ -68,7 +68,7 @@ func TestAgyFullModeNativeShellOffByDefault(t *testing.T) {
 		t.Skip("python3 unavailable")
 	}
 	call := map[string]interface{}{"toolCall": map[string]interface{}{"name": "run_command", "args": map[string]string{"CommandLine": "id -un"}}}
-	t.Setenv(nativeshell.EnvVar, "")
+	t.Setenv(nativeshell.EnvVar, "off")
 	if decision, reason := agyRunHook(t, python, "full", call); decision != "deny" || !strings.Contains(reason, "execute_shell_command") {
 		t.Fatalf("default: decision=%q reason=%q", decision, reason)
 	}

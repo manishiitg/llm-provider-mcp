@@ -72,6 +72,7 @@ func TestBuildClaudeStructuredArgs(t *testing.T) {
 	})
 
 	t.Run("hybrid provider auto preserves native tools", func(t *testing.T) {
+		t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 		got, _ := buildClaudeStructuredArgs("claude-x", "sys", "default", "mcp__bridge__do", "auto", "/tmp/mcp.json", "", "fresh-1", "/work")
 		if !has(got, "--permission-mode") || !has(got, "auto") {
 			t.Fatalf("hybrid argv missing --permission-mode auto: %v", got)

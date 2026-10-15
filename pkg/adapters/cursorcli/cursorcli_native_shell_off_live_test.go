@@ -27,7 +27,7 @@ func TestCursorCLIRealFullModeNativeShellOff(t *testing.T) {
 				if shellOn {
 					t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "on")
 				} else {
-					t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "")
+					t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 				}
 				tmp := t.TempDir()
 				ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)

@@ -19,7 +19,7 @@ import (
 // pre-approved. AGENTWORKS_CLI_NATIVE_SHELL=on restores the old behaviour.
 func TestCursorFullNativeHooks(t *testing.T) {
 	t.Run("shell off by default", func(t *testing.T) {
-		t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "")
+		t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 		cursorDir := filepath.Join(t.TempDir(), ".cursor")
 		cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true, true)
 		if err != nil {

@@ -132,7 +132,7 @@ func TestApplyMCPConfigInstallsFullModePolicyOnlyWithABridge(t *testing.T) {
 
 // PLAT-491: Full mode drops Muse's shell tools unless the escape hatch is on; the hook names the bridge shell.
 func TestFullModeShellToolsFollowTheNativeShellSwitch(t *testing.T) {
-	t.Setenv(nativeshell.EnvVar, "")
+	t.Setenv(nativeshell.EnvVar, "off")
 	for _, name := range museShellTools {
 		if slices.Contains(museFullAllowedTools(), name) {
 			t.Errorf("%s allowed with the switch off", name)
@@ -148,7 +148,7 @@ func TestFullModeShellToolsFollowTheNativeShellSwitch(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
 	}
-	t.Setenv(nativeshell.EnvVar, "")
+	t.Setenv(nativeshell.EnvVar, "off")
 	path, err := museWriteToolPolicyHookShell(museFullAllowedTools(), museFullPolicyReason, museShellOffReason)
 	if err != nil {
 		t.Fatal(err)
