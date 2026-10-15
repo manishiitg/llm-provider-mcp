@@ -5,7 +5,10 @@ import (
 	"sync"
 	"time"
 
+	"bufio"
+	"encoding/json"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"os"
 )
 
 type piRetainedProgress struct {
@@ -107,4 +110,66 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 		return nil
 	}
 	return summary.Messages
+}
+
+// RetainedTurnEndedWithoutReply reports that Pi's own record shows the turn that began at turnStart ended on an error
+// stop with no reply: the person pressed Escape (Pi writes an empty assistant message, stopReason "error", "This
+// operation was aborted") or the model call failed. ReadRetainedTurnMessages returns no final text for such a turn, so
+// without this a retained turn typed into the running pane never settles and the chat stays Working. The stop reason is
+// returned for the log.
+func RetainedTurnEndedWithoutReply(ownerSessionID string, turnStart time.Time) (string, bool) {
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return "", false
+	}
+	session, ok := activePiInteractiveSession(ownerSessionID)
+	if !ok || session == nil {
+		return "", false
+	}
+	session.mu.Lock()
+	nativeSessionID := session.nativeSessionID
+	sessionDir := session.sessionDir
+	session.mu.Unlock()
+	if strings.TrimSpace(sessionDir) == "" {
+		sessionDir = piTranscriptSessionDir()
+	}
+	path := latestPiTranscriptPathInDir(sessionDir, nativeSessionID)
+	if path == "" {
+		return "", false
+	}
+	return piTranscriptEndedWithoutReply(path, turnStart)
+}
+
+// piTranscriptEndedWithoutReply is true when the last record of the turn is an assistant message with an error stop
+// reason and nothing in it: no text and no tool call (a pending tool call is still work).
+func piTranscriptEndedWithoutReply(path string, turnStart time.Time) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	lastRole, lastStop, lastEmpty := "", "", false
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var ev piTranscriptRecord
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil || ev.Type != "message" || ev.Message == nil || !piTranscriptRecordInTurn(ev, turnStart) {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(ev.Message.Role))
+		if role == "" {
+			continue
+		}
+		lastRole, lastStop = role, strings.ToLower(strings.TrimSpace(ev.Message.StopReason))
+		lastEmpty = true
+		for _, part := range ev.Message.Content {
+			if strings.TrimSpace(part.Text) != "" || strings.TrimSpace(part.Type) == "toolCall" {
+				lastEmpty = false
+			}
+		}
+	}
+	if lastRole == "assistant" && lastEmpty && (lastStop == "error" || lastStop == "aborted") {
+		return lastStop, true
+	}
+	return "", false
 }

@@ -411,6 +411,16 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 	}
 }
 
+// ReadCodingAgentRetainedTurnEndedWithoutReply reports that the CLI's own record shows the retained turn that began at
+// turnStart ended with no reply (the person interrupted it, or the model call failed), with the CLI's stop reason. Only
+// Pi is wired; the other CLIs report false, so their turns settle as before.
+func ReadCodingAgentRetainedTurnEndedWithoutReply(provider Provider, ownerSessionID string, turnStart time.Time) (string, bool) {
+	if Provider(strings.ToLower(strings.TrimSpace(string(provider)))) == ProviderPiCLI {
+		return picli.RetainedTurnEndedWithoutReply(ownerSessionID, turnStart)
+	}
+	return "", false
+}
+
 // ReadCodingAgentRetainedTurnUsage returns the usage a coding CLI reported in its own transcript for model runs nobody
 // has reported yet, for turns typed into an already-running terminal (they never pass through GenerateContent). Each
 // run, message or step is returned once, with the CLI's own id, so a caller can record it once. turnStart bounds the
