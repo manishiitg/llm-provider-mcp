@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,11 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		return nil, noop, err
 	}
 
+	launchedAs := "app"
+	if slot, ok := slotfs.SlotOf(home); ok {
+		launchedAs = slot
+	}
+	log.Printf("[CLI_LANDLOCK] launch provider=%s launched_as=%s home=%s", strings.TrimSpace(policy.Provider), launchedAs, home)
 	if slot, ok := slotfs.SlotOf(home); ok {
 		// The CLI runs as the user's own account: give it the files the adapter prepared for this launch.
 		for _, path := range runtimeReadPaths {
