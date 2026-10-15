@@ -16,6 +16,10 @@ func TestCodexPaneAsksForSignIn(t *testing.T) {
 	if !codexPaneAsksForSignIn(codexSignInScreen) {
 		t.Fatal("the sign-in screen was not recognised")
 	}
+	// The variant seen on a stuck chat: both option lines, no "Press enter" footer.
+	if !codexPaneAsksForSignIn("  Sign in with ChatGPT\n  Sign in with Device Code\n  Provide your own API key\n") {
+		t.Fatal("the sign-in screen without its footer was not recognised")
+	}
 	for name, pane := range map[string]string{
 		"working":            "\u2022 Working (12s \u2022 esc to interrupt)\n> \n",
 		"only one phrase":    "Sign in with ChatGPT to continue\n",
