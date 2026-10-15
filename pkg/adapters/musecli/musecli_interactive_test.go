@@ -1036,3 +1036,13 @@ func TestMuseHooksReviewScreenIsRecognisedAndNamed(t *testing.T) {
 		t.Fatal("an uncleared hooks screen must be a never-retry error")
 	}
 }
+
+func TestMuseUnknownLaunchScreenIsRetriedOnlyOnce(t *testing.T) {
+	pane := "Some new Muse screen nobody has seen\nPress any key\n"
+	if museSameLaunchScreenTwice(pane) {
+		t.Fatal("the first timeout on a screen must be retried")
+	}
+	if !museSameLaunchScreenTwice(pane) {
+		t.Fatal("the second timeout on the same screen must end the turn")
+	}
+}

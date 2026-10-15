@@ -3,6 +3,7 @@ package musecli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -404,8 +406,14 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 			return "", fmt.Errorf("muse TUI blocked on trust/auth gate (trust_auth_prompts cert territory); pane:\n%s", pane)
 		}
 		if timeout > 0 && time.Now().After(deadline) {
-			log.Printf("[TURN] stalled cause=launch_timeout provider=muse-cli session=%s screen=%q", session, museScreenCategory(pane))
-			return "", fmt.Errorf("Muse did not start in %s: it was showing %s. Your message is saved; press Retry. (timed out waiting for %s; latest pane:\n%s)", timeout.Round(time.Second), museScreenCategory(pane), waitDescription, pane)
+			category := museScreenCategory(pane)
+			log.Printf("[TURN] stalled cause=launch_timeout provider=muse-cli session=%s screen=%q", session, category)
+			err := fmt.Errorf("Muse did not start in %s: it was showing %s. Your message is saved; press Retry. (timed out waiting for %s; latest pane:\n%s)", timeout.Round(time.Second), category, waitDescription, pane)
+			if museSameLaunchScreenTwice(pane) {
+				// A screen that did not clear after one retry will not clear after four more.
+				return "", &llmerrors.Error{Kind: llmerrors.KindUserInputRequired, Provider: "muse-cli", Err: err}
+			}
+			return "", err
 		}
 		select {
 		case <-ctx.Done():
@@ -783,4 +791,27 @@ func museSendKeysResult(err error, out []byte) string {
 		return "error:" + strings.TrimSpace(string(out))
 	}
 	return "sent"
+}
+
+var (
+	museLaunchScreenMu   sync.Mutex
+	museLaunchScreenSeen = map[string]time.Time{}
+)
+
+// museSameLaunchScreenTwice reports whether the same stuck screen already timed a launch out in the last ten minutes,
+// and remembers this one. The first timeout is retried once; the second ends the turn.
+func museSameLaunchScreenTwice(pane string) bool {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(pane), " ")))
+	key := hex.EncodeToString(sum[:8])
+	now := time.Now()
+	museLaunchScreenMu.Lock()
+	defer museLaunchScreenMu.Unlock()
+	for k, at := range museLaunchScreenSeen {
+		if now.Sub(at) > 10*time.Minute {
+			delete(museLaunchScreenSeen, k)
+		}
+	}
+	_, seen := museLaunchScreenSeen[key]
+	museLaunchScreenSeen[key] = now
+	return seen
 }
