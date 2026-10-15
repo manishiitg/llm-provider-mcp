@@ -337,6 +337,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		return nil, err
 	}
 	tmuxinput.MarkReady(session.tmuxSessionName)
+	llmtypes.SignalPromptAccepted(opts.StreamChan)
 	inspector.EmitEvent("tmux_prompt_sent", map[string]interface{}{
 		"prompt_length":       len(prompt),
 		"submitted_at_launch": initialPromptAtLaunch,

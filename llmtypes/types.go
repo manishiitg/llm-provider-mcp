@@ -101,6 +101,9 @@ const (
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
 	StreamChunkTypeTerminal      StreamChunkType = "terminal"    // Live terminal/screen snapshot
 	StreamChunkTypeStatusLine    StreamChunkType = "status_line" // Generic real-time statusline snapshot
+	// StreamChunkTypePromptAccepted says the coding CLI took the prompt (the launch is over and the turn really
+	// began). It carries no content; the app uses it to stop saying "Starting <agent>".
+	StreamChunkTypePromptAccepted StreamChunkType = "prompt_accepted"
 )
 
 // StatusLine represents a generic unified statusline payload from interactive CLIs
@@ -669,3 +672,15 @@ type EmbeddingOptions struct {
 
 // EmbeddingOption is a function type for setting embedding options
 type EmbeddingOption func(*EmbeddingOptions)
+
+// SignalPromptAccepted tells the caller the coding CLI took the prompt. It never blocks and does nothing without a
+// stream channel; it must be called before the adapter closes the channel.
+func SignalPromptAccepted(ch chan<- StreamChunk) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- StreamChunk{Type: StreamChunkTypePromptAccepted}:
+	default:
+	}
+}

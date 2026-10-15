@@ -546,6 +546,7 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 		return nil, err
 	}
+	llmtypes.SignalPromptAccepted(opts.StreamChan)
 	runID, acceptedSeq, ok := museAcceptedIntentSince(logPath, turnStart, promptSnippet(prompt))
 	if !ok || runID == "" {
 		return nil, fmt.Errorf("muse intake record has no current run ID (session %s)", nativeSessionID)

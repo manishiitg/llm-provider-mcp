@@ -532,6 +532,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		return nil, err
 	}
 	tmuxinput.MarkReady(sessionName)
+	llmtypes.SignalPromptAccepted(opts.StreamChan)
 
 	// Opt-in: stream structured content (assistant text + tool-call starts) by
 	// tailing the CLI's JSONL transcript mid-turn, so a design-first UI can

@@ -301,6 +301,7 @@ func (p *PiCLIAdapter) generateContentTmux(ctx context.Context, messages []llmty
 		return nil, err
 	}
 	tmuxinput.MarkReady(session.tmuxSessionName)
+	llmtypes.SignalPromptAccepted(opts.StreamChan)
 
 	content, err := waitForPiInteractiveResponse(ctx, session, startOffset, opts.StreamChan)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
