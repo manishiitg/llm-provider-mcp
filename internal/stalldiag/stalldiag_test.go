@@ -60,3 +60,13 @@ func TestObserveSignalCallsDetailOnlyWhenItLogs(t *testing.T) {
 		t.Fatalf("detail must run once per quiet stretch, ran %d times", calls)
 	}
 }
+
+// A name that is not a terminal session comes back as itself, so the line always names something searchable.
+func TestOwnerOfFallsBackToTheName(t *testing.T) {
+	if got := ownerOf("no-such-tmux-session"); got != "no-such-tmux-session" {
+		t.Fatalf("owner = %q", got)
+	}
+	if got := ownerOf("  "); got != "-" {
+		t.Fatalf("empty name = %q", got)
+	}
+}

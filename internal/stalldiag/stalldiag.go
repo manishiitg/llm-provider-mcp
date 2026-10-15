@@ -3,12 +3,16 @@
 package stalldiag
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 // knownPrompts are fixed phrases of the CLIs' own screens (sign-in, trust, update, approval, limit, picker). Only the
@@ -103,7 +107,23 @@ func (w *Watch) ObserveSignal(now time.Time, signal string, alive bool, detail f
 		if detail != nil {
 			extra = detail()
 		}
-		log.Printf("[TURN] silent session=%s provider=%s alive=%t quiet=%s %s",
-			w.Session, w.Provider, alive, now.Sub(w.since).Round(time.Second), extra)
+		log.Printf("[TURN] silent session=%s app_session=%s provider=%s alive=%t quiet=%s %s",
+			w.Session, ownerOf(w.Session), w.Provider, alive, now.Sub(w.since).Round(time.Second), extra)
 	}
+}
+
+// ownerOf returns the app session that owns a terminal session (the owner tag the adapters set on it), so a search by
+// the chat's session id finds the line. A name that is not a terminal session (the Muse retained path already uses
+// the owner id) comes back as itself.
+func ownerOf(session string) string {
+	if strings.TrimSpace(session) == "" {
+		return "-"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "show-options", "-v", "-t", session, tmuxinput.OwnerSessionOption).Output()
+	if owner := strings.TrimSpace(string(out)); err == nil && owner != "" {
+		return owner
+	}
+	return session
 }
