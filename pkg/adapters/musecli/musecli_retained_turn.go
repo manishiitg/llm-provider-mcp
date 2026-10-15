@@ -3,11 +3,13 @@ package musecli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -102,6 +104,7 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	entry := musePersistentPool.m[key]
 	if entry == nil {
 		musePersistentPool.Unlock()
+		museObserveRetainedQuiet(ownerSessionID, "pool-missing", false, func() string { return "pool=missing" })
 		return nil
 	}
 	tmuxName := entry.tmuxName
@@ -112,6 +115,12 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	baseline := entry.retainedBaselineSequence
 	autoAnswer := entry.autoAnswer
 	musePersistentPool.Unlock()
+	museObserveRetainedQuiet(ownerSessionID, museLogSignal(logPath), museTmuxSessionAliveQuick(tmuxName), func() string {
+		entry.retainedProgress.mu.Lock()
+		cursor := entry.retainedProgress.lastSeq
+		entry.retainedProgress.mu.Unlock()
+		return fmt.Sprintf("muse_log_seq=%d app_cursor=%d baseline=%d pool=present", museNewestLogSequence(logPath), cursor, baseline)
+	})
 	// Live-input turns have no GenerateContent waiter. Service the same
 	// native controls here before asking whether the retained turn is done.
 	if autoAnswer != nil {
@@ -168,4 +177,49 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 		Role:  llmtypes.ChatMessageTypeAI,
 		Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: final}},
 	}}
+}
+
+// museRetainedQuiet holds one silence watch per owner session for the retained (live-input) turns, which have no
+// waiter loop of their own: the app polls ReadRetainedTurnMessages, so that poll is where silence is seen.
+var museRetainedQuiet sync.Map
+
+func museObserveRetainedQuiet(owner, signal string, alive bool, detail func() string) {
+	v, _ := museRetainedQuiet.LoadOrStore(owner, &stalldiag.Watch{Provider: "muse-cli", Session: owner})
+	v.(*stalldiag.Watch).ObserveSignal(time.Now(), signal, alive, detail)
+}
+
+// museLogSignal changes whenever Muse appends to its session log.
+func museLogSignal(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "no-log"
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+func museTmuxSessionAliveQuick(tmuxName string) bool {
+	if tmuxName == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return museTmuxSessionAlive(ctx, tmuxName)
+}
+
+// museNewestLogSequence is the largest record sequence in the session log (numbers only, nothing else is read out).
+func museNewestLogSequence(path string) int64 {
+	raw, err := os.ReadFile(path) //nolint:gosec // adapter-owned transcript path
+	if err != nil {
+		return -1
+	}
+	var newest int64
+	for _, line := range strings.Split(string(raw), "\n") {
+		var envelope struct {
+			Sequence int64 `json:"sequence"`
+		}
+		if json.Unmarshal([]byte(line), &envelope) == nil && envelope.Sequence > newest {
+			newest = envelope.Sequence
+		}
+	}
+	return newest
 }

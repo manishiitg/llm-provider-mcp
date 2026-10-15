@@ -43,3 +43,20 @@ func TestWatchLogsOncePerQuietStretchAndRearmsOnChange(t *testing.T) {
 		t.Fatal("a changed pane must re-arm the watch")
 	}
 }
+
+func TestObserveSignalCallsDetailOnlyWhenItLogs(t *testing.T) {
+	w := &Watch{Provider: "muse-cli", Session: "owner", After: time.Minute}
+	calls := 0
+	detail := func() string { calls++; return "muse_log_seq=7 app_cursor=3 pool=present" }
+	start := time.Unix(2000, 0)
+	w.ObserveSignal(start, "100:1", true, detail)
+	w.ObserveSignal(start.Add(30*time.Second), "100:1", true, detail)
+	if calls != 0 {
+		t.Fatalf("detail ran before the quiet time: %d", calls)
+	}
+	w.ObserveSignal(start.Add(70*time.Second), "100:1", true, detail)
+	w.ObserveSignal(start.Add(100*time.Second), "100:1", true, detail)
+	if calls != 1 {
+		t.Fatalf("detail must run once per quiet stretch, ran %d times", calls)
+	}
+}

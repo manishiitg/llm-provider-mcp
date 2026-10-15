@@ -80,20 +80,30 @@ type Watch struct {
 
 // Observe records the current pane at now and logs when the quiet stretch has reached After.
 func (w *Watch) Observe(now time.Time, pane string, alive bool) {
+	w.ObserveSignal(now, pane, alive, func() string { return Summary(pane) })
+}
+
+// ObserveSignal is Observe for anything whose change means progress (a pane, a log file's size and time). detail is
+// called only when the line is logged and must return content-free text (numbers and fixed words).
+func (w *Watch) ObserveSignal(now time.Time, signal string, alive bool, detail func() string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	after := w.After
 	if after <= 0 {
 		after = 2 * time.Minute
 	}
-	key := strings.TrimSpace(pane)
+	key := strings.TrimSpace(signal)
 	if w.since.IsZero() || key != w.last {
 		w.last, w.since, w.logged = key, now, false
 		return
 	}
 	if !w.logged && now.Sub(w.since) >= after {
 		w.logged = true
+		extra := ""
+		if detail != nil {
+			extra = detail()
+		}
 		log.Printf("[TURN] silent session=%s provider=%s alive=%t quiet=%s %s",
-			w.Session, w.Provider, alive, now.Sub(w.since).Round(time.Second), Summary(pane))
+			w.Session, w.Provider, alive, now.Sub(w.since).Round(time.Second), extra)
 	}
 }
