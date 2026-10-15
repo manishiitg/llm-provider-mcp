@@ -1,6 +1,7 @@
 package picli
 
 import (
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -148,24 +149,40 @@ func piTranscriptEndedWithoutReply(path string, turnStart time.Time) (string, bo
 		return "", false
 	}
 	defer f.Close()
+	// The watch asks every poll, and only the last record decides: read the tail of the file, not all of it. A record
+	// longer than the tail is a big tool result, never the empty aborted message.
+	start := int64(0)
+	if info, err := f.Stat(); err == nil && info.Size() > piEndedWithoutReplyTailBytes {
+		start = info.Size() - piEndedWithoutReplyTailBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return "", false
+	}
+	reader := bufio.NewReaderSize(f, 64*1024)
+	if start > 0 {
+		if _, err := reader.ReadBytes('\n'); err != nil { // the first line is cut by the seek
+			return "", false
+		}
+	}
 	lastRole, lastStop, lastEmpty := "", "", false
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		var ev piTranscriptRecord
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil || ev.Type != "message" || ev.Message == nil || !piTranscriptRecordInTurn(ev, turnStart) {
-			continue
-		}
-		role := strings.ToLower(strings.TrimSpace(ev.Message.Role))
-		if role == "" {
-			continue
-		}
-		lastRole, lastStop = role, strings.ToLower(strings.TrimSpace(ev.Message.StopReason))
-		lastEmpty = true
-		for _, part := range ev.Message.Content {
-			if strings.TrimSpace(part.Text) != "" || strings.TrimSpace(part.Type) == "toolCall" {
-				lastEmpty = false
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			var ev piTranscriptRecord
+			if json.Unmarshal(line, &ev) == nil && ev.Type == "message" && ev.Message != nil && piTranscriptRecordInTurn(ev, turnStart) {
+				if role := strings.ToLower(strings.TrimSpace(ev.Message.Role)); role != "" {
+					lastRole, lastStop = role, strings.ToLower(strings.TrimSpace(ev.Message.StopReason))
+					lastEmpty = true
+					for _, part := range ev.Message.Content {
+						if strings.TrimSpace(part.Text) != "" || strings.TrimSpace(part.Type) == "toolCall" {
+							lastEmpty = false
+						}
+					}
+				}
 			}
+		}
+		if err != nil {
+			break
 		}
 	}
 	if lastRole == "assistant" && lastEmpty && (lastStop == "error" || lastStop == "aborted") {
@@ -173,3 +190,6 @@ func piTranscriptEndedWithoutReply(path string, turnStart time.Time) (string, bo
 	}
 	return "", false
 }
+
+// piEndedWithoutReplyTailBytes is how much of the end of Pi's session file the ended-without-reply check reads.
+const piEndedWithoutReplyTailBytes = 256 * 1024

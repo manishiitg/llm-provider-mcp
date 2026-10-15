@@ -40,4 +40,14 @@ func TestPiTranscriptEndedWithoutReply(t *testing.T) {
 	if _, ok := piTranscriptEndedWithoutReply(writePiRecords(t, user, toolCall, toolResult, aborted), time.Date(2026, 10, 15, 19, 36, 0, 0, time.UTC)); ok {
 		t.Fatal("an abort before this turn began is not this turn's")
 	}
+	// A long transcript: only the tail is read, and the verdict is the same.
+	filler := `{"type":"message","timestamp":"2026-10-15T19:35:20.000Z","message":{"role":"toolResult","content":[{"type":"text","text":"` + strings.Repeat("x", 4000) + `"}]}}`
+	long := []string{user, toolCall}
+	for i := 0; i < 100; i++ {
+		long = append(long, filler)
+	}
+	long = append(long, aborted)
+	if reason, ok := piTranscriptEndedWithoutReply(writePiRecords(t, long...), start); !ok || reason != "error" {
+		t.Fatalf("an aborted turn after a long transcript = %q, %v; want error, true", reason, ok)
+	}
 }
