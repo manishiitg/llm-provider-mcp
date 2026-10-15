@@ -3,6 +3,7 @@ package musecli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,5 +35,21 @@ func TestMuseNewestLogSequenceAndSignal(t *testing.T) {
 func TestRetainedTurnDiagnosticsWithoutAPoolEntry(t *testing.T) {
 	if got := RetainedTurnDiagnostics("no-such-owner"); got != "pool=missing" {
 		t.Fatalf("diagnostics = %q", got)
+	}
+}
+
+func TestMuseNewestLogSequenceReadsOnlyTheTailOfABigLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	var body strings.Builder
+	filler := "{\"sequence\":1,\"payload\":\"" + strings.Repeat("x", 900) + "\"}\n"
+	for i := 0; i < 200; i++ { // about 180 KB, far over the 64 KB tail
+		body.WriteString(filler)
+	}
+	body.WriteString("{\"sequence\":777}\n")
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := museNewestLogSequence(path); got != 777 {
+		t.Fatalf("newest sequence = %d, want 777", got)
 	}
 }

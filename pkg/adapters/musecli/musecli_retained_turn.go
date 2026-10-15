@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -206,14 +207,33 @@ func museTmuxSessionAliveQuick(tmuxName string) bool {
 	return museTmuxSessionAlive(ctx, tmuxName)
 }
 
-// museNewestLogSequence is the largest record sequence in the session log (numbers only, nothing else is read out).
+// museNewestLogSequence is the largest record sequence in the last 64 KB of the session log (numbers only; nothing
+// else is kept). Muse appends, so the newest records are at the end; the read stays cheap on a huge log.
 func museNewestLogSequence(path string) int64 {
-	raw, err := os.ReadFile(path) //nolint:gosec // adapter-owned transcript path
+	const tail = 64 * 1024
+	f, err := os.Open(path) //nolint:gosec // adapter-owned transcript path
 	if err != nil {
 		return -1
 	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return -1
+	}
+	offset := info.Size() - tail
+	if offset < 0 {
+		offset = 0
+	}
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return -1
+	}
+	lines := strings.Split(string(buf), "\n")
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:] // the first line may be cut in the middle
+	}
 	var newest int64
-	for _, line := range strings.Split(string(raw), "\n") {
+	for _, line := range lines {
 		var envelope struct {
 			Sequence int64 `json:"sequence"`
 		}
