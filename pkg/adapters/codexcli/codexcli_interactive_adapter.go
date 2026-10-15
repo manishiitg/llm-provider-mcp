@@ -364,6 +364,10 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session), completionDiagnostics)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
 	if err != nil && !forcedComplete {
+		var loginRequired *CodexLoginRequiredError
+		if errors.As(err, &loginRequired) {
+			c.logger.Errorf("[TURN] stalled cause=login_required provider=codex-cli owner=%s tmux=%s elapsed=%s", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Second))
+		}
 		err = tmuxexec.WithFailureDiagnostic(err, "codex-cli", session.tmuxSessionName)
 		c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_returned owner=%q tmux=%q outcome=error elapsed=%s error=%q", ownerSessionID, session.tmuxSessionName, time.Since(promptSentAt).Round(time.Millisecond), err.Error())
 		inspector.EmitError(err, map[string]interface{}{
@@ -2122,6 +2126,10 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			captured, err := captureCodexPane(ctx, sessionName)
 			if err != nil {
 				return "", err
+			}
+			// Codex is waiting on its own sign-in screen: the turn can never start.
+			if codexPaneAsksForSignIn(captured) {
+				return captured, &CodexLoginRequiredError{}
 			}
 			delta := codexCapturedAfterBaseline(captured, baseline)
 			stableCapture := codexPromptCandidateStabilitySnapshot(captured)
