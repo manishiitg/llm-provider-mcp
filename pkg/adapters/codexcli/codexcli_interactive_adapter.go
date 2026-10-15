@@ -1613,6 +1613,7 @@ func waitForCodexInitialPromptAcceptedWith(ctx context.Context, sessionName, pro
 	var lastTerminalSnapshot string
 	var lastTerminalStreamedAt time.Time
 	var lastStartupCapture string
+	quietWatch := &stalldiag.Watch{Provider: "codex-cli", Session: sessionName}
 	capture := wait.capture
 	if capture == nil {
 		capture = captureCodexPane
@@ -1643,6 +1644,12 @@ func waitForCodexInitialPromptAcceptedWith(ctx context.Context, sessionName, pro
 			captured, err := capture(ctx, sessionName)
 			if err != nil {
 				continue
+			}
+			quietWatch.Observe(time.Now(), captured, true)
+			// Codex is waiting on its own sign-in screen: the prompt can never be accepted.
+			if codexPaneAsksForSignIn(captured) {
+				log.Printf("[TURN] stalled cause=login_required provider=codex-cli session=%s phase=launch_prompt", sessionName)
+				return lastStartupCapture, &CodexLoginRequiredError{}
 			}
 			if streamChan != nil && streamTerminalScreen && time.Since(lastTerminalStreamedAt) >= time.Second {
 				if streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
@@ -1718,6 +1725,7 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 	lastCaptured := ""
 	var promptCandidateSnapshot string
 	var promptCandidateSince time.Time
+	promptQuiet := &stalldiag.Watch{Provider: "codex-cli", Session: sessionName}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1736,6 +1744,11 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 			if captured != lastCaptured {
 				lastCaptured = captured
 				lastActivityAt = time.Now()
+			}
+			promptQuiet.Observe(time.Now(), captured, true)
+			if codexPaneAsksForSignIn(captured) {
+				log.Printf("[TURN] stalled cause=login_required provider=codex-cli session=%s phase=prompt_mode", sessionName)
+				return &CodexLoginRequiredError{}
 			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamCodexTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
