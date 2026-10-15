@@ -59,3 +59,20 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 	}
 	return os.WriteFile(marker, nil, slotfs.Mode(hint, 0o600))
 }
+
+// codexLoginEnv adds the adapter's configured API key to the environment the login is seeded from, when
+// that environment carries none. A key that reaches the adapter through the app's provider configuration
+// (not an account environment) was otherwise never saved as Codex's login, so the terminal UI opened its
+// sign-in screen and the turn waited there for ever.
+func codexLoginEnv(env []string, configuredKey string) []string {
+	configuredKey = strings.TrimSpace(configuredKey)
+	if configuredKey == "" {
+		return env
+	}
+	for _, entry := range env {
+		if v, ok := strings.CutPrefix(entry, "CODEX_API_KEY="); ok && strings.TrimSpace(v) != "" {
+			return env
+		}
+	}
+	return append(append([]string(nil), env...), "CODEX_API_KEY="+configuredKey)
+}

@@ -718,7 +718,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// this launch did not.
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, opts)
 	scopedScrub := scopedLaunchScrub(nil, scopedEnv, opts)
-	if err := seedCodexAPIKeyLogin(scopedEnv, llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"], workingDir); err != nil {
+	if err := seedCodexAPIKeyLogin(codexLoginEnv(scopedEnv, c.apiKey), llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"], workingDir); err != nil {
 		c.logger.Errorf("codex interactive could not save the API key login owner=%s: %v", ownerSessionID, err)
 	}
 	launchCleanup, err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths, scopedEnv, unsetEnv, scopedScrub)

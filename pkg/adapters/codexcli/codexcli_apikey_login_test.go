@@ -47,3 +47,23 @@ func TestSeedCodexAPIKeyLogin(t *testing.T) {
 		t.Fatal("browser login changed")
 	}
 }
+
+// A key that reaches the adapter through the app's configuration (not an account environment) must still
+// become Codex's saved login, or the terminal UI sits on its sign-in screen.
+func TestCodexLoginEnvUsesTheConfiguredKeyOnlyWhenTheEnvironmentHasNone(t *testing.T) {
+	home := t.TempDir()
+	env := codexLoginEnv([]string{"PATH=/bin", "CODEX_HOME=" + home}, " sk-config ")
+	if err := seedCodexAPIKeyLogin(env, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(home, "auth.json")); err != nil || !strings.Contains(string(raw), "sk-config") {
+		t.Fatalf("auth.json = %q, %v", raw, err)
+	}
+	withKey := []string{"CODEX_API_KEY=sk-account", "CODEX_HOME=" + home}
+	if got := codexLoginEnv(withKey, "sk-config"); len(got) != 2 || got[0] != "CODEX_API_KEY=sk-account" {
+		t.Fatalf("an account key must win over the configured one: %v", got)
+	}
+	if got := codexLoginEnv(withKey, ""); len(got) != 2 {
+		t.Fatalf("no configured key leaves the environment alone: %v", got)
+	}
+}
