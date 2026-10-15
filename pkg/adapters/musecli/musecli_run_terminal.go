@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"io"
 	"os"
 	"time"
@@ -87,6 +88,7 @@ func museWaitTurnTerminal(ctx context.Context, session, logPath, runID string, m
 	deadline := time.Now().Add(timeout)
 	var pane string
 	var offset int64
+	quiet := &stalldiag.Watch{Provider: "muse-cli", Session: session}
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -112,6 +114,7 @@ func museWaitTurnTerminal(ctx context.Context, session, logPath, runID string, m
 		if err != nil {
 			return "", fmt.Errorf("capture pane waiting for muse run: %w", err)
 		}
+		quiet.Observe(time.Now(), pane, true)
 		pending, err := museHandlePendingQuestion(ctx, session, pane)
 		if err != nil {
 			return "", err

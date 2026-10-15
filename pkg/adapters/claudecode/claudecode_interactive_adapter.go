@@ -25,6 +25,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -3523,6 +3524,7 @@ func forcedClaudeResponseFromCaptured(captured, paneBaseline string) string {
 func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	quietWatch := &stalldiag.Watch{Provider: "claude-code", Session: sessionName}
 
 	sawActivity := activityAlreadySeen
 	var idleSince time.Time
@@ -3563,6 +3565,7 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 				}
 				return "", err
 			}
+			quietWatch.Observe(time.Now(), captured, true)
 			delta := capturedAfterPaneBaseline(captured, paneBaseline)
 			quotaText := claudeUsageLimitTextForTurn(captured, paneBaseline)
 			errText := detectTmuxFatalStatusWithQuotaText(delta, quotaText)

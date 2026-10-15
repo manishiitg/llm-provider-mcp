@@ -21,6 +21,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
+	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -2076,6 +2077,7 @@ func codexPaneHasEmptyComposer(captured string) bool {
 func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline string, streamChan chan<- llmtypes.StreamChunk, turnStart time.Time, workingDir string, streamTranscript bool, streamTerminalScreen bool, resolveRollout func(time.Time) string, diagnostics *codexCompletionDiagnosticHooks) (string, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	quietWatch := &stalldiag.Watch{Provider: "codex-cli", Session: sessionName}
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
 	var sawActivity bool
 	var idleSince time.Time
@@ -2127,6 +2129,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			if err != nil {
 				return "", err
 			}
+			quietWatch.Observe(time.Now(), captured, true)
 			// Codex is waiting on its own sign-in screen: the turn can never start.
 			if codexPaneAsksForSignIn(captured) {
 				return captured, &CodexLoginRequiredError{}
