@@ -67,3 +67,22 @@ func TestCodexLoginEnvUsesTheConfiguredKeyOnlyWhenTheEnvironmentHasNone(t *testi
 		t.Fatalf("no configured key leaves the environment alone: %v", got)
 	}
 }
+
+// A ChatGPT sign-in the person made in this home is never replaced by a configured key.
+func TestSeedCodexAPIKeyLoginKeepsAnExistingChatGPTSignIn(t *testing.T) {
+	home := t.TempDir()
+	signIn := `{"auth_mode":"chatgpt","tokens":{"access_token":"x","refresh_token":"y"}}`
+	path := filepath.Join(home, "auth.json")
+	if err := os.WriteFile(path, []byte(signIn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedCodexAPIKeyLogin([]string{"CODEX_API_KEY=sk-config", "CODEX_HOME=" + home}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != signIn {
+		t.Fatalf("the person's own sign-in was replaced: %q", raw)
+	}
+	if _, err := os.Stat(path + ".agentworks"); err == nil {
+		t.Fatal("no marker may be left beside a login this function did not write")
+	}
+}

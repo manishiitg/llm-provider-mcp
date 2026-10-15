@@ -40,11 +40,19 @@ func seedCodexAPIKeyLogin(env []string, accountRoot, hint string) error {
 	}
 	if raw, err := os.ReadFile(path); err == nil {
 		var current struct {
-			Mode string `json:"auth_mode"`
-			Key  string `json:"OPENAI_API_KEY"`
+			Mode   string          `json:"auth_mode"`
+			Key    string          `json:"OPENAI_API_KEY"`
+			Tokens json.RawMessage `json:"tokens"`
 		}
-		if json.Unmarshal(raw, &current) == nil && current.Key == key && current.Mode == "apikey" {
-			return nil
+		if json.Unmarshal(raw, &current) == nil {
+			if current.Key == key && current.Mode == "apikey" {
+				return nil
+			}
+			// A sign-in the person made themselves (a ChatGPT login with tokens, not written by this
+			// function) is never replaced by a configured key.
+			if _, ours := os.Stat(marker); ours != nil && current.Mode != "apikey" && (len(current.Tokens) > 0 || current.Mode != "") {
+				return nil
+			}
 		}
 	}
 	body, err := json.MarshalIndent(map[string]string{"auth_mode": "apikey", "OPENAI_API_KEY": key}, "", "  ")
