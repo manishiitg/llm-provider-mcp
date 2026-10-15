@@ -3580,6 +3580,9 @@ func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, act
 					// A pane phrase contradicted by the current structured statusline is
 					// stale transcript text, not a provider wall. Keep waiting for the
 					// actual turn outcome.
+				} else if errText == "credit balance is too low" {
+					log.Printf("[TURN] stalled cause=credit_low provider=claude-code tmux=%s", sessionName)
+					return "", &ClaudeCreditLowError{}
 				} else if errText != "not logged in" || authConfirmed {
 					return "", fmt.Errorf("claude code tmux session failed: %s", errText)
 				}
@@ -3764,6 +3767,8 @@ func detectTmuxFatalStatusWithQuotaText(captured, quotaText string) string {
 	switch {
 	case IsClaudeUsageLimitText(quotaText):
 		return "rate limit reached"
+	case IsClaudeCreditLowText(captured):
+		return "credit balance is too low"
 	case hasClaudeLoggedOutStatus(captured):
 		return "not logged in"
 	case strings.Contains(captured, "Pane is dead"):
