@@ -3,6 +3,7 @@ package codexcli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,5 +22,17 @@ func TestLaunchPromptWaitEndsOnTheSignInScreen(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("the wait must end at once, took %s", time.Since(start))
+	}
+}
+
+// A launch that never starts ends at the cap with plain words and a way forward (15 minutes by default).
+func TestLaunchPromptWaitCapMessageIsPlain(t *testing.T) {
+	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	wait := codexSubmissionWait{capture: func(context.Context, string) (string, error) { return "", nil }}
+	_, err := waitForCodexInitialPromptAcceptedWith(ctx, "scratch-session", "hello", nil, false, wait)
+	if err == nil || !strings.Contains(err.Error(), "Codex did not start in 1s. Your message is saved; press Retry.") {
+		t.Fatalf("err = %v", err)
 	}
 }

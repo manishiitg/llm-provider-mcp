@@ -45,7 +45,7 @@ const (
 	defaultCodexInteractiveIdleTimeout = codingtimeout.DefaultPersistentSessionIdle
 	defaultCodexInteractiveRetention   = 30 * time.Minute
 	defaultCodexPromptInactivityWait   = 10 * time.Minute
-	defaultCodexPromptMaxWait          = 90 * time.Minute
+	defaultCodexPromptMaxWait          = 15 * time.Minute // owner, 2026-10-15: a launch that has not started in 15 minutes is stuck
 	codexInteractiveStableWindow       = 1200 * time.Millisecond
 	codexPromptCandidateStableWindow   = 2 * time.Second
 	codexActivityScanNonEmptyLines     = 160
@@ -1626,9 +1626,11 @@ func waitForCodexInitialPromptAcceptedWith(ctx context.Context, sessionName, pro
 		case <-maxTimer.C:
 			captured, _ := captureCodexPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return lastStartupCapture, fmt.Errorf("timed out after %s waiting for Codex CLI launch prompt to start; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				log.Printf("[TURN] stalled cause=launch_timeout provider=codex-cli session=%s phase=launch_prompt waited=%s", sessionName, maxWait)
+				return lastStartupCapture, fmt.Errorf("Codex did not start in %s. Your message is saved; press Retry. (timed out waiting for the Codex CLI launch prompt to start; %s)", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return lastStartupCapture, fmt.Errorf("timed out after %s waiting for Codex CLI launch prompt to start", maxWait)
+			log.Printf("[TURN] stalled cause=launch_timeout provider=codex-cli session=%s phase=launch_prompt waited=%s", sessionName, maxWait)
+			return lastStartupCapture, fmt.Errorf("Codex did not start in %s. Your message is saved; press Retry. (timed out waiting for the Codex CLI launch prompt to start)", maxWait)
 		case <-ticker.C:
 			// The native rollout can accept a positional prompt before the TUI
 			// renders its echo or activity. Release the startup input lane as soon
@@ -1733,9 +1735,11 @@ func waitForCodexPromptMode(ctx context.Context, sessionName string, streamChan 
 		case <-maxTimer.C:
 			captured, _ := captureCodexPane(context.Background(), sessionName)
 			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out after %s waiting for Codex CLI prompt; %s", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
+				log.Printf("[TURN] stalled cause=launch_timeout provider=codex-cli session=%s phase=prompt_mode waited=%s", sessionName, maxWait)
+				return fmt.Errorf("Codex did not start in %s. Your message is saved; press Retry. (timed out waiting for the Codex CLI prompt; %s)", maxWait, llmtypes.CompactTerminalPaneForError(sessionName, captured))
 			}
-			return fmt.Errorf("timed out after %s waiting for Codex CLI prompt", maxWait)
+			log.Printf("[TURN] stalled cause=launch_timeout provider=codex-cli session=%s phase=prompt_mode waited=%s", sessionName, maxWait)
+			return fmt.Errorf("Codex did not start in %s. Your message is saved; press Retry. (timed out waiting for the Codex CLI prompt)", maxWait)
 		case <-ticker.C:
 			captured, err := captureCodexPane(ctx, sessionName)
 			if err != nil {

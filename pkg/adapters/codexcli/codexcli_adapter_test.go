@@ -357,8 +357,8 @@ func TestCodexInteractivePromptWaitDefaultsToStartupBudget(t *testing.T) {
 	}
 
 	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "")
-	if got := codexInteractivePromptMaxWait(); got != 90*time.Minute {
-		t.Fatalf("codexInteractivePromptMaxWait default = %v, want 90m", got)
+	if got := codexInteractivePromptMaxWait(); got != 15*time.Minute {
+		t.Fatalf("codexInteractivePromptMaxWait default = %v, want 15m", got)
 	}
 	t.Setenv(EnvCodexInteractivePromptMaxWaitSeconds, "7")
 	if got := codexInteractivePromptMaxWait(); got != 7*time.Second {
