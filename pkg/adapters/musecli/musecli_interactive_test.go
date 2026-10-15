@@ -3,7 +3,9 @@ package musecli
 import (
 	"context"
 	"errors"
+
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1011,5 +1013,26 @@ func TestMuseOversizedProjectRulesUseFullInlineFallback(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != operator {
 		t.Fatalf("oversized projection altered operator rules: %v", err)
+	}
+}
+
+// The pane found on the owner's machine after Muse updated itself (1.4.8 -> 1.4.9): it blocked every launch for 90 s.
+const museHooksReviewPane = "Muse Code updated 1.4.8-R6256.1 -> 1.4.9-R6297.1\nReview plugin hooks\n3 new or changed hooks need your trust.\n" +
+	"Hooks run commands on your machine when their event matches.\nApproval follows the declaration, including after script updates.\n\n\n" +
+	"⟩ 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting\nUp/Down to choose, Enter to confirm. Esc continues without trusting.\n"
+
+func TestMuseHooksReviewScreenIsRecognisedAndNamed(t *testing.T) {
+	if !museHooksReviewScreen(museHooksReviewPane) {
+		t.Fatal("the plugin hooks review screen was not recognised")
+	}
+	if museHooksReviewScreen("Muse Code 1.4.9\n❯ \nmeta · ~/work\nYou can review plugin hooks later.\n") {
+		t.Fatal("an ordinary pane was taken for the hooks screen")
+	}
+	if got := museScreenCategory(museHooksReviewPane); got != "a plugin hooks review screen" {
+		t.Fatalf("category = %q", got)
+	}
+	var e *llmerrors.Error
+	if !errors.As(museHooksReviewError(), &e) || e.Kind != llmerrors.KindUserInputRequired {
+		t.Fatal("an uncleared hooks screen must be a never-retry error")
 	}
 }

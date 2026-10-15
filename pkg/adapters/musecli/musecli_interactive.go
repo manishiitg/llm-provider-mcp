@@ -147,6 +147,37 @@ func musePaneShowsBlockingGate(pane string) bool {
 	return false
 }
 
+// museHooksReviewScreen reports the screen Muse shows after it updates itself while an installed plugin has new or
+// changed hooks ("Review plugin hooks / N new or changed hooks need your trust", options Review hooks / Trust all and
+// continue / Continue without trusting; Esc continues without trusting). It blocks the launch until answered.
+func museHooksReviewScreen(pane string) bool {
+	lower := strings.ToLower(pane)
+	return strings.Contains(lower, "review plugin hooks") && strings.Contains(lower, "need your trust")
+}
+
+// museMuseHooksReviewError is what the person reads when the hooks screen would not clear. It never retries: the same
+// screen would only multiply the wait.
+func museHooksReviewError() error {
+	return &llmerrors.Error{Kind: llmerrors.KindUserInputRequired, Provider: "muse-cli", Err: fmt.Errorf("Muse is asking you to review new plugin hooks before it can start. Open Muse once in a terminal and choose, then retry. Your message is saved.")}
+}
+
+// museScreenCategory names what a pane that never settled was showing, in words a person can use.
+func museScreenCategory(pane string) string {
+	lower := strings.ToLower(pane)
+	switch {
+	case museHooksReviewScreen(pane):
+		return "a plugin hooks review screen"
+	case musePaneShowsBlockingGate(pane):
+		return "a trust or sign-in prompt"
+	case strings.Contains(lower, "update") && strings.Contains(lower, "muse code"):
+		return "an update screen"
+	case strings.TrimSpace(pane) == "":
+		return "a blank screen"
+	default:
+		return "a screen it did not recognise"
+	}
+}
+
 // museTUISufficientlySettled pins the exact ready markers observed live
 // (fresh_launch green 2026-09-10): the "Muse Code <version>" banner, the
 // "❯" input prompt, and the "<provider> · <workdir>" status line (meta
@@ -317,6 +348,7 @@ func museWaitAtPrompt(ctx context.Context, session string, timeout time.Duration
 func museWaitForReadyPane(ctx context.Context, session string, timeout time.Duration, ready func(string) bool, waitDescription string) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var pane string
+	hooksEsc := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -352,11 +384,28 @@ func museWaitForReadyPane(ctx context.Context, session string, timeout time.Dura
 		if ready(pane) && musePaneStable(ctx, session, pane) {
 			return pane, nil
 		}
+		if museHooksReviewScreen(pane) {
+			// Esc is the screen's own "continue without trusting": it grants nothing and runs no hooks.
+			if hooksEsc >= 2 {
+				log.Printf("[TURN] stalled cause=muse_hooks_review provider=muse-cli session=%s action=esc result=not_cleared", session)
+				return "", museHooksReviewError()
+			}
+			hooksEsc++
+			out, err := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "Escape").CombinedOutput()
+			log.Printf("[TURN] gate=muse_hooks_review provider=muse-cli session=%s action=esc attempt=%d result=%s", session, hooksEsc, museSendKeysResult(err, out))
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(1500 * time.Millisecond):
+			}
+			continue
+		}
 		if musePaneShowsBlockingGate(pane) {
 			return "", fmt.Errorf("muse TUI blocked on trust/auth gate (trust_auth_prompts cert territory); pane:\n%s", pane)
 		}
 		if timeout > 0 && time.Now().After(deadline) {
-			return "", fmt.Errorf("timed out waiting for %s; latest pane:\n%s", waitDescription, pane)
+			log.Printf("[TURN] stalled cause=launch_timeout provider=muse-cli session=%s screen=%q", session, museScreenCategory(pane))
+			return "", fmt.Errorf("Muse did not start in %s: it was showing %s. Your message is saved; press Retry. (timed out waiting for %s; latest pane:\n%s)", timeout.Round(time.Second), museScreenCategory(pane), waitDescription, pane)
 		}
 		select {
 		case <-ctx.Done():
@@ -727,4 +776,11 @@ func writeMuseVisibleDraftToTmux(ctx context.Context, session, prompt string) er
 		}
 	}
 	return nil
+}
+
+func museSendKeysResult(err error, out []byte) string {
+	if err != nil {
+		return "error:" + strings.TrimSpace(string(out))
+	}
+	return "sent"
 }
