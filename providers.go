@@ -412,11 +412,14 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 }
 
 // ReadCodingAgentRetainedTurnEndedWithoutReply reports that the CLI's own record shows the retained turn that began at
-// turnStart ended with no reply (the person interrupted it, or the model call failed), with the CLI's stop reason. Only
-// Pi is wired; the other CLIs report false, so their turns settle as before.
+// turnStart ended with no reply (the person interrupted it, or the model call failed), with the CLI's stop reason. Pi
+// and Muse are wired; the other CLIs report false, so their turns settle as before.
 func ReadCodingAgentRetainedTurnEndedWithoutReply(provider Provider, ownerSessionID string, turnStart time.Time) (string, bool) {
-	if Provider(strings.ToLower(strings.TrimSpace(string(provider)))) == ProviderPiCLI {
+	switch Provider(strings.ToLower(strings.TrimSpace(string(provider)))) {
+	case ProviderPiCLI:
 		return picli.RetainedTurnEndedWithoutReply(ownerSessionID, turnStart)
+	case ProviderMuseCLI:
+		return musecli.RetainedTurnEndedWithoutReply(ownerSessionID, turnStart)
 	}
 	return "", false
 }

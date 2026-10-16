@@ -180,6 +180,72 @@ func ReadRetainedTurnMessages(ownerSessionID string, _ time.Time) []llmtypes.Mes
 	}}
 }
 
+// RetainedTurnEndedWithoutReply reports that Muse's own record shows the retained turn ended cancelled with no reply
+// after it: the person pressed Escape and Muse wrote a run "terminal" of "cancelled" ("cancelled during model step").
+// ReadRetainedTurnMessages returns no final text for such a turn, so without this the chat stays Working after Stop.
+// A later run start or committed reply means the turn went on, so only the newest records decide. The reason is
+// returned for the log.
+func RetainedTurnEndedWithoutReply(ownerSessionID string, _ time.Time) (string, bool) {
+	key, err := musePersistentKey(ownerSessionID)
+	if err != nil {
+		return "", false
+	}
+	musePersistentPool.Lock()
+	entry := musePersistentPool.m[key]
+	if entry == nil {
+		musePersistentPool.Unlock()
+		return "", false
+	}
+	logPath, baseline := entry.logPath, entry.retainedBaselineSequence
+	if logPath == "" && entry.nativeSessionID != "" {
+		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
+	}
+	musePersistentPool.Unlock()
+	if logPath == "" {
+		return "", false
+	}
+	raw, err := os.ReadFile(logPath) //nolint:gosec // adapter-owned transcript path
+	if err != nil {
+		return "", false
+	}
+	return museLogEndedWithoutReply(string(raw), baseline)
+}
+
+// museLogEndedWithoutReply is true when, after the baseline sequence, the last run event is a "cancelled" terminal and
+// no run started or reply was committed since.
+func museLogEndedWithoutReply(log string, baseline int64) (string, bool) {
+	reason := ""
+	for _, line := range strings.Split(log, "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &rec) != nil {
+			continue
+		}
+		if sequence, _ := rec["sequence"].(float64); int64(sequence) <= baseline {
+			continue
+		}
+		payload, _ := rec["payload"].(map[string]any)
+		if payload == nil || museLogString(payload, "kind") != "run" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		switch museLogString(event, "kind") {
+		case "started":
+			reason = ""
+		case "assistant_message_committed":
+			if strings.TrimSpace(museLogString(event, "text")) != "" {
+				reason = ""
+			}
+		case "terminal":
+			if museLogString(event, "terminal") == "cancelled" {
+				reason = "cancelled"
+			} else {
+				reason = ""
+			}
+		}
+	}
+	return reason, reason != ""
+}
+
 // museRetainedQuiet holds one silence watch per owner session for the retained (live-input) turns, which have no
 // waiter loop of their own: the app polls ReadRetainedTurnMessages, so that poll is where silence is seen.
 var museRetainedQuiet sync.Map
