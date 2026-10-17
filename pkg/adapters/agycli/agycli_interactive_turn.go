@@ -280,14 +280,14 @@ func agyTmuxSessionAlive(ctx context.Context, tmuxName string) bool {
 // summed from the conversation .db, and the turn's tool invocations in
 // completion order. An unexpected approval prompt fails loudly: bridge
 // tools are pre-approved, so anything asking is native.
-func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (string, llmtypes.Usage, []agyTurnToolCall, []llmtypes.ContextCompaction, error) {
+func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (string, llmtypes.Usage, []agyTurnToolCall, []llmtypes.ContextCompaction, int, error) {
 	session, ok := activeAgyInteractiveSession(ownerSessionID)
 	if !ok {
-		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("no agy interactive session for owner %q", ownerSessionID)
+		return "", llmtypes.Usage{}, nil, nil, 0, fmt.Errorf("no agy interactive session for owner %q", ownerSessionID)
 	}
 	prompt = strings.Trim(prompt, "\n")
 	if strings.TrimSpace(prompt) == "" {
-		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("agy interactive turn needs a non-empty prompt")
+		return "", llmtypes.Usage{}, nil, nil, 0, fmt.Errorf("agy interactive turn needs a non-empty prompt")
 	}
 	// Live steers (sendAgyInteractiveMessage) hold sendMu around baseline,
 	// paste and Enter; the folded turn prompt must too, or the two can
@@ -296,21 +296,21 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	idxBefore := agyConversationMaxIdx(session.getConversationID(), session.transcriptHome)
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
 		session.sendMu.Unlock()
-		return "", llmtypes.Usage{}, nil, nil, err
+		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
 		session.sendMu.Unlock()
-		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("submit sidecar prompt: %w", err)
+		return "", llmtypes.Usage{}, nil, nil, 0, fmt.Errorf("submit sidecar prompt: %w", err)
 	}
 	session.sendMu.Unlock()
 	// The pane can echo a draft before Enter, so only the conversation's
 	// matching user step proves that this prompt was taken in.
 	userIdx, err := agyWaitTurnIntake(ctx, session, idxBefore, prompt)
 	if err != nil {
-		return "", llmtypes.Usage{}, nil, nil, err
+		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
 	if err := agyWaitTurnAnswer(ctx, session, userIdx); err != nil {
-		return "", llmtypes.Usage{}, nil, nil, err
+		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
 	// Only the structured record supplies the answer. The pane includes
 	// prompt echo, thoughts and tool renderings, so it cannot repair an
@@ -318,11 +318,11 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	conversationID := session.getConversationID()
 	reply := agyTurnReplySince(conversationID, userIdx, session.transcriptHome)
 	if reply == "" {
-		return "", llmtypes.Usage{}, nil, nil, fmt.Errorf("sidecar turn produced no recorded assistant reply")
+		return "", llmtypes.Usage{}, nil, nil, 0, fmt.Errorf("sidecar turn produced no recorded assistant reply")
 	}
-	usage := agyTurnUsageSince(conversationID, userIdx, session.transcriptHome)
+	usage, modelCalls := agyTurnUsageAndCountSince(conversationID, userIdx, session.transcriptHome)
 	toolCalls := agyTurnToolCallsSince(conversationID, userIdx, session.transcriptHome)
-	return reply, usage, toolCalls, agyTurnCompactions(session, conversationID, idxBefore), nil
+	return reply, usage, toolCalls, agyTurnCompactions(session, conversationID, idxBefore), modelCalls, nil
 }
 
 // agyTurnCompactions returns the context compactions AGY recorded since the
@@ -883,10 +883,18 @@ func agyConversationMaxIdx(conversationID string, accountHome ...string) int {
 // thinking (9) token counts equal to the exec JSON envelope for the same
 // turn shape; tool steps carry no usage section.
 func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...string) llmtypes.Usage {
+	usage, _ := agyTurnUsageAndCountSince(conversationID, sinceIdx, accountHome...)
+	return usage
+}
+
+// Count only model generations with native usage, not tools or HTTP retries.
+// The same snapshot supplies tokens and count so they cover the same steps.
+func agyTurnUsageAndCountSince(conversationID string, sinceIdx int, accountHome ...string) (llmtypes.Usage, int) {
 	var usage llmtypes.Usage
 	var thinking int
 	last := -1
-	for _, step := range agyUsageSteps(conversationID, sinceIdx, accountHome...) {
+	steps := agyUsageSteps(conversationID, sinceIdx, accountHome...)
+	for _, step := range steps {
 		usage.InputTokens += step.input
 		usage.OutputTokens += step.output
 		thinking += step.thinking
@@ -899,7 +907,7 @@ func agyTurnUsageSince(conversationID string, sinceIdx int, accountHome ...strin
 	if thinking > 0 {
 		usage.ThoughtsTokens = &thinking
 	}
-	return usage
+	return usage, len(steps)
 }
 
 // agyStepUsage is the usage one finished assistant step reports (field 5.9 of the step payload).

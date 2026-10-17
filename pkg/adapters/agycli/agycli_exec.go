@@ -406,10 +406,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		return nil, err
 	}
 	defer releaseToolHook()
-	turnStartIdx := -1
-	if agyFullNativeToolsMode(toolMode) {
-		turnStartIdx = agyConversationMaxIdx(agyStringMetadata(opts, MetadataKeyResumeSessionID), agyTranscriptHome(opts))
-	}
+	turnStartIdx := agyConversationMaxIdx(agyStringMetadata(opts, MetadataKeyResumeSessionID), agyTranscriptHome(opts))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	stderrPipe, err := cmd.StderrPipe()
@@ -506,6 +503,10 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		WorkingDir:      workdir,
 		Model:           model,
 	})
+	if count := len(agyUsageSteps(parsed.conversationID, turnStartIdx, agyTranscriptHome(opts))); count > 0 {
+		gi.Additional["llm_call_count"] = count
+		gi.Additional["llm_call_count_source"] = "native_model_generations"
+	}
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{{
 			Content:        parsed.response,

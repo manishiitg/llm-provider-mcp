@@ -141,7 +141,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	}
 	stopTerminal := streamAgyTerminal(ctx, session.tmuxSessionName, opts.StreamChan)
 	defer stopTerminal()
-	reply, usage, toolCalls, compactions, err := runAgyInteractiveTurn(ctx, owner, prompt)
+	reply, usage, toolCalls, compactions, modelCalls, err := runAgyInteractiveTurn(ctx, owner, prompt)
 	if err != nil {
 		if ctx.Err() != nil {
 			// A cancellation can land before the sidecar reaches its busy
@@ -177,6 +177,10 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 	})
 	gi.Additional["agy_intake_source"] = "sqlite_user_step"
 	gi.Additional["agy_completion_source"] = "sqlite_assistant_settled"
+	if modelCalls > 0 {
+		gi.Additional["llm_call_count"] = modelCalls
+		gi.Additional["llm_call_count_source"] = "native_model_generations"
+	}
 	return &llmtypes.ContentResponse{
 		Choices: []*llmtypes.ContentChoice{{
 			Content:        reply,

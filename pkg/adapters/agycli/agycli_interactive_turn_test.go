@@ -109,10 +109,22 @@ func TestAgyTurnUsageDecodesGoldenPayload(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO steps (idx, step_type, step_payload) VALUES (1, 15, ?)`, raw); err != nil {
 		t.Fatal(err)
 	}
+	// A tool does not make the native model-generation count grow. A second
+	// assistant step does, even though the adapter returns one bounded turn.
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO steps (idx, step_type, step_payload) VALUES (2, 132, ?), (3, 15, ?)`, raw, raw); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	got := agyTurnUsageSince("golden", -1)
+	both, calls := agyTurnUsageAndCountSince("golden", -1)
+	if calls != 2 || both.InputTokens != 17046 || both.OutputTokens != 626 {
+		t.Fatalf("bounded turn usage=%+v calls=%d, want two native generations", both, calls)
+	}
+	got, calls := agyTurnUsageAndCountSince("golden", 1)
+	if calls != 1 {
+		t.Fatalf("usage since previous model step: calls=%d, want 1", calls)
+	}
 	if got.InputTokens != 8523 || got.OutputTokens != 313 {
 		t.Fatalf("usage = %+v, want input 8523 output 313", got)
 	}
@@ -122,8 +134,8 @@ func TestAgyTurnUsageDecodesGoldenPayload(t *testing.T) {
 	if got.ThoughtsTokens == nil || *got.ThoughtsTokens != 309 {
 		t.Fatalf("thinking = %+v, want 309", got.ThoughtsTokens)
 	}
-	if since := agyTurnUsageSince("golden", 1); since.TotalTokens != 0 {
-		t.Fatalf("usage since idx 1 = %+v, want zero (no new steps)", since)
+	if since := agyTurnUsageSince("golden", 3); since.TotalTokens != 0 {
+		t.Fatalf("usage since idx 3 = %+v, want zero (no new steps)", since)
 	}
 	if missing := agyTurnUsageSince("nope", -1); missing.TotalTokens != 0 {
 		t.Fatalf("usage for missing conversation = %+v, want zero", missing)
