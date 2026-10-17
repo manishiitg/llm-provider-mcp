@@ -194,6 +194,33 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 	c.logger.Debugf("codex interactive startup timing owner=%s stage=acquire created=%v elapsed=%s total=%s", ownerSessionID, created, time.Since(acquireStart).Round(time.Millisecond), time.Since(turnStart).Round(time.Millisecond))
 	tmuxSessionName = session.tmuxSessionName
+	// Keep one content-free lifecycle record at ordinary log level. A missing
+	// rollout must be distinguishable from a native completion without enabling
+	// verbose request logging (PLAT-856).
+	completionSource, finalExtractionSource := "", ""
+	diagnosticRollout, diagnosticThread := codexRolloutIdentity(session)
+	diagnosticStartedAt := turnStart
+	diagnosticAnswerRollout, diagnosticNativeTurn, diagnosticCompletedAt := "", "", ""
+	diagnosticForcedComplete := false
+	diagnosticWorkingDir, diagnosticAccountRoot := session.workingDir, session.accountRoot
+	defer func() {
+		outcome := "completed"
+		if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+			outcome = "launch_only"
+		}
+		if err != nil {
+			outcome = "failed"
+		}
+		loggedCompletionSource := completionSource
+		if diagnosticForcedComplete {
+			loggedCompletionSource = "forced_complete"
+		}
+		contextError := ""
+		if callCtx.Err() != nil {
+			contextError = callCtx.Err().Error()
+		}
+		c.logger.Infof("[COMPLETION_TRACE] stage=codex_turn_returned owner=%q tmux=%q thread=%q rollout=%q working_dir=%q account_root=%q turn_started_at=%s completion_source=%q extraction_source=%q answer_rollout=%q native_turn=%q native_completed_at=%q forced_complete=%v outcome=%s error_type=%T context_error=%q", ownerSessionID, tmuxSessionName, diagnosticThread, diagnosticRollout, diagnosticWorkingDir, diagnosticAccountRoot, diagnosticStartedAt.UTC().Format(time.RFC3339Nano), loggedCompletionSource, finalExtractionSource, diagnosticAnswerRollout, diagnosticNativeTurn, diagnosticCompletedAt, diagnosticForcedComplete, outcome, err, contextError)
+	}()
 	tmuxstartup.Publish(callCtx, opts.StreamChan, "codex-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
 		"codex_interactive_session": session.tmuxSessionName,
 	})
@@ -344,14 +371,16 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	})
 
 	initialRolloutPath, initialThreadID := codexRolloutIdentity(session)
+	diagnosticStartedAt = promptSentAt
 	c.logger.Debugf("[COMPLETION_TRACE] stage=codex_wait_started owner=%q tmux=%q thread=%q rollout=%q turn_started_at=%s", ownerSessionID, session.tmuxSessionName, initialThreadID, initialRolloutPath, promptSentAt.UTC().Format(time.RFC3339Nano))
-	completionSource := ""
 	completionDiagnostics := &codexCompletionDiagnosticHooks{
 		completedBy: func(source string) { completionSource = source },
 		rolloutSelected: func(path, threadID string) {
+			diagnosticRollout, diagnosticThread = path, threadID
 			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_rollout_selected owner=%q tmux=%q thread=%q rollout=%q", ownerSessionID, session.tmuxSessionName, threadID, path)
 		},
 		taskComplete: func(path, threadID, turnID string, completedAt time.Time, offset int64) {
+			diagnosticNativeTurn, diagnosticCompletedAt = turnID, completedAt.UTC().Format(time.RFC3339Nano)
 			c.logger.Debugf("[COMPLETION_TRACE] stage=codex_task_complete_observed owner=%q tmux=%q thread=%q native_turn=%q rollout=%q completed_at=%s offset=%d", ownerSessionID, session.tmuxSessionName, threadID, turnID, path, completedAt.UTC().Format(time.RFC3339Nano), offset)
 		},
 	}
@@ -365,6 +394,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}
 	captured, err := waitForCodexInteractiveResponse(callCtx, session.tmuxSessionName, baseline, opts.StreamChan, promptSentAt, session.workingDir, codexInteractiveStreamTranscriptEnabled(opts), codexInteractiveStreamTmuxScreenEnabled(opts), codexRolloutResolverForSession(session), completionDiagnostics)
 	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
+	diagnosticForcedComplete = forcedComplete
 	if err != nil && !forcedComplete {
 		var loginRequired *CodexLoginRequiredError
 		if errors.As(err, &loginRequired) {
@@ -422,7 +452,8 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			sessionRolloutPath = ""
 		}
 	}
-	finalExtractionSource := "tmux_pane"
+	diagnosticAnswerRollout = sessionRolloutPath
+	finalExtractionSource = "tmux_pane"
 	if transcriptFinal, source := readCodexRolloutFinalAssistantText(sessionRolloutPath, promptSentAt.UTC()); strings.TrimSpace(transcriptFinal) != "" {
 		content = transcriptFinal
 		finalExtractionSource = source
