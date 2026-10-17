@@ -35,8 +35,13 @@ func boundCodexRolloutPaths(exclude *codexInteractiveSession) map[string]bool {
 			continue
 		}
 		session.rolloutMu.RLock()
-		path := session.rolloutPath
+		path, threadID, accountRoot := session.rolloutPath, session.threadID, session.accountRoot
 		session.rolloutMu.RUnlock()
+		// A resumed session knows its thread before it has resolved a path (after a restart, until its
+		// first turn ends); its rollout is still its own.
+		if strings.TrimSpace(path) == "" && threadID != "" {
+			path = findCodexRolloutForThread(threadID, accountRoot)
+		}
 		if strings.TrimSpace(path) != "" {
 			claimed[path] = true
 		}

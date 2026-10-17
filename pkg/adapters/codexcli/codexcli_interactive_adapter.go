@@ -413,6 +413,15 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	// session.mu is held for this entire function (released by the deferred
 	// releaseCodexInteractiveSession), so the *Locked variant is required here.
 	sessionRolloutPath := resolveCodexRolloutPathLocked(session, promptSentAt.UTC())
+	// The answer must come from the transcript that recorded this turn's prompt. A chat whose rollout was
+	// picked by directory and recency could otherwise return another chat's final message (a new Code tab
+	// returned its opener's answer, 2026-10-17); the pane text is the fallback.
+	if sessionRolloutPath != "" {
+		if strict, loose := codexRolloutRecordsBindPrompt(sessionRolloutPath, prompt, promptSentAt.UTC()); !strict && !loose {
+			c.logger.Infof("codex interactive rollout %s does not record this turn's prompt; not used for the final answer owner=%s", filepath.Base(sessionRolloutPath), ownerSessionID)
+			sessionRolloutPath = ""
+		}
+	}
 	finalExtractionSource := "tmux_pane"
 	if transcriptFinal, source := readCodexRolloutFinalAssistantText(sessionRolloutPath, promptSentAt.UTC()); strings.TrimSpace(transcriptFinal) != "" {
 		content = transcriptFinal
@@ -1313,6 +1322,12 @@ func codexCanSubmitInitialPromptAtLaunch(opts *llmtypes.CallOptions, prompt stri
 	// `codex [PROMPT]` accepts a positional first prompt. `codex resume`,
 	// however, has a different positional shape and is intentionally left on
 	// the established ready-then-paste path.
+	// A prompt given at launch starts the turn before the MCP bridge has answered tools/list, so a new chat's
+	// first turn could lack the platform's tools (a Code tab said it had no inbox tool, 2026-10-17). With a
+	// readiness marker configured the prompt is pasted after the bridge is ready instead.
+	if opts != nil && opts.Metadata != nil && codingready.MCPReadyFileFromMetadata(opts.Metadata.Custom) != "" {
+		return false
+	}
 	return strings.TrimSpace(codexResumeSessionIDFromOptions(opts)) == ""
 }
 
