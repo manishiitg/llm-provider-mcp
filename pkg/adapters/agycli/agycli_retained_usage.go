@@ -72,6 +72,7 @@ func ReadRetainedTurnUsage(ownerSessionID string, _ time.Time) []llmtypes.Retain
 			usage.ThoughtsTokens = &thinking
 			info.ReasoningTokens = &thinking
 		}
+		agyAttachCost(&info, session.model, usage)
 		id := fmt.Sprintf("%s:%d", conversationID, step.idx)
 		log.Printf("[RETAINED_USAGE] agy owner=%s step=%s input=%d output=%d reported", ownerSessionID, id, step.input, step.output)
 		out = append(out, llmtypes.RetainedTurnUsage{ID: id, Usage: usage, Info: info})

@@ -503,6 +503,7 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		WorkingDir:      workdir,
 		Model:           model,
 	})
+	agyAttachCost(gi, model, parsed.usage)
 	if count := len(agyUsageSteps(parsed.conversationID, turnStartIdx, agyTranscriptHome(opts))); count > 0 {
 		gi.Additional["llm_call_count"] = count
 		gi.Additional["llm_call_count_source"] = "native_model_generations"

@@ -175,6 +175,7 @@ func (a *AgyCLIAdapter) generateContentInteractive(ctx context.Context, messages
 		WorkingDir:      workdir,
 		Model:           model,
 	})
+	agyAttachCost(gi, model, usage)
 	gi.Additional["agy_intake_source"] = "sqlite_user_step"
 	gi.Additional["agy_completion_source"] = "sqlite_assistant_settled"
 	if modelCalls > 0 {
