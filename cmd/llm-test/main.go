@@ -7,7 +7,6 @@ import (
 
 	claudecodecmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/claudecode"
 	codexclicmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/codexcli"
-	sharedcmd "github.com/manishiitg/multi-llm-provider-go/internal/testing/commands/shared"
 )
 
 func main() {
@@ -28,8 +27,6 @@ func main() {
 	rootCmd.AddCommand(codexclicmd.CodexCLIStreamingMultiTurnTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLISearchWebTestCmd)
 	rootCmd.AddCommand(codexclicmd.CodexCLIImageGenerateTestCmd)
-	rootCmd.AddCommand(sharedcmd.TokenUsageTestCmd)
-	rootCmd.AddCommand(sharedcmd.TestSuiteCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
