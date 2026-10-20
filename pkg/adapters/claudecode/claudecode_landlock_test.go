@@ -16,6 +16,14 @@ func TestClaudeMirrorLandlockReadsWritesArrays(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
 	policy := &llmtypes.CLISecurityPolicy{PrivateHome: home, WorkspaceWritePaths: []string{work}}
+	// A home saved before 2026-10-20 still carries the old read block; it must go, or Bash in dontAsk mode refuses
+	// commands Claude cannot prove stay inside the folders (Landlock confines them anyway).
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"permissions":{"blockReadsOutsideWorkingDirectories":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := claudeMirrorLandlockReads(policy, work); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +40,7 @@ func TestClaudeMirrorLandlockReadsWritesArrays(t *testing.T) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatal(err)
 	}
-	if !settings.Permissions.Block || string(settings.Permissions.Dirs) != "[]" {
+	if settings.Permissions.Block || string(settings.Permissions.Dirs) != "[]" {
 		t.Fatalf("settings = %s", data)
 	}
 }

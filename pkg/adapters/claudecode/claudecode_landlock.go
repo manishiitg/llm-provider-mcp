@@ -112,13 +112,10 @@ func copyDirIfMissing(from, to string) error {
 	})
 }
 
-// claudeMirrorLandlockReads makes Claude's own read rule match the Landlock
-// grants, in the private home's user settings (Claude reads this rule from
-// user settings only). A fresh home has no saved answer, so Claude would
-// otherwise stop the turn to ask "Allow this read outside the working
-// directories?". Blocking outside reads, with the granted folders as
-// additional directories, answers it: granted folders read normally, anything
-// else is refused by Claude, and the kernel refuses it underneath regardless.
+// claudeMirrorLandlockReads lists the Landlock grants as Claude's additional
+// directories, in the private home's user settings (Claude reads this from user
+// settings only), so granted folders read normally. Reads outside them are left
+// to the kernel, which refuses them.
 func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir string) error {
 	path := filepath.Join(policy.PrivateHome, ".claude", "settings.json")
 	settings := map[string]any{}
@@ -139,7 +136,11 @@ func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir st
 			}
 		}
 	}
-	permissions["blockReadsOutsideWorkingDirectories"] = true
+	// Not blockReadsOutsideWorkingDirectories: with it Claude in dontAsk mode refused every Bash command it could not
+	// prove stays inside the folders (an inline script, a loop, a variable path), although the built-in shell is on
+	// (owner, 2026-10-15) and Landlock already confines it. Without it Claude neither asks nor refuses; the kernel
+	// enforces the grants and refuses an outside read with an ordinary error.
+	delete(permissions, "blockReadsOutsideWorkingDirectories")
 	permissions["additionalDirectories"] = dirs
 	settings["permissions"] = permissions
 	data, err := json.MarshalIndent(settings, "", "  ")
