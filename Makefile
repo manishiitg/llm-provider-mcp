@@ -115,7 +115,7 @@ test-ci-job: install-act
 	@if [ -z "$(JOB)" ]; then \
 		echo "❌ Error: JOB parameter is required"; \
 		echo "Usage: make test-ci-job JOB=<job-name>"; \
-		echo "Available jobs: lint, security-scan, test, build, test-suite"; \
+		echo "Available jobs: lint, security-scan, test, build"; \
 		exit 1; \
 	fi
 	@echo "Running CI job '$(JOB)' locally with act..."

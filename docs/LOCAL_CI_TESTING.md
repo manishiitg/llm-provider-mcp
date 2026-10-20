@@ -42,7 +42,6 @@ This guide explains how to test GitHub Actions workflows locally using [act](htt
 5. **Run a specific job:**
    ```bash
    make test-ci-job JOB=lint
-   make test-ci-job JOB=test-suite
    make test-ci-job JOB=build
    ```
 
@@ -52,7 +51,6 @@ This guide explains how to test GitHub Actions workflows locally using [act](htt
 - `security-scan` - Run gitleaks secret scanning
 - `test` - Run Go unit tests
 - `build` - Build all binaries
-- `test-suite` - Run the full test suite in replay mode
 
 ## Troubleshooting
 
@@ -159,9 +157,6 @@ make build
 # Test unit tests
 make test
 
-# Test test suite
-make build
-./bin/llm-test test-suite
 ```
 
 ## Configuration
