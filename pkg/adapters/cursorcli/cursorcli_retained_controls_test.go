@@ -22,6 +22,8 @@ func retainedControlsFixture(t *testing.T) (string, string) {
 	script := `#!/bin/sh
 case "$1" in
 capture-pane) cat "$CURSOR_TEST_PANE" ;;
+load-buffer) cat > "$CURSOR_TEST_PANE.buf"; printf '%s\n' "$*" >> "$CURSOR_TEST_KEYS" ;;
+paste-buffer) printf '%s\n' "$*" >> "$CURSOR_TEST_KEYS"; printf '→ %s\n' "$(cat "$CURSOR_TEST_PANE.buf")" > "$CURSOR_TEST_PANE" ;;
 send-keys)
   printf '%s\n' "$*" >> "$CURSOR_TEST_KEYS"
   case "$4" in
@@ -94,8 +96,9 @@ func TestCursorRetainedApprovalDoesNotBlockLiveInput(t *testing.T) {
 	}
 	keys := string(data)
 	approval := strings.Index(keys, " y\n")
-	draft := strings.Index(keys, "-l -- Continue the setup")
-	if approval < 0 || draft <= approval || strings.Count(keys, "-l -- Continue the setup") != 1 || strings.Count(keys, " C-m\n") != 1 {
+	// Live input is pasted in one acknowledged step (a busy Cursor may not redraw a typed draft).
+	draft := strings.Index(keys, "paste-buffer")
+	if approval < 0 || draft <= approval || strings.Count(keys, "paste-buffer") != 1 || strings.Count(keys, " C-m\n") != 1 {
 		t.Fatalf("expected approval followed by exactly one submitted message, got %s", keys)
 	}
 }

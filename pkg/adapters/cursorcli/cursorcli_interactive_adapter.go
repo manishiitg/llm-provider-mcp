@@ -1987,7 +1987,11 @@ func typeCursorInputToTmuxWithMode(ctx context.Context, sessionName, message str
 func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, message string, preferAtomic, liveInput bool) error {
 	transport := "literal"
 	writeDraft := writeCursorVisibleDraftToTmux
-	if cursorInputNeedsAtomicPaste(message, preferAtomic) {
+	// Live input goes to a busy Cursor whose editor often does not redraw the typed draft where the scraper reads it;
+	// the literal path then never pressed Enter and left the text in the editor, where it went out with the next
+	// message and the person saw "Not delivered" for a message Cursor did answer (RTS 2026-10-20). A paste is one
+	// acknowledged tmux operation and needs no visual receipt.
+	if liveInput || cursorInputNeedsAtomicPaste(message, preferAtomic) {
 		transport = "atomic-paste"
 		writeDraft = pasteCursorDraftToTmux
 	}
@@ -1998,7 +2002,8 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 	if err := writeDraft(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
-	draftVisible := waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, 5*time.Second, liveInput)
+	// A live-input paste is acknowledged by tmux; waiting for a visual receipt on a busy Cursor only delays it.
+	draftVisible := liveInput || waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, 5*time.Second, liveInput)
 	if !draftVisible {
 		// Say what the screen was doing (never its text), so a stall explains itself in the log.
 		if captured, capErr := captureCursorPane(context.WithoutCancel(ctx), sessionName); capErr == nil {
