@@ -51,7 +51,7 @@ const (
 	DefaultCodexCLIModel  = "high"
 	DefaultCursorCLIModel = "composer-2.5"
 	DefaultPiCLIModel     = picli.DefaultModelID
-	DefaultMuseCLIModel   = "muse-cli"
+	DefaultMuseCLIModel   = "muse-spark-1.3"
 	DefaultAgyCLIModel    = "gemini-3.8-flash-high"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
@@ -586,7 +586,7 @@ type ProviderAPIKeys struct {
 	// under the same provider name).
 	PiCustomProvider *picli.PiCustomProvider
 	Bedrock          *BedrockConfig
-	Azure          *AzureAPIConfig
+	Azure            *AzureAPIConfig
 }
 
 // AzureAPIConfig holds Azure-specific configuration

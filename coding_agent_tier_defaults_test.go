@@ -224,7 +224,7 @@ func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
 	check("pulse", defaults.Pulse, "google/gemini-3.8-flash", "high")
 }
 
-func TestCodingAgentDefaultTierModelsMuseWonderLongRunningDefaults(t *testing.T) {
+func TestCodingAgentDefaultTierModelsMuseSparkForEveryRole(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderMuseCLI)
 	if !ok {
 		t.Fatal("GetCodingAgentDefaultTierModels(muse-cli) ok = false")
@@ -241,11 +241,15 @@ func TestCodingAgentDefaultTierModelsMuseWonderLongRunningDefaults(t *testing.T)
 			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
 		}
 	}
-	check("builder", defaults.Builder, "muse-wonder-1.0", "max")
-	check("high", defaults.High, "muse-spark-1.3-contributor", "xhigh")
-	check("medium", defaults.Medium, "muse-spark-1.3-contributor", "high")
-	check("low", defaults.Low, "muse-spark-1.3-contributor", "medium")
-	check("pulse", defaults.Pulse, "muse-wonder-1.0", "max")
+	check("builder", defaults.Builder, "muse-spark-1.3", "max")
+	check("high", defaults.High, "muse-spark-1.3", "xhigh")
+	check("medium", defaults.Medium, "muse-spark-1.3", "high")
+	check("low", defaults.Low, "muse-spark-1.3", "medium")
+	check("pulse", defaults.Pulse, "muse-spark-1.3", "max")
+	t.Setenv("MUSE_CLI_PRIMARY_MODEL", "")
+	if got := GetDefaultModel(ProviderMuseCLI); got != "muse-spark-1.3" {
+		t.Fatalf("unpinned Muse default = %q, want regular Spark 1.3", got)
+	}
 }
 
 func TestCodingAgentDefaultTierModelsArePublished(t *testing.T) {
