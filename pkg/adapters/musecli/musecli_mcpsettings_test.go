@@ -160,7 +160,7 @@ func TestMusePrepareIsolatedConfigKeepsConcurrentMountsSeparate(t *testing.T) {
 	}
 }
 
-func TestMusePrepareIsolatedConfigRepairsLegacySharedLeak(t *testing.T) {
+func TestMusePrepareIsolatedConfigKeepsSharedSettingsUntouched(t *testing.T) {
 	sharedPath := redirectMuseConfigHome(t)
 	if err := os.MkdirAll(filepath.Dir(sharedPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -190,48 +190,16 @@ func TestMusePrepareIsolatedConfigRepairsLegacySharedLeak(t *testing.T) {
 	}
 	defer cleanup()
 
-	var repaired struct {
-		Theme   string                       `json:"theme"`
-		Servers map[string]json.RawMessage   `json:"mcpServers"`
-		Hooks   map[string][]json.RawMessage `json:"hooks"`
-	}
 	raw, err := os.ReadFile(sharedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, &repaired); err != nil {
-		t.Fatal(err)
-	}
-	if repaired.Theme != "dark" || len(repaired.Servers) != 1 || repaired.Servers["user-server"] == nil {
-		t.Fatalf("shared settings lost user content: %s", raw)
-	}
-	if len(repaired.Hooks["PreToolUse"]) != 1 || len(repaired.Hooks["PostToolUse"]) != 1 {
-		t.Fatalf("shared hooks after repair = %#v", repaired.Hooks)
+	if string(raw) != shared {
+		t.Fatal("private launch changed the person's shared settings")
 	}
 	isolatedNames := readMCPServerNames(t, filepath.Join(home, "muse", "settings.json"))
 	if len(isolatedNames) != 1 || !isolatedNames["current"] {
 		t.Fatalf("isolated servers = %v, want current only", isolatedNames)
-	}
-}
-
-func TestMuseLegacyCleanupPreservesSimilarUserEntries(t *testing.T) {
-	path := redirectMuseConfigHome(t)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	before := `{"mcpServers":{"api-bridge":{"command":"user-bridge","env":{"MCP_API_URL":"x","MCP_SESSION_ID":"y","MCP_TOOLS":"z"}}},"hooks":{"PreToolUse":[{"hooks":[{"command":"native-tool-policy-user.js"}]}]}}`
-	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := museRemoveLegacySharedConfigLeak(path); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != before {
-		t.Fatalf("similar user entries changed:\nbefore=%s\nafter=%s", before, after)
 	}
 }
 

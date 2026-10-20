@@ -37,22 +37,3 @@ func TestMuseHookDirIsPerUserAndOwnerOnly(t *testing.T) {
 		t.Fatal("a planted symlink was used as the hook folder")
 	}
 }
-
-func TestMuseOwnHookCommandMatchesLegacyAndOwnFolderOnly(t *testing.T) {
-	for _, command := range []string{
-		"node '/tmp/muse-cli-hooks/native-tool-policy-deadbeef.js'",
-		fmt.Sprintf("node '/tmp/muse-cli-hooks-%d/native-tool-policy-deadbeef.js'", os.Getuid()),
-	} {
-		if !museIsOwnHookCommand(command) {
-			t.Errorf("not recognised: %s", command)
-		}
-	}
-	for _, command := range []string{
-		fmt.Sprintf("node '/tmp/muse-cli-hooks-%d/native-tool-policy-x.js'", os.Getuid()+1),
-		"node '/tmp/other/native-tool-policy-x.js'",
-	} {
-		if museIsOwnHookCommand(command) {
-			t.Errorf("another user's or a foreign hook was recognised: %s", command)
-		}
-	}
-}

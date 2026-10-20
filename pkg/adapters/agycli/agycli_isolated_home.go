@@ -46,10 +46,7 @@ func agyIsolatedHomeWithConversations(servers []agyMCPServer, conversationHome s
 	if err != nil {
 		return "", nil, err
 	}
-	agyLegacySweepOnce.Do(func() {
-		_ = agySweepLegacyGlobalMounts(base)
-		agySweepStalePrivateHomes()
-	})
+	agyPrivateHomesSweepOnce.Do(agySweepStalePrivateHomes)
 	home, err := os.MkdirTemp("", fmt.Sprintf("agentworks-agy-%d-", os.Getpid()))
 	if err != nil {
 		return "", nil, err

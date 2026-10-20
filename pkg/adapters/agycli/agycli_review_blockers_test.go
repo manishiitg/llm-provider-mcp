@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -119,31 +118,6 @@ func TestAgyQuotaOnlyUsesExplicitStderrAndPaneErrors(t *testing.T) {
 	}
 	if err := agyQuotaPaneError("", strings.Repeat("ordinary status\n", 12)+"Error: quota exceeded\n"); llmerrors.KindOf(err) != llmerrors.KindQuotaExhausted {
 		t.Fatalf("recent TUI error kind = %q, err=%v", llmerrors.KindOf(err), err)
-	}
-}
-
-func TestAgySweepLegacyDeadMountsKeepsLiveOnes(t *testing.T) {
-	home := t.TempDir()
-	dead := "agentworks-old-99999999-abcd"
-	live := "agentworks-live-" + strconv.Itoa(os.Getpid()) + "-abcd"
-	config := filepath.Join(home, ".gemini", "config", "mcp_config.json")
-	settings := agySettingsPath(home)
-	if err := agyWritePrivateJSON(config, map[string]interface{}{"mcpServers": map[string]interface{}{dead: map[string]interface{}{"command": "/bin/true"}, live: map[string]interface{}{"command": "/bin/true"}, "user-server": map[string]interface{}{"command": "/bin/true"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := agyWritePrivateJSON(settings, map[string]interface{}{"permissions": map[string]interface{}{"allow": []string{"mcp(" + dead + "/*)", "mcp(" + live + "/*)", "view_file"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := agySweepLegacyGlobalMounts(home); err != nil {
-		t.Fatal(err)
-	}
-	configRaw, _ := os.ReadFile(config)
-	settingsRaw, _ := os.ReadFile(settings)
-	if strings.Contains(string(configRaw), dead) || strings.Contains(string(settingsRaw), dead) {
-		t.Fatal("dead legacy mount survived sweep")
-	}
-	if !strings.Contains(string(configRaw), live) || !strings.Contains(string(settingsRaw), live) || !strings.Contains(string(configRaw), "user-server") {
-		t.Fatal("sweep removed a live or user mount")
 	}
 }
 

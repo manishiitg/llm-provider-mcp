@@ -28,7 +28,7 @@ func requireBedrockRealE2E(t *testing.T) string {
 	}
 	model := strings.TrimSpace(os.Getenv("BEDROCK_REAL_E2E_MODEL"))
 	if model == "" {
-		// Matches the default used by the cobra llm-test bedrock
+		// Uses the direct API integration fixture model
 		// suite. Override with BEDROCK_REAL_E2E_MODEL when
 		// validating a different model.
 		model = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"

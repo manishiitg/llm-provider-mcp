@@ -1266,12 +1266,6 @@ go run ./cmd/llm-test codex-cli-image-generate \
   --num-images 1 \
   --output-dir /tmp/mlp-codex-image-gen
 
-GEMINI_API_KEY=<key> go run ./cmd/llm-test vertex-imagen-generate \
-  --model gemini-3.1-flash-image \
-  --prompt "A simple red square icon centered on a white background" \
-  --aspect-ratio 1:1 \
-  --num-images 1 \
-  --output-dir /tmp/mlp-vertex-image-gen
 ```
 
 Builder/workspace image-generation virtual-tool contract command:
