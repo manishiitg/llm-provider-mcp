@@ -31,6 +31,8 @@ const (
 	// KindQuotaExhausted is a daily/monthly usage limit. Will NOT recover
 	// within minutes — skip same-model retries and go straight to fallback.
 	KindQuotaExhausted Kind = "quota_exhausted"
+	// KindBilling is a failed payment or billing check. Waiting for a usage reset cannot fix it.
+	KindBilling Kind = "billing_error"
 	// KindAuth is an invalid/expired credential or permission failure (401/403).
 	// Retrying is pointless until configuration changes.
 	KindAuth Kind = "auth"
@@ -233,9 +235,15 @@ func classifyKind(err error) Kind {
 		"per_day", "per_month", "generaterequestsperday",
 		"resource_exhausted", "quota exceeded for metric", "exceeded your current quota",
 		"hit your usage limit", "hit your limit", "usage limit",
-		"billing", "insufficient credit", "insufficient_quota",
+		"insufficient credit", "insufficient_quota",
 	) {
 		return KindQuotaExhausted
+	}
+
+	// Some providers use 402 for exhausted credits, so check quota first.
+	// A billing check failure has no usage window that can reset.
+	if status == 402 || containsAny(msg, "billing_error", "billing verification failed") {
+		return KindBilling
 	}
 
 	if status == 429 || containsAny(msg,

@@ -20,6 +20,12 @@ func TestClassifyKinds(t *testing.T) {
 		{"deadline exceeded", context.DeadlineExceeded, KindTimeout},
 		{"timeout text", errors.New("request timed out after 30s"), KindTimeout},
 
+		// Billing failures must not acquire usage-reset advice.
+		{"billing verification", errors.New("API error 402: Billing verification failed. Please check your payment method. (billing_error)"), KindBilling},
+		{"402 exhausted credits", errors.New("status code: 402 insufficient credits"), KindQuotaExhausted},
+		{"billing status", errors.New("status code: 402 payment required"), KindBilling},
+		{"billing mention alone", errors.New("unable to continue; check billing details"), KindUnknown},
+
 		// Quota exhaustion (must win over rate-limit patterns in the same message)
 		{"gemini daily quota", errors.New("googleapi: Error 429: Quota exceeded for metric generate_requests_per_model_per_day"), KindQuotaExhausted},
 		{"openai quota", errors.New("429: You exceeded your current quota, please check your plan and billing details"), KindQuotaExhausted},
@@ -171,7 +177,7 @@ func TestIsRetryable(t *testing.T) {
 			t.Errorf("kind %s should be retryable", k)
 		}
 	}
-	terminal := []Kind{KindQuotaExhausted, KindAuth, KindContextTooLong, KindModelNotFound, KindInvalidRequest, KindCanceled, KindUnknown}
+	terminal := []Kind{KindBilling, KindQuotaExhausted, KindAuth, KindContextTooLong, KindModelNotFound, KindInvalidRequest, KindCanceled, KindUnknown}
 	for _, k := range terminal {
 		if IsRetryable(&Error{Kind: k, Err: errors.New("x")}) {
 			t.Errorf("kind %s should NOT be retryable", k)
