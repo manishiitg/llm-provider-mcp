@@ -98,8 +98,12 @@ func ReadRetainedTurnUsage(ownerSessionID string, turnStart time.Time) []llmtype
 			total = u.Input + u.Output + u.CacheRead + u.CacheWrite
 		}
 		usage := llmtypes.Usage{InputTokens: u.Input, OutputTokens: u.Output, TotalTokens: total}
+		model := ev.Message.Model
+		if ev.Message.Provider != "" && model != "" {
+			model = ev.Message.Provider + "/" + model
+		}
 		info := llmtypes.GenerationInfo{InputTokens: intPtr(u.Input), OutputTokens: intPtr(u.Output), TotalTokens: intPtr(total),
-			Additional: map[string]interface{}{"provider": "pi-cli", "pi_token_usage_source": "transcript-file", "pi_model": ev.Message.Model}}
+			Additional: map[string]interface{}{"provider": "pi-cli", "pi_token_usage_source": "transcript-file", "pi_model": model}}
 		if u.CacheRead > 0 {
 			info.CachedContentTokens = intPtr(u.CacheRead)
 			info.Additional["cache_read_input_tokens"] = u.CacheRead

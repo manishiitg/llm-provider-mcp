@@ -7,6 +7,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 )
 
 const (
@@ -96,8 +97,12 @@ func (p *PiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata
 	if strings.TrimSpace(modelID) == "" {
 		modelID = p.GetModelID()
 	}
-	provider, model := resolvePiProviderModel(modelID, "")
-	return &llmtypes.ModelMetadata{
+	selectedProvider := ""
+	if !strings.Contains(modelID, "/") {
+		selectedProvider, _ = resolvePiProviderModel(p.GetModelID(), "")
+	}
+	provider, model := resolvePiProviderModel(modelID, selectedProvider)
+	metadata := &llmtypes.ModelMetadata{
 		ModelID:                 provider + "/" + model,
 		Provider:                "pi-cli",
 		ModelName:               "Pi CLI (" + provider + "/" + model + ")",
@@ -105,7 +110,19 @@ func (p *PiCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetadata
 		SupportsToolCalls:       true,
 		SupportsReasoningEffort: true,
 		ReasoningEffortLevels:   []string{"low", "medium", "high", "xhigh"},
-	}, nil
+	}
+	// Pi's native cost takes precedence in the response. When it supplies only
+	// tokens, the runtime can estimate known Google routes from the same Gemini
+	// registry used by the API adapter. Other routes remain unpriced.
+	if p.customProvider == nil && (provider == "google" || provider == "google-vertex") {
+		if pricing, err := vertex.GetVertexGeminiModelMetadata(model); err == nil {
+			metadata.InputCostPer1MTokens = pricing.InputCostPer1MTokens
+			metadata.OutputCostPer1MTokens = pricing.OutputCostPer1MTokens
+			metadata.CachedInputCostPer1MTokens = pricing.CachedInputCostPer1MTokens
+			metadata.CachedInputCostWritePer1MTokens = pricing.CachedInputCostWritePer1MTokens
+		}
+	}
+	return metadata, nil
 }
 
 func splitPiSystemPrompt(messages []llmtypes.MessageContent) (string, []llmtypes.MessageContent) {
