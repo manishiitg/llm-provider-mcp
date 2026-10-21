@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -65,18 +64,8 @@ func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes
 	if err != nil {
 		return "", "", nil, err
 	}
-	// MCP_TOOLS is literal JSON, including shell examples such as ${NAME}.
-	// Native Pi resolves env values as templates. Read the JSON from a private
-	// file instead so examples are neither expanded nor executed.
-	envDir := filepath.Join(agentDir, "mcp-env")
 	cleanup = func() {
 		_ = os.Remove(piNativeMCPConfigPath(agentDir))
-		_ = os.RemoveAll(envDir)
-	}
-	normalized, err = protectPiMCPToolDefinitions(normalized, envDir)
-	if err != nil {
-		cleanup()
-		return "", "", nil, err
 	}
 	mcpPath := piNativeMCPConfigPath(agentDir)
 	if err := writePiPrivateFileAtomically(mcpPath, normalized); err != nil {
@@ -84,43 +73,6 @@ func preparePiNativeMCPConfig(workingDir, nativeSessionID string, opts *llmtypes
 		return "", "", nil, fmt.Errorf("failed to write native Pi MCP config %s: %w", mcpPath, err)
 	}
 	return agentDir, sessionDir, cleanup, nil
-}
-
-func protectPiMCPToolDefinitions(normalized []byte, envDir string) ([]byte, error) {
-	var config map[string]json.RawMessage
-	if err := json.Unmarshal(normalized, &config); err != nil {
-		return nil, err
-	}
-	var servers map[string]map[string]json.RawMessage
-	if err := json.Unmarshal(config["mcpServers"], &servers); err != nil {
-		return nil, err
-	}
-	for name, server := range servers {
-		if len(server["env"]) == 0 {
-			continue
-		}
-		var env map[string]string
-		if err := json.Unmarshal(server["env"], &env); err != nil {
-			return nil, fmt.Errorf("Pi MCP server %s env: %w", name, err)
-		}
-		definitions, ok := env["MCP_TOOLS"]
-		if !ok {
-			continue
-		}
-		if err := os.MkdirAll(envDir, 0o700); err != nil {
-			return nil, err
-		}
-		sum := sha256.Sum256([]byte(name))
-		path := filepath.Join(envDir, hex.EncodeToString(sum[:12])+".json")
-		if err := writePiPrivateFileAtomically(path, []byte(definitions)); err != nil {
-			return nil, err
-		}
-		env["MCP_TOOLS"] = "!cat " + shelllaunch.Quote(path)
-		server["env"], _ = json.Marshal(env)
-	}
-	config["mcpServers"], _ = json.Marshal(servers)
-	body, err := json.MarshalIndent(config, "", "  ")
-	return append(body, '\n'), err
 }
 
 // removeStalePiProjectMCPConfig deletes a legacy platform config at

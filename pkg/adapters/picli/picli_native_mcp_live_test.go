@@ -37,14 +37,12 @@ func TestPiNativeMCPRuntimeIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverPath := filepath.Join(workDir, "canary.js")
-	envReportPath := filepath.Join(workDir, "server-env.json")
-	literalDefinitions := `[{"name":"example","description":"Keep ${SANDBOX_PERSISTENT_DIR} and $(touch must-not-exist) literal"}]`
-	serverSource := fmt.Sprintf("require('node:fs').writeFileSync(%q, process.env.MCP_TOOLS);\n", envReportPath) + strings.TrimPrefix(piMCPBridgeCanaryServerSource(), "#!/usr/bin/env node\n")
+	serverSource := strings.TrimPrefix(piMCPBridgeCanaryServerSource(), "#!/usr/bin/env node\n")
 	if err := os.WriteFile(serverPath, []byte(serverSource), 0600); err != nil {
 		t.Fatal(err)
 	}
 	opts := &llmtypes.CallOptions{}
-	WithMCPConfig(fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q],"env":{"MCP_TOOLS":%q}}}}`, serverPath, literalDefinitions))(opts)
+	WithMCPConfig(fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, serverPath))(opts)
 	WithBridgeOnlyTools(true)(opts)
 	agentDir, _, cleanup, err := preparePiNativeMCPConfig(workDir, "mlp-pi-native-isolation", opts, nil)
 	if err != nil {
@@ -108,27 +106,11 @@ export default function(pi) {
 	if strings.Contains(string(raw), "foreign") {
 		t.Fatalf("ambient MCP tools loaded: %s", raw)
 	}
-	if got, err := os.ReadFile(envReportPath); err != nil || string(got) != literalDefinitions {
-		t.Fatalf("MCP tool definitions were expanded: got %q, error %v", got, err)
-	}
-	if _, err := os.Stat(filepath.Join(workDir, "must-not-exist")); !os.IsNotExist(err) {
-		t.Fatal("literal tool description was executed")
-	}
-	privateEnvFiles, err := filepath.Glob(filepath.Join(agentDir, "mcp-env", "*.json"))
-	if err != nil || len(privateEnvFiles) != 1 {
-		t.Fatalf("private tool definition files: %v, %v", privateEnvFiles, err)
-	}
-	if info, err := os.Stat(privateEnvFiles[0]); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatal("tool definitions must be private")
-	}
 	if current, err := os.ReadFile(projectPath); err != nil || string(current) != string(foreign) {
 		t.Fatal("foreign project config modified")
 	}
 	cleanup()
 	if _, err := os.Stat(piNativeMCPConfigPath(agentDir)); !os.IsNotExist(err) {
 		t.Fatalf("private config not removed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(agentDir, "mcp-env")); !os.IsNotExist(err) {
-		t.Fatal("private tool definitions not removed")
 	}
 }
