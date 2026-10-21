@@ -2,6 +2,7 @@ package agycli
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -588,12 +589,18 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 // prompts echo inline (snippet match); long ones collapse to a
 // "[Pasted text #N +M lines]" placeholder whose line count must match.
 func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
-	load := exec.CommandContext(ctx, "tmux", "load-buffer", "-w", "-t", tmuxName, "-")
+	// The default buffer belongs to the tmux server, not the target session.
+	// Concurrent sessions must never consume each other's prompts.
+	bufferName := "agy-input-" + rand.Text()
+	defer func() {
+		_ = exec.Command("tmux", "delete-buffer", "-b", bufferName).Run()
+	}()
+	load := exec.CommandContext(ctx, "tmux", "load-buffer", "-w", "-b", bufferName, "-t", tmuxName, "-")
 	load.Stdin = strings.NewReader(prompt)
 	if out, err := load.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux load-buffer: %w\n%s", err, out)
 	}
-	if out, err := exec.CommandContext(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", tmuxName).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "tmux", "paste-buffer", "-d", "-p", "-b", bufferName, "-t", tmuxName).CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux paste-buffer: %w\n%s", err, out)
 	}
 	snippet := agyEchoSnippet(prompt)
