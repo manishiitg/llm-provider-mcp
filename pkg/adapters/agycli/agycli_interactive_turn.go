@@ -297,14 +297,17 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	// interleave in the one input box and share a baseline.
 	session.sendMu.Lock()
 	idxBefore := agyConversationMaxIdx(session.getConversationID(), session.transcriptHome)
+	log.Printf("[AGY_TURN] stage=paste_started tmux_session=%q conversation=%q since_idx=%d prompt_bytes=%d", session.tmuxSessionName, session.getConversationID(), idxBefore, len(prompt))
 	if err := agyPasteToSidecar(ctx, session.tmuxSessionName, prompt); err != nil {
 		session.sendMu.Unlock()
 		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
+	log.Printf("[AGY_TURN] stage=paste_verified tmux_session=%q conversation=%q since_idx=%d", session.tmuxSessionName, session.getConversationID(), idxBefore)
 	if err := agyTmuxSendKeys(ctx, session.tmuxSessionName, "Enter"); err != nil {
 		session.sendMu.Unlock()
 		return "", llmtypes.Usage{}, nil, nil, 0, fmt.Errorf("submit sidecar prompt: %w", err)
 	}
+	log.Printf("[AGY_TURN] stage=enter_sent tmux_session=%q conversation=%q since_idx=%d", session.tmuxSessionName, session.getConversationID(), idxBefore)
 	session.sendMu.Unlock()
 	// The pane can echo a draft before Enter, so only the conversation's
 	// matching user step proves that this prompt was taken in.
@@ -312,6 +315,7 @@ func runAgyInteractiveTurn(ctx context.Context, ownerSessionID, prompt string) (
 	if err != nil {
 		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
+	log.Printf("[AGY_TURN] stage=intake_confirmed tmux_session=%q conversation=%q user_idx=%d", session.tmuxSessionName, session.getConversationID(), userIdx)
 	if err := agyWaitTurnAnswer(ctx, session, userIdx); err != nil {
 		return "", llmtypes.Usage{}, nil, nil, 0, err
 	}
@@ -368,7 +372,14 @@ type agyTurnRecord struct {
 	// turn, for example on an upstream 500. Empty when there is none, or when
 	// an assistant or tool-call step came after it.
 	executorError string
-	subagents     map[string]bool // native child id -> completion notification received
+	// A failed/interrupted assistant or tool can end a native turn without
+	// the separate executor-error step. Later work clears this candidate;
+	// the answer waiter also requires a settled record and an idle pane.
+	nativeFailure    string
+	failedStepIdx    int
+	failedStepType   int
+	failedStepStatus int
+	subagents        map[string]bool // native child id -> completion notification received
 	// compactions are the finished context compactions (CHECKPOINT steps
 	// that are not intent-only) in idx order.
 	compactions []llmtypes.ContextCompaction
@@ -453,6 +464,14 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accou
 		// Work after an error step means the turn went on; a notice or checkpoint does not.
 		if stepType == agyStepAssistant || stepType == agyStepToolCall {
 			record.executorError = ""
+			record.nativeFailure = ""
+			if status == agyStepStatusError || status == agyStepStatusInterrupted {
+				record.nativeFailure = "the agent's last step failed before a final reply; work already performed was kept"
+				if status == agyStepStatusInterrupted {
+					record.nativeFailure = "the agent was interrupted before a final reply; work already performed was kept"
+				}
+				record.failedStepIdx, record.failedStepType, record.failedStepStatus = idx, stepType, status
+			}
 		}
 		if stepType == agyStepExecutorError && status == agyStepStatusDone {
 			record.executorError = agyExecutorErrorText(payload)
@@ -537,6 +556,10 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 	var settledAt time.Time
 	var settledIdx int
 	var settledAnswer string
+	var failureSettledAt time.Time
+	var failureSettledIdx int
+	var failureSettledStatus int
+	lastObservedIdx, lastObservedStatus := -1, -1
 	for {
 		if err := ctx.Err(); err != nil {
 			_ = agyTmuxSendKeys(context.Background(), session.tmuxSessionName, "Escape")
@@ -550,14 +573,30 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 			return fmt.Errorf("sidecar turn blocked on unexpected approval prompt (%s); pane tail:\n%s", marker, agyPaneTail(pane, 25))
 		}
 		record, err := agyReadTurnRecord(session.getConversationID(), userIdx, "", session.transcriptHome)
+		if err == nil && (record.lastIdx != lastObservedIdx || record.lastStatus != lastObservedStatus) {
+			lastObservedIdx, lastObservedStatus = record.lastIdx, record.lastStatus
+			log.Printf("[AGY_TURN] stage=native_progress tmux_session=%q conversation=%q user_idx=%d last_idx=%d last_type=%d last_status=%d ready=%t busy=%t", session.tmuxSessionName, session.getConversationID(), userIdx, record.lastIdx, record.lastType, record.lastStatus, PaneReadyForInput(pane), strings.Contains(agyPaneStatusRows(pane), agyPaneBusyMarker))
+		}
 		if err == nil && agyTurnEndedByExecutorError(record) {
 			return agyExecutorTurnError(record.executorError)
+		}
+		if err == nil && record.nativeFailure != "" && record.compactionPendingIdx < 0 && !agyPendingNativeSubagents(record, 0) && PaneReadyForInput(pane) {
+			if failureSettledAt.IsZero() || failureSettledIdx != record.lastIdx || failureSettledStatus != record.failedStepStatus {
+				failureSettledIdx, failureSettledStatus, failureSettledAt = record.lastIdx, record.failedStepStatus, time.Now()
+			}
+			if time.Since(failureSettledAt) >= 2*time.Second {
+				log.Printf("[AGY_TURN] stage=native_terminal_error tmux_session=%q conversation=%q user_idx=%d failed_idx=%d failed_type=%d failed_status=%d", session.tmuxSessionName, session.getConversationID(), userIdx, record.failedStepIdx, record.failedStepType, record.failedStepStatus)
+				return agyExecutorTurnError(record.nativeFailure)
+			}
+		} else {
+			failureSettledAt = time.Time{}
 		}
 		if err == nil && record.lastType == agyStepAssistant && record.lastStatus == 3 && record.finalAnswer != "" && !agyPendingNativeSubagents(record, 0) {
 			if record.lastIdx != settledIdx || record.finalAnswer != settledAnswer {
 				settledIdx, settledAnswer, settledAt = record.lastIdx, record.finalAnswer, time.Now()
 			}
 			if time.Since(settledAt) >= 2*time.Second && PaneReadyForInput(pane) {
+				log.Printf("[AGY_TURN] stage=answer_confirmed tmux_session=%q conversation=%q user_idx=%d answer_idx=%d", session.tmuxSessionName, session.getConversationID(), userIdx, record.lastIdx)
 				return nil
 			}
 		} else {
@@ -1052,6 +1091,9 @@ func agyExecutorTurnError(text string) error {
 const (
 	agyStepCheckpoint = 23
 	agyStepStatusDone = 3
+	// Values from the native CortexStepStatus descriptor (AGY 1.4.5).
+	agyStepStatusError       = 7
+	agyStepStatusInterrupted = 12
 )
 
 // agyCheckpointCompaction decodes a finished CHECKPOINT step into a context

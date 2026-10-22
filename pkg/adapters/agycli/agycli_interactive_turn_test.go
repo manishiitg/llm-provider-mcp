@@ -1,9 +1,12 @@
 package agycli
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +17,95 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	_ "modernc.org/sqlite"
 )
+
+// A native tool can end in ERROR without an executor-error row or final
+// assistant. Drive the production waiter through SQLite and an isolated tmux
+// pane; the pane alone never proves success or failure.
+func TestAgyNativeTerminalFailureRealTmux(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is required")
+	}
+	for _, tc := range []struct {
+		name            string
+		status          int
+		busy, recovered bool
+	}{
+		{"error", agyStepStatusError, false, false},
+		{"interrupted", agyStepStatusInterrupted, false, false},
+		{"busy_error_keeps_waiting", agyStepStatusError, true, false},
+		{"later_assistant_recovers", agyStepStatusError, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "native-end.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)`); err != nil {
+				t.Fatal(err)
+			}
+			insert := func(idx, kind, status int, payload []byte) {
+				t.Helper()
+				if _, err := db.Exec(`INSERT INTO steps VALUES (?, ?, ?, ?)`, idx, kind, status, payload); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// An older failed step must never end the current turn.
+			insert(0, agyStepToolCall, agyStepStatusError, []byte{})
+			insert(1, agyStepUser, 3, agyTestPayload(agyStepUser, 19, 2, "synthetic request"))
+			insert(2, agyStepAssistant, 3, agyTestPayload(agyStepAssistant, 20, 1, "Working"))
+			insert(3, agyStepToolCall, tc.status, []byte{})
+			if tc.recovered {
+				insert(4, agyStepAssistant, 3, agyTestPayload(agyStepAssistant, 20, 1, "Finished"))
+			}
+			socket := fmt.Sprintf("agy-native-end-%d-%s", os.Getpid(), tc.name)
+			run := func(args ...string) {
+				t.Helper()
+				out, err := exec.Command(realTmux, append([]string{"-L", socket, "-f", "/dev/null"}, args...)...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("tmux: %v: %s", err, out)
+				}
+			}
+			status := "? for shortcuts"
+			if tc.busy {
+				status += " esc to cancel"
+			}
+			run("new-session", "-d", "-s", "qa", "-x", "200", "-y", "50", "/bin/sh", "-c", "printf '%s' '"+status+"'; sleep 30")
+			defer exec.Command(realTmux, "-L", socket, "kill-server").Run()
+			shim := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\nexec '%s' -L '%s' -f /dev/null \"$@\"\n", realTmux, socket)
+			if err := os.WriteFile(filepath.Join(shim, "tmux"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", shim+":"+os.Getenv("PATH"))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			session := &agyInteractiveSession{tmuxSessionName: "qa", transcriptHome: home, conversationID: "native-end"}
+			err = agyWaitTurnAnswer(ctx, session, 1)
+			if tc.busy {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("busy error ended turn: %v", err)
+				}
+				return
+			}
+			if tc.recovered {
+				if err != nil {
+					t.Fatalf("recovered error ended turn: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), agyExecutorErrorPrefix) || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("native failure not released: %v", err)
+			}
+		})
+	}
+}
 
 // Captured from real AGY 1.4.4 drafts. A character marker hides the prompt
 // snippet just as a line marker does; it must not cause a delivery timeout.
