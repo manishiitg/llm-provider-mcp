@@ -545,8 +545,8 @@ func museSendPrompt(ctx context.Context, session, prompt string) error {
 			// Durable-ack P0 (docs/refactor/durable_ack_p0.md in the builder, PLAT-352): attempt once, report the truth. Once Enter took effect nothing is
 			// typed or submitted again from here, and the pane never decides delivery. A footer notice ("Message not sent -- another run is still
 			// starting") also changes the pane; it is only logged. Recovery from a genuine refusal lives in museConfirmSubmitOrResubmit, which resubmits
-			// only with a run-started signal plus a still-absent intake record — a stale notice over a landed message (PLAT-422, one message ran three
-			// or more times on Excellence, 2026-10-04) resubmits nothing. museWaitIntake observes the native session.jsonl for the intake record, with
+			// only for the exact unsent bottom draft plus a still-absent intake record. A stale notice over accepted input sends nothing, and
+			// recovery presses Enter without clearing/retyping. museWaitIntake observes the native session.jsonl for the intake record, with
 			// its slow-start allowance, and says "unconfirmed" if it never comes.
 			if pane, paneErr := museTmuxCapturePane(ctx, session); paneErr == nil && museRejectedNotice(pane) {
 				log.Printf("[MUSE_SUBMIT_NOTICE] session=%s Muse showed \"Message not sent\"; not retyping, waiting for durable intake", session)

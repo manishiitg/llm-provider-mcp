@@ -534,9 +534,8 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	preSubmitSeq := museTranscriptMaxSequence(preSubmitLogPath)
 	turnStart := time.Now()
 	submitErr := museSendPrompt(ctx, session, prompt)
-	// A genuinely refused submit (notice, no intake) is resubmitted here,
-	// intake-gated and bounded; anything else falls through to the long
-	// authoritative wait below.
+	// Recover only an exact idle draft with a delayed Enter. The native log
+	// still decides acceptance; recovery never clears or retypes the prompt.
 	if err := museConfirmSubmitOrResubmit(ctx, museAccountDataHome(ctx), session, prompt, turnStart, workdir); err != nil {
 		if persistent {
 			museRememberUnconfirmedDraft(owner, session)

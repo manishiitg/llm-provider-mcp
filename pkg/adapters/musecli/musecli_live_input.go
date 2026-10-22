@@ -14,9 +14,9 @@ import (
 // it: deliver failed with "provider has no live input transport".
 //
 // museSendPrompt is reused verbatim for follow-ups (chunked/paste routing +
-// Enter) so steering delivery matches turn submission byte-for-byte, minus
-// intake/quiescence: delivery is fire-and-report and the caller tracks
-// completion, the same contract as cursor's sendCursorLiveInputToTmux.
+// Enter) so steering delivery matches turn submission byte-for-byte. Both
+// paths recover an idle stuck draft; native queued/running input returns
+// immediately to its receipt watcher, and the caller tracks completion.
 
 // musePersistentTmuxForOwner resolves the pooled tmux session name for an
 // owner session id. False when nothing is pooled (never started, already
@@ -58,6 +58,7 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	}
 	tmuxName := entry.tmuxName
 	logPath := entry.logPath
+	dataHome, workdir := entry.accountDataHome, entry.workdir
 	userChoice := entry.userChoice
 	if logPath == "" && entry.nativeSessionID != "" {
 		logPath = museSessionLogPath(entry.nativeSessionID, entry.accountDataHome)
@@ -106,6 +107,9 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 	}
 	musePersistentPool.Unlock()
 	if err := museSendPrompt(ctx, tmuxName, message); err != nil {
+		return museArbiterAfterSubmitFailure(ctx, ownerSessionID, tmuxName, message, since, baseline, err)
+	}
+	if err := museConfirmSubmitOrResubmit(ctx, dataHome, tmuxName, message, since, workdir); err != nil {
 		return museArbiterAfterSubmitFailure(ctx, ownerSessionID, tmuxName, message, since, baseline, err)
 	}
 	musePersistentPool.Lock()
