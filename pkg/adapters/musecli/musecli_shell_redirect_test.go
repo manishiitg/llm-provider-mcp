@@ -151,7 +151,7 @@ func TestApplyMCPConfigInstallsShellRedirectWithoutAnAllowlist(t *testing.T) {
 			mine++
 		}
 		for _, h := range entry.Hooks {
-			if strings.Contains(h.Command, "shell-redirect-") {
+			if strings.Contains(h.Command, "shell-redirect-") || strings.Contains(h.Command, "native-tool-policy-") {
 				redirect++
 			}
 		}

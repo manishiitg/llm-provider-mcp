@@ -176,6 +176,7 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 			shellReason = museShellOffReason
 		}
 	}
+	policyHookInstalled := false
 	if toolAllowlist != nil {
 		if _, err := exec.LookPath("node"); err != nil {
 			return nil, fmt.Errorf("Muse native-tool policy requires Node.js: %w", err)
@@ -213,19 +214,20 @@ func museApplyMCPConfigAtPath(path, configJSON string, toolAllowlist []string) (
 		}
 		settings["run"] = runRaw
 
-		hookPath, err := museWriteToolPolicyHookShell(cleaned, denyReason, shellReason)
+		hookPath, err := museWriteToolPolicyHookShellRedirect(cleaned, denyReason, shellReason, museHasBridgeServer(doc.MCPServers))
 		if err != nil {
 			return nil, err
 		}
-		if err := museAppendPreToolUseHook(settings, hookPath); err != nil {
+		if err := museAppendPreToolUseHook(settings, hookPath, museBridgeHostPorts(doc.MCPServers)...); err != nil {
 			return nil, err
 		}
+		policyHookInstalled = true
 	}
 	// The bridge's credentials exist only in the bridge's own shell. Muse's native
 	// shell has none, so a platform call made there can only fail; the hook turns
 	// that failure into the instruction the agent needs (Full CLI mode has no
-	// allowlist hook, so this is installed on its own whenever the bridge is mounted).
-	if museHasBridgeServer(doc.MCPServers) {
+	// allowlist hook, so install a redirect-only hook if no policy hook was installed).
+	if museHasBridgeServer(doc.MCPServers) && !policyHookInstalled {
 		if _, err := exec.LookPath("node"); err == nil {
 			redirectPath, err := museWriteShellRedirectHook()
 			if err != nil {
@@ -448,6 +450,11 @@ func museWriteToolPolicyHook(nativeAllowed []string, denyReason string) (string,
 // museWriteToolPolicyHookShell is museWriteToolPolicyHook with a separate refusal for the shell tools, so a
 // refused bash names the tool to use instead of the generic reason.
 func museWriteToolPolicyHookShell(nativeAllowed []string, denyReason, shellReason string) (string, error) {
+	return museWriteToolPolicyHookShellRedirect(nativeAllowed, denyReason, shellReason, false)
+}
+
+// Share one Node process and one payload read when both checks are installed.
+func museWriteToolPolicyHookShellRedirect(nativeAllowed []string, denyReason, shellReason string, redirect bool) (string, error) {
 	allowed := append([]string(nil), nativeAllowed...)
 	allowed = append(allowed, "tool_search", "submit_reminder_decision")
 	allowedJSON, err := json.Marshal(allowed)
@@ -473,14 +480,16 @@ func museWriteToolPolicyHookShell(nativeAllowed []string, denyReason, shellReaso
 		shellBranch = "const reason = new Set(" + string(toolsBytes) + ").has(name) ? " + string(shellBytes) + " : " + reasonJSON + ";\n"
 		reasonJSON = "reason"
 	}
-	body := "const fs = require('fs');\n" +
-		"let payload = {};\n" +
-		"try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}\n" +
-		"const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';\n" +
+	body := museHookPayloadScript +
 		"const allowed = new Set(" + string(allowedJSON) + ");\n" +
-		"if (allowed.has(name) || name.startsWith('mcp__')) process.exit(0);\n" +
+		"if (!allowed.has(name) && !name.startsWith('mcp__')) {\n" +
 		shellBranch +
-		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:" + reasonJSON + "}}) + '\\n');\n"
+		"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:" + reasonJSON + "}}) + '\\n');\n" +
+		"process.exit(0);\n}\n"
+	if redirect {
+		body += museShellRedirectBody
+	}
+
 	digest := sha256.Sum256([]byte(body))
 	dir, err := museHookDir()
 	if err != nil {
@@ -670,11 +679,15 @@ func museStripResumeNote(text string) string {
 // museShellRedirectScript refuses a native bash/monitor/web_fetch call that targets the platform API and names the
 // tool that can make it, and refuses cron_create outright (scheduling belongs to the platform). It
 // blocks nothing else, reveals no secret and grants nothing.
-const museShellRedirectScript = `const fs = require('fs');
+const museHookPayloadScript = `const fs = require('fs');
 let payload = {};
 try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (_) {}
 const name = payload && typeof payload.tool_name === 'string' ? payload.tool_name : '';
-const input = payload && payload.tool_input;
+`
+
+const museShellRedirectScript = museHookPayloadScript + museShellRedirectBody
+
+const museShellRedirectBody = `const input = payload && payload.tool_input;
 function deny(reason) {
   process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}) + '\n');
   process.exit(0);
