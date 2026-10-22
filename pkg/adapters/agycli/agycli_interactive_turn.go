@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
@@ -586,8 +588,8 @@ func agyWaitTurnAnswer(ctx context.Context, session *agyInteractiveSession, user
 // input via bracketed paste. Typing would submit on the first newline;
 // pasting holds all lines until Enter. The paste is verified on the pane
 // before returning: Enter must never race an undelivered paste. Short
-// prompts echo inline (snippet match); long ones collapse to a
-// "[Pasted text #N +M lines]" placeholder whose line count must match.
+// prompts echo inline (snippet match); long ones collapse to a marker
+// reporting either logical lines or Unicode characters. Its size must match.
 func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 	// The default buffer belongs to the tmux server, not the target session.
 	// Concurrent sessions must never consume each other's prompts.
@@ -608,9 +610,12 @@ func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 		return fmt.Errorf("sidecar prompt has no verifiable content")
 	}
 	wantLines := agyPromptLineCount(prompt)
-	deadline := time.Now().Add(15 * time.Second)
+	wantChars := utf8.RuneCountInString(prompt)
+	started := time.Now()
+	deadline := started.Add(15 * time.Second)
 	var sawMarker bool
 	var lastMarker int
+	var lastUnit string
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -622,9 +627,13 @@ func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 		if strings.Contains(pane, snippet) {
 			return nil
 		}
-		if got, ok := agyPastedMarkerLines(pane); ok {
-			sawMarker, lastMarker = true, got
-			if got == wantLines {
+		if got, unit, ok := agyPastedMarkerSize(pane); ok {
+			sawMarker, lastMarker, lastUnit = true, got, unit
+			want := wantLines
+			if unit == "chars" {
+				want = wantChars
+			}
+			if got == want {
 				return nil
 			}
 			// Wrong count: a stale marker from an earlier turn whose
@@ -632,8 +641,19 @@ func agyPasteToSidecar(ctx context.Context, tmuxName, prompt string) error {
 			// paste — keep polling and decide at the deadline.
 		}
 		if time.Now().After(deadline) {
+			// A pane can contain private messages or credentials. Record only
+			// state and sizes so a failed draft check is diagnosable without
+			// copying any of its text into server logs.
+			log.Printf("[AGY_PASTE] tmux_session=%q outcome=timeout prompt_bytes=%d prompt_chars=%d prompt_lines=%d elapsed_ms=%d ready=%t busy=%t trust=%t approval=%t pasted_marker_seen=%t pasted_marker_size=%d pasted_marker_unit=%q pane_rows=%d",
+				tmuxName, len(prompt), wantChars, wantLines, time.Since(started).Milliseconds(),
+				PaneReadyForInput(pane), strings.Contains(agyPaneStatusRows(pane), agyPaneBusyMarker),
+				agyPaneShowsTrustGate(pane), agyApprovalMarkerShown(pane) != "", sawMarker, lastMarker, lastUnit, strings.Count(pane, "\n"))
 			if sawMarker {
-				return fmt.Errorf("sidecar paste marker shows %d lines, want %d — the prompt may be truncated", lastMarker, wantLines)
+				want := wantLines
+				if lastUnit == "chars" {
+					want = wantChars
+				}
+				return fmt.Errorf("sidecar paste marker shows %d %s, want %d — the prompt may be truncated", lastMarker, lastUnit, want)
 			}
 			return fmt.Errorf("pasted prompt never appeared in the sidecar input within 15s")
 		}
@@ -671,29 +691,34 @@ func agyPromptLineCount(prompt string) int {
 	return n
 }
 
-// agyPastedMarkerLines parses the newest paste-collapse marker on the pane.
+// agyPastedMarkerSize parses the newest paste-collapse marker on the pane.
 // The LAST occurrence wins: earlier turns' markers scroll into history while
-// the fresh input sits at the bottom.
-func agyPastedMarkerLines(pane string) (int, bool) {
+// the fresh input sits at the bottom. AGY 1.4.4 uses both "+N lines" and
+// "N chars" (Unicode code points), including markers wrapped across rows.
+func agyPastedMarkerSize(pane string) (int, string, bool) {
 	idx := strings.LastIndex(pane, "[Pasted text #")
 	if idx < 0 {
-		return 0, false
+		return 0, "", false
 	}
-	rest := pane[idx:]
-	plus := strings.Index(rest, "+")
-	if plus < 0 {
-		return 0, false
+	marker, _, closed := strings.Cut(pane[idx+len("[Pasted text #"):], "]")
+	fields := strings.Fields(marker)
+	if !closed || len(fields) != 3 {
+		return 0, "", false
 	}
-	rest = rest[plus+1:]
-	end := strings.Index(rest, " ")
-	if end < 0 {
-		return 0, false
+	if _, err := strconv.Atoi(fields[0]); err != nil {
+		return 0, "", false
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+	unit, count := fields[2], fields[1]
+	if unit == "lines" && strings.HasPrefix(count, "+") {
+		count = strings.TrimPrefix(count, "+")
+	} else if unit != "chars" || strings.HasPrefix(count, "+") {
+		return 0, "", false
+	}
+	n, err := strconv.Atoi(count)
 	if err != nil || n <= 0 {
-		return 0, false
+		return 0, "", false
 	}
-	return n, true
+	return n, unit, true
 }
 
 // agyConversationIDFromPane attributes the sidecar's conversation by asking

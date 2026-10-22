@@ -15,6 +15,29 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Captured from real AGY 1.4.4 drafts. A character marker hides the prompt
+// snippet just as a line marker does; it must not cause a delivery timeout.
+func TestAgyPastedMarkerSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name, pane, unit string
+		size             int
+		ok               bool
+	}{
+		{"lines", "> [Pasted text #1 +17 lines]\n? for shortcuts", "lines", 17, true},
+		{"characters", "> [Pasted text #1 1280 chars]\n? for shortcuts", "chars", 1280, true},
+		{"wrapped", "> [Pasted text #1\n  +17 lines]", "lines", 17, true},
+		{"latest", "[Pasted text #1 +17 lines]\n> [Pasted text #2 1280 chars]", "chars", 1280, true},
+		{"unfinished latest", "[Pasted text #1 +17 lines]\n> [Pasted text #2 1280", "", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			size, unit, ok := agyPastedMarkerSize(tc.pane)
+			if size != tc.size || unit != tc.unit || ok != tc.ok {
+				t.Fatalf("marker = (%d, %q, %t), want (%d, %q, %t)", size, unit, ok, tc.size, tc.unit, tc.ok)
+			}
+		})
+	}
+}
+
 func TestAgyMountFingerprint(t *testing.T) {
 	if got := agyMountFingerprint(""); got != "unmounted" {
 		t.Fatalf("empty = %q, want unmounted", got)
