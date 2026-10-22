@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -544,6 +545,12 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	}
 	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
+		// Screen changes are not intake. Record only state, never the prompt,
+		// so a retained draft can be distinguished from a missed journal entry.
+		if pane, captureErr := museTmuxCapturePane(ctx, session); captureErr == nil {
+			draft, composer := museActiveComposerDraft(pane)
+			log.Printf("[MUSE_INTAKE_UNCONFIRMED] session=%s composer=%v draft_present=%v refusal_notice=%v initializing=%v", session, composer, draft != "", museRejectedNotice(pane), musePaneInitializing(pane))
+		}
 		if persistent {
 			museRememberUnconfirmedDraft(owner, session)
 		}
