@@ -56,7 +56,16 @@ func TestMuseUnconfirmedDraftIsClearedBeforeTheNextExplicitTurn(t *testing.T) {
 	museRememberUnconfirmedDraft(owner, session)
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
-	script := "#!/bin/sh\necho \"$*\" >> '" + calls + "'\ncase \"$1\" in\n capture-pane) printf '❯ \n' ;;\nesac\n"
+	cleared := filepath.Join(dir, "cleared")
+	script := `#!/bin/sh
+echo "$*" >> '` + calls + `'
+case "$1" in
+ send-keys) case "$*" in *C-c*) touch '` + cleared + `' ;; esac ;;
+ capture-pane)
+   if [ -f '` + cleared + `' ]; then printf '❯ \n';
+   else printf '❯ Review the supplied quotes\nthen compare totals\n\n\n'; fi ;;
+esac
+`
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +80,7 @@ func TestMuseUnconfirmedDraftIsClearedBeforeTheNextExplicitTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(raw), "C-u") != 1 || strings.Contains(string(raw), "Enter") || strings.Contains(string(raw), " -l ") {
+	if strings.Count(string(raw), "C-c") != 1 || strings.Contains(string(raw), "C-u") || strings.Contains(string(raw), "Enter") || strings.Contains(string(raw), " -l ") {
 		t.Fatalf("cleanup must clear once, without typing or submitting: %s", raw)
 	}
 }

@@ -66,7 +66,10 @@ func musePrepareStoppedPrompt(ctx context.Context, owner, session, pane string) 
 		if !strings.HasPrefix(draft, string(prefix)) {
 			return fmt.Errorf("Muse composer changed; new prompt was not typed")
 		}
-		clear := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-u")
+		// At the idle prompt with our nonempty draft, Muse's Clear shortcut
+		// clears the whole editor. Ctrl-U clears only the current line and
+		// does nothing on the trailing blank lines left by a refused submit.
+		clear := exec.CommandContext(ctx, "tmux", "send-keys", "-t", session, "C-c")
 		if out, err := clear.CombinedOutput(); err != nil {
 			return fmt.Errorf("clear retained Muse draft: %w\n%s", err, out)
 		}
