@@ -537,10 +537,16 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 	// intake-gated and bounded; anything else falls through to the long
 	// authoritative wait below.
 	if err := museConfirmSubmitOrResubmit(ctx, museAccountDataHome(ctx), session, prompt, turnStart, workdir); err != nil {
+		if persistent {
+			museRememberUnconfirmedDraft(owner, session)
+		}
 		return nil, err
 	}
 	nativeSessionID, logPath, err := museWaitIntake(ctx, session, turnStart, promptSnippet(prompt), workdir)
 	if err != nil {
+		if persistent {
+			museRememberUnconfirmedDraft(owner, session)
+		}
 		if submitErr != nil {
 			return nil, fmt.Errorf("muse intake unconfirmed after pane submit error (%w): %w", submitErr, err)
 		}
