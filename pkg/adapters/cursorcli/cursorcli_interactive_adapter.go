@@ -2002,6 +2002,16 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 	if err := writeDraft(ctx, sessionName, message); err != nil {
 		return fmt.Errorf("failed to type input into Cursor interactive session: %w", err)
 	}
+	if transport == "atomic-paste" && cursorPasteSubmitDelay > 0 {
+		// Cursor aggregates keys that arrive right after a bracketed paste into
+		// that paste: Enter 137 ms later became two pasted newlines and the
+		// message never sent (Cursor log, 2026-10-23 "paste-event aggregated").
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(cursorPasteSubmitDelay):
+		}
+	}
 	// A live-input paste is acknowledged by tmux; waiting for a visual receipt on a busy Cursor only delays it.
 	draftVisible := liveInput || waitForCursorInputDraftVisibleWithMode(ctx, sessionName, message, 5*time.Second, liveInput)
 	if !draftVisible {
@@ -2068,6 +2078,9 @@ func cursorSinceLastAcceptedMS(sessionName string) int64 {
 	}
 	return time.Since(at).Milliseconds()
 }
+
+// cursorPasteSubmitDelay separates a bracketed paste from its submit Enter.
+var cursorPasteSubmitDelay = 600 * time.Millisecond
 
 func cursorSubmitKeys() []string {
 	return []string{"C-m", "C-m"}
