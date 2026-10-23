@@ -332,6 +332,20 @@ var (
 
 const cursorDraftRecoveryMax = 2
 
+// cursorLostAfter is when a send that left no trace is reported as not
+// delivered: no store row and no new store write, the CLI idle at its composer,
+// the text neither in the composer nor queued, on two looks in a row. Before,
+// such a send waited for the full budget and the reply for its idle limit.
+var cursorLostAfter = 15 * time.Second
+
+// CursorInputNotDeliveredError reports a send that left no trace in Cursor.
+// It is a failure, not a timeout: the person is told to send again.
+type CursorInputNotDeliveredError struct{ After time.Duration }
+
+func (e *CursorInputNotDeliveredError) Error() string {
+	return fmt.Sprintf("Cursor did not take the message: after %s it is idle, the text is not in its input and its record has nothing new", e.After.Round(time.Second))
+}
+
 // pollCursorDurableAck waits for the user_query row matching one send. The
 // only key it may send is Enter, and only while the store has no row, the
 // pane is the idle composer and that composer still holds this exact draft:
@@ -387,6 +401,31 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 			log.Printf("[cursor-durable-ack] session=%s Enter failed: %v", poll.sessionName, err)
 		}
 	}
+	started := time.Now()
+	lostLooks := 0
+	nextLostLook := started.Add(cursorLostAfter)
+	looksLost := func() bool {
+		path := strings.TrimSpace(resolve())
+		if poll.submit == nil || poll.capture == nil || baseline == nil || path == "" ||
+			strings.TrimSpace(poll.sessionName) == "" || time.Now().Before(nextLostLook) {
+			return false
+		}
+		nextLostLook = time.Now().Add(cursorDraftRecoveryInterval)
+		for ref := range cursorSnapshotStoreRefs(path) {
+			if _, seen := baseline[ref]; !seen {
+				lostLooks = 0 // Cursor wrote something since the send: not lost.
+				return false
+			}
+		}
+		captured, err := poll.capture(deadline, poll.sessionName)
+		if err != nil || !hasCursorReadyPrompt(captured) || cursorPaneShowsPromptDraftWithMode(captured, message, false) ||
+			cursorPaneShowsQueuedMessage(captured, message) || check() {
+			lostLooks = 0
+			return false
+		}
+		lostLooks++
+		return lostLooks >= 2
+	}
 	for {
 		select {
 		case <-deadline.Done():
@@ -407,6 +446,10 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 				return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
 			}
 			recoverDraft()
+			if looksLost() {
+				log.Printf("[cursor-durable-ack] session=%s message not delivered: no trace after %s", poll.sessionName, time.Since(started).Round(time.Second))
+				return CursorDurableAck{}, &CursorInputNotDeliveredError{After: time.Since(started)}
+			}
 		}
 	}
 }

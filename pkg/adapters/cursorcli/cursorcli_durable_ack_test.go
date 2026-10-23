@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -500,5 +501,27 @@ func TestPollCursorDurableAckSubmitsAnIdleUnsentDraftOnce(t *testing.T) {
 	}
 	if enters != 1 {
 		t.Fatalf("Enter pressed %d times, want exactly 1", enters)
+	}
+}
+
+// A send that left no trace (idle composer, empty input, nothing new in the
+// store) is reported as not delivered well before the budget ends.
+func TestPollCursorDurableAckReportsATracelessSendAsNotDelivered(t *testing.T) {
+	defer func(lost, interval time.Duration) {
+		cursorLostAfter, cursorDraftRecoveryInterval = lost, interval
+	}(cursorLostAfter, cursorDraftRecoveryInterval)
+	cursorLostAfter, cursorDraftRecoveryInterval = 30*time.Millisecond, 20*time.Millisecond
+
+	path, _ := writeCursorDurableStore(t, "earlier question")
+	_, err := pollCursorDurableAck(context.Background(), "whats the answer for him", time.Now(), cursorSnapshotStoreRefs(path), 5*time.Second, cursorDurableAckPoll{
+		resolve:     func() string { return path },
+		capture:     func(context.Context, string) (string, error) { return "Done.\n\n→ Add a follow-up", nil },
+		submit:      func(context.Context, string) error { t.Fatal("no Enter for an empty composer"); return nil },
+		sessionName: "probe-session",
+		interval:    10 * time.Millisecond,
+	})
+	var lost *CursorInputNotDeliveredError
+	if !errors.As(err, &lost) {
+		t.Fatalf("err = %v, want CursorInputNotDeliveredError", err)
 	}
 }
