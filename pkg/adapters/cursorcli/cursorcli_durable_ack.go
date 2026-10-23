@@ -318,13 +318,27 @@ type cursorDurableAckPoll struct {
 	sessionName string
 	interval    time.Duration
 	occurrence  int
+	// submit presses Enter once in the session. Nil disables draft recovery.
+	submit func(context.Context, string) error
 }
 
-// pollCursorDurableAck waits observe-only for the user_query row matching
-// one send. It never sends keys: on entry the message may already be
-// accepted, so any keystroke risks duplicating it. On budget expiry it
-// distinguishes still-queued (unflushed, held by the CLI) from truly
-// lost via one final pane read.
+var (
+	// A paste followed at once by Enter can leave the text in an idle composer
+	// (RTS 2026-10-23: a 38-character steer sat unsent for 10 minutes and the
+	// turn failed). Muse has the same recovery (PLAT-861-117).
+	cursorDraftRecoveryAfter    = 3 * time.Second
+	cursorDraftRecoveryInterval = 2 * time.Second
+)
+
+const cursorDraftRecoveryMax = 2
+
+// pollCursorDurableAck waits for the user_query row matching one send. The
+// only key it may send is Enter, and only while the store has no row, the
+// pane is the idle composer and that composer still holds this exact draft:
+// an accepted message has left the composer, so the Enter cannot duplicate
+// it, and nothing is ever retyped. On budget expiry it distinguishes
+// still-queued (unflushed, held by the CLI) from truly lost via one final
+// pane read.
 func pollCursorDurableAck(ctx context.Context, message string, since time.Time, baseline map[string]struct{}, timeout time.Duration, poll cursorDurableAckPoll) (CursorDurableAck, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -355,6 +369,24 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 	if check() {
 		return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
 	}
+	nextRecovery := time.Now().Add(cursorDraftRecoveryAfter)
+	recoveries := 0
+	recoverDraft := func() {
+		if poll.submit == nil || poll.capture == nil || strings.TrimSpace(poll.sessionName) == "" ||
+			recoveries >= cursorDraftRecoveryMax || time.Now().Before(nextRecovery) {
+			return
+		}
+		nextRecovery = time.Now().Add(cursorDraftRecoveryInterval)
+		captured, err := poll.capture(deadline, poll.sessionName)
+		if err != nil || !hasCursorReadyPrompt(captured) || !cursorPaneShowsPromptDraftWithMode(captured, message, false) || check() {
+			return
+		}
+		recoveries++
+		log.Printf("[cursor-durable-ack] session=%s attempt=%d draft still in the idle composer; pressing Enter without retyping", poll.sessionName, recoveries)
+		if err := poll.submit(deadline, poll.sessionName); err != nil {
+			log.Printf("[cursor-durable-ack] session=%s Enter failed: %v", poll.sessionName, err)
+		}
+	}
 	for {
 		select {
 		case <-deadline.Done():
@@ -374,6 +406,7 @@ func pollCursorDurableAck(ctx context.Context, message string, since time.Time, 
 			if check() {
 				return CursorDurableAck{Outcome: CursorDurableAckConfirmed, Latency: time.Since(since), ProofPath: resolve()}, nil
 			}
+			recoverDraft()
 		}
 	}
 }
@@ -462,6 +495,9 @@ func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string
 		capture:     captureCursorPane,
 		sessionName: tmuxName,
 		occurrence:  occurrence,
+		submit: func(ctx context.Context, sessionName string) error {
+			return runCursorCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "C-m")
+		},
 	})
 	if err != nil {
 		return CursorDurableAck{}, err

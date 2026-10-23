@@ -461,3 +461,44 @@ func TestCursorInteractiveSessionRegistered(t *testing.T) {
 		t.Fatal("a registered owner must be steer-ready")
 	}
 }
+
+// RTS 2026-10-23: a short steer pasted into an idle Cursor stayed in the
+// composer, nothing reached the store and the turn failed after 10 minutes.
+func TestPollCursorDurableAckSubmitsAnIdleUnsentDraftOnce(t *testing.T) {
+	defer func(after, interval time.Duration) {
+		cursorDraftRecoveryAfter, cursorDraftRecoveryInterval = after, interval
+	}(cursorDraftRecoveryAfter, cursorDraftRecoveryInterval)
+	cursorDraftRecoveryAfter, cursorDraftRecoveryInterval = 20*time.Millisecond, 20*time.Millisecond
+
+	msg := "whats the answer for him tell me first"
+	empty, _ := writeCursorDurableStore(t, "earlier question")
+	landed, _ := writeCursorDurableStore(t, "earlier question", msg)
+	var mu sync.Mutex
+	path, enters := empty, 0
+	ack, err := pollCursorDurableAck(context.Background(), msg, time.Now(), nil, 2*time.Second, cursorDurableAckPoll{
+		resolve: func() string { mu.Lock(); defer mu.Unlock(); return path },
+		capture: func(context.Context, string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if enters > 0 {
+				return "Thinking\n\n→ Add a follow-up  ctrl+c to stop", nil
+			}
+			return "Done.\n\n→ " + msg, nil
+		},
+		submit: func(context.Context, string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			enters++
+			path = landed
+			return nil
+		},
+		sessionName: "probe-session",
+		interval:    10 * time.Millisecond,
+	})
+	if err != nil || ack.Outcome != CursorDurableAckConfirmed {
+		t.Fatalf("ack = %+v err = %v, want confirmed after one recovery Enter", ack, err)
+	}
+	if enters != 1 {
+		t.Fatalf("Enter pressed %d times, want exactly 1", enters)
+	}
+}
