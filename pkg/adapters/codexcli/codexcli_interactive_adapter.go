@@ -2143,6 +2143,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 	defer ticker.Stop()
 	quietWatch := &stalldiag.Watch{Provider: "codex-cli", Session: sessionName}
 	stalePaneBackstop := codexInteractiveStalePaneBackstop()
+	nativeTurnWait := codexInteractivePromptMaxWait()
 	var sawActivity bool
 	var idleSince time.Time
 	var lastCaptured string
@@ -2265,6 +2266,16 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 			// pane idleness and the stale-pane backstop no longer end the turn,
 			// except through the bounded late fallback below.
 			rolloutOwnsTurn := completionTracker.rolloutOwnsTurn()
+			// A cold Codex session can draw an idle composer before it writes the
+			// user row needed to bind its rollout. That gap is not a reply: the
+			// pane can contain only the runtime directory (PLAT-861-237). When an
+			// exact native resolver is supplied, it is authoritative even before
+			// binding. Reuse the existing start budget if no native turn appears.
+			terminalMayComplete := resolveRollout == nil && !rolloutOwnsTurn
+			if resolveRollout != nil && !rolloutOwnsTurn && time.Since(turnStart) >= nativeTurnWait {
+				diagnostics.reportCompletedBy("native_turn_timeout")
+				return captured, errors.New("Codex did not return a reply. Open its live view to check progress, or choose another model.")
+			}
 			// Stale-pane backstop. Independent of hasCodexReadyPrompt and every
 			// branch below: if the pane has produced activity and then frozen
 			// (byte-identical) for longer than the backstop, the turn is over but
@@ -2279,7 +2290,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				paneUnchangedSince = time.Now()
 			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
 				time.Since(paneUnchangedSince) >= stalePaneBackstop &&
-				!rolloutOwnsTurn &&
+				terminalMayComplete &&
 				hasCodexPromptCandidate(captured) && hasCodexExplicitCompletedMarker(captured) {
 				diagnostics.reportCompletedBy(codexCompletionSourcePane)
 				return captured, nil
@@ -2328,7 +2339,7 @@ func waitForCodexInteractiveResponse(ctx context.Context, sessionName, baseline 
 				continue
 			}
 			if time.Since(idleSince) >= codexInteractiveStableWindow {
-				if !rolloutOwnsTurn {
+				if terminalMayComplete {
 					diagnostics.reportCompletedBy(codexCompletionSourcePane)
 					return captured, nil
 				}
