@@ -89,4 +89,33 @@ func TestReadRetainedTurnMessagesWaitsForEndTurn(t *testing.T) {
 	if got := ReadRetainedTurnProgressMessages(ownerSessionID, turnStart.Add(time.Hour)); len(got) != 0 {
 		t.Fatalf("new turn replayed previous messages: %+v", got)
 	}
+
+	// PLAT-872: the CLI queues a new user immediately after end_turn. The
+	// earlier final must not close the follow-up before its native tools run.
+	queued := append(completed,
+		`{"type":"user","timestamp":"2026-08-19T05:46:10.100Z","message":{"content":"Check the source too."}}`,
+	)
+	write := func(rows []string) {
+		t.Helper()
+		if err := os.WriteFile(transcript, []byte(strings.Join(rows, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(queued)
+	if got := ReadRetainedTurnMessages(ownerSessionID, turnStart); len(got) != 0 {
+		t.Fatalf("queued user closed on the previous answer: %+v", got)
+	}
+	queued = append(queued, `{"type":"assistant","timestamp":"2026-08-19T05:46:15Z","message":{"id":"followup-tool","stop_reason":"tool_use","content":[{"type":"tool_use","id":"queued-fetch","name":"WebFetch","input":{}}]}}`)
+	write(queued)
+	if got := ReadRetainedTurnMessages(ownerSessionID, turnStart); len(got) != 0 {
+		t.Fatalf("queued tool closed on the previous answer: %+v", got)
+	}
+	queued = append(queued,
+		`{"type":"user","timestamp":"2026-08-19T05:46:20Z","message":{"content":[{"type":"tool_result","tool_use_id":"queued-fetch","content":"source"}]}}`,
+		`{"type":"assistant","timestamp":"2026-08-19T05:46:25Z","message":{"id":"followup-final","stop_reason":"end_turn","content":[{"type":"text","text":"Source checked."}]}}`,
+	)
+	write(queued)
+	if got := ReadRetainedTurnMessages(ownerSessionID, turnStart); len(got) != 1 || got[0].Parts[0].(llmtypes.TextContent).Text != "Source checked." {
+		t.Fatalf("queued final = %+v", got)
+	}
 }

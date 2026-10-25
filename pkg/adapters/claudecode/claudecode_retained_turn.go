@@ -86,7 +86,9 @@ func ReadRetainedTurnResponse(ownerSessionID string, turnStart time.Time) llmtyp
 	accountHome := session.accountHome
 	session.mu.Unlock()
 	response := completedAssistantResponseFromTranscript(nativeSessionID, workingDir, turnStart, accountHome)
-	if !response.Found || !response.Completed || strings.TrimSpace(response.Text) == "" {
+	// A queued user or tool result after an earlier end_turn means Claude is
+	// working again. Completed remains true for that earlier answer (PLAT-872).
+	if !response.Found || !response.LastIsEndTurn || strings.TrimSpace(response.Text) == "" {
 		return llmtypes.RetainedTurnResponse{}
 	}
 	result := llmtypes.RetainedTurnResponse{NativeSessionID: nativeSessionID, Messages: []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, response.Text)}}

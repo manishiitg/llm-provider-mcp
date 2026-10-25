@@ -237,6 +237,22 @@ func TestReadCodexTranscriptFinalAssistantTextExcludesMCPToolTrail(t *testing.T)
 	if got != final || source != "rollout_assistant_message" {
 		t.Fatalf("final_answer fallback = (%q, %q), want (%q, rollout_assistant_message)", got, source, final)
 	}
+	// PLAT-872: a queued turn starts inside the same read window. An older
+	// final/task_complete is no longer the current native turn's answer.
+	queued := append(lines, `{"timestamp":"`+ts+`","type":"event_msg","payload":{"type":"task_started","turn_id":"queued-turn"}}`)
+	if err := os.WriteFile(rollout, []byte(strings.Join(queued, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readCodexRolloutFinalAssistantText(rollout, turnStart); got != "" {
+		t.Fatalf("queued native turn closed on the previous answer: %q", got)
+	}
+	queued = append(queued, `{"timestamp":"`+ts+`","type":"event_msg","payload":{"type":"task_complete","turn_id":"queued-turn","last_agent_message":"Queued work finished."}}`)
+	if err := os.WriteFile(rollout, []byte(strings.Join(queued, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readCodexRolloutFinalAssistantText(rollout, turnStart); got != "Queued work finished." {
+		t.Fatalf("latest native turn final = %q", got)
+	}
 }
 
 func TestNormalizeCodexFinalAssistantTextContentBlocks(t *testing.T) {

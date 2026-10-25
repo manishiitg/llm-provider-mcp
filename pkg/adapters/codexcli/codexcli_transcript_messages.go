@@ -152,8 +152,11 @@ func readCodexRolloutFinalAssistantText(path string, turnStart time.Time) (strin
 				continue
 			}
 		}
-		if e.Type == "event_msg" && e.Payload.Type == "task_started" && startedTurnID == "" {
+		if e.Type == "event_msg" && e.Payload.Type == "task_started" {
 			startedTurnID = strings.TrimSpace(e.Payload.TurnID)
+			// A queued follow-up may start inside the same retained read window.
+			// Its predecessor's final cannot close this newer native turn.
+			lastAssistantMessage, lastCompletedMessage = "", ""
 			continue
 		}
 		if e.Type == "response_item" && e.Payload.Type == "message" && e.Payload.Role == "assistant" &&
