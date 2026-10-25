@@ -411,6 +411,13 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 	}
 }
 
+func ReadCodingAgentRetainedTurnResponse(provider Provider, ownerSessionID string, turnStart time.Time) llmtypes.RetainedTurnResponse {
+	if provider == ProviderClaudeCode {
+		return claudecodeadapter.ReadRetainedTurnResponse(ownerSessionID, turnStart)
+	}
+	return llmtypes.RetainedTurnResponse{Messages: ReadCodingAgentRetainedTurnMessages(provider, ownerSessionID, turnStart)}
+}
+
 // ReadCodingAgentRetainedTurnEndedWithoutReply reports that the CLI's own record shows the retained turn that began at
 // turnStart ended with no reply (the person interrupted it, or the model call failed), with the CLI's stop reason. Pi
 // and Muse are wired; the other CLIs report false, so their turns settle as before.

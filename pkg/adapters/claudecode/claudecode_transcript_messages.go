@@ -188,6 +188,8 @@ func parseClaudeTranscriptMessages(reader io.Reader, turnStart time.Time, includ
 // transcript means the turn was interrupted and must never fall back to a pane
 // scrape, while a genuinely unavailable transcript retains legacy compatibility.
 type claudeCompletedTranscriptResponse struct {
+	IncludedRoots []string
+	FinalRoot     string
 	// Text is the committed end_turn message: the turn's answer, and what
 	// callers treat as the final result.
 	Text string
@@ -303,6 +305,7 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		text          []string
 		completed     bool
 		observerOwned bool
+		nativeRoot    string
 	}
 
 	groups := make(map[string]*group)
@@ -363,6 +366,9 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 			order = append(order, id)
 		}
 		g.observerOwned = !nativereplies.ForegroundMayPublish(root)
+		if root.Helper {
+			g.nativeRoot = root.Root
+		}
 		g.text = append(g.text, textFromClaudeBlocks(am.Content)...)
 		if am.StopReason == "end_turn" {
 			g.completed = true
@@ -382,11 +388,15 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	for i := len(order) - 1; i >= 0; i-- {
 		g := groups[order[i]]
 		if g.completed && len(g.text) > 0 && !g.observerOwned {
+			result.FinalRoot = g.nativeRoot
 			result.Text = strings.TrimSpace(strings.Join(g.text, "\n\n"))
 			parts := make([]string, 0, len(order))
 			for _, id := range order[:i+1] {
 				if groups[id].observerOwned {
 					continue
+				}
+				if groups[id].completed && groups[id].nativeRoot != "" && len(groups[id].text) > 0 {
+					result.IncludedRoots = append(result.IncludedRoots, groups[id].nativeRoot)
 				}
 				if t := strings.TrimSpace(strings.Join(groups[id].text, "\n\n")); t != "" {
 					parts = append(parts, t)

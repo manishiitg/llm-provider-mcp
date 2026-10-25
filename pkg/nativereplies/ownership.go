@@ -15,24 +15,47 @@ const Foreground = "foreground"
 const Observer = "observer"
 
 type ClaimState struct {
-	Provider  string `json:"provider"`
-	Session   string `json:"session"`
-	Root      string `json:"root"`
-	Owner     string `json:"owner"`
-	Committed bool   `json:"committed"`
+	Provider         string `json:"provider"`
+	Session          string `json:"session"`
+	Root             string `json:"root"`
+	Owner            string `json:"owner"`
+	Committed        bool   `json:"committed"`
+	ForegroundTurnID string `json:"foreground_turn_id,omitempty"`
 }
 
 var registry = struct {
 	sync.Mutex
-	dir    string
-	owners map[string]ClaimState
+	dir     string
+	owners  map[string]ClaimState
+	failure error
 }{owners: map[string]ClaimState{}}
+
+var lookupMu sync.RWMutex
+var foregroundLookup func(string, string) string
+
+// SetForegroundLookup binds publication to a real, nonterminal SDK turn.
+// Diagnostic and history readers have no such turn and may never claim.
+func SetForegroundLookup(lookup func(string, string) string) {
+	lookupMu.Lock()
+	foregroundLookup = lookup
+	lookupMu.Unlock()
+}
+func ActiveForeground(provider, session string) string {
+	lookupMu.RLock()
+	lookup := foregroundLookup
+	lookupMu.RUnlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(provider, session)
+}
 
 // Configure must run before restoring runtimes. Claims survive process restart
 // and are persisted before either producer may publish the root's prose.
-func Configure(dir string) error {
+func Configure(dir string) (err error) {
 	registry.Lock()
 	defer registry.Unlock()
+	defer func() { registry.failure = err }()
 	registry.dir = dir
 	registry.owners = map[string]ClaimState{}
 	if dir == "" {
@@ -48,7 +71,7 @@ func Configure(dir string) error {
 			return err
 		}
 		var claim ClaimState
-		if json.Unmarshal(data, &claim) != nil {
+		if json.Unmarshal(data, &claim) != nil || claim.Provider == "" || claim.Session == "" || claim.Root == "" || (claim.Owner != Foreground && claim.Owner != Observer) {
 			return fmt.Errorf("invalid native reply claim")
 		}
 		// Only unfinished foreground ownership expires on a server restart.
@@ -103,14 +126,21 @@ func Claims(provider, session string) []ClaimState {
 // A native runtime serializes foreground turns. Its accepted completion
 // commits those roots; a failed turn releases its unfinished roots, allowing
 // the observer to save already committed native replies without running a model.
-func SettleForeground(provider, session string, delivered bool) error {
+func SettleForeground(provider, session, turnID string, includedRoots []string) error {
 	registry.Lock()
 	defer registry.Unlock()
 	for key, claim := range registry.owners {
-		if claim.Provider != provider || claim.Session != session || claim.Owner != Foreground || claim.Committed {
+		if claim.Provider != provider || claim.Session != session || claim.ForegroundTurnID != turnID || claim.Owner != Foreground || claim.Committed {
 			continue
 		}
-		if delivered {
+		included := false
+		for _, root := range includedRoots {
+			if root == claim.Root {
+				included = true
+				break
+			}
+		}
+		if included {
 			claim.Committed = true
 		} else {
 			claim.Owner = Observer
@@ -130,10 +160,19 @@ func Claim(provider, session, root, proposed string) (string, error) {
 	key := keyFor(provider, session, root)
 	registry.Lock()
 	defer registry.Unlock()
+	if registry.failure != nil {
+		return "", registry.failure
+	}
 	if claim := registry.owners[key]; claim.Owner != "" {
 		return claim.Owner, nil
 	}
 	claim := ClaimState{Provider: provider, Session: session, Root: root, Owner: proposed}
+	if proposed == Foreground {
+		claim.ForegroundTurnID = ActiveForeground(provider, session)
+		if claim.ForegroundTurnID == "" {
+			return "", fmt.Errorf("no active foreground turn owns this native root")
+		}
+	}
 	if err := save(claim); err != nil {
 		return "", err
 	}
@@ -188,6 +227,9 @@ func (c *ClaudeLineage) Observe(raw []byte) ClaudeRoot {
 func ForegroundMayPublish(root ClaudeRoot) bool {
 	if !root.Helper || root.Root == "" || root.Session == "" {
 		return true
+	}
+	if ActiveForeground("claude-code", root.Session) == "" {
+		return State("claude-code", root.Session, root.Root).Owner != Observer
 	}
 	owner, err := Claim("claude-code", root.Session, root.Root, Foreground)
 	return err != nil || owner == Foreground

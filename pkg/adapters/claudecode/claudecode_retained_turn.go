@@ -68,13 +68,17 @@ func ReadRetainedTurnStructuredProgressMessages(ownerSessionID string, turnStart
 //
 // It does not start, resume, or otherwise mutate the coding-agent process.
 func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmtypes.MessageContent {
+	return ReadRetainedTurnResponse(ownerSessionID, turnStart).Messages
+}
+
+func ReadRetainedTurnResponse(ownerSessionID string, turnStart time.Time) llmtypes.RetainedTurnResponse {
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
-		return nil
+		return llmtypes.RetainedTurnResponse{}
 	}
 	session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID)
 	if !ok || session == nil {
-		return nil
+		return llmtypes.RetainedTurnResponse{}
 	}
 	session.mu.Lock()
 	nativeSessionID := session.nativeSessionID
@@ -83,9 +87,11 @@ func ReadRetainedTurnMessages(ownerSessionID string, turnStart time.Time) []llmt
 	session.mu.Unlock()
 	response := completedAssistantResponseFromTranscript(nativeSessionID, workingDir, turnStart, accountHome)
 	if !response.Found || !response.Completed || strings.TrimSpace(response.Text) == "" {
-		return nil
+		return llmtypes.RetainedTurnResponse{}
 	}
-	return []llmtypes.MessageContent{
-		llmtypes.TextPart(llmtypes.ChatMessageTypeAI, response.Text),
+	result := llmtypes.RetainedTurnResponse{NativeSessionID: nativeSessionID, Messages: []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeAI, response.Text)}}
+	if response.FinalRoot != "" {
+		result.NativeContinuationRoots = []string{response.FinalRoot}
 	}
+	return result
 }

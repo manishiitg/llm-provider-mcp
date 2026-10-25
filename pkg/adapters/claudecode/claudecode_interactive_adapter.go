@@ -775,6 +775,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// which the transcript cannot be read.
 	additional["claude_code_final_extraction_source"] = finalExtractionSource
 	additional["claude_code_completion_source"] = completionSource
+	additional["native_continuation_roots"] = transcriptResponse.IncludedRoots
 	// Chat surfaces want the whole turn (narration before tool calls too), not
 	// only the committed end_turn answer that final_result keeps for workflows.
 	if turnText != "" && turnText != content {

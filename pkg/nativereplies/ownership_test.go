@@ -3,6 +3,8 @@ package nativereplies
 import "testing"
 
 func TestNativeReplyOwnershipSurvivesRestart(t *testing.T) {
+	SetForegroundLookup(func(string, string) string { return "turn-a" })
+	defer SetForegroundLookup(nil)
 	dir := t.TempDir()
 	if err := Configure(dir); err != nil {
 		t.Fatal(err)
@@ -21,7 +23,7 @@ func TestNativeReplyOwnershipSurvivesRestart(t *testing.T) {
 			t.Fatalf("second stole root: %s/%v", owner, err)
 		}
 	}
-	if err := SettleForeground("claude-code", "native", true); err != nil {
+	if err := SettleForeground("claude-code", "native", "turn-a", []string{"root-foreground"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Claim("claude-code", "native", "unfinished", Foreground); err != nil {
@@ -39,11 +41,44 @@ func TestNativeReplyOwnershipSurvivesRestart(t *testing.T) {
 	if _, err := Claim("claude-code", "native", "failed", Foreground); err != nil {
 		t.Fatal(err)
 	}
-	if err := SettleForeground("claude-code", "native", false); err != nil {
+	if err := SettleForeground("claude-code", "native", "turn-a", nil); err != nil {
 		t.Fatal(err)
 	}
 	if State("claude-code", "native", "failed").Owner != Observer {
 		t.Fatal("failed turn retained unpublished root")
+	}
+}
+
+func TestNativeReplyClaimsRequireDeliveredRoots(t *testing.T) {
+	_ = Configure("")
+	defer Configure("")
+	SetForegroundLookup(nil)
+	root := ClaudeRoot{Session: "native", Root: "late", Helper: true}
+	if !ForegroundMayPublish(root) || State("claude-code", "native", "late").Owner != "" {
+		t.Fatal("non-turn reader acquired a claim")
+	}
+	SetForegroundLookup(func(string, string) string { return "turn-a" })
+	defer SetForegroundLookup(nil)
+	if !ForegroundMayPublish(root) {
+		t.Fatal("open foreground could not claim")
+	}
+	if _, err := Claim("claude-code", "native", "included", Foreground); err != nil {
+		t.Fatal(err)
+	}
+	if err := SettleForeground("claude-code", "native", "unrelated", []string{"late"}); err != nil {
+		t.Fatal(err)
+	}
+	if State("claude-code", "native", "late").Committed {
+		t.Fatal("another turn committed this root")
+	}
+	if err := SettleForeground("claude-code", "native", "turn-a", []string{"included"}); err != nil {
+		t.Fatal(err)
+	}
+	if State("claude-code", "native", "late").Owner != Observer {
+		t.Fatal("root omitted from delivered answer was stranded")
+	}
+	if !State("claude-code", "native", "included").Committed {
+		t.Fatal("delivered root was not committed")
 	}
 }
 

@@ -57,8 +57,7 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 		}
 		var msg cursorMessage
 		if err := json.Unmarshal(readCursorBlob(ctx, db, ref), &msg); err != nil {
-			last = ref
-			continue
+			return nil, after, fmt.Errorf("native message blob could not be decoded; boundary not advanced")
 		}
 		r := llmtypes.NativeRecord{ID: "blob:" + ref, Provider: "cursor-cli", SessionID: sessionID}
 		switch strings.ToLower(msg.Role) {
