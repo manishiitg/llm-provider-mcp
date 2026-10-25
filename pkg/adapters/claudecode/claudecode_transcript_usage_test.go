@@ -97,10 +97,12 @@ func TestReadClaudeTranscriptUsageDedupesByMessageID(t *testing.T) {
 	// one row from a SECOND LLM call (msg_B). Correct totals must reflect
 	// msg_A once + msg_B once, not msg_A three times.
 	usageA := `"usage":{"input_tokens":3,"output_tokens":100,"cache_creation_input_tokens":42339,"cache_read_input_tokens":0}`
+	// PLAT-872: a text block carries partial output before the tool-use block.
+	usageEarly := `"usage":{"input_tokens":3,"output_tokens":10,"cache_creation_input_tokens":42339,"cache_read_input_tokens":0}`
 	usageB := `"usage":{"input_tokens":1,"output_tokens":50,"cache_creation_input_tokens":1000,"cache_read_input_tokens":42442}`
 
 	lines := []string{
-		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
+		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageEarly + `}}`,
 		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
 		`{"type":"assistant","timestamp":"` + ts + `","requestId":"req_A","message":{"id":"msg_A","model":"claude-opus-4-7",` + usageA + `}}`,
 		`{"type":"user","timestamp":"` + ts + `","message":{"content":[{"type":"tool_result"}]}}`,

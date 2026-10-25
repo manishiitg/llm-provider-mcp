@@ -90,8 +90,15 @@ func ReadRetainedTurnUsage(ownerSessionID string, turnStart time.Time) []llmtype
 		if id == "" {
 			id = ev.RequestID
 		}
-		if id == "" || calls[id] != nil {
-			continue // every row of one model call carries that call's total: take it once
+		if id == "" {
+			continue
+		}
+		if old := calls[id]; old != nil {
+			old.input = max(old.input, ev.Message.Usage.InputTokens)
+			old.output = max(old.output, ev.Message.Usage.OutputTokens)
+			old.cacheCreate = max(old.cacheCreate, ev.Message.Usage.CacheCreationInputTokens)
+			old.cacheRead = max(old.cacheRead, ev.Message.Usage.CacheReadInputTokens)
+			continue
 		}
 		calls[id] = &call{id: id, input: ev.Message.Usage.InputTokens, output: ev.Message.Usage.OutputTokens,
 			cacheCreate: ev.Message.Usage.CacheCreationInputTokens, cacheRead: ev.Message.Usage.CacheReadInputTokens, model: ev.Message.Model}

@@ -31,7 +31,7 @@ func claudeSubagentCalls(parentPath string, turnStart time.Time) []claudeSubagen
 		if err != nil {
 			continue
 		}
-		seen := map[string]bool{}
+		calls := map[string]claudeSubagentCall{}
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 		for scanner.Scan() {
@@ -61,17 +61,19 @@ func claudeSubagentCalls(parentPath string, turnStart time.Time) []claudeSubagen
 				id = ev.RequestID
 			}
 			u := ev.Message.Usage
-			if id == "" || seen[id] || u.InputTokens+u.OutputTokens+u.CacheCreationInputTokens+u.CacheReadInputTokens == 0 {
+			if id == "" || u.InputTokens+u.OutputTokens+u.CacheCreationInputTokens+u.CacheReadInputTokens == 0 {
 				continue
 			}
-			seen[id] = true
-			if !claudeMarkUsageReported(path, id) {
-				continue
-			}
-			out = append(out, claudeSubagentCall{
+			old := calls[id]
+			calls[id] = claudeSubagentCall{
 				AgentID: strings.TrimSuffix(filepath.Base(path), ".jsonl"), ID: id, Model: ev.Message.Model,
-				Input: u.InputTokens, Output: u.OutputTokens, CacheCreate: u.CacheCreationInputTokens, CacheRead: u.CacheReadInputTokens,
-			})
+				Input: max(old.Input, u.InputTokens), Output: max(old.Output, u.OutputTokens), CacheCreate: max(old.CacheCreate, u.CacheCreationInputTokens), CacheRead: max(old.CacheRead, u.CacheReadInputTokens),
+			}
+		}
+		for id, call := range calls {
+			if claudeMarkUsageReported(path, id) {
+				out = append(out, call)
+			}
 		}
 		_ = f.Close()
 	}

@@ -41,7 +41,8 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 	// chunks + each tool_use), but every row from a single LLM call shares
 	// the same message.id and carries the call's total usage. Sum per
 	// unique message.id, not per row, or we multi-count by ~5-10x.
-	seenMessageID := make(map[string]struct{})
+	seenMessageID := make(map[string][4]int)
+	claimedElsewhere := map[string]bool{}
 	scanner := bufio.NewScanner(f)
 	// Assistant events can carry long tool-use payloads; bump line limit.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -73,21 +74,30 @@ func readClaudeTranscriptUsage(sessionID, workingDir string, turnStart time.Time
 		if dedupKey == "" {
 			dedupKey = ev.RequestID
 		}
+		usage := [4]int{ev.Message.Usage.InputTokens, ev.Message.Usage.OutputTokens, ev.Message.Usage.CacheCreationInputTokens, ev.Message.Usage.CacheReadInputTokens}
 		if dedupKey != "" {
-			if _, ok := seenMessageID[dedupKey]; ok {
-				continue
-			}
-			seenMessageID[dedupKey] = struct{}{}
+			previous, seen := seenMessageID[dedupKey]
 			// First reporter wins: a call a retained-turn read already took is not counted again here, and a call
 			// taken here is not taken by that reader. (A read with no turn start is a status read, not accounting.)
-			if !turnStart.IsZero() && !claudeMarkUsageReported(transcriptPath, dedupKey) {
+			if !seen && !turnStart.IsZero() && !claudeMarkUsageReported(transcriptPath, dedupKey) {
+				claimedElsewhere[dedupKey] = true
+			}
+			if claimedElsewhere[dedupKey] {
 				continue
 			}
+			// PLAT-872: the first block may have partial output. Add only growth
+			// of this same message instead of keeping its first observation.
+			latest := usage
+			for i := range latest {
+				latest[i] = max(latest[i], previous[i])
+				usage[i] = latest[i] - previous[i]
+			}
+			seenMessageID[dedupKey] = latest
 		}
-		input += ev.Message.Usage.InputTokens
-		output += ev.Message.Usage.OutputTokens
-		cacheCreate += ev.Message.Usage.CacheCreationInputTokens
-		cacheRead += ev.Message.Usage.CacheReadInputTokens
+		input += usage[0]
+		output += usage[1]
+		cacheCreate += usage[2]
+		cacheRead += usage[3]
 		if m := ev.Message.Model; m != "" && m != "<synthetic>" {
 			latestModel = m
 		}
