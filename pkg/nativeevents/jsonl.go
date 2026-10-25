@@ -53,13 +53,16 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 				if !queued && text(row, "turnOrigin") == "task_notification" {
 					out.FollowupID = id
 				}
-				if out.ToolID == "" && (b.Next.Tools[notice.ToolID] == "Agent" || b.Next.Tools[notice.ToolID] == "Task") {
+				if out.ToolID == "" && (b.Next.Tools[notice.ToolID] == "Agent" || b.Next.Tools[notice.ToolID] == "Task" || b.Next.Tools[notice.ToolID] == "Bash") {
 					out.ToolID = notice.ToolID
 					b.Next.Tasks[notice.TaskID] = notice.ToolID
 				}
 				if id == "" || notice.TaskID == "" || out.ToolID == "" {
 					b.Gaps++
 					continue
+				}
+				if b.Next.Tools[out.ToolID] == "Bash" {
+					out.Kind = "background_command"
 				}
 				switch notice.Status {
 				case "completed":
@@ -110,6 +113,12 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 					if asynchronous, _ := result["isAsync"].(bool); asynchronous {
 						out.Kind, out.State, out.TaskID = "helper", "started", task
 					}
+				}
+			}
+			if name == "Bash" {
+				if task := text(object(row["toolUseResult"]), "backgroundTaskId"); task != "" {
+					b.Next.Tasks[task] = tool
+					out.Kind, out.State, out.TaskID = "background_command", "started", task
 				}
 			}
 			emit(b, out)

@@ -25,6 +25,12 @@ func TestNativeRecordConformance(t *testing.T) {
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"tool1","name":"Agent"}]}}
 {"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":false},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
 `, []string{"turn:started", "tool:started", "tool:finished"}},
+		{"claude-code", `{"type":"user","uuid":"u1","origin":{"kind":"human"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash","input":{"run_in_background":false}},{"type":"tool_use","id":"todo1","name":"TaskUpdate"}]}}
+{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"backgroundTaskId":"command1"},"message":{"content":[{"type":"tool_result","tool_use_id":"bash1"}]}}
+{"type":"user","uuid":"todo-result","parentUuid":"result1","toolUseResult":{"taskId":"todo1"},"message":{"content":[{"type":"tool_result","tool_use_id":"todo1"}]}}
+{"type":"user","uuid":"notice","parentUuid":"todo-result","queueTranscriptOnly":true,"origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>command1</task-id><status>stopped</status></task-notification>"}}
+`, []string{"turn:started", "tool:started", "tool:started", "background_command:started", "tool:finished", "background_command:stopped"}},
 		{"codex-cli", `{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"message1","text":"Done"}}}
 {"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","error":{"code":"capacity"}}}

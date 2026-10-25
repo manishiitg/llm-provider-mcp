@@ -59,7 +59,7 @@ type Batch struct {
 func Capabilities(provider string) []string {
 	switch provider {
 	case "claude-code":
-		return []string{"reply", "turn", "helper", "question", "tool", "compaction", "usage", "file"}
+		return []string{"reply", "turn", "helper", "background_command", "question", "tool", "compaction", "usage", "file"}
 	case "codex-cli":
 		return []string{"reply", "turn", "question", "tool", "compaction", "usage", "file", "error"}
 	case "muse-cli":
