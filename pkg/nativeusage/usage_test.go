@@ -16,8 +16,8 @@ func TestNativeUsageConservation(t *testing.T) {
 		input, output, cache  int64
 	}{
 		{"claude-code", `{"type":"user","uuid":"turn1","sessionId":"native"}
-{"type":"assistant","sessionId":"native","message":{"id":"msg1","model":"model-a","content":[{"type":"text","text":"partial"}],"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":4}}}
-{"type":"assistant","sessionId":"native","message":{"id":"msg1","model":"model-a","content":[{"type":"tool_use","id":"tool1","name":"Agent"}],"usage":{"input_tokens":10,"output_tokens":8,"cache_read_input_tokens":4}}}
+{"type":"assistant","sessionId":"native","timestamp":"2026-10-25T12:00:00Z","message":{"id":"msg1","model":"model-a","content":[{"type":"text","text":"partial"}],"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":4}}}
+{"type":"assistant","sessionId":"native","timestamp":"2026-10-25T12:01:00Z","message":{"id":"msg1","model":"model-a","content":[{"type":"tool_use","id":"tool1","name":"Agent"}],"usage":{"input_tokens":10,"output_tokens":8,"cache_read_input_tokens":4}}}
 {"type":"assistant","sessionId":"native","message":{"id":"child1","model":"model-b","usage":{"input_tokens":3,"output_tokens":2}}}
 {"type":"cost-state","sessionId":"native","modelUsage":{"model-a":{"inputTokens":10,"outputTokens":8},"model-b":{"inputTokens":3,"outputTokens":2}}}
 `, `{"type":"assistant","sessionId":"native","message":{"id":"child1","model":"model-b","usage":{"input_tokens":3,"output_tokens":2}}}
@@ -69,6 +69,9 @@ func TestNativeUsageConservation(t *testing.T) {
 			var input, output, cache int64
 			keys := map[string]bool{}
 			for _, r := range s.Records {
+				if tc.provider == "claude-code" && r.ID == "msg1" && r.Timestamp.Minute() != 0 {
+					t.Fatal("growing usage moved to a later generation")
+				}
 				if tc.provider == "claude-code" && r.ID == "child1" && r.OwnerType != "helper" {
 					t.Fatal("helper identity must come from its own file")
 				}

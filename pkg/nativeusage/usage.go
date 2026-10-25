@@ -342,7 +342,9 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 				if r.Model == "" {
 					r.Model = old.Model
 				}
-				if r.Timestamp.Before(old.Timestamp) {
+				// Growing observations keep the call's first timestamp. Moving
+				// it into a later generation could charge the same call twice.
+				if !old.Timestamp.IsZero() && (r.Timestamp.IsZero() || old.Timestamp.Before(r.Timestamp)) {
 					r.Timestamp = old.Timestamp
 				}
 			}
