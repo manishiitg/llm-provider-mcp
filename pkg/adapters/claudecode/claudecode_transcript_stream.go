@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/nativereplies"
 )
 
 // claudeTranscriptStreamPollInterval is how often the transcript tailer checks
@@ -147,6 +148,7 @@ func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDi
 // the transcript exists, path discovery backs off; the expensive compatibility
 // glob is delayed when workingDir is known, then runs at most every 30s.
 type claudeTranscriptTailer struct {
+	lineage        nativereplies.ClaudeLineage
 	accountHome    []string
 	sessionID      string
 	workingDir     string
@@ -182,7 +184,7 @@ func (t *claudeTranscriptTailer) Read(now, turnStart time.Time, pendingToolStart
 	if err := t.ensureOpen(now); err != nil || t.file == nil {
 		return nil, err
 	}
-	events, next, err := readClaudeTranscriptEventsFromOpenFile(t.file, t.offset, turnStart, pendingToolStarts)
+	events, next, err := readClaudeTranscriptEventsFromOpenFile(t.file, t.offset, turnStart, pendingToolStarts, &t.lineage)
 	if err != nil {
 		t.Close()
 		forgetClaudeTranscriptPath(t.sessionID, t.path)
@@ -299,7 +301,11 @@ func readClaudeTranscriptEventsFromFile(path string, offset int64, turnStart tim
 	return readClaudeTranscriptEventsFromOpenFile(f, offset, turnStart, pendingToolStarts)
 }
 
-func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, int64, error) {
+func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart time.Time, pendingToolStarts map[string]time.Time, lineageState ...*nativereplies.ClaudeLineage) ([]claudeTranscriptEvent, int64, error) {
+	lineage := &nativereplies.ClaudeLineage{}
+	if len(lineageState) > 0 && lineageState[0] != nil {
+		lineage = lineageState[0]
+	}
 	// Seek even when offset is zero. A previous poll may have read an
 	// incomplete first line to EOF without advancing the logical offset; the
 	// next poll must reread that partial line together with its appended tail.
@@ -335,6 +341,7 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
+		root := lineage.Observe(line)
 		if e.Type == "system" && e.Subtype == "compact_boundary" {
 			rowTime, _ := time.Parse(time.RFC3339Nano, e.Timestamp)
 			if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
@@ -352,6 +359,9 @@ func readClaudeTranscriptEventsFromOpenFile(f *os.File, offset int64, turnStart 
 			rowTime, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 		}
 		if !turnStart.IsZero() && !rowTime.IsZero() && rowTime.Before(turnStart) {
+			continue
+		}
+		if !nativereplies.ForegroundMayPublish(root) {
 			continue
 		}
 

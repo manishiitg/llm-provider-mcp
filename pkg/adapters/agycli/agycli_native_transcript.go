@@ -165,6 +165,12 @@ func agyTranscriptStepText(stepType int, payload []byte) (string, llmtypes.ChatM
 	return text, role, true
 }
 
+// DecodeNativeStepText extracts only visible user/assistant text. Native event
+// readers reuse the provider's protobuf decoder without exposing thinking.
+func DecodeNativeStepText(stepType int, payload []byte) (string, llmtypes.ChatMessageType, bool) {
+	return agyTranscriptStepText(stepType, payload)
+}
+
 // agyProtoSubmessage returns the first length-delimited field num's raw
 // bytes. Structurally invalid input yields ok=false, never a panic.
 func agyProtoSubmessage(msg []byte, num protowire.Number) ([]byte, bool) {

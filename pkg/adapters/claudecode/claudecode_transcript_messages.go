@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/nativereplies"
 )
 
 // readClaudeTranscriptMessages reconstructs the assistant's internal
@@ -55,6 +56,7 @@ func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.T
 }
 
 func parseClaudeTranscriptMessages(reader io.Reader, turnStart time.Time, includeInputs bool) []llmtypes.MessageContent {
+	lineage := &nativereplies.ClaudeLineage{}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
@@ -95,12 +97,16 @@ func parseClaudeTranscriptMessages(reader io.Reader, turnStart time.Time, includ
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
 			continue
 		}
+		root := lineage.Observe(scanner.Bytes())
 		if !turnStart.IsZero() && e.Timestamp != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && ts.Before(turnStart) {
 				continue
 			}
 		}
 
+		if !includeInputs && !nativereplies.ForegroundMayPublish(root) {
+			continue
+		}
 		switch e.Type {
 		case "assistant":
 			var am assistantMessage
@@ -294,8 +300,9 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		PendingBackgroundAgentCount int             `json:"pendingBackgroundAgentCount"`
 	}
 	type group struct {
-		text      []string
-		completed bool
+		text          []string
+		completed     bool
+		observerOwned bool
 	}
 
 	groups := make(map[string]*group)
@@ -304,6 +311,7 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	lastAssistantID := ""
 	userAfterLastAssistant := false
 	pendingTasks := map[string]bool{}
+	lineage := &nativereplies.ClaudeLineage{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -311,6 +319,7 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		if json.Unmarshal(scanner.Bytes(), &e) != nil {
 			continue
 		}
+		root := lineage.Observe(scanner.Bytes())
 		if e.Type == "system" && e.Subtype == "turn_duration" {
 			result.PendingBackgroundAgents = e.PendingBackgroundAgentCount
 			continue
@@ -353,6 +362,7 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 			groups[id] = g
 			order = append(order, id)
 		}
+		g.observerOwned = !nativereplies.ForegroundMayPublish(root)
 		g.text = append(g.text, textFromClaudeBlocks(am.Content)...)
 		if am.StopReason == "end_turn" {
 			g.completed = true
@@ -371,10 +381,13 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 
 	for i := len(order) - 1; i >= 0; i-- {
 		g := groups[order[i]]
-		if g.completed && len(g.text) > 0 {
+		if g.completed && len(g.text) > 0 && !g.observerOwned {
 			result.Text = strings.TrimSpace(strings.Join(g.text, "\n\n"))
 			parts := make([]string, 0, len(order))
 			for _, id := range order[:i+1] {
+				if groups[id].observerOwned {
+					continue
+				}
 				if t := strings.TrimSpace(strings.Join(groups[id].text, "\n\n")); t != "" {
 					parts = append(parts, t)
 				}
