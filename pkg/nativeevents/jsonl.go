@@ -107,7 +107,9 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 				task := text(result, "agentId", "taskId", "task_id")
 				if task != "" {
 					b.Next.Tasks[task] = tool
-					out.Kind, out.State, out.TaskID = "helper", "started", task
+					if asynchronous, _ := result["isAsync"].(bool); asynchronous {
+						out.Kind, out.State, out.TaskID = "helper", "started", task
+					}
 				}
 			}
 			emit(b, out)

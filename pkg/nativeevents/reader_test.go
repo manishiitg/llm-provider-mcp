@@ -17,10 +17,14 @@ func TestNativeRecordConformance(t *testing.T) {
 	}{
 		{"claude-code", `{"type":"user","uuid":"u1","sessionId":"session-test","origin":{"kind":"human"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"tool1","name":"Agent"},{"type":"thinking","thinking":"PRIVATE_THOUGHT"}]}}
-{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1"},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
+{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":true},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
 {"type":"user","uuid":"notice1","parentUuid":"result1","turnOrigin":"task_notification","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>task1</task-id><tool-use-id>tool1</tool-use-id><status>completed</status></task-notification>"}}
 {"type":"assistant","uuid":"a2","parentUuid":"notice1","message":{"content":[{"type":"text","text":"The helper finished."}]}}
 `, []string{"turn:started", "tool:started", "helper:started", "helper:finished", "turn:started", "reply:committed"}},
+		{"claude-code", `{"type":"user","uuid":"u1","origin":{"kind":"human"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"tool1","name":"Agent"}]}}
+{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":false},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
+`, []string{"turn:started", "tool:started", "tool:finished"}},
 		{"codex-cli", `{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"message1","text":"Done"}}}
 {"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","error":{"code":"capacity"}}}
