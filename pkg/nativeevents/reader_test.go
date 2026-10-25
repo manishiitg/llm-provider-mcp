@@ -41,6 +41,11 @@ func TestNativeRecordConformance(t *testing.T) {
 `, []string{"reply:committed"}},
 		{"muse-cli", `{"sequence":1,"transaction_id":"tx1","payload":{"kind":"run","run_id":"r1","event":{"kind":"assistant_message_committed","message_id":"m1","text":"Answer"}}}
 `, []string{"reply:committed"}},
+		{"muse-cli", `{"sequence":2,"payload":{"kind":"task","run_id":"r1","event":{"kind":"status","task_id":"task1","details":{"phase":"opening_stream","facets":[{"kind":"external_attempt","attempt":1}]}}}}
+{"sequence":3,"payload":{"kind":"task","run_id":"r1","event":{"kind":"status","task_id":"task1","details":{"phase":"opening_stream","facets":[{"kind":"external_attempt","attempt":2}]}}}}
+{"sequence":4,"payload":{"kind":"task","run_id":"r1","event":{"kind":"status","task_id":"task1","details":{"phase":"stream_succeeded","facets":[{"kind":"external_attempt","attempt":2}]}}}}
+{"sequence":5,"payload":{"kind":"run","run_id":"r1","event":{"kind":"terminal","terminal":"completed","turn_duration_ms":500}}}
+`, []string{"status:opening_stream", "retry:retrying", "status:stream_succeeded", "turn:completed"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {

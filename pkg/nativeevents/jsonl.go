@@ -403,10 +403,21 @@ func decodeMuse(b *Batch, session string, row map[string]any) {
 		r.Kind, r.State = "helper", strings.TrimPrefix(kind, "task_")
 		emit(b, r)
 	case "terminal":
-		r.Kind, r.State = "turn", text(p, "status", "outcome")
+		r.Kind, r.State = "turn", text(p, "terminal")
+		r.DurationMS = number(p, "turn_duration_ms")
 		emit(b, r)
 	case "status":
-		r.Kind, r.State = "retry", text(p, "status")
+		// A provider's first request and successful stream are statuses, not
+		// retries. The live journal puts the phase in details, not status.
+		details := object(p["details"])
+		r.Kind, r.State = "status", text(details, "phase")
+		facets, _ := details["facets"].([]any)
+		for _, value := range facets {
+			facet := object(value)
+			if text(facet, "kind") == "external_attempt" && number(facet, "attempt") > 1 && r.State == "opening_stream" {
+				r.Kind, r.State = "retry", "retrying"
+			}
+		}
 		emit(b, r)
 	case "model_completed":
 		r.Kind, r.State, r.Model = "usage", "snapshot", text(p, "model", "model_id")
