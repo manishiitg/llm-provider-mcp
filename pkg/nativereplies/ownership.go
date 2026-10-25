@@ -5,6 +5,7 @@ package nativereplies
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 
 const Foreground = "foreground"
 const Observer = "observer"
+
+var ErrNoActiveForeground = errors.New("no active foreground turn owns this native root")
 
 type ClaimState struct {
 	Provider         string `json:"provider"`
@@ -170,7 +173,7 @@ func Claim(provider, session, root, proposed string) (string, error) {
 	if proposed == Foreground {
 		claim.ForegroundTurnID = ActiveForeground(provider, session)
 		if claim.ForegroundTurnID == "" {
-			return "", fmt.Errorf("no active foreground turn owns this native root")
+			return "", ErrNoActiveForeground
 		}
 	}
 	if err := save(claim); err != nil {
@@ -232,5 +235,8 @@ func ForegroundMayPublish(root ClaudeRoot) bool {
 		return State("claude-code", root.Session, root.Root).Owner != Observer
 	}
 	owner, err := Claim("claude-code", root.Session, root.Root, Foreground)
+	if errors.Is(err, ErrNoActiveForeground) {
+		return false
+	}
 	return err != nil || owner == Foreground
 }

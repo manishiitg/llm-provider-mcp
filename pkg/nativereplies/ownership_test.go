@@ -80,6 +80,17 @@ func TestNativeReplyClaimsRequireDeliveredRoots(t *testing.T) {
 	if !State("claude-code", "native", "included").Committed {
 		t.Fatal("delivered root was not committed")
 	}
+	calls := 0
+	SetForegroundLookup(func(string, string) string {
+		calls++
+		if calls == 1 {
+			return "ending-turn"
+		}
+		return ""
+	})
+	if ForegroundMayPublish(ClaudeRoot{Session: "native", Root: "racing-root", Helper: true}) {
+		t.Fatal("turn ended during claim but reader published unclaimed root")
+	}
 }
 
 func TestClaudeNativeReplyLineage(t *testing.T) {
