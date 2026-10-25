@@ -69,6 +69,9 @@ func TestNativeUsageConservation(t *testing.T) {
 			var input, output, cache int64
 			keys := map[string]bool{}
 			for _, r := range s.Records {
+				if tc.provider == "claude-code" && r.ID == "child1" && r.OwnerType != "helper" {
+					t.Fatal("helper identity must come from its own file")
+				}
 				input += r.Input
 				output += r.Output
 				cache += r.CacheRead

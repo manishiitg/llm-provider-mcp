@@ -57,29 +57,21 @@ type PrivateUsage struct {
 	Limits                     []Limit
 }
 type Snapshot struct {
-	Records    []Record
-	Positions  map[string]int64
-	Cumulative map[string]Totals
-	Private    PrivateUsage `json:"-"`
-	Supported  bool
-	CaughtUp   bool
-	Gaps       int
+	Records     []Record
+	Positions   map[string]int64
+	Cumulative  map[string]Totals
+	Private     PrivateUsage `json:"-"`
+	Supported   bool
+	CaughtUp    bool
+	Gaps        int
+	SourceStamp string
 }
 
 func Supported(provider string) bool {
 	return provider == "claude-code" || provider == "codex-cli" || provider == "muse-cli" || provider == "pi-cli"
 }
 
-// Read includes owned helper files under this runtime only. It returns no
-// historical billing decision: the host applies its durable coverage boundary.
-func Read(ctx context.Context, provider, session, path string) (Snapshot, error) {
-	s := Snapshot{Supported: Supported(provider), CaughtUp: true, Positions: map[string]int64{}, Cumulative: map[string]Totals{}}
-	if !s.Supported {
-		return s, nil
-	}
-	if session == "" || path == "" {
-		return s, fmt.Errorf("exact native session and source required")
-	}
+func sourcePaths(provider, path string) ([]string, error) {
 	paths := []string{path}
 	if provider == "claude-code" {
 		children, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents", "agent-*.jsonl"))
@@ -97,11 +89,65 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 			return nil
 		})
 		if err != nil && !os.IsNotExist(err) {
-			return s, err
+			return nil, err
 		}
+	}
+	return paths, nil
+}
+
+func stampPaths(paths []string) (string, error) {
+	var stamp strings.Builder
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&stamp, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
+	}
+	return stamp.String(), nil
+}
+
+// SourceStamp checks only file metadata, including new owned helper files.
+func SourceStamp(provider, path string) (string, error) {
+	paths, err := sourcePaths(provider, path)
+	if err != nil {
+		return "", err
+	}
+	return stampPaths(paths)
+}
+
+// Read includes owned helper files under this runtime only. It returns no
+// historical billing decision: the host applies its durable coverage boundary.
+func Read(ctx context.Context, provider, session, path string) (Snapshot, error) {
+	s := Snapshot{Supported: Supported(provider), CaughtUp: true, Positions: map[string]int64{}, Cumulative: map[string]Totals{}}
+	if !s.Supported {
+		return s, nil
+	}
+	if session == "" || path == "" {
+		return s, fmt.Errorf("exact native session and source required")
+	}
+	paths, err := sourcePaths(provider, path)
+	if err != nil {
+		return s, err
+	}
+	// Capture before reading. A concurrent append then guarantees a changed
+	// stamp on the next poll, even if it raced this reader's end of file.
+	s.SourceStamp, err = stampPaths(paths)
+	if err != nil {
+		return s, err
 	}
 	byID := map[string]Record{}
 	models := map[string]string{}
+	ambiguousModels := map[string]bool{}
+	setModel := func(turn, model string) {
+		if model == "" {
+			return
+		}
+		if old := models[turn]; old != "" && old != model {
+			ambiguousModels[turn] = true
+		}
+		models[turn] = model
+	}
 	for _, p := range paths {
 		if err := ctx.Err(); err != nil {
 			return s, err
@@ -114,6 +160,10 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 		var offset int64
 		turn, model := "", ""
 		for {
+			if err := ctx.Err(); err != nil {
+				_ = f.Close()
+				return s, err
+			}
 			line, e := reader.ReadBytes('\n')
 			if e == io.EOF {
 				if len(line) > 0 {
@@ -160,7 +210,8 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 				r.ID = str(m, "id")
 				r.Model = str(m, "model")
 				r.TurnID = turn
-				if p != path {
+				sidechain, _ := row["isSidechain"].(bool)
+				if p != path || sidechain {
 					r.TaskID = strings.TrimSuffix(filepath.Base(p), ".jsonl")
 					r.OwnerType = "helper"
 				}
@@ -223,13 +274,13 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 				r.TurnID = str(w, "run_id")
 				if str(e, "kind") == "model_completed" {
 					if name := str(e, "model"); name != "" {
-						models[r.TurnID] = name
+						setModel(r.TurnID, name)
 					}
 					continue
 				}
 				if str(e, "kind") == "run_model" {
 					rec := obj(e["record"])
-					models[str(obj(rec["run_stream"]), "id")] = str(rec, "model_id")
+					setModel(str(obj(rec["run_stream"]), "id"), str(rec, "model_id"))
 					continue
 				}
 				if str(e, "kind") != "goal_usage_attribution" {
@@ -280,6 +331,9 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 				continue
 			}
 			if old, ok := byID[r.ID]; ok {
+				if r.OwnerType == "" && old.OwnerType != "" {
+					r.OwnerType, r.TaskID = old.OwnerType, old.TaskID
+				}
 				r.Input = max(r.Input, old.Input)
 				r.Output = max(r.Output, old.Output)
 				r.CacheRead = max(r.CacheRead, old.CacheRead)
@@ -299,8 +353,10 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 	}
 	for _, r := range byID {
 		if provider == "muse-cli" {
-			r.Model = models[r.TurnID]
-			if r.Model == "" {
+			if !ambiguousModels[r.TurnID] {
+				r.Model = models[r.TurnID]
+			}
+			if r.Model == "" && !ambiguousModels[r.ParentTurnID] {
 				r.ParentModel = models[r.ParentTurnID]
 			}
 		}
