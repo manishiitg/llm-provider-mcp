@@ -241,7 +241,7 @@ func AwaitClaudeInputDurable(ctx context.Context, sessionID, message string, tim
 // SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
 // tmux session registered for the owning application session.
 func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return codexcli.SendCodexInteractiveInput(ctx, sessionID, message)
+	return codexcli.SendCodexAppServerInput(ctx, sessionID, message)
 }
 
 // SendCursorCLIInteractiveInput sends user input to a live Cursor CLI

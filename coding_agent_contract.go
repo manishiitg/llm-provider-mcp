@@ -5,23 +5,14 @@ import (
 	"strings"
 )
 
-// CodingAgentTransport describes the process transport used by a coding-agent
-// provider. New coding providers should prefer tmux unless the CLI cannot
-// support same-session chat, live input, interrupt, and terminal snapshots yet.
-//
-// The four possible shapes and the tradeoff behind this default are documented
-// in docs/CODING_AGENT_TRANSPORT_PATTERNS.md §0. In short: tmux is the default
-// because it is the only transport with a real stdin, so it is the only one that
-// can steer a turn that is already running (structured mode can only QUEUE — see
-// the steering_queue.json certification) and the only one that reuses a warm
-// process instead of paying CLI startup on every turn. What tmux is bad at is
-// producing the final reply text: a pane hard-wraps, so read it from the
-// provider's own on-disk session file and keep the pane for idle detection.
+// CodingAgentTransport describes the native process interface. App-server
+// provides structured events and live steering on a persistent connection.
 type CodingAgentTransport string
 
 const (
 	CodingAgentTransportTmux       CodingAgentTransport = "tmux"
 	CodingAgentTransportStructured CodingAgentTransport = "structured"
+	CodingAgentTransportAppServer  CodingAgentTransport = "app-server"
 )
 
 // CodingAgentProviderContract is the provider-level contract that host apps can
@@ -327,17 +318,17 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		Provider:                ProviderCodexCLI,
 		DisplayName:             "Codex CLI",
 		CLIName:                 "codex",
-		Transport:               CodingAgentTransportTmux,
+		Transport:               CodingAgentTransportAppServer,
 		RuntimeBinary:           "codex",
 		InstallCommand:          "npm install -g @openai/codex@latest",
 		VersionProbeArgs:        []string{"--version"},
-		MinCLIVersion:           "0.155.1",
+		MinCLIVersion:           "0.164.0",
 		RequiresWorkingDir:      true,
 		RequiresOwnerSessionID:  true,
 		UsesPersistentSession:   true,
 		SupportsLiveInput:       true,
 		SupportsInterrupt:       true,
-		SupportsTerminalStream:  true,
+		SupportsTerminalStream:  false,
 		SupportsStatusLine:      true,
 		SupportsFinalExtraction: true,
 		// Wired end-to-end: mcpagent.Agent.CodexSessionID is populated by the
@@ -351,25 +342,25 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresMCPBridgeConfig:      true,
 		SupportsBridgeOnlyTools:      true,
 		UsesNativeSystemPrompt:       true,
-		LaunchesViaLoginShell:        true,
+		LaunchesViaLoginShell:        false,
 		ProcessScopedCleanup:         true,
-		HandlesTmuxSessionLoss:       true,
+		HandlesTmuxSessionLoss:       false,
 		StructuredFallback:           false,
 		ImageInputInteractive:        true,
 		SurfacesTokenUsage:           true,
-		TokenUsageSource:             "transcript-file",
+		TokenUsageSource:             "stream-json",
 		SurfacesPlanUsage:            true,
-		PlanUsageSource:              "transcript-file",
+		PlanUsageSource:              "app-server",
 		AdapterReadsTranscript:       true,
 		TranscriptPathTemplate:       "~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-uuid>.jsonl",
 		SupportsStructuredStreaming:  true,
-		RequiresWorkspaceTrust:       true,
+		RequiresWorkspaceTrust:       false,
 		APIKeyEnvVars:                []string{"CODEX_API_KEY"},
 		WorkingDirInstructionFile:    "AGENTS.md",
 		UserInstructionFile:          "~/.codex/AGENTS.md",
-		WorkingDirMCPConfigFile:      "", // Codex has no project-scoped MCP config file; AgentWorks writes a unique per-invocation $CODEX_HOME/<name>.config.toml profile.
+		WorkingDirMCPConfigFile:      "", // Codex receives session MCP config over app-server stdio.
 		UserMCPConfigFile:            "~/.codex/config.toml",
-		SupportsStalledTurnDiagnosis: true,
+		SupportsStalledTurnDiagnosis: false,
 		SupportsDurableAck:           true,
 	},
 	ProviderCursorCLI: {

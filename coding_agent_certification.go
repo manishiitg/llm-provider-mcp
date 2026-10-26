@@ -914,298 +914,37 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
-		{
-			ID:          CertRuntimeAvailability,
-			TestFile:    "pkg/adapters/codexcli/codexcli_runtime_availability_live_test.go",
-			TestName:    "TestCodexRuntimeAvailabilityLive",
-			Description: "contract codex binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTokenUsage,
-			TestFile:    "pkg/adapters/codexcli/codexcli_token_usage_live_test.go",
-			TestName:    "TestCodexTokenUsageLive",
-			Description: "real turn reports input/output token counts through GenerationInfo for the cost ledger",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertPlanUsage,
-			TestFile:    "pkg/adapters/codexcli/codexcli_plan_usage_live_test.go",
-			TestName:    "TestCodexPlanUsageLive",
-			Description: "real turn leaves the account's plan usage windows (used %, reset) in Codex's rollout, surfaced as structured RateLimitWindows",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStalledTurnDiagnosis,
-			TestFile:    "pkg/adapters/codexcli/codexcli_stalled_turn_diagnosis_live_test.go",
-			TestName:    "TestCodexCLIRealInteractiveStalledTurnDiagnosisContract",
-			Description: "runs a real Codex CLI turn to completion, then independently rediscovers it via DiagnoseTurnCompletion with no turn in flight",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertDurableAck,
-			TestFile:    "pkg/adapters/codexcli/codexcli_durable_ack_live_test.go",
-			TestName:    "TestCodexCLIRealDurableAckContract",
-			Description: "steers a busy Codex turn via raw live input, awaits the rollout user row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStructuredMultiTurn,
-			TestFile:    "pkg/adapters/codexcli/codexcli_structured_integration_test.go",
-			TestName:    "TestCodexCLIStructuredTwoTurnResume",
-			Description: "runs two real Codex structured turns and proves the native thread from turn one resumes in turn two",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStructuredStreaming,
-			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go",
-			TestName:    "TestCodexCLITranscriptStreamingRealWorldLive",
-			Description: "tails the live rollout JSONL and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStreamNoHistoryReplay,
-			TestFile:    "pkg/adapters/codexcli/codexcli_transcript_stream_noreplay_live_test.go",
-			TestName:    "TestCodexTranscriptStreamNoHistoryReplayLive",
-			Description: "commits a real marker turn to a real rollout, then proves a freshly constructed reader at offset 0 with a NOW boundary emits none of it",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertReplyFormattingFidelity,
-			TestFile:    "pkg/adapters/codexcli/codexcli_reply_formatting_live_test.go",
-			TestName:    "TestCodexCLIRealReplyFormattingFidelityE2E",
-			Env:         []string{"-coding-cli-p0-live"},
-			Description: "live turn proving the final answer comes from the rollout JSONL rather than the wrapped pane; codex needs no reconciliation guard because rollout rows carry timestamps that scope the read to this turn",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertRuntimeContext,
-			TestFile:    "pkg/adapters/codexcli/codexcli_runtime_self_check_e2e_test.go",
-			TestName:    "TestCodexCLIRealRuntimeSelfCheckContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1"},
-			Description: "proves the real Codex CLI session receives its system prompt, attached skill, and MCP bridge",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertFreshLaunch,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "starts Codex CLI tmux transport, reaches ready, and streams terminal-only chunks",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStatusLine,
-			TestFile:    "pkg/adapters/codexcli/codexcli_statusline_stream_test.go",
-			TestName:    "TestStreamCodexStatusLineEmitsChunk",
-			Description: "emits a status_line chunk from the rollout JSONL token_count (uncached/cached/output tokens, real model, tmux session) — tmux mode has no statusline command hook",
-		},
-		{
-			ID:          CertResumeCompactionStartup,
-			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
-			TestName:    "TestCodexInteractivePromptWaitDefaultsToStartupBudget",
-			Description: "Codex prompt waits use the startup budget rather than a fixed short cutoff",
-		},
-		{
-			ID:          CertStartupTerminalVisibility,
-			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
-			TestName:    "TestCodexTerminalStreamCapturesRawScreenRows",
-			Description: "Codex startup/working panes emit raw terminal rows before final completion",
-		},
-		{
-			ID:          CertWorkingDirectory,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveWorkingDirectoryContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "proves Codex CLI and its MCP bridge run in the requested cwd",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTrustAuthPrompts,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveWorkspaceTrustPromptContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "fresh Codex workspace trust prompt is handled and excluded from final output",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertNativeSystemPrompt,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "system/developer instructions reach Codex through native config override",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertPromptPaste,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "large multiline prompt submits correctly through tmux",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertMCPBridge,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveMCPBridgeContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "Codex CLI calls a real MCP bridge tool",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBridgeOnlyTools,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveMCPBridgeContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "Codex CLI bridge-only mode runs through MCP with internal shell disabled",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSlowToolLiveInput,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "live validation input during a slow MCP tool does not complete the foreground turn",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSlowToolFalseIdle,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "slow MCP activity keeps Codex classified active even if prompt-looking UI appears",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertDoneDetection,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "slow MCP plus queued validation does not falsely complete while active",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertFinalExtraction,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealMCPBridgeFileFinalExtractionContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "real Codex CLI performs an MCP bridge file write and returns only its final assistant message, excluding MCP/TUI trail from workflow completion notifications",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertMultiTurn,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "persistent Codex CLI tmux session keeps native multi-turn memory",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStaleDraftCleanup,
-			TestFile:    "pkg/adapters/codexcli/codexcli_adapter_test.go",
-			TestName:    "TestCodexQueuedInputKeepsSessionActive",
-			Description: "queued/draft input is classified active and not completed as final output",
-		},
-		{
-			ID:          CertLiveInput,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "live input routes into the active Codex CLI tmux session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBusyLiveInput,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveLiveInputSteersBusyTurnContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "a follow-up submitted during a slow Codex tool call is durably applied by the same live session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertCancellation,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "escape/interrupt path is exercised against a live Codex CLI session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertPersistentCancelReuse,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveLiveInputAndEscapeContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "a canceled persistent Codex pane is not reused unless it is prompt-ready",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertLifecyclePolicy,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "persistent chat sessions remain registered after a completed turn",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBoundedRetention,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveCleanup",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "bounded Codex cleanup/retention path unregisters and removes owned sessions",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertParallelStartupQueue,
-			TestFile:    "pkg/adapters/internal/tmuxlaunch/tmuxlaunch_test.go",
-			TestName:    "TestAcquireQueuesConcurrentStarts",
-			Description: "tmux startup acquisition serializes concurrent provider launches when configured",
-		},
-		{
-			ID:          CertCleanup,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveCleanup",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "Codex cleanup unregisters and kills owned tmux sessions",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSessionLoss,
-			TestFile:    "pkg/adapters/codexcli/codexcli_cleanup_test.go",
-			TestName:    "TestCleanupCodexCLIInteractiveSessionsDoesNotBlockOnBusySession",
-			Description: "Codex cleanup path is safe when a session is busy or unavailable",
-		},
-		{
-			ID:          CertSessionLossRecovery,
-			TestFile:    "coding_agent_continuation_real_test.go",
-			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
-			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1"},
-			Description: "Codex CLI recovers a remembered-token conversation after its tmux session is killed",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertParallelIsolation,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveParallelIsolation",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "parallel Codex tmux sessions do not share state",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSharedWorkdirMCPIsolation,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "parallel Codex sessions in one cwd keep MCP sessions isolated",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTmuxTurnExecution,
-			TestFile:    "pkg/adapters/codexcli/codexcli_real_contract_test.go",
-			TestName:    "TestCodexCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CODEX_CLI_REAL_E2E=1", "RUN_CODEX_CLI_INTERACTIVE_E2E=1"},
-			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
-			RealE2E:     true,
-		},
+		{ID: CertFreshLaunch, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: FreshLaunch"},
+		{ID: CertNativeSystemPrompt, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: NativeSystemPrompt"},
+		{ID: CertPromptPaste, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: PromptPaste"},
+		{ID: CertFinalExtraction, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: FinalExtraction"},
+		{ID: CertReplyFormattingFidelity, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: ReplyFormattingFidelity"},
+		{ID: CertMultiTurn, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: MultiTurn"},
+		{ID: CertStructuredMultiTurn, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: StructuredMultiTurn"},
+		{ID: CertStreamNoHistoryReplay, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: StreamNoHistoryReplay"},
+		{ID: CertStaleDraftCleanup, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: StaleDraftCleanup"},
+		{ID: CertLifecyclePolicy, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: LifecyclePolicy"},
+		{ID: CertCleanup, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: Cleanup"},
+		{ID: CertBoundedRetention, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: BoundedRetention"},
+		{ID: CertSessionLossRecovery, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: SessionLossRecovery"},
+		{ID: CertTokenUsage, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: TokenUsage"},
+		{ID: CertStatusLine, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: StatusLine"},
+		{ID: CertRuntimeContext, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: RuntimeContext"},
+		{ID: CertWorkingDirectory, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: WorkingDirectory"},
+		{ID: CertMCPBridge, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: MCPBridge"},
+		{ID: CertStructuredStreaming, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: StructuredStreaming"},
+		{ID: CertBridgeOnlyTools, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerBridgeOnlyP0", RealE2E: true, Description: "Real Codex app-server: BridgeOnlyTools"},
+		{ID: CertSlowToolLiveInput, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: SlowToolLiveInput"},
+		{ID: CertSlowToolFalseIdle, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: SlowToolFalseIdle"},
+		{ID: CertDoneDetection, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: DoneDetection"},
+		{ID: CertLiveInput, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: LiveInput"},
+		{ID: CertBusyLiveInput, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: BusyLiveInput"},
+		{ID: CertDurableAck, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: DurableAck"},
+		{ID: CertCancellation, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerInterruptP0", RealE2E: true, Description: "Real Codex app-server: Cancellation"},
+		{ID: CertPersistentCancelReuse, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerInterruptP0", RealE2E: true, Description: "Real Codex app-server: PersistentCancelReuse"},
+		{ID: CertParallelIsolation, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerParallelIsolationP0", RealE2E: true, Description: "Real Codex app-server: ParallelIsolation"},
+		{ID: CertRuntimeAvailability, TestFile: "pkg/adapters/codexcli/codexcli_runtime_availability_live_test.go", TestName: "TestCodexRuntimeAvailabilityLive", RealE2E: true, Description: "Real Codex app-server RuntimeAvailability"},
+		{ID: CertPlanUsage, TestFile: "pkg/adapters/codexcli/codexcli_plan_usage_live_test.go", TestName: "TestCodexPlanUsageLive", RealE2E: true, Description: "Real Codex app-server PlanUsage"},
 	},
 	ProviderCursorCLI: {
 		{
@@ -1838,7 +1577,7 @@ func CodingAgentP0ReleaseMatrix() ([]CodingAgentP0ReleaseEntry, error) {
 			continue
 		}
 		seen[contract.Provider] = true
-		if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+		if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer) || contract.Deprecated {
 			continue
 		}
 		required := RequiredP0CodingAgentCertificationIDs(contract)
@@ -1903,10 +1642,22 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 // provider self-description cannot weaken the platform's mcp_only release bar.
 // Muse's documented best-effort exception has its own required live P0 proof.
 func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
-	if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+	if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer) || contract.Deprecated {
 		return nil
 	}
 	ids := append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
+	if contract.Transport == CodingAgentTransportAppServer {
+		// Protocol-native transports retain the real lifecycle P0s; terminal
+		// rendering and workspace trust menus do not exist on this interface.
+		filtered := ids[:0]
+		for _, id := range ids {
+			if id != CertTmuxTurnExecution && id != CertTrustAuthPrompts {
+				filtered = append(filtered, id)
+			}
+		}
+		ids = filtered
+	}
+
 	if acceptsBestEffortToolRestrictions(contract) {
 		for i, id := range ids {
 			if id == CertBridgeOnlyTools {

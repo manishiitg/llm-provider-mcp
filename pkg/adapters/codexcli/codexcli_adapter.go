@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -51,10 +50,8 @@ func NewCodexCLIAdapter(apiKey string, modelID string, logger interfaces.Logger)
 	}
 }
 
-// GenerateContent generates content using Codex CLI through the tmux transport.
-// Direct callers that do not pass an interactive owner session get a bounded
-// temporary owner ID so the old non-interactive entry point still works without
-// falling back to `codex exec --json`.
+// GenerateContent drives Codex's native app-server protocol. Persistent callers
+// retain a process; bounded calls close it and can resume the returned thread.
 func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
@@ -65,6 +62,9 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		llmtypes.CLISecurityModeVerified,
 		llmtypes.CLISecurityModeIsolated,
 	); err != nil {
+		if opts.StreamChan != nil {
+			close(opts.StreamChan)
+		}
 		return nil, err
 	}
 
@@ -76,21 +76,10 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		if opts.StreamChan != nil {
 			close(opts.StreamChan)
 		}
-		return nil, fmt.Errorf("codex-cli tmux transport does not support llmtypes.ImageContent directly; pass the image file path as text instead")
+		return nil, fmt.Errorf("codex-cli app-server adapter does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
-			return c.generateContentStructured(ctx, messages, opts)
-		}
-	}
-
-	if codexInteractiveSessionIDFromOptions(opts) == "" {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyInteractiveSessionID] = fmt.Sprintf("codex-bounded-%d-%s", time.Now().UnixNano(), codexRandomHex(4))
-	}
-
-	return c.generateContentInteractive(ctx, messages, opts)
+	return c.generateContentAppServer(ctx, messages, opts)
 }
 
 // SearchWeb uses Codex CLI's native web search capability and returns the final text response.

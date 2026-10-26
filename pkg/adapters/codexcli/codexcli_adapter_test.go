@@ -992,7 +992,7 @@ func TestCodexCLIBoundedInteractiveRejectsImageContent(t *testing.T) {
 	if err == nil {
 		t.Fatal("GenerateContent() error = nil, want unsupported interactive image error")
 	}
-	if !strings.Contains(err.Error(), "tmux transport does not support llmtypes.ImageContent") {
+	if !strings.Contains(err.Error(), "does not support llmtypes.ImageContent") {
 		t.Fatalf("GenerateContent() error = %v, want interactive image unsupported error", err)
 	}
 }

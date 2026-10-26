@@ -498,6 +498,9 @@ func codexArbiterAfterPaneFailure(ctx context.Context, ownerSessionID, sessionNa
 // server watcher calls it after every fast ack and promotes the chat
 // tick on confirmation. A zero timeout selects the env-tuned budget.
 func AwaitCodexInputDurable(ctx context.Context, ownerSessionID, message string, timeout time.Duration) (CodexDurableAck, error) {
+	if codexAppSessionForOwner(ownerSessionID) != nil {
+		return awaitCodexAppInputDurable(ctx, ownerSessionID, message, timeout)
+	}
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
 		return CodexDurableAck{}, fmt.Errorf("owner session id is required")

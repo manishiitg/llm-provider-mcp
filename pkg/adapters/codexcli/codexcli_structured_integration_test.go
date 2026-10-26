@@ -92,7 +92,7 @@ func TestCodexCLIStructuredBasicRun(t *testing.T) {
 		t.Fatalf("expected response to contain tokyo, got %q", content)
 	}
 	gi := resp.Choices[0].GenerationInfo
-	if gi == nil || gi.Additional["codex_mode"] != "structured" {
+	if gi == nil || gi.Additional["codex_mode"] != "app-server" {
 		t.Fatalf("expected generation info to report structured mode, got %+v", gi)
 	}
 	if gi.InputTokens == nil || *gi.InputTokens == 0 {

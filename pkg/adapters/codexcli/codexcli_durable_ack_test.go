@@ -473,15 +473,3 @@ func TestTakeCodexDurableReceiptConcurrentOccurrence(t *testing.T) {
 		t.Fatal("no receipt must remain after two takes")
 	}
 }
-
-func TestInteractiveSessionRegistered(t *testing.T) {
-	owner := "codex-registered-owner"
-	if InteractiveSessionRegistered(owner) {
-		t.Fatal("an unregistered owner must not be steer-ready")
-	}
-	codexInteractiveRegistry.Set(owner, "mlp-codex-test")
-	t.Cleanup(func() { codexInteractiveRegistry.Delete(owner) })
-	if !InteractiveSessionRegistered(owner) {
-		t.Fatal("a registered owner must be steer-ready")
-	}
-}

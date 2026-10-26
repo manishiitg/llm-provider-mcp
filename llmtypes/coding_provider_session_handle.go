@@ -9,6 +9,7 @@ const (
 	CodingProviderTransportTmux       = "tmux"
 	CodingProviderTransportStructured = "structured"
 	CodingProviderTransportAPI        = "api"
+	CodingProviderTransportAppServer  = "app-server"
 
 	CodingProviderSessionStatusIdle   = "idle"
 	CodingProviderSessionStatusActive = "active"

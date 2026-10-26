@@ -576,7 +576,7 @@ func requireRealCodexCLIE2E(t *testing.T) {
 	if !*codingCLIP0Live {
 		t.Skip("run through the live coding CLI P0 runner")
 	}
-	for _, bin := range []string{"codex", "tmux", "node"} {
+	for _, bin := range []string{"codex", "node"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Fatalf("real Codex CLI tests require %s in PATH: %v", bin, err)
 		}

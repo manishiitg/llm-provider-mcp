@@ -16,7 +16,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		wantFound bool
 	}{
 		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
-		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: true, wantFound: true},
+		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: false, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
@@ -143,7 +143,7 @@ func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
 			t.Errorf("interactive-session registry has %s but no coding-agent contract", provider)
 			continue
 		}
-		if contract.Transport != CodingAgentTransportTmux || !contract.RequiresOwnerSessionID {
+		if !contract.RequiresOwnerSessionID {
 			t.Errorf("interactive-session registry has %s but contract does not require tmux owner sessions", provider)
 		}
 	}
@@ -153,7 +153,7 @@ func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
 			t.Errorf("persistent-session registry has %s but no coding-agent contract", provider)
 			continue
 		}
-		if contract.Transport != CodingAgentTransportTmux || !contract.UsesPersistentSession {
+		if !contract.UsesPersistentSession {
 			t.Errorf("persistent-session registry has %s but contract does not claim persistent tmux sessions", provider)
 		}
 	}
@@ -701,7 +701,7 @@ func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
 		}
 		seen[contract.Provider] = true
 		def, ok := GetCodingAgentProviderContract(contract.Provider, "")
-		if !ok || def.Transport != CodingAgentTransportTmux || def.Deprecated {
+		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer) || def.Deprecated {
 			continue
 		}
 		if len(RequiredP0CodingAgentCertificationIDs(def)) == 0 {
@@ -838,6 +838,12 @@ func TestClaudeAndCodexSessionLossRecoveryCertificationUsesRealE2E(t *testing.T)
 		if !found.RealE2E {
 			t.Fatalf("%s %s certification must be marked RealE2E: %#v", provider, CertSessionLossRecovery, *found)
 		}
+		if provider == ProviderCodexCLI {
+			if found.TestName != "TestCodexAppServerLifecycleP0" {
+				t.Fatal("Codex needs real app-server process-loss recovery proof")
+			}
+			continue
+		}
 		if found.TestFile != "coding_agent_continuation_real_test.go" || found.TestName != "TestCodingAgentContinuationRealE2EAfterTmuxLoss" {
 			t.Fatalf("%s %s points at %s/%s, want real tmux-loss continuation E2E", provider, CertSessionLossRecovery, found.TestFile, found.TestName)
 		}
@@ -897,7 +903,7 @@ func TestBestEffortToolRestrictionsRequireExplicitMuseGaps(t *testing.T) {
 // screen text): either it surfaces them from a named source, or it states why
 // it cannot. A new provider cannot silently skip the question.
 func TestPlanUsageContractIsWellFormed(t *testing.T) {
-	valid := map[string]bool{"statusline-sidecar": true, "transcript-file": true}
+	valid := map[string]bool{"app-server": true, "statusline-sidecar": true, "transcript-file": true}
 	for _, c := range CodingAgentProviderContracts() {
 		if c.Deprecated {
 			continue
