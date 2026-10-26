@@ -21,9 +21,9 @@ func TestCodingAgentDefaultTierModelsHighDefaults(t *testing.T) {
 		wantReasoning string
 	}{
 		{
-			name:          "codex uses gpt 6.1 sol medium",
+			name:          "codex uses gpt 6.1 terra medium",
 			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-6.1-sol",
+			wantModelID:   "gpt-6.1-terra",
 			wantReasoning: "medium",
 		},
 		{
@@ -91,9 +91,9 @@ func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
 			wantReasoning: "high",
 		},
 		{
-			name:          "cursor uses auto high",
+			name:          "cursor uses the certified default",
 			provider:      ProviderCursorCLI,
-			wantModelID:   "auto",
+			wantModelID:   DefaultCursorCLIModel,
 			wantReasoning: "high",
 		},
 		{
@@ -166,8 +166,8 @@ func TestCodingAgentDefaultTierModelsCodexGPT6Family(t *testing.T) {
 		model  string
 		effort string
 	}{
-		"high":   {ref: defaults.High, model: "gpt-6.1-sol", effort: "medium"},
-		"medium": {ref: defaults.Medium, model: "gpt-6-luna", effort: "high"},
+		"high":   {ref: defaults.High, model: "gpt-6.1-terra", effort: "medium"},
+		"medium": {ref: defaults.Medium, model: "gpt-6.1-terra", effort: "high"},
 		"low":    {ref: defaults.Low, model: "gpt-6-luna", effort: "high"},
 	} {
 		if check.ref.ModelID != check.model || check.ref.Options["reasoning_effort"] != check.effort {
@@ -193,11 +193,11 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want high", name, got.Options["reasoning_effort"])
 		}
 	}
-	check("high", defaults.High, "auto")
-	check("medium", defaults.Medium, "auto")
-	check("low", defaults.Low, "auto")
-	check("builder", defaults.Builder, "auto")
-	check("pulse", defaults.Pulse, "auto")
+	check("high", defaults.High, DefaultCursorCLIModel)
+	check("medium", defaults.Medium, DefaultCursorCLIModel)
+	check("low", defaults.Low, DefaultCursorCLIModel)
+	check("builder", defaults.Builder, DefaultCursorCLIModel)
+	check("pulse", defaults.Pulse, DefaultCursorCLIModel)
 }
 
 func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {

@@ -205,8 +205,8 @@ func TestCodexCLIAdapterGPT55MetadataIncludesPricing(t *testing.T) {
 
 func TestCodexCLIAdapterGPT6MetadataAndAliases(t *testing.T) {
 	for alias, wantModel := range map[string]string{
-		"high":   "gpt-6.1-sol",
-		"medium": "gpt-6-luna",
+		"high":   "gpt-6.1-terra",
+		"medium": "gpt-6.1-terra",
 		"low":    "gpt-6-luna",
 	} {
 		if got := resolveCodexCLIModelID(alias); got != wantModel {

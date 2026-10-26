@@ -6,11 +6,13 @@ func TestCodexCurrentModelPricing(t *testing.T) {
 	adapter := &CodexCLIAdapter{}
 	for _, tt := range []struct {
 		model                        string
+		context                      int
 		input, cached, write, output float64
 	}{
-		{"gpt-6.1-sol", 2, 0.1, 2.5, 10},
-		{"gpt-6-sol", 2, 0.2, 2.5, 10},
-		{"gpt-6-luna", 0.1, 0.01, 0.125, 0.5},
+		{"gpt-6.1-sol", 1050000, 2, 0.1, 2.5, 10},
+		{"gpt-6.1-terra", 500000, 1, 0.05, 1.25, 5},
+		{"gpt-6-sol", 1050000, 2, 0.2, 2.5, 10},
+		{"gpt-6-luna", 1050000, 0.1, 0.01, 0.125, 0.5},
 	} {
 		meta, err := adapter.GetModelMetadata(tt.model)
 		if err != nil {
@@ -18,7 +20,7 @@ func TestCodexCurrentModelPricing(t *testing.T) {
 		}
 		if meta.InputCostPer1MTokens != tt.input || meta.CachedInputCostPer1MTokens != tt.cached ||
 			meta.CachedInputCostWritePer1MTokens != tt.write || meta.OutputCostPer1MTokens != tt.output ||
-			meta.ContextWindow != 1050000 || meta.LongContextThresholdTokens != 272000 {
+			meta.ContextWindow != tt.context || meta.LongContextThresholdTokens != 272000 {
 			t.Errorf("%s metadata = %+v", tt.model, meta)
 		}
 	}

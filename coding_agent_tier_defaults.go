@@ -46,9 +46,9 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 
 	switch Provider(providerID) {
 	case ProviderCodexCLI:
-		high := codingAgentReasoningRef(providerID, "gpt-6.1-sol", "medium")
+		high := codingAgentReasoningRef(providerID, "gpt-6.1-terra", "medium")
 		builder := codingAgentReasoningRef(providerID, "gpt-6.1-sol", "high")
-		medium := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
+		medium := codingAgentReasoningRef(providerID, "gpt-6.1-terra", "high")
 		low := codingAgentReasoningRef(providerID, "gpt-6-luna", "high")
 		return &CodingAgentDefaultTierModels{
 			Builder: builder,
@@ -71,14 +71,15 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Pulse:   high,
 		}, true
 	case ProviderCursorCLI:
-		// Auto routing avoids pinning a model that can run out of quota.
-		auto := codingAgentHighReasoningRef(providerID, "auto")
+		// Use the same certified default as ordinary Cursor chats. Auto is
+		// still selectable when a person's account offers it (PLAT-872).
+		model := codingAgentHighReasoningRef(providerID, DefaultCursorCLIModel)
 		return &CodingAgentDefaultTierModels{
-			Builder: auto,
-			High:    auto,
-			Medium:  auto,
-			Low:     auto,
-			Pulse:   auto,
+			Builder: model,
+			High:    model,
+			Medium:  model,
+			Low:     model,
+			Pulse:   model,
 		}, true
 	case ProviderPiCLI:
 		return &CodingAgentDefaultTierModels{

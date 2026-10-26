@@ -177,6 +177,28 @@ func (c *CodexCLIAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMetad
 			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
 		}, nil
 
+	case strings.Contains(modelID, "gpt-6.1-terra"):
+		// Codex's native catalog reports 500K and low through ultra; the
+		// public API has a different context limit and effort set. Prices:
+		// https://developers.openai.com/api/docs/models/gpt-6.1-terra
+		return &llmtypes.ModelMetadata{
+			ModelID:                         metadataModelID,
+			Provider:                        "codex-cli",
+			ModelName:                       "GPT-6.1 Terra",
+			ContextWindow:                   500000,
+			InputCostPer1MTokens:            1.00,
+			OutputCostPer1MTokens:           5.00,
+			CachedInputCostPer1MTokens:      0.05,
+			CachedInputCostWritePer1MTokens: 1.25,
+			LongContextThresholdTokens:      272000,
+			LongContextInputMultiplier:      2,
+			LongContextOutputMultiplier:     1.5,
+			SupportsToolCalls:               true,
+			SupportsJSONMode:                true,
+			SupportsReasoningEffort:         true,
+			ReasoningEffortLevels:           []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		}, nil
+
 	case strings.Contains(modelID, "gpt-6-sol"):
 		return &llmtypes.ModelMetadata{
 			ModelID:                         metadataModelID,
