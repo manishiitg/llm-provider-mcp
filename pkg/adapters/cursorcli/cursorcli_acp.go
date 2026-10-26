@@ -26,6 +26,7 @@ type cursorACPSession struct {
 	fingerprint        [32]byte
 	idle               *time.Timer
 	status             *llmtypes.StatusLine
+	hasHistory         bool
 }
 
 var cursorACPSessions = struct {
@@ -223,7 +224,6 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 	if system == "" {
 		system = llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts)
 	}
-	prompt := buildCursorStructuredPrompt("", conversation, "native")
 	model := cursorModelWithReasoning(cursorCLIModelForLaunch(c.modelID), opts)
 	if override := cursorACPString(opts, MetadataKeyCursorModel); override != "" {
 		model = cursorModelWithReasoning(override, opts)
@@ -256,7 +256,7 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 	if s.idle != nil {
 		s.idle.Stop()
 	}
-	r, native, old := s.rpc, s.native, s.fingerprint
+	r, native, old, hasHistory := s.rpc, s.native, s.fingerprint, s.hasHistory
 	s.mu.Unlock()
 	defer func() {
 		if !cursorPersistentInteractiveFromOptions(opts) || err != nil {
@@ -292,6 +292,7 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 		if resume != "" {
 			native = resume
 		}
+		hasHistory = native != ""
 		r, native, err = c.launchACP(ctx, opts, cwd, owner, system, model, native)
 		if err != nil {
 			return nil, err
@@ -302,15 +303,27 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 		s.cwd = cwd
 		s.model = model
 		s.fingerprint = fingerprint
+		s.hasHistory = hasHistory
 		s.mu.Unlock()
 	}
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
 		return cursorACPResponse(s, "", nil), nil
 	}
+	resumePrompt := ""
+	if hasHistory {
+		resumePrompt = native
+	}
+	prompt := buildCursorStructuredPrompt("", conversation, resumePrompt)
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("Cursor prompt is empty")
 	}
-	return c.consumeACPTurn(ctx, s, r, prompt, opts, emit)
+	response, err = c.consumeACPTurn(ctx, s, r, prompt, opts, emit)
+	if err == nil {
+		s.mu.Lock()
+		s.hasHistory = true
+		s.mu.Unlock()
+	}
+	return response, err
 }
 func cursorACPResponse(s *cursorACPSession, text string, usage *llmtypes.Usage) *llmtypes.ContentResponse {
 	info := map[string]any{"cursor_session_id": s.native}

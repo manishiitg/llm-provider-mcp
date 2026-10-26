@@ -30,8 +30,8 @@ type NativeTranscript struct {
 }
 
 // ReadNativeTranscript reads cursor-agent's own transcript for the session
-// nativeSessionID (its agentId, the value `--resume` accepts) that ran in
-// workingDir. The store lives at ~/.cursor/chats/<md5(cwd)>/<agentId>/store.db.
+// nativeSessionID (the ACP session/load identity) that ran in workingDir.
+// The store lives at ~/.cursor/acp-sessions/<sessionId>/store.db.
 // A missing store is not an error: ok is false and the transcript is empty.
 //
 // Unlike readCursorStoreDBMessages this keeps the user's typed queries (the
