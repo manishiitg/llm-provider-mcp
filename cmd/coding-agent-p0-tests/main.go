@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+	priorityFlag := flag.String("priority", "P0", "certification priority: P0, P1, or all")
 	providerFlag := flag.String("provider", "", "coding CLI provider ID")
 	packageFlag := flag.String("package", "", "repository-relative Go package containing the P0 tests")
 	listProviders := flag.Bool("list-providers", false, "print the registry-derived release matrix as 'provider package' lines")
@@ -114,6 +115,11 @@ func main() {
 		os.Exit(2)
 	}
 
+	priority := strings.ToUpper(strings.TrimSpace(*priorityFlag))
+	if priority != "P0" && priority != "P1" && priority != "ALL" {
+		fmt.Fprintln(os.Stderr, "-priority must be P0, P1, or all")
+		os.Exit(2)
+	}
 	requiredIDs := llmproviders.RequiredP0CodingAgentCertificationIDs(contract)
 	required := make(map[llmproviders.CodingAgentCertificationID]struct{}, len(requiredIDs))
 	for _, id := range requiredIDs {
@@ -122,16 +128,20 @@ func main() {
 	found := make(map[llmproviders.CodingAgentCertificationID]struct{}, len(requiredIDs))
 	testNames := make(map[string]struct{}, len(requiredIDs))
 	for _, certification := range llmproviders.CodingAgentProviderCertifications(provider) {
-		if _, needed := required[certification.ID]; !needed {
-			continue
+		_, needed := required[certification.ID]
+		if needed {
+			found[certification.ID] = struct{}{}
 		}
-		if !certification.RealE2E {
+		if needed && !certification.RealE2E {
 			fmt.Fprintf(os.Stderr, "%s P0 certification %s is not a real E2E\n", provider, certification.ID)
 			os.Exit(1)
 		}
+		if (priority == "P0" && !needed) || (priority == "P1" && certification.Priority != llmproviders.CodingAgentCertificationPriorityP1) {
+			continue
+		}
 		testPackage := filepath.ToSlash(filepath.Dir(certification.TestFile))
 		if testPackage != expectedPackage {
-			fmt.Fprintf(os.Stderr, "%s P0 test %s is in %s, runner expected %s\n", provider, certification.TestName, testPackage, expectedPackage)
+			fmt.Fprintf(os.Stderr, "%s certification test %s is in %s, runner expected %s\n", provider, certification.TestName, testPackage, expectedPackage)
 			os.Exit(1)
 		}
 		found[certification.ID] = struct{}{}
@@ -150,7 +160,7 @@ func main() {
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		fmt.Fprintf(os.Stderr, "%s has no registered P0 tests\n", provider)
+		fmt.Fprintf(os.Stderr, "%s has no registered tests for the selected priority\n", provider)
 		os.Exit(1)
 	}
 	fmt.Printf("^(%s)$\n", strings.Join(names, "|"))

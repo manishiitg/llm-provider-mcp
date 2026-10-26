@@ -1,6 +1,7 @@
 package codexcli
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -13,5 +14,8 @@ import (
 // `go test` (no live CLI), so any agent — now or in a future CLI release — is
 // told, on failure, to review the recorded output before the suite passes.
 func TestAgentReviewsApproved(t *testing.T) {
+	if _, err := os.Stat(filepath.Join("testdata", "agent-reviews", "TestCodexAppServerStreamingRealWorldLive.json")); err != nil {
+		t.Fatal("missing native app-server streaming review; run scripts/agentic-p0.sh capture codex-cli")
+	}
 	agentreview.RequireAllApproved(t, filepath.Join("testdata", "agent-reviews"))
 }

@@ -313,3 +313,68 @@ func TestCodexAppServerBridgeOnlyP0(t *testing.T) {
 		}
 	}
 }
+
+// PLAT-872-19: selecting a signed-out private account must never fall back to
+// the ambient signed-in account or reuse its running process/native thread.
+func TestCodexAppServerSignedOutAccountCannotBorrowLogin(t *testing.T) {
+	owner, opts := appServerTestOptions(t)
+	accountA := os.Getenv("CODEX_HOME")
+	if accountA == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		accountA = filepath.Join(home, ".codex")
+	}
+	if _, err := os.Stat(filepath.Join(accountA, "auth.json")); err != nil {
+		t.Fatal("this login-isolation proof requires an existing file-based Codex login")
+	}
+	accountBHome := t.TempDir()
+	accountB := filepath.Join(accountBHome, ".codex")
+	if err := os.Mkdir(accountB, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(accountB, "config.toml"), []byte("cli_auth_credentials_store = \"file\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected := func(home, codexHome string) []llmtypes.CallOption {
+		result := append([]llmtypes.CallOption{}, opts...)
+		env := map[string]string{"CODEX_HOME": codexHome}
+		if home != "" {
+			env["HOME"] = home
+			env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+			env["XDG_DATA_HOME"] = filepath.Join(home, ".local/share")
+			env["XDG_STATE_HOME"] = filepath.Join(home, ".local/state")
+		}
+		return append(result, llmtypes.WithProviderAccountEnvironment(env))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	first, _, err := appServerTestTurn(t, ctx, selected("", accountA), "Never use tools.", "Reply exactly LOGIN_A_OK.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHandle, _ := llmtypes.ExtractCodingProviderSessionHandleFromResponse(first)
+	badCtx, badCancel := context.WithTimeout(ctx, 45*time.Second)
+	_, _, err = appServerTestTurn(t, badCtx, selected(accountBHome, accountB), "Never use tools.", "Reply exactly SHOULD_NOT_RUN.")
+	badCancel()
+	if err == nil {
+		t.Fatal("signed-out account borrowed a signed-in login")
+	}
+	message := strings.ToLower(err.Error())
+	if errors.Is(err, context.DeadlineExceeded) || (!strings.Contains(message, "auth") && !strings.Contains(message, "logged") && !strings.Contains(message, "401")) {
+		t.Fatalf("refusal did not prove the authentication boundary: %v", err)
+	}
+	t.Log("signed-out account refused by native authentication")
+	last, _, err := appServerTestTurn(t, ctx, selected("", accountA), "Never use tools.", "Reply exactly LOGIN_A_OK.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, _ := llmtypes.ExtractCodingProviderSessionHandleFromResponse(last)
+	if strings.TrimSpace(last.Choices[0].Content) != "LOGIN_A_OK" || handle.NativeSessionID == firstHandle.NativeSessionID {
+		t.Fatal("switching accounts reused the old native thread or lost the allowed login")
+	}
+	if s := codexAppSessionForOwner(owner); s == nil {
+		t.Fatal("allowed account failed to retain its process")
+	}
+}

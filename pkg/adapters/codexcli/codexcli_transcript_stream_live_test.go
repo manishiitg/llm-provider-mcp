@@ -25,7 +25,7 @@ func collectCodexTranscriptStream(streamChan <-chan llmtypes.StreamChunk) <-chan
 	go func() {
 		var cap codexTranscriptStreamCapture
 		for chunk := range streamChan {
-			fromTranscript := chunk.Metadata != nil && chunk.Metadata["codex_cli_stream_source"] == "transcript"
+			fromTranscript := chunk.Metadata != nil && (chunk.Metadata["codex_cli_stream_source"] == "transcript" || chunk.Metadata["codex_stream_source"] == "app-server")
 			switch chunk.Type {
 			case llmtypes.StreamChunkTypeContent:
 				if fromTranscript {

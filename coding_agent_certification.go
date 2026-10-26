@@ -23,6 +23,7 @@ const (
 )
 
 const (
+	CertPrivateAccountIsolation    CodingAgentCertificationID = "private_account_isolation"
 	CertFreshLaunch                CodingAgentCertificationID = "fresh_launch"
 	CertRuntimeContext             CodingAgentCertificationID = "runtime_context"
 	CertResumeCompactionStartup    CodingAgentCertificationID = "resume_compaction_startup"
@@ -914,6 +915,8 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		},
 	},
 	ProviderCodexCLI: {
+		{ID: CertPrivateAccountIsolation, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSignedOutAccountCannotBorrowLogin", RealE2E: true, Description: "Native A/signed-out B/A account selection never borrows ambient login or thread"},
+		{ID: CertSharedWorkdirMCPIsolation, TestFile: "pkg/adapters/codexcli/codexcli_real_contract_test.go", TestName: "TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation", RealE2E: true, Description: "Concurrent native threads in one workdir use their own MCP configuration and outputs"},
 		{ID: CertFreshLaunch, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: FreshLaunch"},
 		{ID: CertNativeSystemPrompt, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: NativeSystemPrompt"},
 		{ID: CertPromptPaste, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerLifecycleP0", RealE2E: true, Description: "Real Codex app-server: PromptPaste"},
@@ -932,7 +935,7 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{ID: CertRuntimeContext, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: RuntimeContext"},
 		{ID: CertWorkingDirectory, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: WorkingDirectory"},
 		{ID: CertMCPBridge, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: MCPBridge"},
-		{ID: CertStructuredStreaming, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerRuntimeP0", RealE2E: true, Description: "Real Codex app-server: StructuredStreaming"},
+		{ID: CertStructuredStreaming, TestFile: "pkg/adapters/codexcli/codexcli_transcript_stream_realworld_test.go", TestName: "TestCodexAppServerStreamingRealWorldLive", RealE2E: true, Description: "Real Codex app-server: StructuredStreaming"},
 		{ID: CertBridgeOnlyTools, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerBridgeOnlyP0", RealE2E: true, Description: "Real Codex app-server: BridgeOnlyTools"},
 		{ID: CertSlowToolLiveInput, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: SlowToolLiveInput"},
 		{ID: CertSlowToolFalseIdle, TestFile: "pkg/adapters/codexcli/codexcli_appserver_live_test.go", TestName: "TestCodexAppServerSteerP0", RealE2E: true, Description: "Real Codex app-server: SlowToolFalseIdle"},

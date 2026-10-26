@@ -2,6 +2,7 @@ package codexcli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,12 +81,12 @@ func distinctToolNames(names []string) map[string]bool {
 	return m
 }
 
-// TestCodexCLITranscriptStreamingRealWorldLive is the realistic Codex P0 test: a
-// real Codex tmux turn, bridge-only, driving search → edit-a-file → read-back
-// over a real MCP server. Proves the rollout tailer streams a heavier lifelike
+// TestCodexAppServerStreamingRealWorldLive is the realistic Codex P0 test: a
+// real Codex app-server turn, bridge-only, driving search → edit-a-file → read-back
+// over a real MCP server. Proves native item events stream a heavier lifelike
 // turn (multiple content chunks + distinct tool calls in order) and that real
 // work happened (result.txt written to disk with the searched code word).
-func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
+func TestCodexAppServerStreamingRealWorldLive(t *testing.T) {
 	requireRealCodexCLIE2E(t)
 	t.Cleanup(func() { _ = CleanupCodexCLIInteractiveSessions(context.Background()) })
 
@@ -94,9 +95,9 @@ func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	outDir := t.TempDir()
 	codeWord := "ZEBRA_" + codexRandomHex(4)
 
-	mcpCommandOverride, err := codexStringConfigOverride("mcp_servers.workbench.command", writeWorkbenchMCPServer(t, outDir, codeWord))
+	mcpConfig, err := json.Marshal(map[string]any{"workbench": map[string]any{"command": writeWorkbenchMCPServer(t, outDir, codeWord)}})
 	if err != nil {
-		t.Fatalf("build MCP command override: %v", err)
+		t.Fatal(err)
 	}
 
 	streamChan := make(chan llmtypes.StreamChunk, 2048)
@@ -108,7 +109,7 @@ func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
 		WithDisableShellTool(),
 		WithApprovalPolicy("never"),
 		WithReasoningEffort("low"),
-		WithConfigOverrides([]string{mcpCommandOverride}),
+		WithMCPServers(string(mcpConfig)),
 		WithStreamTranscript(true),
 		llmtypes.WithStreamingChan(streamChan),
 	}
@@ -154,7 +155,7 @@ func TestCodexCLITranscriptStreamingRealWorldLive(t *testing.T) {
 	// require an agent to review it. This is what catches quality regressions a
 	// deterministic assert misses — e.g. the Codex double-write that streamed
 	// every line twice yet still satisfied contentChunks>=2.
-	rec := agentreview.Write(t, "TestCodexCLITranscriptStreamingRealWorldLive",
+	rec := agentreview.Write(t, "TestCodexAppServerStreamingRealWorldLive",
 		"Codex bridge-only: web_search -> write_file (to disk) -> read_file, streamed live",
 		map[string]any{
 			"content_chunks":   capture.contentTexts, // discrete chunks — review formatting/readability

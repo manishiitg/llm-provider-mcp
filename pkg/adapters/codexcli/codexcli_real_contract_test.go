@@ -1035,11 +1035,11 @@ func TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation(t *testing.T) {
 	}
 	for i := range specs {
 		specs[i].mcpServerPath = writeCodexIsolationMCPServer(t, specs[i].sessionMarker, specs[i].outputPath)
-		ov, err := codexStringConfigOverride("mcp_servers.api-bridge.command", specs[i].mcpServerPath)
+		ov, err := json.Marshal(map[string]any{"api-bridge": map[string]any{"command": specs[i].mcpServerPath}})
 		if err != nil {
 			t.Fatalf("build MCP command override for %s: %v", specs[i].name, err)
 		}
-		specs[i].mcpOverride = ov
+		specs[i].mcpOverride = string(ov)
 	}
 
 	type runResult struct {
@@ -1063,7 +1063,7 @@ func TestCodexCLIRealInteractiveSharedWorkingDirMCPIsolation(t *testing.T) {
 				WithDisableShellTool(),
 				WithApprovalPolicy("never"),
 				WithReasoningEffort("low"),
-				WithConfigOverrides([]string{spec.mcpOverride}),
+				WithMCPServers(spec.mcpOverride),
 			)
 			result := runResult{spec: spec, err: err}
 			if err == nil && resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {

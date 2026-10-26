@@ -24,6 +24,30 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	toolStarts := map[string]time.Time{}
 	streamed := map[string]bool{}
 	seenUserItems := map[string]bool{}
+	lastContentItem := ""
+	trailingNewlines := 0
+	emitContent := func(id, text string, metadata map[string]any) {
+		if text == "" {
+			return
+		}
+		metadata[llmtypes.ContentDeltaMetadataKey] = true
+		metadata["codex_item_id"] = id
+		// Native messages are separate paragraphs. Token deltas within one
+		// message must stay byte-exact (PLAT-872-19 agentic streaming failure).
+		if lastContentItem != "" && lastContentItem != id && trailingNewlines < 2 {
+			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: strings.Repeat("\n", 2-trailingNewlines), Metadata: metadata})
+		}
+		lastContentItem = id
+		streamed[id] = true
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text, Metadata: metadata})
+		for _, ch := range text {
+			if ch == '\n' {
+				trailingNewlines++
+			} else {
+				trailingNewlines = 0
+			}
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -76,8 +100,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			metadata := map[string]any{"codex_thread_id": thread, "codex_turn_id": turn, "codex_stream_source": "app-server"}
 			switch msg.Method {
 			case "item/agentMessage/delta":
-				streamed[event.ItemID] = true
-				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: event.Delta, Metadata: metadata})
+				emitContent(event.ItemID, event.Delta, metadata)
 			case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: event.Delta, Metadata: metadata})
 			case "thread/tokenUsage/updated":
@@ -127,7 +150,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 						final = item.Text
 					}
 					if !streamed[item.ID] {
-						emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: item.Text, Metadata: metadata})
+						emitContent(item.ID, item.Text, metadata)
 					}
 				}
 				if item.Type == "userMessage" && !seenUserItems[item.ID] {

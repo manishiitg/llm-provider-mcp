@@ -26,6 +26,22 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Codex's entire P0/P1 registry runs over app-server. Keep this path independent
+# of tmux and of unrelated providers. Review captures before invoking verify.
+if [[ "${2:-}" == "codex-cli" ]]; then
+  case "${1:-all}" in
+    capture|all)
+      regex="$(go run ./cmd/coding-agent-p0-tests -provider codex-cli -package pkg/adapters/codexcli -priority all)"
+      MLP_AGENT_REVIEW_CAPTURE=1 go test ./pkg/adapters/codexcli -run "$regex" -coding-cli-p0-live -v -count=1 -timeout 20m
+      [[ "${1:-all}" == capture ]] && exit 0
+      ;;
+    verify) ;;
+    *) echo "usage: $0 [capture|verify|all] [codex-cli]" >&2; exit 2 ;;
+  esac
+  go test ./pkg/adapters/codexcli -run '^TestAgentReviewsApproved$' -count=1
+  exit
+fi
+
 # Keep live-test tmux sessions out of the user's normal tmux server. The path is
 # deliberately stable: if a previous P0 run was killed too abruptly for its
 # EXIT trap to run, the next invocation can recover that abandoned server
@@ -113,7 +129,6 @@ trap 'exit 143' TERM
 # transcript; pi streams via its injected marker hook.
 STREAM_PKGS=(
   ./pkg/adapters/claudecode/
-  ./pkg/adapters/codexcli/
   ./pkg/adapters/cursorcli/
   ./pkg/adapters/picli/
 )
@@ -127,13 +142,14 @@ capture() {
   P0_TEST_PID=$!
   wait "$P0_TEST_PID"
   P0_TEST_PID=""
+  bash scripts/agentic-p0.sh capture codex-cli
   echo ">> capture done. Records under pkg/adapters/*/testdata/agent-reviews/ now have verdict=\"\" (pending)."
   echo ">> An agent must review each record and set agent_review.verdict=\"good\", then run: $0 verify"
 }
 
 verify() {
   echo ">> verify: enforcing agent sign-off (cheap gate, no live CLI) ..."
-  go test "${PKGS[@]}" -run TestAgentReviewsApproved -count=1
+  go test "${PKGS[@]}" ./pkg/adapters/codexcli/ -run TestAgentReviewsApproved -count=1
   echo ">> verify passed: every recorded output is agent-approved for its current fingerprint."
 }
 
