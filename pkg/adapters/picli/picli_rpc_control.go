@@ -57,12 +57,13 @@ func awaitPiRPCInputDurable(ctx context.Context, owner, message string, timeout 
 	if timeout <= 0 {
 		timeout = piDurableAckBudget()
 	}
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	select {
 	case <-receipt.observed:
 	case <-ctx.Done():
-		return PiDurableAck{Outcome: PiDurableAckUnflushed, Latency: time.Since(start)}, ctx.Err()
+		return PiDurableAck{Outcome: PiDurableAckUnflushed, Latency: time.Since(start)}, caller.Err()
 	}
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -76,7 +77,7 @@ func awaitPiRPCInputDurable(ctx context.Context, owner, message string, timeout 
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			return PiDurableAck{Outcome: PiDurableAckUnflushed, Latency: time.Since(start)}, ctx.Err()
+			return PiDurableAck{Outcome: PiDurableAckUnflushed, Latency: time.Since(start)}, caller.Err()
 		}
 	}
 }

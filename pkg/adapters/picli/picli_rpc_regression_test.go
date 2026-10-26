@@ -211,3 +211,32 @@ for line in sys.stdin:
 		r.close()
 	}
 }
+
+// PLAT-872-20: accepted input remains unflushed when its proof budget expires;
+// caller cancellation is still an error. Cover both event and disk-write waits.
+func TestPiRPCDurabilityBudgetDoesNotFailAcceptedInput(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		for _, cancelled := range []bool{false, true} {
+			receipt := &piRPCReceipt{text: "queued", observed: make(chan struct{})}
+			if observed {
+				close(receipt.observed)
+			}
+			owner := t.Name()
+			piRPCSessions.Lock()
+			piRPCSessions.sessions[owner] = &piRPCSession{receipts: []*piRPCReceipt{receipt}}
+			piRPCSessions.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			if cancelled {
+				cancel()
+			}
+			ack, err := awaitPiRPCInputDurable(ctx, owner, "queued", 10*time.Millisecond)
+			cancel()
+			piRPCSessions.Lock()
+			delete(piRPCSessions.sessions, owner)
+			piRPCSessions.Unlock()
+			if ack.Outcome != PiDurableAckUnflushed || (err != nil) != cancelled {
+				t.Fatalf("observed=%v cancelled=%v: ack=%+v err=%v", observed, cancelled, ack, err)
+			}
+		}
+	}
+}

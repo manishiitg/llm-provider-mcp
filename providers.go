@@ -268,16 +268,14 @@ func AwaitCursorInputDurable(ctx context.Context, sessionID, message string, tim
 	}, nil
 }
 
-// SendPiCLIInteractiveInput sends user input to a live Pi CLI interactive tmux
-// session registered for the owning application session.
+// SendPiCLIInteractiveInput steers the active native Pi RPC turn for its owner.
 func SendPiCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return picli.SendPiInteractiveInput(ctx, sessionID, message)
 }
 
-// AwaitPiInputDurable waits for the marker proof that a previous
-// SendPiCLIInteractiveInput reached the CLI. It is the durability half
-// of the two-stage delivery receipt; host applications call it after
-// the fast pane ack and promote their delivery tick on confirmation. A
+// AwaitPiInputDurable waits for the persisted native user record of a previous
+// SendPiCLIInteractiveInput. Command acceptance remains unflushed until that
+// record exists; exhausting the proof budget does not mean delivery failed. A
 // zero timeout selects the adapter's env-tuned budget.
 func AwaitPiInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
 	ack, err := picli.AwaitPiInputDurable(ctx, sessionID, message, timeout)
