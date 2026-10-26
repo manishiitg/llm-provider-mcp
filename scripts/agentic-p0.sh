@@ -25,6 +25,7 @@
 # Requires: a real authenticated `claude` and `codex` CLI, `tmux`, `node`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.0}"
 
 # Codex's entire P0/P1 registry runs over app-server. Keep this path independent
 # of tmux and of unrelated providers. Review captures before invoking verify.
