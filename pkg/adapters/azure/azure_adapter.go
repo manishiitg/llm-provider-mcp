@@ -707,6 +707,8 @@ func convertTools(llmTools []llmtypes.Tool) []openai.ChatCompletionToolUnionPara
 					paramsMap[k] = v
 				}
 			}
+			paramsMap = llmtypes.ModelToolSchema(paramsMap)
+
 			// OpenAI requires properties to be present when type is "object"
 			if paramsMap["type"] == "object" {
 				if _, hasProperties := paramsMap["properties"]; !hasProperties {
@@ -874,16 +876,15 @@ func (a *AzureAdapter) executeResponsesStreamingRequest(ctx context.Context, mod
 				"properties": map[string]interface{}{},
 			}
 			if t.Function.Parameters != nil {
-				if t.Function.Parameters.Type != "" {
-					paramsMap["type"] = t.Function.Parameters.Type
+				raw, err := json.Marshal(t.Function.Parameters)
+				if err != nil {
+					return nil, fmt.Errorf("invalid tool schema %s: %w", t.Function.Name, err)
 				}
-				if t.Function.Parameters.Properties != nil {
-					paramsMap["properties"] = t.Function.Parameters.Properties
-				}
-				if len(t.Function.Parameters.Required) > 0 {
-					paramsMap["required"] = t.Function.Parameters.Required
+				if err := json.Unmarshal(raw, &paramsMap); err != nil {
+					return nil, err
 				}
 			}
+			paramsMap = llmtypes.ModelToolSchema(paramsMap)
 			// Responses API expects flat structure, not nested under "function"
 			toolObj := map[string]interface{}{
 				"type":        "function",
@@ -1214,16 +1215,15 @@ func (a *AzureAdapter) executeResponsesRequest(ctx context.Context, modelID stri
 				"properties": map[string]interface{}{},
 			}
 			if t.Function.Parameters != nil {
-				if t.Function.Parameters.Type != "" {
-					paramsMap["type"] = t.Function.Parameters.Type
+				raw, err := json.Marshal(t.Function.Parameters)
+				if err != nil {
+					return nil, fmt.Errorf("invalid tool schema %s: %w", t.Function.Name, err)
 				}
-				if t.Function.Parameters.Properties != nil {
-					paramsMap["properties"] = t.Function.Parameters.Properties
-				}
-				if len(t.Function.Parameters.Required) > 0 {
-					paramsMap["required"] = t.Function.Parameters.Required
+				if err := json.Unmarshal(raw, &paramsMap); err != nil {
+					return nil, err
 				}
 			}
+			paramsMap = llmtypes.ModelToolSchema(paramsMap)
 			// Responses API expects flat structure, not nested under "function"
 			toolObj := map[string]interface{}{
 				"type":        "function",

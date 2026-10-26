@@ -628,6 +628,8 @@ func convertTools(llmTools []llmtypes.Tool) []anthropic.ToolUnionParam {
 			parameters = make(map[string]interface{})
 		}
 
+		parameters = llmtypes.ModelToolSchema(parameters)
+
 		var required []string
 		if req, ok := parameters["required"].([]interface{}); ok {
 			for _, r := range req {

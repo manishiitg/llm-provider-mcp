@@ -1104,6 +1104,8 @@ func (b *BedrockAdapter) convertToolsToConverse(llmTools []llmtypes.Tool) []type
 			}
 		}
 
+		inputSchema = llmtypes.ModelToolSchema(inputSchema)
+
 		// Ensure input_schema has required fields
 		if inputSchema == nil {
 			inputSchema = map[string]interface{}{

@@ -1383,6 +1383,8 @@ func convertTools(llmTools []llmtypes.Tool, logger interfaces.Logger) []*genai.T
 				}
 			}
 
+			paramsMap = llmtypes.ModelToolSchema(paramsMap)
+
 			// Normalize array parameters (including nested arrays) before validation
 			// This ensures all arrays have items field, and nested arrays have items.items
 			utils.NormalizeArrayParameters(paramsMap)

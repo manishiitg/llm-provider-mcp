@@ -1040,7 +1040,12 @@ func (v *VertexAnthropicAdapter) convertToolsToAnthropic(tools []llmtypes.Tool) 
 			if tool.Function.Parameters.Required != nil {
 				params["required"] = tool.Function.Parameters.Required
 			}
-			anthropicTool["input_schema"] = params
+			for key, value := range tool.Function.Parameters.Additional {
+				if _, typed := params[key]; !typed {
+					params[key] = value
+				}
+			}
+			anthropicTool["input_schema"] = llmtypes.ModelToolSchema(params)
 		}
 
 		anthropicTools = append(anthropicTools, anthropicTool)

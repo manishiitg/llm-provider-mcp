@@ -1217,6 +1217,8 @@ func convertTools(llmTools []llmtypes.Tool) []openai.ChatCompletionToolUnionPara
 				}
 			}
 
+			paramsMap = llmtypes.ModelToolSchema(paramsMap)
+
 			// CRITICAL FIX: OpenAI API has conflicting requirements:
 			// 1. If type is "object", properties field MUST be present
 			// 2. But empty properties: {} is rejected
@@ -1983,13 +1985,21 @@ func (o *OpenAIAdapter) executeResponsesStreamingRequest(ctx context.Context, mo
 			if t.Function == nil {
 				continue
 			}
+			raw, err := json.Marshal(t.Function.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool schema %s: %w", t.Function.Name, err)
+			}
+			var schema map[string]interface{}
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				return nil, err
+			}
 			toolObj := map[string]interface{}{
 				"name": t.Function.Name,
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":        t.Function.Name,
 					"description": t.Function.Description,
-					"parameters":  t.Function.Parameters,
+					"parameters":  llmtypes.ModelToolSchema(schema),
 				},
 			}
 			apiTools = append(apiTools, toolObj)
@@ -2120,13 +2130,21 @@ func (o *OpenAIAdapter) executeResponsesRequest(ctx context.Context, modelID str
 			if t.Function == nil {
 				continue
 			}
+			raw, err := json.Marshal(t.Function.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool schema %s: %w", t.Function.Name, err)
+			}
+			var schema map[string]interface{}
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				return nil, err
+			}
 			toolObj := map[string]interface{}{
 				"name": t.Function.Name,
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":        t.Function.Name,
 					"description": t.Function.Description,
-					"parameters":  t.Function.Parameters,
+					"parameters":  llmtypes.ModelToolSchema(schema),
 				},
 			}
 			apiTools = append(apiTools, toolObj)
