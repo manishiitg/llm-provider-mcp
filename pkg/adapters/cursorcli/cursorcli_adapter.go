@@ -12,7 +12,7 @@ import (
 )
 
 // EnvCursorCLITestModel is deliberately test-scoped. Authenticated Cursor E2E
-// contracts set it to "auto" so their result does not depend on whichever
+// contracts set it to "composer-2.5" so their result does not depend on whichever
 // paid model a developer last selected in the local Cursor UI.
 const EnvCursorCLITestModel = "CURSOR_CLI_TEST_MODEL"
 

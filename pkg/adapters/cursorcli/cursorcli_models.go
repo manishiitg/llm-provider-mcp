@@ -7,7 +7,6 @@ import (
 )
 
 var knownCursorCLIModels = []string{
-	"auto",
 	"composer-2.5",
 	"grok-4.7",
 	"grok-4.6",

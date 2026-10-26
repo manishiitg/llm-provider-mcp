@@ -18,10 +18,9 @@ func requireRealCursorCLIE2E(t *testing.T) {
 	if !*codingCLIP0Live {
 		t.Skip("run through the live coding CLI P0 runner")
 	}
-	// All authenticated Cursor P0 contracts must exercise the quota-friendly
-	// Auto route, never the user's ambient Cursor model selection.
+	// Use the owner-selected Composer model, never the ambient UI selection.
 	t.Setenv(EnvCursorCLITestModel, "composer-2.5")
-	for _, bin := range []string{"cursor-agent", "tmux"} {
+	for _, bin := range []string{"cursor-agent"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Fatalf("real Cursor CLI tests require %s in PATH: %v", bin, err)
 		}

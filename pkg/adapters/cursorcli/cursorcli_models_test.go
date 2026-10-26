@@ -31,15 +31,12 @@ func TestResolveCursorCLIModelIDKeepsExplicitModel(t *testing.T) {
 	}
 }
 
-func TestGetAllCursorCLIModelsShowsSimpleChoices(t *testing.T) {
-	models := GetAllCursorCLIModels()
-	if len(models) != 6 {
-		t.Fatalf("GetAllCursorCLIModels returned %d models, want 6: %#v", len(models), models)
-	}
-	wantIDs := []string{"auto", "composer-2.5", "grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"}
-	for i, want := range wantIDs {
-		if models[i].ModelID != want {
-			t.Fatalf("models[%d].ModelID = %q, want %q", i, models[i].ModelID, want)
+// PLAT-872: Auto is not available on all Cursor accounts. Keep it as an
+// explicit selector, but do not advertise it without the live CLI catalog.
+func TestCursorSuggestedModelsDoNotAdvertiseUnavailableAuto(t *testing.T) {
+	for _, model := range GetAllCursorCLIModels() {
+		if model.ModelID == "auto" {
+			t.Fatal("static catalog advertised Auto")
 		}
 	}
 }

@@ -78,7 +78,7 @@ func (r *cursorACP) call(ctx context.Context, method string, params any, result 
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-r.done:
-		return r.failure()
+		return fmt.Errorf("Cursor ACP %s: %w", method, r.failure())
 	}
 }
 
@@ -137,7 +137,8 @@ func (r *cursorACP) read(stdout io.Reader) {
 	if err := scanner.Err(); err != nil {
 		r.finish(fmt.Errorf("read Cursor ACP: %w", err))
 	} else {
-		r.finish(io.EOF)
+		// cmd.Wait owns EOF classification after draining stderr.
+		<-r.exited
 	}
 }
 
@@ -159,4 +160,30 @@ func (r *cursorACP) writeContext(ctx context.Context, value any) error {
 	case <-r.done:
 		return r.failure()
 	}
+}
+
+// PLAT-872: Cursor exits instead of replying to session/new for an unavailable
+// model. Recognize only this fixed diagnostic; never retain raw stderr (which
+// may contain credentials or chat data), including partial chunks.
+type cursorACPLaunchDiagnostic struct {
+	matched          int
+	modelUnavailable bool
+}
+
+func (d *cursorACPLaunchDiagnostic) Write(p []byte) (int, error) {
+	const marker = "Cannot use this model:"
+	for _, b := range p {
+		if b == marker[d.matched] {
+			d.matched++
+			if d.matched == len(marker) {
+				d.modelUnavailable = true
+				d.matched = 0
+			}
+		} else if b == marker[0] {
+			d.matched = 1
+		} else {
+			d.matched = 0
+		}
+	}
+	return len(p), nil
 }

@@ -21,9 +21,9 @@ import (
 func TestMain(m *testing.M) {
 	// Cursor tests must never inherit an expensive model from a developer's
 	// current Cursor UI setting. Legacy test constructors use "cursor-cli" as
-	// the model selector; the adapter maps that selector to Auto under this
+	// the model selector; the adapter maps that selector to Composer 2.5 under this
 	// explicit test-only flag. Individual mapping tests may temporarily unset it.
-	_ = os.Setenv(EnvCursorCLITestModel, "auto")
+	_ = os.Setenv(EnvCursorCLITestModel, "composer-2.5")
 	judgeKeys := []string{"GEMINI_API_KEY", "VERTEX_API_KEY", "GOOGLE_API_KEY"}
 	for _, p := range []string{".env", "../../../.env", "../../../../.env"} {
 		vals, err := godotenv.Read(p)

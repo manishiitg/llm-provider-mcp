@@ -3,6 +3,7 @@ package cursorcli
 import (
 	"context"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"os"
 	"path/filepath"
@@ -102,6 +103,17 @@ func TestCursorACPLifecycleLive(t *testing.T) {
 	owner := t.Name()
 	defer closeCursorACP(owner)
 	cwd := t.TempDir()
+	// PLAT-872: unavailable selectors used to become EOF/network retries.
+	rejected := NewCursorCLIAdapter("", "agentworks-unavailable-model", nil)
+	rejectCtx, rejectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer rejectCancel()
+	_, rejectErr := rejected.GenerateContent(rejectCtx,
+		[]llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Reply OK.")},
+		WithWorkingDir(cwd), WithInteractiveSessionID(owner))
+	if llmerrors.KindOf(rejectErr) != llmerrors.KindModelNotFound || llmerrors.IsRetryable(rejectErr) {
+		t.Fatalf("unavailable model must be actionable without retry: %v", rejectErr)
+	}
+	t.Logf("unavailable model rejected without retry: %v", rejectErr)
 	a := NewCursorCLIAdapter("", "composer-2.5", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

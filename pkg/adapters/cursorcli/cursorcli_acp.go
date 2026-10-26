@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,7 +138,8 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 		allCleanup()
 		return nil, "", err
 	}
-	cmd.Stderr = io.Discard
+	diagnostic := &cursorACPLaunchDiagnostic{}
+	cmd.Stderr = diagnostic
 
 	r := &cursorACP{cmd: cmd, stdin: input, pending: map[string]chan cursorACPMessage{}, events: make(chan cursorACPMessage, 4096), done: make(chan struct{}), exited: make(chan struct{}), stop: stop, cleanup: allCleanup, logger: c.logger}
 	if err = cmd.Start(); err != nil {
@@ -149,7 +150,18 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 		return nil, "", err
 	}
 	go r.read(stdout)
-	go func() { err := cmd.Wait(); r.finish(err); allCleanup(); close(r.exited) }()
+	go func() {
+		err := cmd.Wait()
+		// Wait drains stderr before classifying process exit; stdout EOF can
+		// arrive first. Never retain or forward the native stderr text.
+		if diagnostic.modelUnavailable {
+			err = &llmerrors.Error{Kind: llmerrors.KindModelNotFound, Provider: "cursor-cli", Model: model,
+				Err: fmt.Errorf("Selected Cursor model is unavailable for this account. Choose Composer 2.5 or another available model in Models.")}
+		}
+		r.finish(err)
+		allCleanup()
+		close(r.exited)
+	}()
 	initCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	if err = r.call(initCtx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}, "clientInfo": map[string]any{"name": "agentworks", "version": "1"}}, nil); err != nil {
