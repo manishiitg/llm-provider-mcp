@@ -442,7 +442,7 @@ type codexAppEvent struct {
 func codexAppResponse(s *codexAppSession, content string, usage codexAppUsage) *llmtypes.ContentResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info := &llmtypes.GenerationInfo{InputTokens: intPtrIfNonZero(usage.Input), OutputTokens: intPtrIfNonZero(usage.Output), TotalTokens: intPtrIfNonZero(usage.Total), CachedContentTokens: intPtrIfNonZero(usage.Cached), ReasoningTokens: intPtrIfNonZero(usage.Reasoning), Additional: map[string]any{"provider": "codex-cli", "codex_mode": "app-server", "codex_thread_id": s.threadID, "codex_model": s.model, "prompt_tokens_include_cache": true, "cache_creation_input_tokens": usage.CacheWrite}}
+	info := &llmtypes.GenerationInfo{InputTokens: intPtrIfNonZero(usage.Input), OutputTokens: intPtrIfNonZero(usage.Output), TotalTokens: intPtrIfNonZero(usage.Total), CachedContentTokens: intPtrIfNonZero(usage.Cached), ReasoningTokens: intPtrIfNonZero(usage.Reasoning), Additional: map[string]any{"provider": "codex-cli", "codex_mode": "app-server", "codex_thread_id": s.threadID, "codex_model": s.model, "prompt_tokens_include_cache": true, "cache_read_input_tokens": usage.Cached, "cache_creation_input_tokens": usage.CacheWrite}}
 	if s.status != nil {
 		for key, value := range s.status.Metadata {
 			info.Additional[key] = value

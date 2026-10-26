@@ -60,6 +60,10 @@ func TestCodexAppServerLifecycleP0(t *testing.T) {
 	if first.Usage == nil || first.Usage.InputTokens <= 0 || first.Usage.OutputTokens <= 0 {
 		t.Fatal("missing native usage")
 	}
+	info := first.Choices[0].GenerationInfo
+	if _, ok := info.Additional["cache_read_input_tokens"]; !ok {
+		t.Fatal("missing cache tokens for cost ledger")
+	}
 	accepted, streamed := false, false
 	for _, ch := range chunks {
 		accepted = accepted || ch.Type == llmtypes.StreamChunkTypePromptAccepted
