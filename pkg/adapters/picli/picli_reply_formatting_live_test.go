@@ -29,6 +29,7 @@ func TestPiCLIRealReplyFormattingFidelityE2E(t *testing.T) {
 	t.Cleanup(func() { _ = CleanupPiCLIInteractiveSessions(context.Background()) })
 
 	adapter := newRealPiCLIAdapter(t)
+	workDir := piLiveWorkDir(t)
 	ownerSessionID := "pi-real-reply-format-" + piRandomHex(4)
 	token := "FMT_" + piRandomHex(5)
 
@@ -56,6 +57,7 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 		llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, prompt),
 	},
 		WithInteractiveSessionID(ownerSessionID),
+		WithWorkingDir(workDir),
 		WithPersistentInteractiveSession(true),
 		llmtypes.WithStreamingChan(stream),
 	)
@@ -64,23 +66,22 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 	}
 	content := strings.TrimSpace(resp.Choices[0].Content)
 
-	session, ok := activePiInteractiveSession(ownerSessionID)
-	if !ok || session == nil || strings.TrimSpace(session.tmuxSessionName) == "" {
-		t.Fatalf("expected an active Pi interactive session for %s; active=%#v ok=%v", ownerSessionID, session, ok)
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
+	if !ok {
+		t.Fatal("missing native session")
 	}
-	pane, err := capturePiPane(ctx, session.tmuxSessionName)
-	if err != nil {
-		t.Fatalf("capture Pi pane: %v", err)
+	transcript, ok, err := ReadNativeTranscriptFromWorkingDir(workDir, handle.NativeSessionID)
+	if err != nil || !ok || len(transcript.Messages) == 0 {
+		t.Fatalf("read native record: %v", err)
 	}
-
+	nativeFinal := extractTextFromPiMessage(transcript.Messages[len(transcript.Messages)-1])
 	testcontracts.AssertFinalAnswerPreservesStructure(t, testcontracts.ReplyFormattingCase{
 		Provider:       "pi-cli",
-		TmuxScreen:     pane,
+		NativeFinal:    nativeFinal,
 		Extracted:      content,
 		WantParagraphs: 2,
 		WantBullets:    3,
 		UserGoal:       "Return the two long paragraphs and the three-item list with their markdown structure intact.",
-		ExpectedNote: "Live pi turn. The pane capture is expected to be hard-wrapped; the extracted answer must NOT be, " +
-			"because pi returns marker-stream text and never parses the pane for the final answer.",
+		ExpectedNote:   "Real Pi RPC text preserves paragraphs and list structure.",
 	})
 }

@@ -13,6 +13,7 @@ const (
 	CodingAgentTransportTmux       CodingAgentTransport = "tmux"
 	CodingAgentTransportStructured CodingAgentTransport = "structured"
 	CodingAgentTransportAppServer  CodingAgentTransport = "app-server"
+	CodingAgentTransportRPC        CodingAgentTransport = "rpc"
 )
 
 // CodingAgentProviderContract is the provider-level contract that host apps can
@@ -416,17 +417,17 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		Provider:                    ProviderPiCLI,
 		DisplayName:                 "Pi CLI",
 		CLIName:                     "pi",
-		Transport:                   CodingAgentTransportTmux,
+		Transport:                   CodingAgentTransportRPC,
 		RuntimeBinary:               "pi",
 		InstallCommand:              "npm install -g @earendil-works/pi-coding-agent@latest",
 		VersionProbeArgs:            []string{"--version"},
-		MinCLIVersion:               "0.99.0",
+		MinCLIVersion:               "1.4.0",
 		RequiresWorkingDir:          true,
 		RequiresOwnerSessionID:      true,
 		UsesPersistentSession:       true,
 		SupportsLiveInput:           true,
 		SupportsInterrupt:           true,
-		SupportsTerminalStream:      true,
+		SupportsTerminalStream:      false,
 		SupportsStatusLine:          true,
 		SupportsFinalExtraction:     true,
 		SupportsNativeResume:        true,
@@ -434,13 +435,13 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresMCPBridgeConfig:     true,
 		SupportsBridgeOnlyTools:     true,
 		UsesNativeSystemPrompt:      true,
-		LaunchesViaLoginShell:       true,
+		LaunchesViaLoginShell:       false,
 		ProcessScopedCleanup:        true,
-		HandlesTmuxSessionLoss:      true,
+		HandlesTmuxSessionLoss:      false,
 		StructuredFallback:          false,
 		ImageInputInteractive:       false,
 		SurfacesTokenUsage:          true,
-		TokenUsageSource:            "transcript-file",
+		TokenUsageSource:            "stream-json",
 		PlanUsageUnavailableReason:  "Pi runs on API keys / bring-your-own providers; its output carries tokens and cost, no plan windows",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "$PI_CODING_AGENT_SESSION_DIR/**/*_<session-id>.jsonl or ~/.pi/agent/sessions/**/*_<session-id>.jsonl",

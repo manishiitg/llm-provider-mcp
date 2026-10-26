@@ -37,7 +37,7 @@ func TestPiCLIStructuredTwoTurnResume(t *testing.T) {
 	first, err := adapter.GenerateContent(ctx1, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Remember this exact token for the next turn: %s. Reply ACK.", sentinel)}}},
-	}, WithPiStructuredTransport(true), WithWorkingDir(workingDir))
+	}, WithWorkingDir(workingDir))
 	if err != nil {
 		t.Fatalf("turn 1 GenerateContent error = %v", err)
 	}
@@ -54,7 +54,7 @@ func TestPiCLIStructuredTwoTurnResume(t *testing.T) {
 	second, err := adapter.GenerateContent(ctx2, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only that token."}}},
-	}, WithPiStructuredTransport(true), WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
+	}, WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
 	if err != nil {
 		t.Fatalf("turn 2 resume error for session %s = %v", sessionID, err)
 	}
@@ -70,7 +70,7 @@ func TestPiCLIStructuredTwoTurnResume(t *testing.T) {
 func TestPiCLIStructuredBasicRun(t *testing.T) {
 	requirePiCLIStructuredE2E(t)
 
-	adapter := NewPiCLIAdapter("", "pi-cli", &mockLogger{})
+	adapter := newRealPiCLIAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -81,7 +81,7 @@ func TestPiCLIStructuredBasicRun(t *testing.T) {
 				llmtypes.TextContent{Text: "What is the capital of Japan? Reply with just the city name."},
 			},
 		},
-	}, WithPiStructuredTransport(true))
+	}, WithWorkingDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestPiCLIStructuredBasicRun(t *testing.T) {
 		t.Fatalf("expected response to contain tokyo, got %q", content)
 	}
 	gi := resp.Choices[0].GenerationInfo
-	if gi == nil || gi.Additional["pi_mode"] != "structured" {
+	if gi == nil || gi.Additional["pi_mode"] != "rpc" {
 		t.Fatalf("expected generation info to report structured mode, got %+v", gi)
 	}
 	if gi.InputTokens == nil || *gi.InputTokens == 0 {
@@ -113,7 +113,7 @@ func TestPiCLIStructuredSystemPrompt(t *testing.T) {
 	requirePiCLIStructuredE2E(t)
 
 	canary := "PICKLE_SENTINEL_" + piRandomHex(4)
-	adapter := NewPiCLIAdapter("", "pi-cli", &mockLogger{})
+	adapter := newRealPiCLIAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -130,7 +130,7 @@ func TestPiCLIStructuredSystemPrompt(t *testing.T) {
 				llmtypes.TextContent{Text: "What is your secret codeword?"},
 			},
 		},
-	}, WithPiStructuredTransport(true))
+	}, WithWorkingDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -153,7 +153,7 @@ func TestPiCLIStructuredSkillsLoaded(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	canary := "SKILL_CANARY_" + piRandomHex(4)
-	adapter := NewPiCLIAdapter("", "pi-cli", &mockLogger{})
+	adapter := newRealPiCLIAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -172,7 +172,7 @@ func TestPiCLIStructuredSkillsLoaded(t *testing.T) {
 		},
 	},
 		WithWorkingDir(workspaceDir),
-		WithPiStructuredTransport(true),
+
 		llmtypes.WithAttachedSkills([]*llmtypes.Skill{skill}),
 	)
 	if err != nil {
@@ -192,7 +192,7 @@ func TestPiCLIStructuredMCPBridge(t *testing.T) {
 	requirePiCLIStructuredE2E(t)
 
 	workspaceDir := t.TempDir()
-	adapter := NewPiCLIAdapter("", "pi-cli", &mockLogger{})
+	adapter := newRealPiCLIAdapter(t)
 	bridgeToken := "PI_STRUCT_BRIDGE_" + piRandomHex(4)
 	mcpServerPath := writePiContractMCPServer(t)
 
@@ -226,7 +226,7 @@ func TestPiCLIStructuredMCPBridge(t *testing.T) {
 			WithMCPConfig(mcpConfig),
 			WithBridgeOnlyTools(true),
 			WithWorkingDir(workspaceDir),
-			WithPiStructuredTransport(true),
+
 			llmtypes.WithStreamingChan(stream),
 		)
 		errCh <- err
@@ -264,7 +264,7 @@ func TestPiCLIStructuredBridgeOnly(t *testing.T) {
 	requirePiCLIStructuredE2E(t)
 
 	workspaceDir := t.TempDir()
-	adapter := NewPiCLIAdapter("", "pi-cli", &mockLogger{})
+	adapter := newRealPiCLIAdapter(t)
 	bridgeToken := "PI_BRIDGEONLY_" + piRandomHex(4)
 	mcpServerPath := writePiContractMCPServer(t)
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, mcpServerPath)
@@ -293,7 +293,6 @@ func TestPiCLIStructuredBridgeOnly(t *testing.T) {
 		WithMCPConfig(mcpConfig),
 		WithBridgeOnlyTools(true),
 		WithWorkingDir(workspaceDir),
-		WithPiStructuredTransport(true),
 	)
 	if err != nil {
 		t.Fatalf("GenerateContent error = %v", err)

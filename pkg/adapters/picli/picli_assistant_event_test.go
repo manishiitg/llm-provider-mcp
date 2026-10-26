@@ -3,27 +3,7 @@ package picli
 import (
 	"strings"
 	"testing"
-
-	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
-
-func TestPiThinkingDeltaIsPlainReasoningNotAnAssistantUpdate(t *testing.T) {
-	metadata := piThinkingDeltaChunkMetadata(&piInteractiveSession{
-		tmuxSessionName: "pi-test",
-		nativeSessionID: "native-test",
-		modelID:         "test-model",
-	})
-
-	if got, present := metadata["presentation"]; present {
-		t.Fatalf("presentation = %v, want none: Pi thinking is compact reasoning, not an assistant update", got)
-	}
-	if got := metadata[llmtypes.ContentDeltaMetadataKey]; got != true {
-		t.Fatalf("%s = %v, want true", llmtypes.ContentDeltaMetadataKey, got)
-	}
-	if got := metadata["provider"]; got != "pi-cli" {
-		t.Fatalf("provider = %v, want pi-cli", got)
-	}
-}
 
 // TestPiApplyAssistantEventDoesNotMergeSeparateSegments is the regression
 // guard for a real bug: pi delimits each logical assistant text segment with
@@ -43,7 +23,7 @@ func TestPiApplyAssistantEventDoesNotMergeSeparateSegments(t *testing.T) {
 		{Type: "text_start"},
 		{Type: "text_delta", Delta: "About to read a.txt."},
 		{Type: "text_end"},
-		// (a tool call happens here, between the two text segments)
+
 		{Type: "text_start"},
 		{Type: "text_delta", Delta: "The file said hello."},
 		{Type: "text_end"},

@@ -1,7 +1,6 @@
 package picli
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,18 +16,11 @@ const (
 	MetadataKeyMCPConfig             = "pi_mcp_config"
 	MetadataKeyBridgeOnlyTools       = "pi_bridge_only_tools"
 	MetadataKeyMCPExtension          = "pi_mcp_extension"
-	MetadataKeyStatuslineExtension   = "pi_statusline_extension"
-	// MetadataKeyStructuredTransport selects `pi --print --mode json`
-	// (per-turn, one-shot, no tmux dependency) instead of the tmux interactive
-	// transport. OFF by default — tmux is the normal product path. Pass
-	// WithPiStructuredTransport(true) to opt in.
-	MetadataKeyStructuredTransport = "pi_structured_transport"
 
-	defaultPiMCPExtension        = "builtin:mcp"
-	defaultPiStatuslineExtension = "npm:@narumitw/pi-statusline@0.8.0"
+	defaultPiMCPExtension = "builtin:mcp"
 )
 
-// WithWorkingDir sets the Pi CLI workspace/cwd for tmux launch.
+// WithWorkingDir sets the Pi CLI workspace/cwd for the RPC process.
 func WithWorkingDir(dir string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -36,8 +28,8 @@ func WithWorkingDir(dir string) llmtypes.CallOption {
 	}
 }
 
-// WithInteractiveSessionID links a Pi tmux run to the owning application
-// session so follow-up input can be sent directly to tmux.
+// WithInteractiveSessionID links a Pi run to the owning application
+// session so follow-up input can be sent through RPC.
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -45,7 +37,7 @@ func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
-// WithPersistentInteractiveSession keeps the tmux-backed Pi session alive
+// WithPersistentInteractiveSession keeps the Pi RPC process alive
 // across completed chat turns.
 func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
@@ -72,7 +64,7 @@ func WithProvider(provider string) llmtypes.CallOption {
 	}
 }
 
-// WithMCPConfig records a Pi MCP config. The tmux adapter writes it to the
+// WithMCPConfig records a Pi MCP config. The RPC adapter writes it to the
 // private session agent mcp.json before launching Pi with native MCP support.
 func WithMCPConfig(configJSON string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
@@ -96,25 +88,6 @@ func WithMCPExtension(source string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyMCPExtension] = source
-	}
-}
-
-// WithStatuslineExtension overrides the Pi statusline extension source.
-// Pass "off", "false", "0", or "none" to disable the adapter-managed
-// statusline extension for a call.
-func WithStatuslineExtension(source string) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyStatuslineExtension] = source
-	}
-}
-
-// WithPiStructuredTransport selects the structured `--print --mode json`
-// transport instead of tmux. See MetadataKeyStructuredTransport doc comment.
-func WithPiStructuredTransport(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
 	}
 }
 
@@ -205,15 +178,6 @@ func piMCPExtensionFromOptions(opts *llmtypes.CallOptions) string {
 		}
 	}
 	return defaultPiMCPExtension
-}
-
-func piStatuslineExtensionFromOptions(opts *llmtypes.CallOptions) string {
-	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if source, ok := opts.Metadata.Custom[MetadataKeyStatuslineExtension].(string); ok {
-			return normalizePiOptionalExtensionSource(source, defaultPiStatuslineExtension)
-		}
-	}
-	return normalizePiOptionalExtensionSource(os.Getenv(EnvPiStatuslineExtension), defaultPiStatuslineExtension)
 }
 
 func normalizePiOptionalExtensionSource(source, fallback string) string {

@@ -46,40 +46,6 @@ func TestPiCompactionChunks(t *testing.T) {
 		assertCompactions(t, got, want)
 	})
 
-	t.Run("interactive markers", func(t *testing.T) {
-		var tr piCompactionTracker
-		lines := []string{
-			`{"type":"compaction_start","ts":1790000000000,"reason":"manual","tokensBefore":871915,"willRetry":false}`,
-			`{"type":"compaction_end","ts":1790000040135,"reason":"manual","tokensBefore":871915,"willRetry":false}`,
-			`{"type":"compaction_start","ts":1790000100000,"reason":"threshold","tokensBefore":900000,"willRetry":false}`,
-			`{"type":"compaction_failed","ts":1790000100250,"reason":"threshold","aborted":true,"willRetry":false}`,
-			// A manual /compact that fails before session_before_compact: end only.
-			`{"type":"compaction_failed","ts":1790000200000,"reason":"manual","aborted":false,"willRetry":false}`,
-		}
-		var got []llmtypes.ContextCompaction
-		for i, line := range lines {
-			var m piMarker
-			if err := json.Unmarshal([]byte(line), &m); err != nil {
-				t.Fatal(err)
-			}
-			chunk, ok := tr.fromMarker(m)
-			if !ok {
-				t.Fatalf("line %d: no compaction chunk", i)
-			}
-			got = append(got, *chunk.ContextCompaction)
-		}
-		ms := time.UnixMilli
-		want := []llmtypes.ContextCompaction{
-			{Provider: "pi-cli", Phase: "start", ID: "pi-compaction-1790000000000", Trigger: "manual", TokensBefore: 871915, StartedAt: ms(1790000000000)},
-			{Provider: "pi-cli", Phase: "end", ID: "pi-compaction-1790000000000", Trigger: "manual", Outcome: "success", TokensBefore: 871915,
-				StartedAt: ms(1790000000000), EndedAt: ms(1790000040135), DurationMs: 40135},
-			{Provider: "pi-cli", Phase: "start", ID: "pi-compaction-1790000100000", Trigger: "threshold", TokensBefore: 900000, StartedAt: ms(1790000100000)},
-			{Provider: "pi-cli", Phase: "end", ID: "pi-compaction-1790000100000", Trigger: "threshold", Outcome: "aborted",
-				StartedAt: ms(1790000100000), EndedAt: ms(1790000100250), DurationMs: 250},
-			{Provider: "pi-cli", Phase: "end", Trigger: "manual", Outcome: "failed", EndedAt: ms(1790000200000)},
-		}
-		assertCompactions(t, got, want)
-	})
 }
 
 func assertCompactions(t *testing.T, got, want []llmtypes.ContextCompaction) {

@@ -8,7 +8,6 @@ Covered providers:
 - `claude-code`
 - `codex-cli`
 - `cursor-cli`
-- `pi-cli`
 
 The goal is to expose terminal-native coding tools through the normal provider
 interface for both chat and workflow execution: terminal snapshot progress, MCP
@@ -1296,3 +1295,18 @@ Image-generation provider/model semantics:
 
 - `docs/CODING_AGENT_TRANSPORT_PATTERNS.md`
 - `docs/CODEX_CLI_CODING_AGENT_CONTRACT.md`
+
+## Pi native RPC (PLAT-872-20)
+
+Pi uses `pi --mode rpc` for both retained chats and bounded work. Its provider
+contract reports `rpc`; terminal frames and tmux controls do not apply.
+`prompt` starts a turn, `steer` adds input during work, and interruption clears
+the native queue before `abort`. Only `agent_settled` completes a run. Native
+message/tool events supply deltas, results and usage; saved sessions supply
+resume and durable user-input proof. Explicit provider keys take precedence over
+saved logins, and a saved login comes from the selected account environment.
+
+The same Pi harness supplies MCP tools, skills, native tools and compaction.
+Existing confinement and account selection still apply. Terminal-only extension
+UI is unavailable; extension dialogs are cancelled with a chat notice. User
+questions use the product's MCP question tool. There is no tmux or print fallback.

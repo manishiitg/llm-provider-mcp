@@ -9,24 +9,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// piCompactionTracker turns Pi's own compaction records into
-// llmtypes.ContextCompaction chunks, for both transports:
-//
-//   - structured (`--mode json`): compaction_start {reason} and
-//     compaction_end {reason, result{tokensBefore, estimatedTokensAfter}, aborted, willRetry}
-//     (docs/json.md, AgentSessionEvent in dist/core/agent-session.d.ts).
-//   - interactive (tmux): the marker extension's compaction_start /
-//     compaction_end / compaction_failed records, written from Pi's
-//     session_before_compact / session_compact / session_compact_failed
-//     extension hooks (dist/core/extensions/types.d.ts).
-//
-// Trigger is Pi's reason verbatim ("manual", "threshold", "overflow"): the
-// contract keeps the CLI's own reason when it is more specific than auto/manual.
-// ID is the start time in Unix ms, so a start and its end share it; an end
-// without a seen start (Pi fails a manual /compact before
-// session_before_compact) carries no ID and no duration.
-//
-// One tracker per turn loop; not safe for concurrent use.
+// piCompactionTracker maps native RPC compaction events to the shared stream.
 type piCompactionTracker struct {
 	startedAt time.Time
 }
@@ -98,27 +81,6 @@ func (t *piCompactionTracker) fromStructuredEvent(event piJSONEvent, now time.Ti
 		}
 		return t.end(event.Reason, piCompactionOutcome(hasResult, event.Aborted),
 			result.TokensBefore, result.EstimatedTokensAfter, now), true
-	}
-	return llmtypes.StreamChunk{}, false
-}
-
-// fromMarker maps the interactive marker extension's compaction records.
-// Times come from the marker's own ts (ms), written inside Pi.
-func (t *piCompactionTracker) fromMarker(marker piMarker) (llmtypes.StreamChunk, bool) {
-	at := time.UnixMilli(marker.TS)
-	if marker.TS <= 0 {
-		at = time.Now()
-	}
-	switch marker.Type {
-	case "compaction_start":
-		return t.start(marker.Reason, marker.TokensBefore, at), true
-	case "compaction_end":
-		// session_compact carries the saved entry's tokensBefore; Pi does not
-		// hand extensions the after-estimate, so TokensAfter stays unknown.
-		return t.end(marker.Reason, llmtypes.ContextCompactionOutcomeSuccess, marker.TokensBefore, 0, at), true
-	case "compaction_failed":
-		aborted := marker.Aborted != nil && *marker.Aborted
-		return t.end(marker.Reason, piCompactionOutcome(false, aborted), 0, 0, at), true
 	}
 	return llmtypes.StreamChunk{}, false
 }

@@ -10,6 +10,7 @@ const (
 	CodingProviderTransportStructured = "structured"
 	CodingProviderTransportAPI        = "api"
 	CodingProviderTransportAppServer  = "app-server"
+	CodingProviderTransportRPC        = "rpc"
 
 	CodingProviderSessionStatusIdle   = "idle"
 	CodingProviderSessionStatusActive = "active"

@@ -14,7 +14,7 @@ const (
 	DefaultModelID = "google/gemini-3.8-flash"
 )
 
-// PiCLIAdapter implements the LLM interface for Pi Coding Agent's tmux TUI.
+// PiCLIAdapter implements the LLM interface for Pi Coding Agent's native RPC runtime.
 type PiCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -33,13 +33,13 @@ func NewPiCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *P
 	}
 }
 
-// GenerateContent generates content using Pi CLI tmux mode.
+// GenerateContent generates content using Pi RPC.
 func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
 	}
-	// Both Pi lanes (tmux and structured) start under the Landlock launcher
+	// Pi starts under the Landlock launcher
 	// when the policy confines the CLI.
 	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
@@ -52,13 +52,7 @@ func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 		return nil, fmt.Errorf("pi-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if opts.Metadata != nil && opts.Metadata.Custom != nil {
-		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
-			return p.generateContentStructured(ctx, messages, opts)
-		}
-	}
-
-	return p.generateContentTmux(ctx, messages, opts)
+	return p.generateContentRPC(ctx, messages, opts)
 }
 
 // SearchWeb asks Pi to use available web/search capability if the selected

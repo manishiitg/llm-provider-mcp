@@ -7,7 +7,6 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 )
 
 // CodingAgentPaneReady reports whether a coding-agent TUI screen is at its
@@ -23,8 +22,6 @@ func CodingAgentPaneReady(provider Provider, captured string) bool {
 		return codexcli.PaneReadyForInput(captured)
 	case ProviderCursorCLI:
 		return cursorcli.PaneReadyForInput(captured)
-	case ProviderPiCLI:
-		return picli.PaneReadyForInput(captured)
 	case ProviderAgyCLI:
 		return agycli.PaneReadyForInput(captured)
 	default:

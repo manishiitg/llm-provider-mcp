@@ -37,21 +37,3 @@ func TestPiAPIKeyEnvSupportsProviderSpecificKeys(t *testing.T) {
 		})
 	}
 }
-
-func TestPiRedactArgsCoversProviderSpecificKeys(t *testing.T) {
-	got := piRedactArgs([]string{
-		"OPENROUTER_API_KEY=openrouter-secret",
-		"ZAI_API_KEY=zai-secret",
-		"ZAI_CODING_CN_API_KEY=zai-cn-secret",
-		"KIMI_API_KEY=kimi-secret",
-		"MOONSHOT_API_KEY=moonshot-secret",
-		"MINIMAX_CN_API_KEY=minimax-secret",
-		"DEEPSEEK_API_KEY=deepseek-secret",
-		"OPENCODE_API_KEY=opencode-secret",
-	})
-	for _, secret := range []string{"openrouter-secret", "zai-secret", "zai-cn-secret", "kimi-secret", "moonshot-secret", "minimax-secret", "deepseek-secret", "opencode-secret"} {
-		if strings.Contains(got, secret) {
-			t.Fatalf("piRedactArgs leaked %q in %q", secret, got)
-		}
-	}
-}

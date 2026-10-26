@@ -34,7 +34,7 @@ func TestPiCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	bridgeOpts := []llmtypes.CallOption{
 		WithInteractiveSessionID(sessionPrefix + "-bridge"),
 		WithPersistentInteractiveSession(true),
-		WithWorkingDir(t.TempDir()),
+		WithWorkingDir(piLiveWorkDir(t)),
 		WithMCPConfig(mcpConfig),
 		WithBridgeOnlyTools(true),
 	}
@@ -52,7 +52,7 @@ func TestPiCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	systemOpts := []llmtypes.CallOption{
 		WithInteractiveSessionID(sessionPrefix + "-system"),
 		WithPersistentInteractiveSession(true),
-		WithWorkingDir(t.TempDir()),
+		WithWorkingDir(piLiveWorkDir(t)),
 	}
 	systemResp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		llmtypes.TextPart(llmtypes.ChatMessageTypeSystem, testcontracts.RuntimeSelfCheckSystemPrompt(c)),
@@ -66,7 +66,7 @@ func TestPiCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	skillOpts := []llmtypes.CallOption{
 		WithInteractiveSessionID(sessionPrefix + "-skill"),
 		WithPersistentInteractiveSession(true),
-		WithWorkingDir(t.TempDir()),
+		WithWorkingDir(piLiveWorkDir(t)),
 		llmtypes.WithAttachedSkills([]*llmtypes.Skill{testcontracts.RuntimeSelfCheckSkill(c.SkillName, c.SkillToken)}),
 	}
 	skillResp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{

@@ -186,10 +186,6 @@ func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 // has drifted (e.g. workflow sub-agents registered under a step-execution
 // owner). All are no-ops when no live session matches the tmux name.
 
-func ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
-	picli.ClosePiCLIInteractiveSessionByTmux(tmuxSessionName, reason)
-}
-
 func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	cursorcli.CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason)
 }
@@ -300,12 +296,6 @@ func AwaitPiInputDurable(ctx context.Context, sessionID, message string, timeout
 	}, nil
 }
 
-// SendPiCLIRetainedInput starts a new logical turn in an idle retained Pi
-// terminal. Live steering must use SendPiCLIInteractiveInput instead.
-func SendPiCLIRetainedInput(ctx context.Context, sessionID, message string) error {
-	return picli.SendPiRetainedInput(ctx, sessionID, message)
-}
-
 // SendMuseCLIInteractiveInput sends user input to a live Muse CLI
 // interactive tmux session registered for the owning application session.
 func SendMuseCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
@@ -400,8 +390,6 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 		return codexcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderCursorCLI:
 		return cursorcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
-	case ProviderPiCLI:
-		return picli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderAgyCLI:
@@ -423,8 +411,6 @@ func ReadCodingAgentRetainedTurnResponse(provider Provider, ownerSessionID strin
 // and Muse are wired; the other CLIs report false, so their turns settle as before.
 func ReadCodingAgentRetainedTurnEndedWithoutReply(provider Provider, ownerSessionID string, turnStart time.Time) (string, bool) {
 	switch Provider(strings.ToLower(strings.TrimSpace(string(provider)))) {
-	case ProviderPiCLI:
-		return picli.RetainedTurnEndedWithoutReply(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.RetainedTurnEndedWithoutReply(ownerSessionID, turnStart)
 	}
@@ -442,8 +428,6 @@ func ReadCodingAgentRetainedTurnUsage(provider Provider, ownerSessionID, modelID
 		return claudecodeadapter.ReadRetainedTurnUsage(ownerSessionID, turnStart)
 	case ProviderCodexCLI:
 		return codexcli.ReadRetainedTurnUsage(ownerSessionID, turnStart)
-	case ProviderPiCLI:
-		return picli.ReadRetainedTurnUsage(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnUsage(ownerSessionID, modelID)
 	case ProviderAgyCLI:
@@ -463,8 +447,6 @@ func ReadCodingAgentRetainedTurnStructuredProgressMessages(provider Provider, ow
 		return codexcli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
-	case ProviderPiCLI:
-		return picli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
 	case ProviderAgyCLI:
 		return agycli.ReadRetainedTurnStructuredProgressMessages(ownerSessionID, turnStart)
 	default:
@@ -491,10 +473,6 @@ func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSession
 	case ProviderMuseCLI:
 		if len(turnStart) > 0 {
 			return musecli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
-		}
-	case ProviderPiCLI:
-		if len(turnStart) > 0 {
-			return picli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
 		}
 	case ProviderCursorCLI:
 		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)

@@ -22,7 +22,11 @@ import (
 // self-contained and honest about which source it's actually exercising.
 func buildRealMCPBridgeBinary(t *testing.T) string {
 	t.Helper()
-	mcpagentDir, err := filepath.Abs("../../../../mcpagent")
+	sourceDir := os.Getenv("MCPAGENT_SOURCE_DIR")
+	if sourceDir == "" {
+		t.Fatal("set MCPAGENT_SOURCE_DIR to an owned SDK worktree")
+	}
+	mcpagentDir, err := filepath.Abs(sourceDir)
 	if err != nil {
 		t.Fatalf("resolve mcpagent sibling checkout path: %v", err)
 	}

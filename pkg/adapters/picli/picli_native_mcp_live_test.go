@@ -17,10 +17,9 @@ import (
 // Runs the real native MCP extension without a model request. A conflicting
 // project server must neither replace the session bridge nor become available.
 func TestPiNativeMCPRuntimeIsolation(t *testing.T) {
-	if os.Getenv("RUN_PI_CLI_NATIVE_MCP_E2E") != "1" {
+	if !*codingCLIP0Live && os.Getenv("RUN_PI_CLI_NATIVE_MCP_E2E") != "1" {
 		t.Skip("set RUN_PI_CLI_NATIVE_MCP_E2E=1")
 	}
-	t.Setenv(EnvPiStatuslineExtension, "off")
 	workDir := t.TempDir()
 	ambientDir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", ambientDir)
@@ -57,7 +56,7 @@ export default function(pi) {
   const started = Date.now();
   const timer = setInterval(() => {
    const active = pi.getActiveTools();
-   if (active.includes("mcp__api-bridge__bridge_canary") || Date.now()-started > 12000) {
+   if (active.includes("mcp__api_bridge__bridge_canary") || Date.now()-started > 12000) {
     clearInterval(timer);
     writeFileSync(%q, JSON.stringify({active, all: pi.getAllTools()}));
     process.exit(0);
@@ -68,12 +67,9 @@ export default function(pi) {
 	if err := os.WriteFile(auditPath, []byte(audit), 0600); err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewPiCLIAdapter("", "google/gemini-3.5-flash", &mockLogger{})
-	args, env, err := adapter.piLaunchArgs("google", "gemini-3.5-flash", auditPath, "", filepath.Join(workDir, "markers.jsonl"), "", "mlp-pi-native-isolation", workDir, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args = append(args, "--mode", "rpc")
+	args := []string{"--mode", "rpc", "--no-extensions", "--no-skills", "--no-context-files", "--no-builtin-tools", "-e", "builtin:mcp", "-e", auditPath}
+	env := piNativeMCPEnv(agentDir, filepath.Join(workDir, "sessions"))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "pi", args...)
@@ -100,7 +96,7 @@ export default function(pi) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Active) != 1 || report.Active[0] != "mcp__api-bridge__bridge_canary" {
+	if len(report.Active) != 1 || report.Active[0] != "mcp__api_bridge__bridge_canary" {
 		t.Fatalf("bridge-only native tool set violated: %s\n%s", raw, output)
 	}
 	if strings.Contains(string(raw), "foreign") {

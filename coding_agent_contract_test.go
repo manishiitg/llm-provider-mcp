@@ -701,7 +701,7 @@ func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
 		}
 		seen[contract.Provider] = true
 		def, ok := GetCodingAgentProviderContract(contract.Provider, "")
-		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer) || def.Deprecated {
+		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer && def.Transport != CodingAgentTransportRPC) || def.Deprecated {
 			continue
 		}
 		if len(RequiredP0CodingAgentCertificationIDs(def)) == 0 {

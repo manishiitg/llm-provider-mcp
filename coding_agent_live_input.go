@@ -2,6 +2,7 @@ package llmproviders
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -60,7 +61,7 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 		return SendCursorCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:
 		if retainedTurn {
-			return SendPiCLIRetainedInput(ctx, ownerSessionID, message)
+			return fmt.Errorf("Pi idle turns use the normal Run path")
 		}
 		return SendPiCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderMuseCLI:

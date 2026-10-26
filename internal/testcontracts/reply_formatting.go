@@ -63,7 +63,7 @@ func AssertFinalAnswerPreservesStructure(t testing.TB, c ReplyFormattingCase) {
 	if c.NativeFinal != "" && extracted != strings.TrimSpace(c.NativeFinal) {
 		t.Fatalf("%s changed the native final answer's text or formatting", c.Provider)
 	}
-	if strings.TrimSpace(c.TmuxScreen) == "" {
+	if c.NativeFinal == "" && strings.TrimSpace(c.TmuxScreen) == "" {
 		t.Fatalf("%s reply-formatting case has no pane capture to compare against", c.Provider)
 	}
 
@@ -71,7 +71,7 @@ func AssertFinalAnswerPreservesStructure(t testing.TB, c ReplyFormattingCase) {
 	// noticeably longer than the extracted reply's longest line means the
 	// extraction came from somewhere better than the screen; equal-and-short
 	// means we never exercised the defect.
-	if !paneLooksWrapped(c.TmuxScreen, extracted) {
+	if c.NativeFinal == "" && !paneLooksWrapped(c.TmuxScreen, extracted) {
 		t.Fatalf("%s: the pane does not appear to have wrapped this reply, so this run proves nothing.\n"+
 			"Make the prompt ask for longer lines (or shrink the pane) so wrapping is actually exercised.\npane:\n%s\nextracted:\n%s",
 			c.Provider, c.TmuxScreen, extracted)
@@ -117,10 +117,14 @@ func AssertFinalAnswerPreservesStructure(t testing.TB, c ReplyFormattingCase) {
 		"paragraphs":       strings.Count(extracted, "\n\n") + 1,
 		"bullet_lines":     countBulletLines(extracted),
 		"unwrapped":        longestLine(extracted) > longestLine(c.TmuxScreen),
-		"pane_was_wrapped": true, // asserted above; recorded so the review can see it was checked
+		"pane_was_wrapped": c.NativeFinal == "", // asserted above; recorded so the review can see it was checked
 	}
 	summary := fmt.Sprintf("Reply-formatting fidelity for %s: does EXTRACTED_FINAL keep the markdown structure the model authored, given RAW_PROVIDER_OUTPUT is hard-wrapped by the terminal?", c.Provider)
 
+	if c.NativeFinal != "" {
+		shape["native_format_preserved"] = extracted == strings.TrimSpace(c.NativeFinal)
+		summary = fmt.Sprintf("Reply-formatting fidelity for %s: does the final answer preserve native message text, paragraphs and lists?", c.Provider)
+	}
 	rec := agentreview.WriteWithCriteria(t, t.Name(), summary, ReplyFormattingCriteria, output, shape)
 	agentreview.RequireReviewed(t, rec)
 }

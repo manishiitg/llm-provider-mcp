@@ -20,6 +20,9 @@ func piLandlockReads(args []string, env ...string) []string {
 	// .../mcpbridge EACCES" and Pi ran without its platform tools (Confida 2026-09-30).
 	if agentDir := piAgentDirFromEnv(env); agentDir != "" {
 		config := []string{piNativeMCPConfigPath(agentDir)}
+		if auth, err := filepath.EvalSymlinks(filepath.Join(agentDir, "auth.json")); err == nil {
+			read = append(read, auth)
+		}
 		read = append(read, clisandbox.MCPCommandPaths(config)...)
 		read = append(read, clisandbox.JSONFilePaths(config)...)
 	}

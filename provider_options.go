@@ -208,13 +208,6 @@ func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
 	return cursorcli.WithCursorStructuredTransport(enabled)
 }
 
-// WithPiStructuredTransport selects `pi --print --mode json` instead of the
-// tmux interactive transport. OFF by default — see
-// WithCodexStructuredTransport doc comment for the rationale.
-func WithPiStructuredTransport(enabled bool) llmtypes.CallOption {
-	return picli.WithPiStructuredTransport(enabled)
-}
-
 // WithCodexReasoningEffort sets the model_reasoning_effort for the Codex CLI.
 // Values: "none", "minimal", "low", "medium", "high", "xhigh"
 func WithCodexReasoningEffort(effort string) llmtypes.CallOption {
@@ -510,13 +503,6 @@ func WithPiBridgeOnlyTools(enabled bool) llmtypes.CallOption {
 // The default is builtin:mcp.
 func WithPiMCPExtension(source string) llmtypes.CallOption {
 	return picli.WithMCPExtension(source)
-}
-
-// WithPiStatuslineExtension overrides the Pi statusline extension source.
-// The default is npm:@narumitw/pi-statusline@0.8.0. Pass "off", "false",
-// "0", or "none" to disable the adapter-managed statusline extension.
-func WithPiStatuslineExtension(source string) llmtypes.CallOption {
-	return picli.WithStatuslineExtension(source)
 }
 
 // LLM Configuration Management Functions

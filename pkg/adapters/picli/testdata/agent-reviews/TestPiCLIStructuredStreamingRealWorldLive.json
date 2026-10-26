@@ -12,35 +12,33 @@
   ],
   "output": {
     "content_chunks": [
-      "I will call echo_contract with token A_37f51400.",
-      "I will now call echo_contract with token B_82472",
-      "768.",
-      "PI_STREAM_A_37f51400 PI_STREAM_B_824",
-      "72768"
+      "Calling echo_contract with the first verification token.",
+      "Calling echo_contract with the second verification token.",
+      "PI_STREAM_A_",
+      "8a15111f PI_STREAM_B_5fee43df"
     ],
-    "final": "PI_STREAM_A_37f51400 PI_STREAM_B_82472768",
-    "reassembled_message": "I will call echo_contract with token A_37f51400.\nI will now call echo_contract with token B_82472768.\nPI_STREAM_A_37f51400 PI_STREAM_B_82472768",
+    "final": "PI_STREAM_A_8a15111f PI_STREAM_B_5fee43df",
+    "reassembled_message": "Calling echo_contract with the first verification token.\n\nCalling echo_contract with the second verification token.\n\nPI_STREAM_A_8a15111f PI_STREAM_B_5fee43df",
     "stream_order": [
       "text",
       "tool",
-      "text",
       "text",
       "tool",
       "text",
       "text"
     ],
-    "streamed_content": "I will call echo_contract with token A_37f51400.\nI will now call echo_contract with token B_82472768.\nPI_STREAM_A_37f51400 PI_STREAM_B_82472768",
+    "streamed_content": "Calling echo_contract with the first verification token.\n\nCalling echo_contract with the second verification token.\n\nPI_STREAM_A_8a15111f PI_STREAM_B_5fee43df",
     "tool_names": [
-      "mcp__api-bridge__echo_contract",
-      "mcp__api-bridge__echo_contract"
+      "mcp__api_bridge__echo_contract",
+      "mcp__api_bridge__echo_contract"
     ]
   },
-  "fingerprint": "1aaf789636dbcba5",
+  "fingerprint": "c319023aa1e1abba",
   "agent_review": {
     "verdict": "good",
-    "reviewed_fingerprint": "1aaf789636dbcba5",
-    "reviewer": "Codex",
+    "reviewed_fingerprint": "c319023aa1e1abba",
+    "reviewer": "codex-pi-rpc",
     "issues": [],
-    "notes": "Reviewed real Pi 0.99.1 native MCP output: each narration precedes its intended mcp__api-bridge__echo_contract call, both real results reach the final answer, and delta reassembly preserves tokens with clean newlines between tool-separated messages. No duplication, control characters, or proxy tool calls."
+    "notes": "Two real bridge calls interleave with distinct narration; native deltas reconstruct both returned tokens without duplication or terminal artifacts."
   }
 }
