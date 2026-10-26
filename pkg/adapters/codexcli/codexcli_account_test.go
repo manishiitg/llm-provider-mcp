@@ -47,3 +47,36 @@ func TestCodexAppServerConfigUsesSelectedAccount(t *testing.T) {
 		t.Fatal("app-server read the ambient account profile")
 	}
 }
+
+// PLAT-872-19: thread-level defaults must not replace the process's feature
+// restrictions. A live give-up test read the answer through resurrected exec.
+func TestCodexAppServerThreadConfigPreservesToolPolicy(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		opts := &llmtypes.CallOptions{}
+		if native {
+			WithNativeTools()(opts)
+		} else {
+			WithDisableShellTool()(opts)
+		}
+		config, err := codexAppThreadConfig(opts, "never")
+		if err != nil {
+			t.Fatal(err)
+		}
+		features, ok := config["features"].(map[string]any)
+		if !ok {
+			t.Fatal("missing thread feature policy")
+		}
+		for _, name := range []string{"apps", "browser_use", "hooks", "plugins"} {
+			if features[name] != false {
+				t.Fatalf("native=%v lost disabled feature %s", native, name)
+			}
+		}
+		if native {
+			if features["shell_tool"] == false || features["unified_exec"] == false {
+				t.Fatal("native shell disabled in full mode")
+			}
+		} else if features["shell_tool"] != false || features["unified_exec"] != false {
+			t.Fatal("MCP-only native shell restriction lost")
+		}
+	}
+}

@@ -547,6 +547,29 @@ func codexAppThreadConfig(opts *llmtypes.CallOptions, approval string) (map[stri
 	for key, value := range defaults {
 		config[key] = value
 	}
+	// thread/start config replaces the features table supplied at process
+	// startup. Carry the selected tool policy into this table too; otherwise
+	// the defaults above can resurrect shell tools in an MCP-only session.
+	features, _ := config["features"].(map[string]any)
+	if features == nil {
+		features = map[string]any{}
+	}
+	if codexOptionBool(opts, MetadataKeyDisableShellTool) {
+		for _, name := range codexBridgeOnlyDisabledFeatures {
+			features[name] = false
+		}
+	}
+	for _, override := range []struct {
+		key     string
+		enabled bool
+	}{{MetadataKeyDisableFeatures, false}, {MetadataKeyEnableFeatures, true}} {
+		for _, name := range strings.Split(codexOptionString(opts, override.key), ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				features[name] = override.enabled
+			}
+		}
+	}
+	config["features"] = features
 	if dirs := codexOptionString(opts, MetadataKeyAdditionalDirs); dirs != "" {
 		roots := []string{}
 		for _, dir := range strings.Split(dirs, ",") {
