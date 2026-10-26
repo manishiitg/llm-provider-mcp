@@ -40,11 +40,11 @@ func SendCodingAgentControlKey(ctx context.Context, provider Provider, modelID, 
 			Reason:   "provider is not a coding-agent provider",
 		}
 	}
-	if !contract.SupportsLiveInput {
+	if !contract.SupportsInterrupt {
 		return &CodingAgentContinuationError{
 			Kind:     CodingAgentContinuationErrorNonContinuable,
 			Provider: normalizedProvider,
-			Reason:   "provider transport does not support live input",
+			Reason:   "provider transport does not support interruption",
 		}
 	}
 	if strings.TrimSpace(ownerSessionID) == "" {

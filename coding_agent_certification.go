@@ -950,263 +950,31 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 		{ID: CertPlanUsage, TestFile: "pkg/adapters/codexcli/codexcli_plan_usage_live_test.go", TestName: "TestCodexPlanUsageLive", RealE2E: true, Description: "Real Codex app-server PlanUsage"},
 	},
 	ProviderCursorCLI: {
-		{
-			ID:          CertRuntimeAvailability,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_availability_live_test.go",
-			TestName:    "TestCursorRuntimeAvailabilityLive",
-			Description: "contract cursor-agent binary resolves on PATH and answers the version probe (credential-free install/upgrade detection)",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTokenUsage,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_token_usage_live_test.go",
-			TestName:    "TestCursorTokenUsageLive",
-			Description: "real turn reports heuristic input/output counts through GenerationInfo with the token_usage_estimated marker",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertDurableAck,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_durable_ack_live_test.go",
-			TestName:    "TestCursorCLIRealDurableAckContract",
-			Description: "steers a busy Cursor turn via raw live input, awaits the store.db user_query row as durable proof, and shows the model obeyed the steer; then proves an idle follow-up is durably acked fast",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStructuredMultiTurn,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go",
-			TestName:    "TestCursorCLIStructuredTwoTurnResume",
-			Description: "runs two real Cursor structured turns and proves the native session from turn one resumes in turn two",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStructuredStreaming,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_realworld_test.go",
-			TestName:    "TestCursorCLITranscriptStreamingRealWorldLive",
-			Description: "tails the async store.db and streams structured assistant-text + MCP tool-call chunks across a real search→write→read bridge task",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStreamNoHistoryReplay,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_transcript_stream_noreplay_live_test.go",
-			TestName:    "TestCursorTranscriptStreamNoHistoryReplayLive",
-			Description: "commits a real marker turn to a real store.db, settles the async commit, then proves a freshly constructed reader with an empty dedup map emits none of it",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertReplyFormattingFidelity,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_reply_formatting_live_test.go",
-			TestName:    "TestCursorCLIRealReplyFormattingFidelityE2E",
-			Env:         []string{"-coding-cli-p0-live"},
-			Description: "live turn asking for two long paragraphs + a 3-item list: the pane capture is wrapped, the returned answer is not, because the final answer comes from store.db via llmtypes.ReconcileFinalAnswer",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertRuntimeContext,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go",
-			TestName:    "TestCursorCLIRealRuntimeSelfCheckContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "proves the real Cursor CLI session receives its system prompt, attached skill, and MCP bridge",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertFreshLaunch,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "starts Cursor Agent CLI tmux transport, submits a prompt, streams terminal rows, and returns a final answer",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertResumeCompactionStartup,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_resume_e2e_test.go",
-			TestName:    "TestCursorCLIRealCrossRestartResume",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor native --resume survives process restart and accepts the next prompt without blocking startup",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertStartupTerminalVisibility,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor startup/working panes emit terminal-only stream chunks before final completion",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertWorkingDirectory,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_isolated_workspace_e2e_test.go",
-			TestName:    "TestCursorCLIRealIsolatedTmpDirDoesNotTouchOuterWorkspace",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor runs in the requested isolated working directory without leaking .cursor artifacts into the outer workspace",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTrustAuthPrompts,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealFreshWorkspaceTrustFirstPromptContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "fresh Cursor workspace trust is accepted, allowed to settle, and the first prompt produces a real answer instead of being dropped",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertNativeSystemPrompt,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorTmuxSystemPromptSteersWritesThroughBridge",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor loads tmux-mode system prompt through .cursor/rules and uses it to route writes through the MCP bridge",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertPromptPaste,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealVisibleMultilineDraftContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "multiline prompts remain literal and visible in Cursor's editor instead of collapsing into an opaque pasted-text marker",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertMCPBridge,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveMCPBridgeContractTmux",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor CLI tmux transport loads a workspace MCP config and calls a real MCP bridge tool",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBridgeOnlyTools,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_deny_behavioral_e2e_test.go",
-			TestName:    "TestCursorCLIRealDenyBuiltinHookActuallyFires",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor CLI live tmux run denies built-in read/list/search paths and prevents sentinel leakage",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSlowToolLiveInput,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "live validation input during a slow Cursor MCP tool does not complete the foreground turn",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSlowToolFalseIdle,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveQueuedValidationDoesNotCompleteDuringMCPTool",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "slow MCP activity keeps Cursor classified active even if prompt-looking UI appears",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertDoneDetection,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealCompletionDetection",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "Cursor tmux pane is idle and ready only after the response has completed",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertFinalExtraction,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealFinalExtractionFromTmuxAgentJudgeE2E",
-			Env:         []string{"-coding-cli-p0-live"},
-			Description: "real Cursor CLI tmux turn is captured and an agent judges final extraction quality, formatting, and shell/TUI transcript removal (no API key — agentreview sign-off, not an external LLM judge)",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertMultiTurn,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "persistent Cursor tmux session keeps native multi-turn memory and reuses the same backing tmux session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertLiveInput,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "live input routes into Cursor's active tmux session and is processed after the in-flight tool call",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertBusyLiveInput,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveLiveInputProcessesQueuedFollowupContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "a follow-up submitted during a slow Cursor tool call is processed by the same live session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertCancellation,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveLiveInputAndEscapeContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "canceling a live Cursor tmux turn interrupts the running GenerateContent call",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertPersistentCancelReuse,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveLiveInputAndEscapeContract",
-			Description: "after interrupting a live turn, the same owner completes a new message",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertParallelIsolation,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveParallelIsolation",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "parallel Cursor tmux sessions keep final answers isolated from one another",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertParallelStartupQueue,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveParallelIsolation",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "concurrent Cursor tmux launches run through the shared startup gate without cross-session interference",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSharedWorkdirMCPIsolation,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveSharedWorkingDirMCPIsolation",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "parallel Cursor sessions with related workdirs keep MCP sessions and outputs isolated",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertCleanup,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveCleanup",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "explicit Cursor cleanup unregisters and kills the backing tmux session",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSessionLoss,
-			TestFile:    "coding_agent_continuation_real_test.go",
-			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
-			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1", "RUN_CURSOR_CLI_REAL_E2E via subtest cursor-cli"},
-			Description: "Cursor tmux session loss is detected and exposed as a typed coding-agent session-loss condition",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertSessionLossRecovery,
-			TestFile:    "coding_agent_continuation_real_test.go",
-			TestName:    "TestCodingAgentContinuationRealE2EAfterTmuxLoss",
-			Env:         []string{"RUN_CODING_AGENT_CONTINUATION_REAL_E2E=1", "RUN_CURSOR_CLI_REAL_E2E via subtest cursor-cli"},
-			Description: "Cursor continuation after killed tmux starts a fresh tmux session and resumes provider-native memory",
-			RealE2E:     true,
-		},
-		{
-			ID:          CertTmuxTurnExecution,
-			TestFile:    "pkg/adapters/cursorcli/cursorcli_real_contract_test.go",
-			TestName:    "TestCursorCLIRealInteractiveTmuxFullContract",
-			Env:         []string{"RUN_CURSOR_CLI_REAL_E2E=1"},
-			Description: "persistent turns execute in the tmux pane through GenerateContent dispatch",
-			RealE2E:     true,
-		},
+		{ID: CertRuntimeAvailability, TestFile: "pkg/adapters/cursorcli/cursorcli_runtime_availability_live_test.go", TestName: "TestCursorRuntimeAvailabilityLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real Cursor binary and version"},
+		{ID: CertFreshLaunch, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertPromptPaste, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertMultiTurn, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertStaleDraftCleanup, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertLifecyclePolicy, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertBoundedRetention, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertCleanup, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertSessionLossRecovery, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertStructuredMultiTurn, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertStreamNoHistoryReplay, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPLifecycleLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP fresh/warm/resume continuity, stream isolation and scoped process cleanup"},
+		{ID: CertRuntimeContext, TestFile: "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go", TestName: "TestCursorCLIRealRuntimeSelfCheckContract", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP system prompt, skills and MCP runtime"},
+		{ID: CertNativeSystemPrompt, TestFile: "pkg/adapters/cursorcli/cursorcli_runtime_self_check_e2e_test.go", TestName: "TestCursorCLIRealRuntimeSelfCheckContract", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP system prompt, skills and MCP runtime"},
+		{ID: CertMCPBridge, TestFile: "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go", TestName: "TestCursorCLIStructuredMCPBridge", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP MCP arguments and committed tool result stream"},
+		{ID: CertStructuredStreaming, TestFile: "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go", TestName: "TestCursorCLIStructuredMCPBridge", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP MCP arguments and committed tool result stream"},
+		{ID: CertBridgeOnlyTools, TestFile: "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go", TestName: "TestCursorCLIStructuredSandboxedMCP", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP allowed MCP tool and denied native file mutation in selected workspace"},
+		{ID: CertWorkingDirectory, TestFile: "pkg/adapters/cursorcli/cursorcli_structured_integration_test.go", TestName: "TestCursorCLIStructuredSandboxedMCP", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP allowed MCP tool and denied native file mutation in selected workspace"},
+		{ID: CertFinalExtraction, TestFile: "pkg/adapters/cursorcli/cursorcli_reply_formatting_live_test.go", TestName: "TestCursorCLIRealReplyFormattingFidelityE2E", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP markdown compared with the same native session record"},
+		{ID: CertReplyFormattingFidelity, TestFile: "pkg/adapters/cursorcli/cursorcli_reply_formatting_live_test.go", TestName: "TestCursorCLIRealReplyFormattingFidelityE2E", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP markdown compared with the same native session record"},
+		{ID: CertCancellation, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPCancelAndReuseLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP slow tool stays active, cancel terminates and next turn completes"},
+		{ID: CertPersistentCancelReuse, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPCancelAndReuseLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP slow tool stays active, cancel terminates and next turn completes"},
+		{ID: CertSlowToolFalseIdle, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPCancelAndReuseLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP slow tool stays active, cancel terminates and next turn completes"},
+		{ID: CertDoneDetection, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPCancelAndReuseLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP slow tool stays active, cancel terminates and next turn completes"},
+		{ID: CertParallelIsolation, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPParallelMCPIsolationLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP owners in one workspace receive only their own MCP result"},
+		{ID: CertSharedWorkdirMCPIsolation, TestFile: "pkg/adapters/cursorcli/cursorcli_acp_live_test.go", TestName: "TestCursorACPParallelMCPIsolationLive", Env: []string{"-coding-cli-p0-live"}, RealE2E: true, Description: "Real ACP owners in one workspace receive only their own MCP result"},
 	},
 	ProviderPiCLI: {
 		{ID: CertRuntimeAvailability, TestFile: "pkg/adapters/picli/picli_runtime_availability_live_test.go", TestName: "TestPiRuntimeAvailabilityLive", Description: "Real Pi RPC RuntimeAvailability proof", Env: []string{"-coding-cli-p0-live"}, RealE2E: true},
@@ -1324,7 +1092,7 @@ func CodingAgentP0ReleaseMatrix() ([]CodingAgentP0ReleaseEntry, error) {
 			continue
 		}
 		seen[contract.Provider] = true
-		if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC) || contract.Deprecated {
+		if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP) || contract.Deprecated {
 			continue
 		}
 		required := RequiredP0CodingAgentCertificationIDs(contract)
@@ -1389,16 +1157,16 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 // provider self-description cannot weaken the platform's mcp_only release bar.
 // Muse's documented best-effort exception has its own required live P0 proof.
 func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
-	if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC) || contract.Deprecated {
+	if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP) || contract.Deprecated {
 		return nil
 	}
 	ids := append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)
-	if contract.Transport == CodingAgentTransportAppServer || contract.Transport == CodingAgentTransportRPC {
+	if contract.Transport == CodingAgentTransportAppServer || contract.Transport == CodingAgentTransportRPC || contract.Transport == CodingAgentTransportACP {
 		// Protocol-native transports retain the real lifecycle P0s; terminal
 		// rendering and workspace trust menus do not exist on this interface.
 		filtered := ids[:0]
 		for _, id := range ids {
-			if id != CertTmuxTurnExecution && id != CertTrustAuthPrompts {
+			if id != CertTmuxTurnExecution && id != CertTrustAuthPrompts && !(contract.Transport == CodingAgentTransportACP && (id == CertLiveInput || id == CertBusyLiveInput)) {
 				filtered = append(filtered, id)
 			}
 		}

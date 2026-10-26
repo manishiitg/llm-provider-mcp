@@ -59,12 +59,7 @@ func isCursorLegacyModelSelector(modelID string) bool {
 	}
 }
 
-// CursorCLIAdapter implements the LLM interface for Cursor Agent CLI.
-//
-// Cursor uses its native structured CLI transport for every production turn:
-// `cursor-agent --print --output-format stream-json`. It returns typed stream
-// events and carries a conversation forward through Cursor's native --resume
-// session ID, without injecting keystrokes into Cursor's terminal UI.
+// CursorCLIAdapter uses a persistent native ACP process for every turn.
 type CursorCLIAdapter struct {
 	apiKey  string
 	modelID string
@@ -80,17 +75,13 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent uses Cursor's declared tmux transport by default and switches
-// to one-shot stream-json only when the caller explicitly selects structured
-// transport. Interactive chats therefore retain a steerable Cursor process,
-// while workflow/background turns can still choose clean typed JSON events.
+// GenerateContent streams the native ACP turn and handles attended questions.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
 	}
-	// Both Cursor lanes (tmux and structured) start under the Landlock
-	// launcher when the policy confines the CLI.
+	// Native ACP runs inside the configured CLI confinement.
 	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
 	}
@@ -110,18 +101,7 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if cursorStructuredTransportRequested(opts) {
-		return c.generateContentStructured(ctx, messages, opts, nil)
-	}
-	return c.generateContentTmux(ctx, messages, opts)
-}
-
-func cursorStructuredTransportRequested(opts *llmtypes.CallOptions) bool {
-	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return false
-	}
-	structured, _ := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool)
-	return structured
+	return c.generateContentACP(ctx, messages, opts)
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns

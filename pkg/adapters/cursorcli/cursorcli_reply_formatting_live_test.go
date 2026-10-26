@@ -27,7 +27,7 @@ import (
 // real pane wraps the way we think. Only a live run closes that gap.
 func TestCursorCLIRealReplyFormattingFidelityE2E(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+	t.Cleanup(func() { _ = CleanupACP(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	ownerSessionID := "cursor-real-reply-format-" + cursorRandomHex(4)
@@ -50,7 +50,7 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 - second bullet for %s
 - third bullet for %s`, token, token, token, token, token, token)
 
-	streamChan := make(chan llmtypes.StreamChunk, 128)
+	streamChan := make(chan llmtypes.StreamChunk, 4096)
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{
 			llmtypes.TextContent{Text: "Do not use tools. Reply with markdown only. Preserve blank lines between paragraphs and keep each list item on its own line."},
@@ -58,6 +58,7 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}},
 	},
 		WithInteractiveSessionID(ownerSessionID),
+		WithWorkingDir(t.TempDir()),
 		WithPersistentInteractiveSession(true),
 		WithDenyBuiltinTools(true),
 		llmtypes.WithStreamingChan(streamChan),
@@ -67,24 +68,29 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 	}
 	content := strings.TrimSpace(resp.Choices[0].Content)
 
-	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
-	if !ok || tmuxSession == "" {
-		t.Fatalf("expected an active Cursor tmux session for %s", ownerSessionID)
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
+	if !ok {
+		t.Fatal("missing native handle")
 	}
-	pane, err := captureCursorPane(ctx, tmuxSession)
-	if err != nil {
-		t.Fatalf("capture Cursor pane: %v", err)
+	transcript, ok, err := ReadNativeTranscript(handle.WorkingDir, handle.NativeSessionID)
+	if err != nil || !ok || len(transcript.Messages) == 0 {
+		t.Fatalf("native transcript: %v", err)
+	}
+	var nativeFinal strings.Builder
+	for _, p := range transcript.Messages[len(transcript.Messages)-1].Parts {
+		if text, ok := p.(llmtypes.TextContent); ok {
+			nativeFinal.WriteString(text.Text)
+		}
 	}
 	_ = drainCursorStream(streamChan)
 
 	testcontracts.AssertFinalAnswerPreservesStructure(t, testcontracts.ReplyFormattingCase{
 		Provider:       "cursor-cli",
-		TmuxScreen:     pane,
+		NativeFinal:    nativeFinal.String(),
 		Extracted:      content,
 		WantParagraphs: 2,
 		WantBullets:    3,
 		UserGoal:       "Return the two long paragraphs and the three-item list with their markdown structure intact.",
-		ExpectedNote: "Live cursor-agent turn. The pane capture is expected to be hard-wrapped; the extracted answer must NOT be, " +
-			"because it should have come from cursor's store.db transcript via llmtypes.ReconcileFinalAnswer rather than from the screen.",
+		ExpectedNote:   "Real ACP markdown is compared against this same session’s committed native answer.",
 	})
 }

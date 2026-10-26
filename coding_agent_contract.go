@@ -14,6 +14,7 @@ const (
 	CodingAgentTransportStructured CodingAgentTransport = "structured"
 	CodingAgentTransportAppServer  CodingAgentTransport = "app-server"
 	CodingAgentTransportRPC        CodingAgentTransport = "rpc"
+	CodingAgentTransportACP        CodingAgentTransport = "acp"
 )
 
 // CodingAgentProviderContract is the provider-level contract that host apps can
@@ -365,53 +366,44 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:           true,
 	},
 	ProviderCursorCLI: {
-		Provider:                ProviderCursorCLI,
-		DisplayName:             "Cursor CLI",
-		CLIName:                 "cursor-agent",
-		Transport:               CodingAgentTransportTmux,
-		RuntimeBinary:           "cursor-agent",
-		InstallCommand:          "curl --proto '=https' --proto-redir '=https' --tlsv1.2 https://cursor.com/install | bash",
-		VersionProbeArgs:        []string{"--version"},
-		MinCLIVersion:           "2026.09.18",
-		RequiresWorkingDir:      true,
-		RequiresOwnerSessionID:  true,
-		UsesPersistentSession:   true,
-		SupportsLiveInput:       true,
-		SupportsInterrupt:       true,
-		SupportsTerminalStream:  true,
-		SupportsFinalExtraction: true,
-		// Wired end-to-end: mcpagent.Agent.CursorSessionID is populated by
-		// the tmux adapter from Cursor's local store.db sidecar,
-		// session_handle persists it, llmproviders.WithCursorResumeSessionID
-		// re-exports the resume option, and server.go's restore switch
-		// reads it back via `case "cursor-cli":`. The drift test in
-		// coding_agent_contract_test.go enforces this matches the actual
-		// wiring (nativeResumeRegistry membership).
-		SupportsNativeResume:    true,
-		UsesMCPBridge:           true,
-		RequiresMCPBridgeConfig: true,
-		SupportsBridgeOnlyTools: true,
-		UsesNativeSystemPrompt:  true,
-		LaunchesViaLoginShell:   true,
-		ProcessScopedCleanup:    true,
-		HandlesTmuxSessionLoss:  true,
-		StructuredFallback:      false,
-		ImageInputInteractive:   true,
-		SurfacesTokenUsage:      true,
-		// Cursor's tmux interactive path falls back to a 4-chars-per-token
-		// heuristic in estimateCursorTmuxTokens.
-		TokenUsageSource:            "estimated",
+		Provider:                    ProviderCursorCLI,
+		DisplayName:                 "Cursor CLI",
+		CLIName:                     "cursor-agent",
+		Transport:                   CodingAgentTransportACP,
+		RuntimeBinary:               "cursor-agent",
+		InstallCommand:              "curl --proto '=https' --proto-redir '=https' --tlsv1.2 https://cursor.com/install | bash",
+		VersionProbeArgs:            []string{"--version"},
+		MinCLIVersion:               "2026.10.22",
+		RequiresWorkingDir:          true,
+		RequiresOwnerSessionID:      true,
+		UsesPersistentSession:       true,
+		SupportsLiveInput:           false,
+		SupportsInterrupt:           true,
+		SupportsTerminalStream:      false,
+		SupportsFinalExtraction:     true,
+		SupportsNativeResume:        true,
+		UsesMCPBridge:               true,
+		RequiresMCPBridgeConfig:     true,
+		SupportsBridgeOnlyTools:     true,
+		UsesNativeSystemPrompt:      true,
+		LaunchesViaLoginShell:       false,
+		ProcessScopedCleanup:        true,
+		HandlesTmuxSessionLoss:      false,
+		StructuredFallback:          false,
+		ImageInputInteractive:       true,
+		SurfacesTokenUsage:          false,
+		TokenUsageSource:            "",
 		PlanUsageUnavailableReason:  "Cursor CLI exposes no local or structured plan usage; only its private account API",
 		AdapterReadsTranscript:      true,
-		TranscriptPathTemplate:      "~/.cursor/chats/<md5(cwd)>/<agentId>/store.db",
+		TranscriptPathTemplate:      "~/.cursor/acp-sessions/<sessionId>/store.db",
 		SupportsStructuredStreaming: true,
-		RequiresWorkspaceTrust:      true,
+		RequiresWorkspaceTrust:      false,
 		APIKeyEnvVars:               []string{"CURSOR_API_KEY"},
 		WorkingDirInstructionFile:   ".cursor/rules",    // directory of .mdc rule files; Cursor honors every file in here when alwaysApply:true is set in frontmatter.
 		UserInstructionFile:         "~/.cursor/rules",  // same directory layout at the user level
 		WorkingDirMCPConfigFile:     ".cursor/mcp.json", // adapter writes this when WithCursorMCPConfig is provided
 		UserMCPConfigFile:           "~/.cursor/mcp.json",
-		SupportsDurableAck:          true,
+		SupportsDurableAck:          false,
 	},
 	ProviderPiCLI: {
 		Provider:                    ProviderPiCLI,

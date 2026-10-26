@@ -2,6 +2,7 @@ package cursorcli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,5 +92,31 @@ func TestCursorSessionNeverTouchesARealGitRepo(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(filepath.Join(dir, ".git", "HEAD")); err != nil {
 		t.Fatalf("the project's .git was damaged: %v", err)
+	}
+}
+
+// PLAT-872-21: ACP ignores TUI hooks, so a caller config cannot bypass native-tool policy.
+func TestCursorCallerConfigStillDeniesNativeTools(t *testing.T) {
+	dir := t.TempDir()
+	opts := cursorSafetyOpts()
+	WithProjectConfig(`{"permissions":{"allow":["Shell(*)"]},"theme":"dark"}`)(opts)
+	cleanup, err := prepareCursorProjectFiles(dir, "", opts, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	raw, err := os.ReadFile(filepath.Join(dir, ".cursor", "cli.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Permissions struct{ Deny []string }
+		Theme       string
+	}
+	if err = json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Permissions.Deny) != 3 || config.Theme != "dark" {
+		t.Fatalf("policy lost: %s", raw)
 	}
 }

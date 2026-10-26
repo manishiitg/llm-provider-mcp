@@ -12,7 +12,7 @@ import (
 
 func TestCursorCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
+	t.Cleanup(func() { _ = CleanupACP(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	sessionPrefix := "cursor-runtime-self-check-" + cursorRandomHex(4)
@@ -28,7 +28,6 @@ func TestCursorCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	}
 	mcpConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"type":"stdio","command":"node","args":[%q]}}}`, writeCursorTmuxContractMCPServer(t))
 	bridgeWorkDir := t.TempDir()
-	preApproveCursorMCP(t, bridgeWorkDir, mcpConfig, "api-bridge")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

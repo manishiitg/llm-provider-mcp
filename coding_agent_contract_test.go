@@ -17,7 +17,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 	}{
 		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: false, wantFound: true},
-		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: true, wantFound: true},
+		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: false, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
 		{name: "kimi api model", provider: ProviderKimi, modelID: "kimi-k2.6"},
 		{name: "openai", provider: ProviderOpenAI},
@@ -484,14 +484,6 @@ func TestCodingAgentProviderContractsAreSorted(t *testing.T) {
 // Drain this map by writing the missing e2e tests + registering them in
 // codingAgentProviderCertifications.
 var knownCertificationGaps = map[Provider][]CodingAgentCertificationID{
-	// Cursor CLI is fully wired in the orchestrator and most tmux claims now
-	// point at real cursor-agent E2Es. Remaining IDs are real gaps that need
-	// their own e2e tests, tracked as follow-up tasks.
-	ProviderCursorCLI: {
-		CertBoundedRetention,
-		CertLifecyclePolicy,
-		CertStaleDraftCleanup,
-	},
 	// Muse onboarding (2026-09-10): all release-blocking P0s are registered
 	// with live E2E proofs; what remains below is the capability-derived
 	// follow-up set (AdapterReadsTranscript satisfies
@@ -701,7 +693,7 @@ func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
 		}
 		seen[contract.Provider] = true
 		def, ok := GetCodingAgentProviderContract(contract.Provider, "")
-		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer && def.Transport != CodingAgentTransportRPC) || def.Deprecated {
+		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer && def.Transport != CodingAgentTransportRPC && def.Transport != CodingAgentTransportACP) || def.Deprecated {
 			continue
 		}
 		if len(RequiredP0CodingAgentCertificationIDs(def)) == 0 {

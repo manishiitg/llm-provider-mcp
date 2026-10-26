@@ -14,16 +14,15 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// requireCursorCLIStructuredE2E gates the structured-transport revival e2e on
+// requireCursorCLIStructuredE2E gates the native ACP integration checks on
 // an opt-in env var plus a real cursor-agent binary in PATH.
 func requireCursorCLIStructuredE2E(t *testing.T) {
 	t.Helper()
 	if !*codingCLIP0Live && os.Getenv("RUN_CURSOR_CLI_STREAM_JSON_E2E") == "" {
 		t.Skip("set RUN_CURSOR_CLI_STREAM_JSON_E2E=1 to run Cursor CLI structured JSON e2e tests")
 	}
-	// Keep structured transport coverage on the same Auto-only policy as the
-	// tmux P0 suite.
-	t.Setenv(EnvCursorCLITestModel, "auto")
+	// The owner selected Composer 2.5 for these real tests.
+	t.Setenv(EnvCursorCLITestModel, "composer-2.5")
 	if _, err := exec.LookPath("cursor-agent"); err != nil {
 		t.Fatalf("cursor-agent not found in PATH: %v", err)
 	}
@@ -41,7 +40,7 @@ func TestCursorCLIStructuredTwoTurnResume(t *testing.T) {
 	first, err := adapter.GenerateContent(ctx1, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: fmt.Sprintf("Remember this exact token for the next turn: %s. Reply ACK.", sentinel)}}},
-	}, WithCursorStructuredTransport(true), WithWorkingDir(workingDir))
+	}, WithWorkingDir(workingDir))
 	if err != nil {
 		t.Fatalf("turn 1 GenerateContent error = %v", err)
 	}
@@ -58,7 +57,7 @@ func TestCursorCLIStructuredTwoTurnResume(t *testing.T) {
 	second, err := adapter.GenerateContent(ctx2, []llmtypes.MessageContent{
 		{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "Reply tersely and do not use tools."}}},
 		{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "What exact token did I ask you to remember? Reply with only that token."}}},
-	}, WithCursorStructuredTransport(true), WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
+	}, WithWorkingDir(workingDir), WithResumeSessionID(sessionID))
 	if err != nil {
 		t.Fatalf("turn 2 resume error for session %s = %v", sessionID, err)
 	}
@@ -85,7 +84,7 @@ func TestCursorCLIStructuredBasicRun(t *testing.T) {
 				llmtypes.TextContent{Text: "What is the capital of Japan? Reply with just the city name."},
 			},
 		},
-	}, WithCursorStructuredTransport(true))
+	})
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -135,7 +134,7 @@ func TestCursorCLIStructuredSystemPrompt(t *testing.T) {
 				llmtypes.TextContent{Text: "What is your secret codeword?"},
 			},
 		},
-	}, WithCursorStructuredTransport(true))
+	})
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -176,7 +175,6 @@ func TestCursorCLIStructuredSkillsLoaded(t *testing.T) {
 		},
 	},
 		WithWorkingDir(workspaceDir),
-		WithCursorStructuredTransport(true),
 		llmtypes.WithAttachedSkills([]*llmtypes.Skill{skill}),
 	)
 	if err != nil {
@@ -227,7 +225,6 @@ func TestCursorCLIStructuredMCPBridge(t *testing.T) {
 			WithMCPConfig(mcpConfig),
 			WithApproveMCPs(),
 			WithWorkingDir(workspaceDir),
-			WithCursorStructuredTransport(true),
 			llmtypes.WithStreamingChan(stream),
 		)
 		errCh <- err
@@ -306,7 +303,6 @@ func TestCursorCLIStructuredSandboxedMCP(t *testing.T) {
 			WithApproveMCPs(),
 			WithDenyBuiltinTools(true),
 			WithWorkingDir(workspaceDir),
-			WithCursorStructuredTransport(true),
 			llmtypes.WithStreamingChan(stream),
 		)
 		errCh <- err
@@ -328,7 +324,7 @@ func TestCursorCLIStructuredSandboxedMCP(t *testing.T) {
 
 	markerPath := filepath.Join(workspaceDir, markerFile)
 	if _, err := os.Stat(markerPath); err == nil {
-		t.Fatalf("file %s was created despite ask mode — built-in tool restriction not working", markerFile)
+		t.Fatalf("file %s was created despite native write denial — built-in tool restriction not working", markerFile)
 	}
 
 	content := strings.TrimSpace(resp.Choices[0].Content)
@@ -341,7 +337,7 @@ func TestCursorCLIStructuredSandboxedMCP(t *testing.T) {
 		t.Fatalf("MCP bridge tool result not found in response — sandboxed MCP failed\ncontent: %q", content[:maxLen])
 	}
 
-	t.Logf("sandboxed MCP verified: built-in tools blocked (ask mode) + MCP bridge works (approve-mcps)")
+	t.Logf("sandboxed MCP verified: native writes blocked (permissions deny) + MCP bridge works (approve-mcps)")
 	t.Logf("tool_start=%v tool_end=%v", hasToolStart, hasToolEnd)
 }
 

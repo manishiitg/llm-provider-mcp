@@ -57,8 +57,6 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 		return SendClaudeCodeInput(ctx, ownerSessionID, message)
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
-	case ProviderCursorCLI:
-		return SendCursorCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:
 		if retainedTurn {
 			return fmt.Errorf("Pi idle turns use the normal Run path")

@@ -159,7 +159,7 @@ func TestWriteCursorDenyBuiltinHooksRestoresPreExistingHooksJSON(t *testing.T) {
 	}
 }
 
-func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(t *testing.T) {
+func TestPrepareCursorProjectFilesDenyBuiltinRestoresProjectPermissions(t *testing.T) {
 	workDir := t.TempDir()
 	cursorDir := filepath.Join(workDir, ".cursor")
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
@@ -180,12 +180,18 @@ func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(
 	}
 	defer cleanup()
 
-	// Deny-builtin mode generates no cli.json of its own, and a cli.json in the
-	// project is never deleted (a session with bridge tools replaces it with its
-	// allowlist for the session and restores it afterwards).
-	if got, err := os.ReadFile(staleCLI); err != nil || string(got) != staleBody {
-		t.Fatalf("a project's cli.json must be left alone, got %q err=%v", string(got), err)
+	// PLAT-872-21: ACP may bypass hooks; native permissions enforce the same rule.
+	if got, err := os.ReadFile(staleCLI); err != nil || !strings.Contains(string(got), `"Write(**)"`) || !strings.Contains(string(got), `"Read(**)"`) {
+		t.Fatalf("native denial not installed: %s %v", got, err)
 	}
+	t.Cleanup(func() {
+		cleanup()
+		got, err := os.ReadFile(staleCLI)
+		if err != nil || string(got) != staleBody {
+			t.Fatalf("original permissions not restored: %s %v", got, err)
+		}
+	})
+
 	if _, err := os.Stat(filepath.Join(workDir, ".cursor", "hooks.json")); err != nil {
 		t.Fatalf("deny-builtin mode should install hooks.json: %v", err)
 	}
@@ -202,51 +208,6 @@ func TestPrepareCursorProjectFilesDenyBuiltinUsesHooksWithoutGeneratedCLIConfig(
 	} {
 		if !strings.Contains(string(ruleBody), want) {
 			t.Fatalf("mlp-system.mdc = %s, want %q", string(ruleBody), want)
-		}
-	}
-}
-
-func TestBuildCursorInteractiveLaunchDoesNotRunMCPPreflight(t *testing.T) {
-	fakeBin := t.TempDir()
-	logPath := filepath.Join(fakeBin, "cursor-agent.log")
-	cursorPath := filepath.Join(fakeBin, "cursor-agent")
-	script := `#!/bin/sh
-printf '%s\n' "$*" >> "$CURSOR_AGENT_TEST_LOG"
-exit 0
-`
-	if err := os.WriteFile(cursorPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake cursor-agent: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CURSOR_AGENT_TEST_LOG", logPath)
-
-	workDir := t.TempDir()
-	opts := &llmtypes.CallOptions{}
-	WithWorkingDir(workDir)(opts)
-	WithApproveMCPs()(opts)
-	WithMCPConfig(`{"mcpServers":{"zeta":{"command":"node","args":["z.js"]},"api-bridge":{"command":"node","args":["bridge.js"]}}}`)(opts)
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	args, _, _, cleanup, err := adapter.buildCursorInteractiveLaunch(opts, "Original system prompt.", "test-session-no-preflight")
-	if err != nil {
-		t.Fatalf("buildCursorInteractiveLaunch: %v", err)
-	}
-	defer cleanup()
-
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Fatalf("Cursor launch preparation must not execute cursor-agent MCP preflight; log stat err=%v", err)
-	}
-	if len(args) == 0 || args[0] != "cursor-agent" {
-		t.Fatalf("launch args = %#v, want cursor-agent TUI launch", args)
-	}
-	mcpPath := filepath.Join(workDir, ".cursor", "mcp.json")
-	raw, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("read generated MCP config: %v", err)
-	}
-	for _, serverName := range []string{"api-bridge", "zeta"} {
-		if !strings.Contains(string(raw), `"`+serverName+`"`) {
-			t.Fatalf("generated MCP config = %s, want server %q", string(raw), serverName)
 		}
 	}
 }

@@ -102,7 +102,7 @@ func TestPiRPCSettledControlsCompletionAndPreservesToolReceipts(t *testing.T) {
 	var chunks []llmtypes.StreamChunk
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	resp, err := (&PiCLIAdapter{}).consumeRPCTurn(ctx, s, r, func(c llmtypes.StreamChunk) { chunks = append(chunks, c) })
+	resp, err := (&PiCLIAdapter{}).consumeRPCTurn(ctx, s, r, func(c llmtypes.StreamChunk) { chunks = append(chunks, c) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

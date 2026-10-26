@@ -2,300 +2,17 @@ package cursorcli
 
 import (
 	"context"
-	"crypto/md5" //nolint:gosec // md5 here mirrors cursor CLI's own directory naming, not crypto
+
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
+
 	"strings"
-	"sync"
-	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
-	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
-
-// cursorReturnedBlobs tracks the set of message blob IDs already
-// returned to a caller per owner-session. Cursor's store.db root
-// accumulates messages across all turns of a chat — if we re-walked
-// the entire root every turn, the splice would re-record prior-turn
-// messages each new turn. This map lets us return only the *new*
-// messages since the last call for the same session.
-//
-// Eviction: we trust the workspace store-clean cycle to evict stale
-// session IDs. The keys are short UUIDs so the memory cost is small.
-var (
-	cursorReturnedBlobsMu sync.Mutex
-	cursorReturnedBlobs   = map[string]map[string]struct{}{}
-)
-
-// readCursorTranscriptMessages reconstructs the cursor CLI's
-// internal turn-by-turn trail (assistant text, tool-call, tool-result
-// blocks) from the local sqlite store the CLI writes at
-//
-//	~/.cursor/chats/<md5(cwd)>/<agentId>/store.db
-//
-// Cursor stores chat blobs in a content-addressed (SHA256) form:
-//   - `meta` table: one JSON row with `latestRootBlobId`.
-//   - `blobs` table: id → bytes. JSON-encoded message blobs sit
-//     alongside protobuf wrapper blobs.
-//
-// The latest root blob is a protobuf whose `field 1` carries 32-byte
-// refs to message blobs in chronological order, plus turn metadata
-// (working_dir at f9, interface tag at f22="cli", unix-millis ts at
-// f26). We parse the root, follow the refs, and JSON-decode each
-// message blob.
-//
-// Shape mapping (cursor JSON → llmtypes):
-//
-//	{role:"assistant", content:[{type:"text", text}]}
-//	  → {Role: AI, Parts: [TextContent]}
-//	{role:"assistant", content:[{type:"tool-call", toolCallId, toolName, args}]}
-//	  → {Role: AI, Parts: [ToolCall{ID:toolCallId, FunctionCall:{Name, Arguments=json(args)}}]}
-//	{role:"tool",      content:[{type:"tool-result", toolCallId, toolName, result}]}
-//	  → {Role: Tool, Parts: [ToolCallResponse{ToolCallID, Content}]}
-//
-// Skipped (noise / non-content):
-//   - system role: already in mcpagent's outer system prompt
-//   - first user blob: provider-options context (cwd / mcp / rules)
-//   - assistant:redacted-reasoning: encrypted CoT, no usable text
-//
-// baseline is the set of store entries that existed before this turn's
-// prompt was sent (cursor's root is cumulative): only entries after it are
-// the turn's messages. Turns run one at a time (FIFO), so this per-turn
-// snapshot is all the scoping recording needs; nothing is remembered across
-// turns. A nil or empty baseline returns the full root -- a fresh session's
-// first turn, a one-shot phase, or a diagnostic read.
-//
-// Returns nil on any error or when no store.db is found for the
-// given workingDir. Best-effort.
-func readCursorTranscriptMessages(turnStart time.Time, workingDir string, baseline map[string]struct{}) []llmtypes.MessageContent {
-	msgs, _ := readCursorTranscriptMessagesAndStoreDB(turnStart, workingDir, baseline, "")
-	return msgs
-}
-
-// readCursorTranscriptMessagesAndStoreDB does the same work as
-// readCursorTranscriptMessages but also returns the picked store.db
-// path. Callers that need cursor's native session ID (the path's
-// parent dir, used for --resume) want both at once because picking
-// the freshest store.db twice would race when cursor writes another
-// commit in between.
-//
-// knownNativeSessionID, when non-empty (any RESUMED turn — cursor already
-// told us its own session id via a prior --resume), is used DIRECTLY:
-// chatsDir/<knownNativeSessionID>/store.db, no guessing. This matters because
-// chatsDir holds one subfolder per cursor-agent session EVER created for this
-// workingDir — including every throwaway bounded session other callers spin
-// up against the SAME workingDir (e.g. read_image's own nested transcription
-// calls, see image_tool.go). Confirmed live: a turn with several read_image
-// calls had its final-answer reconciliation silently pick one of THEIR
-// store.db files instead of this conversation's own, because theirs happened
-// to commit its async write more recently — not just corrupting that turn's
-// formatting (the wrapped pane got used instead of the clean transcript) but
-// permanently gluing the conversation's persisted native_session_id onto an
-// unrelated one-shot session, so every LATER turn kept resuming the wrong one
-// too. Only fall back to the freshest-in-directory guess below when
-// knownNativeSessionID is empty — a genuinely first-ever turn, where cursor
-// hasn't reported an id yet and there is no better signal available.
-func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir string, baseline map[string]struct{}, knownNativeSessionID string, accountHome ...string) ([]llmtypes.MessageContent, string) {
-	if strings.TrimSpace(workingDir) == "" {
-		return nil, ""
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, ""
-	}
-	if len(accountHome) > 0 && accountHome[0] != "" {
-		home = accountHome[0]
-	}
-	var pickedPath string
-	// A persisted native ID is authoritative. Never fall back to a different
-	// chat merely because this transcript is missing or has not flushed yet.
-	if id := strings.TrimSpace(knownNativeSessionID); id != "" {
-		pickedPath = cursorStoreDBForNativeSession(home, workingDir, id)
-		if pickedPath == "" {
-			return nil, ""
-		}
-	}
-	if pickedPath == "" {
-		// Cursor may keep multiple agent dirs per workspace; pick the
-		// store.db whose mtime is freshest at-or-after turnStart-30s. Only
-		// reached with no known session id — see this function's own
-		// doc comment for why that's a narrower case than it used to be.
-		cutoff := turnStart.Add(-30 * time.Second)
-		type cand struct {
-			path string
-			mod  time.Time
-		}
-		var cands []cand
-		walkCandidate := func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if filepath.Base(p) != "store.db" {
-				return nil
-			}
-			// Use the WAL-aware mtime, NOT store.db's own. Cursor opens the db in WAL
-			// mode, so writes land in store.db-wal and store.db's mtime stays frozen
-			// until a checkpoint — observed live at a 24-minute gap (store.db 19:30,
-			// -wal 19:54). A store.db-only check therefore rejects the very file that
-			// holds the current turn, the transcript reads as "missing", and callers
-			// silently fall back to the wrapped tmux pane. The streaming tailer already
-			// learned this (see cursorStoreDBEffectiveModTime); this path had not.
-			modTime := cursorStoreDBEffectiveModTime(p, d)
-			if modTime.IsZero() || modTime.Before(cutoff) {
-				return nil
-			}
-			cands = append(cands, cand{path: p, mod: modTime})
-			return nil
-		}
-		for _, root := range cursorChatsRoots(home) {
-			_ = filepath.WalkDir(filepath.Join(root, workingDirHashForCursor(workingDir)), walkCandidate)
-		}
-		if len(cands) == 0 {
-			return nil, ""
-		}
-		sort.Slice(cands, func(i, j int) bool { return cands[i].mod.After(cands[j].mod) })
-		pickedPath = cands[0].path
-	}
-
-	// Cursor commits its sqlite root blob asynchronously, sometimes
-	// many seconds AFTER the tmux pane settles (observed 19s on a
-	// trivial "Reply OK" turn — cursor does background bookkeeping).
-	// Poll for up to ~4s, returning as soon as we see an assistant
-	// or tool message. For trivial fast turns the commit may never
-	// arrive in time and we return empty; for real tool-using turns
-	// commits happen mid-turn so the data is usually there by
-	// return. This is best-effort by design.
-	deadline := time.Now().Add(4 * time.Second)
-	for {
-		msgs := readCursorStoreDBMessagesAfter(pickedPath, baseline)
-		if hasUsableCursorTurn(msgs) || time.Now().After(deadline) {
-			return msgs, pickedPath
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-}
-
-// latestCursorAssistantText returns the text of the LAST assistant message in a
-// store.db read — the UNWRAPPED form of the reply the pane shows hard-wrapped.
-// Empty when the slice holds no assistant prose; callers must treat empty as "no
-// better source available", not an error (see llmtypes.ReconcileFinalAnswer).
-//
-// Pure on purpose: it takes the messages the caller already read rather than
-// reading store.db itself. readCursorTranscriptMessagesAndStoreDB polls for up
-// to 4s waiting on cursor's async commit, and the adapter already pays that once
-// per turn for the session handle — doing its own read here would pay it twice.
-func latestCursorAssistantText(msgs []llmtypes.MessageContent) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != llmtypes.ChatMessageTypeAI {
-			continue
-		}
-		var b strings.Builder
-		for _, part := range msgs[i].Parts {
-			if txt, ok := part.(llmtypes.TextContent); ok {
-				b.WriteString(txt.Text)
-			}
-		}
-		// An assistant turn can be tool-calls only, with no prose; keep walking
-		// back rather than returning "" and losing the reply that precedes it.
-		if strings.TrimSpace(b.String()) != "" {
-			return b.String()
-		}
-	}
-	return ""
-}
-
-// cursorNativeSessionIDFromStoreDBPath extracts cursor's agentId —
-// which is what `cursor-agent --resume <id>` accepts — from a
-// transcript store.db path. The cursor layout is:
-//
-//	~/.cursor/chats/<md5(cwd)>/<agentId>/store.db
-//
-// So the parent dir's basename is the agentId. Returns "" for any
-// path that doesn't match (defensive: callers may pass empty path
-// when no transcript was located).
-func cursorNativeSessionIDFromStoreDBPath(storeDBPath string) string {
-	if strings.TrimSpace(storeDBPath) == "" {
-		return ""
-	}
-	if filepath.Base(storeDBPath) != "store.db" {
-		return ""
-	}
-	return filepath.Base(filepath.Dir(storeDBPath))
-}
-
-// hasUsableCursorTurn reports whether the message list contains any
-// content beyond the system/user prefix — i.e., at least one
-// assistant or tool message indicating cursor has committed the
-// current turn's response.
-func hasUsableCursorTurn(msgs []llmtypes.MessageContent) bool {
-	for _, m := range msgs {
-		if m.Role == llmtypes.ChatMessageTypeAI || m.Role == llmtypes.ChatMessageTypeTool {
-			return true
-		}
-	}
-	return false
-}
-
-// workingDirHashForCursor mirrors cursor's own workspace-dir naming:
-// md5 of the absolute, symlink-resolved working directory.
-func workingDirHashForCursor(workingDir string) string {
-	path := strings.TrimSpace(workingDir)
-	if path == "" {
-		return ""
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	path = pathidentity.Key(path)
-	sum := md5.Sum([]byte(path)) //nolint:gosec
-	return hex.EncodeToString(sum[:])
-}
-
-// readCursorStoreDBMessages opens one cursor store.db and returns
-// its chronologically-ordered message list. When ownerSessionID is
-// non-empty, message blob IDs already returned for that session are
-// skipped (multi-turn dedup against cursor's cumulative root) and
-// any new IDs are recorded for the next call. Best-effort: returns
-// nil on any error.
-func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.MessageContent {
-	// Display-only cursor for live streaming: remembers what this stream has
-	// already shown. It never decides what a turn records (see
-	// readCursorStoreDBMessagesAfter).
-	var seen map[string]struct{}
-	if ownerSessionID != "" {
-		cursorReturnedBlobsMu.Lock()
-		current := cursorReturnedBlobs[ownerSessionID]
-		seen = make(map[string]struct{}, len(current))
-		for ref := range current {
-			seen[ref] = struct{}{}
-		}
-		cursorReturnedBlobsMu.Unlock()
-	}
-	msgs, refs := cursorStoreMessagesExcept(dbPath, seen)
-	if ownerSessionID != "" && refs != nil {
-		cursorReturnedBlobsMu.Lock()
-		bucket := cursorReturnedBlobs[ownerSessionID]
-		if bucket == nil {
-			bucket = make(map[string]struct{}, len(refs))
-			cursorReturnedBlobs[ownerSessionID] = bucket
-		}
-		for _, r := range refs {
-			bucket[r] = struct{}{}
-		}
-		cursorReturnedBlobsMu.Unlock()
-	}
-	return msgs
-}
 
 // readCursorStoreDBMessagesAfter returns the messages committed after the
 // baseline snapshot: one turn's own messages. Nothing is cached.
@@ -432,17 +149,21 @@ func normalizeCursorTranscriptToolCall(rawName string, rawArgs json.RawMessage) 
 	if len(rawArgs) > 0 {
 		args = string(rawArgs)
 	}
-	if !strings.EqualFold(strings.TrimSpace(rawName), "CallMcpTool") {
+	if !strings.EqualFold(strings.TrimSpace(rawName), "CallMcpTool") && rawName != "CallDynamicTool" {
 		return name, args
 	}
 
 	var envelope struct {
 		Arguments json.RawMessage `json:"arguments"`
 		Server    string          `json:"server"`
+		Namespace string          `json:"namespace"`
 		ToolName  string          `json:"toolName"`
 	}
 	if err := json.Unmarshal(rawArgs, &envelope); err != nil || strings.TrimSpace(envelope.ToolName) == "" {
 		return name, args
+	}
+	if envelope.Server == "" {
+		envelope.Server = envelope.Namespace
 	}
 	name = strings.TrimSpace(envelope.ToolName)
 	if server := strings.TrimSpace(envelope.Server); server != "" {
@@ -571,29 +292,4 @@ func varintUint64(buf []byte) (uint64, int) {
 		shift += 7
 	}
 	return 0, 0
-}
-
-// cursorStoreDBForNativeSession keeps legacy cwd hashes readable without ever
-// searching for a different session ID or a different workspace.
-func cursorStoreDBForNativeSession(home, workingDir, id string) string {
-	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) {
-		return ""
-	}
-	paths := append([]string{pathidentity.Key(workingDir)}, pathidentity.Candidates(workingDir)...)
-	seen := map[string]bool{}
-	for _, path := range paths {
-		sum := md5.Sum([]byte(filepath.Clean(path))) //nolint:gosec
-		hash := hex.EncodeToString(sum[:])
-		if seen[hash] {
-			continue
-		}
-		seen[hash] = true
-		for _, root := range cursorChatsRoots(home) {
-			candidate := filepath.Join(root, hash, id, "store.db")
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate
-			}
-		}
-	}
-	return ""
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
 
@@ -69,7 +70,14 @@ func (u *piRPCUsage) add(v *piRPCUsage) {
 	u.Cost.CacheWrite += v.Cost.CacheWrite
 }
 
-func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *piRPC, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+type piRPCAccepted struct {
+	Disposition string `json:"disposition"`
+	Err         error  `json:"-"`
+}
+
+func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *piRPC, emit func(llmtypes.StreamChunk), accepted <-chan piRPCAccepted) (*llmtypes.ContentResponse, error) {
+	var questions nativeinput.Requests
+	defer questions.Close()
 	var usage piRPCUsage
 	var messages []llmtypes.MessageContent
 	var compaction piCompactionTracker
@@ -98,12 +106,24 @@ func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *p
 	}
 	for {
 		select {
+		case reply := <-accepted:
+			if reply.Err != nil {
+				return nil, reply.Err
+			}
+			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: piRPCMetadata(s)})
+			if reply.Disposition == "handled" {
+				return piRPCResponse(s, "", nil, nil), nil
+			}
 		case <-ctx.Done():
 			r.close()
 			return nil, ctx.Err()
 		case <-r.done:
 			return nil, r.failure()
 		case <-ticker.C:
+			if questions.Waiting() {
+				lastEvent = time.Now()
+				continue
+			}
 			if len(calls) == 0 && time.Since(lastEvent) >= piWedgeSilenceThreshold() {
 				r.close()
 				return nil, fmt.Errorf("Pi RPC stalled without an active tool (PLAT-153)")
@@ -113,22 +133,22 @@ func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *p
 			event := record.piJSONEvent
 			switch record.Type {
 			case "extension_ui_request":
-				// Native dialog calls must always receive a response. The platform's
-				// question tool remains the supported user-input surface; don't silently
-				// approve extension confirmations or leave a headless turn blocked.
 				var request struct {
-					Method  string `json:"method"`
-					Title   string `json:"title"`
-					Message string `json:"message"`
+					Method string `json:"method"`
 				}
 				_ = json.Unmarshal(record.Raw, &request)
 				switch request.Method {
 				case "select", "confirm", "input", "editor":
-					if err := r.write(map[string]any{"type": "extension_ui_response", "id": record.ID, "cancelled": true}); err != nil {
-						return nil, err
-					}
-					emitText("\n\n" + strings.TrimSpace(request.Title+"\n"+request.Message) + "\nPlease answer in chat.\n\n")
+					questions.Start(ctx, record.ID, func(questionCtx context.Context) {
+						response, err := piNativeQuestion(questionCtx, record.Raw)
+						if err == nil && questionCtx.Err() == nil {
+							if err = r.write(response); err != nil {
+								r.finish(err)
+							}
+						}
+					})
 				}
+
 			case "message_start":
 				var envelope struct {
 					Message piRPCNativeMessage `json:"message"`

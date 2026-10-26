@@ -19,7 +19,7 @@ func NativeRecordPath(workingDir, sessionID, home string) string {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	return cursorStoreDBForNativeSession(home, workingDir, sessionID)
+	return cursorACPStoredSessionPath(home, sessionID)
 }
 
 // ReadNativeRecordRows walks only the selected database's current root. Cursor

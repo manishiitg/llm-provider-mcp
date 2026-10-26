@@ -51,7 +51,7 @@ func ReadNativeTranscript(workingDir, nativeSessionID string, accountHome ...str
 	if len(accountHome) > 0 && accountHome[0] != "" {
 		home = accountHome[0]
 	}
-	dbPath := cursorStoreDBForNativeSession(home, workingDir, nativeSessionID)
+	dbPath := cursorACPStoredSessionPath(home, nativeSessionID)
 	if dbPath == "" {
 		return NativeTranscript{}, false, nil
 	}

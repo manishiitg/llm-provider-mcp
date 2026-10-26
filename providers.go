@@ -97,7 +97,7 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 // CleanupCursorCLIInteractiveSessions removes Cursor CLI tmux sessions
 // registered by this process.
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
-	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
+	return cursorcli.CleanupACP(ctx)
 }
 
 // CleanupPiCLIInteractiveSessions removes Pi CLI tmux sessions registered by
@@ -160,7 +160,7 @@ func ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 }
 
 func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
-	cursorcli.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
+	cursorcli.CloseACP(ownerSessionID)
 }
 
 func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
@@ -185,10 +185,6 @@ func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 // and are used as a teardown backstop when the owning session ID is unknown or
 // has drifted (e.g. workflow sub-agents registered under a step-execution
 // owner). All are no-ops when no live session matches the tmux name.
-
-func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
-	cursorcli.CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason)
-}
 
 func CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
 	codexcli.CloseCodexCLIInteractiveSessionByTmux(tmuxSessionName, reason)
@@ -238,34 +234,6 @@ func AwaitClaudeInputDurable(ctx context.Context, sessionID, message string, tim
 // tmux session registered for the owning application session.
 func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
 	return codexcli.SendCodexAppServerInput(ctx, sessionID, message)
-}
-
-// SendCursorCLIInteractiveInput sends user input to a live Cursor CLI
-// interactive tmux session registered for the owning application session.
-func SendCursorCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return cursorcli.SendCursorInteractiveInput(ctx, sessionID, message)
-}
-
-// AwaitCursorInputDurable waits for the store proof that a previous
-// SendCursorCLIInteractiveInput reached the CLI. It is the durability
-// half of the two-stage delivery receipt; host applications call it
-// after the fast pane ack and promote their delivery tick on
-// confirmation. A zero timeout selects the adapter's env-tuned budget.
-func AwaitCursorInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
-	ack, err := cursorcli.AwaitCursorInputDurable(ctx, sessionID, message, timeout)
-	if err != nil {
-		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
-	}
-	outcome := llmtypes.DurableAckConfirmed
-	if ack.Outcome == cursorcli.CursorDurableAckUnflushed {
-		outcome = llmtypes.DurableAckUnflushed
-	}
-	return llmtypes.DurableAck{
-		Outcome:      outcome,
-		Latency:      ack.Latency,
-		ProofSource:  ack.ProofPath,
-		RowTimestamp: ack.RowTimestamp,
-	}, nil
 }
 
 // SendPiCLIInteractiveInput steers the active native Pi RPC turn for its owner.
@@ -386,8 +354,6 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 		return claudecodeadapter.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderCodexCLI:
 		return codexcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
-	case ProviderCursorCLI:
-		return cursorcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderAgyCLI:
@@ -472,8 +438,6 @@ func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSession
 		if len(turnStart) > 0 {
 			return musecli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
 		}
-	case ProviderCursorCLI:
-		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)
 	case ProviderAgyCLI:
 		if len(turnStart) > 0 {
 			return agycli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
@@ -497,7 +461,7 @@ func SendCodexCLIInteractiveControlKey(ctx context.Context, sessionID, key strin
 // SendCursorCLIInteractiveControlKey injects a tmux control key into a
 // registered Cursor CLI interactive session.
 func SendCursorCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
-	return cursorcli.SendCursorInteractiveControlKey(ctx, sessionID, key)
+	return cursorcli.InterruptACP(ctx, sessionID, key)
 }
 
 // SendPiCLIInteractiveControlKey injects a tmux control key into a registered

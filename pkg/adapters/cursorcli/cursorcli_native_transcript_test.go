@@ -18,7 +18,7 @@ import (
 func writeCursorStoreFixture(t *testing.T, workingDir, agentID string, blobs []string) string {
 	t.Helper()
 	home, _ := os.UserHomeDir()
-	agentDir := filepath.Join(home, ".cursor", "chats", workingDirHashForCursor(workingDir), agentID)
+	agentDir := filepath.Join(home, ".cursor", "acp-sessions", agentID)
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestReadCursorStoreDBMessagesStillReadsAfterRootRefsRefactor(t *testing.T) 
 		`{"role":"user","content":[{"type":"text","text":"<user_query>\nhi\n</user_query>"}]}`,
 		`{"role":"assistant","content":[{"type":"text","text":"hello"}]}`,
 	})
-	msgs := readCursorStoreDBMessages(dbPath, "")
+	msgs := readCursorStoreDBMessagesAfter(dbPath, nil)
 	if len(msgs) != 1 || msgs[0].Role != llmtypes.ChatMessageTypeAI {
 		t.Fatalf("turn reader = %+v, want one assistant message", msgs)
 	}
@@ -163,7 +163,11 @@ func TestTurnRecordsOnlyWhatFollowsItsSnapshot(t *testing.T) {
 		`{"role":"assistant","content":[{"type":"text","text":"follow-up answer"}]}`,
 	}
 	db := writeCursorStoreFixture(t, workingDir, "sess-1", earlier)
-	snapshot := cursorSnapshotStoreRefs(db)
+	_, refs := cursorStoreMessagesExcept(db, nil)
+	snapshot := map[string]struct{}{}
+	for _, ref := range refs {
+		snapshot[ref] = struct{}{}
+	}
 	if msgs := readCursorStoreDBMessagesAfter(db, snapshot); len(msgs) != 0 {
 		t.Fatalf("nothing new since the snapshot, got %d messages: %+v", len(msgs), msgs)
 	}

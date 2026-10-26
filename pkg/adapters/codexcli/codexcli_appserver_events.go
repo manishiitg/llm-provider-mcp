@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 )
 
 func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread, turn string, emit func(llmtypes.StreamChunk)) (response *llmtypes.ContentResponse, err error) {
+	var questions nativeinput.Requests
+	defer questions.Close()
 	completed := false
 	// Protocol/read errors must not leave an unobserved native turn running.
 	defer func() {
@@ -62,10 +65,28 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			return nil, r.failure()
 		case msg := <-r.events:
 			if len(msg.ID) > 0 {
-				// Approval remains the configured native policy. Unsupported interactive
-				// requests must get a protocol error, never silently hang the active turn.
-				if err := r.write(map[string]any{"id": msg.ID, "error": map[string]any{"code": -32601, "message": "AgentWorks does not handle this interactive request; ask the user in your reply"}}); err != nil {
-					return nil, err
+				questions.Start(ctx, string(msg.ID), func(questionCtx context.Context) {
+					result, requestErr := codexNativeQuestion(questionCtx, msg.Method, msg.Params, thread, turn)
+					reply := map[string]any{"id": msg.ID, "result": result}
+					if requestErr != nil {
+						delete(reply, "result")
+						reply["error"] = map[string]any{"code": -32602, "message": requestErr.Error()}
+					}
+					if questionCtx.Err() == nil {
+						if err := r.write(reply); err != nil {
+							r.finish(err)
+						}
+					}
+				})
+				continue
+			}
+			if msg.Method == "serverRequest/resolved" {
+				var resolved struct {
+					ThreadID  string          `json:"threadId"`
+					RequestID json.RawMessage `json:"requestId"`
+				}
+				if json.Unmarshal(msg.Params, &resolved) == nil && resolved.ThreadID == thread {
+					questions.Cancel(string(resolved.RequestID))
 				}
 				continue
 			}

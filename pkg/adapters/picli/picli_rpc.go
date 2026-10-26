@@ -346,17 +346,15 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	s.turnID = "pi-turn-" + piRandomHex(8)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.turnID = ""; s.mu.Unlock() }()
-	var accepted struct {
-		Disposition string `json:"disposition"`
-	}
-	if err = r.call(turnCtx, "prompt", map[string]any{"message": prompt}, &accepted); err != nil {
-		return nil, err
-	}
-	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: piRPCMetadata(s)})
-	if accepted.Disposition == "handled" {
-		return piRPCResponse(s, "", nil, nil), nil
-	}
-	return p.consumeRPCTurn(turnCtx, s, r, emit)
+	turnCtx = llmtypes.ScopeCodingAgentQuestions(turnCtx, "pi-cli", owner)
+	accepted := make(chan piRPCAccepted, 1)
+	go func() {
+		var reply piRPCAccepted
+		reply.Err = r.call(turnCtx, "prompt", map[string]any{"message": prompt}, &reply)
+		accepted <- reply
+	}()
+
+	return p.consumeRPCTurn(turnCtx, s, r, emit, accepted)
 }
 
 func piRPCMetadata(s *piRPCSession) map[string]any {

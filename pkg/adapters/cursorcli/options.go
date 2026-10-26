@@ -20,14 +20,6 @@ const (
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
 	MetadataKeyFullNativeTools       = "cursor_full_native_tools"
-	// MetadataKeyStreamTranscript opts into streaming structured content
-	// (assistant text + tool-call starts) mid-turn by polling Cursor's own
-	// store.db. Set via WithStreamTranscript (default OFF).
-	MetadataKeyStreamTranscript = "cursor_stream_transcript"
-	// MetadataKeyStreamTmuxScreen controls whether raw terminal-pane snapshots
-	// are also pushed to the caller's StreamChan mid-turn. Set via
-	// WithStreamTmuxScreen (default ON).
-	MetadataKeyStreamTmuxScreen = "cursor_stream_tmux_screen"
 	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
 	// controlling whether projected workspace artifacts (.cursor/cli.json,
 	// .cursor/mcp.json, hooks.json, deny script) preserve an operator's
@@ -36,10 +28,6 @@ const (
 	// whatever was there before. Pass WithRestoreProjectFiles(true) to opt
 	// back into the legacy byte-restore behavior.
 	MetadataKeyRestoreProjectFiles = "cursor_restore_project_files"
-	// MetadataKeyStructuredTransport selects `cursor-agent --print
-	// --output-format stream-json` (per-turn, one-shot, no tmux dependency)
-	// instead of the default tmux interactive transport.
-	MetadataKeyStructuredTransport = "cursor_structured_transport"
 )
 
 // WithCursorModel sets the Cursor Agent CLI --model flag. Use "auto" to select
@@ -52,7 +40,7 @@ func WithCursorModel(model string) llmtypes.CallOption {
 	}
 }
 
-// WithResumeSessionID resumes a native Cursor chat with --resume <sessionID>.
+// WithResumeSessionID resumes a native Cursor ACP session.
 func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -105,7 +93,7 @@ func WithMode(mode string) llmtypes.CallOption {
 	}
 }
 
-// WithWorkingDir sets the Cursor Agent workspace/cwd for tmux launch.
+// WithWorkingDir sets the Cursor Agent workspace/cwd for native ACP launch.
 func WithWorkingDir(dir string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -130,12 +118,6 @@ func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
 
 // WithCursorStructuredTransport selects the structured `--print
 // --output-format stream-json` transport instead of tmux.
-func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyStructuredTransport] = enabled
-	}
-}
 
 // cursorRestoreProjectFilesFromOptions reads the OFF-by-default restore
 // flag. Returns false when unset: the default writes fresh and deletes on
@@ -194,7 +176,7 @@ func WithPluginDirs(dirs []string) llmtypes.CallOption {
 	}
 }
 
-// WithAutoApproveWebSearch allows Cursor Agent CLI's TUI approval prompts for
+// WithAutoApproveWebSearch allows native ACP permission requests for
 // web search, web fetch, and opening URLs in an already user-initiated agent
 // turn. It does not enable --force.
 func WithAutoApproveWebSearch() llmtypes.CallOption {
@@ -204,8 +186,7 @@ func WithAutoApproveWebSearch() llmtypes.CallOption {
 	}
 }
 
-// WithInteractiveSessionID links a Cursor Agent tmux run to the owning
-// application session so follow-up input can be sent directly to tmux.
+// WithInteractiveSessionID links a native process to the owning application session.
 func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -213,7 +194,7 @@ func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
-// WithPersistentInteractiveSession keeps the tmux-backed Cursor Agent alive
+// WithPersistentInteractiveSession keeps the native Cursor ACP process alive
 // across completed chat turns.
 func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
@@ -268,23 +249,11 @@ func cursorFullNativeFromOptions(opts *llmtypes.CallOptions) bool {
 // WithStreamTranscript enables (or disables) mid-turn structured streaming —
 // assistant text and tool-call starts pushed to the caller's StreamChan as the
 // turn runs, recovered by polling Cursor's own store.db. Default OFF.
-func WithStreamTranscript(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
-	}
-}
 
 // WithStreamTmuxScreen enables (or disables) pushing raw terminal-pane
 // snapshots to the caller's StreamChan mid-turn. Default ON — pass false to
 // suppress terminal-screen chunks for a design-first UI that only wants
 // WithStreamTranscript's structured content.
-func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyStreamTmuxScreen] = enabled
-	}
-}
 
 func ensureMetadata(opts *llmtypes.CallOptions) {
 	if opts.Metadata == nil {

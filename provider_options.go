@@ -202,12 +202,6 @@ func WithClaudeStructuredTransport(enabled bool) llmtypes.CallOption {
 	return claudecodeadapter.WithClaudeStructuredTransport(enabled)
 }
 
-// WithCursorStructuredTransport is retained for backwards compatibility.
-// Cursor always uses `cursor-agent --print --output-format stream-json`.
-func WithCursorStructuredTransport(enabled bool) llmtypes.CallOption {
-	return cursorcli.WithCursorStructuredTransport(enabled)
-}
-
 // WithCodexReasoningEffort sets the model_reasoning_effort for the Codex CLI.
 // Values: "none", "minimal", "low", "medium", "high", "xhigh"
 func WithCodexReasoningEffort(effort string) llmtypes.CallOption {
@@ -529,12 +523,6 @@ func WithCodexStreamTranscript(enabled bool) llmtypes.CallOption {
 	return codexcli.WithStreamTranscript(enabled)
 }
 
-// WithCursorStreamTranscript enables mid-turn structured streaming for the
-// Cursor CLI by polling its own store.db.
-func WithCursorStreamTranscript(enabled bool) llmtypes.CallOption {
-	return cursorcli.WithStreamTranscript(enabled)
-}
-
 // --- Mid-turn terminal-pane streaming -------------------------------------
 //
 // These control whether raw terminal-pane snapshots are ALSO pushed to the
@@ -552,10 +540,4 @@ func WithClaudeStreamTmuxScreen(enabled bool) llmtypes.CallOption {
 // for the Codex CLI.
 func WithCodexStreamTmuxScreen(enabled bool) llmtypes.CallOption {
 	return codexcli.WithStreamTmuxScreen(enabled)
-}
-
-// WithCursorStreamTmuxScreen enables (or disables) raw terminal-pane streaming
-// for the Cursor CLI.
-func WithCursorStreamTmuxScreen(enabled bool) llmtypes.CallOption {
-	return cursorcli.WithStreamTmuxScreen(enabled)
 }

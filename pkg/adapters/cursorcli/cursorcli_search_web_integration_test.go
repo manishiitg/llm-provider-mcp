@@ -74,7 +74,6 @@ func TestCursorCLIRealSearchWebStructured(t *testing.T) {
 	captureDone := collectCursorSearchStream(streamChan)
 	result, err := adapter.SearchWeb(ctx,
 		"What is the capital of France? Use web search and reply with the city and country only.",
-		WithCursorStructuredTransport(true),
 		llmtypes.WithStreamingChan(streamChan),
 	)
 	if err != nil {
@@ -110,74 +109,4 @@ func collectCursorSearchStream(streamChan <-chan llmtypes.StreamChunk) <-chan cu
 		done <- capture
 	}()
 	return done
-}
-
-func TestCursorCLIRealInteractiveAutoApprovesWebOpenURL(t *testing.T) {
-	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
-
-	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
-	ownerSessionID := "cursor-real-web-open-" + cursorRandomHex(4)
-	workDir := t.TempDir()
-	token := "CURSOR_WEB_OPEN_" + cursorRandomHex(4)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-
-	streamChan := make(chan llmtypes.StreamChunk, 128)
-	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{
-			Role: llmtypes.ChatMessageTypeSystem,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Use Cursor's normal web/open-URL capability when the user asks for a URL. Keep the final answer concise."},
-			},
-		},
-		{
-			Role: llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Open https://example.com/?cursor_approval_test=" + token + " and reply with the exact text WEB_OPEN_OK " + token + " after confirming the page is reachable."},
-			},
-		},
-	},
-		WithInteractiveSessionID(ownerSessionID),
-		WithPersistentInteractiveSession(true),
-		WithWorkingDir(workDir),
-		WithAutoApproveWebSearch(),
-		llmtypes.WithStreamingChan(streamChan),
-	)
-	drained := drainCursorStream(streamChan)
-	if err != nil {
-		t.Fatalf("GenerateContent with Cursor web URL auto-approval error = %v\nstream:\n%s", err, drained.content)
-	}
-
-	tmuxSession, ok := activeCursorInteractiveSession(ownerSessionID)
-	if !ok || tmuxSession == "" {
-		t.Fatalf("expected active Cursor tmux session for %s", ownerSessionID)
-	}
-	pane, captureErr := captureCursorPane(ctx, tmuxSession)
-	if captureErr != nil {
-		t.Fatalf("capture Cursor pane: %v", captureErr)
-	}
-
-	content := ""
-	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0] != nil {
-		content = resp.Choices[0].Content
-	}
-	haystack := pane + "\n" + drained.content + "\n" + content
-	if !strings.Contains(haystack, token) {
-		t.Fatalf("Cursor web URL turn did not preserve token %q\ncontent:\n%s\npane:\n%s", token, content, pane)
-	}
-	if hasCursorWebAccessApprovalPrompt(pane) {
-		t.Fatalf("Cursor web/open-URL approval prompt was still visible after the turn; auto-approval did not clear it:\n%s", pane)
-	}
-	for _, blocked := range []string{
-		"allow this web search?",
-		"allow this web fetch?",
-		"open this url?",
-		"skip (esc or n)",
-	} {
-		if strings.Contains(strings.ToLower(pane), blocked) {
-			t.Fatalf("Cursor pane still contains web approval marker %q after the turn:\n%s", blocked, pane)
-		}
-	}
 }
