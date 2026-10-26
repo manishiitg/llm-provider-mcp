@@ -460,13 +460,13 @@ func codexAppResponse(s *codexAppSession, content string, usage codexAppUsage) *
 func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 	s := codexAppSessionForOwner(owner)
 	if s == nil {
-		return fmt.Errorf("no Codex app-server session for owner")
+		return fmt.Errorf("%w: no Codex app-server session for owner", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	s.mu.Lock()
 	r, thread, turn := s.rpc, s.threadID, s.turnID
 	if r == nil || turn == "" {
 		s.mu.Unlock()
-		return fmt.Errorf("no active Codex turn; start the next turn through GenerateContent")
+		return fmt.Errorf("%w: no active Codex turn; start the next turn through GenerateContent", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	receipt := &codexAppReceipt{id: codexRandomHex(16), text: message, accepted: time.Now(), durable: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
@@ -487,7 +487,7 @@ func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 func InterruptCodexAppServer(ctx context.Context, owner string) error {
 	s := codexAppSessionForOwner(owner)
 	if s == nil {
-		return fmt.Errorf("no Codex app-server session for owner")
+		return fmt.Errorf("%w: no Codex app-server session for owner", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	s.mu.Lock()
 	r, thread, turn := s.rpc, s.threadID, s.turnID

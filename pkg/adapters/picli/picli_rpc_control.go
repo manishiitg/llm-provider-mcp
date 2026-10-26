@@ -8,18 +8,20 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 func sendPiRPCInput(ctx context.Context, owner, message string) error {
 	s := piRPCSessionForOwner(owner)
 	if s == nil {
-		return fmt.Errorf("no active Pi RPC session for owner %s", owner)
+		return fmt.Errorf("%w: no active Pi RPC session for owner %s", llmtypes.ErrCodingAgentInputNotSent, owner)
 	}
 	s.mu.Lock()
 	r, turn := s.rpc, s.turnID
 	if r == nil || turn == "" {
 		s.mu.Unlock()
-		return fmt.Errorf("Pi has no active turn; start a normal turn")
+		return fmt.Errorf("%w: Pi has no active turn; start a normal turn", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	receipt := &piRPCReceipt{text: strings.TrimSpace(message), at: time.Now(), observed: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
