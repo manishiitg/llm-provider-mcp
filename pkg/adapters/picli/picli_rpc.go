@@ -284,7 +284,7 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 		})
 		s.mu.Unlock()
 	}()
-	config := map[string]any{"model": p.modelID, "key": p.apiKey, "custom": p.customProvider, "cwd": cwd, "system": system, "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts), "skills": llmtypes.AttachedSkillsFromOptions(opts)}
+	config := map[string]any{"model": p.modelID, "key": p.apiKey, "custom": p.customProvider, "cwd": cwd, "runtime_dir": opts.CLIRuntimeDir, "system": system, "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts), "skills": llmtypes.AttachedSkillsFromOptions(opts)}
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata.Custom {
 			if k != MetadataKeyResumeSessionID && k != llmtypes.CodingProviderLaunchOnlyMetadataKey {

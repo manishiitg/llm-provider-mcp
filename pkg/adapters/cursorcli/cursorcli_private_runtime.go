@@ -41,6 +41,9 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
+	if config == nil {
+		return "", fmt.Errorf("Cursor account configuration must be an object")
+	}
 	if entries, err := os.ReadDir(source); err == nil {
 		for _, entry := range entries {
 			if entry.Name() == "cli-config.json" || entry.Name() == "hooks.json" {

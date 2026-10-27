@@ -263,7 +263,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	}
 	// Never reuse a process after its account, secret grants, sandbox or launch
 	// config changes. Store only a digest, not another copy of credentials.
-	config := map[string]any{"model": c.modelID, "cwd": cwd, "system": system, "native_questions": llmtypes.CodingAgentQuestionsAvailable(ctx), "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)}
+	config := map[string]any{"model": c.modelID, "cwd": cwd, "runtime_dir": opts.CLIRuntimeDir, "system": system, "native_questions": llmtypes.CodingAgentQuestionsAvailable(ctx), "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)}
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata.Custom {
 			if k != MetadataKeyResumeSessionID {

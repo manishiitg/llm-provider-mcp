@@ -476,6 +476,10 @@ func CodingAgentScopeFingerprint(opts *CallOptions) string {
 		sum := sha256.Sum256([]byte(strings.Join(accountEntries, "\n")))
 		accountHash = hex.EncodeToString(sum[:]) + ":"
 	}
+	if CLIHasPrivateRuntime(opts) {
+		sum := sha256.Sum256([]byte(opts.CLIRuntimeDir))
+		accountHash += hex.EncodeToString(sum[:]) + ":"
+	}
 	if !CodingAgentScopeDeclared(opts) {
 		return accountHash + "unscoped"
 	}

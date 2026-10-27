@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,6 +56,19 @@ func ReadNativeTranscript(workingDir, nativeSessionID string, accountHome ...str
 	if dbPath == "" {
 		return NativeTranscript{}, false, nil
 	}
+	return readNativeTranscriptDB(dbPath)
+}
+
+// ReadNativeTranscriptFromConfigDir reads the exact session in a host-issued
+// private Cursor configuration directory, independently of the native cwd.
+func ReadNativeTranscriptFromConfigDir(configDir, nativeSessionID string) (NativeTranscript, bool, error) {
+	if !filepath.IsAbs(configDir) || nativeSessionID == "" || strings.ContainsAny(nativeSessionID, `/\\`) {
+		return NativeTranscript{}, false, nil
+	}
+	return readNativeTranscriptDB(filepath.Join(configDir, "acp-sessions", nativeSessionID, "store.db"))
+}
+
+func readNativeTranscriptDB(dbPath string) (NativeTranscript, bool, error) {
 	info, err := os.Stat(dbPath)
 	if err != nil || info.IsDir() {
 		return NativeTranscript{}, false, nil

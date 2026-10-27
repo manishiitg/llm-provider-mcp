@@ -114,6 +114,14 @@ func TestReadNativeTranscriptKeepsTypedQueriesAndAssistantProse(t *testing.T) {
 			t.Fatalf("message %d = %s %q, want %s %q", i, got.Role, text, w.role, w.text)
 		}
 	}
+	// PLAT-856-145: private config lookup must retain the exact native ID.
+	private, found, readErr := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "agent-1")
+	if readErr != nil || !found || private.Path != dbPath || len(private.Messages) != len(want) {
+		t.Fatalf("private config transcript: %+v %v", private, readErr)
+	}
+	if _, found, err := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "../agent-1"); found || err != nil {
+		t.Fatal("relative native ID accepted")
+	}
 	if transcript.UpdatedAt.IsZero() {
 		t.Fatal("UpdatedAt should come from the store's mtime")
 	}
