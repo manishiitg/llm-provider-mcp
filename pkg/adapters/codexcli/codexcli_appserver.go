@@ -134,7 +134,14 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 		stop()
 		return nil, fmt.Errorf("Codex app-server requires enforced CLI confinement")
 	}
-	cleanupSandbox, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, nil, nil)
+	// MCP commands arrive later in thread configuration, so argv discovery
+	// cannot grant their executable at launch (PLAT-872-57).
+	mcpReads, err := strictCodexMCPRuntimePaths(opts)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	cleanupSandbox, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, mcpReads, nil)
 	if err != nil {
 		stop()
 		return nil, err
