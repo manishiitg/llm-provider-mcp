@@ -5,6 +5,7 @@ package llmproviders
 // contract with SurfacesTokenUsage:true names one of these — guards
 // against typos and free-form drift over time.
 var validTokenUsageSources = map[string]struct{}{
+	"sdk-events":      {},
 	"stream-json":     {}, // exact, parsed from the CLI's structured output
 	"transcript-file": {}, // exact, parsed from a CLI-written transcript file
 	"estimated":       {}, // approximate; adapter heuristically guesses

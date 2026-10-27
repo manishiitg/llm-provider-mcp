@@ -6,7 +6,7 @@ import (
 	claudecodeadapter "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 )
 
-func TestInitializeClaudeCodeDefaultUsesExperimentalTransport(t *testing.T) {
+func TestInitializeClaudeCodeDefaultUsesSDKTransport(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, "")
 	t.Setenv(EnvClaudeCodeMode, "")
 
@@ -69,7 +69,7 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "default", raw: "", want: ClaudeCodeTransportTmux},
+		{name: "default", raw: "", want: ClaudeCodeTransportSDK},
 		{name: "legacy experimental alias", raw: "experimental", want: ClaudeCodeTransportTmux},
 		{name: "tmux", raw: "tmux", want: ClaudeCodeTransportTmux},
 		{name: "sdk", raw: "sdk", want: ClaudeCodeTransportSDK},
@@ -111,5 +111,36 @@ func TestGetDefaultModelCursorCLIUsesSentinel(t *testing.T) {
 
 	if got := GetDefaultModel(ProviderCursorCLI); got != DefaultCursorCLIModel {
 		t.Fatalf("GetDefaultModel(ProviderCursorCLI) = %q, want %q", got, DefaultCursorCLIModel)
+	}
+}
+
+// PLAT-872-55: selecting a terminal is explicit; no default may start tmux.
+func TestNativeTransportDefaultsAndExplicitTerminals(t *testing.T) {
+	t.Setenv(EnvClaudeCodeMode, "")
+	for _, tc := range []struct {
+		provider Provider
+		env      string
+		native   CodingAgentTransport
+	}{
+		{ProviderClaudeCode, EnvClaudeCodeTransport, CodingAgentTransportSDK},
+		{ProviderCursorCLI, EnvCursorCLITransport, CodingAgentTransportSDK},
+		{ProviderCodexCLI, EnvCodexCLITransport, CodingAgentTransportAppServer},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			t.Setenv(tc.env, "")
+			c, _ := GetCodingAgentProviderContract(tc.provider, "")
+			if c.Transport != tc.native || c.SupportsTerminalStream {
+				t.Fatalf("default contract: %+v", c)
+			}
+			t.Setenv(tc.env, "tmux")
+			c, _ = GetCodingAgentProviderContract(tc.provider, "")
+			if c.Transport != CodingAgentTransportTmux || !c.SupportsTerminalStream {
+				t.Fatalf("terminal contract: %+v", c)
+			}
+			t.Setenv(tc.env, "invalid")
+			if _, err := InitializeLLM(Config{Provider: tc.provider}); err == nil {
+				t.Fatal("invalid selection must not silently start a different transport")
+			}
+		})
 	}
 }

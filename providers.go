@@ -55,7 +55,7 @@ const (
 	DefaultAgyCLIModel    = "gemini-3.8-flash-high"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
-	// Supported values: "tmux" (default) or "sdk" (official Agent SDK).
+	// Supported values: "sdk" (default, official Agent SDK) or "tmux".
 	EnvClaudeCodeTransport     = "CLAUDE_CODE_TRANSPORT"
 	EnvCodexCLITransport       = "CODEX_CLI_TRANSPORT"
 	CodexCLITransportAppServer = "app-server"
@@ -65,9 +65,10 @@ const (
 
 	// EnvCursorCLITransport selects the Cursor transport: "sdk" (default, official Cursor SDK
 	// local runtime, which steers a running turn) or "acp".
-	EnvCursorCLITransport = "CURSOR_CLI_TRANSPORT"
-	CursorCLITransportACP = "acp"
-	CursorCLITransportSDK = "sdk"
+	EnvCursorCLITransport  = "CURSOR_CLI_TRANSPORT"
+	CursorCLITransportACP  = "acp"
+	CursorCLITransportTmux = "tmux"
+	CursorCLITransportSDK  = "sdk"
 
 	ClaudeCodeTransportTmux = "tmux"
 	ClaudeCodeTransportSDK  = "sdk"
@@ -107,7 +108,7 @@ func CleanupCodexCLIInteractiveSessions(ctx context.Context) error {
 // CleanupCursorCLIInteractiveSessions removes Cursor CLI tmux sessions
 // registered by this process.
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
-	return cursorcli.CleanupACP(ctx)
+	return cursorcli.CleanupCursorCLIInteractiveSessions(ctx)
 }
 
 // CleanupPiCLIInteractiveSessions removes Pi CLI tmux sessions registered by
@@ -170,7 +171,7 @@ func ClosePiCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
 }
 
 func CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
-	cursorcli.CloseACP(ownerSessionID)
+	cursorcli.CloseCursorCLIInteractiveSessionForOwner(ownerSessionID, reason)
 }
 
 func CloseCodexCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
@@ -364,6 +365,8 @@ func ReadCodingAgentRetainedTurnMessages(provider Provider, ownerSessionID strin
 		return claudecodeadapter.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderCodexCLI:
 		return codexcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
+	case ProviderCursorCLI:
+		return cursorcli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderMuseCLI:
 		return musecli.ReadRetainedTurnMessages(ownerSessionID, turnStart)
 	case ProviderAgyCLI:
@@ -444,6 +447,8 @@ func ReadCodingAgentRetainedTurnProgressMessages(provider Provider, ownerSession
 		if len(turnStart) > 0 {
 			return codexcli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
 		}
+	case ProviderCursorCLI:
+		return cursorcli.ReadRetainedTurnProgressMessages(ownerSessionID)
 	case ProviderMuseCLI:
 		if len(turnStart) > 0 {
 			return musecli.ReadRetainedTurnProgressMessages(ownerSessionID, turnStart[0])
@@ -471,7 +476,7 @@ func SendCodexCLIInteractiveControlKey(ctx context.Context, sessionID, key strin
 // SendCursorCLIInteractiveControlKey injects a tmux control key into a
 // registered Cursor CLI interactive session.
 func SendCursorCLIInteractiveControlKey(ctx context.Context, sessionID, key string) error {
-	return cursorcli.InterruptACP(ctx, sessionID, key)
+	return cursorcli.SendCursorInteractiveControlKey(ctx, sessionID, key)
 }
 
 // SendPiCLIInteractiveControlKey injects a tmux control key into a registered
@@ -497,8 +502,8 @@ type Config struct {
 	// API keys for providers (optional, falls back to environment variables if not provided)
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
-	// initialized Claude Code model. Default is "tmux" (the interactive TUI
-	// transport); "sdk" selects the official streaming Agent SDK.
+	// initialized Claude Code model. Default is "sdk" (official streaming
+	// Agent SDK); "tmux" selects the interactive terminal transport.
 	ClaudeCodeTransport string
 }
 
@@ -701,3 +706,24 @@ func InitializeLLM(config Config) (llmtypes.Model, error) {
 
 // InitializeEmbeddingModel creates and initializes an embedding model based on the provider configuration
 // Supported providers: OpenAI, OpenRouter, Vertex AI, Bedrock
+
+func CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason string) {
+	cursorcli.CloseCursorCLIInteractiveSessionByTmux(tmuxSessionName, reason)
+}
+
+func AwaitCursorInputDurable(ctx context.Context, sessionID, message string, timeout time.Duration) (llmtypes.DurableAck, error) {
+	ack, err := cursorcli.AwaitCursorInputDurable(ctx, sessionID, message, timeout)
+	if err != nil {
+		return llmtypes.DurableAck{Outcome: llmtypes.DurableAckFailed}, err
+	}
+	outcome := llmtypes.DurableAckConfirmed
+	if ack.Outcome == cursorcli.CursorDurableAckUnflushed {
+		outcome = llmtypes.DurableAckUnflushed
+	}
+	return llmtypes.DurableAck{
+		Outcome:      outcome,
+		Latency:      ack.Latency,
+		ProofSource:  ack.ProofPath,
+		RowTimestamp: ack.RowTimestamp,
+	}, nil
+}

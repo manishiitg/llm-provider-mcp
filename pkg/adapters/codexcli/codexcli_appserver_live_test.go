@@ -378,3 +378,38 @@ func TestCodexAppServerSignedOutAccountCannotBorrowLogin(t *testing.T) {
 		t.Fatal("allowed account failed to retain its process")
 	}
 }
+
+// PLAT-872-55: opting into tmux must run and resume the retained native conversation.
+func TestCodexTmuxLifecycleLive(t *testing.T) {
+	requireRealCodexCLIE2E(t)
+	owner := t.Name() + codexRandomHex(4)
+	defer CloseCodexCLIInteractiveSessionForOwner(owner, "test complete")
+	cwd, runtimeDir := t.TempDir(), t.TempDir()
+	opts := []llmtypes.CallOption{WithProjectDirID(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithApprovalPolicy("never"), WithReasoningEffort("low"), llmtypes.WithCLIRuntimeDir(runtimeDir)}
+	a := NewCodexCLIAdapter("", codexCLIRealContractModel, &MockLogger{})
+	a.SetTmuxTransport(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	word := "TERMINAL_" + codexRandomHex(5)
+	first, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Remember the codeword "+word+". Do not use tools. Reply READY.")}, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(first)
+	if !ok || h.Transport != "tmux" || h.NativeSessionID == "" || h.TmuxSession == "" || h.RuntimeDir != runtimeDir {
+		t.Fatalf("missing terminal continuation: %+v", h)
+	}
+	CloseCodexCLIInteractiveSessionForOwner(owner, "restart proof")
+	resumed, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What was the codeword? Reply with only the codeword. Do not use tools.")}, append(opts, WithResumeSessionID(h.NativeSessionID))...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Choices) == 0 || strings.TrimSpace(resumed.Choices[0].Content) != word {
+		t.Fatalf("terminal lost its native conversation: %+v", resumed)
+	}
+	next, _ := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resumed)
+	if next.NativeSessionID != h.NativeSessionID {
+		t.Fatal("restart changed native conversation")
+	}
+	t.Logf("tmux native resume passed: %s", h.NativeSessionID)
+}

@@ -563,6 +563,20 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 			contract.TokenUsageSource = "sdk-events"
 		}
 	}
+
+	if normalizedProvider == ProviderCursorCLI {
+		if transport, err := resolveCursorCLITransport(); err == nil && transport == CursorCLITransportTmux {
+			contract.Transport = CodingAgentTransportTmux
+			contract.SupportsLiveInput = true
+			contract.SupportsTerminalStream = true
+			contract.SupportsDurableAck = true
+			contract.LaunchesViaLoginShell = true
+			contract.HandlesTmuxSessionLoss = true
+			contract.SurfacesTokenUsage = true
+			contract.TokenUsageSource = "estimated"
+			contract.TranscriptPathTemplate = "~/.cursor/chats/<cwd-hash>/<sessionId>/store.db"
+		}
+	}
 	if normalizedProvider == ProviderClaudeCode {
 		if transport, err := resolveClaudeCodeTransport(""); err == nil && transport == ClaudeCodeTransportSDK {
 			contract.Transport = CodingAgentTransportSDK
@@ -577,6 +591,7 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 			contract.TokenUsageSource = "sdk-events"
 			contract.SurfacesPlanUsage = false
 			contract.PlanUsageSource = ""
+			contract.PlanUsageUnavailableReason = "The Claude Agent SDK reports per-turn token usage; this adapter does not read account plan windows"
 		}
 	}
 	if normalizedProvider == ProviderCodexCLI {

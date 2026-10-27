@@ -39,7 +39,7 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 	// A persisted native ID is authoritative. Never fall back to a different
 	// chat merely because this transcript is missing or has not flushed yet.
 	if id := strings.TrimSpace(knownNativeSessionID); id != "" {
-		pickedPath = cursorStoreDBForNativeSession(home, workingDir, id)
+		pickedPath = cursorStoreDBForNativeSession(home, workingDir, id, cursorTmuxConfigArg(accountHome)...)
 		if pickedPath == "" {
 			return nil, ""
 		}
@@ -76,7 +76,7 @@ func readCursorTranscriptMessagesAndStoreDB(turnStart time.Time, workingDir stri
 			cands = append(cands, cand{path: p, mod: modTime})
 			return nil
 		}
-		for _, root := range cursorChatsRoots(home) {
+		for _, root := range cursorTmuxChatsRoots(home, cursorTmuxConfigArg(accountHome)...) {
 			_ = filepath.WalkDir(filepath.Join(root, workingDirHashForCursor(workingDir)), walkCandidate)
 		}
 		if len(cands) == 0 {
@@ -189,7 +189,7 @@ func readCursorStoreDBMessages(dbPath string, ownerSessionID string) []llmtypes.
 	return msgs
 }
 
-func cursorStoreDBForNativeSession(home, workingDir, id string) string {
+func cursorStoreDBForNativeSession(home, workingDir, id string, configDir ...string) string {
 	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) {
 		return ""
 	}
@@ -202,7 +202,7 @@ func cursorStoreDBForNativeSession(home, workingDir, id string) string {
 			continue
 		}
 		seen[hash] = true
-		for _, root := range cursorChatsRoots(home) {
+		for _, root := range cursorTmuxChatsRoots(home, configDir...) {
 			candidate := filepath.Join(root, hash, id, "store.db")
 			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 				return candidate

@@ -158,13 +158,19 @@ func (p *cursorSDKProcess) read(stdout io.Reader) {
 	}
 }
 
-// cursorSDKEntry finds the installed @cursor/sdk: CURSOR_SDK_PATH, else the global npm root.
+// cursorSDKEntry checks the explicit path, managed CLI prefix, then global npm root.
 func cursorSDKEntry() (string, error) {
 	if path := strings.TrimSpace(os.Getenv("CURSOR_SDK_PATH")); path != "" {
 		if _, err := os.Stat(path); err != nil {
 			return "", fmt.Errorf("Cursor SDK entry is unavailable: %w", err)
 		}
 		return filepath.Abs(path)
+	}
+	if binary, err := exec.LookPath("cursor-agent"); err == nil {
+		path := filepath.Join(filepath.Dir(binary), "..", "lib", "node_modules", "@cursor", "sdk", "dist", "cjs", "index.js")
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
 	}
 	if out, err := exec.Command("npm", "root", "-g").Output(); err == nil {
 		path := filepath.Join(strings.TrimSpace(string(out)), "@cursor", "sdk", "dist", "cjs", "index.js")

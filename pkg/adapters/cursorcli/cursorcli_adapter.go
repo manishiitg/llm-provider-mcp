@@ -62,10 +62,11 @@ func isCursorLegacyModelSelector(modelID string) bool {
 // CursorCLIAdapter uses a persistent native ACP process for every turn, or the Cursor SDK bridge
 // when the server selects CURSOR_CLI_TRANSPORT=sdk.
 type CursorCLIAdapter struct {
-	apiKey       string
-	modelID      string
-	logger       interfaces.Logger
-	sdkTransport bool
+	tmuxTransport bool
+	apiKey        string
+	modelID       string
+	logger        interfaces.Logger
+	sdkTransport  bool
 }
 
 // SetSDKTransport selects the Cursor SDK bridge instead of ACP for this adapter.
@@ -106,6 +107,9 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if c.tmuxTransport {
+		return c.generateContentTmux(ctx, messages, opts)
+	}
 	if c.sdkTransport {
 		return c.generateContentSDK(ctx, messages, opts)
 	}
@@ -404,3 +408,5 @@ func (c *CursorCLIAdapter) logInfof(format string, args ...interface{}) {
 		c.logger.Infof(format, args...)
 	}
 }
+
+func (c *CursorCLIAdapter) SetTmuxTransport(enabled bool) { c.tmuxTransport = enabled }

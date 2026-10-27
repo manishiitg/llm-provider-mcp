@@ -61,6 +61,9 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 		}
 		return SendClaudeCodeInput(ctx, ownerSessionID, message)
 	case ProviderCursorCLI:
+		if contract.Transport == CodingAgentTransportTmux {
+			return cursorcli.SendCursorInteractiveInput(ctx, ownerSessionID, message)
+		}
 		if contract.Transport == CodingAgentTransportSDK {
 			return cursorcli.SendCursorSDKInput(ctx, ownerSessionID, message)
 		}

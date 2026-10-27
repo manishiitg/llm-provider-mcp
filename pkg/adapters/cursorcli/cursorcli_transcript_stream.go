@@ -38,10 +38,11 @@ func cursorInteractiveStreamTranscriptEnabled(opts *llmtypes.CallOptions) bool {
 // adapter, so this runs as a goroutine that is stopped (with a final flush)
 // before any close.
 type cursorTranscriptStreamState struct {
-	accountHome     string
-	workingDir      string
-	nativeSessionID string
-	streamKey       string
+	accountHome      string
+	accountConfigDir string
+	workingDir       string
+	nativeSessionID  string
+	streamKey        string
 	// baseline is set when this turn actually starts (after session
 	// acquisition). Cursor spawns warmup "OK" readiness turns during acquisition,
 	// each with its own store.db; only store.db modified at/after baseline belong
@@ -71,6 +72,9 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 	}
 	if len(accountHome) > 0 {
 		s.accountHome = accountHome[0]
+		if len(accountHome) > 1 {
+			s.accountConfigDir = accountHome[1]
+		}
 	}
 	s.primeSeenBlobs()
 	return s
@@ -102,14 +106,14 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 // suppressing. The pane-extraction path has always had the equivalent guard
 // (historicalAssistantTexts); this brings the store.db stream path in line.
 func (s *cursorTranscriptStreamState) primeSeenBlobs() {
-	paths := allCursorStoreDBs(s.workingDir, s.accountHome)
+	paths := allCursorStoreDBs(s.workingDir, s.accountHome, s.accountConfigDir)
 	if s.nativeSessionID != "" {
 		home, _ := os.UserHomeDir()
 		if s.accountHome != "" {
 			home = s.accountHome
 		}
 		paths = nil
-		if path := cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID); path != "" {
+		if path := cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID, s.accountConfigDir); path != "" {
 			paths = []string{path}
 		}
 	}
@@ -143,7 +147,7 @@ func allCursorStoreDBs(workingDir string, accountHome ...string) []string {
 		out = append(out, p)
 		return nil
 	}
-	for _, root := range cursorChatsRoots(home) {
+	for _, root := range cursorTmuxChatsRoots(home, cursorTmuxConfigArg(accountHome)...) {
 		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
 	}
 	return out
@@ -191,7 +195,7 @@ func freshestCursorStoreDBSince(workingDir string, since time.Time, accountHome 
 		}
 		return nil
 	}
-	for _, root := range cursorChatsRoots(home) {
+	for _, root := range cursorTmuxChatsRoots(home, cursorTmuxConfigArg(accountHome)...) {
 		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
 	}
 	return best
@@ -244,9 +248,9 @@ func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<
 		if s.accountHome != "" {
 			home = s.accountHome
 		}
-		path = cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID)
+		path = cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID, s.accountConfigDir)
 	} else {
-		path = freshestCursorStoreDBSince(s.workingDir, s.baseline, s.accountHome)
+		path = freshestCursorStoreDBSince(s.workingDir, s.baseline, s.accountHome, s.accountConfigDir)
 	}
 	if path == "" {
 		return

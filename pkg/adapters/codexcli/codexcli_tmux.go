@@ -199,6 +199,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 			NativeSessionID: codexResumeSessionIDFromOptions(opts),
 			TmuxSession:     session.tmuxSessionName,
 			WorkingDir:      session.workingDir,
+			RuntimeDir:      opts.CLIRuntimeDir,
 			Model:           handleModel,
 			Status:          llmtypes.CodingProviderSessionStatusIdle,
 		})
@@ -469,6 +470,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 		NativeSessionID: threadID,
 		TmuxSession:     session.tmuxSessionName,
 		WorkingDir:      session.workingDir,
+		RuntimeDir:      opts.CLIRuntimeDir,
 		Model:           handleModel,
 		Status:          llmtypes.CodingProviderSessionStatusIdle,
 	})

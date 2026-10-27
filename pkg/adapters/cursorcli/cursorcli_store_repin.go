@@ -11,7 +11,7 @@ import (
 
 // cursorStoresHoldingUserQuery lists the chat stores of workingDir, written at
 // or after since, that hold a user row matching message.
-func cursorStoresHoldingUserQuery(workingDir, accountHome, message string, since time.Time) []string {
+func cursorStoresHoldingUserQuery(workingDir, accountHome, message string, since time.Time, configDir ...string) []string {
 	home := accountHome
 	if home == "" {
 		var err error
@@ -24,7 +24,7 @@ func cursorStoresHoldingUserQuery(workingDir, accountHome, message string, since
 		return nil
 	}
 	var matches []string
-	for _, root := range cursorChatsRoots(home) {
+	for _, root := range cursorTmuxChatsRoots(home, configDir...) {
 		_ = filepath.WalkDir(filepath.Join(root, hash), func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
 				return nil
@@ -60,7 +60,7 @@ func (s *cursorInteractiveSession) repinStoreForMessage(message string, since ti
 	if pinned != "" && cursorStoreUserQuerySince(pinned, message, nil) {
 		return pinned
 	}
-	candidates := cursorStoresHoldingUserQuery(workingDir, s.accountHome, message, since)
+	candidates := cursorStoresHoldingUserQuery(workingDir, s.accountHome, message, since, s.accountConfigDir)
 	if len(candidates) != 1 || candidates[0] == pinned {
 		return pinned
 	}

@@ -58,13 +58,31 @@ func InterruptACP(ctx context.Context, owner, key string) error {
 	return r.writeContext(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]any{"sessionId": native}})
 }
 
-func CloseCursorCLIInteractiveSessionForOwner(owner, reason string) { CloseACP(owner) }
-func CleanupCursorCLIInteractiveSessions(ctx context.Context) error { return CleanupACP(ctx) }
+// Controls target the actual registered process, never retry through another transport.
+func CloseCursorCLIInteractiveSessionForOwner(owner, reason string) {
+	CloseACP(owner)
+	closeCursorTmuxForOwner(owner, reason)
+}
+func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
+	if err := CleanupACP(ctx); err != nil {
+		return err
+	}
+	return cleanupCursorTmuxSessions(ctx)
+}
 func InteractiveSessionRegistered(owner string) bool {
+	if TmuxSessionRegistered(owner) {
+		return true
+	}
 	cursorSDKSessions.Lock()
 	sdk := cursorSDKSessions.sessions[owner] != nil
 	cursorSDKSessions.Unlock()
 	cursorACPSessions.Lock()
 	defer cursorACPSessions.Unlock()
 	return sdk || cursorACPSessions.sessions[owner] != nil
+}
+func SendCursorInteractiveControlKey(ctx context.Context, owner, key string) error {
+	if TmuxSessionRegistered(owner) {
+		return sendCursorTmuxControlKey(ctx, owner, key)
+	}
+	return InterruptACP(ctx, owner, key)
 }

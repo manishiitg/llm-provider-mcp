@@ -35,7 +35,9 @@ import (
 )
 
 type cursorInteractiveSession struct {
-	accountHome string
+	accountHome      string
+	accountConfigDir string
+	runtimeDir       string
 	// Independent of mu: live input is accepted while GenerateContent owns mu.
 	retainedMu         sync.Mutex
 	retainedStoreDB    string
@@ -136,6 +138,9 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		return nil, err
 	}
 	tmuxSessionName = session.tmuxSessionName
+	if resumeID == "" {
+		resumeID = session.retainedNativeID
+	}
 	session.setRetainedStore(resumeID)
 	stopCursorRetainedControls(session.tmuxSessionName)
 	tmuxstartup.Publish(callCtx, opts.StreamChan, "cursor-cli", c.modelID, session.tmuxSessionName, session.workingDir, map[string]interface{}{
@@ -233,7 +238,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		}
 		nativeSessionID := resumeID
 		if nativeSessionID == "" {
-			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, nil, resumeID, session.accountHome); storeDBPath != "" {
+			if _, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, nil, resumeID, session.accountHome, session.accountConfigDir); storeDBPath != "" {
 				nativeSessionID = cursorNativeSessionIDFromStoreDBPath(storeDBPath)
 			}
 		}
@@ -257,6 +262,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 			NativeSessionID: nativeSessionID,
 			TmuxSession:     session.tmuxSessionName,
 			WorkingDir:      session.workingDir,
+			RuntimeDir:      session.runtimeDir,
 			Model:           c.modelID,
 		})
 		return &llmtypes.ContentResponse{
@@ -267,7 +273,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// as pre-existing history by the streaming deduplicator.
 	var streamState *cursorTranscriptStreamState
 	if opts.StreamChan != nil && cursorInteractiveStreamTranscriptEnabled(opts) {
-		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome)
+		streamState = newCursorTranscriptStreamState(turnStart, session.workingDir, ownerSessionID, resumeID, session.accountHome, session.accountConfigDir)
 	}
 	c.logInfof("Executing Cursor Agent CLI tmux session: %s", session.tmuxSessionName)
 	// Snapshot only an already-pinned store (resumed session). A cold
@@ -282,7 +288,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		if home == "" {
 			home, _ = os.UserHomeDir()
 		}
-		initialStore = cursorStoreDBForNativeSession(home, session.workingDir, resumeID)
+		initialStore = cursorStoreDBForNativeSession(home, session.workingDir, resumeID, session.accountConfigDir)
 	}
 	initialRefs := cursorSnapshotStoreRefs(initialStore)
 	if err := cursorConfirmInitialSubmitAfterPaneError(ctx, session, prompt, turnStart, initialRefs,
@@ -316,7 +322,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	storeAnswer := func(query string) (string, cursorTrailState) {
 		storeDB := pinnedCursorStoreNoMu(session)
 		if storeDB == "" {
-			storeDB = freshestCursorStoreDBSince(session.workingDir, turnStart, session.accountHome)
+			storeDB = freshestCursorStoreDBSince(session.workingDir, turnStart, session.accountHome, session.accountConfigDir)
 		}
 		trail := readCursorRetainedInput(&cursorRetainedInput{
 			storeDB:  storeDB,
@@ -372,7 +378,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	// to 4s on cursor's async commit, so it must not happen twice per turn.
 	// This turn's messages are what Cursor committed after the snapshot taken
 	// before its prompt: one turn at a time, nothing carried across turns.
-	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, initialRefs, resumeID, session.accountHome)
+	sidecarMsgs, storeDBPath := readCursorTranscriptMessagesAndStoreDB(turnStart, session.workingDir, initialRefs, resumeID, session.accountHome, session.accountConfigDir)
 	content = llmtypes.ReconcileFinalAnswer(content, latestCursorAssistantText(sidecarMsgs))
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	llmtypes.RunTrailingPaneCapture(callCtx, opts.StreamChan,
@@ -493,6 +499,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 		NativeSessionID: nativeSessionID,
 		TmuxSession:     session.tmuxSessionName,
 		WorkingDir:      session.workingDir,
+		RuntimeDir:      session.runtimeDir,
 		Model:           c.modelID,
 	})
 
@@ -532,7 +539,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 			tmuxSessionName:  newCursorTmuxSessionName(),
 			persistent:       persistent,
 			createdAt:        now,
-			scopeFingerprint: llmtypes.CodingAgentScopeFingerprint(opts),
+			scopeFingerprint: cursorTmuxScopeFingerprint(opts, c.modelID),
 		}
 		session.mu.Lock()
 		return session
@@ -547,7 +554,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		session.mu.Lock()
 		// The live process holds the environment it launched with, so a
 		// changed (or removed) scope cannot take effect without replacing it.
-		if session.scopeFingerprint != llmtypes.CodingAgentScopeFingerprint(opts) {
+		if session.scopeFingerprint != cursorTmuxScopeFingerprint(opts, c.modelID) {
 			session.mu.Unlock()
 			closeCursorPersistentSession(ownerSessionID, "Cursor credential scope changed", c.logger)
 			return c.acquireCursorInteractiveSession(ctx, ownerSessionID, persistent, opts, systemPrompt)
@@ -569,6 +576,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 		return nil, false, err
 	}
 	session.workingDir = workingDir
+	session.runtimeDir = opts.CLIRuntimeDir
 	session.cleanupFiles = cleanupFiles
 
 	// The structured path applies the caller's scoped environment when it
@@ -580,7 +588,34 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
 	env = append(env, scopedEnv...)
 	env = append(env, cursorAmbientAPIKeyEnv(env, os.Getenv("CURSOR_API_KEY"), opts)...)
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		configDir, configErr := prepareCursorPrivateRuntime(opts, llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts))
+		if configErr != nil {
+			cleanupFiles()
+			session.initErr = configErr
+			session.mu.Unlock()
+			removeCursorPersistentSession(ownerSessionID, session)
+			return nil, false, configErr
+		}
+		env = append(env, "CURSOR_CONFIG_DIR="+configDir)
+		session.accountConfigDir = configDir
+	}
 
+	// Allocate the exact native ID before the first prompt. Never discover a
+	// different conversation by choosing the newest store in a shared cwd.
+	nativeID := cursorResumeSessionIDFromOptions(opts)
+	if nativeID == "" {
+		nativeID, err = createCursorTmuxChat(ctx, opts, workingDir, env)
+		if err != nil {
+			cleanupFiles()
+			session.initErr = err
+			session.mu.Unlock()
+			removeCursorPersistentSession(ownerSessionID, session)
+			return nil, false, err
+		}
+		args = append(args, "--resume", nativeID)
+	}
+	session.setRetainedStore(nativeID)
 	args, cleanupSandbox, err := cursorLandlockArgs(opts, args, workingDir)
 	if err != nil {
 		session.initErr = fmt.Errorf("confine Cursor: %w", err)
@@ -618,10 +653,10 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	// Agent Skills loader picks them up at session start. Non-fatal:
 	// the listing is also in the system prompt via mcpagent.
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		_ = c.ProjectSkills(workingDir, skills)
+		_ = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workingDir), skills)
 	}
 
-	cleanupFiles, err := prepareCursorProjectFiles(workingDir, systemPrompt, opts, ownerSessionID)
+	cleanupFiles, err := prepareCursorProjectFiles(llmtypes.CLIArtifactDirectory(opts, workingDir), systemPrompt, opts, ownerSessionID)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -640,6 +675,9 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	// for each new one (found by the cross-CLI sandbox contract, 2026-10-04). A
 	// flag, not a key press on the screen.
 	args := []string{"cursor-agent", "--workspace", workingDir, "--trust"}
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		args = append(args, "--plugin-dir", opts.CLIRuntimeDir)
+	}
 	if opts != nil {
 		// Granted folders reached through links (project/) are outside Cursor's
 		// workspace; --add-dir makes them workspace roots (see SeatbeltGrantedDirs).
@@ -1151,7 +1189,7 @@ func cursorConfirmInitialSubmitAfterPaneError(ctx context.Context, session *curs
 			if pinned := pinnedCursorStoreNoMu(session); pinned != "" {
 				return pinned
 			}
-			return freshestCursorStoreDBSince(session.workingDir, since, session.accountHome)
+			return freshestCursorStoreDBSince(session.workingDir, since, session.accountHome, session.accountConfigDir)
 		},
 	})
 	if err == nil && ack.Outcome == CursorDurableAckConfirmed {
@@ -1252,7 +1290,7 @@ func typeCursorInputToTmuxWithDeliveryMode(ctx context.Context, sessionName, mes
 	writeDraft := writeCursorVisibleDraftToTmux
 	// Live input goes to a busy Cursor whose editor often does not redraw the typed draft where the scraper reads it;
 	// the literal path then never pressed Enter and left the text in the editor, where it went out with the next
-	// message and the person saw "Not delivered" for a message Cursor did answer (RTS 2026-10-20). A paste is one
+	// message and the person saw "Not delivered" for a message Cursor did answer. A paste is one
 	// acknowledged tmux operation and needs no visual receipt.
 	if liveInput || cursorInputNeedsAtomicPaste(message, preferAtomic) {
 		transport = "atomic-paste"
@@ -2955,3 +2993,63 @@ const (
 	cursorAtomicPasteMinRunes = 2048
 	cursorAtomicPasteMinLines = 16
 )
+
+func closeCursorTmuxForOwner(ownerSessionID, reason string) {
+	closeCursorPersistentSession(ownerSessionID, reason, nil)
+}
+
+func cleanupCursorTmuxSessions(ctx context.Context) error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil
+	}
+	sessions := cursorPersistentRegistry.Drain()
+
+	var failures []string
+	for _, session := range sessions {
+		cleanupFiles := stopCursorIdleTimerAndSnapshotCleanupIfAvailable(session)
+		unregisterCursorInteractiveSession(session.ownerSessionID, session.tmuxSessionName)
+		if cleanupFiles != nil {
+			cleanupFiles()
+		}
+		if err := killCursorTmuxSession(ctx, session.tmuxSessionName); err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to clean up Cursor interactive sessions: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+const cursorVisibleInputChunkRunes = 160
+
+const cursorStoreIntakeWait = 90 * time.Second
+
+const cursorStoreIntakeNudgeAfter = 10 * time.Second
+
+func createCursorTmuxChat(ctx context.Context, opts *llmtypes.CallOptions, cwd string, env []string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "cursor-agent", "--workspace", cwd, "--trust", "create-chat")
+	cmd.Dir = cwd
+	cmd.Env = append(llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(""), opts), env...)
+	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(cmd.Args, cwd), nil)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("create Cursor terminal conversation: %w", err)
+	}
+	id := strings.TrimSpace(string(out))
+	if !regexp.MustCompile(`^[a-fA-F0-9-]{36}$`).MatchString(id) {
+		return "", fmt.Errorf("Cursor create-chat returned no valid conversation ID")
+	}
+	return id, nil
+}
+
+// Retained processes must be replaced when credentials, policy, model or cwd change.
+func cursorTmuxScopeFingerprint(opts *llmtypes.CallOptions, model string) string {
+	return clisandbox.Fingerprint(opts.CLISecurity) + ":" + llmtypes.CodingAgentScopeFingerprint(opts) + ":" + cursorWorkingDirFromOptions(opts) + ":" + model
+}

@@ -52,7 +52,7 @@ func ReadNativeTranscript(workingDir, nativeSessionID string, accountHome ...str
 	if len(accountHome) > 0 && accountHome[0] != "" {
 		home = accountHome[0]
 	}
-	dbPath := cursorACPStoredSessionPath(home, nativeSessionID)
+	dbPath := NativeRecordPath(workingDir, nativeSessionID, home)
 	if dbPath == "" {
 		return NativeTranscript{}, false, nil
 	}
@@ -61,11 +61,19 @@ func ReadNativeTranscript(workingDir, nativeSessionID string, accountHome ...str
 
 // ReadNativeTranscriptFromConfigDir reads the exact session in a host-issued
 // private Cursor configuration directory, independently of the native cwd.
-func ReadNativeTranscriptFromConfigDir(configDir, nativeSessionID string) (NativeTranscript, bool, error) {
+func ReadNativeTranscriptFromConfigDir(configDir, nativeSessionID string, workingDir ...string) (NativeTranscript, bool, error) {
 	if !filepath.IsAbs(configDir) || nativeSessionID == "" || strings.ContainsAny(nativeSessionID, `/\\`) {
 		return NativeTranscript{}, false, nil
 	}
-	return readNativeTranscriptDB(filepath.Join(configDir, "acp-sessions", nativeSessionID, "store.db"))
+	cwd := ""
+	if len(workingDir) > 0 {
+		cwd = workingDir[0]
+	}
+	path := NativeRecordPathFromConfigDir(configDir, cwd, nativeSessionID)
+	if path == "" {
+		return NativeTranscript{}, false, nil
+	}
+	return readNativeTranscriptDB(path)
 }
 
 func readNativeTranscriptDB(dbPath string) (NativeTranscript, bool, error) {

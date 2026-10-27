@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -19,7 +20,10 @@ func NativeRecordPath(workingDir, sessionID, home string) string {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	return cursorACPStoredSessionPath(home, sessionID)
+	if path := cursorACPStoredSessionPath(home, sessionID); path != "" {
+		return path
+	}
+	return cursorStoreDBForNativeSession(home, workingDir, sessionID)
 }
 
 // ReadNativeRecordRows walks only the selected database's current root. Cursor
@@ -91,4 +95,19 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 		last = ref
 	}
 	return records, last, nil
+}
+
+// NativeRecordPathFromConfigDir resolves only this selected account and exact ID.
+func NativeRecordPathFromConfigDir(configDir, workingDir, sessionID string) string {
+	if !filepath.IsAbs(configDir) || sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+		return ""
+	}
+	acp := filepath.Join(configDir, "acp-sessions", sessionID, "store.db")
+	if info, err := os.Stat(acp); err == nil && !info.IsDir() {
+		return acp
+	}
+	if workingDir == "" {
+		return ""
+	}
+	return cursorStoreDBForNativeSession("", workingDir, sessionID, configDir)
 }

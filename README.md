@@ -13,7 +13,7 @@ It supports two complementary ways to run a model:
   transport, including OpenAI, Anthropic, Bedrock, Vertex AI, Azure, and
   OpenRouter.
 - **Coding-agent providers** run Claude Code, Codex CLI, Cursor Agent, or Pi in
-  local tmux sessions, preserving their native tools, subscriptions, project
+  native SDK or protocol sessions, preserving their native tools, subscriptions, project
   context, and authenticated sessions.
 
 The repository also includes `llm-provider-mcp`, an optional MCP server for
@@ -37,8 +37,10 @@ flowchart LR
     Provider --> API[API and cloud adapters]
     Provider --> CLI[Local coding-agent adapters]
     API --> Hosted[Hosted models]
-    CLI --> Tmux[tmux sessions]
-    Tmux --> Agents[Claude Code / Codex / Cursor / Pi]
+    CLI --> Native[SDK / app-server / RPC]
+    CLI --> Tmux[Optional tmux sessions]
+    Native --> Agents[Claude Code / Codex / Cursor / Pi]
+    Tmux --> Agents
     MCP[Optional MCP server] --> CLI
 ```
 
@@ -58,10 +60,10 @@ text and coding-agent providers:
 | `z-ai` | Z.AI | OpenAI-compatible API |
 | `kimi` | Kimi/Moonshot | OpenAI-compatible API |
 | `minimax`, `minimax-coding-plan` | MiniMax | Provider API |
-| `claude-code` | Claude Code | Local CLI in tmux |
-| `codex-cli` | Codex CLI | Local CLI in tmux by default |
-| `cursor-cli` | Cursor Agent | Local CLI in tmux |
-| `pi-cli` | Pi | Local CLI in tmux by default |
+| `claude-code` | Claude Code | Agent SDK; optional tmux |
+| `codex-cli` | Codex CLI | app-server; optional tmux |
+| `cursor-cli` | Cursor Agent | Cursor SDK; optional ACP or tmux |
+| `pi-cli` | Pi | RPC |
 
 Specialized factories expose capabilities that do not fit the text-model
 interface:
@@ -195,15 +197,27 @@ session automatically. Long-lived host applications should explicitly pass
 `CodingAgentPersistentInteractiveOption`. Provider-specific options additionally
 control the model, approval policy, resume ID, tools, and streaming behavior.
 
-## Coding Agents And tmux
+## Coding-agent transports
 
 The coding-agent adapters turn native coding CLIs into providers without
 reimplementing their agent loops. They use each CLI's existing login and model
 access, and run in a local project with that CLI's native file and shell tools.
 
-tmux is the default transport because it supports long-lived interactive
-sessions, multi-turn continuation, live terminal capture, control-key input,
-and recovery after a caller disconnects.
+Native SDK and protocol transports are the defaults. Keep tmux available explicitly
+when a terminal session is needed:
+
+| Provider | Default | Environment override |
+|---|---|---|
+| Claude Code | SDK | `CLAUDE_CODE_TRANSPORT=sdk` or `tmux` |
+| Codex | app-server | `CODEX_CLI_TRANSPORT=app-server` or `tmux` |
+| Cursor | SDK | `CURSOR_CLI_TRANSPORT=sdk`, `acp` or `tmux` |
+| Pi | RPC | No terminal transport |
+
+Set these variables on the backend and restart it. A native launch failure does
+not switch to tmux automatically. SDK modes require Node.js and the matching
+`@anthropic-ai/claude-agent-sdk` or `@cursor/sdk` package. The adapters look in
+the managed CLI installation prefix before the global npm prefix; explicit
+`CLAUDE_AGENT_SDK_PATH` and `CURSOR_SDK_PATH` overrides are also supported.
 
 | CLI | Provider ID | Authentication |
 |---|---|---|
@@ -212,7 +226,7 @@ and recovery after a caller disconnects.
 | Cursor Agent | `cursor-cli` | Existing Cursor login |
 | Pi CLI | `pi-cli` | Existing Pi/provider configuration |
 
-Requirements for this transport:
+Requirements for the optional tmux transport:
 
 - macOS or Linux
 - tmux 3.x or newer

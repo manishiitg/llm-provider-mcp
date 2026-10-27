@@ -15,7 +15,7 @@ func TestCodingAgentProviderContractCurrentProviders(t *testing.T) {
 		wantTmux  bool
 		wantFound bool
 	}{
-		{name: "claude code", provider: ProviderClaudeCode, wantTmux: true, wantFound: true},
+		{name: "claude code", provider: ProviderClaudeCode, wantTmux: false, wantFound: true},
 		{name: "codex cli", provider: ProviderCodexCLI, wantTmux: false, wantFound: true},
 		{name: "cursor cli", provider: ProviderCursorCLI, wantTmux: false, wantFound: true},
 		{name: "removed kimi code cli", provider: ProviderKimi, modelID: "kimi-code"},
@@ -153,7 +153,7 @@ func TestCodingAgentOptionRegistriesMatchContracts(t *testing.T) {
 			t.Errorf("persistent-session registry has %s but no coding-agent contract", provider)
 			continue
 		}
-		if !contract.UsesPersistentSession {
+		if !contract.UsesPersistentSession && !contract.SupportsNativeResume {
 			t.Errorf("persistent-session registry has %s but contract does not claim persistent tmux sessions", provider)
 		}
 	}
@@ -375,19 +375,11 @@ func TestTranscriptReaderContractMatchesRegistry(t *testing.T) {
 				c.Provider, c.TranscriptPathTemplate)
 		}
 	}
-	// Inverse: any registry entry must have its contract flag flipped to true.
-	for provider, info := range transcriptReaderRegistry {
-		contract, ok := GetCodingAgentProviderContract(provider, "")
-		if !ok {
-			t.Errorf("transcriptReaderRegistry has %s but no coding-agent contract is registered for it", provider)
-			continue
-		}
-		if !contract.AdapterReadsTranscript {
-			t.Errorf("transcriptReaderRegistry has %s but its contract.AdapterReadsTranscript is false — flip the contract", provider)
-		}
-		if contract.TranscriptPathTemplate != info.PathTemplate {
-			t.Errorf("registry path template for %s (%q) does not match contract.TranscriptPathTemplate (%q)",
-				provider, info.PathTemplate, contract.TranscriptPathTemplate)
+	// Registry entries may serve an optional transport. The selected transport
+	// above must expose only its own reader, while every entry needs a provider.
+	for provider := range transcriptReaderRegistry {
+		if _, ok := GetCodingAgentProviderContract(provider, ""); !ok {
+			t.Errorf("transcript reader registered for unknown provider %s", provider)
 		}
 	}
 }

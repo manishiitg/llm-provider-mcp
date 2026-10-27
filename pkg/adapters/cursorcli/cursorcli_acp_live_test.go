@@ -168,3 +168,41 @@ func TestCursorACPLifecycleLive(t *testing.T) {
 		t.Fatal("resume lost context: " + third.Choices[0].Content)
 	}
 }
+
+// PLAT-872-55: the explicit terminal path must retain its own conversation after restart.
+func TestCursorTmuxLifecycleLive(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	owner := t.Name() + cursorRandomHex(4)
+	defer CloseCursorCLIInteractiveSessionForOwner(owner, "test complete")
+	cwd, runtimeDir := t.TempDir(), t.TempDir()
+	opts := []llmtypes.CallOption{WithWorkingDir(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), llmtypes.WithCLIRuntimeDir(runtimeDir)}
+	a := NewCursorCLIAdapter("", "composer-2.5", nil)
+	a.SetTmuxTransport(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	word := "TERMINAL_" + cursorRandomHex(5)
+	first, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Remember the codeword "+word+". Do not use tools. Reply READY.")}, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(first)
+	if !ok || h.Transport != "tmux" || h.NativeSessionID == "" || h.TmuxSession == "" || h.RuntimeDir != runtimeDir {
+		t.Fatalf("missing terminal continuation: %+v", h)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".cursor")); !os.IsNotExist(err) {
+		t.Fatal("generated runtime leaked into real project")
+	}
+	CloseCursorCLIInteractiveSessionForOwner(owner, "restart proof")
+	resumed, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What was the codeword? Reply with only the codeword. Do not use tools.")}, append(opts, WithResumeSessionID(h.NativeSessionID))...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Choices) == 0 || strings.TrimSpace(resumed.Choices[0].Content) != word {
+		t.Fatalf("terminal lost its native conversation: %+v", resumed)
+	}
+	next, _ := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resumed)
+	if next.NativeSessionID != h.NativeSessionID {
+		t.Fatal("restart changed native conversation")
+	}
+	t.Logf("tmux native resume passed: %s", h.NativeSessionID)
+}

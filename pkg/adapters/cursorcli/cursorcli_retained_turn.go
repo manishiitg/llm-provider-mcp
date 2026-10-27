@@ -49,11 +49,11 @@ func (s *cursorInteractiveSession) resolveRetainedStoreLocked() string {
 		home = s.accountHome
 	}
 	if s.retainedNativeID != "" {
-		s.retainedStoreDB = cursorStoreDBForNativeSession(home, s.retainedWorkingDir, s.retainedNativeID)
+		s.retainedStoreDB = cursorStoreDBForNativeSession(home, s.retainedWorkingDir, s.retainedNativeID, s.accountConfigDir)
 	} else {
 		// A cold launch may not have flushed its store when GenerateContent
 		// returns. Discover once, then pin it just as the normal turn reader does.
-		s.retainedStoreDB = freshestCursorStoreDBSince(s.retainedWorkingDir, s.createdAt.Add(-30*time.Second), s.accountHome)
+		s.retainedStoreDB = freshestCursorStoreDBSince(s.retainedWorkingDir, s.createdAt.Add(-30*time.Second), s.accountHome, s.accountConfigDir)
 	}
 	return s.retainedStoreDB
 }

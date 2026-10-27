@@ -48,5 +48,10 @@ var transcriptReaderRegistry = map[Provider]TranscriptReaderInfo{
 // or zero-value + false if the provider's adapter does not read transcripts.
 func TranscriptReaderFor(provider Provider) (TranscriptReaderInfo, bool) {
 	info, ok := transcriptReaderRegistry[provider]
-	return info, ok
+	contract, exists := GetCodingAgentProviderContract(provider, "")
+	if !ok || !exists || !contract.AdapterReadsTranscript {
+		return TranscriptReaderInfo{}, false
+	}
+	info.PathTemplate = contract.TranscriptPathTemplate
+	return info, true
 }

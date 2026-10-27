@@ -31,11 +31,11 @@ func cursorChatsRoots(home string) []string {
 	// The given home's own folders come first. A confined or account-scoped Cursor keeps its chats
 	// under its own home; the server's XDG folder can hold an older copy of the same chat (one
 	// started before the lock), and preferring it read a stale store and streamed nothing
-	// (RTS 2026-09-30).
+	// in an older process.
 	if strings.TrimSpace(home) != "" {
 		roots = append(roots, filepath.Join(home, ".config", "cursor", "chats"))
 	}
-	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); filepath.IsAbs(xdg) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); filepath.IsAbs(xdg) && home == os.Getenv("HOME") {
 		roots = append(roots, filepath.Join(xdg, "cursor", "chats"))
 	}
 	legacy := filepath.Join(home, ".cursor", "chats")
@@ -45,4 +45,18 @@ func cursorChatsRoots(home string) []string {
 		}
 	}
 	return append(roots, legacy)
+}
+
+// An issued runtime config is authoritative; never search another account's stores.
+func cursorTmuxChatsRoots(home string, configDir ...string) []string {
+	if len(configDir) > 0 && configDir[0] != "" {
+		return []string{filepath.Join(configDir[0], "chats")}
+	}
+	return cursorChatsRoots(home)
+}
+func cursorTmuxConfigArg(accountHome []string) []string {
+	if len(accountHome) > 1 {
+		return accountHome[1:2]
+	}
+	return nil
 }

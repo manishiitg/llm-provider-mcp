@@ -1,6 +1,7 @@
 package llmproviders
 
 import (
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
@@ -13,6 +14,8 @@ import (
 // pin their native row/ref/sequence here instead.
 func AdoptCodingAgentNativeInput(provider Provider, ownerSessionID, message string, acceptedAt time.Time) error {
 	switch provider {
+	case ProviderCursorCLI:
+		return cursorcli.AdoptNativeInput(ownerSessionID, message, acceptedAt)
 	case ProviderMuseCLI:
 		return musecli.AdoptNativeInput(ownerSessionID, message)
 	case ProviderAgyCLI:

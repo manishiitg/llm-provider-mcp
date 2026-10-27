@@ -2,9 +2,11 @@ package cursorcli
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -122,6 +124,28 @@ func TestReadNativeTranscriptKeepsTypedQueriesAndAssistantProse(t *testing.T) {
 	if _, found, err := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "../agent-1"); found || err != nil {
 		t.Fatal("relative native ID accepted")
 	}
+	// PLAT-872-55: terminal stores must stay in the issued config, never another
+	// account's newer conversation or the ambient HOME's matching native ID.
+	configDir := t.TempDir()
+	tmuxPath := filepath.Join(configDir, "chats", fmt.Sprintf("%x", md5.Sum([]byte(workingDir))), "agent-1", "store.db")
+	if err := os.MkdirAll(filepath.Dir(tmuxPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmuxPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	terminal, found, err := ReadNativeTranscriptFromConfigDir(configDir, "agent-1", workingDir)
+	if err != nil || !found || terminal.Path != tmuxPath || len(terminal.Messages) != len(want) {
+		t.Fatalf("terminal private transcript: %+v found=%v err=%v", terminal, found, err)
+	}
+	if _, found, err := ReadNativeTranscriptFromConfigDir(t.TempDir(), "agent-1", workingDir); found || err != nil {
+		t.Fatal("private runtime searched another account")
+	}
+
 	if transcript.UpdatedAt.IsZero() {
 		t.Fatal("UpdatedAt should come from the store's mtime")
 	}
@@ -164,7 +188,9 @@ func TestTurnRecordsOnlyWhatFollowsItsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	earlier := []string{
-		`{"role":"user","content":"context"}`,
+		`{"role":"user","content":"context"
+ "crypto/md5"
+ "fmt"}`,
 		`{"role":"user","content":"<user_query>first question</user_query>"}`,
 		`{"role":"assistant","content":[{"type":"text","text":"first answer"}]}`,
 		`{"role":"user","content":"<user_query>live follow-up</user_query>"}`,
