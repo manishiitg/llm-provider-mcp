@@ -81,11 +81,12 @@ func codexCommandApproval(ctx context.Context, raw json.RawMessage, thread, turn
 			return deny, nil
 		}
 	}
+	hasNetwork := len(req.NetworkApprovalContext) > 0 && string(req.NetworkApprovalContext) != "null"
 	description := "Allow Codex to run this command?\n\n" + req.Command
-	if len(req.NetworkApprovalContext) > 0 && string(req.NetworkApprovalContext) != "null" {
+	if hasNetwork {
 		description = "Allow this command's network access?\n\n" + string(req.NetworkApprovalContext) + "\n\n" + req.Command
 	}
-	if strings.TrimSpace(req.Command) == "" && len(req.NetworkApprovalContext) == 0 {
+	if strings.TrimSpace(req.Command) == "" && !hasNetwork {
 		return deny, nil
 	}
 	if req.Cwd != "" {

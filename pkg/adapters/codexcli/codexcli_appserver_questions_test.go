@@ -100,6 +100,11 @@ func TestCodexCommandApprovalUsesScopedAnswer(t *testing.T) {
 			if err != nil || out.(map[string]any)["decision"] != "decline" {
 				t.Fatal("unattended request not declined")
 			}
+			empty := json.RawMessage(`{"threadId":"thread","turnId":"turn","itemId":"item","command":null,"networkApprovalContext":null}`)
+			out, err = codexNativeQuestion(ctx, "item/commandExecution/requestApproval", empty, "thread", "turn")
+			if err != nil || out.(map[string]any)["decision"] != "decline" || asked != 1 {
+				t.Fatal("empty nullable command reached approval card")
+			}
 			limited := json.RawMessage(strings.Replace(string(raw), `"accept",`, "", 1))
 			out, err = codexNativeQuestion(ctx, "item/commandExecution/requestApproval", limited, "thread", "turn")
 			if err != nil || out.(map[string]any)["decision"] != "decline" || asked != 1 {
