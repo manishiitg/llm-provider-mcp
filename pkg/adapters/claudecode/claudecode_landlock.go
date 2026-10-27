@@ -178,7 +178,7 @@ func claudeSDKLandlock(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir str
 	}
 	cli := cmd.Args[3:]
 	return clisandbox.LandlockChild(opts.CLISecurity, cmd, cli, workingDir, claudeLandlockReads(cli, workingDir), nil,
-		[]string{cmd.Args[1], filepath.Dir(cmd.Args[2])})
+		[]string{filepath.Dir(cmd.Args[2])}, []string{filepath.Dir(cmd.Args[1])})
 }
 
 // claudeLandlockCmd confines a structured (stream-json) Claude launch.

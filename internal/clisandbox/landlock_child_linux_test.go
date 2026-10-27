@@ -24,7 +24,7 @@ func TestLandlockChildConfinesTheCLINotTheHost(t *testing.T) {
 	}
 	policy := &llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner, PrivateHome: filepath.Join(dir, "home"), CredentialHome: dir}
 	host := exec.Command("/usr/bin/node", "bridge.cjs", "sdk.mjs", "/bin/sh", "-p")
-	cleanup, err := LandlockChild(policy, host, host.Args[3:], dir, nil, nil, nil)
+	cleanup, err := LandlockChild(policy, host, host.Args[3:], dir, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

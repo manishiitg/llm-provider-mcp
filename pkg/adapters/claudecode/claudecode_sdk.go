@@ -72,21 +72,20 @@ func claudeSDKCommand(ctx context.Context, executable string, args []string) (*e
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("Claude Agent SDK requires Node.js: %w", err)
 	}
-	f, err := os.CreateTemp("", "claude-sdk-*.cjs")
+	// A private folder per launch: the bridge runs outside Landlock, so neither
+	// it nor the policy files it writes may sit where a confined CLI can write
+	// (PLAT-872-51). Confined CLIs get their own TMPDIR, never this one.
+	dir, err := os.MkdirTemp("", "claude-sdk-*")
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cleanup := func() { _ = os.Remove(f.Name()) }
-	if _, err = f.Write(claudeSDKBridge); err != nil {
-		_ = f.Close()
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	bridge := filepath.Join(dir, "bridge.cjs")
+	if err = os.WriteFile(bridge, claudeSDKBridge, 0o600); err != nil {
 		cleanup()
 		return nil, func() {}, err
 	}
-	if err = f.Close(); err != nil {
-		cleanup()
-		return nil, func() {}, err
-	}
-	return exec.CommandContext(ctx, node, append([]string{f.Name(), entry, executable}, args...)...), cleanup, nil
+	return exec.CommandContext(ctx, node, append([]string{bridge, entry, executable}, args...)...), cleanup, nil
 }
 
 func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage) map[string]any {

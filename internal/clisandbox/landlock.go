@@ -494,9 +494,9 @@ func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 const ChildLaunchEnv = "AGENTWORKS_CLI_LAUNCH"
 
 // ChildLaunch is how a trusted host process starts the confined CLI itself:
-// Runner --config <Policy written to a fresh file> -- EnvArgs... <cli> <args>.
-// The launcher deletes the policy file when it reads it, so the host writes a
-// new copy for every CLI it starts.
+// Runner --config <file> -- EnvArgs... <cli> <args>, with Policy written to a
+// fresh file in a folder only the host can write (never one a confined CLI is
+// granted), which the launcher deletes when it reads it.
 type ChildLaunch struct {
 	Runner  string          `json:"runner"`
 	EnvArgs []string        `json:"env_args"`
@@ -508,9 +508,10 @@ type ChildLaunch struct {
 // /proc/self belongs to the process it execs; a confined host cannot give a
 // child its own /proc entry, and Claude (Bun) aborts at startup without it
 // (PLAT-872-51). The launch goes to the host in ChildLaunchEnv; on a slot
-// launch the host runs as the user's account and is given hostReads. It is
+// launch the host runs as the user's account and is given hostReads, and
+// hostWrites for its private folder. It is
 // a no-op when the policy does not enforce Landlock.
-func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs []string, workingDir string, cliReads, cliWrites, hostReads []string) (func(), error) {
+func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs []string, workingDir string, cliReads, cliWrites, hostReads, hostWrites []string) (func(), error) {
 	if !policy.LandlockEnforced() {
 		return func() {}, nil
 	}
@@ -537,6 +538,11 @@ func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs [
 	slot, _ := slotfs.SlotOf(canonical(policy.PrivateHome))
 	for _, path := range hostReads {
 		if err := slotfs.GrantRuntime(slot, path, false); err != nil {
+			return func() {}, fmt.Errorf("give the user's account launch files: %w", err)
+		}
+	}
+	for _, path := range hostWrites {
+		if err := slotfs.GrantRuntime(slot, path, true); err != nil {
 			return func() {}, fmt.Errorf("give the user's account launch files: %w", err)
 		}
 	}
