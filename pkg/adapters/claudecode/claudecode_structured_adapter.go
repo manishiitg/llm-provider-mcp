@@ -328,7 +328,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if !c.sdkTransport {
 		cmd.Stdin = strings.NewReader(prompt) // one-shot structured input
 	}
-	cleanupSandbox, err := claudeLandlockCmd(opts, cmd, workingDir)
+	confine := claudeLandlockCmd
+	if c.sdkTransport {
+		confine = claudeSDKLandlock
+	}
+	cleanupSandbox, err := confine(opts, cmd, workingDir)
 	if err != nil {
 		return nil, fmt.Errorf("confine Claude Code: %w", err)
 	}

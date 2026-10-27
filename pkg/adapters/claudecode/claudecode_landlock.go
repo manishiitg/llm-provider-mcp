@@ -158,17 +158,27 @@ func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir st
 // status-line helper and hook scripts those configs name, and the hooks.
 func claudeLandlockReads(args []string, workingDir string) []string {
 	read := clisandbox.ArgFilePaths(args)
-	// The SDK entry imports sibling modules from this installed package. Grant
-	// only that package, alongside the existing exact runtime/config paths.
-	for _, arg := range args {
-		if filepath.Base(arg) == "sdk.mjs" && filepath.Base(filepath.Dir(arg)) == "claude-agent-sdk" {
-			read = append(read, filepath.Dir(arg))
-		}
-	}
 	configs := append(append([]string(nil), read...), filepath.Join(workingDir, ".mcp.json"))
 	read = append(read, clisandbox.MCPCommandPaths(configs)...)
 	read = append(read, clisandbox.JSONFilePaths(configs)...)
 	return append(read, filepath.Join(os.TempDir(), "claude-code-hooks"))
+}
+
+// claudeSDKLandlock confines the Claude Code process the SDK bridge starts,
+// not the bridge: under Landlock a confined node cannot give its child its own
+// /proc entry and Claude aborts at startup (PLAT-872-51). Seatbelt still wraps
+// the whole command; its children inherit the profile and there is no /proc.
+// cmd is node <bridge> <sdk.mjs> <claude> <args...>.
+func claudeSDKLandlock(opts *llmtypes.CallOptions, cmd *exec.Cmd, workingDir string) (func(), error) {
+	if opts == nil || !opts.CLISecurity.LandlockEnforced() {
+		return claudeLandlockCmd(opts, cmd, workingDir)
+	}
+	if err := claudeMirrorLandlockReads(opts.CLISecurity, workingDir); err != nil {
+		return func() {}, err
+	}
+	cli := cmd.Args[3:]
+	return clisandbox.LandlockChild(opts.CLISecurity, cmd, cli, workingDir, claudeLandlockReads(cli, workingDir), nil,
+		[]string{cmd.Args[1], filepath.Dir(cmd.Args[2])})
 }
 
 // claudeLandlockCmd confines a structured (stream-json) Claude launch.

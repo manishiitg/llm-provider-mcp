@@ -2,6 +2,10 @@
 const { createInterface } = require('node:readline');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 let nativeErrorReported = false;
 const deny = () => ({ behavior: 'deny', message: 'The request was cancelled. Use the chat or account setup to continue.' });
@@ -18,6 +22,19 @@ async function main() {
     settingSources: ['user', 'project', 'local'],
     extraArgs: { 'replay-user-messages': null },
   };
+  // A confined chat: this bridge runs outside Landlock and every Claude Code
+  // process the SDK starts is exec'd in place by the launcher, so it keeps its
+  // own /proc entry (PLAT-872-51). The launcher deletes the policy file it reads.
+  const launch = process.env.AGENTWORKS_CLI_LAUNCH && JSON.parse(process.env.AGENTWORKS_CLI_LAUNCH);
+  delete process.env.AGENTWORKS_CLI_LAUNCH;
+  if (launch) {
+    options.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
+      const policy = join(tmpdir(), `agentworks-cli-landlock-${randomUUID()}.json`);
+      writeFileSync(policy, JSON.stringify(launch.policy), { mode: 0o600 });
+      return spawn(launch.runner, ['--config', policy, '--', ...launch.env_args, command, ...args],
+        { cwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'] });
+    };
+  }
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '-p' || flag === '--verbose') continue;

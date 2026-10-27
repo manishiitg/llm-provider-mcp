@@ -490,6 +490,59 @@ func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 	return cleanup, nil
 }
 
+// ChildLaunchEnv carries a ChildLaunch to the host process as JSON.
+const ChildLaunchEnv = "AGENTWORKS_CLI_LAUNCH"
+
+// ChildLaunch is how a trusted host process starts the confined CLI itself:
+// Runner --config <Policy written to a fresh file> -- EnvArgs... <cli> <args>.
+// The launcher deletes the policy file when it reads it, so the host writes a
+// new copy for every CLI it starts.
+type ChildLaunch struct {
+	Runner  string          `json:"runner"`
+	EnvArgs []string        `json:"env_args"`
+	Policy  json.RawMessage `json:"policy"`
+}
+
+// LandlockChild confines only the CLI that a trusted host process starts (the
+// Claude Agent SDK bridge spawns Claude Code), not the host. The launcher's
+// /proc/self belongs to the process it execs; a confined host cannot give a
+// child its own /proc entry, and Claude (Bun) aborts at startup without it
+// (PLAT-872-51). The launch goes to the host in ChildLaunchEnv; on a slot
+// launch the host runs as the user's account and is given hostReads. It is
+// a no-op when the policy does not enforce Landlock.
+func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs []string, workingDir string, cliReads, cliWrites, hostReads []string) (func(), error) {
+	if !policy.LandlockEnforced() {
+		return func() {}, nil
+	}
+	wrapped, cleanup, err := LandlockArgs(policy, cliArgs, workingDir, append(cliReads, ArgFilePaths(cliArgs)...), cliWrites)
+	if err != nil {
+		return func() {}, err
+	}
+	defer cleanup()
+	if len(wrapped) < 5+len(cliArgs) || wrapped[1] != "--config" || wrapped[3] != "--" {
+		return func() {}, errors.New("unexpected Landlock launch shape")
+	}
+	raw, err := os.ReadFile(wrapped[2])
+	if err != nil {
+		return func() {}, fmt.Errorf("read CLI Landlock policy: %w", err)
+	}
+	launch, err := json.Marshal(ChildLaunch{Runner: wrapped[0], EnvArgs: wrapped[4 : len(wrapped)-len(cliArgs)], Policy: raw})
+	if err != nil {
+		return func() {}, err
+	}
+	host.Env = append(host.Env, ChildLaunchEnv+"="+string(launch))
+	if !slotfs.IsSlotLaunch(policy.PrivateHome) {
+		return func() {}, nil
+	}
+	slot, _ := slotfs.SlotOf(canonical(policy.PrivateHome))
+	for _, path := range hostReads {
+		if err := slotfs.GrantRuntime(slot, path, false); err != nil {
+			return func() {}, fmt.Errorf("give the user's account launch files: %w", err)
+		}
+	}
+	return slotfs.WrapCmd(host, policy.PrivateHome, host.Env)
+}
+
 // ConfigDirFiles lists the JSON files directly inside dir (e.g. a working
 // directory's .cursor/ or .claude/), for grants derived from project configs.
 func ConfigDirFiles(dir string) []string {
