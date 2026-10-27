@@ -137,12 +137,11 @@ func splitPiSystemPrompt(messages []llmtypes.MessageContent) (string, []llmtypes
 }
 
 func buildPiPrompt(messages []llmtypes.MessageContent) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == llmtypes.ChatMessageTypeHuman {
-			return extractPiTextFromMessage(messages[i])
-		}
+	var parts []string
+	for _, message := range llmtypes.PendingHumanMessages(messages) {
+		parts = append(parts, extractPiTextFromMessage(message))
 	}
-	return ""
+	return strings.Join(parts, "\n\n")
 }
 
 func extractPiTextFromMessage(msg llmtypes.MessageContent) string {

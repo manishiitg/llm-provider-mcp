@@ -664,14 +664,11 @@ func splitCodexSystemPrompt(messages []llmtypes.MessageContent) (string, []llmty
 }
 
 func buildCodexInteractivePrompt(messages []llmtypes.MessageContent) string {
-	// Persistent tmux sessions keep prior turns in the native Codex TUI, so each
-	// adapter call submits only the newest human message.
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == llmtypes.ChatMessageTypeHuman {
-			return extractTextFromMessage(messages[i])
-		}
+	var parts []string
+	for _, message := range llmtypes.PendingHumanMessages(messages) {
+		parts = append(parts, extractTextFromMessage(message))
 	}
-	return ""
+	return strings.Join(parts, "\n\n")
 }
 
 func codexCanSubmitInitialPromptAtLaunch(opts *llmtypes.CallOptions, prompt string) bool {

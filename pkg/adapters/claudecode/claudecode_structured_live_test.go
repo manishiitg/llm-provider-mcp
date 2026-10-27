@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ func TestClaudeStructuredTwoTurnResume(t *testing.T) {
 	workingDir := t.TempDir()
 	sentinel := "CLAUDE_STRUCTURED_RESUME_" + randomHex(6)
 	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
+	adapter.SetSDKTransport(os.Getenv("CLAUDE_CODE_TRANSPORT") == "sdk")
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel1()
@@ -65,6 +67,7 @@ func TestClaudeStructuredErrorResultSurfacesAsError(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
 	adapter := NewClaudeCodeInteractiveAdapter("totally-nonexistent-model-xyz", &MockLogger{})
+	adapter.SetSDKTransport(os.Getenv("CLAUDE_CODE_TRANSPORT") == "sdk")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -91,6 +94,7 @@ func TestClaudeStructuredToolCallHasCompleteLifecycle(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
 	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
+	adapter.SetSDKTransport(os.Getenv("CLAUDE_CODE_TRANSPORT") == "sdk")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	bridgeToken := "CLAUDE_STRUCTURED_RECEIPT_" + randomHex(4)
@@ -212,6 +216,7 @@ func TestClaudeStructuredUsageNotDoubled(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
 	adapter := NewClaudeCodeInteractiveAdapter(claudeInteractiveIntegrationModel(), &MockLogger{})
+	adapter.SetSDKTransport(os.Getenv("CLAUDE_CODE_TRANSPORT") == "sdk")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 

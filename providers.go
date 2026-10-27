@@ -55,19 +55,20 @@ const (
 	DefaultAgyCLIModel    = "gemini-3.8-flash-high"
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
-	// Supported normal value: "tmux" for Claude Code TUI mode.
+	// Supported values: "tmux" (default) or "sdk" (official Agent SDK).
 	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
 
 	ClaudeCodeTransportTmux = "tmux"
+	ClaudeCodeTransportSDK  = "sdk"
 	// ClaudeCodeTransportExperimental is kept as a legacy alias.
 	// Deprecated: use ClaudeCodeTransportTmux.
 	ClaudeCodeTransportExperimental = "experimental"
 	// ClaudeCodeTransportPrint is retained only so callers get a clear
 	// unsupported-transport error instead of an unknown symbol during migration.
 	//
-	// Deprecated: Claude Code uses tmux only.
+	// Deprecated: select tmux or sdk.
 	ClaudeCodeTransportPrint = "print"
 )
 
@@ -488,8 +489,7 @@ type Config struct {
 	APIKeys *ProviderAPIKeys
 	// ClaudeCodeTransport optionally overrides CLAUDE_CODE_TRANSPORT for this
 	// initialized Claude Code model. Default is "tmux" (the interactive TUI
-	// transport). The old "print" / `claude -p` stream-json transport is no
-	// longer supported.
+	// transport); "sdk" selects the official streaming Agent SDK.
 	ClaudeCodeTransport string
 }
 

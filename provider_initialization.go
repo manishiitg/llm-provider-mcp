@@ -859,8 +859,9 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 		logger.Infof("Claude Code: using the CLI saved login")
 	}
 
-	// Create Claude Code tmux adapter.
+	// The selected transport is fixed for this adapter instance.
 	llm := claudecodeadapter.NewClaudeCodeInteractiveAdapterWithOAuthToken(modelID, oauthToken, logger)
+	llm.SetSDKTransport(transport == ClaudeCodeTransportSDK)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{
@@ -870,13 +871,13 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 			"provider":     "claude-code",
 			"status":       StatusLLMInitialized,
 			"capabilities": CapabilityTextGeneration + "," + CapabilityToolCalling,
-			"mode":         ClaudeCodeTransportTmux,
-			"transport":    ClaudeCodeTransportTmux,
+			"mode":         transport,
+			"transport":    transport,
 		},
 	}
 	emitLLMInitializationSuccess(config.EventEmitter, string(config.Provider), modelID, CapabilityTextGeneration+","+CapabilityToolCalling, config.TraceID, successMetadata)
 
-	logger.Infof("Initialized Claude Code tmux adapter - model_id: %s", modelID)
+	logger.Infof("Initialized Claude Code %s adapter - model_id: %s", transport, modelID)
 	return llm, nil
 }
 
@@ -895,7 +896,9 @@ func normalizeClaudeCodeTransport(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
 		return ClaudeCodeTransportTmux, nil
-	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk", "sdk":
+	case ClaudeCodeTransportSDK:
+		return ClaudeCodeTransportSDK, nil
+	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk":
 		return "", fmt.Errorf("Claude Code print/stream-json transport is no longer supported; use %s=%q", EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	default:
 		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)

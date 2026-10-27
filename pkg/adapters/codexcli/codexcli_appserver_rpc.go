@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"io"
 	"os/exec"
 	"sync"
@@ -68,6 +69,9 @@ func (r *codexRPC) call(ctx context.Context, method string, params any, result a
 			r.logger.Debugf("codex app-server response method=%s id=%s error=%t", method, id, response.Error != nil)
 		}
 		if response.Error != nil {
+			if method == "turn/steer" {
+				return fmt.Errorf("%w: Codex rejected steer (%d)", llmtypes.ErrCodingAgentInputNotSent, response.Error.Code)
+			}
 			return fmt.Errorf("codex app-server %s (%d): %s", method, response.Error.Code, response.Error.Message)
 		}
 		if result != nil {

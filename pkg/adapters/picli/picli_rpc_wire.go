@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"io"
 	"os/exec"
 	"sync"
@@ -63,7 +64,6 @@ func (r *piRPC) call(ctx context.Context, command string, params map[string]any,
 			return fmt.Errorf("Pi RPC %s: %w", command, err)
 		}
 	case <-ctx.Done():
-		r.finish(ctx.Err())
 		return ctx.Err()
 	case <-r.done:
 		return r.failure()
@@ -71,6 +71,9 @@ func (r *piRPC) call(ctx context.Context, command string, params map[string]any,
 	select {
 	case msg := <-ch:
 		if !msg.Success {
+			if command == "steer" {
+				return fmt.Errorf("%w: Pi rejected steer", llmtypes.ErrCodingAgentInputNotSent)
+			}
 			return fmt.Errorf("Pi RPC %s: %s", command, msg.Error)
 		}
 		if result != nil && len(msg.Data) > 0 {

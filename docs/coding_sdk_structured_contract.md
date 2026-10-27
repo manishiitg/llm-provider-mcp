@@ -3,23 +3,28 @@
 This document defines the structured JSON streaming transport contract for
 coding SDK providers in `multi-llm-provider-go`.
 
-Covered providers:
+The installed provider contract is authoritative: Codex uses app-server, Cursor
+uses ACP, and Pi uses RPC. Claude keeps tmux by default and has two explicit
+structured paths: bounded workflow JSON and the official Agent SDK.
 
-- `claude-code` — `claude -p --output-format stream-json`
-- `codex-cli` — `codex exec --json`
-- `cursor-cli` — `cursor-agent --print --output-format stream-json`
+For Claude SDK mode set `CLAUDE_CODE_TRANSPORT=sdk` in the backend environment
+and restart it. `CLAUDE_CODE_TRANSPORT=tmux` retains the terminal mode. Install
+Node.js and `npm install -g @anthropic-ai/claude-agent-sdk@0.3.311` first, or set
+`CLAUDE_AGENT_SDK_PATH` to the absolute `sdk.mjs` of an existing installation.
+No packages are downloaded during a chat request. This switch affects Claude only.
 
-The provider-level coding-agent contract in `coding_agent_contract.go` decides
-which transport host applications should use by default. Claude Code, Codex CLI,
-and Cursor CLI use the tmux interactive transport. The two transports are
-complementary:
+SDK mode uses streaming input/output through the actual Anthropic package, native
+question callbacks and acknowledged interruption. Each platform turn owns its
+process; subsequent turns use the same native session via resume. Follow-ups queue
+at the host turn boundary. To redirect immediately, interrupt and send a new prompt;
+this is not Codex-style in-place steering. Terminal controls are absent in SDK mode.
+Existing account scope, MCP/native tool policy, OS confinement, transcript files,
+child-transcript reader and usage accounting apply. Native plan usage is optional
+and not advertised by this mode. Existing bounded workflow JSON stays available
+when SDK mode is not selected.
 
-- Tmux: persistent chat, live input, terminal streaming, interrupt, multi-turn.
-- Structured: per-turn, native token/cost, clean tool events, no tmux dependency.
-
-Declared provider capabilities must have matching test coverage. Neither
-transport is legacy, but not every CLI provider exposes both transports through
-the provider-level contract.
+The CLI command examples below describe the earlier bounded JSON adapters;
+current Codex/Cursor runtime launch contracts are app-server/ACP respectively.
 
 ## Provider CLI Commands
 

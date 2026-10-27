@@ -16,6 +16,12 @@ func SendClaudeCodeControlKey(ctx context.Context, ownerSessionID, key string) e
 	if ownerSessionID == "" {
 		return fmt.Errorf("Claude Code owner session ID is required")
 	}
+	if process, ok := claudeSDKProcesses.Get(ownerSessionID); ok {
+		if key != "Escape" && key != "C-c" {
+			return fmt.Errorf("Claude SDK only supports interruption; use the question card for input")
+		}
+		return process.interrupt(ctx)
+	}
 	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)

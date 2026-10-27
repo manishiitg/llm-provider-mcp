@@ -39,3 +39,19 @@ func TestClaudeStructuredProcessEnvWithoutAdapterTokenPreservesExistingAuth(t *t
 		t.Fatalf("structured Claude environment = %#v, want unchanged %#v", got, base)
 	}
 }
+
+// PLAT-872: SDK mode must keep subscription account selection, not inherit an
+// unrelated server API key or OAuth login.
+func TestClaudeSDKAccountDoesNotInheritAmbientCredentials(t *testing.T) {
+	base := []string{"HOME=/selected", "ANTHROPIC_API_KEY=ambient", "ANTHROPIC_AUTH_TOKEN=ambient", "ANTHROPIC_BASE_URL=https://example.com", "CLAUDE_CODE_OAUTH_TOKEN=ambient"}
+	for _, token := range []string{"", "scoped"} {
+		got := claudeSDKProcessEnv(base, token)
+		want := []string{"HOME=/selected"}
+		if token != "" {
+			want = append(want, "CLAUDE_CODE_OAUTH_TOKEN=scoped")
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("account environment not isolated: %#v", got)
+		}
+	}
+}

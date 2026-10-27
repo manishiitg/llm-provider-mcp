@@ -248,7 +248,8 @@ func TestClaudeCodeTmuxRealSeatbeltFullCLIP0(t *testing.T) {
 		"4) echo x > " + filepath.Join(otherWorkflow, "escape.txt") + ". " +
 		"5) echo x > " + filepath.Join(planning, "plan.json") + ". " +
 		"6) /usr/bin/osascript -e 'return 7'."
-	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(defaultClaudeInteractiveTestModel, os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	adapter := NewClaudeCodeInteractiveAdapterWithOAuthToken(claudeInteractiveIntegrationModel(), os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), &MockLogger{})
+	adapter.SetSDKTransport(os.Getenv("CLAUDE_CODE_TRANSPORT") == "sdk")
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	resp, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}}, opts...)

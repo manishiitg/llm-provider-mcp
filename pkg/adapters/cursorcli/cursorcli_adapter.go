@@ -308,7 +308,11 @@ func splitCursorSystemPrompt(messages []llmtypes.MessageContent) (string, []llmt
 
 func buildCursorPrompt(messages []llmtypes.MessageContent, resume bool) string {
 	if resume {
-		return latestCursorHumanMessage(messages)
+		var parts []string
+		for _, message := range llmtypes.PendingHumanMessages(messages) {
+			parts = append(parts, extractTextFromMessage(message))
+		}
+		return strings.Join(parts, "\n\n")
 	}
 	if len(messages) <= 1 {
 		return latestCursorHumanMessage(messages)

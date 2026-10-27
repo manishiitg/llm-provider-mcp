@@ -200,6 +200,7 @@ func newClaudeCallContext(parent context.Context, timeout time.Duration) (contex
 // ClaudeCodeInteractiveAdapter runs Claude Code through its interactive tmux transport.
 // It intentionally does not invoke `claude -p`.
 type ClaudeCodeInteractiveAdapter struct {
+	sdkTransport    bool
 	modelID         string
 	oauthToken      string
 	authFingerprint string
@@ -328,6 +329,10 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	}
 	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
+	}
+
+	if c.sdkTransport {
+		return c.generateContentStructured(ctx, messages, opts)
 	}
 
 	// Opt-in structured/JSON transport: `claude -p --output-format stream-json`,
@@ -4639,6 +4644,10 @@ func armClaudePersistentIdleLease(session *claudeInteractivePersistentSession, l
 // equivalent CloseCursorCLIInteractiveSessionForOwner for the
 // mid-chat-prompt-change motivation.
 func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
+	if process, ok := claudeSDKProcesses.Get(ownerSessionID); ok {
+		process.cancel()
+	}
+
 	closeClaudePersistentInteractiveSession(ownerSessionID, reason, nil)
 }
 

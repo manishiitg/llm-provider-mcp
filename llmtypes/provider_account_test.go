@@ -63,9 +63,9 @@ func TestProviderAccountScopeFingerprintAndTmuxPlan(t *testing.T) {
 func TestProviderAccountCredentialsOverrideAndLoginCannotInheritKey(t *testing.T) {
 	opts := &CallOptions{}
 	WithProviderAccountEnvironment(map[string]string{"HOME": "/B"})(opts)
-	base := []string{"HOME=/global", "META_API_KEY=global-key", "OPENAI_API_KEY=global-openai", "PATH=/bin"}
+	base := []string{"HOME=/global", "META_API_KEY=global-key", "OPENAI_API_KEY=global-openai", "PATH=/bin", "CURSOR_AUTH_TOKEN=global-cursor", "GEMINI_API_KEY=global-gemini", "GOOGLE_API_KEY=global-google"}
 	login := strings.Join(MergeCodingAgentSecretEnvironment(base, opts), "\n")
-	if strings.Contains(login, "global-key") || strings.Contains(login, "global-openai") {
+	if strings.Contains(login, "global-key") || strings.Contains(login, "global-openai") || strings.Contains(login, "global-cursor") || strings.Contains(login, "global-gemini") || strings.Contains(login, "global-google") {
 		t.Fatal("file-login account inherited server credential")
 	}
 	WithProviderAccountCredentials(map[string]string{"META_API_KEY": "private-B"})(opts)

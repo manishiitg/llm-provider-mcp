@@ -15,6 +15,7 @@ const (
 	CodingAgentTransportAppServer  CodingAgentTransport = "app-server"
 	CodingAgentTransportRPC        CodingAgentTransport = "rpc"
 	CodingAgentTransportACP        CodingAgentTransport = "acp"
+	CodingAgentTransportSDK        CodingAgentTransport = "sdk"
 )
 
 // CodingAgentProviderContract is the provider-level contract that host apps can
@@ -552,6 +553,22 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 	if strings.TrimSpace(contract.ModelID) != "" && !strings.EqualFold(strings.TrimSpace(modelID), contract.ModelID) {
 		return CodingAgentProviderContract{}, false
 	}
+	if normalizedProvider == ProviderClaudeCode {
+		if transport, err := resolveClaudeCodeTransport(""); err == nil && transport == ClaudeCodeTransportSDK {
+			contract.Transport = CodingAgentTransportSDK
+			contract.SupportsTerminalStream = false
+			contract.SupportsLiveInput = false // Queue at the host's turn boundary; interrupt then re-prompt to redirect.
+			contract.SupportsDurableAck = false
+			contract.UsesPersistentSession = false // Native --resume persists context; the SDK process is scoped to a host turn.
+			contract.LaunchesViaLoginShell = false
+			contract.HandlesTmuxSessionLoss = false
+			contract.SupportsStalledTurnDiagnosis = false
+			contract.RestoreAsksInteractivePrompts = false
+			contract.TokenUsageSource = "sdk-events"
+			contract.SurfacesPlanUsage = false
+			contract.PlanUsageSource = ""
+		}
+	}
 	return contract, true
 }
 
@@ -573,7 +590,8 @@ func IsTmuxCodingAgentProvider(provider Provider, modelID string) bool {
 // contracts.
 func CodingAgentProviderContracts() []CodingAgentProviderContract {
 	contracts := make([]CodingAgentProviderContract, 0, len(codingAgentProviderContracts))
-	for _, contract := range codingAgentProviderContracts {
+	for provider, registered := range codingAgentProviderContracts {
+		contract, _ := GetCodingAgentProviderContract(provider, registered.ModelID)
 		contracts = append(contracts, contract)
 	}
 	sort.Slice(contracts, func(i, j int) bool {

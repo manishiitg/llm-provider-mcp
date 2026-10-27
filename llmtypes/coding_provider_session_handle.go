@@ -12,6 +12,7 @@ const (
 	CodingProviderTransportAppServer  = "app-server"
 	CodingProviderTransportRPC        = "rpc"
 	CodingProviderTransportACP        = "acp"
+	CodingProviderTransportSDK        = "sdk"
 
 	CodingProviderSessionStatusIdle   = "idle"
 	CodingProviderSessionStatusActive = "active"

@@ -158,6 +158,13 @@ func claudeMirrorLandlockReads(policy *llmtypes.CLISecurityPolicy, workingDir st
 // status-line helper and hook scripts those configs name, and the hooks.
 func claudeLandlockReads(args []string, workingDir string) []string {
 	read := clisandbox.ArgFilePaths(args)
+	// The SDK entry imports sibling modules from this installed package. Grant
+	// only that package, alongside the existing exact runtime/config paths.
+	for _, arg := range args {
+		if filepath.Base(arg) == "sdk.mjs" && filepath.Base(filepath.Dir(arg)) == "claude-agent-sdk" {
+			read = append(read, filepath.Dir(arg))
+		}
+	}
 	configs := append(append([]string(nil), read...), filepath.Join(workingDir, ".mcp.json"))
 	read = append(read, clisandbox.MCPCommandPaths(configs)...)
 	read = append(read, clisandbox.JSONFilePaths(configs)...)

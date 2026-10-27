@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/toolclock"
 )
@@ -25,6 +26,19 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // assistant events (message.content text/tool_use blocks), then a terminal
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
+	ControlID string          `json:"id,omitempty"`
+	Errors    []string        `json:"errors,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Event     *struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	} `json:"event,omitempty"`
+
 	ParentToolUseID string               `json:"parent_tool_use_id,omitempty"`
 	Type            string               `json:"type"`
 	Subtype         string               `json:"subtype,omitempty"`
@@ -110,6 +124,9 @@ type claudeStreamUsage struct {
 // session under --session-id and continues it via --resume). See
 // MetadataKeyStructuredTransport for when this is selected instead of tmux.
 func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+	if c.sdkTransport {
+		ctx = llmtypes.ScopeCodingAgentQuestions(ctx, "claude-code", claudeInteractiveSessionIDFromOptions(opts))
+	}
 	if opts != nil && opts.StreamChan != nil {
 		defer close(opts.StreamChan)
 	}
@@ -129,6 +146,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 
 	systemPrompt, conversationMessages := splitSystemPrompt(messages)
+	if claudeResumeSessionIDFromStructuredOptions(opts) != "" {
+		conversationMessages = llmtypes.PendingHumanMessages(conversationMessages)
+	}
 	prompt := buildClaudeStructuredPrompt(conversationMessages)
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("claude-code prompt is empty")
@@ -154,6 +174,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 
+	if c.sdkTransport && permissionMode == "" {
+		permissionMode = "dontAsk"
+		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions] == true {
+			permissionMode = "bypassPermissions"
+		}
+	}
 	var tempFiles []string
 	defer func() {
 		// removeFiles, not a bare os.Remove loop: writeClaudeCodeProjectInstructionFile
@@ -197,6 +223,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 
+	projectedPrompt := false
 	// Project the system prompt into <workingDir>/CLAUDE.md, as the interactive
 	// adapter does. The prompt still goes through --append-system-prompt below:
 	// that is the structured transport's carrier and the stronger channel, so it
@@ -218,6 +245,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			_ = err
 		} else if rulePath != "" {
 			tempFiles = append(tempFiles, rulePath)
+			projectedPrompt = true
 		}
 	}
 
@@ -229,7 +257,33 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if resumeSessionID == "" {
 		freshSessionID = newClaudeNativeSessionID()
 	}
-	args, sessionID := buildClaudeStructuredArgs(c.modelID, systemPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	launchPrompt := systemPrompt
+	if c.sdkTransport && projectedPrompt && projectInstructionOnlyFromOptions(opts) {
+		launchPrompt = ""
+	}
+	args, sessionID := buildClaudeStructuredArgs(c.modelID, launchPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	if c.sdkTransport && opts != nil && opts.Metadata != nil {
+		if effort, ok := opts.Metadata.Custom[MetadataKeyEffort].(string); ok && effort != "" {
+			args = append(args, "--effort", effort)
+		}
+		if _, supplied := opts.Metadata.Custom[MetadataKeyTools]; supplied && tools == "" {
+			args = append(args, "--tools", "")
+		}
+	}
+	if c.sdkTransport && redirectSettingsPath == "" && opts != nil && opts.Metadata != nil {
+		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && settings != "" {
+			raw, err := json.Marshal(claudeLoadSettingsMap(settings))
+			if err != nil {
+				return nil, err
+			}
+			path, err := writeTempJSONConfig("claude-code-sdk-settings-*.json", string(raw))
+			if err != nil {
+				return nil, err
+			}
+			tempFiles = append(tempFiles, path)
+			redirectSettingsPath = path
+		}
+	}
 	if redirectSettingsPath != "" {
 		args = append(args, "--settings", redirectSettingsPath)
 	}
@@ -244,14 +298,36 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, args...)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	cmd := exec.CommandContext(runCtx, binPath, args...)
+	var sdkProcess *claudeSDKProcess
+	if c.sdkTransport {
+		var cleanup func()
+		cmd, cleanup, err = claudeSDKCommand(runCtx, binPath, args)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		sdkProcess = &claudeSDKProcess{cancel: cancelRun, done: make(chan struct{})}
+		defer close(sdkProcess.done)
+		sdkProcess.input, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		defer sdkProcess.input.Close()
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	procshutdown.KillGroupOnCancel(cmd)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
 	cmd.Env = append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...)
-	cmd.Stdin = strings.NewReader(prompt) // prompt via stdin (--input-format text default)
+	if c.sdkTransport {
+		cmd.Env = claudeSDKProcessEnv(cmd.Env, c.oauthToken)
+	} else {
+		cmd.Stdin = strings.NewReader(prompt) // one-shot structured input
+	}
 	cleanupSandbox, err := claudeLandlockCmd(opts, cmd, workingDir)
 	if err != nil {
 		return nil, fmt.Errorf("confine Claude Code: %w", err)
@@ -266,7 +342,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	cmd.Stderr = &stderr
 
 	if c.logger != nil {
-		if resumeSessionID != "" {
+		if c.sdkTransport {
+			c.logger.Infof("Executing Claude Agent SDK: streaming input/output, native resume=%t", resumeSessionID != "")
+		} else if resumeSessionID != "" {
 			c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json --resume <id>")
 		} else {
 			c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json")
@@ -276,6 +354,22 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
 
+	if sdkProcess != nil {
+		owner := claudeInteractiveSessionIDFromOptions(opts)
+		if owner != "" {
+			claudeSDKProcesses.Set(owner, sdkProcess)
+			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
+		}
+		if err := sdkProcess.write(map[string]any{"type": "prompt", "text": prompt}); err != nil {
+			cancelRun()
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("Claude SDK input: %w", err)
+		}
+	}
+	var questions nativeinput.Requests
+	defer questions.Close()
+	var partialText bool
+	var scanErr error
 	var finalText strings.Builder
 	var resultText string
 	sawNativeSubagent := false
@@ -338,6 +432,31 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				sessionID = ev.SessionID
 			}
 			switch ev.Type {
+			case "sdk_permission":
+				if sdkProcess != nil {
+					request := ev
+					questions.Start(ctx, request.RequestID, func(questionCtx context.Context) {
+						response := claudeSDKPermission(questionCtx, request.ToolName, request.Input)
+						_ = sdkProcess.write(map[string]any{"type": "permission", "id": request.RequestID, "response": response})
+					})
+				}
+			case "sdk_control_result":
+				if sdkProcess != nil {
+					sdkProcess.acknowledgeControl(ev.ControlID, ev.IsError)
+				}
+			case "sdk_permission_cancel":
+				questions.Cancel(ev.RequestID)
+			case "stream_event":
+				if ev.Event != nil {
+					if ev.Event.Type == "message_start" {
+						partialText = false
+					}
+					if ev.Event.Type == "content_block_delta" && ev.Event.Delta.Type == "text_delta" {
+						partialText = true
+						emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: ev.Event.Delta.Text, Metadata: map[string]any{llmtypes.ContentDeltaMetadataKey: true}})
+					}
+				}
+
 			case "system":
 				if ev.Subtype == "init" && ev.Model != "" {
 					liveUsage.model = ev.Model
@@ -360,7 +479,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					for _, block := range ev.Message.Content {
 						if block.Type == "text" && block.Text != "" {
 							finalText.WriteString(block.Text)
-							emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
+							if !partialText {
+								emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
+							}
 						}
 						if block.Type == "tool_use" && block.Name != "" {
 							if block.Name == "Agent" || block.Name == "Task" {
@@ -436,6 +557,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
+				if ev.IsError && ev.Result == "" {
+					resultText = strings.Join(ev.Errors, "; ")
+				}
 				if strings.TrimSpace(ev.Result) != "" {
 					resultText = ev.Result
 				}
@@ -450,10 +574,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, claudeStructuredNaturalExitGrace, c.logger)
 			}
 		}
+		scanErr = scanner.Err()
 	}()
 
 	<-scannerDone
 	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("Claude stream: %w", scanErr)
+	}
 	if waitErr != nil && ctx.Err() == nil && !sawResult {
 		stderrStr := strings.TrimSpace(stderr.String())
 		if stderrStr != "" {
@@ -492,6 +623,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		"claude_code_session_id":     sessionID, // surfaced so mcpagent captures a.ClaudeCodeSessionID and can --resume next turn
 		"context_window_usage_known": false,
 	}
+	transport := llmtypes.CodingProviderTransportStructured
+	if c.sdkTransport {
+		additional["claude_code_mode"] = "sdk"
+		transport = llmtypes.CodingProviderTransportSDK
+	}
 	// Same contract as the interactive adapter: every assistant text block of
 	// the turn, for surfaces that show the conversation rather than a result.
 	if turnText := strings.TrimSpace(finalText.String()); turnText != "" && turnText != content {
@@ -528,7 +664,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// ID", silently restarting the turn as a fresh conversation.
 	llmtypes.AttachCodingProviderSessionHandle(genInfo, llmtypes.CodingProviderSessionHandle{
 		Provider:        "claude-code",
-		Transport:       llmtypes.CodingProviderTransportStructured,
+		Transport:       transport,
 		NativeSessionID: sessionID,
 		WorkingDir:      workingDir,
 		Model:           c.modelID,

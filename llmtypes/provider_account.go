@@ -121,7 +121,7 @@ func providerAccountCredentials(opts *CallOptions) map[string]string {
 	return values
 }
 func ProviderAccountCredentialNames() []string {
-	return []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "META_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY", "PI_CODING_AGENT_DIR"}
+	return []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "META_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "PI_API_KEY", "PI_CODING_AGENT_DIR"}
 }
 func providerAccountCredentialKey(key string) bool {
 	for _, name := range ProviderAccountCredentialNames() {

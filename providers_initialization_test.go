@@ -72,6 +72,7 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 		{name: "default", raw: "", want: ClaudeCodeTransportTmux},
 		{name: "legacy experimental alias", raw: "experimental", want: ClaudeCodeTransportTmux},
 		{name: "tmux", raw: "tmux", want: ClaudeCodeTransportTmux},
+		{name: "sdk", raw: "sdk", want: ClaudeCodeTransportSDK},
 		{name: "print", raw: "print", wantErr: true},
 		{name: "p alias", raw: "-p", wantErr: true},
 		{name: "agent sdk alias", raw: "agent-sdk", wantErr: true},
