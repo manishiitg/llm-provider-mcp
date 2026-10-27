@@ -26,12 +26,14 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // assistant events (message.content text/tool_use blocks), then a terminal
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
-	ControlID string          `json:"id,omitempty"`
-	Errors    []string        `json:"errors,omitempty"`
-	RequestID string          `json:"request_id,omitempty"`
-	ToolName  string          `json:"tool_name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	Event     *struct {
+	SDKContinues bool            `json:"sdk_continues,omitempty"`
+	InputNotSent bool            `json:"input_not_sent,omitempty"`
+	ControlID    string          `json:"id,omitempty"`
+	Errors       []string        `json:"errors,omitempty"`
+	RequestID    string          `json:"request_id,omitempty"`
+	ToolName     string          `json:"tool_name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	Event        *struct {
 		Type  string `json:"type"`
 		Delta struct {
 			Type string `json:"type"`
@@ -370,6 +372,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var scanErr error
 	var finalText strings.Builder
 	var resultText string
+	var previousResultContinues bool
 	sawNativeSubagent := false
 	// totalUsage is fed ONLY from the terminal result event's usage, which
 	// Anthropic documents as the per-run cumulative total — NOT summed with
@@ -440,7 +443,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			case "sdk_control_result":
 				if sdkProcess != nil {
-					sdkProcess.acknowledgeControl(ev.ControlID, ev.IsError)
+					sdkProcess.acknowledgeControl(ev.ControlID, ev.IsError, ev.InputNotSent)
 				}
 			case "sdk_permission_cancel":
 				questions.Cancel(ev.RequestID)
@@ -555,12 +558,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
-				if ev.IsError && ev.Result == "" {
-					resultText = strings.Join(ev.Errors, "; ")
-				}
-				if strings.TrimSpace(ev.Result) != "" {
-					resultText = ev.Result
-				}
+				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
+				previousResultContinues = ev.SDKContinues
 				if ev.Usage != nil {
 					accumulateClaudeUsage(&totalUsage, ev.Usage)
 					totalCacheReadTokens += ev.Usage.CacheReadInputTokens
@@ -569,7 +568,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				// Claude emits the result before its resumable transcript is
 				// guaranteed to be flushed. Let it exit naturally first; the
 				// signal sequence remains a backstop for a stuck CLI.
-				go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, claudeStructuredNaturalExitGrace, c.logger)
+				if !ev.SDKContinues {
+					go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, claudeStructuredNaturalExitGrace, c.logger)
+				}
 			}
 		}
 		scanErr = scanner.Err()
@@ -777,4 +778,20 @@ func claudeResumeSessionIDFromStructuredOptions(opts *llmtypes.CallOptions) stri
 		return strings.TrimSpace(id)
 	}
 	return ""
+}
+
+// PLAT-872-47: one host turn may contain several native results after steering.
+// Keep each answer the person saw, including the answer before background work.
+func claudeContinuedResultText(previous string, event claudeStreamEvent, continued bool) string {
+	text := event.Result
+	if event.IsError && text == "" {
+		text = strings.Join(event.Errors, "; ")
+	}
+	if strings.TrimSpace(text) == "" {
+		return previous
+	}
+	if continued && strings.TrimSpace(previous) != "" {
+		return previous + "\n\n" + text
+	}
+	return text
 }

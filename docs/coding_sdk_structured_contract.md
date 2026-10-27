@@ -15,9 +15,11 @@ No packages are downloaded during a chat request. This switch affects Claude onl
 
 SDK mode uses streaming input/output through the actual Anthropic package, native
 question callbacks and acknowledged interruption. Each platform turn owns its
-process; subsequent turns use the same native session via resume. Follow-ups queue
-at the host turn boundary. To redirect immediately, interrupt and send a new prompt;
-this is not Codex-style in-place steering. Terminal controls are absent in SDK mode.
+process; subsequent turns use the same native session via resume. Messages sent
+while a query is running use native priority-now steering, acknowledged by their
+CLI message UUID. The CLI can move active tools aside to take the new instruction.
+If the query has ended before submission, the host queues a follow-up normally.
+Terminal controls are absent in SDK mode.
 Existing account scope, MCP/native tool policy, OS confinement, transcript files,
 child-transcript reader and usage accounting apply. Native plan usage is optional
 and not advertised by this mode. Existing bounded workflow JSON stays available

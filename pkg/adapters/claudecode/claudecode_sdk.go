@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
 )
@@ -134,6 +135,17 @@ func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage
 }
 
 func (p *claudeSDKProcess) interrupt(ctx context.Context) error {
+	return p.control(ctx, "interrupt", "")
+}
+
+func (p *claudeSDKProcess) steer(ctx context.Context, message string) error {
+	return p.control(ctx, "steer", message)
+}
+
+func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := randomHex(12)
 	reply := make(chan error, 1)
 	p.controlsMu.Lock()
@@ -143,7 +155,7 @@ func (p *claudeSDKProcess) interrupt(ctx context.Context) error {
 	p.controls[id] = reply
 	p.controlsMu.Unlock()
 	defer func() { p.controlsMu.Lock(); delete(p.controls, id); p.controlsMu.Unlock() }()
-	if err := p.write(map[string]any{"type": "interrupt", "id": id}); err != nil {
+	if err := p.write(map[string]any{"type": kind, "id": id, "text": message}); err != nil {
 		return err
 	}
 	select {
@@ -152,21 +164,32 @@ func (p *claudeSDKProcess) interrupt(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-p.done:
-		return fmt.Errorf("Claude SDK turn ended before interrupt acknowledgement")
+		return fmt.Errorf("Claude SDK turn ended before native input/control acknowledgement")
 	}
 }
-func (p *claudeSDKProcess) acknowledgeControl(id string, failed bool) {
+func (p *claudeSDKProcess) acknowledgeControl(id string, failed, notSent bool) {
 	p.controlsMu.Lock()
 	reply := p.controls[id]
 	p.controlsMu.Unlock()
 	if reply != nil {
 		var err error
-		if failed {
-			err = fmt.Errorf("Claude SDK rejected interruption")
+		if notSent {
+			err = fmt.Errorf("%w: Claude SDK turn is no longer accepting input", llmtypes.ErrCodingAgentInputNotSent)
+		} else if failed {
+			err = fmt.Errorf("Claude SDK rejected control request")
 		}
 		select {
 		case reply <- err:
 		default:
 		}
 	}
+}
+
+// SendClaudeCodeSDKInput never falls back to a tmux session from another transport.
+func SendClaudeCodeSDKInput(ctx context.Context, owner, message string) error {
+	process, ok := claudeSDKProcesses.Get(strings.TrimSpace(owner))
+	if !ok {
+		return fmt.Errorf("%w: no active Claude SDK turn", llmtypes.ErrCodingAgentInputNotSent)
+	}
+	return process.steer(ctx, message)
 }

@@ -16,7 +16,7 @@ async function main() {
     // Match the CLI's normal Claude Code instructions and project skills.
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['user', 'project', 'local'],
-    extraArgs: {},
+    extraArgs: { 'replay-user-messages': null },
   };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -44,7 +44,7 @@ async function main() {
     }
   }
   let run, wake, ended = false;
-  const input = [], permissions = new Map();
+  const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map();
   const lines = createInterface({ input: process.stdin });
   const finishInput = () => { ended = true; wake?.(); };
   const cancelPermissions = () => { for (const resolve of permissions.values()) resolve(deny()); permissions.clear(); };
@@ -62,11 +62,22 @@ async function main() {
     lines.on('line', line => {
       try {
         const request = JSON.parse(line);
-        if (request.type === 'prompt') { input.push(request.text); wake?.(); resolve(); }
+        if (request.type === 'prompt') { input.push({ text: request.text }); wake?.(); resolve(); }
+        else if (request.type === 'steer') {
+          if (!run || ended) {
+            emit({ type: 'sdk_control_result', id: request.id, is_error: true, input_not_sent: true });
+          } else {
+            const uuid = randomUUID();
+            steering.set(uuid, request.id);
+            unsettled.add(uuid);
+            input.push({ text: request.text, uuid, priority: 'now' });
+            wake?.();
+          }
+        }
         else if (request.type === 'permission') permissions.get(request.id)?.(request.response);
         else if (request.type === 'interrupt' && run) {
           cancelPermissions();
-          run.interrupt().then(() => emit({ type: 'sdk_control_result', id: request.id }), () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
+          run.interrupt().then(() => { unsettled.clear(); background.clear(); finishInput(); emit({ type: 'sdk_control_result', id: request.id }); }, () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
         }
       } catch (error) { reject(error); }
     });
@@ -76,17 +87,43 @@ async function main() {
   async function* messages() {
     while (!ended || input.length) {
       if (!input.length) { await new Promise(resolve => { wake = resolve; }); wake = undefined; continue; }
-      yield { type: 'user', message: { role: 'user', content: input.shift() }, parent_tool_use_id: null };
+      const next = input.shift();
+      // Native human priority-now delivery lets movable tools step aside while
+      // the running conversation takes the new direction (PLAT-872-47).
+      yield { type: 'user', message: { role: 'user', content: next.text }, parent_tool_use_id: null,
+        uuid: next.uuid, priority: next.priority, origin: { kind: 'human' } };
     }
   }
   run = query({ prompt: messages(), options });
   try {
     for await (const event of run) {
+      // Keep work moved aside by steering alive until its native completion.
+      // An empty roster can precede task_notification, so only that terminal
+      // notification retires a known task. Ambient watchers do not hold a turn.
+      if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
+        for (const task of event.tasks || []) {
+          if (!task.ambient) background.set(task.task_id, task.run_id);
+        }
+      }
+      if (event.type === 'system' && event.subtype === 'task_notification' &&
+          background.get(event.task_id) === event.run_id) background.delete(event.task_id);
       if (event.type === "result" && event.is_error) nativeErrorReported = true;
+      const consumed = new Set([...(event.user_message_uuids || []), event.user_message_uuid]);
+      if (event.type === 'user' && !event.parent_tool_use_id) consumed.add(event.uuid);
+      for (const uuid of consumed) {
+        if (steering.has(uuid)) {
+          emit({ type: 'sdk_control_result', id: steering.get(uuid) });
+          steering.delete(uuid);
+        }
+      }
+      if (event.type === 'result') {
+        for (const uuid of consumed) unsettled.delete(uuid);
+        event.sdk_continues = !ended && (unsettled.size > 0 || background.size > 0 || event.queued_turn_count > 0);
+      }
       emit(event);
-      // One host turn per SDK process. Close input at the native result, then
-      // drain the SDK so its native transcript finishes flushing for --resume.
-      if (event.type === 'result') finishInput();
+      // One host turn can consume several steers. Close only after their native
+      // results, then drain transcript writes before the next host resumes.
+      if (event.type === 'result' && !event.sdk_continues) finishInput();
     }
   } finally { finishInput(); cancelPermissions(); lines.close(); run.close(); }
 }

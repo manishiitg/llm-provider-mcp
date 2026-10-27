@@ -557,7 +557,7 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 		if transport, err := resolveClaudeCodeTransport(""); err == nil && transport == ClaudeCodeTransportSDK {
 			contract.Transport = CodingAgentTransportSDK
 			contract.SupportsTerminalStream = false
-			contract.SupportsLiveInput = false // Queue at the host's turn boundary; interrupt then re-prompt to redirect.
+			contract.SupportsLiveInput = true // Native SDK priority-now input, confirmed by the CLI message UUID.
 			contract.SupportsDurableAck = false
 			contract.UsesPersistentSession = false // Native --resume persists context; the SDK process is scoped to a host turn.
 			contract.LaunchesViaLoginShell = false

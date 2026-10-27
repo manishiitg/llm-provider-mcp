@@ -3,6 +3,7 @@ package llmproviders
 import (
 	"context"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
 	"strings"
 )
 
@@ -54,6 +55,9 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 
 	switch normalizedProvider {
 	case ProviderClaudeCode:
+		if contract.Transport == CodingAgentTransportSDK {
+			return claudecode.SendClaudeCodeSDKInput(ctx, ownerSessionID, message)
+		}
 		return SendClaudeCodeInput(ctx, ownerSessionID, message)
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
