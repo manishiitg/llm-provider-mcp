@@ -104,7 +104,13 @@ func TestPrivateCursorRuntimePreservesProjectAndAccountPolicy(t *testing.T) {
 			t.Fatalf("old account visible in B: %s %v", name, err)
 		}
 	}
-	if current, err := filepath.EvalSymlinks(filepath.Join(private, "cursor-config")); err != nil || current != configB {
+	// macOS temporary directories can use /var while the link resolves under
+	// /private/var. Compare canonical directories, not those OS aliases.
+	canonicalB, err := filepath.EvalSymlinks(configB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, err := filepath.EvalSymlinks(filepath.Join(private, "cursor-config")); err != nil || current != canonicalB {
 		t.Fatal("transcript account not updated", err)
 	}
 	if _, err := os.Stat(filepath.Join(configA, "acp-sessions", "record-A")); err != nil {
