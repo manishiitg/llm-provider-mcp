@@ -17,8 +17,18 @@ import (
 // replacement before sending, and keep normal streaming and later continuation.
 // The only fake is the external Cursor protocol process; adapter routing is real.
 func TestCursorACPInvalidLoadRestoresHistoryOnce(t *testing.T) {
-	for _, refusal := range []int{-32602, -32000} {
-		t.Run(fmt.Sprint(refusal), func(t *testing.T) {
+	for _, refusal := range []struct {
+		name    string
+		code    int
+		detail  string
+		recover bool
+	}{
+		{"missing saved session", -32602, `Session "old-handle" not found`, true},
+		{"missing session wording", -32602, "Saved session old-handle was NOT FOUND in this account", true},
+		{"invalid parameters", -32602, "cwd must be absolute", false},
+		{"other refusal", -32000, "not authenticated", false},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
 			cwd, bin := t.TempDir(), t.TempDir()
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -30,14 +40,14 @@ for line in sys.stdin:
  m=q.get('method'); p=q.get('params',{})
  reply={'jsonrpc':'2.0','id':q['id'],'result':{}}
  if m=='session/load' and p['sessionId']=='old-handle':
-  reply.pop('result'); reply['error']={'code':%d,'message':'Invalid params'}
+  reply.pop('result'); reply['error']={'code':%d,'message':'Invalid params','data':{'message':%q}}
  elif m=='session/new': reply['result']={'sessionId':'new-handle'}
  elif m=='session/prompt':
   if not os.path.exists('published-handle'): sys.exit(3)
   print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':p['sessionId'],'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'OK'}}}}),flush=True)
   reply['result']={'stopReason':'end_turn'}
  print(json.dumps(reply),flush=True)
-`, refusal)
+`, refusal.code, refusal.detail)
 			if err := os.WriteFile(filepath.Join(bin, "cursor-agent"), []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -77,7 +87,7 @@ for line in sys.stdin:
 				return response, err
 			}
 			first, err := run("First follow-up.")
-			if refusal == -32000 {
+			if !refusal.recover {
 				if err == nil {
 					t.Fatal("unrelated load error must fail")
 				}

@@ -200,7 +200,13 @@ func (r *cursorACP) openSession(ctx context.Context, cwd string, servers any, re
 	}
 	err := r.call(ctx, method, params, &state)
 	var refusal *cursorACPError
-	if resume != "" && errors.As(err, &refusal) && refusal.Code == -32602 {
+	var detail struct {
+		Message string `json:"message"`
+	}
+	missing := resume != "" && errors.As(err, &refusal) && refusal.Code == -32602 &&
+		json.Unmarshal(refusal.Data, &detail) == nil && strings.Contains(detail.Message, resume) &&
+		strings.Contains(strings.ToLower(detail.Message), "not found")
+	if missing {
 		// PLAT-872-50: an incompatible saved handle is refused before any
 		// prompt. Start a new session and let the caller supply saved history.
 		// Never recover transport failures or errors after submitting a prompt.
@@ -337,7 +343,7 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 		s.hasHistory = hasHistory
 		s.mu.Unlock()
 		if requestedNative != "" && native != requestedNative && c.logger != nil {
-			c.logger.Infof("[CURSOR_ACP] session_load_invalid_params fallback=new chat=%q requested=%q new=%q", owner, requestedNative, native)
+			c.logger.Infof("[CURSOR_ACP] session_load_missing fallback=new chat=%q requested=%q new=%q", owner, requestedNative, native)
 		}
 		if opts.OnCodingProviderSession != nil {
 			opts.OnCodingProviderSession(cursorACPSessionHandle(s))

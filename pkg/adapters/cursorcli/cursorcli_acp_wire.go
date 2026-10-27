@@ -25,8 +25,9 @@ type cursorACPMessage struct {
 }
 
 type cursorACPError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *cursorACPError) Error() string {
