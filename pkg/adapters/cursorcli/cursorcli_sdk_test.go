@@ -23,6 +23,7 @@ function agent(id) {
   return {
     agentId: id,
     async send(text, opts) {
+      check(opts);
       let done, resolveDone = new Promise(r => { done = r; });
       const run = {
         async steer(t) { if (t === 'LATER') { done(); return 'revert_to_followup'; } steered = t; done(); return 'complete_delivered'; },
@@ -75,6 +76,50 @@ func TestCursorSDKModelDiscoveryDoesNotBlockOrOverrideSelection(t *testing.T) {
 				t.Fatalf("starts failed: %v, %s", err, out)
 			}
 		})
+	}
+}
+
+// PLAT-872-64: an owner got a reply, then a plan refusal on the next message
+// using the same native agent. Keep the selected params explicit on both sends,
+// even when the SDK's retained default differs after a run.
+func TestCursorSDKResumedChatKeepsSelectedModelAcrossTwoTurns(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	bridge, entry := filepath.Join(dir, "bridge.cjs"), filepath.Join(dir, "sdk.cjs")
+	sdk := `
+exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>[{id:'composer-2.5',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]}};
+exports.Agent={
+  create:async()=>{throw Error('must retain the native conversation');},
+  resume:async(id,options)=>{
+    let retained=options.model, turns=0;
+    return {agentId:id, send:async(text,sendOptions)=>{
+      const model=sendOptions.model??retained;
+      if(model.id!=='composer-2.5'||JSON.stringify(model.params)!=='[{"id":"fast","value":"false"}]') throw Error('Model unavailable on Plus. Switch to an included model to continue.');
+      return {async *stream(){},wait:async()=>{
+        retained={id:'composer-2.5'};
+        return {status:'finished',result:'reply '+(++turns)};
+      }};
+    }};
+  }
+};`
+	for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
+		if err := os.WriteFile(name, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", bridge, entry)
+	cmd.Stdin = strings.NewReader(`{"type":"start","agent_id":"agent-existing","model":{"id":"composer-2.5"}}
+{"type":"prompt","text":"hi"}
+{"type":"prompt","text":"ok"}
+{"type":"close"}
+`)
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), `"agent_id":"agent-existing","resumed":true`) || strings.Count(string(out), `"status":"finished"`) != 2 || !strings.Contains(string(out), `"result":"reply 2"`) {
+		t.Fatalf("resumed two-turn conversation failed: %v, %s", err, out)
 	}
 }
 

@@ -102,6 +102,8 @@ async function main() {
     try {
       while (text !== undefined) {
         run = await agent.send(text, {
+          // Reassert the selected variant on every turn, including resumed/follow-up runs.
+          model: start.model,
           onDelta: ({ update }) => {
             if (update.type === 'text-delta') emit({ type: 'delta', kind: 'text', text: update.text });
             else if (update.type === 'thinking-delta') emit({ type: 'delta', kind: 'thinking', text: update.text });
