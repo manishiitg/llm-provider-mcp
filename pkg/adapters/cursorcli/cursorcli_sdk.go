@@ -254,7 +254,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	}
 	// The agent loop runs in node itself, so node is the confined process (no spawned CLI child).
 	sdkPackages := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(entry)))) // .../node_modules/@cursor
-	reads := append(cursorLandlockReads(nil, cwd), bridge, sdkPackages, artifacts)
+	reads := append(cursorLandlockReads(opts, nil, cwd), bridge, sdkPackages, artifacts)
 	sandboxCleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, reads, nil)
 	if err != nil {
 		stop()

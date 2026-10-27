@@ -131,7 +131,7 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 		}
 		cmd.Env = append(cmd.Env, "CURSOR_CONFIG_DIR="+configDir)
 	}
-	sandboxCleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(args, cwd), nil)
+	sandboxCleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(opts, args, cwd), nil)
 	if err != nil {
 		stop()
 		cleanup()

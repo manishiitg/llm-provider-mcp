@@ -158,3 +158,29 @@ func TestCursorTerminalLaunchCannotBorrowServerKeyOrBypassDenyHooks(t *testing.T
 		t.Fatal("selected key missing")
 	}
 }
+
+// PLAT-872-57: a Crew bound to a person's folder keeps its MCP config in the private runtime, not cwd.
+// The sandbox must grant the MCP command named there, or AgentWorks tools fail to start.
+func TestCursorSandboxGrantsMCPCommandFromPrivateRuntime(t *testing.T) {
+	project, private := t.TempDir(), t.TempDir()
+	command := filepath.Join(t.TempDir(), "mcpbridge")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(private, ".cursor"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"mcpServers":{"agentworks":{"command":"` + command + `"}}}`
+	if err := os.WriteFile(filepath.Join(private, ".cursor", "mcp.json"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts := &llmtypes.CallOptions{}
+	llmtypes.WithCLIRuntimeDir(private)(opts)
+	reads := cursorLandlockReads(opts, nil, project)
+	for _, read := range reads {
+		if read == command {
+			return
+		}
+	}
+	t.Fatalf("MCP command %s not granted; reads=%v", command, reads)
+}

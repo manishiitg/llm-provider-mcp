@@ -2995,7 +2995,7 @@ func createCursorTmuxChat(ctx context.Context, opts *llmtypes.CallOptions, cwd s
 	cmd := exec.CommandContext(ctx, "cursor-agent", "--workspace", cwd, "--trust", "create-chat")
 	cmd.Dir = cwd
 	cmd.Env = append(llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(""), opts), env...)
-	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(cmd.Args, cwd), nil)
+	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(opts, cmd.Args, cwd), nil)
 	if err != nil {
 		return "", err
 	}
