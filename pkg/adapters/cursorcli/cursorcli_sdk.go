@@ -289,6 +289,16 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	start := map[string]any{"type": "start", "cwd": cwd, "model": cursorSDKModel(model)}
 	if artifacts != cwd {
 		start["dirs"] = []string{artifacts}
+		// The SDK documents rules and skills from local.dirs, not MCP: pass the prepared servers (with the
+		// AgentWorks bridge) explicitly so a bound-folder chat never loses its tools.
+		if raw, readErr := os.ReadFile(filepath.Join(artifacts, ".cursor", "mcp.json")); readErr == nil {
+			var mcp struct {
+				Servers map[string]any `json:"mcpServers"`
+			}
+			if json.Unmarshal(raw, &mcp) == nil && len(mcp.Servers) > 0 {
+				start["mcp_servers"] = mcp.Servers
+			}
+		}
 	}
 	// Only an SDK agent handle can be resumed; an ACP session ID starts a new agent with saved history.
 	if strings.HasPrefix(resume, "agent-") {

@@ -21,10 +21,12 @@ async function main() {
   const options = () => ({
     apiKey: process.env.CURSOR_API_KEY || undefined,
     model: start.model,
-    // Rules (system prompt) and MCP servers come from the project's .cursor files Go prepared.
+    // Rules (system prompt) and MCP servers come from the .cursor files Go prepared; a bound folder's
+    // servers also arrive explicitly in start.mcp_servers.
     local: { cwd: start.cwd, ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'] },
     ...(start.mode ? { mode: start.mode } : {}),
     ...(start.tools ? { tools: start.tools } : {}),
+    ...(start.mcp_servers ? { mcpServers: start.mcp_servers } : {}),
   });
   // Steering and cancel arrive while a run streams, so they are handled as they are read.
   const control = request => {
