@@ -228,6 +228,10 @@ func classifyKind(err error) Kind {
 	// any unrelated Codex failure classify as permanent quota exhaustion, and
 	// the provider was then skipped for the rest of the session.
 	msg = usageLimitOfferRe.ReplaceAllString(msg, "")
+	// Native API-credit exhaustion requires account action, not a timed reset.
+	if strings.Contains(msg, "quota exceeded. check your plan and billing details") {
+		return KindBilling
+	}
 
 	// Permanent quota exhaustion — checked before rate limit because these
 	// messages frequently also mention 429/quota.

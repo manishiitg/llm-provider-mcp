@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 	"os"
@@ -233,6 +234,11 @@ func (c *CursorCLIAdapter) consumeACPTurn(ctx context.Context, s *cursorACPSessi
 				usage = &llmtypes.Usage{InputTokens: u.Input, OutputTokens: u.Output, TotalTokens: u.Total, CacheTokens: &u.Cached}
 			}
 			flushTools(true)
+			if len(tools) == 0 {
+				if err := cursorACPPlanFailure(text.String(), s.model); err != nil {
+					return nil, err
+				}
+			}
 			if strings.TrimSpace(text.String()) == "" && len(tools) == 0 {
 				return nil, fmt.Errorf("Cursor returned no answer (stop reason: %s)", result.StopReason)
 			}
@@ -248,6 +254,16 @@ func (c *CursorCLIAdapter) consumeACPTurn(ctx context.Context, s *cursorACPSessi
 			return nil, r.failure()
 		}
 	}
+}
+
+func cursorACPPlanFailure(text, model string) error {
+	// Cursor emits this standalone account refusal as a normal message chunk.
+	// Do not classify ordinary explanations or quoted discussions of plans.
+	if strings.TrimSpace(text) != "Upgrade your plan to continue" {
+		return nil
+	}
+	return &llmerrors.Error{Kind: llmerrors.KindBilling, Provider: "cursor-cli", Model: model,
+		Err: fmt.Errorf("This Cursor account needs a plan upgrade to continue. Check its plan or select another Cursor account.")}
 }
 func (c *CursorCLIAdapter) GetStatusLine(ctx context.Context, owner string) (*llmtypes.StatusLine, error) {
 	cursorACPSessions.Lock()
