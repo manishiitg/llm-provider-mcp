@@ -18,7 +18,7 @@ type cursorRetainedInput struct {
 	query    string
 	baseline map[string]struct{}
 	// message is the text as sent (query is whitespace-normalized) and sentAt
-	// when; together they find the chat that received it (repinStoreForMessage).
+	// when, for matching the submitted turn in its exact native conversation.
 	message string
 	sentAt  time.Time
 }
@@ -50,10 +50,7 @@ func (s *cursorInteractiveSession) resolveRetainedStoreLocked() string {
 	}
 	if s.retainedNativeID != "" {
 		s.retainedStoreDB = cursorStoreDBForNativeSession(home, s.retainedWorkingDir, s.retainedNativeID, s.accountConfigDir)
-	} else {
-		// A cold launch may not have flushed its store when GenerateContent
-		// returns. Discover once, then pin it just as the normal turn reader does.
-		s.retainedStoreDB = freshestCursorStoreDBSince(s.retainedWorkingDir, s.createdAt.Add(-30*time.Second), s.accountHome, s.accountConfigDir)
+
 	}
 	return s.retainedStoreDB
 }
@@ -147,15 +144,12 @@ func readRetainedTurnMessages(ownerSessionID string, requireIdle bool) []llmtype
 	if messages := readCursorRetainedInput(input); messages != nil {
 		return messages
 	}
-	// Nothing yet: make sure the pinned chat is the one that received the
-	// message before concluding the reply is still pending.
-	if repinned := session.repinStoreForMessage(input.message, input.sentAt.Add(-time.Minute)); repinned != "" && repinned != input.storeDB {
-		session.retainedMu.Lock()
-		current := session.retainedInput
-		session.retainedMu.Unlock()
-		if current != nil {
-			return readCursorRetainedInput(current)
-		}
+	// The issued store may first appear after the input was sent. Resolve only
+	// that native ID; never select another conversation with matching text.
+	if path := resolveCursorStoreNoMu(session); path != "" && input.storeDB == "" {
+		updated := *input
+		updated.storeDB = path
+		return readCursorRetainedInput(&updated)
 	}
 	return nil
 }

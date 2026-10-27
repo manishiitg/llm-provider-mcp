@@ -3,6 +3,9 @@ package cursorcli
 import (
 	"context"
 	"errors"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +20,18 @@ type cursorRuntimeControls struct {
 }
 
 func (c *cursorRuntimeControls) handle(ctx context.Context, sessionName, captured string) bool {
+	if hasCursorMCPToolApprovalPrompt(captured) {
+		key := cursorMCPApprovalKey(ctx, captured)
+		// A decision authorizes only the prompt the person saw. Never allow a
+		// changed operation, and never use Tab (which persists an allowlist grant).
+		samePrompt := func(current string) bool {
+			return hasCursorMCPToolApprovalPrompt(current) && strings.TrimSpace(cursorVisiblePaneText(current)) == strings.TrimSpace(cursorVisiblePaneText(captured))
+		}
+		if ctx.Err() == nil {
+			_, _ = sendCursorControlIfVisible(ctx, sessionName, "cursor-mcp-approval-once", samePrompt, key)
+		}
+		return true
+	}
 	controls := []struct {
 		source   string
 		visible  func(string) bool
@@ -27,7 +42,6 @@ func (c *cursorRuntimeControls) handle(ctx context.Context, sessionName, capture
 		{"cursor-followups-send-now", hasCursorQueuedFollowupsSendPrompt, "C-m", time.Second, true},
 		// Bridge-only child agents do not reliably inherit the scoped bridge.
 		{"cursor-mode-switch-reject", hasCursorModeSwitchPrompt, "n", time.Second, true},
-		{"cursor-mcp-approval", hasCursorMCPToolApprovalPrompt, "Tab", time.Second, true},
 		{"cursor-web-approval", hasCursorWebAccessApprovalPrompt, "y", 2 * time.Second, c.autoApproveWebSearch},
 	}
 	for _, control := range controls {
@@ -61,9 +75,9 @@ var cursorRetainedControlRegistry = struct {
 
 // Called while the provider session is locked, after a successful turn or
 // launch-only return. Direct Send calls do not re-enter the response loop.
-func startCursorRetainedControls(sessionName string, autoApproveWebSearch bool) {
+func startCursorRetainedControls(parent context.Context, sessionName string, autoApproveWebSearch bool) {
 	stopCursorRetainedControls(sessionName)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	watcher := &cursorRetainedControls{cancel: cancel, done: make(chan struct{})}
 	cursorRetainedControlRegistry.Lock()
 	cursorRetainedControlRegistry.sessions[sessionName] = watcher
@@ -89,7 +103,7 @@ func startCursorRetainedControls(sessionName string, autoApproveWebSearch bool) 
 				pollCtx, pollCancel := context.WithTimeout(ctx, 2*time.Second)
 				captured, err := captureCursorPane(pollCtx, sessionName)
 				if err == nil {
-					controls.handle(pollCtx, sessionName, captured)
+					controls.handle(ctx, sessionName, captured)
 				}
 				pollCancel()
 				if isCursorTmuxSessionLostError(err) {
@@ -111,4 +125,17 @@ func stopCursorRetainedControls(sessionName string) {
 		watcher.cancel()
 		<-watcher.done
 	}
+}
+
+// Configured bridge tools are already allowed. An unexpected request in
+// unattended work is denied; attended approval permits only this invocation.
+func cursorMCPApprovalKey(ctx context.Context, captured string) string {
+	if !llmtypes.CodingAgentQuestionsAvailable(ctx) {
+		return "n"
+	}
+	allowed, err := nativeinput.ApproveCommand(ctx, "Cursor requests permission to run this MCP tool:\n\n"+cursorVisiblePaneText(captured))
+	if err == nil && allowed {
+		return "y"
+	}
+	return "n"
 }

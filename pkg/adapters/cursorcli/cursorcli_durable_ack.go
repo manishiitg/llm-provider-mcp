@@ -324,7 +324,7 @@ type cursorDurableAckPoll struct {
 
 var (
 	// A paste followed at once by Enter can leave the text in an idle composer
-	// (RTS 2026-10-23: a 38-character steer sat unsent for 10 minutes and the
+	// (a short steer sat unsent for 10 minutes and the
 	// turn failed). Muse has the same recovery (PLAT-861-117).
 	cursorDraftRecoveryAfter    = 3 * time.Second
 	cursorDraftRecoveryInterval = 2 * time.Second
@@ -534,7 +534,7 @@ func AwaitCursorInputDurable(ctx context.Context, ownerSessionID, message string
 	ack, err := pollCursorDurableAck(ctx, message, since, baseline, timeout, cursorDurableAckPoll{
 		// Re-pins to the chat that holds the message when the pinned one
 		// does not (several chats can share the folder after a relaunch).
-		resolve:     func() string { return session.repinStoreForMessage(message, since) },
+		resolve:     func() string { return resolveCursorStoreNoMu(session) },
 		capture:     captureCursorPane,
 		sessionName: tmuxName,
 		occurrence:  occurrence,

@@ -176,7 +176,7 @@ func TestCursorTmuxLifecycleLive(t *testing.T) {
 	defer CloseCursorCLIInteractiveSessionForOwner(owner, "test complete")
 	cwd, runtimeDir := t.TempDir(), t.TempDir()
 	opts := []llmtypes.CallOption{WithWorkingDir(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), llmtypes.WithCLIRuntimeDir(runtimeDir)}
-	a := NewCursorCLIAdapter("", "composer-2.5", nil)
+	a := NewCursorCLIAdapter("", "composer-2.5", &MockLogger{})
 	a.SetTmuxTransport(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -192,6 +192,7 @@ func TestCursorTmuxLifecycleLive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cwd, ".cursor")); !os.IsNotExist(err) {
 		t.Fatal("generated runtime leaked into real project")
 	}
+	t.Logf("first terminal turn native=%s runtime=%s cwd=%s", h.NativeSessionID, runtimeDir, cwd)
 	CloseCursorCLIInteractiveSessionForOwner(owner, "restart proof")
 	resumed, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What was the codeword? Reply with only the codeword. Do not use tools.")}, append(opts, WithResumeSessionID(h.NativeSessionID))...)
 	if err != nil {

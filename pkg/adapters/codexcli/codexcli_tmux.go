@@ -73,6 +73,7 @@ func (c *CodexCLIAdapter) generateContentInteractive(ctx context.Context, messag
 	}()
 
 	systemPrompt, conversationMessages := splitCodexSystemPrompt(messages)
+	systemPrompt += llmtypes.CLIPrivateSkillInstructions(opts, codexSkillsSubdir)
 	historicalAssistantTexts := codexAssistantHistory(conversationMessages)
 	prompt := buildCodexInteractivePrompt(conversationMessages)
 	initialPromptAtLaunch := codexCanSubmitInitialPromptAtLaunch(opts, prompt)
@@ -541,7 +542,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	c.logger.Debugf("codex interactive acquire enter owner=%s", ownerSessionID)
 	now := time.Now()
 	workingDir := codexWorkingDirFromOptions(opts)
-	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity) + ":" + llmtypes.CodingAgentScopeFingerprint(opts)
+	securityFingerprint := clisandbox.Fingerprint(opts.CLISecurity) + ":" + llmtypes.CodingAgentScopeFingerprint(opts) + ":" + workingDir + ":" + c.modelID
 	session, created, ok := codexPersistentRegistry.GetOrCreate(ownerSessionID, func() *codexInteractiveSession {
 		session := &codexInteractiveSession{
 			ownerSessionID:         ownerSessionID,
@@ -632,7 +633,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// even when the operator-instruction-file projection is off.
 	// Best-effort.
 	if attachedSkills := llmtypes.AttachedSkillsFromOptions(opts); len(attachedSkills) > 0 && workingDir != "" {
-		_ = c.ProjectSkills(workingDir, attachedSkills)
+		_ = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workingDir), attachedSkills)
 	}
 	if reaped := reapOrphanCodexTmuxSessions(ctx, ownerSessionID, session.tmuxSessionName, c.logger.Infof); len(reaped) > 0 {
 		c.logger.Infof("codex interactive reaped orphaned tmux session(s) %v for owner %s before launching a new one", reaped, ownerSessionID)
@@ -662,7 +663,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// this launch did not.
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, opts)
 	scopedScrub := scopedLaunchScrub(nil, scopedEnv, opts)
-	if err := seedCodexAPIKeyLogin(codexLoginEnv(scopedEnv, c.apiKey), llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"], workingDir); err != nil {
+	if err := c.seedTmuxAccountLogin(opts, workingDir); err != nil {
 		c.logger.Errorf("codex interactive could not save the API key login owner=%s: %v", ownerSessionID, err)
 	}
 	launchCleanup, err := startCodexTmuxSession(ctx, session.tmuxSessionName, args, workingDir, opts.CLISecurity, runtimeReadPaths, scopedEnv, unsetEnv, scopedScrub)
@@ -684,4 +685,17 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	registerCodexInteractiveSession(ownerSessionID, session.tmuxSessionName)
 	c.logger.Debugf("codex interactive startup timing owner=%s stage=start_tmux tmux=%s elapsed=%s total=%s", ownerSessionID, session.tmuxSessionName, time.Since(tmuxStart).Round(time.Millisecond), time.Since(acquireStart).Round(time.Millisecond))
 	return session, true, nil
+}
+
+func (c *CodexCLIAdapter) seedTmuxAccountLogin(opts *llmtypes.CallOptions, workingDir string) error {
+	selected := llmtypes.MergeCodingAgentSecretEnvironment(codexLoginEnv(buildCodexStructuredEnv(c.apiKey), c.apiKey), opts)
+	// The terminal login writer uses CODEX_API_KEY; accept OPENAI_API_KEY only
+	// after account selection has removed any ambient/server credential.
+	key := ""
+	for _, entry := range selected {
+		if v, ok := strings.CutPrefix(entry, "OPENAI_API_KEY="); ok {
+			key = v
+		}
+	}
+	return seedCodexAPIKeyLogin(codexLoginEnv(selected, key), llmtypes.CLIHomeEnvironment(opts)["CODEX_HOME"], workingDir)
 }

@@ -35,9 +35,6 @@ func cursorChatsRoots(home string) []string {
 	if strings.TrimSpace(home) != "" {
 		roots = append(roots, filepath.Join(home, ".config", "cursor", "chats"))
 	}
-	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); filepath.IsAbs(xdg) && home == os.Getenv("HOME") {
-		roots = append(roots, filepath.Join(xdg, "cursor", "chats"))
-	}
 	legacy := filepath.Join(home, ".cursor", "chats")
 	for _, root := range roots {
 		if filepath.Clean(root) == filepath.Clean(legacy) {

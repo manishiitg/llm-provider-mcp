@@ -33,3 +33,19 @@ func TestCursorACPQuestionsDoNotInferApproval(t *testing.T) {
 		}
 	}
 }
+
+// PLAT-872-55: terminal permission answers must never persist an allowlist grant.
+func TestCursorTerminalMCPPermissionUsesPersonDecisionOnce(t *testing.T) {
+	for _, tc := range []struct{ answer, want string }{{"Allow", "y"}, {"Deny", "n"}, {"", "n"}} {
+		ctx := llmtypes.WithCodingAgentQuestionHandler(context.Background(), "cursor-cli", "owner", func(context.Context, map[string]any) (string, error) {
+			return `{"status":"answered","answers":[{"id":"command_permission","selected_labels":["` + tc.answer + `"]}]}`, nil
+		})
+		ctx = llmtypes.ScopeCodingAgentQuestions(ctx, "cursor-cli", "owner")
+		if got := cursorMCPApprovalKey(ctx, "Run this MCP tool? example tool"); got != tc.want {
+			t.Fatalf("%q decision: %q", tc.answer, got)
+		}
+	}
+	if cursorMCPApprovalKey(context.Background(), "Run this MCP tool?") != "n" {
+		t.Fatal("unattended request was approved")
+	}
+}

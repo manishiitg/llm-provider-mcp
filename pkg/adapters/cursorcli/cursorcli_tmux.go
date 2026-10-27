@@ -89,6 +89,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	if ownerSessionID == "" {
 		ownerSessionID = "cursor-bounded-" + cursorRandomHex(8)
 	}
+	ctx = llmtypes.ScopeCodingAgentQuestions(ctx, "cursor-cli", ownerSessionID)
 	// Capture turn start before doing any I/O so the sidecar parser
 	// can scope its store.db pick to a freshly-modified session.
 	turnStart := time.Now()
@@ -152,7 +153,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 			return
 		}
 		if err == nil {
-			startCursorRetainedControls(session.tmuxSessionName, cursorAutoApproveWebSearchFromOptions(opts))
+			startCursorRetainedControls(ctx, session.tmuxSessionName, cursorAutoApproveWebSearchFromOptions(opts))
 		}
 		if persistent {
 			releaseCursorInteractiveSession(session, c.logger)
@@ -320,10 +321,7 @@ func (c *CursorCLIAdapter) generateContentTmux(ctx context.Context, messages []l
 	}
 
 	storeAnswer := func(query string) (string, cursorTrailState) {
-		storeDB := pinnedCursorStoreNoMu(session)
-		if storeDB == "" {
-			storeDB = freshestCursorStoreDBSince(session.workingDir, turnStart, session.accountHome, session.accountConfigDir)
-		}
+		storeDB := resolveCursorStoreNoMu(session)
 		trail := readCursorRetainedInput(&cursorRetainedInput{
 			storeDB:  storeDB,
 			query:    strings.Join(strings.Fields(query), " "),
@@ -685,26 +683,13 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 			args = append(args, "--add-dir", dir)
 		}
 	}
-	if cursorFullNativeFromOptions(opts) {
-		// Full CLI: the platform's sandbox is the boundary. Without --force Cursor
-		// stops on "Run this command?" for any shell write that resolves outside
-		// its workspace folder, such as a redirect into the linked project/
-		// (contract test 2026-10-04). Checked live: --force does NOT switch the
-		// hooks off, so the hook-based denials (subagents, cloud agents, computer
-		// use) still apply, and an explicit deny still wins.
-		args = append(args, "--force")
-	}
+
 	if modelToUse != "" {
 		args = append(args, "--model", modelToUse)
 	}
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-		// NOTE: --force and --approve-mcps do NOT reliably suppress cursor's
-		// per-tool-call "Run this MCP tool?" gate (verified repeatedly — they
-		// affect server/command approval, not the per-call MCP prompt). Do not
-		// remove the tmux-pane auto-allowlist in waitForCursorInteractiveResponse
-		// (hasCursorMCPToolApprovalPrompt → send Tab) on the assumption these
-		// flags handle it; that prompt-scrape is the only dependable mechanism.
-		if force, ok := opts.Metadata.Custom[MetadataKeyForce].(bool); ok && force {
+		// Match native ACP: --force must not bypass bridge-only or full-mode hooks.
+		if cursorACPBool(opts, MetadataKeyForce) && !cursorACPBool(opts, MetadataKeyDenyBuiltinTools) && !cursorFullNativeFromOptions(opts) {
 			args = append(args, "--force")
 		}
 		if autoReview, ok := opts.Metadata.Custom[MetadataKeyAutoReview].(bool); ok && autoReview {
@@ -739,30 +724,19 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 		}
 	}
 
+	// Apply the selected account before protecting launch exports from shell startup.
+	selected := llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts)
 	env := []string{}
-	if strings.TrimSpace(c.apiKey) != "" {
-		env = append(env, "CURSOR_API_KEY="+strings.TrimSpace(c.apiKey))
+	for _, entry := range selected {
+		if strings.HasPrefix(entry, "CURSOR_API_KEY=") {
+			env = append(env, entry)
+		}
 	}
 	return args, env, workingDir, cleanupFiles, nil
 }
 
 func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool, fullNativeMode ...bool) (func(), error) {
 	return writeCursorDenyBuiltinHooksWithBridge(cursorDir, restorePrior, len(fullNativeMode) > 0 && fullNativeMode[0], "")
-}
-
-func readPreviousCursorFile(path string) ([]byte, bool) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	return content, true
-}
-
-func readPreviousCursorFileIf(restore bool, path string) ([]byte, bool) {
-	if !restore {
-		return nil, false
-	}
-	return readPreviousCursorFile(path)
 }
 
 func releaseCursorInteractiveSession(session *cursorInteractiveSession, logger interfaces.Logger) {
@@ -1183,14 +1157,7 @@ func cursorConfirmInitialSubmitAfterPaneError(ctx context.Context, session *curs
 		return nil
 	}
 	ack, err := pollCursorDurableAck(ctx, message, since, baseline, cursorDurableAckBudget(), cursorDurableAckPoll{
-		// Discover without pinning, limited to stores written since this
-		// submit, so a sibling chat cannot become the session's store.
-		resolve: func() string {
-			if pinned := pinnedCursorStoreNoMu(session); pinned != "" {
-				return pinned
-			}
-			return freshestCursorStoreDBSince(session.workingDir, since, session.accountHome, session.accountConfigDir)
-		},
+		resolve: func() string { return resolveCursorStoreNoMu(session) },
 	})
 	if err == nil && ack.Outcome == CursorDurableAckConfirmed {
 		return nil
@@ -1543,11 +1510,6 @@ func waitForCursorInputDraftVisibleWithMode(ctx context.Context, sessionName, me
 		case <-ticker.C:
 		}
 	}
-}
-
-func waitForCursorInteractiveResponse(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool) (string, error) {
-	captured, _, err := waitForCursorInteractiveResponseWithStore(ctx, sessionName, baseline, prompt, historicalAssistantTexts, streamChan, autoApproveWebSearch, streamTerminalScreen, nil)
-	return captured, err
 }
 
 func waitForCursorInteractiveResponseWithStore(ctx context.Context, sessionName, baseline, prompt string, historicalAssistantTexts []string, streamChan chan<- llmtypes.StreamChunk, autoApproveWebSearch bool, streamTerminalScreen bool, storeAnswer func(query string) (string, cursorTrailState)) (string, string, error) {

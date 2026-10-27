@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -123,4 +124,37 @@ func TestPrivateCursorRuntimePreservesProjectAndAccountPolicy(t *testing.T) {
 		t.Fatalf("nonbridge runtime without generated permissions: %v", err)
 	}
 
+}
+
+// PLAT-872-55 T1/T5: terminal launch must preserve account and deny-tool policy.
+func TestCursorTerminalLaunchCannotBorrowServerKeyOrBypassDenyHooks(t *testing.T) {
+	opts := &llmtypes.CallOptions{}
+	WithWorkingDir(t.TempDir())(opts)
+	llmtypes.WithCLIRuntimeDir(t.TempDir())(opts)
+	llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": t.TempDir()})(opts)
+	WithDenyBuiltinTools(true)(opts)
+	WithForce()(opts)
+	c := NewCursorCLIAdapter("server-test-key", "composer-2.5", &MockLogger{})
+	args, env, _, cleanup, err := c.buildCursorInteractiveLaunch(opts, "", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if strings.Contains(strings.Join(env, "\n"), "server-test-key") {
+		t.Fatal("file login inherited server key")
+	}
+	for _, arg := range args {
+		if arg == "--force" {
+			t.Fatal("deny hooks bypassed by force")
+		}
+	}
+	llmtypes.WithProviderAccountCredentials(map[string]string{"CURSOR_API_KEY": "account-test-key"})(opts)
+	_, env, _, cleanup2, err := c.buildCursorInteractiveLaunch(opts, "", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup2()
+	if !strings.Contains(strings.Join(env, "\n"), "CURSOR_API_KEY=account-test-key") {
+		t.Fatal("selected key missing")
+	}
 }

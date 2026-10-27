@@ -2,6 +2,7 @@ package cursorcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -64,10 +65,7 @@ func CloseCursorCLIInteractiveSessionForOwner(owner, reason string) {
 	closeCursorTmuxForOwner(owner, reason)
 }
 func CleanupCursorCLIInteractiveSessions(ctx context.Context) error {
-	if err := CleanupACP(ctx); err != nil {
-		return err
-	}
-	return cleanupCursorTmuxSessions(ctx)
+	return errors.Join(CleanupACP(ctx), cleanupCursorTmuxSessions(ctx))
 }
 func InteractiveSessionRegistered(owner string) bool {
 	if TmuxSessionRegistered(owner) {

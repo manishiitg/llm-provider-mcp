@@ -1,6 +1,7 @@
 package codexcli
 
 import (
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,5 +85,27 @@ func TestSeedCodexAPIKeyLoginKeepsAnExistingChatGPTSignIn(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".agentworks"); err == nil {
 		t.Fatal("no marker may be left beside a login this function did not write")
+	}
+}
+
+// PLAT-872-55 T2: selecting a file-login account must never seed the server key.
+func TestCodexTmuxLoginUsesOnlySelectedAccountCredential(t *testing.T) {
+	home := t.TempDir()
+	opts := &llmtypes.CallOptions{}
+	llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": home, "CODEX_HOME": home})(opts)
+	c := NewCodexCLIAdapter("server-test-key", "", &MockLogger{})
+	if err := c.seedTmuxAccountLogin(opts, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "auth.json")); !os.IsNotExist(err) {
+		t.Fatal("server key seeded into personal home")
+	}
+	llmtypes.WithProviderAccountCredentials(map[string]string{"OPENAI_API_KEY": "account-test-key"})(opts)
+	if err := c.seedTmuxAccountLogin(opts, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "auth.json"))
+	if err != nil || !strings.Contains(string(raw), "account-test-key") || strings.Contains(string(raw), "server-test-key") {
+		t.Fatal("selected account key was not used")
 	}
 }

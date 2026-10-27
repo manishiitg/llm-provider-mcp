@@ -4,7 +4,6 @@ import (
 	"context"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -93,20 +92,9 @@ func newCursorTranscriptStreamState(turnStart time.Time, workingDir, ownerSessio
 // reply. Found live in SparkQuill: 22 historical narration blobs replayed on the
 // first message after each restart.
 //
-// Priming is keyed on blob IDs, which are content-addressed (SHA256), so it is
-// safe to prime from EVERY store.db under this working dir rather than only the
-// freshest: any blob that already exists anywhere is by definition history, not
-// output from a turn that hasn't been submitted yet. That also makes this
-// correct by construction regardless of process lifetime, instead of depending
-// on a map surviving one.
-//
-// Deliberately NOT filtered by s.baseline: a brand-new turn's store.db may not
-// exist yet at this point, and an existing one's mtime can be stale under WAL,
-// so a baseline filter here would skip exactly the file whose history needs
-// suppressing. The pane-extraction path has always had the equivalent guard
-// (historicalAssistantTexts); this brings the store.db stream path in line.
+// Prime only this native conversation, before sending its next prompt.
 func (s *cursorTranscriptStreamState) primeSeenBlobs() {
-	paths := allCursorStoreDBs(s.workingDir, s.accountHome, s.accountConfigDir)
+	var paths []string
 	if s.nativeSessionID != "" {
 		home, _ := os.UserHomeDir()
 		if s.accountHome != "" {
@@ -124,85 +112,8 @@ func (s *cursorTranscriptStreamState) primeSeenBlobs() {
 	}
 }
 
-// allCursorStoreDBs returns every store.db under this working dir's cursor chats
-// dir, unfiltered by mtime. Used only for dedup priming, where completeness
-// matters and freshness does not.
-func allCursorStoreDBs(workingDir string, accountHome ...string) []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	if len(accountHome) > 0 && accountHome[0] != "" {
-		home = accountHome[0]
-	}
-	hash := workingDirHashForCursor(workingDir)
-	if hash == "" {
-		return nil
-	}
-	var out []string
-	walkStore := func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
-			return nil
-		}
-		out = append(out, p)
-		return nil
-	}
-	for _, root := range cursorTmuxChatsRoots(home, cursorTmuxConfigArg(accountHome)...) {
-		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
-	}
-	return out
-}
-
-// freshestCursorStoreDBSince returns the newest store.db under this workingDir's
-// cursor chats dir whose mtime is at/after `since`. Re-resolved every poll (not
-// cached) so the tailer converges onto the REAL turn's store.db as cursor
-// creates it — instead of latching onto a warmup "OK" store.db written first.
-func freshestCursorStoreDBSince(workingDir string, since time.Time, accountHome ...string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	if len(accountHome) > 0 && accountHome[0] != "" {
-		home = accountHome[0]
-	}
-	hash := workingDirHashForCursor(workingDir)
-	if hash == "" {
-		return ""
-	}
-	var best string
-	var bestMod time.Time
-	walkStore := func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(p) != "store.db" {
-			return nil
-		}
-		// store.db is opened in WAL mode: writes land in store.db-wal (and
-		// touch store.db-shm) without ever updating store.db's own mtime
-		// until a checkpoint happens. On a reused persistent session the
-		// checkpoint from turn 1 can leave store.db's mtime stale for the
-		// entire duration of turn 2+, so a store.db-only mtime check wrongly
-		// filters out the very file we need — found live: turn 2 produced
-		// zero streamed chunks because every store.db candidate read as
-		// "too old" while its -wal sibling kept advancing. Use the freshest
-		// mtime across the trio to judge staleness; still return the
-		// store.db path itself since the read-only connection below sees
-		// committed WAL contents transparently.
-		modTime := cursorStoreDBEffectiveModTime(p, d)
-		if modTime.Before(since) {
-			return nil
-		}
-		if best == "" || modTime.After(bestMod) {
-			best, bestMod = p, modTime
-		}
-		return nil
-	}
-	for _, root := range cursorTmuxChatsRoots(home, cursorTmuxConfigArg(accountHome)...) {
-		_ = filepath.WalkDir(filepath.Join(root, hash), walkStore)
-	}
-	return best
-}
-
 // cursorStoreDBEffectiveModTime returns the freshest mtime among store.db and
-// its -wal/-shm siblings (see freshestCursorStoreDBSince for why).
+// its -wal/-shm siblings: SQLite writes may not touch store.db until checkpoint.
 func cursorStoreDBEffectiveModTime(p string, d fs.DirEntry) time.Time {
 	fi, err := d.Info()
 	if err != nil {
@@ -237,8 +148,7 @@ func (s *cursorTranscriptStreamState) run(ctx context.Context, streamChan chan<-
 }
 
 func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<- llmtypes.StreamChunk) {
-	// Resumed turns stay bound to their exact native ID. First turns still
-	// discover the freshest post-baseline store until a native ID is known.
+	// Every turn stays bound to the native ID issued before launch.
 	var path string
 	if s.nativeSessionID != "" {
 		home, err := os.UserHomeDir()
@@ -249,8 +159,6 @@ func (s *cursorTranscriptStreamState) poll(ctx context.Context, streamChan chan<
 			home = s.accountHome
 		}
 		path = cursorStoreDBForNativeSession(home, s.workingDir, s.nativeSessionID, s.accountConfigDir)
-	} else {
-		path = freshestCursorStoreDBSince(s.workingDir, s.baseline, s.accountHome, s.accountConfigDir)
 	}
 	if path == "" {
 		return
