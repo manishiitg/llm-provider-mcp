@@ -73,4 +73,48 @@ func TestPrivateCursorRuntimePreservesProjectAndAccountPolicy(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(private, ".cursor-plugin", "plugin.json")); err != nil {
 		t.Fatal(err)
 	}
+	// PLAT-856-145 review: changing selected HOME must not inherit credentials,
+	// history, or XDG configuration from the previous/ambient account.
+	if _, err := os.Stat(filepath.Join(private, ".git")); !os.IsNotExist(err) {
+		t.Fatal("private runtime was git-initialized")
+	}
+	if err := os.WriteFile(filepath.Join(account, "auth.json"), []byte("fixture-A"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configA, err := prepareCursorPrivateRuntime(opts, []string{"HOME=" + home, "XDG_CONFIG_HOME=" + t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(configA, "auth.json")); err != nil || string(raw) != "fixture-A" {
+		t.Fatal("selected account overridden", err)
+	}
+	if err := os.MkdirAll(filepath.Join(configA, "acp-sessions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configA, "acp-sessions", "record-A"), []byte("fixture history"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	homeB := t.TempDir()
+	configB, err := prepareCursorPrivateRuntime(opts, []string{"HOME=" + homeB, "XDG_CONFIG_HOME=" + filepath.Dir(account)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"auth.json", "acp-sessions/record-A"} {
+		if _, err := os.Stat(filepath.Join(configB, name)); !os.IsNotExist(err) {
+			t.Fatalf("old account visible in B: %s %v", name, err)
+		}
+	}
+	if current, err := filepath.EvalSymlinks(filepath.Join(private, "cursor-config")); err != nil || current != configB {
+		t.Fatal("transcript account not updated", err)
+	}
+	if _, err := os.Stat(filepath.Join(configA, "acp-sessions", "record-A")); err != nil {
+		t.Fatal("old history deleted", err)
+	}
+	if err := os.Remove(filepath.Join(private, ".cursor", "cli.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareCursorPrivateRuntime(opts, []string{"HOME=" + homeB, "CURSOR_CONFIG_DIR=" + account}); err != nil {
+		t.Fatalf("nonbridge runtime without generated permissions: %v", err)
+	}
+
 }

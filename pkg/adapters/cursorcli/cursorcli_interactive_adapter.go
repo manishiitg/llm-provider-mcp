@@ -189,12 +189,14 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 	// in the workflow folder so Cursor treats this folder as the project root.
 	// workspace-docs is gitignored upstream, and cleanup removes the marker on
 	// session end.
-	releaseGit, gitErr := acquireCursorGitMarker(workingDir)
-	if gitErr != nil {
-		cleanupAll()
-		return nil, gitErr
+	if !llmtypes.CLIHasPrivateRuntime(opts) {
+		releaseGit, gitErr := acquireCursorGitMarker(workingDir)
+		if gitErr != nil {
+			cleanupAll()
+			return nil, gitErr
+		}
+		addCleanup(releaseGit)
 	}
-	addCleanup(releaseGit)
 
 	cursorDir := filepath.Join(workingDir, ".cursor")
 	addCleanup(func() { _ = os.Remove(cursorDir) }) // Only remove when empty, after per-file cleanup.
