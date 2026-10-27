@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
@@ -175,6 +176,19 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 		r.close()
 		return nil, "", err
 	}
+	native, err := r.openSession(initCtx, cwd, servers, resume)
+	if err != nil {
+		r.close()
+		return nil, "", err
+	}
+	// session/load replays history. It must not become output for the next turn.
+	for len(r.events) > 0 {
+		<-r.events
+	}
+	return r, native, nil
+}
+
+func (r *cursorACP) openSession(ctx context.Context, cwd string, servers any, resume string) (string, error) {
 	params := map[string]any{"cwd": cwd, "mcpServers": servers}
 	method := "session/new"
 	if resume != "" {
@@ -184,23 +198,27 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 	var state struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err = r.call(initCtx, method, params, &state); err != nil {
-		r.close()
-		return nil, "", err
+	err := r.call(ctx, method, params, &state)
+	var refusal *cursorACPError
+	if resume != "" && errors.As(err, &refusal) && refusal.Code == -32602 {
+		// PLAT-872-50: an incompatible saved handle is refused before any
+		// prompt. Start a new session and let the caller supply saved history.
+		// Never recover transport failures or errors after submitting a prompt.
+		resume = ""
+		delete(params, "sessionId")
+		err = r.call(ctx, "session/new", params, &state)
+	}
+	if err != nil {
+		return "", err
 	}
 	native := state.SessionID
 	if resume != "" {
 		native = resume
 	}
 	if native == "" {
-		r.close()
-		return nil, "", fmt.Errorf("Cursor ACP did not return a session ID")
+		return "", fmt.Errorf("Cursor ACP did not return a session ID")
 	}
-	// session/load replays history. It must not become output for the next turn.
-	for len(r.events) > 0 {
-		<-r.events
-	}
-	return r, native, nil
+	return native, nil
 }
 func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (response *llmtypes.ContentResponse, err error) {
 	if opts.StreamChan != nil {
@@ -304,11 +322,12 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 		if resume != "" {
 			native = resume
 		}
-		hasHistory = native != ""
+		requestedNative := native
 		r, native, err = c.launchACP(ctx, opts, cwd, owner, system, model, native)
 		if err != nil {
 			return nil, err
 		}
+		hasHistory = requestedNative != "" && native == requestedNative
 		s.mu.Lock()
 		s.rpc = r
 		s.native = native
@@ -317,6 +336,12 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 		s.fingerprint = fingerprint
 		s.hasHistory = hasHistory
 		s.mu.Unlock()
+		if requestedNative != "" && native != requestedNative && c.logger != nil {
+			c.logger.Infof("[CURSOR_ACP] session_load_invalid_params fallback=new chat=%q requested=%q new=%q", owner, requestedNative, native)
+		}
+		if opts.OnCodingProviderSession != nil {
+			opts.OnCodingProviderSession(cursorACPSessionHandle(s))
+		}
 	}
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
 		return cursorACPResponse(s, "", nil), nil
@@ -324,6 +349,8 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 	resumePrompt := ""
 	if hasHistory {
 		resumePrompt = native
+	} else if len(opts.CodingProviderHistory) > 0 {
+		_, conversation = splitCursorSystemPrompt(opts.CodingProviderHistory)
 	}
 	prompt := buildCursorStructuredPrompt("", conversation, resumePrompt)
 	if strings.TrimSpace(prompt) == "" {
@@ -337,9 +364,13 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 	}
 	return response, err
 }
+func cursorACPSessionHandle(s *cursorACPSession) llmtypes.CodingProviderSessionHandle {
+	return llmtypes.CodingProviderSessionHandle{Provider: "cursor-cli", Transport: "acp", NativeSessionID: s.native, WorkingDir: s.cwd, Model: s.model, Status: llmtypes.CodingProviderSessionStatusIdle}
+}
+
 func cursorACPResponse(s *cursorACPSession, text string, usage *llmtypes.Usage) *llmtypes.ContentResponse {
 	info := map[string]any{"cursor_session_id": s.native}
-	handle := llmtypes.CodingProviderSessionHandle{Provider: "cursor-cli", Transport: "acp", NativeSessionID: s.native, WorkingDir: s.cwd, Model: s.model, Status: llmtypes.CodingProviderSessionStatusIdle}
+	handle := cursorACPSessionHandle(s)
 	gi := &llmtypes.GenerationInfo{Additional: info}
 	llmtypes.AttachCodingProviderSessionHandle(gi, handle)
 	response := &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{Content: text, StopReason: "stop", GenerationInfo: gi}}, Usage: usage}

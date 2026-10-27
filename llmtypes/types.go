@@ -566,6 +566,10 @@ type CallOptions struct {
 	ThinkingBudget  int                // Thinking budget (token limit) for reasoning models (e.g., Gemini 2.5 Flash Thinking)
 	AllowedTools    []string           // Explicitly allowed tools for agentic models (e.g., gpt-5.2-codex)
 	CLISecurity     *CLISecurityPolicy // Resolved coding-CLI launch policy; nil means compatibility mode.
+	// Host-owned recovery context, used only when a native session cannot load.
+	CodingProviderHistory []MessageContent `json:"-"`
+	// Called synchronously after session creation, before submitting a prompt.
+	OnCodingProviderSession func(CodingProviderSessionHandle) `json:"-"`
 
 	// Sampling controls supported by most modern providers. Zero values
 	// mean "do not set" — adapters should only forward these to the

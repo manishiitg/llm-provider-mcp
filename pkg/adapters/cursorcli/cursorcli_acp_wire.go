@@ -29,6 +29,10 @@ type cursorACPError struct {
 	Message string `json:"message"`
 }
 
+func (e *cursorACPError) Error() string {
+	return fmt.Sprintf("(%d): %s", e.Code, e.Message)
+}
+
 type cursorACP struct {
 	logger  interfaces.Logger
 	cmd     *exec.Cmd
@@ -69,7 +73,7 @@ func (r *cursorACP) call(ctx context.Context, method string, params any, result 
 			r.logger.Debugf("Cursor ACP response method=%s id=%s error=%t", method, id, response.Error != nil)
 		}
 		if response.Error != nil {
-			return fmt.Errorf("Cursor ACP %s (%d): %s", method, response.Error.Code, response.Error.Message)
+			return fmt.Errorf("Cursor ACP %s %w", method, response.Error)
 		}
 		if result != nil {
 			return json.Unmarshal(response.Result, result)
