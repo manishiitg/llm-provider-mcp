@@ -60,6 +60,12 @@ const (
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
 
+	// EnvCursorCLITransport selects the Cursor transport: "sdk" (default, official Cursor SDK
+	// local runtime, which steers a running turn) or "acp".
+	EnvCursorCLITransport = "CURSOR_CLI_TRANSPORT"
+	CursorCLITransportACP = "acp"
+	CursorCLITransportSDK = "sdk"
+
 	ClaudeCodeTransportTmux = "tmux"
 	ClaudeCodeTransportSDK  = "sdk"
 	// ClaudeCodeTransportExperimental is kept as a legacy alias.

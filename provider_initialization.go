@@ -881,6 +881,18 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+func resolveCursorCLITransport() (string, error) {
+	// Owner 2026-10-27: the newest transport is the default; older ones stay selectable.
+	switch raw := strings.ToLower(strings.TrimSpace(os.Getenv(EnvCursorCLITransport))); raw {
+	case "", CursorCLITransportSDK:
+		return CursorCLITransportSDK, nil
+	case CursorCLITransportACP:
+		return CursorCLITransportACP, nil
+	default:
+		return "", fmt.Errorf("unsupported Cursor transport %q; use %s=%q or %q", raw, EnvCursorCLITransport, CursorCLITransportACP, CursorCLITransportSDK)
+	}
+}
+
 func resolveClaudeCodeTransport(configured string) (string, error) {
 	if strings.TrimSpace(configured) != "" {
 		return normalizeClaudeCodeTransport(configured)
@@ -1158,7 +1170,13 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 		logger.Infof("Cursor CLI: no explicit API key — will use Cursor Agent CLI's own stored auth")
 	}
 
+	transport, err := resolveCursorCLITransport()
+	if err != nil {
+		return nil, err
+	}
+	logger.Infof("Cursor CLI transport: %s", transport)
 	llm := cursorcli.NewCursorCLIAdapter(apiKey, modelID, logger)
+	llm.SetSDKTransport(transport == CursorCLITransportSDK)
 
 	successMetadata := LLMMetadata{
 		ModelVersion: modelID,

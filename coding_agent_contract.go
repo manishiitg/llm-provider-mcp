@@ -553,6 +553,16 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 	if strings.TrimSpace(contract.ModelID) != "" && !strings.EqualFold(strings.TrimSpace(modelID), contract.ModelID) {
 		return CodingAgentProviderContract{}, false
 	}
+	if normalizedProvider == ProviderCursorCLI {
+		if transport, err := resolveCursorCLITransport(); err == nil && transport == CursorCLITransportSDK {
+			contract.Transport = CodingAgentTransportSDK
+			contract.SupportsLiveInput = true // run.steer adds the message at the next safe step.
+			contract.TranscriptPathTemplate = ""
+			contract.AdapterReadsTranscript = false
+			contract.SurfacesTokenUsage = true
+			contract.TokenUsageSource = "sdk-events"
+		}
+	}
 	if normalizedProvider == ProviderClaudeCode {
 		if transport, err := resolveClaudeCodeTransport(""); err == nil && transport == ClaudeCodeTransportSDK {
 			contract.Transport = CodingAgentTransportSDK

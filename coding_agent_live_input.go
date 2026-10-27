@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
 	"strings"
 )
 
@@ -59,6 +60,11 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 			return claudecode.SendClaudeCodeSDKInput(ctx, ownerSessionID, message)
 		}
 		return SendClaudeCodeInput(ctx, ownerSessionID, message)
+	case ProviderCursorCLI:
+		if contract.Transport == CodingAgentTransportSDK {
+			return cursorcli.SendCursorSDKInput(ctx, ownerSessionID, message)
+		}
+		return &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Provider: normalizedProvider, Reason: "Cursor ACP has no live input"}
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:

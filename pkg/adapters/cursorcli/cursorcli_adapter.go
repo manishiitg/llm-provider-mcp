@@ -59,12 +59,17 @@ func isCursorLegacyModelSelector(modelID string) bool {
 	}
 }
 
-// CursorCLIAdapter uses a persistent native ACP process for every turn.
+// CursorCLIAdapter uses a persistent native ACP process for every turn, or the Cursor SDK bridge
+// when the server selects CURSOR_CLI_TRANSPORT=sdk.
 type CursorCLIAdapter struct {
-	apiKey  string
-	modelID string
-	logger  interfaces.Logger
+	apiKey       string
+	modelID      string
+	logger       interfaces.Logger
+	sdkTransport bool
 }
+
+// SetSDKTransport selects the Cursor SDK bridge instead of ACP for this adapter.
+func (c *CursorCLIAdapter) SetSDKTransport(enabled bool) { c.sdkTransport = enabled }
 
 // NewCursorCLIAdapter creates a new CursorCLIAdapter.
 func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *CursorCLIAdapter {
@@ -101,6 +106,9 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if c.sdkTransport {
+		return c.generateContentSDK(ctx, messages, opts)
+	}
 	return c.generateContentACP(ctx, messages, opts)
 }
 
