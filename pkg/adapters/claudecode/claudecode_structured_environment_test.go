@@ -40,18 +40,23 @@ func TestClaudeStructuredProcessEnvWithoutAdapterTokenPreservesExistingAuth(t *t
 	}
 }
 
-// PLAT-872: SDK mode must keep subscription account selection, not inherit an
-// unrelated server API key or OAuth login.
+// PLAT-872: SDK and structured mode share account isolation while the server
+// account retains its explicit API/gateway configuration.
 func TestClaudeSDKAccountDoesNotInheritAmbientCredentials(t *testing.T) {
-	base := []string{"HOME=/selected", "ANTHROPIC_API_KEY=ambient", "ANTHROPIC_AUTH_TOKEN=ambient", "ANTHROPIC_BASE_URL=https://example.com", "CLAUDE_CODE_OAUTH_TOKEN=ambient"}
+	base := []string{"HOME=/server", "ANTHROPIC_API_KEY=ambient", "ANTHROPIC_AUTH_TOKEN=ambient", "ANTHROPIC_BASE_URL=https://example.com", "CLAUDE_CODE_OAUTH_TOKEN=ambient"}
+	if got := claudeStructuredProcessEnv(base, nil, ""); !reflect.DeepEqual(got, base) {
+		t.Fatal("server account lost configured credentials")
+	}
+	opts := &llmtypes.CallOptions{}
+	llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": "/selected"})(opts)
 	for _, token := range []string{"", "scoped"} {
-		got := claudeSDKProcessEnv(base, token)
+		got := claudeStructuredProcessEnv(base, opts, token)
 		want := []string{"HOME=/selected"}
 		if token != "" {
 			want = append(want, "CLAUDE_CODE_OAUTH_TOKEN=scoped")
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("account environment not isolated: %#v", got)
+			t.Fatalf("private account environment not isolated: %#v", got)
 		}
 	}
 }

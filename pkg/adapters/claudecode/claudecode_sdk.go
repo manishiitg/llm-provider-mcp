@@ -133,23 +133,6 @@ func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage
 	return map[string]any{"behavior": "allow", "updatedInput": value}
 }
 
-// The Claude provider uses scoped subscription credentials, never ambient API
-// billing or another process's OAuth login. Keep the explicitly applied token.
-func claudeSDKProcessEnv(base []string, oauthToken string) []string {
-	out := make([]string, 0, len(base))
-	for _, entry := range base {
-		key, _, _ := strings.Cut(entry, "=")
-		if key == "ANTHROPIC_API_KEY" || key == "ANTHROPIC_AUTH_TOKEN" || key == "ANTHROPIC_BASE_URL" || key == "CLAUDE_CODE_OAUTH_TOKEN" {
-			continue
-		}
-		out = append(out, entry)
-	}
-	if oauthToken != "" {
-		out = append(out, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
-	}
-	return out
-}
-
 func (p *claudeSDKProcess) interrupt(ctx context.Context) error {
 	id := randomHex(12)
 	reply := make(chan error, 1)
