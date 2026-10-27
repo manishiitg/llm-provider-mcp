@@ -61,3 +61,30 @@ func TestLinkCredentialFilesServerAccountUsesProcessEnvironment(t *testing.T) {
 		t.Fatalf("granted %v, want %s", granted, login)
 	}
 }
+
+// PLAT-872-64: SDK login belongs to the selected account, not the service or Crew.
+func TestCursorSDKCredentialProjectionUsesSelectedAccount(t *testing.T) {
+	root := t.TempDir()
+	account, other, private := filepath.Join(root, "selected"), filepath.Join(root, "other"), filepath.Join(root, "runtime")
+	rel := ".cursor/sdk/auth.json"
+	for _, home := range []string{account, other} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(home, rel)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, rel), []byte(`{"apiKey":"fixture"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", other)
+	granted, err := linkCredentialFiles(&llmtypes.CLISecurityPolicy{Provider: "cursor-cli", CredentialHome: account}, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(granted) != 1 || granted[0] != filepath.Join(account, rel) {
+		t.Fatalf("wrong account grant: %v", granted)
+	}
+	target, err := os.Readlink(filepath.Join(private, rel))
+	if err != nil || target != filepath.Join(account, rel) {
+		t.Fatalf("wrong SDK login link: %q %v", target, err)
+	}
+}

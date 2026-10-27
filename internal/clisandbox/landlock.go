@@ -49,6 +49,7 @@ var credentialFiles = map[string][]credentialFile{
 	"cursor-cli": {
 		{Rel: ".config/cursor/auth.json", EnvKey: "XDG_CONFIG_HOME", Sub: "cursor/auth.json"},
 		{Rel: ".cursor/cli-config.json"},
+		{Rel: ".cursor/sdk/auth.json"},
 	},
 	"muse-cli": {{Rel: ".config/muse/auth.json", EnvKey: "XDG_CONFIG_HOME", Sub: "muse/auth.json"}},
 }

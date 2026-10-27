@@ -7,7 +7,7 @@ const emit = value => process.stdout.write('\u0001aw ' + JSON.stringify(value) +
 const short = error => String(error?.message || error || 'Error').split('\n')[0].slice(0, 300);
 
 async function main() {
-  const { Agent } = require(process.argv[2]);
+  const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, followups = [], early = [], busy = false;
   const lines = createInterface({ input: process.stdin });
   const queue = [];
@@ -58,6 +58,9 @@ async function main() {
     if (control(request)) continue;
     if (request.type === 'start') {
       start = request;
+      if (!process.env.CURSOR_API_KEY && (await Cursor.auth.status()).status !== 'logged-in') {
+        throw new Error('Sign in again to use Cursor. Open Providers, select this account, and choose Sign in.');
+      }
       if (start.agent_id) {
         try { agent = await Agent.resume(start.agent_id, options()); }
         catch (error) {

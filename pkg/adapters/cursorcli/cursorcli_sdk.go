@@ -173,7 +173,9 @@ func cursorSDKEntry() (string, error) {
 			return path, nil
 		}
 	}
-	if out, err := exec.Command("npm", "root", "-g").Output(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "npm", "root", "-g").Output(); err == nil {
 		path := filepath.Join(strings.TrimSpace(string(out)), "@cursor", "sdk", "dist", "cjs", "index.js")
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
@@ -256,7 +258,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		cmd.Env = append(cmd.Env, "CURSOR_CONFIG_DIR="+configDir)
 	}
 	// The agent loop runs in node itself, so node is the confined process (no spawned CLI child).
-	sdkPackages := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(entry)))) // .../node_modules/@cursor
+	sdkPackages := cursorSDKReadRoot(entry)
 	reads := append(cursorLandlockReads(opts, nil, cwd), bridge, sdkPackages, artifacts)
 	sandboxCleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, reads, nil)
 	if err != nil {

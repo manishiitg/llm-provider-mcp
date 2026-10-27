@@ -17,6 +17,7 @@ import (
 // local run that waits at a tool step until steered, as the live SDK does (PLAT-872, owner chose the
 // SDK because ACP held a mid-reply message until the reply ended).
 const fakeCursorSDK = `
+exports.Cursor = { auth: { status: async () => ({status:'logged-in'}) } };
 let steered = '', cancelled = false;
 function agent(id) {
   return {
@@ -216,7 +217,7 @@ func TestCursorSDKSteerDuringFailedLaunchIsNotSent(t *testing.T) {
 	}
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "fake-sdk.cjs")
-	broken := "exports.Agent = { create: async () => { await new Promise(r => setTimeout(r, 300)); throw new Error('login required'); } };"
+	broken := "exports.Cursor = { auth: { status: async () => ({status: 'logged-in'}) } }; exports.Agent = { create: async () => { await new Promise(r => setTimeout(r, 300)); throw new Error('login required'); } };"
 	if err := os.WriteFile(entry, []byte(broken), 0o600); err != nil {
 		t.Fatal(err)
 	}

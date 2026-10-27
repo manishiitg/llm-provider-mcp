@@ -881,6 +881,12 @@ func initializeClaudeCode(config Config) (llmtypes.Model, error) {
 	return llm, nil
 }
 
+// CursorSDKEnabled reports the selected Cursor account and chat transport.
+func CursorSDKEnabled() bool {
+	transport, err := resolveCursorCLITransport()
+	return err == nil && transport == CursorCLITransportSDK
+}
+
 func resolveCursorCLITransport() (string, error) {
 	// Owner 2026-10-27: the newest transport is the default; older ones stay selectable.
 	switch raw := strings.ToLower(strings.TrimSpace(os.Getenv(EnvCursorCLITransport))); raw {
@@ -1174,7 +1180,7 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 		apiKey = envKey
 		logger.Infof("Cursor CLI: using API key from CURSOR_API_KEY env var (length=%d)", len(apiKey))
 	} else {
-		logger.Infof("Cursor CLI: no explicit API key — will use Cursor Agent CLI's own stored auth")
+		logger.Infof("Cursor CLI: no explicit API key — will use the selected transport's saved browser login")
 	}
 
 	transport, err := resolveCursorCLITransport()
