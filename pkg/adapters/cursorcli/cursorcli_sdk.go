@@ -82,6 +82,7 @@ type cursorSDKSession struct {
 	idle        *time.Timer
 	hasHistory  bool
 	running     bool
+	prompted    bool // the bridge has this turn's prompt: a steer handed over now cannot be lost to a failed launch
 }
 
 var cursorSDKSessions = struct {
@@ -424,7 +425,7 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 	s.mu.Lock()
 	s.running = true
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
+	defer func() { s.mu.Lock(); s.running, s.prompted = false, false; s.mu.Unlock() }()
 	s.mu.Lock()
 	if s.idle != nil {
 		s.idle.Stop()
@@ -508,6 +509,9 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 	if err := p.send(map[string]any{"type": "prompt", "text": prompt}); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	s.prompted = true
+	s.mu.Unlock()
 	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: meta})
 	var text strings.Builder
 	afterTool := false
@@ -558,7 +562,7 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 			case "result":
 				// A message sent after this point starts the next turn rather than joining this one.
 				s.mu.Lock()
-				s.running = false
+				s.running, s.prompted = false, false
 				s.mu.Unlock()
 				switch event.Status {
 				case "finished":
@@ -607,16 +611,17 @@ func SendCursorSDKInput(ctx context.Context, owner, message string) error {
 	if s == nil {
 		return fmt.Errorf("%w: no active Cursor SDK turn", llmtypes.ErrCodingAgentInputNotSent)
 	}
-	// While the turn is still starting its bridge, wait for it: the bridge holds an early steer for the prompt.
+	// While the turn is still starting, wait until the bridge holds its prompt. If the launch fails first,
+	// the turn stops running and the message is reported not sent, so the host keeps it (never a lost ack).
 	var p *cursorSDKProcess
 	for {
 		s.mu.Lock()
-		proc, running := s.proc, s.running
+		proc, running, prompted := s.proc, s.running, s.prompted
 		s.mu.Unlock()
 		if !running {
 			return fmt.Errorf("%w: no active Cursor SDK turn", llmtypes.ErrCodingAgentInputNotSent)
 		}
-		if proc != nil {
+		if proc != nil && prompted {
 			p = proc
 			break
 		}

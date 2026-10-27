@@ -2,6 +2,7 @@ package cursorcli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,5 +205,50 @@ func TestCursorSDKFollowUpRunStartsNewParagraph(t *testing.T) {
 	resp := <-done
 	if resp == nil || !strings.Contains(resp.Choices[0].Content, "answer to world\n\nanswer to LATER") {
 		t.Fatalf("follow-up text was glued to the first answer: %#v", resp)
+	}
+}
+
+// Reviewer 2026-10-27: a steer sent while the bridge launches must never be acknowledged and then lost
+// when the launch fails; it is reported not sent so the host keeps it for the next turn.
+func TestCursorSDKSteerDuringFailedLaunchIsNotSent(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "fake-sdk.cjs")
+	broken := "exports.Agent = { create: async () => { await new Promise(r => setTimeout(r, 300)); throw new Error('login required'); } };"
+	if err := os.WriteFile(entry, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURSOR_SDK_PATH", entry)
+	c := NewCursorCLIAdapter("", "composer-2.5", nil)
+	c.SetSDKTransport(true)
+	owner := "chat-failed-launch"
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.GenerateContent(context.Background(), []llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "hello")},
+			WithWorkingDir(dir), WithInteractiveSessionID(owner))
+		done <- err
+	}()
+	var steerErr error
+	for start := time.Now(); time.Since(start) < 3*time.Second; time.Sleep(10 * time.Millisecond) {
+		cursorSDKSessions.Lock()
+		s := cursorSDKSessions.sessions[owner]
+		cursorSDKSessions.Unlock()
+		if s != nil {
+			s.mu.Lock()
+			running := s.running
+			s.mu.Unlock()
+			if running {
+				steerErr = SendCursorSDKInput(context.Background(), owner, "keep me")
+				break
+			}
+		}
+	}
+	if err := <-done; err == nil {
+		t.Fatal("a failed launch must fail the turn")
+	}
+	if !errors.Is(steerErr, llmtypes.ErrCodingAgentInputNotSent) {
+		t.Fatalf("steer during a failed launch = %v, want not sent", steerErr)
 	}
 }
