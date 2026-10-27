@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
@@ -60,7 +61,9 @@ func claudeSDKEntry() (string, error) {
 	}
 	// No dependency downloads at request time. Operators install the official SDK
 	// beside the other coding runtimes; the optional path supports local installs.
-	out, err := exec.Command("npm", "root", "-g").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "npm", "root", "-g").Output()
 	if err == nil {
 		path := filepath.Join(strings.TrimSpace(string(out)), "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")
 		if _, err := os.Stat(path); err == nil {
