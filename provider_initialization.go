@@ -906,9 +906,9 @@ func resolveClaudeCodeTransport(configured string) (string, error) {
 
 func normalizeClaudeCodeTransport(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
+	case ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
 		return ClaudeCodeTransportTmux, nil
-	case ClaudeCodeTransportSDK:
+	case "", ClaudeCodeTransportSDK:
 		return ClaudeCodeTransportSDK, nil
 	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk":
 		return "", fmt.Errorf("Claude Code print/stream-json transport is no longer supported; use %s=%q", EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
@@ -1073,6 +1073,10 @@ func initializeKimi(config Config) (llmtypes.Model, error) {
 
 // initializeCodexCLI creates and configures an OpenAI Codex CLI adapter instance
 func initializeCodexCLI(config Config) (llmtypes.Model, error) {
+	transport, err := resolveCodexCLITransport()
+	if err != nil {
+		return nil, err
+	}
 	// LLM Initialization event data
 	llmMetadata := LLMMetadata{
 		ModelVersion: config.ModelID,
@@ -1116,6 +1120,7 @@ func initializeCodexCLI(config Config) (llmtypes.Model, error) {
 
 	// Create Codex CLI adapter
 	llm := codexcli.NewCodexCLIAdapter(apiKey, modelID, logger)
+	llm.SetTmuxTransport(transport == CodexCLITransportTmux)
 
 	// Emit LLM initialization success event
 	successMetadata := LLMMetadata{
@@ -1456,3 +1461,14 @@ func initializeAgyCLI(config Config) (llmtypes.Model, error) {
 }
 
 // GetDefaultModel returns the default model for each provider from environment variables
+
+func resolveCodexCLITransport() (string, error) {
+	switch raw := strings.ToLower(strings.TrimSpace(os.Getenv(EnvCodexCLITransport))); raw {
+	case "", CodexCLITransportAppServer:
+		return CodexCLITransportAppServer, nil
+	case CodexCLITransportTmux:
+		return CodexCLITransportTmux, nil
+	default:
+		return "", fmt.Errorf("unsupported Codex transport %q; use %s=app-server or tmux", raw, EnvCodexCLITransport)
+	}
+}

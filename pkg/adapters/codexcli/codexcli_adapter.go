@@ -36,9 +36,10 @@ func looksLikeCodexRateLimit(line string) bool {
 
 // CodexCLIAdapter implements the LLM interface for the OpenAI Codex CLI.
 type CodexCLIAdapter struct {
-	apiKey  string
-	modelID string
-	logger  interfaces.Logger
+	tmuxTransport bool
+	apiKey        string
+	modelID       string
+	logger        interfaces.Logger
 }
 
 // NewCodexCLIAdapter creates a new instance of the CodexCLIAdapter.
@@ -79,6 +80,9 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("codex-cli app-server adapter does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
+	if c.tmuxTransport {
+		return c.generateContentInteractive(ctx, messages, opts)
+	}
 	return c.generateContentAppServer(ctx, messages, opts)
 }
 
@@ -400,3 +404,6 @@ func codexStringConfigOverride(key string, value string) (string, error) {
 	}
 	return key + "=" + string(encoded), nil
 }
+
+// SetTmuxTransport selects an explicit terminal transport; failures never change transport.
+func (c *CodexCLIAdapter) SetTmuxTransport(enabled bool) { c.tmuxTransport = enabled }

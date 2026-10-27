@@ -3,6 +3,8 @@ package cursorcli
 import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 const (
+	MetadataKeyStreamTranscript      = "cursor_stream_transcript"
+	MetadataKeyStreamTmuxScreen      = "cursor_stream_tmux_screen"
 	MetadataKeyCursorModel           = "cursor_model"
 	MetadataKeyResumeSessionID       = "cursor_resume_session_id"
 	MetadataKeyForce                 = "cursor_force"
@@ -281,4 +283,17 @@ func cursorBridgeServerNameFromOptions(opts *llmtypes.CallOptions) string {
 	}
 	mcpJSON, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
 	return cursorBridgeServerName(mcpJSON)
+}
+
+func WithStreamTranscript(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTranscript] = enabled
+	}
+}
+func WithStreamTmuxScreen(enabled bool) llmtypes.CallOption {
+	return func(opts *llmtypes.CallOptions) {
+		ensureMetadata(opts)
+		opts.Metadata.Custom[MetadataKeyStreamTmuxScreen] = enabled
+	}
 }

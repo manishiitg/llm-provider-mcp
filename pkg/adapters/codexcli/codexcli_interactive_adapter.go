@@ -588,6 +588,9 @@ func activeCodexInteractiveSession(ownerSessionID string) (string, bool) {
 // registered — the live-injection transport exists. Cheap registry lookup
 // (no tmux round-trip) for steer gating; delivery re-verifies liveness.
 func InteractiveSessionRegistered(ownerSessionID string) bool {
+	if _, ok := activeCodexInteractiveSession(ownerSessionID); ok {
+		return true
+	}
 	s := codexAppSessionForOwner(ownerSessionID)
 	if s == nil {
 		return false
@@ -606,7 +609,21 @@ func InteractiveSessionRegistered(ownerSessionID string) bool {
 }
 
 func SendCodexInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
-	return SendCodexAppServerInput(ctx, ownerSessionID, message)
+	if _, ok := activeCodexInteractiveSession(ownerSessionID); !ok {
+		return SendCodexAppServerInput(ctx, ownerSessionID, message)
+	}
+	if session, ok := codexPersistentRegistry.Get(ownerSessionID); ok && session != nil {
+		if !session.idleLease.Arm(codexInteractiveIdleTimeout(), func() {
+			closeCodexPersistentSession(session.ownerSessionID, "idle timeout", nil)
+		}) {
+			return fmt.Errorf("Codex session for owner %s is expiring; retry to resume it in a fresh tmux session", ownerSessionID)
+		}
+	}
+	sessionName, ok := activeCodexInteractiveSession(ownerSessionID)
+	if !ok {
+		return fmt.Errorf("no active Codex interactive session registered for owner session %s", ownerSessionID)
+	}
+	return sendCodexInputToTmux(ctx, ownerSessionID, sessionName, message)
 }
 
 func codexInteractiveSessionIDFromOptions(opts *llmtypes.CallOptions) string {

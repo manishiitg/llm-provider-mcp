@@ -51,6 +51,13 @@ func claudeSDKEntry() (string, error) {
 		}
 		return path, nil
 	}
+	// Managed server installs put SDKs beside the coding CLI binaries.
+	if binary, err := exec.LookPath("claude"); err == nil {
+		path := filepath.Join(filepath.Dir(binary), "..", "lib", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
 	// No dependency downloads at request time. Operators install the official SDK
 	// beside the other coding runtimes; the optional path supports local installs.
 	out, err := exec.Command("npm", "root", "-g").Output()

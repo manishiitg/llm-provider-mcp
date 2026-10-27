@@ -579,6 +579,18 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 			contract.PlanUsageSource = ""
 		}
 	}
+	if normalizedProvider == ProviderCodexCLI {
+		if transport, err := resolveCodexCLITransport(); err == nil && transport == CodexCLITransportTmux {
+			contract.Transport = CodingAgentTransportTmux
+			contract.SupportsTerminalStream = true
+			contract.LaunchesViaLoginShell = true
+			contract.HandlesTmuxSessionLoss = true
+			contract.TokenUsageSource = "transcript-file"
+			contract.PlanUsageSource = "transcript-file"
+			contract.SupportsStalledTurnDiagnosis = true
+		}
+	}
+
 	return contract, true
 }
 

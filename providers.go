@@ -56,7 +56,10 @@ const (
 
 	// EnvClaudeCodeTransport selects the Claude Code provider transport.
 	// Supported values: "tmux" (default) or "sdk" (official Agent SDK).
-	EnvClaudeCodeTransport = "CLAUDE_CODE_TRANSPORT"
+	EnvClaudeCodeTransport     = "CLAUDE_CODE_TRANSPORT"
+	EnvCodexCLITransport       = "CODEX_CLI_TRANSPORT"
+	CodexCLITransportAppServer = "app-server"
+	CodexCLITransportTmux      = "tmux"
 	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
 	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
 
@@ -240,7 +243,7 @@ func AwaitClaudeInputDurable(ctx context.Context, sessionID, message string, tim
 // SendCodexCLIInteractiveInput sends user input to a live Codex CLI interactive
 // tmux session registered for the owning application session.
 func SendCodexCLIInteractiveInput(ctx context.Context, sessionID, message string) error {
-	return codexcli.SendCodexAppServerInput(ctx, sessionID, message)
+	return codexcli.SendCodexInteractiveInput(ctx, sessionID, message)
 }
 
 // SendPiCLIInteractiveInput steers the active native Pi RPC turn for its owner.

@@ -1,6 +1,7 @@
 package cursorcli
 
 import (
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"path/filepath"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
@@ -16,4 +17,11 @@ func cursorLandlockReads(args []string, workingDir string) []string {
 	read = append(read, clisandbox.MCPCommandPaths(configs)...)
 	read = append(read, clisandbox.JSONFilePaths(configs)...)
 	return append(read, cursorBridgeTokenDirFor(workingDir))
+}
+
+func cursorLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir string) ([]string, func(), error) {
+	if opts == nil {
+		return args, func() {}, nil
+	}
+	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, cursorLandlockReads(args, workingDir), nil)
 }
