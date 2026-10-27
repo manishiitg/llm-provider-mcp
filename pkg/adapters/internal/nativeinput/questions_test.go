@@ -2,6 +2,7 @@ package nativeinput
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,5 +29,24 @@ func TestRequestsCancelOnlyMatchingQuestionAndCloseRemaining(t *testing.T) {
 	case <-second:
 	case <-time.After(time.Second):
 		t.Fatal("turn exit left question pending")
+	}
+}
+
+// PLAT-872-54: permission cards must not expose common inline credentials.
+func TestCommandApprovalDisplayMasksInlineCredentials(t *testing.T) {
+	for _, command := range []string{
+		`API_TOKEN="private-fixture" printf ok`,
+		`curl -H "Authorization: Bearer private-fixture" https://example.com`,
+		`curl --token private-fixture https://example.com`,
+		`tool --password='private-fixture'`,
+		`mysql -u user -pprivate-fixture`,
+		`curl https://user:private-fixture@example.com`,
+	} {
+		if got := approvalDisplay(command); strings.Contains(got, "private-fixture") || !strings.Contains(got, "[hidden]") {
+			t.Fatalf("credential masking failed for %q", command)
+		}
+	}
+	if got := approvalDisplay("printf hello"); got != "printf hello" {
+		t.Fatal("ordinary command changed")
 	}
 }
