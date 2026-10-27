@@ -24,6 +24,8 @@ func TestClassifyKinds(t *testing.T) {
 		{"billing verification", errors.New("API error 402: Billing verification failed. Please check your payment method. (billing_error)"), KindBilling},
 		{"402 exhausted credits", errors.New("status code: 402 insufficient credits"), KindQuotaExhausted},
 		{"billing status", errors.New("status code: 402 payment required"), KindBilling},
+		// PLAT-872-64: a fixed-settings plan refusal was retried five times as a server failure.
+		{"Cursor Plus model setting refusal", errors.New("Cursor SDK turn failed: Model unavailable on Plus. Plus includes Composer 2.5, Grok 4.7, Grok 4.6, and Grok 4.5 with fixed settings. Switch to an included model to continue."), KindBilling},
 		{"billing mention alone", errors.New("unable to continue; check billing details"), KindUnknown},
 
 		// Quota exhaustion (must win over rate-limit patterns in the same message)
@@ -51,6 +53,8 @@ func TestClassifyKinds(t *testing.T) {
 
 		// Auth
 		{"invalid key", errors.New("invalid x-api-key"), KindAuth},
+		{"Cursor SDK invalid user key", errors.New("Cursor SDK turn failed: [unknown] Invalid User API Key"), KindAuth},
+		{"Cursor SDK missing login", errors.New("Cursor SDK did not start: Sign in again to use Cursor. Open Providers, select this account, and choose Sign in."), KindAuth},
 		{"status 401", errors.New("status code: 401 Unauthorized"), KindAuth},
 		{"bedrock denied", errors.New("AccessDeniedException: not authorized to invoke this model"), KindAuth},
 

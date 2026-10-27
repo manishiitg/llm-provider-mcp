@@ -246,7 +246,8 @@ func classifyKind(err error) Kind {
 
 	// Some providers use 402 for exhausted credits, so check quota first.
 	// A billing check failure has no usage window that can reset.
-	if status == 402 || containsAny(msg, "billing_error", "billing verification failed") {
+	if status == 402 || containsAny(msg, "billing_error", "billing verification failed",
+		"model unavailable on ", "switch to an included model", "model is not included in your plan", "model is not included in your subscription") {
 		return KindBilling
 	}
 
@@ -260,6 +261,7 @@ func classifyKind(err error) Kind {
 
 	if status == 401 || status == 403 || containsAny(msg,
 		"invalid api key", "invalid x-api-key", "incorrect api key", "api key not valid",
+		"invalid user api key", "sign in again to use cursor",
 		"authentication", "unauthorized", "unauthenticated",
 		"permission denied", "permission_denied", "forbidden",
 		"accessdeniedexception", "credential",

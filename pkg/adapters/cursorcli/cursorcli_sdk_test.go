@@ -17,7 +17,7 @@ import (
 // local run that waits at a tool step until steered, as the live SDK does (PLAT-872, owner chose the
 // SDK because ACP held a mid-reply message until the reply ended).
 const fakeCursorSDK = `
-exports.Cursor = { auth: { status: async () => ({status:'logged-in'}) } };
+exports.Cursor = { auth: { status: async () => ({status:'logged-in'}) }, models: {list: async () => [{id:'composer-2.5',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]} };
 let steered = '', cancelled = false;
 function agent(id) {
   return {
@@ -39,8 +39,44 @@ function agent(id) {
     },
   };
 }
-exports.Agent = { create: async () => agent('agent-test'), resume: async id => agent(id) };
+// PLAT-872-64: the real bridge must apply the account's default settings before launch/resume.
+function check(opts) { if (JSON.stringify(opts.model.params) !== '[{"id":"fast","value":"false"}]') throw Error('Model unavailable on Plus. Switch to an included model to continue.'); }
+exports.Agent = { create: async opts => {check(opts); return agent('agent-test');}, resume: async (id,opts) => {check(opts); return agent(id);} };
 `
+
+// PLAT-872-64: discovery failure cannot block a chat; explicit choices win,
+// and a second start in the same account process reuses the discovered defaults.
+func TestCursorSDKModelDiscoveryDoesNotBlockOrOverrideSelection(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	for _, tc := range []struct{ name, lookup, model, expected string }{
+		{"cached default", `if (++calls > 1) throw Error('second lookup'); return [{id:'composer',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]`, `{"id":"composer"}`, `[{"id":"fast","value":"false"}]`},
+		{"explicit selection", `throw Error('must not discover')`, `{"id":"composer","params":[{"id":"fast","value":"true"}]}`, `[{"id":"fast","value":"true"}]`},
+		{"unavailable catalog", `throw Error('network unavailable')`, `{"id":"composer"}`, `undefined`},
+		{"stalled catalog", `return new Promise(() => {})`, `{"id":"composer"}`, `undefined`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bridge, entry := filepath.Join(dir, "bridge.cjs"), filepath.Join(dir, "sdk.cjs")
+			sdk := `let calls=0; exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>{` + tc.lookup + `}}}; exports.Agent={create:async opts=>{if(JSON.stringify(opts.model.params)!==JSON.stringify(` + tc.expected + `))throw Error('wrong model settings');return {agentId:'ready'};}};`
+			for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
+				if err := os.WriteFile(name, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "node", bridge, entry)
+			start := `{"type":"start","model":` + tc.model + `}` + "\n"
+			cmd.Stdin = strings.NewReader(start + start + "{\"type\":\"close\"}\n")
+			out, err := cmd.CombinedOutput()
+			if err != nil || strings.Count(string(out), `"type":"ready"`) != 2 {
+				t.Fatalf("starts failed: %v, %s", err, out)
+			}
+		})
+	}
+}
 
 func TestCursorSDKSteersTheRunningTurn(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
@@ -217,7 +253,7 @@ func TestCursorSDKSteerDuringFailedLaunchIsNotSent(t *testing.T) {
 	}
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "fake-sdk.cjs")
-	broken := "exports.Cursor = { auth: { status: async () => ({status: 'logged-in'}) } }; exports.Agent = { create: async () => { await new Promise(r => setTimeout(r, 300)); throw new Error('login required'); } };"
+	broken := "exports.Cursor = { auth: { status: async () => ({status: 'logged-in'}) }, models: {list: async () => []} }; exports.Agent = { create: async () => { await new Promise(r => setTimeout(r, 300)); throw new Error('login required'); } };"
 	if err := os.WriteFile(entry, []byte(broken), 0o600); err != nil {
 		t.Fatal(err)
 	}

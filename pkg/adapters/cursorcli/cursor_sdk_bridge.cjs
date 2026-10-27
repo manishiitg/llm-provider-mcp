@@ -9,6 +9,18 @@ const short = error => String(error?.message || error || 'Error').split('\n')[0]
 async function main() {
   const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, followups = [], early = [], busy = false;
+  // This process belongs to one account; keep discovery across starts/resumes.
+  let accountModels;
+  const modelDefaults = () => accountModels ??= (async () => {
+    let timer;
+    try {
+      return await Promise.race([
+        Cursor.models.list({ apiKey: process.env.CURSOR_API_KEY || undefined }),
+        new Promise(resolve => { timer = setTimeout(() => resolve([]), 3000); }),
+      ]);
+    } catch { return []; } // Discovery trouble must not prevent an otherwise valid chat.
+    finally { clearTimeout(timer); }
+  })();
   const lines = createInterface({ input: process.stdin });
   const queue = [];
   let wake;
@@ -60,6 +72,14 @@ async function main() {
       start = request;
       if (!process.env.CURSOR_API_KEY && (await Cursor.auth.status()).status !== 'logged-in') {
         throw new Error('Sign in again to use Cursor. Open Providers, select this account, and choose Sign in.');
+      }
+      // PLAT-872-64: an omitted parameter list is not the account's default variant.
+      // Composer's account catalog, for example, supplies explicit fast=false.
+      // Preserve explicit selections; resolve bare IDs with this account only.
+      if (!start.model.params?.length) {
+        const models = await modelDefaults();
+        const variant = models.find(model => model.id === start.model.id)?.variants?.find(variant => variant.isDefault);
+        if (variant?.params?.length) start.model = {...start.model, params: variant.params};
       }
       if (start.agent_id) {
         try { agent = await Agent.resume(start.agent_id, options()); }
