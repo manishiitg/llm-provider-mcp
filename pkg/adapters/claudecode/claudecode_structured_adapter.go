@@ -178,6 +178,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	if c.sdkTransport && permissionMode == "" {
 		permissionMode = "dontAsk"
+		if llmtypes.CodingAgentQuestionsAvailable(ctx) {
+			permissionMode = "default"
+		}
 		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom[MetadataKeyDangerouslySkipPermissions] == true {
 			permissionMode = "bypassPermissions"
 		}

@@ -3,6 +3,7 @@ package codexcli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"strings"
 	"testing"
@@ -60,5 +61,50 @@ func TestCodexAppServerNativeQuestionLive(t *testing.T) {
 	}
 	if asked != 1 || strings.TrimSpace(resp.Choices[0].Content) != "CHOSEN_Blue" {
 		t.Fatalf("asked=%d response=%s", asked, resp.Choices[0].Content)
+	}
+}
+
+// PLAT-872-54: command approvals must return one native decision, not an
+// unsupported-request error or a persistent permission grant.
+func TestCodexCommandApprovalUsesScopedAnswer(t *testing.T) {
+	raw := json.RawMessage(`{"threadId":"thread","turnId":"turn","itemId":"item","command":"printf hello","cwd":"/work","availableDecisions":["accept","acceptForSession","decline","cancel"]}`)
+	for _, choice := range []string{"Allow", "Deny", "cancel"} {
+		t.Run(choice, func(t *testing.T) {
+			asked := 0
+			ctx := llmtypes.WithCodingAgentQuestionHandler(context.Background(), "codex-cli", "chat", func(_ context.Context, args map[string]any) (string, error) {
+				asked++
+				q := args["questions"].([]any)[0].(map[string]any)
+				if !strings.Contains(q["question"].(string), "printf hello") {
+					t.Fatal("missing command")
+				}
+				if choice == "cancel" {
+					return "", context.Canceled
+				}
+				return fmt.Sprintf(`{"status":"answered","answers":[{"id":"command_permission","selected_labels":[%q]}]}`, choice), nil
+			})
+			out, err := codexNativeQuestion(ctx, "item/commandExecution/requestApproval", raw, "thread", "turn")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "decline"
+			if choice == "Allow" {
+				want = "accept"
+			}
+			if asked != 1 || out.(map[string]any)["decision"] != want {
+				t.Fatalf("asked=%d response=%v", asked, out)
+			}
+			if _, err = codexNativeQuestion(ctx, "item/commandExecution/requestApproval", raw, "other", "turn"); err == nil || asked != 1 {
+				t.Fatal("cross-thread approval reached card")
+			}
+			out, err = codexNativeQuestion(context.Background(), "item/commandExecution/requestApproval", raw, "thread", "turn")
+			if err != nil || out.(map[string]any)["decision"] != "decline" {
+				t.Fatal("unattended request not declined")
+			}
+			limited := json.RawMessage(strings.Replace(string(raw), `"accept",`, "", 1))
+			out, err = codexNativeQuestion(ctx, "item/commandExecution/requestApproval", limited, "thread", "turn")
+			if err != nil || out.(map[string]any)["decision"] != "decline" || asked != 1 {
+				t.Fatal("single approval became a session grant")
+			}
+		})
 	}
 }

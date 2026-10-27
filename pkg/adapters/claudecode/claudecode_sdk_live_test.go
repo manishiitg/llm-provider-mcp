@@ -203,3 +203,40 @@ func TestClaudeSDKSteersActiveTool(t *testing.T) {
 		t.Fatalf("finished query must reject unsent input: %v", err)
 	}
 }
+
+// PLAT-872-54: command requests used to hit the callback's unconditional deny.
+func TestClaudeSDKCommandPermissionUsesScopedAnswer(t *testing.T) {
+	for _, choice := range []string{"Allow", "Deny", "cancel"} {
+		t.Run(choice, func(t *testing.T) {
+			command := `API_TOKEN="private fixture" printf hello`
+			input, _ := json.Marshal(map[string]any{"command": command, "description": "fixture"})
+			ctx := llmtypes.WithCodingAgentQuestionHandler(context.Background(), "claude-code", "chat", func(ctx context.Context, args map[string]any) (string, error) {
+				q := args["questions"].([]any)[0].(map[string]any)
+				text := q["question"].(string)
+				if strings.Contains(text, "private fixture") || !strings.Contains(text, "printf hello") {
+					t.Fatal("command display lost command or exposed credential")
+				}
+				if choice == "cancel" {
+					return "", context.Canceled
+				}
+				return fmt.Sprintf(`{"status":"answered","answers":[{"id":"command_permission","selected_labels":[%q]}]}`, choice), nil
+			})
+			result := claudeSDKPermission(ctx, "Bash", input)
+			if choice == "Allow" {
+				if result["behavior"] != "allow" || result["updatedInput"].(map[string]any)["command"] != command {
+					t.Fatalf("approval changed original command: %v", result)
+				}
+			} else if result["behavior"] != "deny" {
+				t.Fatal("non-approval executed command")
+			}
+			if claudeSDKPermission(context.Background(), "Bash", input)["behavior"] != "deny" {
+				t.Fatal("unattended command approved")
+			}
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if claudeSDKPermission(cancelled, "Bash", input)["behavior"] != "deny" {
+				t.Fatal("cancelled approval executed command")
+			}
+		})
+	}
+}

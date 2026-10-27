@@ -91,7 +91,7 @@ func claudeSDKCommand(ctx context.Context, executable string, args []string) (*e
 func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage) map[string]any {
 	deny := map[string]any{"behavior": "deny", "message": "This request was not approved. Use the chat or account setup to continue."}
 	// Tool policy still runs natively (including the existing deny hooks). Only
-	// native question/plan requests that reach canUseTool use attended cards.
+	// native requests that reach canUseTool use attended cards.
 	var value map[string]any
 	if json.Unmarshal(input, &value) != nil {
 		return deny
@@ -126,6 +126,18 @@ func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage
 		answers, err := nativeinput.Ask(ctx, []nativeinput.Question{{ID: "plan", Question: "Approve this plan?\n" + plan, Options: []nativeinput.Option{{Label: "Approve"}, {Label: "Reject"}}}})
 		if err != nil || len(answers) != 1 || len(answers[0].SelectedLabels) != 1 || answers[0].SelectedLabels[0] != "Approve" {
 			return deny
+		}
+	case "Bash", "PowerShell", "Monitor":
+		command, _ := value["command"].(string)
+		if strings.TrimSpace(command) == "" {
+			return deny
+		}
+		allowed, err := nativeinput.ApproveCommand(ctx, "Allow Claude to run this command?\n\n"+command)
+		if err != nil {
+			return map[string]any{"behavior": "deny", "message": "Command not run: no answer. Ask again in chat when you are ready."}
+		}
+		if !allowed {
+			return map[string]any{"behavior": "deny", "message": "Command not run: you chose Deny."}
 		}
 	default:
 		return deny

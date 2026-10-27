@@ -311,6 +311,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		approval := codexOptionString(opts, MetadataKeyApprovalPolicy)
 		if approval == "" {
 			approval = "never"
+			if llmtypes.CodingAgentQuestionsAvailable(ctx) {
+				approval = "on-request"
+			}
 		}
 		threadConfig, configErr := codexAppThreadConfig(opts, approval)
 		if configErr != nil {
