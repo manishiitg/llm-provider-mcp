@@ -15,7 +15,7 @@ import (
 // local run that waits at a tool step until steered, as the live SDK does (PLAT-872, owner chose the
 // SDK because ACP held a mid-reply message until the reply ended).
 const fakeCursorSDK = `
-let steered = '';
+let steered = '', cancelled = false;
 function agent(id) {
   return {
     agentId: id,
@@ -29,8 +29,8 @@ function agent(id) {
           yield { type: 'tool_call', call_id: 'c1', name: 'shell', status: 'completed', result: 'SLEPT' };
           opts.onDelta({ update: { type: 'text-delta', text: 'answer to ' + text.slice(-5) + (steered ? ' +' + steered : '') } });
         },
-        async wait() { return { status: 'finished', result: '' }; },
-        async cancel() {},
+        async wait() { return { status: cancelled ? 'cancelled' : 'finished', result: '' }; },
+        async cancel() { cancelled = true; done(); },
       };
       return run;
     },
@@ -92,3 +92,37 @@ func TestCursorSDKSteersTheRunningTurn(t *testing.T) {
 		t.Fatal("a steer with no running turn must report not sent")
 	}
 }
+
+// The Stop button (Escape) must reach the SDK bridge, not only ACP sessions.
+func TestCursorSDKStopCancelsTheRunningTurn(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "fake-sdk.cjs")
+	if err := os.WriteFile(entry, []byte(fakeCursorSDK), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURSOR_SDK_PATH", entry)
+	c := NewCursorCLIAdapter("", "composer-2.5", nil)
+	c.SetSDKTransport(true)
+	stream := make(chan llmtypes.StreamChunk, 64)
+	owner := "chat-stop-test"
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.GenerateContent(context.Background(), []llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "hello world")},
+			WithWorkingDir(dir), WithInteractiveSessionID(owner), llmtypes.WithStreamingChan(stream))
+		done <- err
+	}()
+	for chunk := range stream {
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart {
+			if err := InterruptACP(context.Background(), owner, "Escape"); err != nil {
+				t.Fatalf("stop did not reach the SDK turn: %v", err)
+			}
+		}
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("turn was not cancelled: %v", err)
+	}
+}
+
