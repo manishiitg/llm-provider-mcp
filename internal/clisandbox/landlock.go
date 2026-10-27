@@ -218,6 +218,14 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 			"GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*",
 			"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
 			"GIT_CONFIG_KEY_2=core.fsmonitor", "GIT_CONFIG_VALUE_2=false")
+	} else {
+		// Private project runtimes can trust exact mixed-UID repositories in
+		// their own Git config. Keep repository hooks and fsmonitor disabled
+		// at command scope, where repository-local config cannot override them.
+		wrapped = append(wrapped,
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
+			"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false")
 	}
 	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil

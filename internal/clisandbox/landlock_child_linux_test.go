@@ -45,4 +45,20 @@ func TestLandlockChildConfinesTheCLINotTheHost(t *testing.T) {
 	if files, _ := filepath.Glob(filepath.Join(dir, "home", "agentworks-cli-landlock-*.json")); len(files) != 0 {
 		t.Fatalf("policy file left behind: %v", files)
 	}
+	// PLAT-856-383: repository-local config cannot re-enable automatic code
+	// execution when a private non-slot CLI trusts a mixed-UID project.
+	repo := filepath.Join(dir, "repo")
+	for _, args := range [][]string{{"init", "-q", repo}, {"-C", repo, "config", "core.hooksPath", "/untrusted-hooks"}, {"-C", repo, "config", "core.fsmonitor", "/untrusted-monitor"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git fixture: %v %s", err, out)
+		}
+	}
+	for key, want := range map[string]string{"core.hooksPath": "/dev/null", "core.fsmonitor": "false"} {
+		args := append(append([]string{}, launch.EnvArgs[1:]...), "git", "-C", repo, "config", "--get", key)
+		cmd := exec.Command(launch.EnvArgs[0], args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != want {
+			t.Fatalf("repository overrode %s: %v %s", key, err, out)
+		}
+	}
 }
