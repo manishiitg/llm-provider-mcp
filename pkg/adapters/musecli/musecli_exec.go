@@ -145,6 +145,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	if err != nil {
 		return nil, err
 	}
+	prompt = llmtypes.CLIPrivateSkillInstructions(opts, museSkillsSubdir) + prompt
 	// exec resumes with --session-id: the old history may claim there is no bridge.
 	prompt = museWithResumeNote(prompt, museResumeSessionIDFromOptions(opts) != "", museMCPConfigFromOptions(opts))
 	model := strings.TrimSpace(a.modelID)
@@ -213,7 +214,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		}
 	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		_ = a.ProjectSkills(workdir, skills)
+		_ = a.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workdir), skills)
 	}
 	cmd.Dir = workdir
 	cleanupSandbox, err := museLandlockCmd(opts, cmd, workdir)

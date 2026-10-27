@@ -891,6 +891,7 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 }
 
 func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOptions, sessionName, nativeSessionID, systemPrompt string) ([]string, []string, error) {
+	systemPrompt += llmtypes.CLIPrivateSkillInstructions(opts, ".claude/skills")
 	extraArgs := []string{}
 	var tempFiles []string
 	toolsArg := ""
@@ -1072,7 +1073,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string); strings.TrimSpace(workingDir) != "" {
 			if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-				_ = c.ProjectSkills(workingDir, skills)
+				_ = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workingDir), skills)
 			}
 		}
 	}
@@ -1091,6 +1092,9 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 // true when the key is unset; callers can opt out by passing
 // WithClaudeCodeWriteProjectInstructionFile(false).
 func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		return false
+	}
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return true
 	}

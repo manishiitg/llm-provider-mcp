@@ -262,7 +262,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if resumeSessionID == "" {
 		freshSessionID = newClaudeNativeSessionID()
 	}
-	launchPrompt := systemPrompt
+	launchPrompt := systemPrompt + llmtypes.CLIPrivateSkillInstructions(opts, ".claude/skills")
 	if c.sdkTransport && projectedPrompt && projectInstructionOnlyFromOptions(opts) {
 		launchPrompt = ""
 	}
@@ -299,7 +299,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			// Project skills to <workdir>/.claude/skills — claude discovers them
 			// natively from the working dir, same as the tmux path. (Disk
 			// side-effect; --add-dir is added by the builder.)
-			_ = c.ProjectSkills(workingDir, skills)
+			_ = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workingDir), skills)
 		}
 	}
 

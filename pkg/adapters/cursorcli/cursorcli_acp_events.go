@@ -39,6 +39,11 @@ func (c *CursorCLIAdapter) consumeACPTurn(ctx context.Context, s *cursorACPSessi
 			storePath = filepath.Join(strings.TrimPrefix(e, "XDG_CONFIG_HOME="), "cursor", "acp-sessions", s.native, "store.db")
 		}
 	}
+	for _, e := range r.cmd.Env {
+		if strings.HasPrefix(e, "CURSOR_CONFIG_DIR=") && strings.TrimPrefix(e, "CURSOR_CONFIG_DIR=") != "" {
+			storePath = filepath.Join(strings.TrimPrefix(e, "CURSOR_CONFIG_DIR="), "acp-sessions", s.native, "store.db")
+		}
+	}
 	_, oldRefs := cursorStoreMessagesExcept(storePath, nil)
 	baseline := map[string]struct{}{}
 	for _, ref := range oldRefs {

@@ -203,8 +203,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		return nil, err
 	}
 	cwd := codexWorkingDirFromOptions(opts)
+	system += llmtypes.CLIPrivateSkillInstructions(opts, codexSkillsSubdir)
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		if err = c.ProjectSkills(cwd, skills); err != nil {
+		if err = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, cwd), skills); err != nil {
 			return nil, err
 		}
 	}

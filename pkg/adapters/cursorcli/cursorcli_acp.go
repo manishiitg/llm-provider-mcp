@@ -72,12 +72,12 @@ func cursorACPBool(opts *llmtypes.CallOptions, key string) bool {
 	return v
 }
 func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOptions, cwd, owner, system, model, resume string) (*cursorACP, string, error) {
-	cleanup, err := prepareCursorProjectFiles(cwd, system, opts, owner)
+	cleanup, err := prepareCursorProjectFiles(llmtypes.CLIArtifactDirectory(opts, cwd), system, opts, owner)
 	if err != nil {
 		return nil, "", err
 	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		if err = c.ProjectSkills(cwd, skills); err != nil {
+		if err = c.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, cwd), skills); err != nil {
 			cleanup()
 			return nil, "", err
 		}
@@ -112,6 +112,9 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 			}
 		}
 	}
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		args = append(args, "--plugin-dir", opts.CLIRuntimeDir)
+	}
 	args = append(args, "acp")
 	processCtx, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(processCtx, bin, args...)
@@ -119,6 +122,15 @@ func (c *CursorCLIAdapter) launchACP(ctx context.Context, opts *llmtypes.CallOpt
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	procshutdown.KillGroupOnCancel(cmd)
 	cmd.Env = append(llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts), "NO_OPEN_BROWSER=1")
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		configDir, configErr := prepareCursorPrivateRuntime(opts, cmd.Env)
+		if configErr != nil {
+			stop()
+			cleanup()
+			return nil, "", configErr
+		}
+		cmd.Env = append(cmd.Env, "CURSOR_CONFIG_DIR="+configDir)
+	}
 	sandboxCleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, cwd, cursorLandlockReads(args, cwd), nil)
 	if err != nil {
 		stop()
@@ -264,7 +276,7 @@ func (c *CursorCLIAdapter) generateContentACP(ctx context.Context, messages []ll
 	if override := cursorACPString(opts, MetadataKeyCursorModel); override != "" {
 		model = cursorModelWithReasoning(override, opts)
 	}
-	config := map[string]any{"cwd": cwd, "system": system, "model": model, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts), "security": opts.CLISecurity, "skills": llmtypes.AttachedSkillsFromOptions(opts)}
+	config := map[string]any{"cwd": cwd, "runtime": opts.CLIRuntimeDir, "system": system, "model": model, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts), "security": opts.CLISecurity, "skills": llmtypes.AttachedSkillsFromOptions(opts)}
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata.Custom {
 			if k != MetadataKeyResumeSessionID && k != llmtypes.CodingProviderLaunchOnlyMetadataKey {

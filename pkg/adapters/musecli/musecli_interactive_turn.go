@@ -411,10 +411,13 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		}
 	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		_ = a.ProjectSkills(workdir, skills)
+		_ = a.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workdir), skills)
 	}
 	instructionOnly := museProjectInstructionOnlyFromOptions(opts)
-	wantAgents := instructionOnly && len(system) > 0
+	wantAgents := instructionOnly && len(system) > 0 && !llmtypes.CLIHasPrivateRuntime(opts)
+	if note := llmtypes.CLIPrivateSkillInstructions(opts, museSkillsSubdir); note != "" {
+		system = append(system, note)
+	}
 
 	var prompt string // set below via museResolveTmuxPrompt once launch/acquire decides whether AGENTS.md carries the system prompt
 	session := ""

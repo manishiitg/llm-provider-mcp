@@ -546,3 +546,26 @@ func agyBridgeHostPorts(mcpJSON string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// Bound local Crews preserve project hooks. The CLI loads global hooks from
+// .gemini/config/hooks.json in this run's isolated HOME (not settings.json).
+func agyHoldToolModeHookForCall(workingDir, privateHome, mode string, opts *llmtypes.CallOptions, hostPorts ...string) (func(), error) {
+	if !llmtypes.CLIHasPrivateRuntime(opts) {
+		return agyHoldToolModeHook(workingDir, mode, hostPorts...)
+	}
+	if mode == "" {
+		return func() {}, nil
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return nil, fmt.Errorf("agy native tools mode requires python3: %w", err)
+	}
+	if privateHome == "" {
+		return nil, fmt.Errorf("agy private hook home is unavailable")
+	}
+	hookPath := filepath.Join(privateHome, ".gemini", "config", "hooks.json")
+	if err := agyWritePrivateJSON(hookPath, map[string]interface{}{agyToolModeHookName: agyManagedToolHookEntry(python, mode, hostPorts...)}); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.Remove(hookPath) }, nil
+}

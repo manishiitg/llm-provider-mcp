@@ -84,7 +84,7 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 	if err != nil {
 		return nil, "", err
 	}
-	agentDir, sessionDir, cleanupConfig, err := preparePiNativeMCPConfig(cwd, nativeID, opts, p.customProvider)
+	agentDir, sessionDir, cleanupConfig, err := preparePiNativeMCPConfig(llmtypes.CLIArtifactDirectory(opts, cwd), nativeID, opts, p.customProvider)
 	if err != nil {
 		return nil, "", err
 	}
@@ -107,7 +107,7 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 		args = append(args, "--append-system-prompt", system)
 	}
 	if len(llmtypes.AttachedSkillsFromOptions(opts)) > 0 {
-		args = append(args, "--skill", piProjectedSkillsPath(cwd))
+		args = append(args, "--skill", piProjectedSkillsPath(llmtypes.CLIArtifactDirectory(opts, cwd)))
 	}
 	env := llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts)
 	// A saved login belongs to the selected account environment. Never consult
@@ -230,7 +230,7 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 		}
 	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
-		if err = p.ProjectSkills(cwd, skills); err != nil {
+		if err = p.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, cwd), skills); err != nil {
 			return nil, err
 		}
 	}

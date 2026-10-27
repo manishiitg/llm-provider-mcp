@@ -46,6 +46,7 @@ type CodingProviderSessionHandle struct {
 	NativeSessionID string `json:"native_session_id,omitempty"`
 	TmuxSession     string `json:"tmux_session,omitempty"`
 	WorkingDir      string `json:"working_dir,omitempty"`
+	RuntimeDir      string `json:"runtime_dir,omitempty"`
 	ProjectDirID    string `json:"project_dir_id,omitempty"`
 	Model           string `json:"model,omitempty"`
 	Status          string `json:"status,omitempty"`
@@ -57,6 +58,7 @@ func (h CodingProviderSessionHandle) Empty() bool {
 		strings.TrimSpace(h.NativeSessionID) == "" &&
 		strings.TrimSpace(h.TmuxSession) == "" &&
 		strings.TrimSpace(h.WorkingDir) == "" &&
+		strings.TrimSpace(h.RuntimeDir) == "" &&
 		strings.TrimSpace(h.ProjectDirID) == "" &&
 		strings.TrimSpace(h.Model) == "" &&
 		strings.TrimSpace(h.Status) == ""

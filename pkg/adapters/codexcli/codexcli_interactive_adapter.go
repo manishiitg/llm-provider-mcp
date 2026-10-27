@@ -421,6 +421,9 @@ func cleanupCodexLaunch(session *codexInteractiveSession) {
 // true when the key is unset; callers can opt out by passing
 // WithCodexWriteProjectInstructionFile(false).
 func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		return false
+	}
 	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
 		return true
 	}
