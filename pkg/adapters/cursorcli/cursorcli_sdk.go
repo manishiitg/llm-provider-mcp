@@ -163,7 +163,7 @@ func (p *cursorSDKProcess) read(stdout io.Reader) {
 func cursorSDKEntry() (string, error) {
 	if path := strings.TrimSpace(os.Getenv("CURSOR_SDK_PATH")); path != "" {
 		if _, err := os.Stat(path); err != nil {
-			return "", fmt.Errorf("Cursor SDK entry is unavailable: %w", err)
+			return "", errors.New("Cursor needs a component that is unavailable. Update the app and try again")
 		}
 		return filepath.Abs(path)
 	}
@@ -179,7 +179,7 @@ func cursorSDKEntry() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("Cursor SDK is not installed; install @cursor/sdk with npm, or set CURSOR_SDK_PATH to its dist/cjs/index.js")
+	return "", errors.New("Cursor needs a component that isn't installed. Update the app and try again")
 }
 
 // cursorSDKModel turns a Cursor selector ("claude-opus-4-8[effort=high,fast=false]") into the SDK's
@@ -203,6 +203,9 @@ func cursorSDKModel(selector string) map[string]any {
 }
 
 func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOptions, cwd, owner, system, model, resume string) (*cursorSDKProcess, string, bool, error) {
+	if err := llmtypes.PrepareCodingSDK(ctx, "cursor-cli", opts.StreamChan); err != nil {
+		return nil, "", false, err
+	}
 	// Rules, MCP and skills go where ACP puts them: the private runtime for a Crew bound to a person's own
 	// folder (PLAT-856-145), never .cursor/ inside that folder.
 	artifacts := llmtypes.CLIArtifactDirectory(opts, cwd)

@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,7 +49,7 @@ func claudeSDKEntry() (string, error) {
 			return "", err
 		}
 		if _, err := os.Stat(path); err != nil {
-			return "", fmt.Errorf("Claude Agent SDK entry is unavailable: %w", err)
+			return "", errors.New("Claude needs a component that is unavailable. Update the app and try again")
 		}
 		return path, nil
 	}
@@ -70,7 +71,7 @@ func claudeSDKEntry() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("Claude Agent SDK is not installed; install @anthropic-ai/claude-agent-sdk@0.3.311 with npm, or set CLAUDE_AGENT_SDK_PATH to its sdk.mjs")
+	return "", errors.New("Claude needs a component that isn't installed. Update the app and try again")
 }
 
 func claudeSDKCommand(ctx context.Context, executable string, args []string) (*exec.Cmd, func(), error) {

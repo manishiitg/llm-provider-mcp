@@ -308,6 +308,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	cmd := exec.CommandContext(runCtx, binPath, args...)
 	var sdkProcess *claudeSDKProcess
 	if c.sdkTransport {
+		var setupStream chan<- llmtypes.StreamChunk
+		if opts != nil {
+			setupStream = opts.StreamChan
+		}
+		if err := llmtypes.PrepareCodingSDK(runCtx, "claude-code", setupStream); err != nil {
+			return nil, err
+		}
 		var cleanup func()
 		cmd, cleanup, err = claudeSDKCommand(runCtx, binPath, args)
 		if err != nil {
