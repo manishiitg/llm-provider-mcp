@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -22,7 +23,7 @@ function agent(id) {
     async send(text, opts) {
       let done, resolveDone = new Promise(r => { done = r; });
       const run = {
-        async steer(t) { steered = t; done(); return 'complete_delivered'; },
+        async steer(t) { if (t === 'LATER') { done(); return 'revert_to_followup'; } steered = t; done(); return 'complete_delivered'; },
         async *stream() {
           yield { type: 'tool_call', call_id: 'c1', name: 'shell', status: 'running', args: { command: 'sleep' } };
           await Promise.race([resolveDone, new Promise(r => setTimeout(r, 5000))]);
@@ -126,3 +127,82 @@ func TestCursorSDKStopCancelsTheRunningTurn(t *testing.T) {
 	}
 }
 
+// RTS 2026-10-27: a message sent 2s into a turn, before the SDK run had started, fell back to an
+// after-turn injection and showed twice. It must join this turn, and text after a tool step must not
+// be glued to the previous sentence ("ready.Yes.").
+func TestCursorSDKEarlySteerJoinsTheSameTurn(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "fake-sdk.cjs")
+	if err := os.WriteFile(entry, []byte(fakeCursorSDK), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURSOR_SDK_PATH", entry)
+	c := NewCursorCLIAdapter("", "composer-2.5", nil)
+	c.SetSDKTransport(true)
+	stream := make(chan llmtypes.StreamChunk, 256)
+	owner := "chat-early-steer"
+	done := make(chan *llmtypes.ContentResponse, 1)
+	go func() {
+		resp, err := c.GenerateContent(context.Background(), []llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "hello world")},
+			WithWorkingDir(dir), WithInteractiveSessionID(owner), llmtypes.WithStreamingChan(stream))
+		if err != nil {
+			t.Error(err)
+		}
+		done <- resp
+	}()
+	sent := false
+	for start := time.Now(); !sent && time.Since(start) < 3*time.Second; time.Sleep(20 * time.Millisecond) {
+		sent = SendCursorSDKInput(context.Background(), owner, "STEER") == nil
+	}
+	if !sent {
+		t.Fatal("an early steer was refused while the turn was starting")
+	}
+	for range stream {
+	}
+	resp := <-done
+	if resp == nil {
+		return
+	}
+	if text := resp.Choices[0].Content; !strings.Contains(text, "STEER") {
+		t.Fatalf("early steer was not answered in the same turn: %q", text)
+	}
+}
+
+// A steer the SDK does not take becomes a follow-up run in the same turn; its text starts a new paragraph.
+func TestCursorSDKFollowUpRunStartsNewParagraph(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "fake-sdk.cjs")
+	if err := os.WriteFile(entry, []byte(fakeCursorSDK), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURSOR_SDK_PATH", entry)
+	c := NewCursorCLIAdapter("", "composer-2.5", nil)
+	c.SetSDKTransport(true)
+	stream := make(chan llmtypes.StreamChunk, 256)
+	owner := "chat-followup-paragraph"
+	done := make(chan *llmtypes.ContentResponse, 1)
+	go func() {
+		resp, _ := c.GenerateContent(context.Background(), []llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "hello world")},
+			WithWorkingDir(dir), WithInteractiveSessionID(owner), llmtypes.WithStreamingChan(stream))
+		done <- resp
+	}()
+	steered := false
+	for chunk := range stream {
+		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart && !steered {
+			steered = true
+			if err := SendCursorSDKInput(context.Background(), owner, "LATER"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	resp := <-done
+	if resp == nil || !strings.Contains(resp.Choices[0].Content, "answer to world\n\nanswer to LATER") {
+		t.Fatalf("follow-up text was glued to the first answer: %#v", resp)
+	}
+}

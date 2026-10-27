@@ -8,7 +8,7 @@ const short = error => String(error?.message || error || 'Error').split('\n')[0]
 
 async function main() {
   const { Agent } = require(process.argv[2]);
-  let agent, run, start, followups = [], busy = false;
+  let agent, run, start, followups = [], early = [], busy = false;
   const lines = createInterface({ input: process.stdin });
   const queue = [];
   let wake;
@@ -31,7 +31,10 @@ async function main() {
   // Steering and cancel arrive while a run streams, so they are handled as they are read.
   const control = request => {
     if (request.type === 'steer') {
-      if (!busy || !run) { emit({ type: 'steer_accepted', id: request.id, accepted: false }); return true; }
+      // Go only steers during its turn; before this turn's prompt arrives, hold it for that prompt.
+      if (!busy) { early.push(request.text); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
+      // The prompt arrived but its run is still starting: answer it right after that run, same turn.
+      if (!run) { followups.push(request.text); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
       emit({ type: 'steer_accepted', id: request.id, accepted: true });
       const steer = run.steer ? run.steer(request.text) : Promise.resolve('revert_to_followup');
       steer.then(outcome => {
@@ -45,7 +48,7 @@ async function main() {
   };
   lines.on('line', line => {
     const request = JSON.parse(line);
-    if (busy && control(request)) return;
+    if ((busy || request.type === 'steer') && control(request)) return;
     queue.push(request); wake?.();
   });
   lines.on('close', () => { queue.push({ type: 'close' }); wake?.(); });
@@ -70,6 +73,8 @@ async function main() {
     }
     if (request.type !== 'prompt') continue;
     busy = true;
+    followups = early;
+    early = [];
     let text = request.text, last;
     try {
       while (text !== undefined) {

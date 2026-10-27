@@ -419,6 +419,12 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 		return nil, fmt.Errorf("Cursor is already working; queue this message")
 	}
 	defer s.turnMu.Unlock()
+	// The turn takes steering from its first moment, including while the bridge starts and before the
+	// prompt is sent: a message 2s in otherwise fell back to an after-turn injection (RTS 2026-10-27).
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
 	s.mu.Lock()
 	if s.idle != nil {
 		s.idle.Stop()
@@ -499,15 +505,12 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 
 func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSession, p *cursorSDKProcess, prompt string, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
 	meta := map[string]any{"cursor_session_id": s.agentID, "cursor_stream_source": "sdk"}
-	s.mu.Lock()
-	s.running = true
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
 	if err := p.send(map[string]any{"type": "prompt", "text": prompt}); err != nil {
 		return nil, err
 	}
 	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: meta})
 	var text strings.Builder
+	afterTool := false
 	type tool struct {
 		name, args string
 		started    time.Time
@@ -523,10 +526,16 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 				if event.Kind == "thinking" {
 					kind = llmtypes.StreamChunkTypeReasoning
 				} else {
+					// Text written after a tool step is a new paragraph, not glued to the last sentence.
+					if afterTool && text.Len() > 0 && !strings.HasSuffix(text.String(), "\n") {
+						event.Text = "\n\n" + event.Text
+					}
+					afterTool = false
 					text.WriteString(event.Text)
 				}
 				emit(llmtypes.StreamChunk{Type: kind, Content: event.Text, Metadata: map[string]any{"cursor_session_id": s.agentID, "cursor_stream_source": "sdk", llmtypes.ContentDeltaMetadataKey: true}})
 			case "tool":
+				afterTool = true
 				t := tools[event.CallID]
 				if t == nil {
 					args := string(event.Args)
@@ -547,6 +556,10 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
 				}
 			case "result":
+				// A message sent after this point starts the next turn rather than joining this one.
+				s.mu.Lock()
+				s.running = false
+				s.mu.Unlock()
 				switch event.Status {
 				case "finished":
 				case "cancelled":
@@ -594,11 +607,24 @@ func SendCursorSDKInput(ctx context.Context, owner, message string) error {
 	if s == nil {
 		return fmt.Errorf("%w: no active Cursor SDK turn", llmtypes.ErrCodingAgentInputNotSent)
 	}
-	s.mu.Lock()
-	p, running := s.proc, s.running
-	s.mu.Unlock()
-	if p == nil || !running {
-		return fmt.Errorf("%w: no active Cursor SDK turn", llmtypes.ErrCodingAgentInputNotSent)
+	// While the turn is still starting its bridge, wait for it: the bridge holds an early steer for the prompt.
+	var p *cursorSDKProcess
+	for {
+		s.mu.Lock()
+		proc, running := s.proc, s.running
+		s.mu.Unlock()
+		if !running {
+			return fmt.Errorf("%w: no active Cursor SDK turn", llmtypes.ErrCodingAgentInputNotSent)
+		}
+		if proc != nil {
+			p = proc
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	token := make([]byte, 8)
 	_, _ = rand.Read(token)
