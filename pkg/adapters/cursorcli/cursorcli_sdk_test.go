@@ -130,6 +130,52 @@ exports.Agent={
 	}
 }
 
+// PLAT-872: a server restart killed the bridge mid-run (Excellence 2026-10-27 17:11), the run stayed
+// active in Cursor's local store, and every later turn of that chat failed "Agent ... already has active
+// run". A resumed agent's stale run is cancelled; if it cannot be, the chat starts a new native agent.
+func TestCursorSDKResumeClearsStaleActiveRun(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	for _, tc := range []struct{ name, cancel, want string }{
+		{"cancelled", `active=false`, `"agent_id":"agent-existing","resumed":true,"stale":"cancelled"`},
+		{"new agent", `throw Error('store locked')`, `"agent_id":"agent-new","resumed":false,"stale":"new_agent","stale_agent":"agent-existing"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bridge, entry := filepath.Join(dir, "bridge.cjs"), filepath.Join(dir, "sdk.cjs")
+			sdk := `
+let active=true;
+const agent=id=>({agentId:id, send:async()=>{
+  if(id==='agent-existing'&&active) throw Error('Agent '+id+' already has active run');
+  return {async *stream(){}, wait:async()=>({status:'finished',result:'reply'})};
+}});
+exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>[]}};
+exports.Agent={
+  resume:async id=>agent(id), create:async()=>agent('agent-new'),
+  listRuns:async id=>({items:id==='agent-existing'&&active?[{id:'run-stale',status:'running'}]:[{id:'run-old',status:'finished'}]}),
+  cancelRun:async runId=>{if(runId!=='run-stale') throw Error('wrong run'); ` + tc.cancel + `},
+};`
+			for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
+				if err := os.WriteFile(name, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "node", bridge, entry)
+			cmd.Stdin = strings.NewReader(`{"type":"start","agent_id":"agent-existing","model":{"id":"composer-2.5"}}
+{"type":"prompt","text":"hi"}
+{"type":"close"}
+`)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), tc.want) || !strings.Contains(string(out), `"status":"finished"`) {
+				t.Fatalf("stale active run was not cleared: %v, %s", err, out)
+			}
+		})
+	}
+}
+
 func TestCursorSDKSteersTheRunningTurn(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not installed")

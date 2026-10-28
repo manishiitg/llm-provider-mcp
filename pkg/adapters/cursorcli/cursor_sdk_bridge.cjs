@@ -25,6 +25,30 @@ async function main() {
     } catch { return []; } // Discovery trouble must not prevent an otherwise valid chat.
     finally { clearTimeout(timer); }
   })();
+  // Cancels this agent's runs still marked running; true when there was one. Throws only when a stale
+  // run could not be cancelled; if the runs cannot be listed, the agent is kept as before.
+  const cancelStale = async agentId => {
+    const where = { runtime: 'local', cwd: start.cwd };
+    let cursor, found = false;
+    do {
+      let page;
+      try { page = await Agent.listRuns(agentId, { ...where, cursor }); } catch { return found; }
+      for (const old of page.items) {
+        if (old.status === 'running') { await Agent.cancelRun(old.id, where); found = true; }
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return found;
+  };
+  // Never leave a run active at Cursor when this bridge is stopped: a server restart (SIGTERM) or Go
+  // closing stdin cancels the in-flight run first, so the next resume of this agent can send again.
+  const cancelRun = () => {
+    let timer;
+    return Promise.race([run?.cancel().catch(() => {}), new Promise(resolve => { timer = setTimeout(resolve, 3000); })]).finally(() => clearTimeout(timer));
+  };
+  for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+    process.on(signal, () => { drop(); cancelRun().finally(() => process.exit(143)); });
+  }
   const lines = createInterface({ input: process.stdin });
   const queue = [];
   let wake;
@@ -78,7 +102,7 @@ async function main() {
     if ((busy || request.type === 'steer') && control(request)) return;
     queue.push(request); wake?.();
   });
-  lines.on('close', () => { queue.push({ type: 'close' }); wake?.(); });
+  lines.on('close', () => { if (busy) { drop(); cancelRun(); } queue.push({ type: 'close' }); wake?.(); });
   for (;;) {
     const request = await next();
     if (request.type === 'close') break;
@@ -104,9 +128,17 @@ async function main() {
           agent = undefined;
         }
       }
+      // A run this chat's earlier bridge left active (killed by a restart before run.cancel landed) blocks
+      // every later send with "already has active run". This bridge has started no run yet, so any
+      // running run is stale: cancel it, or start a new agent and let Go send the history.
+      let stale;
+      if (agent) {
+        try { stale = (await cancelStale(agent.agentId)) ? 'cancelled' : undefined; }
+        catch { stale = 'new_agent'; agent = undefined; }
+      }
       const resumed = Boolean(agent);
       if (!agent) agent = await Agent.create(options());
-      emit({ type: 'ready', agent_id: agent.agentId, resumed });
+      emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}) });
       continue;
     }
     if (request.type !== 'prompt') continue;
@@ -116,14 +148,21 @@ async function main() {
     let text = request.text, last;
     try {
       while (text !== undefined) {
-        run = await agent.send(text, {
+        const sendOptions = {
           // Reassert the selected variant on every turn, including resumed/follow-up runs.
           model: start.model,
           onDelta: ({ update }) => {
             if (update.type === 'text-delta') emit({ type: 'delta', kind: 'text', text: update.text });
             else if (update.type === 'thinking-delta') emit({ type: 'delta', kind: 'thinking', text: update.text });
           },
-        });
+        };
+        try { run = await agent.send(text, sendOptions); }
+        catch (error) {
+          // Same stale run as at start, if it appeared after: cancel it and retry once.
+          if (!/already has active run/i.test(short(error)) || !(await cancelStale(agent.agentId).catch(() => false))) throw error;
+          emit({ type: 'stale', agent_id: agent.agentId, action: 'cancelled' });
+          run = await agent.send(text, sendOptions);
+        }
         for await (const event of run.stream()) {
           if (event.type === 'tool_call') emit({ type: 'tool', call_id: event.call_id, name: event.name, status: event.status, args: event.args, result: event.result });
           else if (event.type === 'usage') emit({ type: 'usage', usage: event.usage });

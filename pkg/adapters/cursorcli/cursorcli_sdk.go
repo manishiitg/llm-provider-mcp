@@ -49,6 +49,10 @@ type cursorSDKEvent struct {
 	ID       string          `json:"id"`
 	Accepted bool            `json:"accepted"`
 	Error    string          `json:"error"`
+	// Stale is how the bridge cleared a run an earlier bridge left active: cancelled or new_agent.
+	Stale      string `json:"stale"`
+	StaleAgent string `json:"stale_agent"`
+	Action     string `json:"action"`
 }
 
 type cursorSDKUsage struct {
@@ -119,7 +123,14 @@ func (p *cursorSDKProcess) failure() error {
 	return fmt.Errorf("Cursor SDK bridge closed")
 }
 
+// close lets the bridge cancel its in-flight run before it is killed: a SIGKILL first left the run
+// active in Cursor's agent store, and every later turn of that chat failed "already has active run".
 func (p *cursorSDKProcess) close() {
+	_ = p.stdin.Close()
+	select {
+	case <-p.exited:
+	case <-time.After(5 * time.Second):
+	}
 	p.finish(fmt.Errorf("Cursor SDK bridge closed"))
 	<-p.exited
 }
@@ -333,6 +344,9 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		if event.Type != "ready" || event.AgentID == "" {
 			p.close()
 			return nil, "", false, fmt.Errorf("Cursor SDK did not start: %s", event.Error)
+		}
+		if event.Stale != "" && c.logger != nil {
+			c.logger.Infof("[CURSOR_SDK] stale_active_run agent=%s action=%s new=%s", event.StaleAgent, event.Stale, event.AgentID)
 		}
 		return p, event.AgentID, event.Resumed, nil
 	case <-p.done:
@@ -563,6 +577,10 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 						result = plain
 					}
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
+				}
+			case "stale":
+				if c.logger != nil {
+					c.logger.Infof("[CURSOR_SDK] stale_active_run agent=%s action=%s", event.AgentID, event.Action)
 				}
 			case "steer_outcome":
 				// Whether the running run took a mid-turn message ("complete_delivered") or the bridge answers
