@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
@@ -71,6 +72,12 @@ func credentialSource(file credentialFile, home string, env func(string) string)
 // launch (MCP config, settings, hooks, status files) that live outside the
 // granted folders.
 func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths []string) ([]string, func(), error) {
+	return landlockArgs(policy, args, workingDir, runtimeReadPaths, runtimeWritePaths, nil)
+}
+
+// landlockArgs is LandlockArgs for a command whose environment is known: the sandbox's git settings are added after
+// the git settings env already carries (GIT_CONFIG_COUNT/KEY_n/VALUE_n), so neither replaces the other.
+func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths, env []string) ([]string, func(), error) {
 	noop := func() {}
 	if policy.SeatbeltEnforced() {
 		return SeatbeltArgs(policy, args, workingDir, SeatbeltGrants{ReadPaths: runtimeReadPaths, WritePaths: runtimeWritePaths})
@@ -213,19 +220,12 @@ func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		// safe.directory=* (the folders are platform-owned), and the two repository settings that run code
 		// unasked, hooks and fsmonitor, switched off: a shared folder's author cannot get code run as the
 		// user through git (same set as the shell tool's; docs/DECISIONS.md in the builder).
-		wrapped = append(wrapped,
-			"GIT_CONFIG_COUNT=3",
-			"GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*",
-			"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
-			"GIT_CONFIG_KEY_2=core.fsmonitor", "GIT_CONFIG_VALUE_2=false")
+		wrapped = append(wrapped, appendGitConfig(env, "safe.directory", "*", "core.hooksPath", "/dev/null", "core.fsmonitor", "false")...)
 	} else {
 		// Private project runtimes can trust exact mixed-UID repositories in
 		// their own Git config. Keep repository hooks and fsmonitor disabled
 		// at command scope, where repository-local config cannot override them.
-		wrapped = append(wrapped,
-			"GIT_CONFIG_COUNT=2",
-			"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
-			"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false")
+		wrapped = append(wrapped, appendGitConfig(env, "core.hooksPath", "/dev/null", "core.fsmonitor", "false")...)
 	}
 	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil
@@ -479,7 +479,7 @@ func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 		workingDir = cmd.Dir
 	}
 	args := append([]string{cmd.Path}, cmd.Args[1:]...)
-	wrapped, cleanup, err := LandlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), runtimeWritePaths)
+	wrapped, cleanup, err := landlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), runtimeWritePaths, cmd.Env)
 	if err != nil {
 		return func() {}, err
 	}
@@ -572,4 +572,25 @@ func ConfigDirFiles(dir string) []string {
 		}
 	}
 	return files
+}
+
+// appendGitConfig returns the env assignments that add key/value pairs to git's environment configuration after the
+// entries env already has: KEY_n/VALUE_n from the current GIT_CONFIG_COUNT, and the new count. Every layer appends;
+// none replaces another's settings (the sandbox's hooks and fsmonitor protection, a connected GitHub account's
+// credential helper).
+func appendGitConfig(env []string, pairs ...string) []string {
+	count := 0
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				count = n
+			}
+		}
+	}
+	out := make([]string, 0, len(pairs)+1)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		out = append(out, "GIT_CONFIG_KEY_"+strconv.Itoa(count)+"="+pairs[i], "GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"="+pairs[i+1])
+		count++
+	}
+	return append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(count))
 }
