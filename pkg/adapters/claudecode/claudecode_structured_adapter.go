@@ -572,6 +572,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
+				if isClaudeDiagnosticResult(ev.Result) {
+					c.logger.Infof("[CLAUDE_SDK] dropped diagnostic result: %s", strings.TrimSpace(ev.Result))
+				}
 				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
 				previousResultContinues = ev.SDKContinues
 				if ev.Usage != nil {
@@ -794,13 +797,17 @@ func claudeResumeSessionIDFromStructuredOptions(opts *llmtypes.CallOptions) stri
 	return ""
 }
 
+func isClaudeDiagnosticResult(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "[ede_diagnostic]")
+}
+
 // PLAT-872-47: one host turn may contain several native results after steering.
 // Keep each answer the person saw, including the answer before background work.
 func claudeContinuedResultText(previous string, event claudeStreamEvent, continued bool) string {
 	text := event.Result
 	// A segment that ended on a steered message has no answer; Claude Code
 	// fills its result with an internal diagnostic line, not words for people.
-	if strings.HasPrefix(strings.TrimSpace(text), "[ede_diagnostic]") {
+	if isClaudeDiagnosticResult(text) {
 		text = ""
 	}
 	if event.IsError && text == "" {
