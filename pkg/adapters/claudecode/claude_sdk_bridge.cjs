@@ -62,8 +62,9 @@ async function main() {
       default: throw new Error(`Unsupported SDK launch flag ${flag}`);
     }
   }
-  let run, wake, ended = false, steered = false;
-  const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map();
+  let run, wake, ended = false;
+  // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
+  const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map(), movedAside = new Set();
   const lines = createInterface({ input: process.stdin });
   const finishInput = () => { ended = true; wake?.(); };
   const cancelPermissions = () => { for (const resolve of permissions.values()) resolve(deny()); permissions.clear(); };
@@ -87,7 +88,6 @@ async function main() {
             emit({ type: 'sdk_control_result', id: request.id, is_error: true, input_not_sent: true });
           } else {
             const uuid = randomUUID();
-            steered = true;
             steering.set(uuid, request.id);
             unsettled.add(uuid);
             input.push({ text: request.text, uuid, priority: 'now' });
@@ -97,7 +97,7 @@ async function main() {
         else if (request.type === 'permission') permissions.get(request.id)?.(request.response);
         else if (request.type === 'interrupt' && run) {
           cancelPermissions();
-          run.interrupt().then(() => { unsettled.clear(); background.clear(); finishInput(); emit({ type: 'sdk_control_result', id: request.id }); }, () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
+          run.interrupt().then(() => { unsettled.clear(); background.clear(); movedAside.clear(); finishInput(); emit({ type: 'sdk_control_result', id: request.id }); }, () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
         }
       } catch (error) { reject(error); }
     });
@@ -122,11 +122,13 @@ async function main() {
       // notification retires a known task. Ambient watchers do not hold a turn.
       if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
         for (const task of event.tasks || []) {
-          if (!task.ambient) background.set(task.task_id, task.run_id);
+          if (task.ambient) continue;
+          if (!background.has(task.task_id) && unsettled.size > 0) movedAside.add(task.task_id);
+          background.set(task.task_id, task.run_id);
         }
       }
       if (event.type === 'system' && event.subtype === 'task_notification' &&
-          background.get(event.task_id) === event.run_id) background.delete(event.task_id);
+          background.get(event.task_id) === event.run_id) { background.delete(event.task_id); movedAside.delete(event.task_id); }
       if (event.type === "result" && event.is_error) nativeErrorReported = true;
       const consumed = new Set([...(event.user_message_uuids || []), event.user_message_uuid]);
       if (event.type === 'user' && !event.parent_tool_use_id) consumed.add(event.uuid);
@@ -139,9 +141,9 @@ async function main() {
       if (event.type === 'result') {
         for (const uuid of consumed) unsettled.delete(uuid);
         // A finished answer ends the person's turn. Background work holds it open only when a steer moved
-        // that work aside; a command Claude backgrounded on its own (a slow search past its timeout) must not
-        // keep the chat "working" after the answer (owner, 2026-10-28: an answer means the turn is done).
-        event.sdk_continues = !ended && (unsettled.size > 0 || (steered && background.size > 0) || event.queued_turn_count > 0);
+        // that work aside; a command Claude backgrounded on its own (a slow search past its timeout), before or
+        // apart from any steer, must not keep the chat "working" (owner, 2026-10-28: an answer means done).
+        event.sdk_continues = !ended && (unsettled.size > 0 || movedAside.size > 0 || event.queued_turn_count > 0);
       }
       emit(event);
       // One host turn can consume several steers. Close only after their native
