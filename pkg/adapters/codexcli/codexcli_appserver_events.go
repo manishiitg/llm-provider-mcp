@@ -60,10 +60,24 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	// session's turn id, Stop and queue) on that turn until it ends.
 	var followupC <-chan time.Time
 	var finishedResponse *llmtypes.ContentResponse
+	// Replies of the turns already finished in this call; the returned text keeps them all.
+	var carried string
+	joined := func() string {
+		if carried == "" {
+			return final
+		}
+		if final == "" {
+			return carried
+		}
+		return carried + "\n\n" + final
+	}
 	for {
 		select {
 		case <-followupC:
 			completed = true
+			if c.logger != nil {
+				c.logger.Infof("codex app-server steered input: no follow-up turn within %s thread=%s turn=%s", codexSteerFollowupWait, thread, turn)
+			}
 			return finishedResponse, nil
 		case <-ctx.Done():
 			// Do not let cancellation leave an unobserved turn executing. The persisted
@@ -130,6 +144,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					next = event.TurnID
 				}
 				if next != "" && next != turn {
+					carried = joined()
 					turn, followupC, finishedResponse, final = next, nil, nil, ""
 					s.mu.Lock()
 					s.turnID = next
@@ -249,7 +264,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					steered := len(s.steers) > 0
 					s.mu.Unlock()
 					if steered && followupC == nil {
-						finishedResponse = codexAppResponse(s, final, usage)
+						finishedResponse = codexAppResponse(s, joined(), usage)
 						followup := time.NewTimer(codexSteerFollowupWait)
 						defer followup.Stop()
 						followupC = followup.C
@@ -259,7 +274,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				completed = true
 				switch event.Turn.Status {
 				case "completed":
-					return codexAppResponse(s, final, usage), nil
+					return codexAppResponse(s, joined(), usage), nil
 				case "interrupted":
 					return nil, context.Canceled
 				default:

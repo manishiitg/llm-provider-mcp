@@ -50,6 +50,7 @@ func TestCodexAppServerFollowsUnconsumedSteerIntoNextTurn(t *testing.T) {
 	send := func(method, fields string) {
 		r.events <- codexRPCMessage{Method: method, Params: json.RawMessage(fields)}
 	}
+	send("item/completed", `{"threadId":"thread","turnId":"turn","item":{"id":"m0","type":"agentMessage","phase":"final_answer","text":"first answer"}}`)
 	send("turn/completed", `{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)
 	send("turn/started", `{"threadId":"thread","turn":{"id":"turn2","status":"inProgress"}}`)
 	send("item/completed", `{"threadId":"thread","turnId":"turn2","item":{"id":"m","type":"agentMessage","phase":"final_answer","text":"steered answer"}}`)
@@ -59,7 +60,7 @@ func TestCodexAppServerFollowsUnconsumedSteerIntoNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := response.Choices[0].Content; got != "steered answer" || s.turnID != "turn2" {
+	if got := response.Choices[0].Content; got != "first answer\n\nsteered answer" || s.turnID != "turn2" {
 		t.Fatalf("follow-up turn not followed: %q turn=%s", got, s.turnID)
 	}
 }
