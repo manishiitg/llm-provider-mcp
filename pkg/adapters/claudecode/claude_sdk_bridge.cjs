@@ -62,7 +62,7 @@ async function main() {
       default: throw new Error(`Unsupported SDK launch flag ${flag}`);
     }
   }
-  let run, wake, ended = false;
+  let run, wake, ended = false, steered = false;
   const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map();
   const lines = createInterface({ input: process.stdin });
   const finishInput = () => { ended = true; wake?.(); };
@@ -87,6 +87,7 @@ async function main() {
             emit({ type: 'sdk_control_result', id: request.id, is_error: true, input_not_sent: true });
           } else {
             const uuid = randomUUID();
+            steered = true;
             steering.set(uuid, request.id);
             unsettled.add(uuid);
             input.push({ text: request.text, uuid, priority: 'now' });
@@ -137,7 +138,10 @@ async function main() {
       }
       if (event.type === 'result') {
         for (const uuid of consumed) unsettled.delete(uuid);
-        event.sdk_continues = !ended && (unsettled.size > 0 || background.size > 0 || event.queued_turn_count > 0);
+        // A finished answer ends the person's turn. Background work holds it open only when a steer moved
+        // that work aside; a command Claude backgrounded on its own (a slow search past its timeout) must not
+        // keep the chat "working" after the answer (owner, 2026-10-28: an answer means the turn is done).
+        event.sdk_continues = !ended && (unsettled.size > 0 || (steered && background.size > 0) || event.queued_turn_count > 0);
       }
       emit(event);
       // One host turn can consume several steers. Close only after their native
