@@ -564,6 +564,12 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					}
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
 				}
+			case "steer_outcome":
+				// Whether the running run took a mid-turn message ("complete_delivered") or the bridge answers
+				// it as a follow-up in this turn (any other outcome).
+				if c.logger != nil {
+					c.logger.Infof("[CURSOR_SDK] steer_outcome agent=%s steer=%s outcome=%s", s.agentID, event.ID, event.Status)
+				}
 			case "result":
 				// A message sent after this point starts the next turn rather than joining this one.
 				s.mu.Lock()

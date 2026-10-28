@@ -18,7 +18,7 @@ import (
 // SDK because ACP held a mid-reply message until the reply ended).
 const fakeCursorSDK = `
 exports.Cursor = { auth: { status: async () => ({status:'logged-in'}) }, models: {list: async () => [{id:'composer-2.5',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]} };
-let steered = '', cancelled = false;
+let steered = '', cancelled = false, settleAfterWait;
 function agent(id) {
   return {
     agentId: id,
@@ -26,14 +26,19 @@ function agent(id) {
       check(opts);
       let done, resolveDone = new Promise(r => { done = r; });
       const run = {
-        async steer(t) { if (t === 'LATER') { done(); return 'revert_to_followup'; } steered = t; done(); return 'complete_delivered'; },
+        async steer(t) {
+          if (t === 'LATER') { done(); return 'revert_to_followup'; }
+          // The real SDK settles a steer it had queued only as its run ends, after run.wait() returned.
+          if (t === 'QUEUED') { done(); return new Promise(r => { settleAfterWait = () => setTimeout(() => r('revert_to_followup'), 50); }); }
+          steered = t; done(); return 'complete_delivered';
+        },
         async *stream() {
           yield { type: 'tool_call', call_id: 'c1', name: 'shell', status: 'running', args: { command: 'sleep' } };
           await Promise.race([resolveDone, new Promise(r => setTimeout(r, 5000))]);
           yield { type: 'tool_call', call_id: 'c1', name: 'shell', status: 'completed', result: 'SLEPT' };
           opts.onDelta({ update: { type: 'text-delta', text: 'answer to ' + text.slice(-5) + (steered ? ' +' + steered : '') } });
         },
-        async wait() { return { status: cancelled ? 'cancelled' : 'finished', result: '' }; },
+        async wait() { settleAfterWait?.(); settleAfterWait = undefined; return { status: cancelled ? 'cancelled' : 'finished', result: '' }; },
         async cancel() { cancelled = true; done(); },
       };
       return run;
@@ -257,7 +262,15 @@ func TestCursorSDKEarlySteerJoinsTheSameTurn(t *testing.T) {
 }
 
 // A steer the SDK does not take becomes a follow-up run in the same turn; its text starts a new paragraph.
+// QUEUED: on Excellence (2026-10-28) a second chat message was accepted mid-turn, the SDK settled it
+// only after the run ended, and the bridge had already closed the turn, so it was never answered.
 func TestCursorSDKFollowUpRunStartsNewParagraph(t *testing.T) {
+	for _, steer := range []string{"LATER", "QUEUED"} {
+		t.Run(steer, func(t *testing.T) { testCursorSDKFollowUpRun(t, steer) })
+	}
+}
+
+func testCursorSDKFollowUpRun(t *testing.T, steer string) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not installed")
 	}
@@ -270,7 +283,7 @@ func TestCursorSDKFollowUpRunStartsNewParagraph(t *testing.T) {
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
 	c.SetSDKTransport(true)
 	stream := make(chan llmtypes.StreamChunk, 256)
-	owner := "chat-followup-paragraph"
+	owner := "chat-followup-paragraph-" + steer
 	done := make(chan *llmtypes.ContentResponse, 1)
 	go func() {
 		resp, _ := c.GenerateContent(context.Background(), []llmtypes.MessageContent{llmtypes.TextParts(llmtypes.ChatMessageTypeHuman, "hello world")},
@@ -281,13 +294,13 @@ func TestCursorSDKFollowUpRunStartsNewParagraph(t *testing.T) {
 	for chunk := range stream {
 		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart && !steered {
 			steered = true
-			if err := SendCursorSDKInput(context.Background(), owner, "LATER"); err != nil {
+			if err := SendCursorSDKInput(context.Background(), owner, steer); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 	resp := <-done
-	if resp == nil || !strings.Contains(resp.Choices[0].Content, "answer to world\n\nanswer to LATER") {
+	if resp == nil || !strings.Contains(resp.Choices[0].Content, "answer to world\n\nanswer to "+steer[len(steer)-5:]) {
 		t.Fatalf("follow-up text was glued to the first answer: %#v", resp)
 	}
 }

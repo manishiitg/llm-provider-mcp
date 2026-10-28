@@ -44,6 +44,18 @@ async function main() {
     ...(start.tools ? { tools: start.tools } : {}),
     ...(start.mcp_servers ? { mcpServers: start.mcp_servers } : {}),
   });
+  // Steers handed to a running run. The SDK settles a steer only when the server answers, and one it
+  // had queued is settled "revert_to_followup" only as its run ends, often after run.wait() returned.
+  // So a turn waits for every steer's outcome before it ends, and answers each one the run did not
+  // take (or never confirmed) as a follow-up: an accepted message is never dropped.
+  let steers = [];
+  const settle = (entry, outcome) => {
+    if (entry.settled) return;
+    entry.settled = true;
+    emit({ type: 'steer_outcome', id: entry.id, status: outcome });
+    if (outcome !== 'complete_delivered') followups.push(entry.text);
+  };
+  const drop = () => { for (const entry of steers) entry.settled = true; steers = []; followups = []; };
   // Steering and cancel arrive while a run streams, so they are handled as they are read.
   const control = request => {
     if (request.type === 'steer') {
@@ -52,14 +64,13 @@ async function main() {
       // The prompt arrived but its run is still starting: answer it right after that run, same turn.
       if (!run) { followups.push(request.text); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
       emit({ type: 'steer_accepted', id: request.id, accepted: true });
-      const steer = run.steer ? run.steer(request.text) : Promise.resolve('revert_to_followup');
-      steer.then(outcome => {
-        // Not taken by the running turn: answer it in this same host turn, right after.
-        if (outcome !== 'complete_delivered') followups.push(request.text);
-      }, () => followups.push(request.text));
+      const entry = { id: request.id, text: request.text };
+      steers.push(entry);
+      entry.done = (run.steer ? run.steer(request.text) : Promise.resolve('revert_to_followup'))
+        .then(outcome => settle(entry, outcome), () => settle(entry, 'error'));
       return true;
     }
-    if (request.type === 'cancel') { followups = []; run?.cancel().catch(() => {}); return true; }
+    if (request.type === 'cancel') { drop(); run?.cancel().catch(() => {}); return true; }
     return false;
   };
   lines.on('line', line => {
@@ -120,12 +131,17 @@ async function main() {
         last = await run.wait();
         run = undefined;
         if (last.status !== 'finished') break;
+        let timer;
+        await Promise.race([Promise.all(steers.map(entry => entry.done)), new Promise(resolve => { timer = setTimeout(resolve, 15000); })]);
+        clearTimeout(timer);
+        for (const entry of steers) settle(entry, 'unconfirmed');
+        steers = [];
         text = followups.shift();
       }
       emit({ type: 'result', status: last.status, result: last.result || '', error: last.error ? short(last.error) : undefined, usage: last.usage });
     } catch (error) {
       emit({ type: 'result', status: 'error', error: short(error) });
-    } finally { busy = false; run = undefined; followups = []; }
+    } finally { busy = false; run = undefined; drop(); }
   }
   await agent?.[Symbol.asyncDispose]?.();
 }
