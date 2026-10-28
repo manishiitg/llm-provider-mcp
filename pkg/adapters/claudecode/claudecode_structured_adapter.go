@@ -382,9 +382,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 	var questions nativeinput.Requests
 	defer questions.Close()
-	var partialText bool
 	var scanErr error
-	var finalText strings.Builder
+	var text claudeStructuredText
 	var resultText string
 	var previousResultContinues bool
 	sawNativeSubagent := false
@@ -446,6 +445,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if ev.SessionID != "" {
 				sessionID = ev.SessionID
 			}
+			text.observe(ev, emitChunk)
 			switch ev.Type {
 			case "sdk_permission":
 				if sdkProcess != nil {
@@ -461,16 +461,6 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			case "sdk_permission_cancel":
 				questions.Cancel(ev.RequestID)
-			case "stream_event":
-				if ev.Event != nil {
-					if ev.Event.Type == "message_start" {
-						partialText = false
-					}
-					if ev.Event.Type == "content_block_delta" && ev.Event.Delta.Type == "text_delta" {
-						partialText = true
-						emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: ev.Event.Delta.Text, Metadata: map[string]any{llmtypes.ContentDeltaMetadataKey: true}})
-					}
-				}
 
 			case "system":
 				if ev.Subtype == "init" && ev.Model != "" {
@@ -492,12 +482,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 				if ev.Message != nil {
 					for _, block := range ev.Message.Content {
-						if block.Type == "text" && block.Text != "" {
-							finalText.WriteString(block.Text)
-							if !partialText {
-								emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
-							}
-						}
+
 						if block.Type == "tool_use" && block.Name != "" {
 							if block.Name == "Agent" || block.Name == "Task" {
 								sawNativeSubagent = true
@@ -631,7 +616,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	content := strings.TrimSpace(resultText)
 	if content == "" {
-		content = strings.TrimSpace(finalText.String())
+		content = strings.TrimSpace(text.completed.String())
 	}
 	if content == "" {
 		return nil, fmt.Errorf("claude run returned no text output; stderr: %s", strings.TrimSpace(stderr.String()))
@@ -650,7 +635,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 	// Same contract as the interactive adapter: every assistant text block of
 	// the turn, for surfaces that show the conversation rather than a result.
-	if turnText := strings.TrimSpace(finalText.String()); turnText != "" && turnText != content {
+	if turnText := strings.TrimSpace(text.completed.String()); turnText != "" && turnText != content {
 		additional["assistant_turn_text"] = turnText
 	}
 	if sawNativeSubagent {
