@@ -612,6 +612,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// an API error surfaced as the final message) — it must not be reported
 	// as a successful StopReason:"stop" response. Checked regardless of
 	// waitErr/sawResult: the CLI can exit 0 while still reporting is_error.
+	if resultIsError && sdkProcess != nil && sdkProcess.interrupted.Load() {
+		// A turn the person stopped is a stop, not a failure (PLAT-872-65).
+		return nil, fmt.Errorf("Claude turn stopped by the person: %w", context.Canceled)
+	}
 	if resultIsError {
 		msg := strings.TrimSpace(resultText)
 		if msg == "" {

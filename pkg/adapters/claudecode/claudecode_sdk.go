@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -32,6 +33,8 @@ type claudeSDKProcess struct {
 	controlsMu sync.Mutex
 	controls   map[string]chan error
 	done       chan struct{}
+	// interrupted is set when the person stopped the turn (Stop or Escape); the SDK then ends it with an error result.
+	interrupted atomic.Bool
 }
 
 var claudeSDKProcesses = sessionregistry.NewOwnerRegistry[*claudeSDKProcess]()
@@ -157,6 +160,7 @@ func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage
 }
 
 func (p *claudeSDKProcess) interrupt(ctx context.Context) error {
+	p.interrupted.Store(true)
 	return p.control(ctx, "interrupt", "")
 }
 
