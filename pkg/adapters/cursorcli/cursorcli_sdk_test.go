@@ -60,7 +60,9 @@ func TestCursorSDKModelDiscoveryDoesNotBlockOrOverrideSelection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			bridge, entry := filepath.Join(dir, "bridge.cjs"), filepath.Join(dir, "sdk.cjs")
-			sdk := `let calls=0; exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>{` + tc.lookup + `}}}; exports.Agent={create:async opts=>{if(JSON.stringify(opts.model.params)!==JSON.stringify(` + tc.expected + `))throw Error('wrong model settings');return {agentId:'ready'};}};`
+			// The SDK looks for its bundled ripgrep above argv[1]; from the temp bridge folder every
+			// grep/glob failed "Ripgrep path not configured" on server B (2026-10-28).
+			sdk := `if(require('fs').realpathSync(process.argv[1])!==__filename) throw Error('Ripgrep path not configured'); let calls=0; exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>{` + tc.lookup + `}}}; exports.Agent={create:async opts=>{if(JSON.stringify(opts.model.params)!==JSON.stringify(` + tc.expected + `))throw Error('wrong model settings');return {agentId:'ready'};}};`
 			for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
 				if err := os.WriteFile(name, data, 0o600); err != nil {
 					t.Fatal(err)

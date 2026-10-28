@@ -7,6 +7,10 @@ const emit = value => process.stdout.write('\u0001aw ' + JSON.stringify(value) +
 const short = error => String(error?.message || error || 'Error').split('\n')[0].slice(0, 300);
 
 async function main() {
+  // The SDK finds its bundled programs (ripgrep for grep/glob, the tree-sitter shell parser) in
+  // node_modules above the running script. This script sits in a temp folder, so point argv[1] at
+  // the SDK itself; otherwise every grep/glob fails "Ripgrep path not configured".
+  process.argv[1] = process.argv[2];
   const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, followups = [], early = [], busy = false;
   // This process belongs to one account; keep discovery across starts/resumes.
