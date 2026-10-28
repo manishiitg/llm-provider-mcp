@@ -17,6 +17,8 @@ func TestClaudeToolResultTextPreservesNonTextBlocks(t *testing.T) {
 func TestClaudeSDKContinuedResultsKeepEarlierAnswer(t *testing.T) {
 	frames := []string{
 		`{"type":"result","result":"I changed direction.","sdk_continues":true}`,
+		// A segment that ended on a steered message: no answer to show.
+		`{"type":"result","result":"[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null","sdk_continues":true}`,
 		`{"type":"result","result":"The background tool completed."}`,
 	}
 	var text string

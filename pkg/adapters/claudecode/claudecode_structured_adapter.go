@@ -798,6 +798,11 @@ func claudeResumeSessionIDFromStructuredOptions(opts *llmtypes.CallOptions) stri
 // Keep each answer the person saw, including the answer before background work.
 func claudeContinuedResultText(previous string, event claudeStreamEvent, continued bool) string {
 	text := event.Result
+	// A segment that ended on a steered message has no answer; Claude Code
+	// fills its result with an internal diagnostic line, not words for people.
+	if strings.HasPrefix(strings.TrimSpace(text), "[ede_diagnostic]") {
+		text = ""
+	}
 	if event.IsError && text == "" {
 		text = strings.Join(event.Errors, "; ")
 	}
