@@ -53,7 +53,7 @@ func TestClaudeStructuredTextPreservesMessageBoundaries(t *testing.T) {
 			emitted = append(emitted, chunk.Content)
 		})
 	}
-	if strings.Join(emitted, "\n\n") != blocks.completed.String() || blocks.completed.String() != "Checking dependencies:\n\nReady." {
+	if strings.Join(emitted, "") != blocks.completed.String() || blocks.completed.String() != "Checking dependencies:\n\nReady." {
 		t.Fatalf("complete blocks changed: %q", blocks.completed.String())
 	}
 }

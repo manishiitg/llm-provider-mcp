@@ -482,7 +482,6 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 				if ev.Message != nil {
 					for _, block := range ev.Message.Content {
-
 						if block.Type == "tool_use" && block.Name != "" {
 							if block.Name == "Agent" || block.Name == "Task" {
 								sawNativeSubagent = true

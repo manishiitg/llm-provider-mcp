@@ -48,8 +48,12 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 			// The completed message repeats the partial stream. Without partial
 			// events (structured transport), it is a complete block instead.
 			if !t.partial {
+				text := block.Text
+				if t.emitted {
+					text = "\n\n" + text
+				}
 				t.emitted = true
-				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text})
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text})
 			}
 		}
 	}
