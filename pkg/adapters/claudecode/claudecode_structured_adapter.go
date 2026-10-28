@@ -556,8 +556,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
-				if isClaudeDiagnosticResult(ev.Result) {
-					c.logger.Infof("[CLAUDE_SDK] dropped diagnostic result: %s", strings.TrimSpace(ev.Result))
+				for _, line := range append([]string{ev.Result}, ev.Errors...) {
+					if isClaudeDiagnosticResult(line) {
+						c.logger.Infof("[CLAUDE_SDK] dropped diagnostic result: %s", strings.TrimSpace(line))
+					}
 				}
 				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
 				previousResultContinues = ev.SDKContinues
@@ -799,7 +801,15 @@ func claudeContinuedResultText(previous string, event claudeStreamEvent, continu
 		text = ""
 	}
 	if event.IsError && text == "" {
-		text = strings.Join(event.Errors, "; ")
+		// An error result after a steered message carries the same diagnostic
+		// line in errors[] instead of result.
+		var errs []string
+		for _, line := range event.Errors {
+			if !isClaudeDiagnosticResult(line) {
+				errs = append(errs, line)
+			}
+		}
+		text = strings.Join(errs, "; ")
 	}
 	if strings.TrimSpace(text) == "" {
 		return previous

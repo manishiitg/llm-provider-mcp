@@ -72,6 +72,9 @@ func TestClaudeSDKContinuedResultsKeepEarlierAnswer(t *testing.T) {
 		`{"type":"result","result":"I changed direction.","sdk_continues":true}`,
 		// A segment that ended on a steered message: no answer to show.
 		`{"type":"result","result":"[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null","sdk_continues":true}`,
+		// The same segment as Claude Code reports it on the SDK: an error
+		// result whose only error is the diagnostic line (server B, 2026-10-28).
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],"sdk_continues":true}`,
 		`{"type":"result","result":"The background tool completed."}`,
 	}
 	var text string
