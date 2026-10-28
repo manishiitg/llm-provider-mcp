@@ -11,6 +11,10 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 )
 
+// codexSteerFollowupWait is how long a finished turn waits for Codex to start
+// the next turn for a steer the finished turn did not consume.
+var codexSteerFollowupWait = 3 * time.Second
+
 func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread, turn string, emit func(llmtypes.StreamChunk)) (response *llmtypes.ContentResponse, err error) {
 	var questions nativeinput.Requests
 	defer questions.Close()
@@ -51,8 +55,16 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			}
 		}
 	}
+	// A steer Codex accepted after the turn's last model step is not lost: it
+	// runs as the next turn on the same thread. Keep this call (and so the
+	// session's turn id, Stop and queue) on that turn until it ends.
+	var followupC <-chan time.Time
+	var finishedResponse *llmtypes.ContentResponse
 	for {
 		select {
+		case <-followupC:
+			completed = true
+			return finishedResponse, nil
 		case <-ctx.Done():
 			// Do not let cancellation leave an unobserved turn executing. The persisted
 			// native thread can be resumed even when the process needs termination.
@@ -111,6 +123,23 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			}
 			if event.ThreadID != thread {
 				continue
+			}
+			if followupC != nil && msg.Method == "turn/started" {
+				next := event.Turn.ID
+				if next == "" {
+					next = event.TurnID
+				}
+				if next != "" && next != turn {
+					turn, followupC, finishedResponse, final = next, nil, nil, ""
+					s.mu.Lock()
+					s.turnID = next
+					s.mu.Unlock()
+					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: map[string]any{"codex_thread_id": thread, "codex_turn_id": next}})
+					if c.logger != nil {
+						c.logger.Infof("codex app-server steered input runs as its own turn thread=%s turn=%s", thread, next)
+					}
+					continue
+				}
 			}
 			if msg.Method == "turn/completed" {
 				event.TurnID = event.Turn.ID
@@ -184,6 +213,12 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					}
 					text := strings.Join(texts, "\n")
 					s.mu.Lock()
+					for id, steered := range s.steers {
+						if (item.ClientID != "" && id == item.ClientID) || (item.ClientID == "" && steered == text) {
+							delete(s.steers, id)
+							break
+						}
+					}
 					for _, receipt := range s.receipts {
 						if !receipt.confirmed && ((item.ClientID != "" && receipt.id == item.ClientID) || (item.ClientID == "" && receipt.text == text)) {
 							receipt.confirmed = true
@@ -209,6 +244,18 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					emit(llmtypes.StreamChunk{Type: kind, Content: codexToolItemLabel(tool), ToolName: codexToolItemName(tool), ToolCallID: tool.ID, ToolArgs: codexToolItemArgs(tool), ToolResult: codexToolItemResult(tool), ToolDuration: duration, Metadata: metadata})
 				}
 			case "turn/completed":
+				if event.Turn.Status == "completed" {
+					s.mu.Lock()
+					steered := len(s.steers) > 0
+					s.mu.Unlock()
+					if steered && followupC == nil {
+						finishedResponse = codexAppResponse(s, final, usage)
+						followup := time.NewTimer(codexSteerFollowupWait)
+						defer followup.Stop()
+						followupC = followup.C
+						continue
+					}
+				}
 				completed = true
 				switch event.Turn.Status {
 				case "completed":

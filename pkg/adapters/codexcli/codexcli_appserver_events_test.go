@@ -42,3 +42,24 @@ func TestCodexAppServerSeparatesMessagesWithoutDuplicatingCompletedText(t *testi
 		t.Fatalf("message boundaries or final changed: %q / %q", output.String(), response.Choices[0].Content)
 	}
 }
+
+// Excellence 2026-10-28: a steer the turn did not consume ran as Codex's own next turn, which the adapter ignored, so
+// the chat showed nothing running and Stop had no turn id. The call must follow that turn to its end.
+func TestCodexAppServerFollowsUnconsumedSteerIntoNextTurn(t *testing.T) {
+	r := &codexRPC{events: make(chan codexRPCMessage, 10), done: make(chan struct{})}
+	send := func(method, fields string) {
+		r.events <- codexRPCMessage{Method: method, Params: json.RawMessage(fields)}
+	}
+	send("turn/completed", `{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)
+	send("turn/started", `{"threadId":"thread","turn":{"id":"turn2","status":"inProgress"}}`)
+	send("item/completed", `{"threadId":"thread","turnId":"turn2","item":{"id":"m","type":"agentMessage","phase":"final_answer","text":"steered answer"}}`)
+	send("turn/completed", `{"threadId":"thread","turn":{"id":"turn2","status":"completed"}}`)
+	s := &codexAppSession{threadID: "thread", turnID: "turn", steers: map[string]string{"id": "more"}}
+	response, err := (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), s, r, "thread", "turn", func(llmtypes.StreamChunk) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := response.Choices[0].Content; got != "steered answer" || s.turnID != "turn2" {
+		t.Fatalf("follow-up turn not followed: %q turn=%s", got, s.turnID)
+	}
+}

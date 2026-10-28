@@ -29,7 +29,11 @@ type codexAppSession struct {
 	status                       *llmtypes.StatusLine
 	// A successful steer response acknowledges acceptance; the corresponding
 	// userMessage item is the durable acknowledgement, scoped to this send.
-	receipts   []*codexAppReceipt
+	receipts []*codexAppReceipt
+	// Steers the server accepted whose userMessage item has not been seen
+	// (receipt id -> text). Codex runs a steer its turn did not consume as its
+	// own next turn, which consumeAppTurn must then follow.
+	steers     map[string]string
 	rateLimits *codexRateLimits
 	idle       *time.Timer
 }
@@ -410,6 +414,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 
 	s.mu.Lock()
 	s.turnID = turn
+	s.steers = nil
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.turnID = ""; s.mu.Unlock() }()
 	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: map[string]any{"codex_thread_id": thread, "codex_turn_id": turn}})
@@ -481,10 +486,15 @@ func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 	}
 	receipt := &codexAppReceipt{id: codexRandomHex(16), text: message, accepted: time.Now(), durable: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
+	if s.steers == nil {
+		s.steers = map[string]string{}
+	}
+	s.steers[receipt.id] = message
 	s.mu.Unlock()
 	err := r.call(ctx, "turn/steer", map[string]any{"threadId": thread, "expectedTurnId": turn, "input": codexAppTextInput(message), "clientUserMessageId": receipt.id}, nil)
 	if err != nil {
 		s.mu.Lock()
+		delete(s.steers, receipt.id)
 		for i, v := range s.receipts {
 			if v == receipt {
 				s.receipts = append(s.receipts[:i], s.receipts[i+1:]...)
