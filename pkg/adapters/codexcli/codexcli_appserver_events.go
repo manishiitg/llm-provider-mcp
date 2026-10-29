@@ -382,3 +382,69 @@ func codexAppRateLimits(raw json.RawMessage) *codexRateLimits {
 	}
 	return r
 }
+
+// compactAppThread runs Codex's own compaction on the resumed thread (idle
+// compaction, PLAT-872): thread/compact/start starts it as a native turn, which
+// is then followed like any turn (its contextCompaction item, token usage and
+// turn/completed). No person message is sent.
+func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+	if err := r.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil); err != nil {
+		r.close()
+		return nil, err
+	}
+	turn := ""
+	for turn == "" {
+		select {
+		case <-ctx.Done():
+			r.close()
+			return nil, ctx.Err()
+		case <-r.done:
+			return nil, r.failure()
+		case msg := <-r.events:
+			if msg.Method != "turn/started" {
+				continue
+			}
+			var event codexAppEvent
+			if json.Unmarshal(msg.Params, &event) != nil || event.ThreadID != thread {
+				continue
+			}
+			turn = event.Turn.ID
+			if turn == "" {
+				turn = event.TurnID
+			}
+		}
+	}
+	s.mu.Lock()
+	s.turnID = turn
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.turnID = ""; s.mu.Unlock() }()
+	if c.logger != nil {
+		c.logger.Infof("codex app-server idle compaction started thread=%s turn=%s", thread, turn)
+	}
+	compacted := false
+	resp, err := c.consumeAppTurn(ctx, s, r, thread, turn, func(chunk llmtypes.StreamChunk) {
+		if chunk.Type == llmtypes.StreamChunkTypeContextCompaction && chunk.ContextCompaction != nil {
+			compaction := *chunk.ContextCompaction
+			compaction.Trigger = "idle"
+			chunk.ContextCompaction = &compaction
+			if compaction.Phase == llmtypes.ContextCompactionPhaseEnd {
+				compacted = true
+			}
+		}
+		emit(chunk)
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := llmtypes.IdleCompactResult{Compacted: compacted, Reason: llmtypes.IdleCompactReasonCompacted}
+	if !compacted {
+		result.Reason = llmtypes.IdleCompactReasonNothing
+	}
+	if len(resp.Choices) > 0 && resp.Choices[0].GenerationInfo != nil {
+		info := resp.Choices[0].GenerationInfo
+		result.CacheReadTokens, _ = info.Additional["cache_read_input_tokens"].(int)
+		result.CacheWriteTokens, _ = info.Additional["cache_creation_input_tokens"].(int)
+		llmtypes.AttachIdleCompactResult(info, result)
+	}
+	return resp, nil
+}

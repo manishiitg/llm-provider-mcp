@@ -164,6 +164,19 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		conversationMessages = llmtypes.PendingHumanMessages(conversationMessages)
 	}
 	prompt := buildClaudeStructuredPrompt(conversationMessages)
+	// Idle compaction (PLAT-872): the turn is Claude Code's own /compact on the
+	// resumed conversation, with no person message.
+	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
+	if idleCompact {
+		if claudeResumeSessionIDFromStructuredOptions(opts) == "" {
+			return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonNoSession), nil
+		}
+		if owner := claudeInteractiveSessionIDFromOptions(opts); owner != "" && claudeSDKSessionForOwner(owner) != nil {
+			// A kept session is running Claude's own background work.
+			return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonBackgroundWork), nil
+		}
+		prompt = claudeIdleCompactCommand
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("claude-code prompt is empty")
 	}
@@ -337,8 +350,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	keepAllowed := false
 	if c.sdkTransport {
 		launch := claudeSDKLaunchParts(c.modelID, systemPrompt, strings.TrimPrefix(launchPrompt, systemPrompt), permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
-		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts)
-		if owner != "" {
+		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts) && !idleCompact
+		if owner != "" && !idleCompact {
 			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
 		}
 		if sess != nil {
@@ -515,6 +528,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}{}
 	scannerDone := make(chan struct{})
 	var compaction claudeStructuredCompaction
+	var idle claudeIdleCompactObserved
 	liveUsage := &claudeLiveUsage{}
 	usageThrottle := &llmtypes.LiveUsageThrottle{}
 	emitLiveUsage := func(force bool) {
@@ -588,6 +602,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					liveUsage.model = ev.Model
 				}
 				for _, c := range compaction.observe(ev, time.Now()) {
+					if idleCompact {
+						c = idle.observe(c)
+					}
 					emitChunk(llmtypes.ContextCompactionChunk(c))
 				}
 			case "rate_limit_event":
@@ -797,6 +814,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		totalUsage = assistantUsageFallback
 		totalCacheReadTokens = fallbackCacheReadTokens
 		totalCacheWriteTokens = fallbackCacheWriteTokens
+	}
+	if idleCompact {
+		return claudeIdleCompactResponse(sessionID, workingDir, c.modelID, c.sdkTransport, idle, totalUsage, totalCacheReadTokens, totalCacheWriteTokens), nil
 	}
 
 	content := strings.TrimSpace(resultText)

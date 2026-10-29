@@ -391,6 +391,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	resumeID := claudeResumeIDFromOptions(opts)
 	interactiveSessionID := claudeInteractiveSessionIDFromOptions(opts)
 	persistentInteractive := claudePersistentInteractiveFromOptions(opts) && interactiveSessionID != ""
+	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
+	if idleCompact && resumeID == "" {
+		return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonNoSession), nil
+	}
 
 	// On user-initiated cancellation, tear down the persistent tmux
 	// session so the live pane closes alongside the workflow step.
@@ -483,6 +487,28 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		// than block the turn. Only cold (createdSession) sessions pay this;
 		// reused persistent sessions are already connected.
 		waitForMCPReadyFile(callCtx, opts, sessionName, c.logger)
+	}
+
+	if idleCompact {
+		// Idle compaction (PLAT-872): /compact in the resumed pane, no person message.
+		emit := func(chunk llmtypes.StreamChunk) {
+			if opts.StreamChan != nil {
+				select {
+				case opts.StreamChan <- chunk:
+				case <-callCtx.Done():
+				}
+			}
+		}
+		result, compactErr := runClaudeTmuxIdleCompact(callCtx, sessionName, nativeSessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"], emit)
+		if compactErr != nil {
+			discardPersistentSession(compactErr)
+			return nil, compactErr
+		}
+		tmuxinput.MarkReady(sessionName)
+		gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"provider": "claude-code", "claude_code_mode": "tmux", "claude_code_session": sessionName, "claude_code_session_id": nativeSessionID}}
+		llmtypes.AttachIdleCompactResult(gi, result)
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{Provider: "claude-code", Transport: llmtypes.CodingProviderTransportTmux, NativeSessionID: nativeSessionID, TmuxSession: sessionName, WorkingDir: workingDir, Model: c.modelID, Status: llmtypes.CodingProviderSessionStatusIdle})
+		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{GenerationInfo: gi}}}, nil
 	}
 
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {

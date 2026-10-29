@@ -206,12 +206,16 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	system, conversation := splitCodexSystemPrompt(messages)
 	prompt := buildCodexInteractivePrompt(conversation)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
-	if prompt == "" && !launchOnly {
+	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
+	if prompt == "" && !launchOnly && !idleCompact {
 		return nil, fmt.Errorf("codex-cli prompt is empty")
 	}
 	resume, err := codexValidatedResumeSessionIDFromOptions(opts)
 	if err != nil {
 		return nil, err
+	}
+	if idleCompact && resume == "" {
+		return llmtypes.IdleCompactSkipResponse("codex-cli", llmtypes.IdleCompactReasonNoSession), nil
 	}
 	cwd := codexWorkingDirFromOptions(opts)
 	system += llmtypes.CLIPrivateSkillInstructions(opts, codexSkillsSubdir)
@@ -277,7 +281,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	config := map[string]any{"model": c.modelID, "cwd": cwd, "runtime_dir": opts.CLIRuntimeDir, "system": system, "native_questions": llmtypes.CodingAgentQuestionsAvailable(ctx), "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)}
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata.Custom {
-			if k != MetadataKeyResumeSessionID {
+			if k != MetadataKeyResumeSessionID && k != llmtypes.CodingProviderIdleCompactMetadataKey {
 				config[k] = v
 			}
 		}
@@ -391,6 +395,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	rateCancel()
 	if launchOnly {
 		return codexAppResponse(s, "", codexAppUsage{}), nil
+	}
+	if idleCompact {
+		return c.compactAppThread(ctx, s, r, thread, emit)
 	}
 	params := map[string]any{"threadId": thread, "input": codexAppTextInput(prompt)}
 	if effort := codexOptionString(opts, MetadataKeyReasoningEffort); effort != "" {

@@ -215,12 +215,16 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	}
 	prompt := buildPiPrompt(conversation)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
-	if strings.TrimSpace(prompt) == "" && !launchOnly {
+	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
+	if strings.TrimSpace(prompt) == "" && !launchOnly && !idleCompact {
 		return nil, fmt.Errorf("pi-cli prompt is empty")
 	}
 	resume := piResumeSessionIDFromOptions(opts)
 	if resume != "" && !isValidPiNativeSessionID(resume) {
 		return nil, fmt.Errorf("invalid Pi native session ID")
+	}
+	if idleCompact && resume == "" {
+		return llmtypes.IdleCompactSkipResponse("pi-cli", llmtypes.IdleCompactReasonNoSession), nil
 	}
 	cwd := piWorkingDirFromOptions(opts)
 	if cwd == "" {
@@ -287,7 +291,7 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	config := map[string]any{"model": p.modelID, "key": p.apiKey, "custom": p.customProvider, "cwd": cwd, "runtime_dir": opts.CLIRuntimeDir, "system": system, "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(os.Environ(), opts), "skills": llmtypes.AttachedSkillsFromOptions(opts)}
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata.Custom {
-			if k != MetadataKeyResumeSessionID && k != llmtypes.CodingProviderLaunchOnlyMetadataKey {
+			if k != MetadataKeyResumeSessionID && k != llmtypes.CodingProviderLaunchOnlyMetadataKey && k != llmtypes.CodingProviderIdleCompactMetadataKey {
 				config[k] = v
 			}
 		}
@@ -340,6 +344,9 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	}
 	if launchOnly {
 		return piRPCResponse(s, "", nil, nil), nil
+	}
+	if idleCompact {
+		return compactPiRPC(turnCtx, s, r, emit)
 	}
 	// Only the newest user message is sent: Pi's saved session owns history.
 	s.mu.Lock()

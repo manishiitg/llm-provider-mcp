@@ -158,6 +158,67 @@ func StartCodingAgentTmuxSession(ctx context.Context, model llmtypes.Model, hand
 	return StartCodingAgentTransportSession(ctx, model, handle, options...)
 }
 
+// CompactCodingAgentSession runs only the CLI's own compaction on a
+// provider-native session (idle compaction, PLAT-872): no person message is
+// sent. The response carries an llmtypes.IdleCompactResult; a provider or
+// transport without a reliable native trigger answers reason=unsupported
+// without starting anything.
+func CompactCodingAgentSession(ctx context.Context, model llmtypes.Model, handle llmtypes.CodingProviderSessionHandle, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
+	if model == nil {
+		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Reason: "model is nil"}
+	}
+	provider := Provider(strings.ToLower(strings.TrimSpace(handle.Provider)))
+	contract, ok := GetCodingAgentProviderContract(provider, strings.TrimSpace(handle.Model))
+	if !ok {
+		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonApplicable, Provider: provider, Reason: "provider is not a coding-agent provider"}
+	}
+	if strings.TrimSpace(handle.NativeSessionID) == "" {
+		return llmtypes.IdleCompactSkipResponse(string(provider), llmtypes.IdleCompactReasonNoSession), nil
+	}
+	transport := strings.TrimSpace(handle.Transport)
+	if transport == "" {
+		transport = string(contract.Transport)
+	}
+	if !IdleCompactSupported(provider, transport) {
+		return llmtypes.IdleCompactSkipResponse(string(provider), llmtypes.IdleCompactReasonUnsupported), nil
+	}
+	compactOptions, err := appendCodingAgentContinuationOptions(provider, handle, options)
+	if err != nil {
+		return nil, err
+	}
+	compactOptions = append(compactOptions, llmtypes.WithCodingProviderIdleCompact())
+	probe := &llmtypes.CallOptions{}
+	for _, opt := range compactOptions {
+		opt(probe)
+	}
+	// The system prompt keeps the launch identical to the chat's own turns, so
+	// the resumed conversation's prompt prefix (and its provider cache) match.
+	var messages []llmtypes.MessageContent
+	if systemPrompt := strings.TrimSpace(llmtypes.CodingProviderLaunchSystemPromptFromOptions(probe)); systemPrompt != "" {
+		messages = append(messages, llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeSystem, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: systemPrompt}}})
+	}
+	return model.GenerateContent(ctx, messages, compactOptions...)
+}
+
+// IdleCompactSupported reports whether a provider transport has a reliable
+// native compaction trigger: Claude Code (/compact on its SDK, stream-json and
+// tmux transports), Codex app-server (thread/compact/start) and Pi RPC
+// (compact). Codex tmux/exec, Cursor, Muse and AGY have none.
+func IdleCompactSupported(provider Provider, transport string) bool {
+	switch normalizeCodingAgentProvider(provider) {
+	case ProviderClaudeCode:
+		switch transport {
+		case llmtypes.CodingProviderTransportSDK, llmtypes.CodingProviderTransportStructured, llmtypes.CodingProviderTransportTmux:
+			return true
+		}
+	case ProviderCodexCLI:
+		return transport == llmtypes.CodingProviderTransportAppServer
+	case ProviderPiCLI:
+		return transport == llmtypes.CodingProviderTransportRPC
+	}
+	return false
+}
+
 func startCodingAgentTmuxTransportSession(ctx context.Context, model llmtypes.Model, provider Provider, handle llmtypes.CodingProviderSessionHandle, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	if strings.TrimSpace(handle.NativeSessionID) == "" {
 		return nil, &CodingAgentContinuationError{
