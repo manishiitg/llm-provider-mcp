@@ -63,11 +63,12 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	})
 	defer SetSDKBackgroundListener(nil)
 
-	// The fake bridge waits for a trigger line, optionally reports an empty task
-	// list, then exits on stop_background like the real bridge between turns.
-	start := func(owner, onTrigger string) *claudeSDKSession {
+	// The fake bridge runs its opening (for example: wait for a trigger line,
+	// then report an empty task list), then exits on stop_background like the
+	// real bridge between turns.
+	start := func(owner, opening string) *claudeSDKSession {
 		life, kill := context.WithCancel(context.Background())
-		cmd := exec.CommandContext(life, "sh", "-c", `read trigger; `+onTrigger+` while read line; do case "$line" in *stop_background*) exit 0;; esac; done`)
+		cmd := exec.CommandContext(life, "sh", "-c", opening+` while read line; do case "$line" in *stop_background*) exit 0;; esac; done`)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			t.Fatal(err)
@@ -93,7 +94,7 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 		}
 	}
 
-	finished := start("chat-finished", `echo '{"type":"sdk_background","background":[]}';`)
+	finished := start("chat-finished", `read trigger; echo '{"type":"sdk_background","background":[]}';`)
 	if err := finished.input.write(map[string]any{"type": "go"}); err != nil {
 		t.Fatal(err)
 	}
