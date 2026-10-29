@@ -80,6 +80,34 @@ type claudeStructuredCompaction struct {
 	boundary  bool // the current compaction's boundary was already emitted
 }
 
+// startIdle opens the compaction an idle-compact turn runs before the
+// person's message, so the chat shows it from the moment it starts; Claude's
+// own status and boundary events then close it under the same ID.
+func (s *claudeStructuredCompaction) startIdle(now time.Time) llmtypes.ContextCompaction {
+	s.open, s.boundary = true, false
+	s.startedAt = now.UTC()
+	s.id = "claude-compact-" + strconv.FormatInt(now.UnixMilli(), 10)
+	return llmtypes.ContextCompaction{Provider: "claude-code", Phase: llmtypes.ContextCompactionPhaseStart, ID: s.id, Trigger: "idle", StartedAt: s.startedAt}
+}
+
+// finishIdle closes an idle compaction that Claude ended without a boundary
+// or status result (a failed or skipped /compact).
+func (s *claudeStructuredCompaction) finishIdle(ok bool, now time.Time) []llmtypes.ContextCompaction {
+	if !s.open {
+		return nil
+	}
+	s.open = false
+	if s.boundary {
+		return nil
+	}
+	end := llmtypes.ContextCompaction{Provider: "claude-code", Phase: llmtypes.ContextCompactionPhaseEnd, ID: s.id, Trigger: "idle",
+		Outcome: llmtypes.ContextCompactionOutcomeSuccess, StartedAt: s.startedAt, EndedAt: now.UTC(), DurationMs: now.Sub(s.startedAt).Milliseconds()}
+	if !ok {
+		end.Outcome = llmtypes.ContextCompactionOutcomeFailed
+	}
+	return []llmtypes.ContextCompaction{end}
+}
+
 func (s *claudeStructuredCompaction) observe(ev claudeStreamEvent, now time.Time) []llmtypes.ContextCompaction {
 	if ev.Type != "system" {
 		return nil

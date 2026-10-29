@@ -335,12 +335,16 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// A chat's SDK session may be kept after the turn while Claude's own
 	// background tasks run (PLAT-872); see claudecode_sdk_session.go.
 	keepAllowed := false
+	// idleCompact: this turn resumes a long conversation after a long break,
+	// so it runs Claude's /compact before the person's message (PLAT-872).
+	idleCompact := false
 	if c.sdkTransport {
 		launch := claudeSDKLaunchParts(c.modelID, systemPrompt, strings.TrimPrefix(launchPrompt, systemPrompt), permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
 		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts)
 		if owner != "" {
 			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
 		}
+		reused := sess != nil
 		if sess != nil {
 			cmd = sess.cmd
 			if c.logger != nil {
@@ -408,6 +412,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			launchFilesHanded = true
 			sess.setNativeID(sessionID)
 		}
+		if owner != "" {
+			idleCompact = c.decideClaudeIdleCompact(owner, resumeSessionID, workingDir, opts, reused)
+		}
 		turnDone := make(chan struct{})
 		defer close(turnDone)
 		session := sess
@@ -425,7 +432,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			claudeSDKProcesses.Set(owner, sdkProcess)
 			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
 		}
-		if err := sdkProcess.write(map[string]any{"type": "prompt", "text": prompt}); err != nil {
+		if err := sdkProcess.write(map[string]any{"type": "prompt", "text": prompt, "compact_first": idleCompact}); err != nil {
 			sess.kill()
 			<-sess.exited
 			return nil, fmt.Errorf("Claude SDK input: %w", err)
@@ -515,6 +522,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}{}
 	scannerDone := make(chan struct{})
 	var compaction claudeStructuredCompaction
+	if idleCompact {
+		emitChunk(llmtypes.ContextCompactionChunk(compaction.startIdle(time.Now())))
+	}
 	liveUsage := &claudeLiveUsage{}
 	usageThrottle := &llmtypes.LiveUsageThrottle{}
 	emitLiveUsage := func(force bool) {
@@ -578,6 +588,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			case "sdk_permission_cancel":
 				questions.Cancel(ev.RequestID)
+			case "sdk_compact_result":
+				// The idle /compact this turn ran first ended; the person's message follows.
+				c.logger.Infof("[IDLE_COMPACT] session=%s native=%s action=compacted is_error=%t", owner, sessionID, ev.IsError)
+				for _, c := range compaction.finishIdle(!ev.IsError, time.Now()) {
+					emitChunk(llmtypes.ContextCompactionChunk(c))
+				}
 			case "sdk_background":
 				if sess != nil {
 					sess.setTasks(claudeSDKTasksFromWire(ev.Background))

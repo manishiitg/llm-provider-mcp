@@ -73,6 +73,9 @@ async function main() {
   // for example after a task notification) is tagged sdk_parked_turn; the host logs and drops it.
   // strayCheck: the prompt went into a kept session while such a model turn was running, so output is ours only
   // once the SDK says it consumed our prompt (its uuid).
+  // Idle compaction (PLAT-872): compact_first runs Claude Code's /compact before the person's prompt, which is
+  // queued until the compaction's result. Only Claude's system events (compaction status) reach the host meanwhile.
+  let compactPending = false, afterCompact;
   let turnActive = false, parked = false, parkedTurnRunning = false, strayCheck = false, promptUUID, promptConsumed = true, lastBackground = '[]';
   const toolInfo = new Map(), taskTool = new Map(), taskInfo = new Map();
   const ownRunning = () => [...background.keys()].filter(id => ownBackground.has(taskTool.get(id)));
@@ -106,11 +109,15 @@ async function main() {
           const uuid = randomUUID();
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
-          input.push({ text: request.text, uuid }); wake?.(); resolve();
+          if (request.compact_first) {
+            compactPending = true; afterCompact = { text: request.text, uuid };
+            input.push({ text: '/compact', uuid: randomUUID() });
+          } else input.push({ text: request.text, uuid });
+          wake?.(); resolve();
         }
         else if (request.type === 'steer') {
           // A kept session between turns takes no steer: the host starts a normal turn instead.
-          if (!run || ended || !turnActive) {
+          if (!run || ended || !turnActive || compactPending) {
             emit({ type: 'sdk_control_result', id: request.id, is_error: true, input_not_sent: true });
           } else {
             const uuid = randomUUID();
@@ -190,6 +197,16 @@ async function main() {
       if (event.type === 'system' && event.subtype === 'task_notification' &&
           background.get(event.task_id) === event.run_id) { background.delete(event.task_id); movedAside.delete(event.task_id); }
       if (event.type === 'system') reportBackground();
+      if (compactPending) {
+        if (event.type === 'result') {
+          compactPending = false;
+          emit({ type: 'sdk_compact_result', is_error: !!event.is_error });
+          const next = afterCompact;
+          afterCompact = undefined;
+          if (!ended && next) { input.push(next); wake?.(); continue; }
+          // Input already ended (the person pressed Stop): this result ends the turn.
+        } else if (event.type !== 'system') continue;
+      }
       if (event.type === "result" && event.is_error) nativeErrorReported = true;
       const consumed = new Set([...(event.user_message_uuids || []), event.user_message_uuid]);
       if (event.type === 'user' && !event.parent_tool_use_id) consumed.add(event.uuid);
