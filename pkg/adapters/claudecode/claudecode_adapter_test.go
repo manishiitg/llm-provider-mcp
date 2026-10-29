@@ -38,14 +38,6 @@ func TestClaudeCodeNewModelMetadataIsExplicit(t *testing.T) {
 			wantOutput:  25,
 			wantContext: 200000,
 		},
-		{
-			// A chat with "1M context" on runs the same model, priced the same, with the 1M window.
-			modelID:     "claude-opus-5" + Context1MSuffix,
-			wantName:    "Claude Opus 5",
-			wantInput:   5,
-			wantOutput:  25,
-			wantContext: 1000000,
-		},
 	} {
 		t.Run(tt.modelID, func(t *testing.T) {
 			meta, err := interactive.GetModelMetadata(tt.modelID)

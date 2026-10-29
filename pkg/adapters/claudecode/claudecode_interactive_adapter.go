@@ -903,10 +903,6 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 	if modelID == "" {
 		modelID = c.modelID
 	}
-	if base, ok := Strip1MContext(modelID); ok {
-		meta, err := c.GetModelMetadata(base)
-		return with1MContextWindow(meta, modelID, err)
-	}
 
 	switch modelID {
 	case "claude-fable-5-1":

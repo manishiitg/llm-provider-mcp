@@ -25,55 +25,6 @@ func CurrentClaudeCodeModel(modelID string) string {
 	return modelID
 }
 
-// Context1MSuffix asks Claude Code for a model's 1M-token context window
-// ("claude-opus-5-5[1m]"); without it the model runs with its normal window.
-// AgentWorks adds it per chat when the person turns "1M context" on.
-const Context1MSuffix = "[1m]"
-
-// claudeCode1MContextModels offer a 1M context window on request.
-var claudeCode1MContextModels = map[string]bool{
-	"claude-opus-5-5":   true,
-	"claude-sonnet-5-5": true,
-	"claude-opus-5":     true,
-}
-
-// Strip1MContext returns modelID without the 1M suffix, and whether it had one.
-func Strip1MContext(modelID string) (string, bool) {
-	trimmed := strings.TrimSpace(modelID)
-	if len(trimmed) > len(Context1MSuffix) && strings.EqualFold(trimmed[len(trimmed)-len(Context1MSuffix):], Context1MSuffix) {
-		return trimmed[:len(trimmed)-len(Context1MSuffix)], true
-	}
-	return modelID, false
-}
-
-// Supports1MContext reports whether a Claude Code model offers a 1M window.
-func Supports1MContext(modelID string) bool {
-	base, _ := Strip1MContext(modelID)
-	return claudeCode1MContextModels[strings.ToLower(CurrentClaudeCodeModel(base))]
-}
-
-// With1MContext returns the model ID that runs with the 1M window, or modelID
-// unchanged when that model has no 1M window.
-func With1MContext(modelID string) string {
-	base, _ := Strip1MContext(modelID)
-	if !Supports1MContext(base) {
-		return modelID
-	}
-	return CurrentClaudeCodeModel(base) + Context1MSuffix
-}
-
-// with1MContextWindow reports a 1M-suffixed model's metadata: the base model's
-// prices with its 1M window.
-func with1MContextWindow(meta *llmtypes.ModelMetadata, modelID string, err error) (*llmtypes.ModelMetadata, error) {
-	if meta != nil {
-		copy := *meta
-		copy.ModelID = modelID
-		copy.ContextWindow = 1_000_000
-		return &copy, err
-	}
-	return meta, err
-}
-
 var knownClaudeCodeModels = []string{
 	"claude-code",
 	"claude-fable-5-1",
