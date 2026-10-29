@@ -1,7 +1,6 @@
 package claudecode
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -27,7 +26,14 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
 	SDKContinues bool `json:"sdk_continues,omitempty"`
-	SDKHold      *struct {
+	// SDKParked: this final result ends the turn while Claude's own background
+	// tasks still run, so the bridge kept the session open (PLAT-872).
+	SDKParked bool `json:"sdk_parked,omitempty"`
+	// SDKParkedTurn: output of a model turn the SDK ran on its own in a kept
+	// session; never part of the host's turn.
+	SDKParkedTurn bool                `json:"sdk_parked_turn,omitempty"`
+	Background    []claudeSDKWireTask `json:"background,omitempty"`
+	SDKHold       *struct {
 		Unsettled  int `json:"unsettled"`
 		MovedAside int `json:"moved_aside"`
 		Queued     int `json:"queued"`
@@ -198,6 +204,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		// deleting the path instead of restoring it would destroy their content.
 		removeFiles(tempFiles)
 	}()
+	// Files the launched process reads for its whole life (MCP config, settings).
+	// A kept SDK session owns them until it exits; otherwise they go with the turn.
+	var launchFiles []string
+	launchFilesHanded := false
+	defer func() {
+		if !launchFilesHanded {
+			removeFiles(launchFiles)
+		}
+	}()
 	// MCP-config file write is a disk side-effect; the resolved path feeds the
 	// argv builder below.
 	mcpConfigPath := ""
@@ -206,7 +221,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		if cfgErr != nil {
 			return nil, fmt.Errorf("claude structured MCP config: %w", cfgErr)
 		}
-		tempFiles = append(tempFiles, configPath)
+		launchFiles = append(launchFiles, configPath)
 		mcpConfigPath = configPath
 	}
 
@@ -227,7 +242,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			raw, mErr := json.Marshal(settingsMap)
 			if mErr == nil {
 				if p, wErr := writeTempJSONConfig("claude-code-structured-settings-*.json", string(raw)); wErr == nil {
-					tempFiles = append(tempFiles, p)
+					launchFiles = append(launchFiles, p)
 					redirectSettingsPath = p
 				}
 			}
@@ -291,7 +306,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if err != nil {
 				return nil, err
 			}
-			tempFiles = append(tempFiles, path)
+			launchFiles = append(launchFiles, path)
 			redirectSettingsPath = path
 		}
 	}
@@ -309,82 +324,146 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 
-	runCtx, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
-	cmd := exec.CommandContext(runCtx, binPath, args...)
+	owner := claudeInteractiveSessionIDFromOptions(opts)
+	environment := append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...)
+	var cmd *exec.Cmd
+	var lines <-chan string
+	var reader *claudeLineReader
+	var stderr *claudeLockedBuffer
+	var sess *claudeSDKSession
 	var sdkProcess *claudeSDKProcess
+	// A chat's SDK session may be kept after the turn while Claude's own
+	// background tasks run (PLAT-872); see claudecode_sdk_session.go.
+	keepAllowed := false
 	if c.sdkTransport {
-		var setupStream chan<- llmtypes.StreamChunk
-		if opts != nil {
-			setupStream = opts.StreamChan
+		fingerprint, fingerprintOK := claudeSDKFingerprint(c.modelID, systemPrompt+"\x00"+launchPrompt, permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
+		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts)
+		if owner != "" {
+			sess = takeKeptClaudeSDKSession(owner, fingerprint, fingerprintOK, resumeSessionID)
 		}
-		if err := llmtypes.PrepareCodingSDK(runCtx, "claude-code", setupStream); err != nil {
-			return nil, err
-		}
-		var cleanup func()
-		cmd, cleanup, err = claudeSDKCommand(runCtx, binPath, args)
-		if err != nil {
-			return nil, err
-		}
-		defer cleanup()
-		sdkProcess = &claudeSDKProcess{cancel: cancelRun, done: make(chan struct{})}
-		defer close(sdkProcess.done)
-		sdkProcess.input, err = cmd.StdinPipe()
-		if err != nil {
-			return nil, err
-		}
-		defer sdkProcess.input.Close()
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	procshutdown.KillGroupOnCancel(cmd)
-	if workingDir != "" {
-		cmd.Dir = workingDir
-	}
-	cmd.Env = append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...)
-	if !c.sdkTransport {
-		cmd.Stdin = strings.NewReader(prompt) // one-shot structured input
-	}
-	confine := claudeLandlockCmd
-	if c.sdkTransport {
-		confine = claudeSDKLandlock
-	}
-	cleanupSandbox, err := confine(opts, cmd, workingDir)
-	if err != nil {
-		return nil, fmt.Errorf("confine Claude Code: %w", err)
-	}
-	defer cleanupSandbox()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude stdout pipe: %w", err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if c.logger != nil {
-		if c.sdkTransport {
-			c.logger.Infof("Executing Claude Agent SDK: streaming input/output, native resume=%t", resumeSessionID != "")
-		} else if resumeSessionID != "" {
-			c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json --resume <id>")
+		if sess != nil {
+			cmd = sess.cmd
+			if c.logger != nil {
+				c.logger.Infof("Continuing kept Claude Agent SDK session: background tasks=%d", sess.taskCount())
+			}
 		} else {
-			c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json")
+			var setupStream chan<- llmtypes.StreamChunk
+			if opts != nil {
+				setupStream = opts.StreamChan
+			}
+			if err := llmtypes.PrepareCodingSDK(ctx, "claude-code", setupStream); err != nil {
+				return nil, err
+			}
+			// The process outlives this turn when it is kept, so its life is not the turn's context;
+			// a cancelled turn still ends it (below).
+			life, kill := context.WithCancel(context.Background())
+			var cleanupBridge func()
+			cmd, cleanupBridge, err = claudeSDKCommand(life, binPath, args)
+			if err != nil {
+				kill()
+				return nil, err
+			}
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				kill()
+				cleanupBridge()
+				return nil, err
+			}
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			procshutdown.KillGroupOnCancel(cmd)
+			if workingDir != "" {
+				cmd.Dir = workingDir
+			}
+			cmd.Env = environment
+			cleanupSandbox, err := claudeSDKLandlock(opts, cmd, workingDir)
+			if err != nil {
+				kill()
+				cleanupBridge()
+				return nil, fmt.Errorf("confine Claude Code: %w", err)
+			}
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				kill()
+				cleanupSandbox()
+				cleanupBridge()
+				return nil, fmt.Errorf("claude stdout pipe: %w", err)
+			}
+			errBuf := &claudeLockedBuffer{}
+			cmd.Stderr = errBuf
+			if c.logger != nil {
+				c.logger.Infof("Executing Claude Agent SDK: streaming input/output, native resume=%t", resumeSessionID != "")
+			}
+			files := launchFiles
+			sess, err = startClaudeSDKSession(owner, fingerprint, cmd, stdin, stdout, errBuf, kill, func() {
+				cleanupSandbox()
+				cleanupBridge()
+				removeFiles(files)
+			}, c.logger)
+			if err != nil {
+				kill()
+				cleanupSandbox()
+				cleanupBridge()
+				return nil, fmt.Errorf("claude start: %w", err)
+			}
+			launchFilesHanded = true
+			sess.setNativeID(sessionID)
 		}
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("claude start: %w", err)
-	}
-
-	if sdkProcess != nil {
-		owner := claudeInteractiveSessionIDFromOptions(opts)
+		turnDone := make(chan struct{})
+		defer close(turnDone)
+		session := sess
+		sdkProcess = &claudeSDKProcess{session: sess, cancel: sess.kill, done: turnDone}
+		go func() {
+			select {
+			case <-ctx.Done():
+				session.kill() // a cancelled turn ends its session, as before
+			case <-turnDone:
+			}
+		}()
+		reader, stderr = sess.reader, sess.stderr
+		lines = reader.lines
 		if owner != "" {
 			claudeSDKProcesses.Set(owner, sdkProcess)
 			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
 		}
 		if err := sdkProcess.write(map[string]any{"type": "prompt", "text": prompt}); err != nil {
-			cancelRun()
-			_ = cmd.Wait()
+			sess.kill()
+			<-sess.exited
 			return nil, fmt.Errorf("Claude SDK input: %w", err)
 		}
+	} else {
+		runCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+		cmd = exec.CommandContext(runCtx, binPath, args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		procshutdown.KillGroupOnCancel(cmd)
+		if workingDir != "" {
+			cmd.Dir = workingDir
+		}
+		cmd.Env = environment
+		cmd.Stdin = strings.NewReader(prompt) // one-shot structured input
+		cleanupSandbox, err := claudeLandlockCmd(opts, cmd, workingDir)
+		if err != nil {
+			return nil, fmt.Errorf("confine Claude Code: %w", err)
+		}
+		defer cleanupSandbox()
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("claude stdout pipe: %w", err)
+		}
+		stderr = &claudeLockedBuffer{}
+		cmd.Stderr = stderr
+		if c.logger != nil {
+			if resumeSessionID != "" {
+				c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json --resume <id>")
+			} else {
+				c.logger.Infof("Executing Claude Code structured: claude -p --output-format stream-json")
+			}
+		}
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("claude start: %w", err)
+		}
+		reader = startClaudeLineReader(stdout)
+		lines = reader.lines
 	}
 	var questions nativeinput.Requests
 	defer questions.Close()
@@ -392,6 +471,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var text claudeStructuredText
 	var resultText string
 	var previousResultContinues bool
+	parkedTurn := false
 	sawNativeSubagent := false
 	// totalUsage is fed ONLY from the terminal result event's usage, which
 	// Anthropic documents as the per-run cumulative total — NOT summed with
@@ -434,10 +514,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	go func() {
 		defer close(scannerDone)
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
+		for raw := range lines {
+			line := strings.TrimSpace(raw)
 			if line == "" || line[0] != '{' {
 				continue
 			}
@@ -445,11 +523,21 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if jErr := json.Unmarshal([]byte(line), &ev); jErr != nil {
 				continue
 			}
+			if ev.SDKParkedTurn {
+				// Output of a model turn the SDK ran on its own in a kept session, not this turn's.
+				if ev.Type == "result" && c.logger != nil {
+					c.logger.Infof("[SDK_BACKGROUND] dropped a model turn that was not this chat turn session=%s", owner)
+				}
+				continue
+			}
 			if ev.ParentToolUseID != "" {
 				continue
 			}
 			if ev.SessionID != "" {
 				sessionID = ev.SessionID
+				if sess != nil {
+					sess.setNativeID(sessionID)
+				}
 			}
 			text.observe(ev, emitChunk)
 			switch ev.Type {
@@ -467,6 +555,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			case "sdk_permission_cancel":
 				questions.Cancel(ev.RequestID)
+			case "sdk_background":
+				if sess != nil {
+					sess.setTasks(claudeSDKTasksFromWire(ev.Background))
+				}
 
 			case "system":
 				if ev.Subtype == "init" && ev.Model != "" {
@@ -584,16 +676,41 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				// guaranteed to be flushed. Let it exit naturally first; the
 				// signal sequence remains a backstop for a stuck CLI.
 				if !ev.SDKContinues {
-					go procshutdown.GracefulAfterNaturalExit(cmd, scannerDone, claudeStructuredNaturalExitGrace, c.logger)
+					if ev.SDKParked && sess != nil {
+						if keepAllowed {
+							// The answer ends the turn; the session stays for the running tasks.
+							parkedTurn = true
+							return
+						}
+						// Not a chat that keeps sessions: end it as before; its tasks stop with it.
+						c.logger.Infof("[SDK_BACKGROUND] stopped session=%s tasks=%d reason=not_kept", owner, sess.taskCount())
+						_ = sess.input.write(map[string]any{"type": "stop_background", "id": randomHex(12)})
+					}
+					go procshutdown.GracefulAfterNaturalExit(cmd, reader.done, claudeStructuredNaturalExitGrace, c.logger)
 				}
 			}
 		}
-		scanErr = scanner.Err()
 	}()
 
 	<-scannerDone
-	waitErr := cmd.Wait()
+	var waitErr error
+	if parkedTurn {
+		sess.park()
+	} else {
+		if sess != nil {
+			<-sess.exited
+			waitErr = sess.waitErr
+		} else {
+			<-reader.done
+			waitErr = cmd.Wait()
+		}
+		<-reader.done
+		scanErr = reader.err
+	}
 	if ctx.Err() != nil {
+		if parkedTurn {
+			sess.closeIfParked("stopped", "stopped", "turn_cancelled")
+		}
 		return nil, ctx.Err()
 	}
 	if scanErr != nil {

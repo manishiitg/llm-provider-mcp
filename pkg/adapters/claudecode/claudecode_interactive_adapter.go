@@ -4651,6 +4651,7 @@ func CloseClaudeCodeInteractiveSessionForOwner(ownerSessionID, reason string) {
 	if process, ok := claudeSDKProcesses.Get(ownerSessionID); ok {
 		process.cancel()
 	}
+	closeKeptClaudeSDKSession(ownerSessionID, "chat_closed: "+reason)
 
 	closeClaudePersistentInteractiveSession(ownerSessionID, reason, nil)
 }

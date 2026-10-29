@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,10 +25,11 @@ var claudeSDKBridge []byte
 // SetSDKTransport selects the official Agent SDK for this adapter instance.
 func (c *ClaudeCodeInteractiveAdapter) SetSDKTransport(enabled bool) { c.sdkTransport = enabled }
 
+// claudeSDKProcess is one turn's handle on its SDK session: live input and
+// controls go to the session; done closes when the turn ends.
 type claudeSDKProcess struct {
-	mu         sync.Mutex
-	input      io.WriteCloser
-	cancel     context.CancelFunc
+	session    *claudeSDKSession
+	cancel     func()
 	controlsMu sync.Mutex
 	controls   map[string]chan error
 	done       chan struct{}
@@ -40,9 +40,7 @@ type claudeSDKProcess struct {
 var claudeSDKProcesses = sessionregistry.NewOwnerRegistry[*claudeSDKProcess]()
 
 func (p *claudeSDKProcess) write(value any) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return json.NewEncoder(p.input).Encode(value)
+	return p.session.input.write(value)
 }
 
 func claudeSDKEntry() (string, error) {

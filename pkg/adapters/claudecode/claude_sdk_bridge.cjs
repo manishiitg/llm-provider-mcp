@@ -67,6 +67,24 @@ async function main() {
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
   // were never moved aside, so they never hold the turn, even when they start while a steer waits.
   const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map(), movedAside = new Set(), ownBackground = new Set();
+  // Kept session (PLAT-872): a turn ends at its answer, but while Claude's own background tasks still run the
+  // session stays open ("parked") so they keep running; the next turn's prompt goes into this same session.
+  // turnActive: a host turn owns the output. Output while no turn is active (a model turn the SDK starts on its own,
+  // for example after a task notification) is tagged sdk_parked_turn; the host logs and drops it.
+  // strayCheck: the prompt went into a kept session while such a model turn was running, so output is ours only
+  // once the SDK says it consumed our prompt (its uuid).
+  let turnActive = false, parked = false, parkedTurnRunning = false, strayCheck = false, promptUUID, promptConsumed = true, lastBackground = '[]';
+  const toolInfo = new Map(), taskTool = new Map(), taskInfo = new Map();
+  const ownRunning = () => [...background.keys()].filter(id => ownBackground.has(taskTool.get(id)));
+  // Only what the person needs to recognise the task. Go trims the command and removes inline values.
+  const reportBackground = () => {
+    const tasks = ownRunning().map(id => {
+      const tool = toolInfo.get(taskTool.get(id)) || {}, info = taskInfo.get(id) || {};
+      return { task_id: id, description: tool.description || info.description || '', command: tool.command || '', started_at: info.started_at || 0 };
+    });
+    const key = JSON.stringify(tasks.map(task => task.task_id));
+    if (key !== lastBackground) { lastBackground = key; emit({ type: 'sdk_background', background: tasks }); }
+  };
   const lines = createInterface({ input: process.stdin });
   const finishInput = () => { ended = true; wake?.(); };
   const cancelPermissions = () => { for (const resolve of permissions.values()) resolve(deny()); permissions.clear(); };
@@ -84,9 +102,15 @@ async function main() {
     lines.on('line', line => {
       try {
         const request = JSON.parse(line);
-        if (request.type === 'prompt') { input.push({ text: request.text }); wake?.(); resolve(); }
+        if (request.type === 'prompt') {
+          const uuid = randomUUID();
+          strayCheck = parked && parkedTurnRunning;
+          parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
+          input.push({ text: request.text, uuid }); wake?.(); resolve();
+        }
         else if (request.type === 'steer') {
-          if (!run || ended) {
+          // A kept session between turns takes no steer: the host starts a normal turn instead.
+          if (!run || ended || !turnActive) {
             emit({ type: 'sdk_control_result', id: request.id, is_error: true, input_not_sent: true });
           } else {
             const uuid = randomUUID();
@@ -100,6 +124,13 @@ async function main() {
         else if (request.type === 'interrupt' && run) {
           cancelPermissions();
           run.interrupt().then(() => { unsettled.clear(); background.clear(); movedAside.clear(); finishInput(); emit({ type: 'sdk_control_result', id: request.id }); }, () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
+        }
+        else if (request.type === 'stop_background') {
+          // Stop Claude's own background tasks; between turns this also closes the session.
+          Promise.allSettled(ownRunning().map(id => run ? run.stopTask(id) : undefined)).then(() => {
+            if (!turnActive) finishInput();
+            emit({ type: 'sdk_control_result', id: request.id });
+          });
         }
       } catch (error) { reject(error); }
     });
@@ -124,27 +155,50 @@ async function main() {
       // notification retires a known task. Ambient watchers do not hold a turn.
       if (event.type === 'assistant') {
         for (const block of event.message?.content || []) {
-          if (block?.type === 'tool_use' && block.input?.run_in_background === true) ownBackground.add(block.id);
+          if (block?.type === 'tool_use' && block.input?.run_in_background === true) {
+            ownBackground.add(block.id);
+            toolInfo.set(block.id, { description: typeof block.input.description === 'string' ? block.input.description : '', command: typeof block.input.command === 'string' ? block.input.command : '' });
+          }
         }
       }
       if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
         for (const task of event.tasks || []) {
           if (task.ambient) continue;
-          if (!background.has(task.task_id) && unsettled.size > 0 && !ownBackground.has(task.tool_use_id)) movedAside.add(task.task_id);
+          if (task.tool_use_id) taskTool.set(task.task_id, task.tool_use_id);
+          if (!background.has(task.task_id) && unsettled.size > 0 && !ownBackground.has(taskTool.get(task.task_id))) movedAside.add(task.task_id);
+          if (!taskInfo.has(task.task_id)) taskInfo.set(task.task_id, { description: task.description || '', started_at: Date.now() });
           background.set(task.task_id, task.run_id);
         }
       }
+      if (event.type === 'system' && event.subtype === 'task_started' && event.tool_use_id) {
+        // The roster can list a task before task_started names its tool call.
+        taskTool.set(event.task_id, event.tool_use_id);
+        if (ownBackground.has(event.tool_use_id)) movedAside.delete(event.task_id);
+        if (!taskInfo.has(event.task_id)) taskInfo.set(event.task_id, { description: event.description || '', started_at: Date.now() });
+      }
       if (event.type === 'system' && event.subtype === 'task_notification' &&
           background.get(event.task_id) === event.run_id) { background.delete(event.task_id); movedAside.delete(event.task_id); }
+      if (event.type === 'system') reportBackground();
       if (event.type === "result" && event.is_error) nativeErrorReported = true;
       const consumed = new Set([...(event.user_message_uuids || []), event.user_message_uuid]);
       if (event.type === 'user' && !event.parent_tool_use_id) consumed.add(event.uuid);
+      if (strayCheck && !promptConsumed && (consumed.has(promptUUID) ||
+          (event.type === 'result' && !event.user_message_uuids && !event.user_message_uuid))) promptConsumed = true;
       for (const uuid of consumed) {
         if (steering.has(uuid)) {
           emit({ type: 'sdk_control_result', id: steering.get(uuid) });
           steering.delete(uuid);
         }
       }
+      if (!turnActive || !promptConsumed) {
+        // Not part of the host's turn: a model turn the SDK ran on its own in a kept session.
+        if (event.type === 'assistant' || event.type === 'stream_event') parkedTurnRunning = true;
+        if (event.type === 'result') parkedTurnRunning = false;
+        event.sdk_parked_turn = true;
+        emit(event);
+        continue;
+      }
+      let park = false;
       if (event.type === 'result') {
         for (const uuid of consumed) unsettled.delete(uuid);
         // A finished answer ends the person's turn. Background work holds it open only when a steer moved
@@ -153,11 +207,17 @@ async function main() {
         event.sdk_continues = !ended && (unsettled.size > 0 || movedAside.size > 0 || event.queued_turn_count > 0);
         // Why a turn stays open, for the host log (counts only).
         event.sdk_hold = { unsettled: unsettled.size, moved_aside: movedAside.size, queued: event.queued_turn_count || 0, background: background.size };
+        if (!event.sdk_continues) {
+          turnActive = false; strayCheck = false;
+          // Claude's own background tasks still run: keep the session so they keep running.
+          park = !ended && ownRunning().length > 0;
+          if (park) { parked = true; event.sdk_parked = true; reportBackground(); }
+        }
       }
       emit(event);
       // One host turn can consume several steers. Close only after their native
       // results, then drain transcript writes before the next host resumes.
-      if (event.type === 'result' && !event.sdk_continues) finishInput();
+      if (event.type === 'result' && !event.sdk_continues && !park) finishInput();
     }
   } finally { finishInput(); cancelPermissions(); lines.close(); run.close(); }
 }
