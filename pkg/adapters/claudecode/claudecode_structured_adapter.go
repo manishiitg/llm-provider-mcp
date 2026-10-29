@@ -238,29 +238,27 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		mcpConfigPath = configPath
 	}
 
-	// Full CLI mode keeps native Bash on, but only the bridge's shell has the
-	// platform credentials: refuse a platform call there and name the bridge
-	// shell tool. Settings go in a per-launch file, so nothing needs restoring.
-	var redirectSettingsPath string
-	if mcpConfigJSON != "" {
-		settingsMap := map[string]any{}
-		if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
-			if v, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok {
-				settingsMap = claudeLoadSettingsMap(v)
-			}
-		}
-		if added, hookErr := claudeAddShellRedirectHook(settingsMap, mcpConfigJSON); hookErr != nil {
-			return nil, fmt.Errorf("claude structured shell redirect: %w", hookErr)
-		} else if added {
-			raw, mErr := json.Marshal(settingsMap)
-			if mErr == nil {
-				if p, wErr := writeTempJSONConfig("claude-code-structured-settings-*.json", string(raw)); wErr == nil {
-					launchFiles = append(launchFiles, p)
-					redirectSettingsPath = p
-				}
-			}
+	// Launch settings: the caller's own, plus the skill scope, plus (full CLI
+	// mode keeps native Bash on, but only the bridge's shell has the platform
+	// credentials) a hook that refuses a platform call there and names the
+	// bridge shell tool. Settings go in a per-launch file, so nothing needs
+	// restoring.
+	settingsMap := map[string]any{}
+	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
+		if v, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok {
+			settingsMap = claudeLoadSettingsMap(v)
 		}
 	}
+	if mcpConfigJSON != "" {
+		if _, hookErr := claudeAddShellRedirectHook(settingsMap, mcpConfigJSON); hookErr != nil {
+			return nil, fmt.Errorf("claude structured shell redirect: %w", hookErr)
+		}
+	}
+	settingsPath, err := writeClaudeSkillScopedSettings(settingsMap)
+	if err != nil {
+		return nil, fmt.Errorf("claude structured settings: %w", err)
+	}
+	launchFiles = append(launchFiles, settingsPath)
 
 	projectedPrompt := false
 	// Project the system prompt into <workingDir>/CLAUDE.md, as the interactive
@@ -309,23 +307,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			args = append(args, "--tools", "")
 		}
 	}
-	if c.sdkTransport && redirectSettingsPath == "" && opts != nil && opts.Metadata != nil {
-		if settings, ok := opts.Metadata.Custom[MetadataKeySettings].(string); ok && settings != "" {
-			raw, err := json.Marshal(claudeLoadSettingsMap(settings))
-			if err != nil {
-				return nil, err
-			}
-			path, err := writeTempJSONConfig("claude-code-sdk-settings-*.json", string(raw))
-			if err != nil {
-				return nil, err
-			}
-			launchFiles = append(launchFiles, path)
-			redirectSettingsPath = path
-		}
-	}
-	if redirectSettingsPath != "" {
-		args = append(args, "--settings", redirectSettingsPath)
-	}
+	args = append(args, "--settings", settingsPath)
 	args = append(args, claudeSeatbeltAddDirs(opts, workingDir)...)
 
 	if workingDir != "" {

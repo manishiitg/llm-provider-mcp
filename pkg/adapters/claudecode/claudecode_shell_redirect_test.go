@@ -191,7 +191,9 @@ func TestClaudeLoadSettingsMapReadsFile(t *testing.T) {
 }
 
 // The tmux launch carries the redirect in its --settings file, with or without
-// the status-line session, and a launch without a bridge gets no settings.
+// the status-line session, and a launch without a bridge gets no redirect. Every
+// launch's settings keep the caller's keys and switch off Claude's own extras
+// (owner, 2026-10-29: AgentWorks-launched Claude uses only AgentWorks skills).
 func TestBuildClaudeArgsInstallsShellRedirectOnlyWithBridge(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
@@ -223,13 +225,32 @@ func TestBuildClaudeArgsInstallsShellRedirectOnlyWithBridge(t *testing.T) {
 	}
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"other":{"command":"x"}}}`)(opts)
+	WithClaudeCodeSettings(`{"model":"keep-me","enabledPlugins":{"own@market":true}}`)(opts)
 	args, files, err := adapter.buildClaudeArgs(opts, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "p")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer removeFiles(files)
-	if got := settingsOf(args); got != "" {
-		t.Errorf("no bridge but settings were passed: %s", got)
+	got := settingsOf(args)
+	if strings.Contains(got, "shell-redirect-") {
+		t.Errorf("no bridge but the redirect hook was installed: %s", got)
+	}
+	var settings struct {
+		Model          string            `json:"model"`
+		EnabledPlugins map[string]bool   `json:"enabledPlugins"`
+		SkillOverrides map[string]string `json:"skillOverrides"`
+		SyncSkills     *bool             `json:"syncClaudeAiSkills"`
+	}
+	if err := json.Unmarshal([]byte(got), &settings); err != nil {
+		t.Fatalf("settings %q: %v", got, err)
+	}
+	if settings.Model != "keep-me" || !settings.EnabledPlugins["own@market"] {
+		t.Errorf("caller settings lost: %s", got)
+	}
+	if on, set := settings.EnabledPlugins["cc-plugin-plugin-authoring@builtin"]; !set || on ||
+		settings.SkillOverrides["design"] != "off" || settings.SkillOverrides["doctor"] != "off" ||
+		settings.SyncSkills == nil || *settings.SyncSkills {
+		t.Errorf("Claude's own skills not switched off: %s", got)
 	}
 }
 

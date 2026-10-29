@@ -272,6 +272,44 @@ func claudeSkillScopeEnv() []string {
 	return []string{"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1", "CLAUDE_CODE_DISABLE_POLICY_SKILLS=1"}
 }
 
+// claudeAddSkillScopeSettings adds to a launch's --settings what the env
+// switches above do not cover (owner, 2026-10-29: an AgentWorks-launched Claude
+// uses only AgentWorks's skills): the built-in "mods" plugin, the built-in
+// design and doctor skills, and the skills synced from the claude.ai account
+// (anthropic-skills:*). Given through --settings these apply to this launch
+// only; nothing is changed or moved in the person's own Claude setup. Other
+// plugins (cc-plugin-agents-md, the person's installed plugins) and project
+// skills stay. Caller keys are kept.
+func claudeAddSkillScopeSettings(settings map[string]any) {
+	plugins, _ := settings["enabledPlugins"].(map[string]any)
+	if plugins == nil {
+		plugins = map[string]any{}
+	}
+	plugins["cc-plugin-plugin-authoring@builtin"] = false
+	settings["enabledPlugins"] = plugins
+
+	overrides, _ := settings["skillOverrides"].(map[string]any)
+	if overrides == nil {
+		overrides = map[string]any{}
+	}
+	overrides["design"] = "off"
+	overrides["doctor"] = "off"
+	settings["skillOverrides"] = overrides
+
+	settings["syncClaudeAiSkills"] = false
+}
+
+// writeClaudeSkillScopedSettings adds the skill scope to the launch settings
+// and writes them to a per-launch file for --settings.
+func writeClaudeSkillScopedSettings(settings map[string]any) (string, error) {
+	claudeAddSkillScopeSettings(settings)
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return "", err
+	}
+	return writeTempJSONConfig("claude-code-settings-*.json", string(raw))
+}
+
 func claudeInteractiveFinalEnv(oauthToken string) []string {
 	oauthToken = strings.TrimSpace(oauthToken)
 	if oauthToken == "" {
@@ -947,32 +985,21 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		} else {
 			mcpCfg, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
 			settings, _ := opts.Metadata.Custom[MetadataKeySettings].(string)
+			// Merged with the caller's own settings.
+			settingsMap := claudeLoadSettingsMap(settings)
 			if claudeBridgeShellToolName(mcpCfg) != "" {
 				// Platform calls in the native Bash cannot work (no credentials);
-				// say so up front. Merged with the caller's own settings.
-				settingsMap := claudeLoadSettingsMap(settings)
-				if added, err := claudeAddShellRedirectHook(settingsMap, mcpCfg); err != nil {
+				// say so up front.
+				if _, err := claudeAddShellRedirectHook(settingsMap, mcpCfg); err != nil {
 					return nil, nil, err
-				} else if added {
-					raw, err := json.Marshal(settingsMap)
-					if err != nil {
-						return nil, nil, err
-					}
-					settings = string(raw)
 				}
 			}
-			if strings.TrimSpace(settings) != "" {
-				settingsArg := settings
-				if strings.HasPrefix(strings.TrimSpace(settings), "{") {
-					settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", settings)
-					if err != nil {
-						return nil, nil, err
-					}
-					tempFiles = append(tempFiles, settingsPath)
-					settingsArg = settingsPath
-				}
-				extraArgs = append(extraArgs, "--settings", settingsArg)
+			settingsPath, err := writeClaudeSkillScopedSettings(settingsMap)
+			if err != nil {
+				return nil, nil, err
 			}
+			tempFiles = append(tempFiles, settingsPath)
+			extraArgs = append(extraArgs, "--settings", settingsPath)
 		}
 
 		if tools, ok := opts.Metadata.Custom[MetadataKeyTools].(string); ok {
@@ -991,6 +1018,13 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 				return nil, nil, err
 			}
 			tempFiles = append(tempFiles, sFiles...)
+			extraArgs = append(extraArgs, "--settings", settingsPath)
+		} else {
+			settingsPath, err := writeClaudeSkillScopedSettings(map[string]any{})
+			if err != nil {
+				return nil, nil, err
+			}
+			tempFiles = append(tempFiles, settingsPath)
 			extraArgs = append(extraArgs, "--settings", settingsPath)
 		}
 	}
@@ -5079,6 +5113,7 @@ func (c *ClaudeCodeInteractiveAdapter) prepareStatusLineSettings(opts *llmtypes.
 		}
 	}
 
+	claudeAddSkillScopeSettings(settingsMap)
 	settingsMap["statusLine"] = map[string]interface{}{
 		"type":    "command",
 		"command": "sh " + scriptPath,
