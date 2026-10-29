@@ -336,10 +336,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// background tasks run (PLAT-872); see claudecode_sdk_session.go.
 	keepAllowed := false
 	if c.sdkTransport {
-		fingerprint, fingerprintOK := claudeSDKFingerprint(c.modelID, systemPrompt+"\x00"+launchPrompt, permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
+		launch := claudeSDKLaunchParts(c.modelID, systemPrompt, strings.TrimPrefix(launchPrompt, systemPrompt), permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
 		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts)
 		if owner != "" {
-			sess = takeKeptClaudeSDKSession(owner, fingerprint, fingerprintOK, resumeSessionID)
+			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
 		}
 		if sess != nil {
 			cmd = sess.cmd
@@ -394,7 +394,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				c.logger.Infof("Executing Claude Agent SDK: streaming input/output, native resume=%t", resumeSessionID != "")
 			}
 			files := launchFiles
-			sess, err = startClaudeSDKSession(owner, fingerprint, cmd, stdin, stdout, errBuf, kill, func() {
+			sess, err = startClaudeSDKSession(owner, launch, cmd, stdin, stdout, errBuf, kill, func() {
 				cleanupSandbox()
 				cleanupBridge()
 				removeFiles(files)

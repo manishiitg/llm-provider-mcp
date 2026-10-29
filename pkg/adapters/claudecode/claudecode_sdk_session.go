@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,35 +117,66 @@ func claudeSDKTasksFromWire(wire []claudeSDKWireTask) []SDKBackgroundTask {
 	return tasks
 }
 
-// claudeSDKFingerprint decides whether a kept session can take the next turn:
-// the same model, effort, folder, permission mode, tools, MCP servers,
-// settings, instructions, account, secrets and confinement. Only a digest is
-// kept, never another copy of credentials. The resume id is compared on its own.
-func claudeSDKFingerprint(model, systemPrompt, permissionMode string, environment []string, opts *llmtypes.CallOptions, questions bool) ([32]byte, bool) {
-	config := map[string]any{"model": model, "system": systemPrompt, "permission_mode": permissionMode, "env": environment, "native_questions": questions}
+// claudeSDKLaunch describes what a kept session was started with, one digest
+// per named part: model, instructions, permission mode, process environment
+// (account and secrets), native questions, confinement, runtime folder and
+// each launch option except the resume id. Only digests are kept, never
+// another copy of credentials. The conversation is compared on its own.
+type claudeSDKLaunch map[string][32]byte
+
+func claudeSDKLaunchParts(model, systemPrompt, launchExtra, permissionMode string, environment []string, opts *llmtypes.CallOptions, questions bool) claudeSDKLaunch {
+	parts := claudeSDKLaunch{}
+	add := func(name string, value any) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			// Not comparable by content: compare its type only.
+			raw = []byte(fmt.Sprintf("%T", value))
+		}
+		parts[name] = sha256.Sum256(raw)
+	}
+	add("model", model)
+	add("system_prompt", systemPrompt)
+	add("skill_instructions", launchExtra)
+	add("permission_mode", permissionMode)
+	add("environment", environment)
+	add("native_questions", questions)
 	if opts != nil {
-		config["security"] = opts.CLISecurity
-		config["runtime_dir"] = opts.CLIRuntimeDir
+		add("security", opts.CLISecurity)
+		add("runtime_dir", opts.CLIRuntimeDir)
 		if opts.Metadata != nil {
 			for key, value := range opts.Metadata.Custom {
 				if key != MetadataKeyResumeSessionID {
-					config[key] = value
+					add("option:"+key, value)
 				}
 			}
 		}
 	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		return [32]byte{}, false
+	return parts
+}
+
+// changed names the parts that differ (names only, never values).
+func (kept claudeSDKLaunch) changed(wanted claudeSDKLaunch) []string {
+	var names []string
+	for name, digest := range wanted {
+		if old, ok := kept[name]; !ok || old != digest {
+			names = append(names, name)
+		}
 	}
-	return sha256.Sum256(raw), true
+	for name := range kept {
+		if _, ok := wanted[name]; !ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // claudeSDKReuseDecision says whether a kept session may take a turn, and why not.
-func claudeSDKReuseDecision(kept, wanted [32]byte, keptSessionID, resumeSessionID string) (bool, string) {
+func claudeSDKReuseDecision(kept, wanted claudeSDKLaunch, keptSessionID, resumeSessionID string) (bool, string) {
+	if changed := kept.changed(wanted); len(changed) > 0 {
+		return false, "launch_changed:" + strings.Join(changed, ",")
+	}
 	switch {
-	case kept != wanted:
-		return false, "launch_changed"
 	case strings.TrimSpace(resumeSessionID) == "":
 		return false, "new_conversation"
 	case strings.TrimSpace(resumeSessionID) != strings.TrimSpace(keptSessionID):
@@ -205,16 +237,16 @@ func startClaudeLineReader(stdout io.Reader) *claudeLineReader {
 }
 
 type claudeSDKSession struct {
-	owner       string
-	fingerprint [32]byte
-	cmd         *exec.Cmd
-	input       *claudeSDKInput
-	reader      *claudeLineReader
-	stderr      *claudeLockedBuffer
-	exited      chan struct{}
-	waitErr     error // valid after exited closes
-	kill        context.CancelFunc
-	logger      interfaces.Logger
+	owner   string
+	launch  claudeSDKLaunch
+	cmd     *exec.Cmd
+	input   *claudeSDKInput
+	reader  *claudeLineReader
+	stderr  *claudeLockedBuffer
+	exited  chan struct{}
+	waitErr error // valid after exited closes
+	kill    context.CancelFunc
+	logger  interfaces.Logger
 
 	mu        sync.Mutex
 	nativeID  string
@@ -227,11 +259,11 @@ type claudeSDKSession struct {
 }
 
 // startClaudeSDKSession starts the bridge. cleanup runs once the process has exited.
-func startClaudeSDKSession(owner string, fingerprint [32]byte, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
+func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	s := &claudeSDKSession{owner: owner, fingerprint: fingerprint, cmd: cmd, input: &claudeSDKInput{w: stdin}, reader: startClaudeLineReader(stdout), stderr: stderr, exited: make(chan struct{}), kill: kill, logger: logger}
+	s := &claudeSDKSession{owner: owner, launch: launch, cmd: cmd, input: &claudeSDKInput{w: stdin}, reader: startClaudeLineReader(stdout), stderr: stderr, exited: make(chan struct{}), kill: kill, logger: logger}
 	go func() {
 		<-s.reader.done
 		s.waitErr = cmd.Wait()
@@ -436,7 +468,7 @@ func (s *claudeSDKSession) endReleased() {
 // takeKeptClaudeSDKSession hands a chat's kept session to its next turn when
 // the launch is unchanged and the turn continues the same conversation.
 // Otherwise the kept session is closed and the caller starts a new one.
-func takeKeptClaudeSDKSession(owner string, fingerprint [32]byte, fingerprintOK bool, resumeSessionID string) *claudeSDKSession {
+func takeKeptClaudeSDKSession(owner string, launch claudeSDKLaunch, resumeSessionID string) *claudeSDKSession {
 	claudeSDKKept.Lock()
 	s := claudeSDKKept.sessions[owner]
 	delete(claudeSDKKept.sessions, owner)
@@ -449,10 +481,7 @@ func takeKeptClaudeSDKSession(owner string, fingerprint [32]byte, fingerprintOK 
 		s.mu.Unlock()
 		return nil
 	}
-	ok, reason := claudeSDKReuseDecision(s.fingerprint, fingerprint, s.nativeID, resumeSessionID)
-	if !fingerprintOK {
-		ok, reason = false, "launch_unknown"
-	}
+	ok, reason := claudeSDKReuseDecision(s.launch, launch, s.nativeID, resumeSessionID)
 	if s.hasExited() {
 		ok, reason = false, "process_exited"
 	}
@@ -488,29 +517,50 @@ func closeKeptClaudeSDKSession(owner, reason string) bool {
 	return s.closeIfParked("stopped", "stopped", reason)
 }
 
-// StopClaudeSDKBackground stops the background tasks Claude started itself in
-// this chat. Between turns it also closes the kept session. It reports how
-// many tasks were asked to stop.
-func StopClaudeSDKBackground(ctx context.Context, owner string) (int, error) {
+func claudeSDKSessionForOwner(owner string) *claudeSDKSession {
 	owner = strings.TrimSpace(owner)
-	if owner == "" {
-		return 0, fmt.Errorf("chat is required")
-	}
 	claudeSDKKept.Lock()
 	kept := claudeSDKKept.sessions[owner]
 	claudeSDKKept.Unlock()
 	if kept != nil {
-		tasks := kept.taskCount()
-		kept.closeIfParked("stopped", "stopped", "stop_pressed")
-		return tasks, nil
+		return kept
 	}
-	if process, ok := claudeSDKProcesses.Get(owner); ok && process.session != nil {
-		tasks := process.session.taskCount()
-		if tasks == 0 {
-			return 0, nil
-		}
-		process.session.logf("[SDK_BACKGROUND] stopped session=%s tasks=%d reason=stop_pressed_during_turn", owner, tasks)
-		return tasks, process.session.input.write(map[string]any{"type": "stop_background", "id": randomHex(12)})
+	if process, ok := claudeSDKProcesses.Get(owner); ok {
+		return process.session
 	}
-	return 0, ctx.Err()
+	return nil
+}
+
+// ClaudeSDKBackgroundTasks lists the background tasks Claude started itself in
+// this chat that are still running, during a turn or between turns.
+func ClaudeSDKBackgroundTasks(owner string) []SDKBackgroundTask {
+	s := claudeSDKSessionForOwner(owner)
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return nil
+	}
+	return append([]SDKBackgroundTask(nil), s.tasks...)
+}
+
+// StopClaudeSDKBackgroundTask stops one background task Claude started itself
+// in this chat. When it was the last one of a kept session, the empty list that
+// follows closes the session. False when the chat has no such task.
+func StopClaudeSDKBackgroundTask(owner, taskID string) bool {
+	s := claudeSDKSessionForOwner(owner)
+	if s == nil {
+		return false
+	}
+	found := false
+	for _, task := range ClaudeSDKBackgroundTasks(owner) {
+		found = found || task.TaskID == taskID
+	}
+	if !found {
+		return false
+	}
+	s.logf("[SDK_BACKGROUND] stop requested session=%s task=%s", s.owner, taskID)
+	return s.input.write(map[string]any{"type": "stop_task", "task_id": taskID}) == nil
 }

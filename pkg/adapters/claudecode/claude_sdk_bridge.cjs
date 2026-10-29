@@ -131,6 +131,11 @@ async function main() {
           turnActive = false; strayCheck = false; promptConsumed = true;
           if (request.keep && ownRunning().length > 0) parked = true; else finishInput();
         }
+        else if (request.type === 'stop_task') {
+          // One of Claude's own tasks, stopped from the chat's background-work list. Its task_notification
+          // updates the list; an empty list between turns closes the session.
+          if (run && ownRunning().includes(request.task_id)) run.stopTask(request.task_id).catch(() => {});
+        }
         else if (request.type === 'stop_background') {
           // Stop Claude's own background tasks; between turns this also closes the session.
           Promise.allSettled(ownRunning().map(id => run ? run.stopTask(id) : undefined)).then(() => {

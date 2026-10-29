@@ -7,25 +7,32 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // PLAT-872: a kept session may take the next turn only with the same launch
-// and the same conversation; anything else starts a fresh session.
+// and the same conversation; anything else starts a fresh session. A changed
+// launch is named by part (never by value) so the log shows what changed.
 func TestClaudeSDKReuseDecision(t *testing.T) {
-	a, b := [32]byte{1}, [32]byte{2}
+	launch := func(model, system string, mcp string) claudeSDKLaunch {
+		opts := &llmtypes.CallOptions{Metadata: &llmtypes.Metadata{Custom: map[string]interface{}{MetadataKeyMCPConfig: mcp, MetadataKeyResumeSessionID: model + system}}}
+		return claudeSDKLaunchParts(model, system, "", "default", []string{"SECRET_X=v"}, opts, false)
+	}
+	base := launch("m1", "sys", "{}")
 	for _, tc := range []struct {
 		name           string
-		kept, wanted   [32]byte
+		wanted         claudeSDKLaunch
 		keptID, resume string
 		reuse          bool
 		reason         string
 	}{
-		{"same launch and conversation", a, a, "s1", "s1", true, ""},
-		{"launch changed", a, b, "s1", "s1", false, "launch_changed"},
-		{"new conversation", a, a, "s1", "", false, "new_conversation"},
-		{"other conversation", a, a, "s1", "s2", false, "other_conversation"},
+		{"same launch and conversation", launch("m1", "sys", "{}"), "s1", "s1", true, ""},
+		{"model and MCP servers changed", launch("m2", "sys", "{\"x\":1}"), "s1", "s1", false, "launch_changed:model,option:" + MetadataKeyMCPConfig},
+		{"new conversation", launch("m1", "sys", "{}"), "s1", "", false, "new_conversation"},
+		{"other conversation", launch("m1", "sys", "{}"), "s1", "s2", false, "other_conversation"},
 	} {
-		reuse, reason := claudeSDKReuseDecision(tc.kept, tc.wanted, tc.keptID, tc.resume)
+		reuse, reason := claudeSDKReuseDecision(base, tc.wanted, tc.keptID, tc.resume)
 		if reuse != tc.reuse || reason != tc.reason {
 			t.Errorf("%s: got %t %q, want %t %q", tc.name, reuse, reason, tc.reuse, tc.reason)
 		}
@@ -77,7 +84,7 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := startClaudeSDKSession(owner, [32]byte{7}, cmd, stdin, stdout, &claudeLockedBuffer{}, kill, func() {}, nil)
+		s, err := startClaudeSDKSession(owner, claudeSDKLaunch{"model": {7}}, cmd, stdin, stdout, &claudeLockedBuffer{}, kill, func() {}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,13 +108,13 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	waitExit(finished)
 
 	replaced := start("chat-replaced", "")
-	if s := takeKeptClaudeSDKSession("chat-replaced", [32]byte{8}, true, "native-1"); s != nil {
+	if s := takeKeptClaudeSDKSession("chat-replaced", claudeSDKLaunch{"model": {8}}, "native-1"); s != nil {
 		t.Fatal("a kept session with another launch must not take the turn")
 	}
 	waitExit(replaced)
 
 	kept := start("chat-kept", "")
-	if s := takeKeptClaudeSDKSession("chat-kept", [32]byte{7}, true, "native-1"); s != kept {
+	if s := takeKeptClaudeSDKSession("chat-kept", claudeSDKLaunch{"model": {7}}, "native-1"); s != kept {
 		t.Fatal("an unchanged launch of the same conversation must reuse the kept session")
 	}
 	// A session that dies while it still lists tasks clears the chat's line.
