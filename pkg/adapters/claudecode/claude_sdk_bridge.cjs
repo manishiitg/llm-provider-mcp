@@ -144,6 +144,8 @@ async function main() {
         // that work aside; a command Claude backgrounded on its own (a slow search past its timeout), before or
         // apart from any steer, must not keep the chat "working" (owner, 2026-10-28: an answer means done).
         event.sdk_continues = !ended && (unsettled.size > 0 || movedAside.size > 0 || event.queued_turn_count > 0);
+        // Why a turn stays open, for the host log (counts only).
+        event.sdk_hold = { unsettled: unsettled.size, moved_aside: movedAside.size, queued: event.queued_turn_count || 0, background: background.size };
       }
       emit(event);
       // One host turn can consume several steers. Close only after their native
