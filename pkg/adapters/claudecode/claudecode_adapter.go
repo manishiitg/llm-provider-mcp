@@ -375,6 +375,10 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 	if modelID == "" {
 		modelID = c.modelID
 	}
+	if base, ok := Strip1MContext(modelID); ok {
+		meta, err := c.GetModelMetadata(base)
+		return with1MContextWindow(meta, modelID, err)
+	}
 
 	providerName := c.providerName
 	if providerName == "" {
