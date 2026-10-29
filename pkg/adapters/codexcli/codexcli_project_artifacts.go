@@ -16,8 +16,7 @@ import (
 
 // writeCodexProjectArtifacts is the unified opt-in writer invoked by
 // the adapter when MetadataKeyWriteProjectInstructionFile is set. It
-// projects up to four artifacts into <workingDir> with byte-restore on
-// teardown:
+// projects these artifacts into <workingDir>, removed on teardown:
 //
 //   - <workingDir>/AGENTS.md           — per-session system prompt
 //   - <workingDir>/.codex/config.toml  — AgentWorks session defaults plus
@@ -28,11 +27,9 @@ import (
 //     that exits 2 on built-in
 //     tool invocations
 //
-// Each artifact captures any pre-existing operator content and restores
-// it byte-for-byte at session teardown. The returned cleanup is a
-// composite: it walks each captured cleanup in REVERSE order (LIFO) so
-// nested files are restored before their parent directories are
-// considered for removal of empty ancestors we created.
+// The returned cleanup is a composite: it walks each captured cleanup in
+// REVERSE order (LIFO) so nested files are removed before their parent
+// directories are considered for removal of empty ancestors we created.
 //
 // Best-effort by design: a write failure for any single artifact does
 // not block the session — the primary injection paths
@@ -40,7 +37,7 @@ import (
 // configuration. The workspace projection is additive belt-and-
 // suspenders, useful when downstream tooling reads codex's
 // project-scoped files directly.
-func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string, denyBuiltins, restorePrior bool) (func(), error) {
+func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string, denyBuiltins bool) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -56,7 +53,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	}
 
 	if strings.TrimSpace(systemPrompt) != "" {
-		cu, err := writeCodexProjectAgentsFile(workingDir, systemPrompt, restorePrior)
+		cu, err := writeCodexProjectAgentsFile(workingDir, systemPrompt)
 		if err != nil {
 			rollback()
 			return noop, fmt.Errorf("codex AGENTS.md: %w", err)
@@ -66,7 +63,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 		}
 	}
 
-	cu, err := writeCodexProjectConfigTOML(workingDir, mcpServersJSON, restorePrior)
+	cu, err := writeCodexProjectConfigTOML(workingDir, mcpServersJSON)
 	if err != nil {
 		rollback()
 		return noop, fmt.Errorf("codex .codex/config.toml: %w", err)
@@ -101,8 +98,8 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 	// between sessions — orphaned config.toml from a prior session whose
 	// cleanup callback didn't fire would otherwise leak. Trade-off: an
 	// operator's own pre-existing content under .codex/ is destroyed.
-	// AGENTS.md (workingDir root, outside .codex/) is still byte-restored
-	// by writeCodexProjectAgentsFile so an operator AGENTS.md survives.
+	// AGENTS.md (workingDir root, outside .codex/) is a per-session block,
+	// so an operator AGENTS.md survives.
 	cleanups = append(cleanups, func() {
 		_ = os.RemoveAll(filepath.Join(workingDir, ".codex"))
 	})
@@ -112,8 +109,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 
 // writeCodexProjectConfigTOML writes the AgentWorks-scoped Codex defaults and
 // optionally projects operator-supplied MCP server JSON into
-// <workingDir>/.codex/config.toml. Pre-existing operator content is captured
-// and restored on cleanup.
+// <workingDir>/.codex/config.toml, removed on cleanup.
 //
 // JSON shape expected (matches WithMCPServers): a map of server name
 // → {command: string, args?: []string, env?: map[string]string,
@@ -125,7 +121,7 @@ func writeCodexProjectArtifacts(workingDir, systemPrompt, mcpServersJSON string,
 // definitions have a known small shape (per
 // developers.openai.com/codex/mcp), so we avoid pulling in a TOML
 // dependency.
-func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string, restorePrior bool) (func(), error) {
+func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string) (func(), error) {
 	noop := func() {}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
@@ -146,16 +142,6 @@ func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string, restorePrior
 	codexDirCreatedByUs := dirIsEmptyOrJustCreated(codexDir)
 
 	path := filepath.Join(codexDir, "config.toml")
-	var priorContent []byte
-	priorExisted := false
-	if restorePrior {
-		if data, err := os.ReadFile(path); err == nil {
-			priorContent = data
-			priorExisted = true
-		} else if !os.IsNotExist(err) {
-			return noop, fmt.Errorf("read pre-existing .codex/config.toml: %w", err)
-		}
-	}
 
 	toml := renderCodexProjectConfigTOML(servers)
 	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
@@ -163,11 +149,7 @@ func writeCodexProjectConfigTOML(workingDir, mcpServersJSON string, restorePrior
 	}
 
 	return func() {
-		if priorExisted {
-			_ = os.WriteFile(path, priorContent, 0o600)
-		} else {
-			_ = os.Remove(path)
-		}
+		_ = os.Remove(path)
 		if codexDirCreatedByUs {
 			_ = os.Remove(codexDir) // best-effort, no-op if other files landed
 		}

@@ -151,9 +151,9 @@ func WithWorkingDir(dir string) llmtypes.CallOption {
 }
 
 // WithMuseStructuredTransport selects the exec --json lane (per-turn
-// process, no live pane). Default is the tmux lane, like every other
-// coding provider: structured must be asked for explicitly, and the
-// orchestrator asks exactly when it wants structured (wantsStructured).
+// process, no live pane). Default is the tmux lane: structured must be
+// asked for explicitly, and the orchestrator asks exactly when it wants
+// structured (wantsStructured).
 func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -183,7 +183,6 @@ const MetadataKeyMuseProjectInstructionOnly = "muse_project_instruction_only"
 // AGENTS.md preserves an operator's pre-existing content across the
 // session. Default off: the run writes a fresh artifact and deletes it on
 // cleanup. Pass WithRestoreProjectFiles(true) to byte-restore instead.
-// Same shape as codex's MetadataKeyRestoreProjectFiles.
 const MetadataKeyMuseRestoreProjectFiles = "muse_restore_project_files"
 
 // WithProjectInstructionOnly makes the adapter carry the per-session system

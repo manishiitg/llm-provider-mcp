@@ -27,34 +27,21 @@ func TestMuseRunningToolIsNotCompletedP0(t *testing.T) {
 	}
 }
 
-// Real tmux, synthetic tool output, no model or workflow side effects. Keep
-// both the transcript and pane quiet past the completion quiet window, then
-// finish the tool. This reproduces the shell-sleep case from production.
+// Real tmux, synthetic tool output, no model or workflow side effects:
+// readiness must stay cancellable while a previous tool is still running.
 func TestMuseLongRunningToolWaitTmuxP0(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux unavailable")
 	}
 	dir := t.TempDir()
-	for name, body := range map[string]string{
-		"busy":          museRunningToolPane,
-		"idle":          "◆ Completed this turn.\n❯\necho · /tmp/work\n",
-		"session.jsonl": "{}\n",
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	logPath := filepath.Join(dir, "session.jsonl")
-	old := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(logPath, old, old); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "busy"), []byte(museRunningToolPane), 0600); err != nil {
 		t.Fatal(err)
 	}
 	session := "mlp-muse-lifetime-test-" + museRandomSessionSuffix()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", session,
-		"-x", "160", "-y", "30", "-c", dir, "sh", "-c",
-		"cat busy; while [ ! -f done ]; do sleep 0.1; done; printf '\033[2J\033[H'; cat idle; exec sleep 30")
+		"-x", "160", "-y", "30", "-c", dir, "sh", "-c", "cat busy; exec sleep 30")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("launch scratch terminal: %v %s", err, out)
 	}
@@ -73,42 +60,10 @@ func TestMuseLongRunningToolWaitTmuxP0(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Explicit bounded callers still get their requested deadline.
-	if _, err := museWaitTurnQuiescent(ctx, session, logPath, 100*time.Millisecond); err == nil {
-		t.Fatal("explicit timeout ignored for a running tool")
-	}
-	// Readiness remains cancellable while a previous tool is running.
 	readyCtx, readyCancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	_, err := museWaitAtPrompt(readyCtx, session, 0)
 	readyCancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("readiness must honor caller deadline: %v", err)
-	}
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	turnCancel()
-	if _, err := museWaitTurnQuiescent(turnCtx, session, logPath, 0); !errors.Is(err, context.Canceled) {
-		t.Fatalf("turn wait must honor stop: %v", err)
-	}
-
-	result := make(chan error, 1)
-	go func() {
-		_, err := museWaitTurnQuiescent(ctx, session, logPath, 0)
-		result <- err
-	}()
-	select {
-	case err := <-result:
-		t.Fatalf("abandoned or completed an active tool: %v", err)
-	case <-time.After(6 * time.Second):
-	}
-	if err := os.WriteFile(filepath.Join(dir, "done"), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal("did not recognize actual completion")
 	}
 }

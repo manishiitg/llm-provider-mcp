@@ -295,66 +295,6 @@ func museLogQuietSince(logPath string, quietFor time.Duration) bool {
 	return time.Since(info.ModTime()) >= quietFor
 }
 
-// museWaitTurnQuiescent is the legacy pane/log waiter retained for visual
-// settling tests. Production completion uses museWaitTurnTerminal instead.
-// It waits for a submitted, taken-in turn to appear finished:
-// the pane has returned to settled idle and the native session log has been
-// quiet for a beat. Callers must prove intake first (museWaitIntake): pane
-// markers alone cannot signal completion, because the settled chrome
-// (banner, input prompt, status line) persists while a turn streams —
-// proven live 2026-09-10, when completion-by-growth returned on
-// typed-but-unsubmitted input. Streaming deltas, tool phases, and reminder
-// subagents all append to the log, so a quiet log plus a settled, stable
-// pane without a running-tool indicator means the turn is done, not paused.
-// A zero timeout delegates the turn lifetime to the caller's context.
-func museWaitTurnQuiescent(ctx context.Context, session, logPath string, timeout time.Duration) (string, error) {
-	const quietFor = 5 * time.Second
-	deadline := time.Now().Add(timeout)
-	for {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if !museTmuxSessionAlive(ctx, session) {
-			return "", fmt.Errorf("muse tmux session %q died mid-turn", session)
-		}
-		pane, err := museTmuxCapturePane(ctx, session)
-		if err != nil {
-			return "", fmt.Errorf("capture pane waiting for turn: %w", err)
-		}
-		pending, err := museHandlePendingQuestion(ctx, session, pane)
-		if err != nil {
-			return "", err
-		}
-		if pending {
-			if timeout > 0 && time.Now().After(deadline) {
-				return "", musePendingUserInputError(pane)
-			}
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
-		if musePaneShowsBlockingGate(pane) {
-			return "", fmt.Errorf("muse TUI hit a trust/auth gate mid-turn; pane:\n%s", pane)
-		}
-		if museTUIAtPrompt(pane) && musePaneStable(ctx, session, pane) &&
-			museLogQuietSince(logPath, quietFor) {
-			return pane, nil
-		}
-		if timeout > 0 && time.Now().After(deadline) {
-			return "", fmt.Errorf("timed out waiting for muse turn to quiesce (commits=%d); latest pane:\n%s",
-				museTurnCommits(logPath), pane)
-		}
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("turn wait canceled: %w", ctx.Err())
-		case <-time.After(time.Second):
-		}
-	}
-}
-
 // museResolveTmuxPrompt decides what gets typed into the tmux pane: the
 // legacy inline concatenation (system folded ahead of human) by default, or
 // the bare human turn ONLY once AGENTS.md is confirmed to actually carry the

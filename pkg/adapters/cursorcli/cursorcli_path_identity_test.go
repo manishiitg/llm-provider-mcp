@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCursorCleanupPreservesUnrelatedFilesAndRestoreOption(t *testing.T) {
+func TestCursorCleanupPreservesUnrelatedAndPriorFiles(t *testing.T) {
 	dir := t.TempDir()
 	cursor := filepath.Join(dir, ".cursor")
 	if err := os.Mkdir(cursor, 0700); err != nil {
@@ -24,7 +24,6 @@ func TestCursorCleanupPreservesUnrelatedFilesAndRestoreOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := &llmtypes.CallOptions{}
-	WithRestoreProjectFiles(true)(opts)
 	WithMCPConfig(`{"mcpServers":{"fixture":{"command":"fixture-only"}}}`)(opts)
 	cleanup, err := prepareCursorProjectFiles(dir, "fixture", opts, "fixture-owner")
 	if err != nil {

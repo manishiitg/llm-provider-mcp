@@ -21,7 +21,7 @@ func TestCursorFullNativeHooks(t *testing.T) {
 	t.Run("shell off by default", func(t *testing.T) {
 		t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "off")
 		cursorDir := filepath.Join(t.TempDir(), ".cursor")
-		cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true, true)
+		cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestCursorFullNativeHooks(t *testing.T) {
 	})
 	t.Setenv("AGENTWORKS_CLI_NATIVE_SHELL", "on")
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
-	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true, true)
+	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}

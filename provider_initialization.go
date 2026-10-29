@@ -905,23 +905,17 @@ func resolveClaudeCodeTransport(configured string) (string, error) {
 	if strings.TrimSpace(configured) != "" {
 		return normalizeClaudeCodeTransport(configured)
 	}
-	raw := strings.TrimSpace(os.Getenv(EnvClaudeCodeTransport))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv(EnvClaudeCodeMode))
-	}
-	return normalizeClaudeCodeTransport(raw)
+	return normalizeClaudeCodeTransport(os.Getenv(EnvClaudeCodeTransport))
 }
 
 func normalizeClaudeCodeTransport(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case ClaudeCodeTransportTmux, ClaudeCodeTransportExperimental, "interactive":
+	case ClaudeCodeTransportTmux:
 		return ClaudeCodeTransportTmux, nil
 	case "", ClaudeCodeTransportSDK:
 		return ClaudeCodeTransportSDK, nil
-	case ClaudeCodeTransportPrint, "-p", "p", "legacy", "agent-sdk", "agentsdk":
-		return "", fmt.Errorf("Claude Code print/stream-json transport is no longer supported; use %s=%q", EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
 	default:
-		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=%q", raw, EnvClaudeCodeTransport, ClaudeCodeTransportTmux)
+		return "", fmt.Errorf("unsupported Claude Code transport %q; use %s=sdk or tmux", raw, EnvClaudeCodeTransport)
 	}
 }
 

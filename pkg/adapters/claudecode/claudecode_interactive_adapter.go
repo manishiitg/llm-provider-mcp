@@ -29,6 +29,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/launchscrub"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
@@ -112,13 +113,8 @@ const (
 	// 30s; only cold sessions with a readiness file configured ever wait.
 	EnvClaudeMCPReadyWaitSeconds = "CLAUDE_CODE_MCP_READY_WAIT_SECONDS"
 
-	// Legacy env names kept for existing deployments and test runners.
-	EnvClaudeExperimentalSessionPrefix      = "CLAUDE_CODE_EXPERIMENTAL_SESSION_PREFIX"
-	EnvClaudeExperimentalTimeoutSeconds     = "CLAUDE_CODE_EXPERIMENTAL_TIMEOUT_SECONDS"
-	EnvClaudeExperimentalPromptWaitSeconds  = "CLAUDE_CODE_EXPERIMENTAL_PROMPT_WAIT_SECONDS"
-	EnvClaudeExperimentalIdleTimeoutSeconds = "CLAUDE_CODE_EXPERIMENTAL_IDLE_TIMEOUT_SECONDS"
-	EnvClaudePromptSuggestion               = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
-	EnvClaudeDisableAlternateScreen         = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"
+	EnvClaudePromptSuggestion       = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+	EnvClaudeDisableAlternateScreen = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"
 )
 
 var claudeInteractiveSessionRegistry = struct {
@@ -394,7 +390,7 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 	}
 
 	// Opt-in structured/JSON transport: `claude -p --output-format stream-json`,
-	// per-turn and one-shot (no tmux). tmux stays the default.
+	// per-turn and one-shot (no tmux).
 	if opts.Metadata != nil && opts.Metadata.Custom != nil {
 		if structured, ok := opts.Metadata.Custom[MetadataKeyStructuredTransport].(bool); ok && structured {
 			return c.generateContentStructured(ctx, messages, opts)
@@ -1072,9 +1068,8 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// once, via project instructions); otherwise we fall back to the flag.
 	projectedToClaudeMd := false
 
-	// Project the system prompt into <workingDir>/CLAUDE.md (Claude
-	// Code's project-instructions convention) with byte-restore on
-	// cleanup. ON by default; operators that need to protect their own
+	// Project the system prompt into <workingDir>/AGENTS.md (a per-session
+	// marked block). ON by default; operators that need to protect their own
 	// CLAUDE.md can opt out with WithClaudeCodeWriteProjectInstructionFile(false).
 	// By default the prompt is ALSO injected via --system-prompt-file below;
 	// CLAUDE.md makes it visible inside the workspace for debugging and
@@ -1085,17 +1080,15 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	// When the same flag is on AND an MCP config was provided via
 	// WithMCPConfig, we also project the MCP servers into
 	// <workingDir>/.mcp.json (Claude Code's project-scoped MCP
-	// convention) with byte-restore on cleanup so operator-owned
-	// .mcp.json content survives the session.
+	// convention), removed on cleanup.
 	// In project-instruction-only mode the AGENTS.md block is the only carrier, so it
 	// is used only when this claude reads AGENTS.md; an older (or unreadable-version)
 	// binary gets the prompt through --system-prompt-file below instead.
 	carrierOK := !projectInstructionOnlyFromOptions(opts) || claudeReadsAgentsMD()
 	if carrierOK && writeProjectInstructionFromOptions(opts) && opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		workingDir, _ := opts.Metadata.Custom[MetadataKeyWorkingDir].(string)
-		restoreProjectFiles := restoreProjectFilesFromOptions(opts)
 		if strings.TrimSpace(systemPrompt) != "" {
-			if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt, restoreProjectFiles); err != nil {
+			if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt); err != nil {
 				// Best-effort: a write failure here must not block the
 				// session. projectedToClaudeMd stays false so the
 				// --system-prompt-file fallback below still fires.
@@ -1120,7 +1113,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		// (e.g. a tmux send-keys post-launch dismissal).
 		if os.Getenv("MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS") != "" {
 			if mcpConfig, ok := opts.Metadata.Custom[MetadataKeyMCPConfig].(string); ok && strings.TrimSpace(mcpConfig) != "" && strings.TrimSpace(workingDir) != "" {
-				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, restoreProjectFiles, llmtypes.CLIHomeEnvironment(opts)["HOME"]); err != nil {
+				if mcpPath, err := writeClaudeCodeProjectMCPFile(workingDir, mcpConfig, llmtypes.CLIHomeEnvironment(opts)["HOME"]); err != nil {
 					_ = err
 				} else if mcpPath != "" {
 					tempFiles = append(tempFiles, mcpPath)
@@ -1186,19 +1179,6 @@ func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-// restoreProjectFilesFromOptions reads the OFF-by-default feature flag for
-// preserving operator-owned project artifacts across a session. Returns
-// false when the key is unset: the default is to write fresh and delete on
-// cleanup, never restoring pre-existing content. Callers opt back into the
-// legacy byte-restore behavior with WithRestoreProjectFiles(true).
-func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
-	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return false
-	}
-	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
-	return enabled
-}
-
 // projectInstructionOnlyFromOptions reads the OFF-by-default feature flag for
 // injecting the system prompt only via CLAUDE.md (skipping --system-prompt-file).
 // Returns false when the key is unset. Callers opt in with
@@ -1211,27 +1191,13 @@ func projectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-// writeClaudeCodeProjectInstructionFile installs the per-session system
-// prompt at <workingDir>/CLAUDE.md (Claude Code's project-instructions
-// convention). When restorePrior is true and a pre-existing CLAUDE.md is
-// present, its bytes are registered with claudeProjectFileRestores so
-// removeFiles restores them on session cleanup. When restorePrior is false
-// (the default), no prior bytes are stashed: the freshly-written file is
-// simply os.Remove'd on cleanup, so every run reflects the latest
-// orchestrator output and never resurrects stale content. Returns the
-// absolute path so the caller can append it to tempFiles for the existing
-// cleanup flow.
+// writeClaudeCodeProjectInstructionFile adds the per-session system prompt
+// to <workingDir>/AGENTS.md as a marked, per-session block and returns the
+// lease token the caller appends to tempFiles; removeFiles releases it.
 //
-// Returns "" with nil error when no work needs doing (empty workingDir);
-// returns a non-empty path with non-nil error only when the write itself
-// failed. The caller treats any error as best-effort and continues; the
-// primary --system-prompt-file injection has already succeeded.
-//
-// Risk caveat: CLAUDE.md is a single-file convention. With restorePrior
-// false, an operator's pre-existing CLAUDE.md is overwritten and removed
-// without recovery — that is the intended default. Pass
-// WithRestoreProjectFiles(true) to byte-restore operator content instead.
-func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string, restorePrior bool) (string, error) {
+// Returns "" with nil error when no work needs doing (empty workingDir). The
+// caller treats any error as best-effort and continues.
+func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string) (string, error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return "", nil
@@ -1239,9 +1205,7 @@ func writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt string, rest
 	// AGENTS.md is the one project-instructions file for every CLI (Claude
 	// Code reads it natively). The prompt is added as a marked block, counted
 	// per session, so the user's own file and other sessions sharing this
-	// folder are never overwritten or deleted. restorePrior is obsolete: the
-	// user's content is never touched.
-	_ = restorePrior
+	// folder are never overwritten or deleted.
 	return projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
 }
 
@@ -1263,7 +1227,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux
 	// SERVER's environment, so it has to be executed here as export/unset too.
 	scopedEnv, scopedUnset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), finalEnv, opts)
-	scopedScrub := scopedLaunchScrub(finalEnv, scopedEnv, opts)
+	scopedScrub := launchscrub.Scoped(finalEnv, scopedEnv, opts)
 	finalEnv = append(finalEnv, scopedEnv...)
 	unsetKeys := append(append([]string(nil), claudeAmbientAuthEnvKeys...), scopedUnset...)
 	args, cleanupSandbox, err := claudeLandlockArgs(opts, args, workingDir, sessionName)
@@ -4313,7 +4277,7 @@ func truncateClaudePaneForError(captured string) string {
 }
 
 func tmuxTimeout() time.Duration {
-	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxTimeoutSeconds, EnvClaudeExperimentalTimeoutSeconds)
+	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxTimeoutSeconds)
 	if !ok || seconds < 0 {
 		return defaultTmuxTimeout
 	}
@@ -4321,10 +4285,7 @@ func tmuxTimeout() time.Duration {
 }
 
 func promptReadyTimeout() time.Duration {
-	if parsed, ok := claudePositiveDurationFromEnv(EnvClaudeTmuxPromptWaitSeconds); ok {
-		return parsed
-	}
-	return tmuxlaunch.PromptWait(EnvClaudeExperimentalPromptWaitSeconds)
+	return tmuxlaunch.PromptWait(EnvClaudeTmuxPromptWaitSeconds)
 }
 
 // promptReadyMaxWait is the absolute ceiling waitForTmuxPrompt will wait for a
@@ -4347,7 +4308,7 @@ func promptReadyMaxWait(idleWait time.Duration) time.Duration {
 }
 
 func persistentInteractiveIdleTimeout() time.Duration {
-	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxIdleTimeoutSeconds, EnvClaudeExperimentalIdleTimeoutSeconds)
+	seconds, ok := claudeDurationSecondsFromEnv(EnvClaudeTmuxIdleTimeoutSeconds)
 	if !ok || seconds <= 0 {
 		return defaultPersistentIdleTimeout
 	}
@@ -4498,9 +4459,6 @@ func appendUniqueStrings(base []string, extra ...string) []string {
 
 func claudeInteractiveSessionPrefix() string {
 	prefix := strings.TrimSpace(os.Getenv(EnvClaudeTmuxSessionPrefix))
-	if prefix == "" {
-		prefix = strings.TrimSpace(os.Getenv(EnvClaudeExperimentalSessionPrefix))
-	}
 	if prefix == "" {
 		prefix = "mlp-claude-code"
 	}
@@ -4987,18 +4945,6 @@ func removeFiles(paths []string) {
 		if projectfile.IsLease(path) {
 			projectfile.ReleaseToken(path)
 			continue
-		}
-		// Honor byte-restore registrations from
-		// writeClaudeCodeProjectInstructionFile and
-		// writeClaudeCodeProjectMCPFile: if the path is in
-		// claudeProjectFileRestores, write the prior bytes back instead
-		// of deleting the file. Files we created from nothing fall
-		// through to the unconditional os.Remove path.
-		if restored, ok := claudeProjectFileRestores.LoadAndDelete(path); ok {
-			if bs, isBytes := restored.([]byte); isBytes {
-				_ = os.WriteFile(path, bs, 0o600)
-				continue
-			}
 		}
 		_ = os.Remove(path)
 	}

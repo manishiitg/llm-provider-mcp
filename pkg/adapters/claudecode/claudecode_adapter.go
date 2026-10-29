@@ -29,7 +29,7 @@ const (
 	MetadataKeyWorkingDir            = "claude_code_working_dir"
 	// MetadataKeyStructuredTransport selects `claude -p --output-format
 	// stream-json` (per-turn, one-shot, no tmux) instead of the tmux
-	// interactive transport (tmux stays the default).
+	// interactive transport.
 	MetadataKeyStructuredTransport = "claude_code_structured_transport"
 	// MetadataKeyStreamTranscript opts into streaming structured content
 	// (assistant text + tool-call starts) mid-turn by tailing Claude Code's
@@ -54,16 +54,6 @@ const (
 	// The comment here previously said OFF-by-default, which contradicted both
 	// the reader and the exported wrapper.
 	MetadataKeyWriteProjectInstructionFile = "claude_code_write_project_instruction_file"
-	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
-	// controlling whether projected workspace artifacts (CLAUDE.md,
-	// .mcp.json, and any other byte-restore writer) preserve an operator's
-	// pre-existing content across the session. Default off: every run
-	// writes a fresh artifact from the latest orchestrator output and
-	// deletes it on cleanup, never restoring whatever was there before.
-	// Pass WithRestoreProjectFiles(true) to opt back into the legacy
-	// byte-restore behavior for repos with operator-owned files worth
-	// preserving.
-	MetadataKeyRestoreProjectFiles = "claude_code_restore_project_files"
 	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature flag
 	// that makes the adapter inject the per-session system prompt SOLELY via
 	// <workingDir>/CLAUDE.md and skip the --system-prompt-file flag. Default
@@ -255,36 +245,16 @@ func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 //
 // Useful because (a) the prompt is visible inside the workspace for
 // debugging and transparency, and (b) downstream tooling (other agents,
-// IDE plugins) that reads CLAUDE.md sees the same instructions. The
-// adapter byte-restores any pre-existing operator CLAUDE.md on session
-// teardown.
+// IDE plugins) that reads CLAUDE.md sees the same instructions.
 //
-// When this flag is on AND WithMCPConfig was also set, the adapter
-// ALSO projects the MCP servers JSON into <workingDir>/.mcp.json
-// (Claude Code's project-scoped MCP convention), also with byte-restore.
-//
-// Risk caveat: CLAUDE.md and .mcp.json are single-file conventions. If
-// the orchestrator process crashes between write and cleanup, the
-// operator's prior content is destroyed. Pass false to disable for repos
-// where this trade-off is unacceptable.
+// When this flag is on AND WithMCPConfig was also set (and
+// MLP_ENABLE_UNSAFE_WORKSPACE_PROJECTIONS is set), the adapter ALSO
+// projects the MCP servers JSON into <workingDir>/.mcp.json (Claude Code's
+// project-scoped MCP convention), removed on cleanup.
 func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
-	}
-}
-
-// WithRestoreProjectFiles controls whether projected workspace artifacts
-// (CLAUDE.md, .mcp.json) preserve the operator's pre-existing content
-// across a session. OFF by default: each run writes a fresh artifact and
-// removes it on cleanup, never restoring whatever was there before — so
-// the workspace always reflects the latest orchestrator output. Pass true
-// to opt back into the legacy behavior where any pre-existing operator
-// file is byte-restored on session teardown.
-func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
 	}
 }
 

@@ -27,7 +27,7 @@ type ProviderRunner struct {
 func (r ProviderRunner) Run(ctx context.Context, job Job, progress func(ProgressUpdate)) (RunResult, error) {
 	provider := llmproviders.Provider(job.Provider)
 	contract, ok := llmproviders.GetCodingAgentProviderContract(provider, job.Model)
-	if !ok || contract.Deprecated {
+	if !ok {
 		return RunResult{}, fmt.Errorf("provider %q is not available for delegation", job.Provider)
 	}
 	logger := newWriterLogger(r.Logger)

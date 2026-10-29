@@ -1,4 +1,6 @@
-package codexcli
+// Package launchscrub builds the credential scrub shared by the coding-agent
+// tmux launchers (Claude Code, Codex CLI, Cursor CLI).
+package launchscrub
 
 import (
 	"strings"
@@ -7,7 +9,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// scopedLaunchScrub builds the dynamic credential scrub for a tmux launch.
+// Scoped builds the dynamic credential scrub for a tmux launch.
 //
 // The unset list computed from os.Environ() cannot be complete: the pane
 // inherits the long-lived tmux SERVER's environment, so a credential that
@@ -19,7 +21,7 @@ import (
 // the credentials this adapter derived itself (its provider key, the MCP
 // routes built from the caller's config). Scrubbing those would strip the
 // credentials the launch just assembled.
-func scopedLaunchScrub(adapterEnv, declaredEnv []string, opts *llmtypes.CallOptions) *shelllaunch.ScopeScrub {
+func Scoped(adapterEnv, declaredEnv []string, opts *llmtypes.CallOptions) *shelllaunch.ScopeScrub {
 	if !llmtypes.CodingAgentScopeDeclared(opts) {
 		return nil
 	}

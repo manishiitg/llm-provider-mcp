@@ -7,6 +7,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/launchscrub"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/tmuxexec"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/codingready"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
@@ -662,7 +663,7 @@ func (c *CodexCLIAdapter) acquireCodexInteractiveSession(ctx context.Context, ow
 	// structured path applies it, the other interactive adapters now do, and
 	// this launch did not.
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, opts)
-	scopedScrub := scopedLaunchScrub(nil, scopedEnv, opts)
+	scopedScrub := launchscrub.Scoped(nil, scopedEnv, opts)
 	if err := c.seedTmuxAccountLogin(opts, workingDir); err != nil {
 		c.logger.Errorf("codex interactive could not save the API key login owner=%s: %v", ownerSessionID, err)
 	}

@@ -47,12 +47,6 @@ type CodingAgentProviderContract struct {
 	// explicit update message instead of undefined adapter behavior.
 	MinCLIVersion string
 
-	// Deprecated marks coding-agent providers that remain runnable for old
-	// sessions/configs but should not be offered for new user setup.
-	Deprecated          bool
-	DeprecationReason   string
-	ReplacementProvider Provider
-
 	RequiresWorkingDir     bool
 	RequiresOwnerSessionID bool
 	UsesPersistentSession  bool

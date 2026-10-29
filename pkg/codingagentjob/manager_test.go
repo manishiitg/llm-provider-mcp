@@ -117,22 +117,6 @@ func TestManagerRejectsNestedDelegationAndOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestManagerProvidersExcludesDeprecatedContracts(t *testing.T) {
-	manager, err := NewManager(openTestStore(t), &fakeLauncher{pid: 1})
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
-	providers := manager.Providers()
-	if len(providers) == 0 {
-		t.Fatal("Providers() returned no providers")
-	}
-	for _, provider := range providers {
-		if provider.Deprecated {
-			t.Fatalf("Providers() included deprecated provider %s", provider.Provider)
-		}
-	}
-}
-
 func TestManagerGetReconcilesDeadWorker(t *testing.T) {
 	store := openTestStore(t)
 	now := time.Date(2026, 7, 10, 13, 0, 0, 0, time.UTC)

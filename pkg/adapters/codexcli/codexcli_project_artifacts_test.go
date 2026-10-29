@@ -88,50 +88,10 @@ func TestTomlQuoteKeyBareVsQuoted(t *testing.T) {
 	}
 }
 
-// TestWriteCodexProjectConfigTOMLRestoresOperatorContent guards the
-// promise that pre-existing operator-owned .codex/config.toml is
-// restored byte-for-byte at cleanup.
-func TestWriteCodexProjectConfigTOMLRestoresOperatorContent(t *testing.T) {
-	withoutPersonalCodexMCPServers(t)
-	tmp := t.TempDir()
-	codexDir := filepath.Join(tmp, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("seed .codex dir: %v", err)
-	}
-	operatorContent := []byte("# operator's hand-tuned codex config\n[profile.work]\nmodel = \"o4\"\n")
-	configPath := filepath.Join(codexDir, "config.toml")
-	if err := os.WriteFile(configPath, operatorContent, 0o600); err != nil {
-		t.Fatalf("seed pre-existing config.toml: %v", err)
-	}
-
-	mcpJSON := `{"api-bridge":{"command":"/usr/local/bin/mcpbridge"}}`
-	cleanup, err := writeCodexProjectConfigTOML(tmp, mcpJSON, true)
-	if err != nil {
-		t.Fatalf("writeCodexProjectConfigTOML: %v", err)
-	}
-
-	mid, _ := os.ReadFile(configPath)
-	if strings.Contains(string(mid), "profile.work") {
-		t.Error("mid-session, the operator's prior config.toml content should NOT be visible — our MCP config is installed")
-	}
-	if !strings.Contains(string(mid), "[mcp_servers.api-bridge]") {
-		t.Errorf("mid-session, the MCP server block must be present; got:\n%s", mid)
-	}
-
-	cleanup()
-	restored, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("after cleanup, config.toml should exist (restored): %v", err)
-	}
-	if string(restored) != string(operatorContent) {
-		t.Errorf("cleanup must restore pre-existing config.toml byte-for-byte\n  want: %q\n  got:  %q", operatorContent, restored)
-	}
-}
-
 func TestWriteCodexProjectConfigTOMLWithoutMCPUsesAgentWorksDefaults(t *testing.T) {
 	withoutPersonalCodexMCPServers(t)
 	tmp := t.TempDir()
-	cleanup, err := writeCodexProjectConfigTOML(tmp, "", false)
+	cleanup, err := writeCodexProjectConfigTOML(tmp, "")
 	if err != nil {
 		t.Fatalf("writeCodexProjectConfigTOML: %v", err)
 	}
@@ -193,7 +153,7 @@ func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
 	// denyBuiltins=true is now a no-op on codex; we keep passing it
 	// to lock in that the parameter remains accepted on the function
 	// signature for API symmetry with the other adapters.
-	cleanup, err := writeCodexProjectArtifacts(tmp, prompt, mcpJSON, true, false)
+	cleanup, err := writeCodexProjectArtifacts(tmp, prompt, mcpJSON, true)
 	if err != nil {
 		t.Fatalf("writeCodexProjectArtifacts: %v", err)
 	}
@@ -229,7 +189,7 @@ func TestWriteCodexProjectArtifactsComposesAGENTSAndConfigTOML(t *testing.T) {
 // TestWriteCodexProjectArtifactsEmptyWorkingDirNoOps guards the
 // orchestrator-cwd safety: empty workingDir must short-circuit.
 func TestWriteCodexProjectArtifactsEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeCodexProjectArtifacts("", "anything", `{"x":{"command":"y"}}`, true, false)
+	cleanup, err := writeCodexProjectArtifacts("", "anything", `{"x":{"command":"y"}}`, true)
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

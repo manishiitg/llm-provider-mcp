@@ -60,8 +60,6 @@ const (
 	EnvCodexCLITransport       = "CODEX_CLI_TRANSPORT"
 	CodexCLITransportAppServer = "app-server"
 	CodexCLITransportTmux      = "tmux"
-	// EnvClaudeCodeMode is kept as a compatibility alias for older deployments.
-	EnvClaudeCodeMode = "CLAUDE_CODE_MODE"
 
 	// EnvCursorCLITransport selects the Cursor transport: "sdk" (default, official Cursor SDK
 	// local runtime, which steers a running turn) or "acp".
@@ -72,14 +70,6 @@ const (
 
 	ClaudeCodeTransportTmux = "tmux"
 	ClaudeCodeTransportSDK  = "sdk"
-	// ClaudeCodeTransportExperimental is kept as a legacy alias.
-	// Deprecated: use ClaudeCodeTransportTmux.
-	ClaudeCodeTransportExperimental = "experimental"
-	// ClaudeCodeTransportPrint is retained only so callers get a clear
-	// unsupported-transport error instead of an unknown symbol during migration.
-	//
-	// Deprecated: select tmux or sdk.
-	ClaudeCodeTransportPrint = "print"
 )
 
 // SetCodingAgentTmuxSize records the operator's last-known terminal viewport

@@ -173,10 +173,7 @@ const (
 )
 
 // requiredTmuxCertificationIDs is the full promotion bar for an active tmux
-// coding-agent provider. Deprecated tmux providers keep legacy runtime wiring
-// for restored sessions, but they are not treated as new-provider promotion
-// targets; their certification requirements are derived from explicit
-// capability flags below instead.
+// coding-agent provider.
 var requiredTmuxCertificationIDs = []CodingAgentCertificationID{
 	CertFreshLaunch,
 	CertRuntimeContext,
@@ -1018,11 +1015,11 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 // provider's claimed capabilities.
 func RequiredCodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
 	seen := make(map[CodingAgentCertificationID]struct{}, len(requiredTmuxCertificationIDs))
-	if contract.Transport == CodingAgentTransportTmux && !contract.Deprecated {
+	if contract.Transport == CodingAgentTransportTmux {
 		for _, id := range requiredTmuxCertificationIDs {
 			seen[id] = struct{}{}
 		}
-	} else if contract.Transport != CodingAgentTransportTmux {
+	} else {
 		seen[CertFreshLaunch] = struct{}{}
 		seen[CertPromptPaste] = struct{}{}
 		seen[CertDoneDetection] = struct{}{}
@@ -1092,7 +1089,7 @@ func CodingAgentP0ReleaseMatrix() ([]CodingAgentP0ReleaseEntry, error) {
 			continue
 		}
 		seen[contract.Provider] = true
-		if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP) || contract.Deprecated {
+		if contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP {
 			continue
 		}
 		required := RequiredP0CodingAgentCertificationIDs(contract)
@@ -1157,7 +1154,7 @@ func CodingAgentCertificationPriorityForID(id CodingAgentCertificationID) Coding
 // provider self-description cannot weaken the platform's mcp_only release bar.
 // Muse's documented best-effort exception has its own required live P0 proof.
 func RequiredP0CodingAgentCertificationIDs(contract CodingAgentProviderContract) []CodingAgentCertificationID {
-	if (contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP) || contract.Deprecated {
+	if contract.Transport != CodingAgentTransportTmux && contract.Transport != CodingAgentTransportAppServer && contract.Transport != CodingAgentTransportRPC && contract.Transport != CodingAgentTransportACP {
 		return nil
 	}
 	ids := append([]CodingAgentCertificationID(nil), requiredP0CertificationIDs...)

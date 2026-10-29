@@ -171,37 +171,6 @@ func readMuseTranscriptUsage(logPath, runID string) (llmtypes.Usage, bool) {
 
 func museIntPtr(v int) *int { return &v }
 
-// museTurnCommits counts assistant_message_committed run events in a native
-// session log for legacy pane-wait diagnostics. A commit is not whole-run
-// completion; production uses the run terminal event. Unreadable logs count
-// zero, never an error.
-func museTurnCommits(logPath string) int {
-	raw, err := os.ReadFile(logPath)
-	if err != nil {
-		return 0
-	}
-	commits := 0
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			continue
-		}
-		payload, _ := rec["payload"].(map[string]any)
-		if payload == nil || museLogString(payload, "kind") != "run" {
-			continue
-		}
-		event, _ := payload["event"].(map[string]any)
-		if event != nil && museLogString(event, "kind") == "assistant_message_committed" {
-			commits++
-		}
-	}
-	return commits
-}
-
 // museAttachTurnCost maps sidecar usage onto GenerationInfo and attaches the
 // shadow USD estimate through the model rate card. Proven 2026-09-10 against
 // live goal_usage_attribution rows: input_tokens is the total prompt-side

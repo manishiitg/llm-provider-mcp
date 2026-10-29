@@ -29,7 +29,7 @@ func runCursorShellHook(t *testing.T, script, command string) string {
 
 func TestCursorShellRedirectHook(t *testing.T) {
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
-	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, cursorBridgeServerName(testBridgeMCP))
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, cursorBridgeServerName(testBridgeMCP))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestCursorShellRedirectHook(t *testing.T) {
 
 func TestCursorShellRedirectProbesAndHostPort(t *testing.T) {
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
-	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "api-bridge")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, "api-bridge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestCursorShellRedirectNeedsBridge(t *testing.T) {
 		t.Fatalf("no bridge expected, got %q", name)
 	}
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
-	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestCursorShellRedirectKeepsPersonsHooks(t *testing.T) {
 	if err := os.WriteFile(hooksPath, []byte(prior), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "api-bridge")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, "api-bridge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func runCursorToolHook(t *testing.T, script string, toolInput map[string]interfa
 
 func TestCursorPreToolRedirectHookURLs(t *testing.T) {
 	cursorDir := filepath.Join(t.TempDir(), ".cursor")
-	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, true, "api-bridge")
+	cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, true, "api-bridge")
 	if err != nil {
 		t.Fatal(err)
 	}

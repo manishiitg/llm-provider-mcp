@@ -37,26 +37,16 @@ const (
 	MetadataKeyPersistentInteractive = "codex_persistent_interactive"
 	// MetadataKeyStructuredTransport selects `codex exec --json` (per-turn,
 	// one-shot, no tmux dependency) instead of the tmux interactive transport.
-	// OFF by default — see docs/coding_sdk_tmux_contract.md: tmux is the normal
-	// product path. Pass WithCodexStructuredTransport(true) to opt in.
+	// OFF by default. Pass WithCodexStructuredTransport(true) to opt in.
 	MetadataKeyStructuredTransport = "codex_structured_transport"
 	// MetadataKeyWriteProjectInstructionFile is the OFF-by-default feature
 	// flag for ALSO writing the per-session system prompt to
 	// <workingDir>/AGENTS.md (Codex's project-instructions convention,
 	// https://github.com/openai/codex/blob/main/AGENTS.md). Default off;
 	// codex already injects the prompt via -c model_instructions_file.
-	// When enabled, the adapter byte-restores any pre-existing AGENTS.md
-	// on session teardown so operator-owned content is preserved across
-	// successful runs.
+	// The prompt is added as a marked per-session block, so operator-owned
+	// AGENTS.md content is never overwritten.
 	MetadataKeyWriteProjectInstructionFile = "codex_write_project_instruction_file"
-	// MetadataKeyRestoreProjectFiles is the OFF-by-default feature flag
-	// controlling whether projected workspace artifacts (AGENTS.md,
-	// .codex/config.toml) preserve an operator's pre-existing content
-	// across the session. Default off: every run writes a fresh artifact
-	// and deletes it on cleanup, never restoring whatever was there
-	// before. Pass WithRestoreProjectFiles(true) to opt back into the
-	// legacy byte-restore behavior.
-	MetadataKeyRestoreProjectFiles = "codex_restore_project_files"
 	// MetadataKeyProjectInstructionOnly is the OFF-by-default feature
 	// flag that carries the per-session system prompt SOLELY via the
 	// projected <workingDir>/AGENTS.md file and SKIPS the CLI-side
@@ -353,18 +343,6 @@ func WithWriteProjectInstructionFile(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
 		opts.Metadata.Custom[MetadataKeyWriteProjectInstructionFile] = enabled
-	}
-}
-
-// WithRestoreProjectFiles controls whether projected workspace artifacts
-// (AGENTS.md, .codex/config.toml) preserve the operator's pre-existing
-// content across a session. OFF by default: each run writes a fresh
-// artifact and removes it on cleanup, never restoring whatever was there
-// before. Pass true to opt back into the legacy byte-restore behavior.
-func WithRestoreProjectFiles(enabled bool) llmtypes.CallOption {
-	return func(opts *llmtypes.CallOptions) {
-		ensureMetadata(opts)
-		opts.Metadata.Custom[MetadataKeyRestoreProjectFiles] = enabled
 	}
 }
 

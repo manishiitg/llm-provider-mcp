@@ -22,7 +22,7 @@ func TestWriteCursorDenyBuiltinHooksLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	cursorDir := filepath.Join(tmp, ".cursor")
 
-	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, false)
+	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir)
 	if err != nil {
 		t.Fatalf("writeCursorDenyBuiltinHooks: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestWriteCursorDenyBuiltinHooksRestoresPreExistingHooksJSON(t *testing.T) {
 		t.Fatalf("seed pre-existing hooks.json: %v", err)
 	}
 
-	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir, true)
+	cleanup, err := writeCursorDenyBuiltinHooks(cursorDir)
 	if err != nil {
 		t.Fatalf("writeCursorDenyBuiltinHooks with pre-existing config: %v", err)
 	}

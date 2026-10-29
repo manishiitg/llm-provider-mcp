@@ -1147,7 +1147,7 @@ func TestMuseCLIRealLargePromptDraftDelivery(t *testing.T) {
 // isolation (draft typing alone, settle/gate detection via raw tmux) or goes
 // through the exec --json lane (WithMuseStructuredTransport). None combined
 // a live GenerateContent call with WithTmuxTransport(true) and let
-// museSendPrompt -> museWaitIntake -> museWaitTurnQuiescent run together as
+// museSendPrompt -> museWaitIntake -> museWaitTurnTerminal run together as
 // one real turn -- which is exactly what silently swallowed a short prompt's
 // keystrokes in production (a bare "hi", well under the atomic-paste
 // threshold, submitted an empty input box for the full 60s intake deadline;

@@ -8,7 +8,6 @@ import (
 
 func TestInitializeClaudeCodeDefaultUsesSDKTransport(t *testing.T) {
 	t.Setenv(EnvClaudeCodeTransport, "")
-	t.Setenv(EnvClaudeCodeMode, "")
 
 	llm, err := InitializeLLM(Config{
 		Provider: ProviderClaudeCode,
@@ -28,8 +27,7 @@ func TestInitializeClaudeCodeDefaultUsesSDKTransport(t *testing.T) {
 }
 
 func TestInitializeClaudeCodeRejectsPrintTransport(t *testing.T) {
-	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
-	t.Setenv(EnvClaudeCodeMode, "")
+	t.Setenv(EnvClaudeCodeTransport, "print")
 
 	_, err := InitializeLLM(Config{
 		Provider: ProviderClaudeCode,
@@ -41,8 +39,7 @@ func TestInitializeClaudeCodeRejectsPrintTransport(t *testing.T) {
 }
 
 func TestInitializeClaudeCodeConfigTransportOverridesEnv(t *testing.T) {
-	t.Setenv(EnvClaudeCodeTransport, ClaudeCodeTransportPrint)
-	t.Setenv(EnvClaudeCodeMode, "")
+	t.Setenv(EnvClaudeCodeTransport, "print")
 
 	llm, err := InitializeLLM(Config{
 		Provider:            ProviderClaudeCode,
@@ -70,12 +67,10 @@ func TestNormalizeClaudeCodeTransportAliases(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "default", raw: "", want: ClaudeCodeTransportSDK},
-		{name: "legacy experimental alias", raw: "experimental", want: ClaudeCodeTransportTmux},
+		{name: "removed experimental alias", raw: "experimental", wantErr: true},
 		{name: "tmux", raw: "tmux", want: ClaudeCodeTransportTmux},
 		{name: "sdk", raw: "sdk", want: ClaudeCodeTransportSDK},
 		{name: "print", raw: "print", wantErr: true},
-		{name: "p alias", raw: "-p", wantErr: true},
-		{name: "agent sdk alias", raw: "agent-sdk", wantErr: true},
 		{name: "invalid", raw: "json", wantErr: true},
 	}
 
@@ -116,7 +111,6 @@ func TestGetDefaultModelCursorCLIUsesSentinel(t *testing.T) {
 
 // PLAT-872-55: selecting a terminal is explicit; no default may start tmux.
 func TestNativeTransportDefaultsAndExplicitTerminals(t *testing.T) {
-	t.Setenv(EnvClaudeCodeMode, "")
 	for _, tc := range []struct {
 		provider Provider
 		env      string

@@ -17,11 +17,11 @@ func TestWriteCodexProjectAgentsFileKeepsUsersFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(own), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	first, err := writeCodexProjectAgentsFile(dir, "PROMPT", false)
+	first, err := writeCodexProjectAgentsFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := writeCodexProjectAgentsFile(dir, "PROMPT", false)
+	second, err := writeCodexProjectAgentsFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestWriteCodexProjectAgentsFileKeepsUsersFile(t *testing.T) {
 
 func TestWriteCodexProjectAgentsFileCreatedThenRemoved(t *testing.T) {
 	dir := t.TempDir()
-	cleanup, err := writeCodexProjectAgentsFile(dir, "PROMPT", false)
+	cleanup, err := writeCodexProjectAgentsFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestWriteCodexProjectAgentsFileCreatedThenRemoved(t *testing.T) {
 }
 
 func TestWriteCodexProjectAgentsFileEmptyWorkingDirNoOps(t *testing.T) {
-	cleanup, err := writeCodexProjectAgentsFile("", "anything", false)
+	cleanup, err := writeCodexProjectAgentsFile("", "anything")
 	if err != nil {
 		t.Errorf("empty workingDir should return nil error; got %v", err)
 	}

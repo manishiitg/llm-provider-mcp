@@ -240,7 +240,7 @@ func (m *Manager) Providers() []llmproviders.CodingAgentProviderContract {
 	result := make([]llmproviders.CodingAgentProviderContract, 0, len(contracts))
 	for _, contract := range contracts {
 		provider := normalizeProvider(string(contract.Provider))
-		if contract.Deprecated || !m.providerAllowed(provider) {
+		if !m.providerAllowed(provider) {
 			continue
 		}
 		result = append(result, contract)
@@ -309,12 +309,9 @@ func (m *Manager) validateStartRequest(request StartRequest) (StartRequest, erro
 	if len(request.Task) > MaxTaskBytes {
 		return StartRequest{}, fmt.Errorf("task exceeds maximum size of %d bytes", MaxTaskBytes)
 	}
-	contract, ok := llmproviders.GetCodingAgentProviderContract(llmproviders.Provider(request.Provider), request.Model)
+	_, ok := llmproviders.GetCodingAgentProviderContract(llmproviders.Provider(request.Provider), request.Model)
 	if !ok {
 		return StartRequest{}, fmt.Errorf("provider %q is not a supported coding-agent provider", request.Provider)
-	}
-	if contract.Deprecated {
-		return StartRequest{}, fmt.Errorf("provider %q is deprecated: %s", request.Provider, contract.DeprecationReason)
 	}
 	if !m.providerAllowed(request.Provider) {
 		return StartRequest{}, fmt.Errorf("provider %q is not allowed by this MCP server", request.Provider)

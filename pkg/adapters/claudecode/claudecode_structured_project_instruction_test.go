@@ -46,7 +46,7 @@ func TestStructuredProjectionWritesClaudeMdWhenEnabled(t *testing.T) {
 	if !writeProjectInstructionFromOptions(opts) {
 		t.Fatal("projection must default on when the flag is unset")
 	}
-	path, err := writeClaudeCodeProjectInstructionFile(dir, "video studio rules", restoreProjectFilesFromOptions(opts))
+	path, err := writeClaudeCodeProjectInstructionFile(dir, "video studio rules")
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestStructuredCleanupRestoresOperatorClaudeMd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	written, err := writeClaudeCodeProjectInstructionFile(dir, "session prompt", true)
+	written, err := writeClaudeCodeProjectInstructionFile(dir, "session prompt")
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}

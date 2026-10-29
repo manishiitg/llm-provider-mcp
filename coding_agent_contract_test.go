@@ -187,7 +187,7 @@ func TestCodingAgentMCPBridgeIsRequiredWhenUsed(t *testing.T) {
 		if contract.RequiresMCPBridgeConfig && !contract.UsesMCPBridge {
 			t.Errorf("%s requires bridge config but does not declare UsesMCPBridge", contract.Provider)
 		}
-		if !contract.Deprecated && contract.UsesMCPBridge && !contract.SupportsBridgeOnlyTools && !acceptsBestEffortToolRestrictions(contract) {
+		if contract.UsesMCPBridge && !contract.SupportsBridgeOnlyTools && !acceptsBestEffortToolRestrictions(contract) {
 			t.Errorf("%s is an active MCP-bridge provider but does not support the platform's default mcp_only containment mode", contract.Provider)
 		}
 	}
@@ -199,7 +199,7 @@ func TestToolRestrictionsRequireP0WithExplicitMuseException(t *testing.T) {
 	}
 
 	for _, contract := range CodingAgentProviderContracts() {
-		if contract.Deprecated || contract.Transport != CodingAgentTransportTmux {
+		if contract.Transport != CodingAgentTransportTmux {
 			continue
 		}
 		// Prove the requirement is platform-owned rather than capability-claim
@@ -229,7 +229,7 @@ func TestStopThenNewMessageIsP0ForEveryActiveTmuxProvider(t *testing.T) {
 		t.Fatalf("%s priority = %q, want P0", CertPersistentCancelReuse, priority)
 	}
 	for _, contract := range CodingAgentProviderContracts() {
-		if contract.Deprecated || contract.Transport != CodingAgentTransportTmux {
+		if contract.Transport != CodingAgentTransportTmux {
 			continue
 		}
 		found := false
@@ -302,7 +302,7 @@ func TestTokenUsageContractIsWellFormed(t *testing.T) {
 // invisible to install/upgrade lifecycle instead of loudly undeclared.
 func TestCodingAgentRuntimeInstallContractIsWellFormed(t *testing.T) {
 	for _, c := range CodingAgentProviderContracts() {
-		if c.Transport != CodingAgentTransportTmux || c.Deprecated {
+		if c.Transport != CodingAgentTransportTmux {
 			continue
 		}
 		if strings.TrimSpace(c.RuntimeBinary) == "" {
@@ -329,7 +329,7 @@ func TestCodingAgentRuntimeInstallContractIsWellFormed(t *testing.T) {
 // so renaming the binary fails here instead of probing a stale name live.
 func TestRuntimeAvailabilityLiveTestsProbeContractBinaries(t *testing.T) {
 	for _, c := range CodingAgentProviderContracts() {
-		if c.Transport != CodingAgentTransportTmux || c.Deprecated {
+		if c.Transport != CodingAgentTransportTmux {
 			continue
 		}
 		var testFile string
@@ -639,7 +639,7 @@ func TestCodingAgentCertificationReferencesExistingTests(t *testing.T) {
 
 func TestActiveCodingAgentProvidersSatisfyP0Contract(t *testing.T) {
 	for _, contract := range CodingAgentProviderContracts() {
-		if contract.Transport != CodingAgentTransportTmux || contract.Deprecated {
+		if contract.Transport != CodingAgentTransportTmux {
 			continue
 		}
 		if missing := MissingP0CodingAgentCertifications(contract); len(missing) > 0 {
@@ -685,7 +685,7 @@ func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
 		}
 		seen[contract.Provider] = true
 		def, ok := GetCodingAgentProviderContract(contract.Provider, "")
-		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer && def.Transport != CodingAgentTransportRPC && def.Transport != CodingAgentTransportACP) || def.Deprecated {
+		if !ok || (def.Transport != CodingAgentTransportTmux && def.Transport != CodingAgentTransportAppServer && def.Transport != CodingAgentTransportRPC && def.Transport != CodingAgentTransportACP) {
 			continue
 		}
 		if len(RequiredP0CodingAgentCertificationIDs(def)) == 0 {
@@ -747,7 +747,7 @@ func TestCodingAgentP0ReleaseMatrix(t *testing.T) {
 
 func TestPersistentProviderP0RequiresBothTransportMultiTurnProofs(t *testing.T) {
 	for _, contract := range CodingAgentProviderContracts() {
-		if contract.Deprecated || !contract.UsesPersistentSession || !contract.SupportsNativeResume {
+		if !contract.UsesPersistentSession || !contract.SupportsNativeResume {
 			continue
 		}
 		required := make(map[CodingAgentCertificationID]bool)
@@ -889,9 +889,6 @@ func TestBestEffortToolRestrictionsRequireExplicitMuseGaps(t *testing.T) {
 func TestPlanUsageContractIsWellFormed(t *testing.T) {
 	valid := map[string]bool{"app-server": true, "statusline-sidecar": true, "transcript-file": true}
 	for _, c := range CodingAgentProviderContracts() {
-		if c.Deprecated {
-			continue
-		}
 		if c.SurfacesPlanUsage {
 			if !valid[c.PlanUsageSource] {
 				t.Errorf("%s claims SurfacesPlanUsage but PlanUsageSource=%q is not one of statusline-sidecar|transcript-file", c.Provider, c.PlanUsageSource)

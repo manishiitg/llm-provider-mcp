@@ -13,6 +13,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/launchscrub"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/paneview"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionlease"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/sessionregistry"
@@ -583,7 +584,7 @@ func (c *CursorCLIAdapter) acquireCursorInteractiveSession(ctx context.Context, 
 	// the launch script as export/unset. Without this, an interactive session
 	// silently ran with whatever credentials were ambient on the backend.
 	scopedEnv, unsetEnv := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), env, opts)
-	scopedScrub := scopedLaunchScrub(env, scopedEnv, opts)
+	scopedScrub := launchscrub.Scoped(env, scopedEnv, opts)
 	env = append(env, scopedEnv...)
 	env = append(env, cursorAmbientAPIKeyEnv(env, os.Getenv("CURSOR_API_KEY"), opts)...)
 	if llmtypes.CLIHasPrivateRuntime(opts) {
@@ -735,8 +736,8 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	return args, env, workingDir, cleanupFiles, nil
 }
 
-func writeCursorDenyBuiltinHooks(cursorDir string, restorePrior bool, fullNativeMode ...bool) (func(), error) {
-	return writeCursorDenyBuiltinHooksWithBridge(cursorDir, restorePrior, len(fullNativeMode) > 0 && fullNativeMode[0], "")
+func writeCursorDenyBuiltinHooks(cursorDir string, fullNativeMode ...bool) (func(), error) {
+	return writeCursorDenyBuiltinHooksWithBridge(cursorDir, len(fullNativeMode) > 0 && fullNativeMode[0], "")
 }
 
 func releaseCursorInteractiveSession(session *cursorInteractiveSession, logger interfaces.Logger) {

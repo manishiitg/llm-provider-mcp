@@ -17,11 +17,11 @@ func TestProjectInstructionFileKeepsUsersFileAndSharesBlock(t *testing.T) {
 	if err := os.WriteFile(path, []byte(own), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT", false)
+	a, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT", false)
+	b, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestProjectInstructionFileKeepsUsersFileAndSharesBlock(t *testing.T) {
 
 func TestProjectInstructionFileCreatedThenRemoved(t *testing.T) {
 	dir := t.TempDir()
-	token, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT", false)
+	token, err := writeClaudeCodeProjectInstructionFile(dir, "PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestProjectInstructionFileCreatedThenRemoved(t *testing.T) {
 }
 
 func TestWriteClaudeCodeProjectInstructionFileEmptyWorkingDirNoOps(t *testing.T) {
-	path, err := writeClaudeCodeProjectInstructionFile("", "anything", false)
+	path, err := writeClaudeCodeProjectInstructionFile("", "anything")
 	if err != nil || path != "" {
 		t.Errorf("empty workingDir should no-op; got %q, %v", path, err)
 	}

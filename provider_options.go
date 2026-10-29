@@ -188,8 +188,7 @@ func WithCodexApprovalPolicy(policy string) llmtypes.CallOption {
 
 // WithCodexStructuredTransport selects `codex exec --json` (per-turn, one-shot,
 // no tmux dependency) instead of the tmux interactive transport. OFF by
-// default — see docs/coding_sdk_tmux_contract.md: tmux is the normal product
-// path; structured is for callers with no live-steering/terminal-view need
+// default; structured is for callers with no live-steering/terminal-view need
 // (e.g. unattended workflow steps).
 func WithCodexStructuredTransport(enabled bool) llmtypes.CallOption {
 	return codexcli.WithCodexStructuredTransport(enabled)
@@ -448,7 +447,7 @@ func WithMuseToolAllowlist(toolNames []string) llmtypes.CallOption {
 
 // WithMuseStructuredTransport selects the exec --json lane (per-turn
 // one-shot process) instead of the default tmux interactive lane. OFF by
-// default — see WithCodexStructuredTransport doc comment for the rationale.
+// default.
 func WithMuseStructuredTransport(enabled bool) llmtypes.CallOption {
 	return musecli.WithMuseStructuredTransport(enabled)
 }

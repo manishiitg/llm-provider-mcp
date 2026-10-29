@@ -1307,22 +1307,22 @@ func TestResumeCompressionPromptIgnoresScrollbackKeywords(t *testing.T) {
 }
 
 func TestTmuxTimeoutEnv(t *testing.T) {
-	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "")
+	t.Setenv(EnvClaudeTmuxTimeoutSeconds, "")
 	if got := tmuxTimeout(); got != 0 {
 		t.Fatalf("tmuxTimeout default = %v, want 0", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "0")
+	t.Setenv(EnvClaudeTmuxTimeoutSeconds, "0")
 	if got := tmuxTimeout(); got != 0 {
 		t.Fatalf("tmuxTimeout zero env = %v, want 0", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "2")
+	t.Setenv(EnvClaudeTmuxTimeoutSeconds, "2")
 	if got := tmuxTimeout(); got != 2*time.Second {
 		t.Fatalf("tmuxTimeout = %v, want 2s", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalTimeoutSeconds, "bad")
+	t.Setenv(EnvClaudeTmuxTimeoutSeconds, "bad")
 	if got := tmuxTimeout(); got != defaultTmuxTimeout {
 		t.Fatalf("tmuxTimeout invalid env = %v, want default %v", got, defaultTmuxTimeout)
 	}
@@ -1330,28 +1330,28 @@ func TestTmuxTimeoutEnv(t *testing.T) {
 
 func TestTmuxPromptWaitEnv(t *testing.T) {
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "")
-	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "")
+	t.Setenv(EnvClaudeTmuxPromptWaitSeconds, "")
 	if got := promptReadyTimeout(); got != 300*time.Second {
 		t.Fatalf("promptReadyTimeout default = %v, want 300s", got)
 	}
 
 	t.Setenv(tmuxlaunch.EnvPromptWaitSeconds, "3")
-	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "")
+	t.Setenv(EnvClaudeTmuxPromptWaitSeconds, "")
 	if got := promptReadyTimeout(); got != 3*time.Second {
 		t.Fatalf("promptReadyTimeout global env = %v, want 3s", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "2")
+	t.Setenv(EnvClaudeTmuxPromptWaitSeconds, "2")
 	if got := promptReadyTimeout(); got != 2*time.Second {
 		t.Fatalf("promptReadyTimeout provider env = %v, want 2s", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "0")
+	t.Setenv(EnvClaudeTmuxPromptWaitSeconds, "0")
 	if got := promptReadyTimeout(); got != 3*time.Second {
 		t.Fatalf("promptReadyTimeout zero provider env = %v, want global 3s", got)
 	}
 
-	t.Setenv(EnvClaudeExperimentalPromptWaitSeconds, "bad")
+	t.Setenv(EnvClaudeTmuxPromptWaitSeconds, "bad")
 	if got := promptReadyTimeout(); got != 3*time.Second {
 		t.Fatalf("promptReadyTimeout invalid provider env = %v, want global 3s", got)
 	}

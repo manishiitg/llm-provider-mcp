@@ -242,7 +242,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			config["permissions"] = permissions
 			encoded, _ := json.Marshal(config)
 			configJSON = string(encoded)
-			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(configJSON), cursorRestoreProjectFilesFromOptions(opts))
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(configJSON))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -267,7 +267,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				cleanupAll()
 				return nil, err
 			}
-			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(normalizedMCPJSON), cursorRestoreProjectFilesFromOptions(opts))
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "mcp.json"), []byte(normalizedMCPJSON))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -280,7 +280,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 					return nil, err
 				}
 				if ok {
-					cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(allowlistJSON), cursorRestoreProjectFilesFromOptions(opts))
+					cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(allowlistJSON))
 					if err != nil {
 						cleanupAll()
 						return nil, err
@@ -297,7 +297,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 				cleanupAll()
 				return nil, err
 			}
-			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(nativeJSON), cursorRestoreProjectFilesFromOptions(opts))
+			cleanup, err := writeCursorRestoredFile(filepath.Join(cursorDir, "cli.json"), []byte(nativeJSON))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -305,7 +305,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 			addCleanup(cleanup)
 		}
 		if denyBuiltin {
-			cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, cursorRestoreProjectFilesFromOptions(opts), fullNative, cursorBridgeServerNameFromOptions(opts))
+			cleanup, err := writeCursorDenyBuiltinHooksWithBridge(cursorDir, fullNative, cursorBridgeServerNameFromOptions(opts))
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -563,7 +563,7 @@ func cursorPreToolRedirectEntry(fullNative bool, bridgeName string) string {
 	return `, {"command": "./.cursor/hooks/mlp-allow-shell.sh", "matcher": "Shell|WebFetch|WebSearch", "failClosed": true}`
 }
 
-func writeCursorDenyBuiltinHooksWithBridge(cursorDir string, restorePrior, fullNative bool, bridgeName string) (func(), error) {
+func writeCursorDenyBuiltinHooksWithBridge(cursorDir string, fullNative bool, bridgeName string) (func(), error) {
 	hooksDir := filepath.Join(cursorDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cursor hooks dir: %w", err)
@@ -633,10 +633,8 @@ exit 0
 		_ = os.Remove(hooksDir)
 		return nil, fmt.Errorf("failed to write cursor hooks.json: %w", err)
 	}
-	// Counted and always restoring (restorePrior is obsolete): a project's own
-	// hooks.json is put back by the last session, and overlapping sessions keep
-	// each other's hooks.
-	_ = restorePrior
+	// Counted and always restoring: a project's own hooks.json is put back by
+	// the last session, and overlapping sessions keep each other's hooks.
 	return func() {
 		projectfile.ReleaseToken(hooksToken)
 		projectfile.ReleaseToken(scriptToken)
@@ -651,10 +649,10 @@ exit 0
 	}, nil
 }
 
-func writeCursorRestoredFile(path string, content []byte, _ bool) (func(), error) {
+func writeCursorRestoredFile(path string, content []byte) (func(), error) {
 	// Counted and always restoring: a project's own .cursor/mcp.json, cli.json or
 	// hooks.json is put back when the last session using it ends, and overlapping
-	// sessions never delete each other's file. (restorePrior is obsolete.)
+	// sessions never delete each other's file.
 	token, err := projectfile.AcquireOwnedLease(path, content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write Cursor config %s: %w", path, err)

@@ -65,7 +65,7 @@ func TestCodexCLIStructuredTwoTurnResume(t *testing.T) {
 // TestCodexCLIStructuredBasicRun proves the revived structured transport
 // (codex exec --json) actually launches the real CLI and returns a real
 // answer, opted into via WithCodexStructuredTransport(true) — structured is
-// NOT the default (tmux is, per docs/coding_sdk_tmux_contract.md).
+// NOT the default.
 func TestCodexCLIStructuredBasicRun(t *testing.T) {
 	requireCodexCLIStructuredE2E(t)
 

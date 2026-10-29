@@ -171,7 +171,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	if writeProjectInstructionFromOptions(opts) && strings.TrimSpace(workingDir) != "" && strings.TrimSpace(systemPrompt) != "" {
 		// MCP lives in the unique CODEX_HOME profile above. Keeping it out of
 		// the project file avoids shared-workspace races and secret persistence.
-		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, "", true, restoreProjectFilesFromOptions(opts)); perr != nil {
+		if cleanup, perr := writeCodexProjectArtifacts(workingDir, systemPrompt, "", true); perr != nil {
 			c.logger.Errorf("codex cli: project artifacts write failed (best-effort): %v", perr)
 		} else if cleanup != nil {
 			projectCleanup = cleanup
@@ -435,19 +435,6 @@ func writeProjectInstructionFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-// restoreProjectFilesFromOptions reads the OFF-by-default feature flag for
-// preserving operator-owned project artifacts across a session. Returns
-// false when the key is unset: the default writes fresh and deletes on
-// cleanup, never restoring pre-existing content. Callers opt into the
-// legacy byte-restore behavior with WithRestoreProjectFiles(true).
-func restoreProjectFilesFromOptions(opts *llmtypes.CallOptions) bool {
-	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
-		return false
-	}
-	enabled, _ := opts.Metadata.Custom[MetadataKeyRestoreProjectFiles].(bool)
-	return enabled
-}
-
 // projectInstructionOnlyFromOptions reads the OFF-by-default feature flag for
 // carrying the system prompt only via the projected AGENTS.md file (skipping
 // the CLI-side -c developer_instructions / -c model_instructions_file
@@ -461,26 +448,17 @@ func projectInstructionOnlyFromOptions(opts *llmtypes.CallOptions) bool {
 	return enabled
 }
 
-// writeCodexProjectAgentsFile writes the per-session system prompt to
-// <workingDir>/AGENTS.md (codex's project-instructions convention). If
-// a pre-existing AGENTS.md is present, its bytes are captured and the
-// returned cleanup restores them on session teardown.
-//
-// Unlike claude code's .claude/rules/ subdirectory which lets us drop
-// a unique session file alongside operator-owned content, AGENTS.md
-// is a single conventional path. The byte-restore lifecycle keeps
-// operator content safe across successful runs; a process crash
-// between write and cleanup destroys the prior content (documented
-// risk for the opt-in flag).
-func writeCodexProjectAgentsFile(workingDir, systemPrompt string, restorePrior bool) (func(), error) {
+// writeCodexProjectAgentsFile adds the per-session system prompt to
+// <workingDir>/AGENTS.md (codex's project-instructions convention) as a
+// marked block; the returned cleanup releases it.
+func writeCodexProjectAgentsFile(workingDir, systemPrompt string) (func(), error) {
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return func() {}, nil
 	}
 	// The prompt is added to AGENTS.md as a marked block, counted per
 	// session: a project's own AGENTS.md and other sessions sharing the folder
-	// are never overwritten or deleted. restorePrior is obsolete.
-	_ = restorePrior
+	// are never overwritten or deleted.
 	token, err := projectfile.AcquireLease(filepath.Join(workingDir, "AGENTS.md"), systemPrompt)
 	if err != nil {
 		return nil, err

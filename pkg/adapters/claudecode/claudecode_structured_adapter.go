@@ -213,8 +213,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var tempFiles []string
 	defer func() {
 		// removeFiles, not a bare os.Remove loop: writeClaudeCodeProjectInstructionFile
-		// may register an operator's prior CLAUDE.md bytes for byte-restore, and
-		// deleting the path instead of restoring it would destroy their content.
+		// returns an AGENTS.md lease token that must be released, not deleted.
 		removeFiles(tempFiles)
 	}()
 	// Files the launched process reads for its whole life (MCP config, settings).
@@ -276,7 +275,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// Structured turns are one-shot, so the file is written per turn and cleaned
 	// up by the deferred removeFiles above.
 	if writeProjectInstructionFromOptions(opts) && workingDir != "" && strings.TrimSpace(systemPrompt) != "" {
-		if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt, restoreProjectFilesFromOptions(opts)); err != nil {
+		if rulePath, err := writeClaudeCodeProjectInstructionFile(workingDir, systemPrompt); err != nil {
 			// Best-effort: --append-system-prompt already carries the prompt, so a
 			// projection failure must never fail the turn.
 			_ = err
