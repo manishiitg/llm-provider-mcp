@@ -35,6 +35,23 @@ type claudeSDKProcess struct {
 	done       chan struct{}
 	// interrupted is set when the person stopped the turn (Stop or Escape); the SDK then ends it with an error result.
 	interrupted atomic.Bool
+	// answered is set once the turn has an answer; release then ends the turn with it.
+	answered    atomic.Bool
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+// ReleaseAnsweredSDKTurn ends a chat's running Claude SDK turn with the answer
+// it already gave, when it has one (a turn held open after its answer by a
+// steer or moved-aside work). The server's idle limit calls it before
+// cancelling, so an answered turn completes instead of failing (PLAT-872).
+func ReleaseAnsweredSDKTurn(owner string) bool {
+	process, ok := claudeSDKProcesses.Get(strings.TrimSpace(owner))
+	if !ok || process.release == nil || !process.answered.Load() {
+		return false
+	}
+	process.releaseOnce.Do(func() { close(process.release) })
+	return true
 }
 
 var claudeSDKProcesses = sessionregistry.NewOwnerRegistry[*claudeSDKProcess]()

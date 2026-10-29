@@ -415,6 +415,24 @@ func (s *claudeSDKSession) shutdown() {
 	}()
 }
 
+// endReleased ends a session whose turn was released at its answer: input
+// ends, remaining output is discarded, and the process is ended if it does not
+// exit within a short grace.
+func (s *claudeSDKSession) endReleased() {
+	go func() {
+		for range s.reader.lines {
+		}
+	}()
+	go func() {
+		select {
+		case <-s.exited:
+		case <-time.After(claudeSDKCloseGrace):
+			s.logf("[SDK_BACKGROUND] session=%s did not exit after its turn was released; ending the process", s.owner)
+			s.kill()
+		}
+	}()
+}
+
 // takeKeptClaudeSDKSession hands a chat's kept session to its next turn when
 // the launch is unchanged and the turn continues the same conversation.
 // Otherwise the kept session is closed and the caller starts a new one.

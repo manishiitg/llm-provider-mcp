@@ -125,6 +125,12 @@ async function main() {
           cancelPermissions();
           run.interrupt().then(() => { unsettled.clear(); background.clear(); movedAside.clear(); finishInput(); emit({ type: 'sdk_control_result', id: request.id }); }, () => emit({ type: 'sdk_control_result', id: request.id, is_error: true }));
         }
+        else if (request.type === 'release') {
+          // The host ended a turn held open after its answer. What still runs is no longer part of a turn; the
+          // session stays only for Claude's own background tasks (keep), otherwise input ends.
+          turnActive = false; strayCheck = false; promptConsumed = true;
+          if (request.keep && ownRunning().length > 0) parked = true; else finishInput();
+        }
         else if (request.type === 'stop_background') {
           // Stop Claude's own background tasks; between turns this also closes the session.
           Promise.allSettled(ownRunning().map(id => run ? run.stopTask(id) : undefined)).then(() => {

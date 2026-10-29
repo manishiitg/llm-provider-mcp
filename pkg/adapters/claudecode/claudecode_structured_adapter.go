@@ -411,7 +411,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		turnDone := make(chan struct{})
 		defer close(turnDone)
 		session := sess
-		sdkProcess = &claudeSDKProcess{session: sess, cancel: sess.kill, done: turnDone}
+		sdkProcess = &claudeSDKProcess{session: sess, cancel: sess.kill, done: turnDone, release: make(chan struct{})}
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -470,8 +470,20 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var scanErr error
 	var text claudeStructuredText
 	var resultText string
+	// answerText is the answer of the last successful result of this turn. A
+	// turn held open after its answer (a steer, moved-aside work) and then
+	// cancelled or interrupted (Stop, the server's idle limit) still ends with
+	// that answer, never as a provider failure (PLAT-872).
+	var answerText string
 	var previousResultContinues bool
 	parkedTurn := false
+	// released: the server ended a turn held open after its answer (its idle
+	// limit); the turn returns that answer instead of failing.
+	released := false
+	var releaseCh <-chan struct{}
+	if sdkProcess != nil {
+		releaseCh = sdkProcess.release
+	}
 	sawNativeSubagent := false
 	// totalUsage is fed ONLY from the terminal result event's usage, which
 	// Anthropic documents as the per-run cumulative total — NOT summed with
@@ -514,7 +526,18 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	go func() {
 		defer close(scannerDone)
-		for raw := range lines {
+		for {
+			var raw string
+			select {
+			case next, ok := <-lines:
+				if !ok {
+					return
+				}
+				raw = next
+			case <-releaseCh:
+				released = true
+				return
+			}
 			line := strings.TrimSpace(raw)
 			if line == "" || line[0] != '{' {
 				continue
@@ -666,6 +689,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
+				if !ev.IsError && strings.TrimSpace(resultText) != "" {
+					answerText = resultText
+					if sdkProcess != nil {
+						sdkProcess.answered.Store(true)
+					}
+				}
 				previousResultContinues = ev.SDKContinues
 				if ev.Usage != nil {
 					accumulateClaudeUsage(&totalUsage, ev.Usage)
@@ -694,7 +723,19 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	<-scannerDone
 	var waitErr error
-	if parkedTurn {
+	if released {
+		// Keep the session only for Claude's own background tasks; the work that
+		// held the turn finishes or ends with the session, never in this chat turn.
+		keep := keepAllowed && sess.taskCount() > 0
+		c.logger.Infof("[CLAUDE_SDK] turn ended at its answer after the server's idle limit session=%s keep=%t", sessionID, keep)
+		_ = sess.input.write(map[string]any{"type": "release", "keep": keep})
+		if keep {
+			sess.park()
+		} else {
+			sess.endReleased()
+		}
+		resultText, resultIsError = answerText, false
+	} else if parkedTurn {
 		sess.park()
 	} else {
 		if sess != nil {
@@ -707,11 +748,21 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		<-reader.done
 		scanErr = reader.err
 	}
+	answeredBeforeStop := sdkProcess != nil && strings.TrimSpace(answerText) != "" &&
+		(ctx.Err() != nil || (resultIsError && sdkProcess.interrupted.Load()))
+	if answeredBeforeStop {
+		c.logger.Infof("[CLAUDE_SDK] turn ended after its answer was given (cancelled=%t interrupted=%t); reporting the answer session=%s", ctx.Err() != nil, sdkProcess.interrupted.Load(), sessionID)
+		resultIsError = false
+		resultText = answerText
+		scanErr = nil
+	}
 	if ctx.Err() != nil {
 		if parkedTurn {
 			sess.closeIfParked("stopped", "stopped", "turn_cancelled")
 		}
-		return nil, ctx.Err()
+		if !answeredBeforeStop {
+			return nil, ctx.Err()
+		}
 	}
 	if scanErr != nil {
 		return nil, fmt.Errorf("Claude stream: %w", scanErr)
