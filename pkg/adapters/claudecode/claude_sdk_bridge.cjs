@@ -64,7 +64,9 @@ async function main() {
   }
   let run, wake, ended = false;
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
-  const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map(), movedAside = new Set();
+  // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
+  // were never moved aside, so they never hold the turn, even when they start while a steer waits.
+  const input = [], permissions = new Map(), steering = new Map(), unsettled = new Set(), background = new Map(), movedAside = new Set(), ownBackground = new Set();
   const lines = createInterface({ input: process.stdin });
   const finishInput = () => { ended = true; wake?.(); };
   const cancelPermissions = () => { for (const resolve of permissions.values()) resolve(deny()); permissions.clear(); };
@@ -120,10 +122,15 @@ async function main() {
       // Keep work moved aside by steering alive until its native completion.
       // An empty roster can precede task_notification, so only that terminal
       // notification retires a known task. Ambient watchers do not hold a turn.
+      if (event.type === 'assistant') {
+        for (const block of event.message?.content || []) {
+          if (block?.type === 'tool_use' && block.input?.run_in_background === true) ownBackground.add(block.id);
+        }
+      }
       if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
         for (const task of event.tasks || []) {
           if (task.ambient) continue;
-          if (!background.has(task.task_id) && unsettled.size > 0) movedAside.add(task.task_id);
+          if (!background.has(task.task_id) && unsettled.size > 0 && !ownBackground.has(task.tool_use_id)) movedAside.add(task.task_id);
           background.set(task.task_id, task.run_id);
         }
       }
