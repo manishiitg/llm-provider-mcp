@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -275,6 +276,20 @@ func museWaitWidget(ctx context.Context, session string, ready func(museWidget) 
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	// Structure only: never the question or option text.
+	pane, _ := museTmuxCapturePane(ctx, session)
+	start := museQuestionWidgetStart(pane)
+	w, ok := museReadWidget(pane)
+	cursors := 0
+	if start >= 0 {
+		for _, line := range strings.Split(pane[start:], "\n") {
+			if m := museQuestionOptionRE.FindStringSubmatch(line); m != nil && m[1] != "" {
+				cursors++
+			}
+		}
+	}
+	log.Printf("[MUSE_QUESTION] session=%s widget unreadable: pending=%v start=%d rows=%d cursors=%d review=%v question_on_screen=%v pane_lines=%d",
+		session, musePendingUserInputError(pane) != nil, start, len(w.rows), cursors, w.review, ok, strings.Count(pane, "\n")+1)
 	return museWidget{}, fmt.Errorf("Muse question widget changed")
 }
 

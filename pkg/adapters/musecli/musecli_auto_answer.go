@@ -52,7 +52,7 @@ type museRecommendedAnswer struct {
 	current, target int
 }
 
-var museQuestionOptionRE = regexp.MustCompile(`^\s*([›❯>]?)\s*(\d+)\.\s+(.+)$`)
+var museQuestionOptionRE = regexp.MustCompile(`^\s*([›❯>⟩]?)\s*(\d+)\.\s+(.+)$`)
 var museQuestionRunningRE = regexp.MustCompile(`(?i)\s*[—·]\s*running\s*\([^)]*\)`)
 
 // Parse only the active native widget, never recommendation text in history.
@@ -223,11 +223,11 @@ func museRecommendedReview(widget string) (museRecommendedAnswer, bool) {
 		if strings.HasPrefix(line, "─") {
 			break
 		}
-		cursor := strings.HasPrefix(line, ">") || strings.HasPrefix(line, "›") || strings.HasPrefix(line, "❯")
+		cursor := strings.HasPrefix(line, ">") || strings.HasPrefix(line, "›") || strings.HasPrefix(line, "❯") || strings.HasPrefix(line, "⟩")
 		if cursor {
 			result.current = rows
 			cursors++
-			line = strings.TrimSpace(strings.TrimLeft(line, ">›❯"))
+			line = strings.TrimSpace(strings.TrimLeft(line, ">›❯⟩"))
 		}
 		switch line {
 		case "Submit answers":

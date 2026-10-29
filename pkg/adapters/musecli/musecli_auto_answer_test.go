@@ -94,6 +94,18 @@ func TestMuseFirstOptionBotChannel(t *testing.T) {
 	}
 }
 
+// PLAT-872-70: Muse 1.4.x marks the selected row with U+27E9, which must read
+// as the cursor in both the live widget and the recommended-option parser.
+func TestMuseQuestionAngleBracketCursor(t *testing.T) {
+	pane := "◈ Request user input Color — running (3s)\n\n  Which color do you prefer?\n\n  \u27e9 1. Red                 A bold choice.\n    2. Blue (Recommended)  A balanced choice.\n    3. Green               A fresh choice.\n    4. None of the above   Add details in notes.\n\n  Enter to select · ↑/↓ to move · Esc to interrupt\n"
+	if w, ok := museReadWidget(pane); !ok || w.cursor != 0 || len(w.rows) != 4 {
+		t.Fatalf("1.4.x widget not read: %+v %v", w, ok)
+	}
+	if answer, ok := museRecommendedQuestion(pane); !ok || answer.current != 0 || answer.target != 0 {
+		t.Fatalf("1.4.x recommended parse failed: %+v %v", answer, ok)
+	}
+}
+
 func TestMuseFirstOptionLivePaneShape(t *testing.T) {
 	pane := "Agent pid 3118\nIdentity added: /Users/test/.ssh/id_ed25519\n\n  Muse Code 1.3.0\n\n❯ Integration test of your native request_user_input widget. Ask all THREE questions in a SINGLE request_user_input call.\n\n◈ Request user input Color, Drink, Layout — running (14s)\n\n  Which color do you prefer?\n\n  › 1. Red                 A bold and warm choice.\n    2. Blue (Recommended)  A balanced and popular choice.\n    3. Green               A fresh and natural choice.\n    4. None of the above   Optionally, add details in notes (tab).\n\n  1 of 3\n  Enter to select · ↑/↓ to move · ←/→ to switch question · Tab for an optional note · Esc to interrupt\n\n────────────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────────────\n  muse-spark-1.3-contributor · max · /tmp/work · Auto-review"
 	answer, ok := museRecommendedQuestion(pane)
