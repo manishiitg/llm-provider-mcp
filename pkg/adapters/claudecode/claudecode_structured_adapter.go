@@ -411,7 +411,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		turnDone := make(chan struct{})
 		defer close(turnDone)
 		session := sess
-		sdkProcess = &claudeSDKProcess{session: sess, cancel: sess.kill, done: turnDone, release: make(chan struct{})}
+		sdkProcess = &claudeSDKProcess{session: sess, cancel: sess.kill, done: turnDone, release: make(chan struct{}), answering: prompt}
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -689,10 +689,14 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
+				if sdkProcess != nil && !ev.IsError {
+					// This result's own answer (not the joined turn text), for the chat history.
+					sdkProcess.answered(owner, claudeContinuedResultText("", ev, false))
+				}
 				if !ev.IsError && strings.TrimSpace(resultText) != "" {
 					answerText = resultText
 					if sdkProcess != nil {
-						sdkProcess.answered.Store(true)
+						sdkProcess.hasAnswer.Store(true)
 					}
 				}
 				previousResultContinues = ev.SDKContinues

@@ -36,9 +36,48 @@ type claudeSDKProcess struct {
 	// interrupted is set when the person stopped the turn (Stop or Escape); the SDK then ends it with an error result.
 	interrupted atomic.Bool
 	// answered is set once the turn has an answer; release then ends the turn with it.
-	answered    atomic.Bool
+	hasAnswer   atomic.Bool
 	release     chan struct{}
 	releaseOnce sync.Once
+	// answering is the person's message the next answer replies to: the turn's
+	// prompt, then each steer once Claude took it (guarded by controlsMu).
+	answering string
+	steers    map[string]string
+}
+
+// SDKAnswer is one answer Claude finished inside a chat turn: the turn's own
+// answer, or the answer to a steer sent while the turn ran (PLAT-872). The host
+// records each in the chat history at that point, so an answer is kept even when
+// the turn that contained it is later released or cancelled.
+type SDKAnswer struct {
+	Owner string
+	// Text is Claude's answer, verbatim. Answers is the person's message it replies to.
+	Text    string
+	Answers string
+	At      time.Time
+}
+
+var claudeSDKAnswerListener atomic.Pointer[func(SDKAnswer)]
+
+// SetSDKAnswerListener receives each answer Claude finishes inside a chat turn.
+func SetSDKAnswerListener(listener func(SDKAnswer)) {
+	if listener == nil {
+		claudeSDKAnswerListener.Store(nil)
+		return
+	}
+	claudeSDKAnswerListener.Store(&listener)
+}
+
+func (p *claudeSDKProcess) answered(owner, text string) {
+	if owner == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	p.controlsMu.Lock()
+	answers := p.answering
+	p.controlsMu.Unlock()
+	if listener := claudeSDKAnswerListener.Load(); listener != nil {
+		(*listener)(SDKAnswer{Owner: owner, Text: text, Answers: answers, At: time.Now()})
+	}
 }
 
 // ReleaseAnsweredSDKTurn ends a chat's running Claude SDK turn with the answer
@@ -47,7 +86,7 @@ type claudeSDKProcess struct {
 // cancelling, so an answered turn completes instead of failing (PLAT-872).
 func ReleaseAnsweredSDKTurn(owner string) bool {
 	process, ok := claudeSDKProcesses.Get(strings.TrimSpace(owner))
-	if !ok || process.release == nil || !process.answered.Load() {
+	if !ok || process.release == nil || !process.hasAnswer.Load() {
 		return false
 	}
 	process.releaseOnce.Do(func() { close(process.release) })
@@ -194,6 +233,12 @@ func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) er
 		p.controls = map[string]chan error{}
 	}
 	p.controls[id] = reply
+	if kind == "steer" {
+		if p.steers == nil {
+			p.steers = map[string]string{}
+		}
+		p.steers[id] = message
+	}
 	p.controlsMu.Unlock()
 	defer func() { p.controlsMu.Lock(); delete(p.controls, id); p.controlsMu.Unlock() }()
 	if err := p.write(map[string]any{"type": kind, "id": id, "text": message}); err != nil {
@@ -211,6 +256,12 @@ func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) er
 func (p *claudeSDKProcess) acknowledgeControl(id string, failed, notSent bool) {
 	p.controlsMu.Lock()
 	reply := p.controls[id]
+	if text, ok := p.steers[id]; ok {
+		delete(p.steers, id)
+		if !failed && !notSent {
+			p.answering = text // Claude took the steer; its next answer replies to it
+		}
+	}
 	p.controlsMu.Unlock()
 	if reply != nil {
 		var err error
