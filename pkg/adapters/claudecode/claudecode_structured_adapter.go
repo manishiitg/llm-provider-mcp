@@ -254,7 +254,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			return nil, fmt.Errorf("claude structured shell redirect: %w", hookErr)
 		}
 	}
-	settingsPath, err := writeClaudeSkillScopedSettings(settingsMap)
+	settingsPath, err := writeClaudeSkillScopedSettings(opts, settingsMap)
 	if err != nil {
 		return nil, fmt.Errorf("claude structured settings: %w", err)
 	}

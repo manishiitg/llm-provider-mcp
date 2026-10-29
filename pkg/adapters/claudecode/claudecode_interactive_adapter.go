@@ -300,14 +300,34 @@ func claudeAddSkillScopeSettings(settings map[string]any) {
 }
 
 // writeClaudeSkillScopedSettings adds the skill scope to the launch settings
-// and writes them to a per-launch file for --settings.
-func writeClaudeSkillScopedSettings(settings map[string]any) (string, error) {
+// and writes them to a per-launch --settings file, mode 0600, in the session's
+// private runtime dir (the system temp dir when the caller gave none). The
+// caller removes it with the launch's other files when the CLI exits.
+func writeClaudeSkillScopedSettings(opts *llmtypes.CallOptions, settings map[string]any) (string, error) {
 	claudeAddSkillScopeSettings(settings)
 	raw, err := json.Marshal(settings)
 	if err != nil {
 		return "", err
 	}
-	return writeTempJSONConfig("claude-code-settings-*.json", string(raw))
+	dir := ""
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		dir = strings.TrimSpace(opts.CLIRuntimeDir)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("claude settings dir: %w", err)
+		}
+	}
+	tmp, err := os.CreateTemp(dir, "claude-code-settings-*.json")
+	if err != nil {
+		return "", fmt.Errorf("claude settings file: %w", err)
+	}
+	path := tmp.Name()
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(path, 0o600)); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("claude settings file: %w", err)
+	}
+	return path, nil
 }
 
 func claudeInteractiveFinalEnv(oauthToken string) []string {
@@ -994,7 +1014,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 					return nil, nil, err
 				}
 			}
-			settingsPath, err := writeClaudeSkillScopedSettings(settingsMap)
+			settingsPath, err := writeClaudeSkillScopedSettings(opts, settingsMap)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1020,7 +1040,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 			tempFiles = append(tempFiles, sFiles...)
 			extraArgs = append(extraArgs, "--settings", settingsPath)
 		} else {
-			settingsPath, err := writeClaudeSkillScopedSettings(map[string]any{})
+			settingsPath, err := writeClaudeSkillScopedSettings(opts, map[string]any{})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -5113,20 +5133,13 @@ func (c *ClaudeCodeInteractiveAdapter) prepareStatusLineSettings(opts *llmtypes.
 		}
 	}
 
-	claudeAddSkillScopeSettings(settingsMap)
 	settingsMap["statusLine"] = map[string]interface{}{
 		"type":    "command",
 		"command": "sh " + scriptPath,
 		"padding": 0,
 	}
 
-	settingsJSON, err := json.Marshal(settingsMap)
-	if err != nil {
-		removeFiles(tempFiles)
-		return "", nil, err
-	}
-
-	settingsPath, err := writeTempJSONConfig("claude-code-settings-*.json", string(settingsJSON))
+	settingsPath, err := writeClaudeSkillScopedSettings(opts, settingsMap)
 	if err != nil {
 		removeFiles(tempFiles)
 		return "", nil, err

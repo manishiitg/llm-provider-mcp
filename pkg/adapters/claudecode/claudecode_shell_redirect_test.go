@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -226,12 +228,25 @@ func TestBuildClaudeArgsInstallsShellRedirectOnlyWithBridge(t *testing.T) {
 	opts := &llmtypes.CallOptions{}
 	WithMCPConfig(`{"mcpServers":{"other":{"command":"x"}}}`)(opts)
 	WithClaudeCodeSettings(`{"model":"keep-me","enabledPlugins":{"own@market":true}}`)(opts)
+	runtimeDir := t.TempDir()
+	llmtypes.WithCLIRuntimeDir(runtimeDir)(opts)
 	args, files, err := adapter.buildClaudeArgs(opts, "", "7aa21987-0003-4d71-b887-ad73e29d2faf", "p")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer removeFiles(files)
 	got := settingsOf(args)
+	// The merged file stays in the session's private runtime dir, owner-only,
+	// and is one of the launch files removed when the CLI exits.
+	for i, a := range args {
+		if a != "--settings" || i+1 >= len(args) {
+			continue
+		}
+		info, err := os.Stat(args[i+1])
+		if err != nil || filepath.Dir(args[i+1]) != runtimeDir || info.Mode().Perm() != 0o600 || !slices.Contains(files, args[i+1]) {
+			t.Errorf("settings file %s: dir/mode/cleanup wrong (%v, %v)", args[i+1], info, err)
+		}
+	}
 	if strings.Contains(got, "shell-redirect-") {
 		t.Errorf("no bridge but the redirect hook was installed: %s", got)
 	}
