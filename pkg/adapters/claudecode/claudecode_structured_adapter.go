@@ -706,8 +706,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 				resultText = claudeContinuedResultText(resultText, ev, previousResultContinues)
-				if sdkProcess != nil && !ev.IsError {
+				if sdkProcess != nil && !ev.IsError && !idleCompact {
 					// This result's own answer (not the joined turn text), for the chat history.
+					// An idle compaction's result is not an answer.
 					sdkProcess.answered(owner, claudeContinuedResultText("", ev, false))
 				}
 				if !ev.IsError && strings.TrimSpace(resultText) != "" {
