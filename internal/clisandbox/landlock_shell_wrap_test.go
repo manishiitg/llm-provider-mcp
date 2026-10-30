@@ -15,8 +15,6 @@ import (
 // PLAT-872-84: a confined CLI keeps its login; the shells it starts get the same grants without the login file and
 // without the login variables.
 func TestConfinedLaunchWrapsShellsWithoutTheLogin(t *testing.T) {
-	shellWrapEnabled = true
-	t.Cleanup(func() { shellWrapEnabled = false })
 	dir := t.TempDir()
 	runner := filepath.Join(dir, "runner")
 	if err := os.WriteFile(runner, nil, 0o700); err != nil {
