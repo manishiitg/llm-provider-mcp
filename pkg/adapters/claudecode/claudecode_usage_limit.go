@@ -41,6 +41,8 @@ var claudeUsageLimitAlternatives = []string{
 	"usage limits reached",
 	"out of usage",
 	"upgrade to increase your usage limit",
+	// An API-billed login with no credit (PLAT-872-87, tmux turn on 30 Oct): the turn waited until cancelled.
+	"credit balance too low",
 }
 
 // claudeUsageLimitStatuslineThreshold accepts the slightly stale 99.x status

@@ -22,6 +22,7 @@ func TestClaudeUsageLimitTextMatchesRealWordings(t *testing.T) {
 		"you've hit your LIMIT",
 		"Usage limit reached",
 		"Upgrade to increase your usage limit",
+		"  ⎿  Credit balance too low · Add funds: https://platform.claude.com/settings/billing",
 	} {
 		if !IsClaudeUsageLimitText(text) {
 			t.Errorf("IsClaudeUsageLimitText(%q) = false, want true", text)
