@@ -227,8 +227,55 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		// at command scope, where repository-local config cannot override them.
 		wrapped = append(wrapped, appendGitConfig(env, "core.hooksPath", "/dev/null", "core.fsmonitor", "false")...)
 	}
+	shimEnv, err := nodeMemoryShimEnv(home, env)
+	if err != nil {
+		cleanup()
+		return nil, noop, err
+	}
+	wrapped = append(wrapped, shimEnv)
 	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil
+}
+
+// nodeMemoryShim keeps process.memoryUsage() working inside the lock. The launcher grants /proc/self as the
+// launcher's own pid, so a node started from the CLI's shell (a new pid) cannot read its /proc/self and the call
+// throws EACCES (uv_resident_set_memory): `next build` failed in every sandboxed Crew. On that error it answers
+// from V8's own heap numbers, which need no /proc; any other error, and every unblocked call, is unchanged.
+const nodeMemoryShim = `"use strict";
+const v8 = require("v8");
+const original = process.memoryUsage;
+const blocked = (err) => err && err.code === "EACCES";
+const estimate = () => {
+  const heap = v8.getHeapStatistics();
+  return { rss: heap.total_heap_size + heap.external_memory, heapTotal: heap.total_heap_size, heapUsed: heap.used_heap_size, external: heap.external_memory, arrayBuffers: 0 };
+};
+const memoryUsage = function memoryUsage() {
+  try { return original.call(process); } catch (err) { if (blocked(err)) return estimate(); throw err; }
+};
+memoryUsage.rss = function rss() {
+  try { return original.rss(); } catch (err) { if (blocked(err)) return estimate().rss; throw err; }
+};
+process.memoryUsage = memoryUsage;
+`
+
+// nodeMemoryShimEnv writes the shim into the private home (readable inside the lock) and returns the NODE_OPTIONS
+// that preloads it, after any NODE_OPTIONS the launch already carries.
+func nodeMemoryShimEnv(home string, env []string) (string, error) {
+	path := filepath.Join(home, ".agentworks-node-memory.js")
+	if err := os.WriteFile(path, []byte(nodeMemoryShim), 0o644); err != nil {
+		return "", fmt.Errorf("write the sandbox Node memory shim: %w", err)
+	}
+	options := ""
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "NODE_OPTIONS="); ok {
+			options = strings.TrimSpace(value)
+		}
+	}
+	require := "--require=" + path
+	if strings.ContainsAny(path, " \t\"") {
+		require = "--require=" + strconv.Quote(path)
+	}
+	return "NODE_OPTIONS=" + strings.TrimSpace(options+" "+require), nil
 }
 
 // linkCredentialFiles gives the private home a link to each of the CLI's
