@@ -3,8 +3,9 @@
 //
 // A launch is a slot launch when its working folder lies in a slot's state folder,
 // <state root>/<slot>/..., as set by the agent server. Nothing else changes for hosts without
-// slots: with no allow-list file, or with AGENTWORKS_SLOT_CLI off, every function here reduces to
-// what the code did before (os.TempDir, owner-only modes, no sudo).
+// slots: with no allow-list file every function here reduces to what the code did before
+// (os.TempDir, owner-only modes, no sudo). There is no separate switch: one system everywhere
+// (owner 2026-10-30, PLAT-872-84).
 //
 // The roots come from the root-owned allow-list that slotctl also reads, so the platform cannot point
 // them elsewhere. The request format in WrapCmd mirrors the builder's workspace/slots.ExecRequest.
@@ -34,13 +35,8 @@ import (
 )
 
 const (
-	// EnvEnabled turns CLI launches as slots on ("on").
-	EnvEnabled = "AGENTWORKS_SLOT_CLI"
 	// ConfigPath is the root-owned allow-list written by provision-slots.sh.
 	ConfigPath = "/usr/local/libexec/agentworks/slotctl.json"
-	// EnvUsers limits CLI launches as slots to these user ids (comma-separated) while a rollout is
-	// tested; empty means every user who holds a slot.
-	EnvUsers = "AGENTWORKS_SLOT_CLI_USERS"
 	// EnvConfig overrides ConfigPath (tests).
 	EnvConfig = "AGENTWORKS_SLOTCTL_CONFIG"
 
@@ -97,9 +93,6 @@ type config struct {
 }
 
 func loadConfig() (config, bool) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv(EnvEnabled)), "on") {
-		return config{}, false
-	}
 	return loadConfigUnchecked()
 }
 
@@ -204,9 +197,6 @@ func explicitSlot(cfg config, declared llmtypes.RunAs) (string, bool, *LaunchBlo
 	if user == "" {
 		return "", false, nil // declared: the app account
 	}
-	if !canaryAllows(user) {
-		return "", false, nil
-	}
 	slot := ""
 	if cfg.SlotTable != "" {
 		slot = slotOfUser(cfg.SlotTable, user)
@@ -235,10 +225,8 @@ func pathInferredSlot(cfg config, clean string) (string, bool) {
 		return "", false
 	}
 	userID := strings.SplitN(strings.TrimPrefix(clean, prefix), string(filepath.Separator), 2)[0]
-	if canaryAllows(userID) {
-		if slot := slotOfUser(cfg.SlotTable, userID); slot != "" {
-			return slot, true
-		}
+	if slot := slotOfUser(cfg.SlotTable, userID); slot != "" {
+		return slot, true
 	}
 	return "", false
 }
@@ -250,19 +238,6 @@ func logFallback(path, slot string) {
 	if _, seen := fallbackLogged.LoadOrStore(path+"\x00"+slot, true); !seen {
 		log.Printf("[SLOT_FALLBACK] path-inferred slot %s for %s: the application did not declare a run-as identity for this launch", slot, path)
 	}
-}
-
-func canaryAllows(userID string) bool {
-	list := strings.TrimSpace(os.Getenv(EnvUsers))
-	if list == "" {
-		return true
-	}
-	for _, id := range strings.Split(list, ",") {
-		if strings.TrimSpace(id) == userID {
-			return true
-		}
-	}
-	return false
 }
 
 func slotOfUser(tablePath, userID string) string {
@@ -564,9 +539,12 @@ func grant(slot, path string, write bool) error {
 	return nil
 }
 
-// On reports whether launches as slots are switched on for this process at all (the flag; the
-// allow-list and the user decide whether a given launch is one).
-func On() bool { return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvEnabled)), "on") }
+// On reports whether this host runs CLI launches as slots at all (its slot allow-list exists; the
+// user decides whether a given launch is one).
+func On() bool {
+	_, ok := loadConfigUnchecked()
+	return ok
+}
 
 // ShareTree gives a slot launch's group full use of a tree the platform just prepared (a CLI's
 // config folder): the folder's files are made group-owned by the slot's group and group read-write

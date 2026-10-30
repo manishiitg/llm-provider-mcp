@@ -33,8 +33,6 @@ func newIdentityHost(t *testing.T) identityHost {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvConfig, cfg)
-	t.Setenv(EnvEnabled, "on")
-	t.Setenv(EnvUsers, "")
 	return identityHost{docs: filepath.Join(root, "docs")}
 }
 
@@ -67,9 +65,6 @@ func identityTable(h identityHost) []identityCase {
 		{name: "Goal: Workflow/<name> names no user, so no slot", hint: h.dir("Workflow", "goal-1"), wantSlot: ""},
 		{name: "Goal run folder", hint: h.dir("Workflow", "goal-1", "runs", "iteration-0"), wantSlot: ""},
 		{name: "a user without a slot", hint: h.dir("_users", "user-c", "Chats", "Code", "projects", "p"), owner: "user-c", wantSlot: ""},
-		{name: "canary lists only B: A's Code is not a slot launch", hint: a("Chats", "Code", "projects", "app-1"), canary: "user-b", owner: "user-a", slot: "slot08", wantSlot: ""},
-		{name: "canary lists only B: reader B in A's Crew is not a slot launch either", hint: a("Chats", "Work", "projects", "crew-1"), canary: "user-b", owner: "user-a", slot: "slot08", wantSlot: ""},
-		{name: "canary lists A: A's Crew still is", hint: a("Chats", "Work", "projects", "crew-1"), canary: "user-a", owner: "user-a", slot: "slot08", wantSlot: "slot08"},
 		{name: "outside the docs root", hint: filepath.Join(filepath.Dir(h.docs), "elsewhere", "_users", "user-a", "x"), noDecl: true, wantSlot: ""},
 		{name: "a logical path names no user", hint: "Chats/Code/projects/app-1", noDecl: true, wantSlot: ""},
 	}
@@ -89,7 +84,6 @@ func TestSlotOfRegressionTable(t *testing.T) {
 	for _, tc := range identityTable(h) {
 		t.Run("fallback/"+tc.name, func(t *testing.T) {
 			llmtypes.ResetDeclaredRunAsForTest()
-			t.Setenv(EnvUsers, tc.canary)
 			slot, ok := SlotOf(tc.hint)
 			if slot != tc.wantSlot || ok != (tc.wantSlot != "") {
 				t.Fatalf("SlotOf(%q) = %q,%v, want %q", tc.hint, slot, ok, tc.wantSlot)
@@ -99,7 +93,6 @@ func TestSlotOfRegressionTable(t *testing.T) {
 			continue
 		}
 		t.Run("explicit/"+tc.name, func(t *testing.T) {
-			t.Setenv(EnvUsers, tc.canary)
 			declareFor(t, tc)
 			slot, ok := SlotOf(tc.hint)
 			if slot != tc.wantSlot || ok != (tc.wantSlot != "") {
@@ -149,10 +142,8 @@ func TestExplicitMismatchIsARefusalNotNoSlot(t *testing.T) {
 		{"user named, no slot named: the table's", "", llmtypes.RunAs{Declared: true, User: "user-a"}, false, "slot08"},
 		{"user with no slot, none named: app account", "", llmtypes.RunAs{Declared: true, User: "user-c"}, false, ""},
 		{"declared app account", "", llmtypes.RunAs{Declared: true}, false, ""},
-		{"canary does not cover the user: no slot, no refusal", "user-b", llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot09"}, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(EnvUsers, tc.canary)
 			llmtypes.ResetDeclaredRunAsForTest()
 			dir := h.dir("Crew", "crew-x")
 			llmtypes.DeclareRunAs(dir, tc.decl)

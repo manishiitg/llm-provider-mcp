@@ -29,6 +29,36 @@ type landlockPolicy struct {
 	ListPaths []string `json:"list_paths,omitempty"`
 	// Agy native shells require PTYs; only grant an isolated devpts instance.
 	PrivatePTS bool `json:"private_pts,omitempty"`
+	// ShellWrap: every shell the CLI starts runs under Inner, without the CLI's logins (PLAT-872-84).
+	ShellWrap *landlockShellWrap `json:"shell_wrap,omitempty"`
+}
+
+type landlockShellWrap struct {
+	Inner    landlockPolicy `json:"inner"`
+	ScrubEnv []string       `json:"scrub_env,omitempty"`
+}
+
+// cliLoginEnv are the environment variables a coding CLI logs in with. A shell the CLI starts never needs them, so
+// the launcher's shell wrapper removes them; the CLI itself keeps them.
+var cliLoginEnv = []string{
+	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+	"CODEX_API_KEY", "OPENAI_API_KEY",
+	"CURSOR_API_KEY", "META_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+}
+
+// withoutPaths is paths without any of drop (canonical spelling).
+func withoutPaths(paths, drop []string) []string {
+	skip := map[string]bool{}
+	for _, path := range drop {
+		skip[canonical(path)] = true
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !skip[canonical(path)] {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // credentialFile is one CLI login file: where it goes in the private home
@@ -193,6 +223,12 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		ListPaths:  []string{"/"},
 		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
 	}
+	// The CLI's shells get the same grants without its login files, and no login variables.
+	config.ShellWrap = &landlockShellWrap{
+		Inner: landlockPolicy{ReadPaths: withoutPaths(config.ReadPaths, credentials), WritePaths: withoutPaths(config.WritePaths, credentials),
+			WorkDir: config.WorkDir, ListPaths: config.ListPaths},
+		ScrubEnv: cliLoginEnv,
+	}
 	file, err := slotfs.CreateTemp(home, "agentworks-cli-landlock-*.json")
 	if err != nil {
 		return nil, noop, fmt.Errorf("create CLI Landlock policy: %w", err)
@@ -285,6 +321,11 @@ func nodeMemoryShimEnv(home string, env []string) (string, error) {
 // file is moved back to the account first so no session loses a refresh.
 // It returns the credential files to grant.
 func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]string, error) {
+	// A CLI run as a person's slot gets the server's shared account only from its environment, never as a linked
+	// file the slot could read (PLAT-872-84). The person's own account (CredentialHome set) is theirs to read.
+	if _, slot := slotfs.SlotOf(home); slot && strings.TrimSpace(policy.CredentialHome) == "" {
+		return nil, nil
+	}
 	source := canonical(policy.CredentialHome)
 	if source == "" {
 		if userHome, err := os.UserHomeDir(); err == nil {

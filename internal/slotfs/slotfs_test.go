@@ -25,7 +25,6 @@ func setup(t *testing.T) (state, run string) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvConfig, cfg)
-	t.Setenv(EnvEnabled, "on")
 	return state, run
 }
 
@@ -44,17 +43,12 @@ func TestSlotOfOnlyMatchesSlotFoldersUnderTheRoots(t *testing.T) {
 	}
 }
 
-func TestNothingChangesWhenTheFeatureIsOffOrUnconfigured(t *testing.T) {
+func TestNothingChangesWhenUnconfigured(t *testing.T) {
 	state, _ := setup(t)
 	hint := filepath.Join(state, "slot05", "cli")
-	t.Setenv(EnvEnabled, "")
-	if IsSlotLaunch(hint) || TempDir(hint) != os.TempDir() || Mode(hint, 0o600) != 0o600 {
-		t.Fatal("with the flag off a launch must be exactly as before")
-	}
-	t.Setenv(EnvEnabled, "on")
 	t.Setenv(EnvConfig, filepath.Join(t.TempDir(), "missing.json"))
-	if IsSlotLaunch(hint) {
-		t.Fatal("with no allow-list nothing is a slot launch")
+	if IsSlotLaunch(hint) || TempDir(hint) != os.TempDir() || Mode(hint, 0o600) != 0o600 {
+		t.Fatal("with no allow-list a launch must be exactly as before")
 	}
 }
 
@@ -131,7 +125,6 @@ func TestAUsersOwnTreeIsTheirSlotLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvConfig, cfg)
-	t.Setenv(EnvEnabled, "on")
 	if slot, ok := SlotOf(root + "/docs/_users/user-a/Chats/Code/projects/p"); !ok || slot != "slot08" {
 		t.Fatalf("own tree: %q %v", slot, ok)
 	}
@@ -140,27 +133,6 @@ func TestAUsersOwnTreeIsTheirSlotLaunch(t *testing.T) {
 	}
 	if _, ok := SlotOf(root + "/docs/Workflow/x"); ok {
 		t.Fatal("shared folders are not anyone's tree")
-	}
-}
-
-func TestCanaryLimitsWhichUsersLaunchAsSlots(t *testing.T) {
-	root := t.TempDir()
-	table := filepath.Join(root, "slots.json")
-	_ = os.WriteFile(table, []byte(`{"slots":{"slot01":"user-a","slot02":"user-b"}}`), 0o600)
-	cfg := filepath.Join(root, "slotctl.json")
-	_ = os.WriteFile(cfg, []byte(`{"slot_run_root":"`+root+`/run","slot_state_root":"`+root+`/state","docs_root":"`+root+`/docs","slot_table":"`+table+`"}`), 0o644)
-	t.Setenv(EnvConfig, cfg)
-	t.Setenv(EnvEnabled, "on")
-	t.Setenv(EnvUsers, "user-b")
-	if IsSlotLaunch(root + "/docs/_users/user-a/x") {
-		t.Fatal("a user outside the canary list must not launch as a slot")
-	}
-	if !IsSlotLaunch(root + "/docs/_users/user-b/x") {
-		t.Fatal("a listed user must launch as a slot")
-	}
-	t.Setenv(EnvUsers, "")
-	if !IsSlotLaunch(root + "/docs/_users/user-a/x") {
-		t.Fatal("with no list every slot holder launches as a slot")
 	}
 }
 
@@ -175,7 +147,6 @@ func TestSlotOfHonoursTheProductsSlotPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvConfig, cfg)
-	t.Setenv(EnvEnabled, "on")
 	if slot, ok := SlotOf(filepath.Join(state, "cf07", "cli", "x")); !ok || slot != "cf07" {
 		t.Fatalf("own slot: %q %v", slot, ok)
 	}
