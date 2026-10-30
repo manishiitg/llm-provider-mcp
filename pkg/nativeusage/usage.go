@@ -219,6 +219,13 @@ func Read(ctx context.Context, provider, session, path string) (Snapshot, error)
 				r.Output = num(u, "output_tokens")
 				r.CacheRead = num(u, "cache_read_input_tokens")
 				r.CacheWrite = num(u, "cache_creation_input_tokens")
+				// The main thread's latest prompt is what fills the window; Claude
+				// does not write the window size, so callers use the model's.
+				if r.OwnerType == "" {
+					if used := r.Input + r.CacheRead + r.CacheWrite; used > 0 {
+						s.Private.ContextUsed = used
+					}
+				}
 			case "codex-cli":
 				p := obj(row["payload"])
 				if str(row, "type") == "session_meta" && str(p, "id") != "" && str(p, "id") != session {
