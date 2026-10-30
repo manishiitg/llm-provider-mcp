@@ -185,7 +185,7 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 					continue
 				}
 				// A Crew's folders already belong to its owner's slot group; a file another account owns cannot take
-				// an ACL from the platform (setfacl: Operation not permitted, Excellence 30 Oct). Launch anyway: the
+				// an ACL from the platform (setfacl: Operation not permitted). Launch anyway: the
 				// slot reaches what its group allows.
 				if err := slotfs.GrantRuntime(slot, path, shared.write); err != nil {
 					log.Printf("[CLI_LANDLOCK] launch provider=%s as %s: shared folder %s not fully granted: %v", strings.TrimSpace(policy.Provider), slot, path, err)
@@ -227,7 +227,7 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
 	}
 	// The CLI's shells get the same grants without its login files, and no login variables. Not for Muse yet: its
-	// tmux session died at start inside the wrapped namespace (Excellence 30 Oct); it stays on the app account.
+	// tmux session died at start inside the wrapped namespace; it stays on the app account.
 	if !strings.EqualFold(strings.TrimSpace(policy.Provider), "muse-cli") {
 		config.ShellWrap = &landlockShellWrap{
 			Inner: landlockPolicy{ReadPaths: withoutPaths(config.ReadPaths, credentials), WritePaths: withoutPaths(config.WritePaths, credentials),
