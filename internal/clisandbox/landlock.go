@@ -649,6 +649,15 @@ func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs [
 			return func() {}, fmt.Errorf("give the user's account launch files: %w", err)
 		}
 	}
+	// The bridge runs unconfined as the slot: nothing from its environment may make node load other code
+	// (PLAT-872-84: a slot-writable --require would run with the CLI's login).
+	env := host.Env[:0:0]
+	for _, entry := range host.Env {
+		if !strings.HasPrefix(entry, "NODE_OPTIONS=") && !strings.HasPrefix(entry, "NODE_PATH=") {
+			env = append(env, entry)
+		}
+	}
+	host.Env = env
 	return slotfs.WrapCmd(host, policy.PrivateHome, host.Env)
 }
 
