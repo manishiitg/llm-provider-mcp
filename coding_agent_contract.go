@@ -577,7 +577,8 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 			contract.SupportsTerminalStream = false
 			contract.SupportsLiveInput = true // Native SDK priority-now input, confirmed by the CLI message UUID.
 			contract.SupportsDurableAck = false
-			contract.UsesPersistentSession = false // Native --resume persists context; the SDK process is scoped to a host turn.
+			// Keep the base persistent-session capability: SDK chats retain their process
+			// while Claude-owned background tasks run after the answer.
 			contract.LaunchesViaLoginShell = false
 			contract.HandlesTmuxSessionLoss = false
 			contract.SupportsStalledTurnDiagnosis = false
