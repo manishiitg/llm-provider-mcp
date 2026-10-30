@@ -470,6 +470,12 @@ func StatusMetaForTmuxSession(tmuxSession string) (map[string]interface{}, bool)
 	if windows, ok := gi.Additional[llmtypes.RateLimitWindowsMetaKey].([]llmtypes.RateLimitWindow); ok && len(windows) > 0 {
 		meta[llmtypes.RateLimitWindowsMetaKey] = windows
 	}
+	// The context fill, so a launch-only chat still shows its context figure.
+	for _, key := range []string{llmtypes.ContextUsedTokensMetaKey, llmtypes.ContextWindowTokensMetaKey} {
+		if n, ok := gi.Additional[key].(int); ok && n > 0 {
+			meta[key] = n
+		}
+	}
 	return meta, len(meta) > 0
 }
 
