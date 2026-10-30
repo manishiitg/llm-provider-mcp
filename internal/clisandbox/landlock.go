@@ -136,6 +136,14 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 			return nil, noop, fmt.Errorf("create private CLI home: %w", err)
 		}
 	}
+	// A slot runtime folder (<slot state>/<slot>/cli-runtimes/v1/<digest>) is the slot's to use: the server's umask
+	// left the folders it made (the private home's parents, tool_output_folder) owner-only, so the slot could not
+	// enter its own home.
+	if runtime := canonical(workingDir); strings.Contains(runtime, string(filepath.Separator)+filepath.Join("cli-runtimes", "v1")+string(filepath.Separator)) && strings.HasPrefix(home, runtime+string(filepath.Separator)) {
+		if err := slotfs.ShareTree(home, runtime); err != nil {
+			return nil, noop, fmt.Errorf("give the user's account its CLI runtime: %w", err)
+		}
+	}
 	adoptResumedSession(policy, args)
 	credentials, err := linkCredentialFiles(policy, home)
 	if err != nil {
