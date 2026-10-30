@@ -26,8 +26,6 @@ func TestLaunchFunctionsRefuseAnUnconfirmedSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(slotfs.EnvConfig, cfg)
-	t.Setenv(slotfs.EnvEnabled, "on")
-	t.Setenv(slotfs.EnvUsers, "")
 	t.Cleanup(llmtypes.ResetDeclaredRunAsForTest)
 
 	mismatched := filepath.Join(root, "docs", "Crew", "crew-1")

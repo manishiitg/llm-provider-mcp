@@ -19,8 +19,6 @@ func TestPrepareCodexCommandRefusesAnUnconfirmedSlot(t *testing.T) {
 	cfg := filepath.Join(root, "slotctl.json")
 	_ = os.WriteFile(cfg, []byte(`{"slot_run_root":"`+root+`/run","slot_state_root":"`+root+`/state","docs_root":"`+root+`/docs","slot_table":"`+table+`"}`), 0o644)
 	t.Setenv(slotfs.EnvConfig, cfg)
-	t.Setenv(slotfs.EnvEnabled, "on")
-	t.Setenv(slotfs.EnvUsers, "")
 	t.Cleanup(llmtypes.ResetDeclaredRunAsForTest)
 	bad := filepath.Join(root, "docs", "Crew", "c")
 	llmtypes.DeclareRunAs(bad, llmtypes.RunAs{Declared: true, User: "user-a", Slot: "slot09"})
