@@ -38,8 +38,9 @@ type landlockShellWrap struct {
 	ScrubEnv []string       `json:"scrub_env,omitempty"`
 }
 
-// shellWrapEnabled turns shell wrapping on for confined launches (PLAT-872-84); off until wrapped shells run.
-var shellWrapEnabled = false
+// shellWrapEnabled turns shell wrapping on for confined launches (PLAT-872-84). It needs a launcher whose wrapper
+// lets the inner layer run the real shells in its private /tmp.
+var shellWrapEnabled = true
 
 // cliLoginEnv are the environment variables a coding CLI logs in with. A shell the CLI starts never needs them, so
 // the launcher's shell wrapper removes them; the CLI itself keeps them.
@@ -239,9 +240,9 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	}
 	// The CLI's shells get the same grants without its login files, and no login variables. Not for Muse yet: its
 	// tmux session died at start inside the wrapped namespace; it stays on the app account.
-	// Off for every CLI until fixed: in production a wrapped shell failed with exit 126 (permission denied), so the
-	// CLIs could run no shell command at all. The launcher's shell_wrap stays; nothing asks for it.
-	if shellWrapEnabled {
+	// Not for Muse yet: its tmux session died at start inside the wrapped namespace (likely the same inner-layer
+	// /tmp bug the launcher now fixes); it is turned on separately once proven.
+	if shellWrapEnabled && !strings.EqualFold(strings.TrimSpace(policy.Provider), "muse-cli") {
 		config.ShellWrap = &landlockShellWrap{
 			Inner: landlockPolicy{ReadPaths: withoutPaths(config.ReadPaths, credentials), WritePaths: withoutPaths(config.WritePaths, credentials),
 				WorkDir: config.WorkDir, ListPaths: config.ListPaths},
