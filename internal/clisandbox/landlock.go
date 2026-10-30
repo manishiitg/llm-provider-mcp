@@ -227,12 +227,12 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		// at command scope, where repository-local config cannot override them.
 		wrapped = append(wrapped, appendGitConfig(env, "core.hooksPath", "/dev/null", "core.fsmonitor", "false")...)
 	}
-	shimEnv, err := nodeMemoryShimEnv(home, env)
-	if err != nil {
-		cleanup()
-		return nil, noop, err
+	// The shim is a convenience: a home that cannot take it (read-only, full) launches without it.
+	if shimEnv, err := nodeMemoryShimEnv(home, env); err != nil {
+		log.Printf("[CLI_LANDLOCK] launch provider=%s without the Node memory shim: %v", strings.TrimSpace(policy.Provider), err)
+	} else {
+		wrapped = append(wrapped, shimEnv)
 	}
-	wrapped = append(wrapped, shimEnv)
 	wrapped = append(wrapped, args...)
 	return wrapped, cleanup, nil
 }
