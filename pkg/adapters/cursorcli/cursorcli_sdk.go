@@ -53,6 +53,10 @@ type cursorSDKEvent struct {
 	Stale      string `json:"stale"`
 	StaleAgent string `json:"stale_agent"`
 	Action     string `json:"action"`
+	// ModelCatalog is how the bridge found the account's default model settings: ok, not_needed, timeout, empty or
+	// error; ModelParams the settings it sent.
+	ModelCatalog string `json:"model_catalog"`
+	ModelParams  string `json:"model_params"`
 }
 
 type cursorSDKUsage struct {
@@ -347,6 +351,9 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		}
 		if event.Stale != "" && c.logger != nil {
 			c.logger.Infof("[CURSOR_SDK] stale_active_run agent=%s action=%s new=%s", event.StaleAgent, event.Stale, event.AgentID)
+		}
+		if c.logger != nil {
+			c.logger.Infof("[CURSOR_SDK] start agent=%s catalog=%s params=%q", event.AgentID, event.ModelCatalog, event.ModelParams)
 		}
 		return p, event.AgentID, event.Resumed, nil
 	case <-p.done:
