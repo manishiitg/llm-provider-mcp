@@ -13,18 +13,26 @@ async function main() {
   process.argv[1] = process.argv[2];
   const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, followups = [], early = [], busy = false;
-  // This process belongs to one account; keep discovery across starts/resumes.
-  let accountModels;
-  const modelDefaults = () => accountModels ??= (async () => {
-    let timer;
-    try {
-      return await Promise.race([
-        Cursor.models.list({ apiKey: process.env.CURSOR_API_KEY || undefined }),
-        new Promise(resolve => { timer = setTimeout(() => resolve([]), 3000); }),
-      ]);
-    } catch { return []; } // Discovery trouble must not prevent an otherwise valid chat.
-    finally { clearTimeout(timer); }
-  })();
+  // This process belongs to one account; keep a successful discovery across starts/resumes. The lookup begins as
+  // the bridge starts, so a start rarely waits; a start waits at most 3 s and never keeps a failed or empty result:
+  // the next start asks again (PLAT-872-64: an empty result cached for the bridge's life sent the bare model without
+  // the account's fixed settings, and a Plus account refused it).
+  let accountModels, catalog = 'not_needed', lookup;
+  const listModels = () => lookup ??= Cursor.models.list({ apiKey: process.env.CURSOR_API_KEY || undefined })
+    .then(models => { if (Array.isArray(models) && models.length) accountModels = models; else catalog = 'empty'; return models; },
+          error => { catalog = 'error: ' + short(error); })
+    .finally(() => { lookup = undefined; });
+  listModels();
+  const modelDefaults = async () => {
+    if (!accountModels) {
+      let timer;
+      const waited = await Promise.race([listModels().then(() => 'done'), new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 3000); })]);
+      clearTimeout(timer);
+      if (!accountModels) { if (waited === 'timeout') catalog = 'timeout'; return []; } // Discovery trouble must not prevent an otherwise valid chat.
+    }
+    catalog = 'ok';
+    return accountModels;
+  };
   // Cancels this agent's runs still marked running; true when there was one. Throws only when a stale
   // run could not be cancelled; if the runs cannot be listed, the agent is kept as before.
   const cancelStale = async agentId => {
@@ -138,7 +146,7 @@ async function main() {
       }
       const resumed = Boolean(agent);
       if (!agent) agent = await Agent.create(options());
-      emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}) });
+      emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}), model_catalog: catalog, model_params: (start.model.params || []).map(p => p.id + '=' + p.value).join(',') });
       continue;
     }
     if (request.type !== 'prompt') continue;
