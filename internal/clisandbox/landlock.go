@@ -31,6 +31,20 @@ type landlockPolicy struct {
 	PrivatePTS bool `json:"private_pts,omitempty"`
 	// ShellWrap: every shell the CLI starts runs under Inner, without the CLI's logins (PLAT-872-84).
 	ShellWrap *landlockShellWrap `json:"shell_wrap,omitempty"`
+	// OwnLoginEnv is the only login variables the CLI keeps; the launcher removes every other login-like variable
+	// before it starts (PLAT-872-91). Nil (Pi, whose keys are its users' choice) leaves the environment as it is.
+	OwnLoginEnv *[]string `json:"own_login_env,omitempty"`
+}
+
+// ownLoginEnv is each CLI's own login variables: one CLI never carries another provider's company login (a Muse
+// launch held the company Claude and Codex logins and its shells read them, PLAT-872-91). Pi is left out: it may
+// use any vendor's key, so its environment is not narrowed here.
+var ownLoginEnv = map[string][]string{
+	"claude-code": {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"},
+	"codex-cli":   {"CODEX_API_KEY", "OPENAI_API_KEY"},
+	"cursor-cli":  {"CURSOR_API_KEY"},
+	"muse-cli":    {"META_API_KEY"},
+	"agy-cli":     {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 }
 
 type landlockShellWrap struct {
@@ -237,6 +251,10 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		WorkDir:    canonical(workingDir),
 		ListPaths:  []string{"/"},
 		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
+	}
+	if own, ok := ownLoginEnv[strings.TrimSpace(policy.Provider)]; ok {
+		config.OwnLoginEnv = &own
+		log.Printf("[CLI_LOGIN_ENV] provider=%s keeps only %v of the login variables", policy.Provider, own)
 	}
 	// The CLI's shells get the same grants without its login files, and no login variables. Not for Muse yet: its
 	// tmux session died at start inside the wrapped namespace; it stays on the app account.
