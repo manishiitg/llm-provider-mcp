@@ -570,11 +570,20 @@ func ShareTree(hint, root string) error {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		if err := os.Lchown(path, -1, gid); err != nil {
-			return err
-		}
 		info, err := entry.Info()
 		if err != nil {
+			return err
+		}
+		// What the slot made itself (a CLI cache, its sessions) is already the slot's, and only its owner or root may
+		// change it: skip it, with everything under it (PLAT-872-90: the next launch failed "lchown ...: operation not
+		// permitted").
+		if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+			if info.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if err := os.Lchown(path, -1, gid); err != nil {
 			return err
 		}
 		mode := info.Mode().Perm() | 0o060
