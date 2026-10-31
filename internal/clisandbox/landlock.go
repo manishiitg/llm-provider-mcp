@@ -32,13 +32,13 @@ type landlockPolicy struct {
 	// ShellWrap: every shell the CLI starts runs under Inner, without the CLI's logins (PLAT-872-84).
 	ShellWrap *landlockShellWrap `json:"shell_wrap,omitempty"`
 	// OwnLoginEnv is the only login variables the CLI keeps; the launcher removes every other login-like variable
-	// before it starts (PLAT-872-91). Nil (Pi, whose keys are its users' choice) leaves the environment as it is.
+	// before it starts (PLAT-872-91). Always sent: a CLI with no list keeps no login variables.
 	OwnLoginEnv *[]string `json:"own_login_env,omitempty"`
 }
 
 // ownLoginEnv is each CLI's own login variables: one CLI never carries another provider's company login (a Muse
-// launch held the company Claude and Codex logins and its shells read them, PLAT-872-91). Pi is left out: it may
-// use any vendor's key, so its environment is not narrowed here.
+// launch held the company Claude and Codex logins and its shells read them, PLAT-872-91). Pi sends its own per turn
+// (policy.OwnLoginEnv: the chosen model's provider key). A CLI with no entry keeps none.
 var ownLoginEnv = map[string][]string{
 	"claude-code": {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"},
 	"codex-cli":   {"CODEX_API_KEY", "OPENAI_API_KEY"},
@@ -252,10 +252,12 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		ListPaths:  []string{"/"},
 		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
 	}
-	if own, ok := ownLoginEnv[strings.TrimSpace(policy.Provider)]; ok {
-		config.OwnLoginEnv = &own
-		log.Printf("[CLI_LOGIN_ENV] provider=%s keeps only %v of the login variables", policy.Provider, own)
+	own := append([]string{}, policy.OwnLoginEnv...)
+	if len(own) == 0 {
+		own = append(own, ownLoginEnv[strings.TrimSpace(policy.Provider)]...)
 	}
+	config.OwnLoginEnv = &own
+	log.Printf("[CLI_LOGIN_ENV] provider=%s keeps only %v of the login variables", policy.Provider, own)
 	// The CLI's shells get the same grants without its login files, and no login variables, in the CLI's own private
 	// namespace (a private /tmp, the account's service manager hidden). Muse too since PLAT-872-91: unwrapped, its
 	// shells reached the app account's unconfined tmux server in /tmp (its environment held the company logins, and a

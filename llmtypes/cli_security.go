@@ -75,16 +75,19 @@ func NormalizeCLISecurityMode(mode CLISecurityMode) CLISecurityMode {
 // provider. It is produced by trusted application code; model/tool arguments
 // must never be decoded directly into this type.
 type CLISecurityPolicy struct {
-	Mode                 CLISecurityMode `json:"mode"`
-	Provider             string          `json:"provider"`
-	ProfileVersion       string          `json:"profile_version,omitempty"`
-	WorkspaceReadPaths   []string        `json:"workspace_read_paths,omitempty"`
-	WorkspaceWritePaths  []string        `json:"workspace_write_paths,omitempty"`
-	HostReadPaths        []string        `json:"host_read_paths,omitempty"`
-	HostWritePaths       []string        `json:"host_write_paths,omitempty"`
-	EnvironmentVariables []string        `json:"environment_variables,omitempty"`
-	PrivateHome          string          `json:"private_home,omitempty"`
-	ApprovedCapabilities []string        `json:"approved_capabilities,omitempty"`
+	Mode     CLISecurityMode `json:"mode"`
+	Provider string          `json:"provider"`
+	// OwnLoginEnv, set by a launch whose login variables depend on the turn (Pi: the chosen model's provider), is
+	// the only login variables the CLI keeps (PLAT-872-91). Empty: the per-provider list in clisandbox applies.
+	OwnLoginEnv          []string `json:"own_login_env,omitempty"`
+	ProfileVersion       string   `json:"profile_version,omitempty"`
+	WorkspaceReadPaths   []string `json:"workspace_read_paths,omitempty"`
+	WorkspaceWritePaths  []string `json:"workspace_write_paths,omitempty"`
+	HostReadPaths        []string `json:"host_read_paths,omitempty"`
+	HostWritePaths       []string `json:"host_write_paths,omitempty"`
+	EnvironmentVariables []string `json:"environment_variables,omitempty"`
+	PrivateHome          string   `json:"private_home,omitempty"`
+	ApprovedCapabilities []string `json:"approved_capabilities,omitempty"`
 	// LandlockRunner is the host's Landlock launcher (absolute path). With a
 	// strict mode on Linux, the CLI starts under it: it can write only the
 	// workspace write paths and PrivateHome, read only the granted paths and

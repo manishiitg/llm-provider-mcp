@@ -135,6 +135,14 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 	env = piOverrideEnv(env, piNodeOptionsEnv())
 	env = piOverrideEnv(env, piNativeMCPEnv(agentDir, sessionDir))
 	env = piOverrideEnv(env, piAPIKeyEnv(provider, p.apiKey))
+	// Pi keeps only the chosen model's provider key, whether it came from this account or the server (PLAT-872-91).
+	if opts != nil && opts.CLISecurity != nil {
+		opts.CLISecurity.OwnLoginEnv = nil
+		for _, entry := range piAPIKeyEnv(provider, "x") {
+			name, _, _ := strings.Cut(entry, "=")
+			opts.CLISecurity.OwnLoginEnv = append(opts.CLISecurity.OwnLoginEnv, name)
+		}
+	}
 	env = piOverrideEnv(env, piBridgeShellEnvFromMCPConfig(piMCPConfigFromOptions(opts)))
 	life, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(life, prefix[0], args...)
