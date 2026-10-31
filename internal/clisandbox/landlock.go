@@ -256,11 +256,11 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 		config.OwnLoginEnv = &own
 		log.Printf("[CLI_LOGIN_ENV] provider=%s keeps only %v of the login variables", policy.Provider, own)
 	}
-	// The CLI's shells get the same grants without its login files, and no login variables. Not for Muse yet: its
-	// tmux session died at start inside the wrapped namespace; it stays on the app account.
-	// Not for Muse yet: its tmux session died at start inside the wrapped namespace (likely the same inner-layer
-	// /tmp bug the launcher now fixes); it is turned on separately once proven.
-	if shellWrapEnabled && !strings.EqualFold(strings.TrimSpace(policy.Provider), "muse-cli") {
+	// The CLI's shells get the same grants without its login files, and no login variables, in the CLI's own private
+	// namespace (a private /tmp, the account's service manager hidden). Muse too since PLAT-872-91: unwrapped, its
+	// shells reached the app account's unconfined tmux server in /tmp (its environment held the company logins, and a
+	// new window ran outside the sandbox) and escaped through systemd-run --user.
+	if shellWrapEnabled {
 		config.ShellWrap = &landlockShellWrap{
 			Inner: landlockPolicy{ReadPaths: withoutPaths(config.ReadPaths, credentials), WritePaths: withoutPaths(config.WritePaths, credentials),
 				WorkDir: config.WorkDir, ListPaths: config.ListPaths},
