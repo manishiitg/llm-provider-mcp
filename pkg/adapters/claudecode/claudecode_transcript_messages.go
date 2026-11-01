@@ -2,10 +2,8 @@ package claudecode
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,46 +12,6 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/nativereplies"
 )
-
-// readClaudeTranscriptMessages reconstructs the assistant's internal
-// tool-use loop from the same sidecar JSONL that readClaudeTranscriptUsage
-// reads tokens from. It returns a chronologically ordered
-// []llmtypes.MessageContent representing what happened INSIDE the
-// claude-code CLI during the turn — text chunks, tool_use calls, and
-// the tool_result responses fed back to the model — so callers can
-// splice that trail into a workflow conversation log alongside the
-// outer user-prompt → final-assistant-text shape that the LLM
-// abstraction already exposes.
-//
-// Shape mapping (claude-code JSONL → llmtypes):
-//
-//	{type:"assistant", message.content: [{type:"text", text}]}
-//	  → {Role: AI, Parts: [TextContent]}
-//	{type:"assistant", message.content: [{type:"tool_use", id, name, input}]}
-//	  → {Role: AI, Parts: [ToolCall{ID, FunctionCall:{Name, Arguments=json(input)}}]}
-//	{type:"user",     message.content: [{type:"tool_result", tool_use_id, content}]}
-//	  → {Role: Tool,Parts: [ToolCallResponse{ToolCallID, Content}]}
-//
-// Claude writes one JSONL row per content BLOCK (text chunk or
-// tool_use). Rows from the same LLM call share a message.id. We GROUP
-// by message.id so that a single assistant LLM call producing
-// "text + tool_use + tool_use" returns as ONE MessageContent with
-// three Parts — matching the shape the Anthropic Messages API itself
-// would have returned.
-//
-// Returns nil/empty on any error or if the transcript is missing.
-// Best-effort by design — never surfaces IO errors to the caller.
-func readClaudeTranscriptMessages(sessionID, workingDir string, turnStart time.Time, accountHome ...string) []llmtypes.MessageContent {
-	if !isClaudeTranscriptSessionID(sessionID) {
-		return nil
-	}
-	f, _, err := openClaudeTranscript(sessionID, workingDir, accountHome...)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	return parseClaudeTranscriptMessages(f, turnStart, false)
-}
 
 func parseClaudeTranscriptMessages(reader io.Reader, turnStart time.Time, includeInputs bool) []llmtypes.MessageContent {
 	lineage := &nativereplies.ClaudeLineage{}
@@ -407,60 +365,6 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 		}
 	}
 	return result
-}
-
-// waitForCompletedAssistantResponseFromTranscript waits for Claude Code's
-// authoritative end_turn record after its TUI appears to have returned to the
-// prompt. Pane readiness is only a display/transport hint: Claude may render
-// assistant narration and briefly expose a prompt while it is still processing
-// a tool result and starting the next model round. A fixed post-pane grace
-// period can therefore terminate a healthy tool loop before its final response
-// is committed. The owning turn context is the only timeout/cancellation
-// authority here.
-func waitForCompletedAssistantResponseFromTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, accountHome ...string) claudeCompletedTranscriptResponse {
-	response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
-	if !response.Found || (response.Completed && strings.TrimSpace(response.Text) != "") {
-		return response
-	}
-
-	// Transcripts can grow to several megabytes. Once one has been found, avoid
-	// rescanning the entire JSONL on every poll while Claude is still thinking.
-	// An append changes size and mtime; transient stat/read failures retain the
-	// already-observed Found state rather than falling back to pane text.
-	transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
-	var lastSize int64 = -1
-	var lastModTime time.Time
-	if info, err := os.Stat(transcriptPath); err == nil {
-		lastSize = info.Size()
-		lastModTime = info.ModTime()
-	}
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return response
-		case <-ticker.C:
-			if transcriptPath != "" {
-				info, err := os.Stat(transcriptPath)
-				if err != nil || (info.Size() == lastSize && info.ModTime().Equal(lastModTime)) {
-					continue
-				}
-				lastSize = info.Size()
-				lastModTime = info.ModTime()
-			}
-			candidate := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
-			if !candidate.Found {
-				continue
-			}
-			response = candidate
-			if response.Completed && strings.TrimSpace(response.Text) != "" {
-				return response
-			}
-		}
-	}
 }
 
 func textFromClaudeBlocks(blocks []claudeAssistantContentBlock) []string {

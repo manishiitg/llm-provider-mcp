@@ -11,6 +11,15 @@ let running = false
 let turnId = ''
 let delivering = false
 const delivered = new Set<string>()
+// Streamed pieces of the main conversation's current model request, written
+// out about every 150 ms; stepKey names that request for its stored rows.
+let stream: Record<string, unknown>[] = []
+let flushedAt = 0
+let stepKey = ''
+// Rows the chat history keeps: prompts, answer blocks, tool results, input
+// joined into a running turn.
+const ROW_DOORS = new Set(['prompt', 'response', 'tool-result', 'delivery', 'note'])
+const ROW_TEXT_LIMIT = 200000
 
 async function emit($: any, type: string, fields: Record<string, unknown> = {}) {
   // Numbered before any await, so concurrent events keep their order.
@@ -50,6 +59,32 @@ async function deliverInbox($: any) {
   } finally {
     delivering = false
   }
+}
+
+async function flushStream($: any, force: boolean) {
+  if (stream.length === 0 || (!force && Date.now() - flushedAt < 150)) return
+  const items = stream
+  stream = []
+  flushedAt = Date.now()
+  await emit($, 'stream', { step: stepKey, items })
+}
+
+// trimRow keeps a stored row small enough for one event file: long text and
+// tool output are cut, with a note of how much.
+function trimRow(message: any): any {
+  const cut = (text: string) => (text.length > ROW_TEXT_LIMIT ? `${text.slice(0, ROW_TEXT_LIMIT)}\n[cut: ${text.length - ROW_TEXT_LIMIT} more characters]` : text)
+  const content = Array.isArray(message?.content)
+    ? message.content.map((block: any) => {
+        if (block?.type === 'text' && typeof block.text === 'string') return { ...block, text: cut(block.text) }
+        if (block?.type === 'tool_result') {
+          if (typeof block.content === 'string') return { ...block, content: cut(block.content) }
+          if (Array.isArray(block.content)) return { ...block, content: block.content.map((part: any) => (part?.type === 'text' ? { ...part, text: cut(String(part.text ?? '')) } : { type: 'text', text: `[${part?.type ?? 'item'} not shown]` })) }
+        }
+        if (block?.type === 'image' || block?.type === 'document') return { type: 'text', text: `[${block.type} not shown]` }
+        return block
+      })
+    : message?.content
+  return { role: message?.role, content }
 }
 
 // handle runs one inbox request and says how it went.
@@ -109,6 +144,49 @@ export const register: Register = on => {
       await emit($, 'turn_start', { turn_id: e.turnId })
     }
     return next(e)
+  })
+
+  // The main conversation's model requests, streamed as they arrive: text,
+  // thinking, each tool call and its input as Claude writes it, and the stop.
+  on('turn.step', async function* ($, e, next) {
+    const main = !e.agentId
+    if (main) stepKey = `${e.turnId}:${e.index}`
+    const chunks = next(e)
+    while (true) {
+      const step = await chunks.next()
+      if (step.done) {
+        if (main) await flushStream($, true)
+        return step.value
+      }
+      const chunk: any = step.value
+      if (main) {
+        switch (chunk.kind) {
+          case 'text':
+          case 'thinking':
+            stream.push({ kind: chunk.kind, index: chunk.index, text: chunk.text })
+            break
+          case 'tool':
+            stream.push({ kind: 'tool', index: chunk.index, id: chunk.id, name: chunk.name })
+            break
+          case 'input':
+            stream.push({ kind: 'input', index: chunk.index, json: chunk.json })
+            break
+          case 'stop':
+            stream.push({ kind: 'stop', stop_reason: chunk.stopReason, usage: chunk.usage })
+            break
+        }
+        await flushStream($, chunk.kind === 'stop' || chunk.kind === 'tool')
+      }
+      yield chunk
+    }
+  })
+
+  on('session.append', async ($, e, next) => {
+    const stored: any = await next(e)
+    if (!(e as any).agentId && ROW_DOORS.has(String((e as any).door)) && stored?.message) {
+      await emit($, 'row', { door: (e as any).door, uuid: stored.uuid, step: stepKey, message: trimRow(stored.message) })
+    }
+    return stored
   })
 
   // Every compaction, whoever asked for it: /compact, Claude's own threshold, AgentWorks.

@@ -2,22 +2,15 @@ package claudecode
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/nativereplies"
 )
-
-// claudeTranscriptStreamPollInterval is how often the transcript tailer checks
-// the JSONL sidecar for newly-appended blocks during a turn. Matches the pane
-// poll cadence so structured content and terminal snapshots arrive in step.
-const claudeTranscriptStreamPollInterval = 250 * time.Millisecond
 
 // claudeInteractiveStreamTranscriptEnabled reports whether to tail the CLI's
 // JSONL transcript for structured streaming. Opt-in (default OFF): the existing
@@ -62,189 +55,6 @@ type claudeTranscriptEvent struct {
 	ToolDuration time.Duration
 	// Compaction is set for a system/compact_boundary row.
 	Compaction *llmtypes.ContextCompaction
-}
-
-// streamClaudeTranscript tails the claude-code JSONL transcript for `sessionID`
-// and emits assistant-text and tool-call-start StreamChunks onto streamChan as
-// each block is written, until ctx is cancelled. Best-effort and additive: it
-// never affects the turn's final response (built from the pane parse) and
-// swallows all IO errors. Designed for design-first UIs that never render the
-// terminal pane — the caller typically consumes these Content chunks and
-// ignores the terminal-snapshot chunks.
-//
-// It relies on the transcript being append-live (claude-code writes one JSONL
-// row per content block during the turn) and on `sessionID` (a pre-generated
-// UUID passed to the CLI) being known before the turn starts.
-func streamClaudeTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk, accountHome ...string) {
-	if streamChan == nil || !isClaudeTranscriptSessionID(sessionID) {
-		return
-	}
-	ticker := time.NewTicker(claudeTranscriptStreamPollInterval)
-	defer ticker.Stop()
-	tailer := newClaudeTranscriptTailer(sessionID, workingDir, accountHome...)
-	defer tailer.Close()
-
-	// A tool_use row and its tool_result row can land in different polls (the
-	// CLI writes the result once the tool actually finishes, which is the
-	// whole point of a duration). This carries each start's transcript
-	// timestamp across polls so the matching end can compute a real duration
-	// instead of reporting zero.
-	pendingToolStarts := map[string]time.Time{}
-	// PLAT-160: a tool call that completes and is written to the transcript
-	// in the gap between one poll and the next used to be lost entirely if
-	// ctx was cancelled (normal completion, timeout, or Stop) before the next
-	// tick — the loop returned without ever reading that final write. poll
-	// takes its own context for the streamChan send so the final call below
-	// can use context.Background() instead of the already-cancelled ctx,
-	// matching cursorcli's transcript tailer, which already does this.
-	poll := func(sendCtx context.Context) {
-		events, err := tailer.Read(time.Now(), turnStart, pendingToolStarts)
-		if err != nil {
-			return
-		}
-		for _, e := range events {
-			chunk := transcriptEventToChunk(sessionID, e)
-			select {
-			case streamChan <- chunk:
-			case <-sendCtx.Done():
-				return
-			}
-		}
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			poll(context.Background()) // final read, catches a completion written right at turn-end
-			return
-		case <-ticker.C:
-			poll(ctx)
-		}
-	}
-}
-
-// startClaudeTranscriptStream starts the additive structured-stream tailer and
-// returns a stop function that waits for its final flush. The caller MUST call
-// that function before closing streamChan: streamClaudeTranscript intentionally
-// polls once more after cancellation so a just-written tool receipt is not lost.
-func startClaudeTranscriptStream(parentCtx context.Context, sessionID, workingDir string, turnStart time.Time, streamChan chan<- llmtypes.StreamChunk, accountHome ...string) func() {
-	streamCtx, cancel := context.WithCancel(parentCtx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		streamClaudeTranscript(streamCtx, sessionID, workingDir, turnStart, streamChan, accountHome...)
-	}()
-
-	var stopOnce sync.Once
-	return func() {
-		stopOnce.Do(func() {
-			cancel()
-			<-done
-		})
-	}
-}
-
-// claudeTranscriptTailer owns transcript discovery and the open file for one
-// streaming turn. Normal polling performs only a seek+read on this file. Before
-// the transcript exists, path discovery backs off; the expensive compatibility
-// glob is delayed when workingDir is known, then runs at most every 30s.
-type claudeTranscriptTailer struct {
-	lineage        nativereplies.ClaudeLineage
-	accountHome    []string
-	sessionID      string
-	workingDir     string
-	path           string
-	file           *os.File
-	offset         int64
-	nextResolveAt  time.Time
-	resolveBackoff time.Duration
-	nextFallbackAt time.Time
-}
-
-func newClaudeTranscriptTailer(sessionID, workingDir string, accountHome ...string) *claudeTranscriptTailer {
-	return &claudeTranscriptTailer{
-		accountHome:    append([]string(nil), accountHome...),
-		sessionID:      sessionID,
-		workingDir:     workingDir,
-		resolveBackoff: claudeTranscriptStreamPollInterval,
-	}
-}
-
-func (t *claudeTranscriptTailer) Close() {
-	if t == nil || t.file == nil {
-		return
-	}
-	_ = t.file.Close()
-	t.file = nil
-}
-
-func (t *claudeTranscriptTailer) Read(now, turnStart time.Time, pendingToolStarts map[string]time.Time) ([]claudeTranscriptEvent, error) {
-	if t == nil {
-		return nil, nil
-	}
-	if err := t.ensureOpen(now); err != nil || t.file == nil {
-		return nil, err
-	}
-	events, next, err := readClaudeTranscriptEventsFromOpenFile(t.file, t.offset, turnStart, pendingToolStarts, &t.lineage)
-	if err != nil {
-		t.Close()
-		forgetClaudeTranscriptPath(t.sessionID, t.path)
-		t.path = ""
-		t.scheduleResolve(now)
-		return nil, err
-	}
-	t.offset = next
-	return events, nil
-}
-
-func (t *claudeTranscriptTailer) ensureOpen(now time.Time) error {
-	if t.file != nil {
-		return nil
-	}
-	if !t.nextResolveAt.IsZero() && now.Before(t.nextResolveAt) {
-		return nil
-	}
-
-	allowFallback := false
-	if t.nextFallbackAt.IsZero() {
-		// A known working directory is the normal case. Give Claude two seconds
-		// to create its directly-addressable transcript before paying for the
-		// compatibility scan. Callers without a working directory retain one
-		// immediate fallback for legacy use.
-		allowFallback = strings.TrimSpace(t.workingDir) == ""
-		t.nextFallbackAt = now.Add(2 * time.Second)
-	} else if !now.Before(t.nextFallbackAt) {
-		allowFallback = true
-		t.nextFallbackAt = now.Add(30 * time.Second)
-	}
-	path, err := resolveClaudeTranscriptPath(t.sessionID, t.workingDir, allowFallback, t.accountHome...)
-	if err != nil || path == "" {
-		t.scheduleResolve(now)
-		return err
-	}
-	f, err := claudeTranscriptOpen(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			forgetClaudeTranscriptPath(t.sessionID, path)
-		}
-		t.scheduleResolve(now)
-		return err
-	}
-	t.path = path
-	t.file = f
-	t.resolveBackoff = claudeTranscriptStreamPollInterval
-	t.nextResolveAt = time.Time{}
-	return nil
-}
-
-func (t *claudeTranscriptTailer) scheduleResolve(now time.Time) {
-	if t.resolveBackoff <= 0 {
-		t.resolveBackoff = claudeTranscriptStreamPollInterval
-	}
-	t.nextResolveAt = now.Add(t.resolveBackoff)
-	t.resolveBackoff *= 2
-	if t.resolveBackoff > 2*time.Second {
-		t.resolveBackoff = 2 * time.Second
-	}
 }
 
 func transcriptEventToChunk(sessionID string, e claudeTranscriptEvent) llmtypes.StreamChunk {

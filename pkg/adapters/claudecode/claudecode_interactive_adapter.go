@@ -596,7 +596,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// stops when this function returns. The completed JSONL end_turn below is the
 	// authoritative final response; the pane remains the completion/display rail.
 	if opts.StreamChan != nil && claudeInteractiveStreamTranscriptEnabled(opts) {
-		stopTranscriptStream := startClaudeTranscriptStream(callCtx, nativeSessionID, workingDir, turnStart, opts.StreamChan, llmtypes.CLIHomeEnvironment(opts)["HOME"])
+		stopTranscriptStream := startClaudeModStream(callCtx, sessionName, turnStart, opts.StreamChan)
 		// streamClaudeTranscript performs one final transcript flush after its
 		// context is cancelled. It must finish that flush before this body
 		// returns: WithObservability owns (and immediately closes) StreamChan
@@ -667,23 +667,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		discardPersistentSession(ctxErr)
 		return nil, ctxErr
 	}
-	finalExtractionSource := "tmux_pane"
-	turnText := ""
-	transcriptResponse := waitForCompletedAssistantResponseFromTranscript(callCtx, nativeSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"])
-	if transcriptResponse.Found {
-		if !transcriptResponse.Completed || strings.TrimSpace(transcriptResponse.Text) == "" {
-			if ctxErr := callCtx.Err(); ctxErr != nil {
-				discardPersistentSession(ctxErr)
-				return nil, ctxErr
-			}
-			transcriptErr := errors.New("Claude Code transcript exists but the current turn has no completed end_turn response")
-			discardPersistentSession(transcriptErr)
-			return nil, transcriptErr
-		}
-		content = transcriptResponse.Text
-		finalExtractionSource = "jsonl_end_turn"
-		turnText = transcriptResponse.TurnText
-	}
+	// What the mod recorded for this turn: its history rows, the prompts it
+	// answered and its model requests' token counts.
+	record := claudeModRecordTurn(sessionName, turnStart)
+	turnText := record.turnText
 	// Trailing-capture grace window — see llmtypes.RunTrailingPaneCapture.
 	// Skip for persistent interactive sessions: they live past the call
 	// and are scraped by other paths.
@@ -746,37 +733,27 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		additional["claude_code_interactive_retention_seconds"] = int(boundedRetentionTimeout().Seconds())
 	}
 
-	// Best-effort usage extraction from the local JSONL transcript.
-	// claude-code's tmux TUI does not emit usage on stdout, but its
-	// session-id'd transcript file at ~/.claude/projects/<...>/<sid>.jsonl
-	// records `usage` on every assistant event.
+	// Usage is the sum of the turn's model requests, as the mod reported them.
 	gi := &llmtypes.GenerationInfo{Additional: additional}
 	effectiveModel := c.modelID
-	if usage, transcriptModel := readClaudeTranscriptUsage(responseSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"]); usage != nil || transcriptModel != "" {
-		if usage != nil {
-			gi.PromptTokens = usage.PromptTokens
-			gi.CompletionTokens = usage.CompletionTokens
-			gi.TotalTokens = usage.TotalTokens
-			gi.CachedContentTokens = usage.CachedContentTokens
-			// Forward raw cache token keys (cache_read_input_tokens /
-			// cache_creation_input_tokens) into the adapter's local
-			// Additional map so they survive to the cost ledger's
-			// extractCacheTokens, which keys off those raw names
-			// rather than the typed CachedContentTokens field.
-			for k, v := range usage.Additional {
-				additional[k] = v
-			}
+	if record.requests > 0 {
+		usage := claudeGenerationInfo(record.usage.InputTokens, record.usage.OutputTokens, record.usage.CacheCreationTokens, record.usage.CacheReadTokens)
+		gi.PromptTokens = usage.PromptTokens
+		gi.CompletionTokens = usage.CompletionTokens
+		gi.TotalTokens = usage.TotalTokens
+		gi.CachedContentTokens = usage.CachedContentTokens
+		// The cost ledger reads the raw cache token keys.
+		for k, v := range usage.Additional {
+			additional[k] = v
 		}
-		if transcriptModel != "" {
-			effectiveModel = transcriptModel
-			additional["claude_code_model"] = transcriptModel
-		}
-		if transcriptModel != "" {
-			if meta, _ := c.GetModelMetadata(transcriptModel); meta != nil {
-				if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
-					additional["cost_usd_estimated"] = cost
-					additional["cost_model_id"] = transcriptModel
-				}
+	}
+	if model := record.usage.Model; model != "" {
+		effectiveModel = model
+		additional["claude_code_model"] = model
+		if meta, _ := c.GetModelMetadata(model); meta != nil {
+			if cost := llmtypes.ComputeUSDCostFromMetadata(meta, gi); cost > 0 {
+				additional["cost_usd_estimated"] = cost
+				additional["cost_model_id"] = model
 			}
 		}
 	}
@@ -790,13 +767,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		Status:          llmtypes.CodingProviderSessionStatusIdle,
 	})
 
-	// Reconstruct the CLI's internal tool-use loop from the same
-	// sidecar JSONL we read usage from, so workflow conversation logs
-	// can splice the in-CLI text/tool_use/tool_result trail into
-	// their persisted history. Best-effort: empty when the transcript
-	// is missing, unparsable, or only contains the final assistant
-	// text with no internal loop.
-	if sidecarMsgs := readClaudeTranscriptMessages(responseSessionID, workingDir, turnStart, llmtypes.CLIHomeEnvironment(opts)["HOME"]); len(sidecarMsgs) > 0 {
+	// The CLI's own tool-use loop, from the rows the mod recorded, so workflow
+	// conversation logs keep the in-CLI text/tool_use/tool_result trail.
+	if sidecarMsgs := record.messages; len(sidecarMsgs) > 0 {
 		llmtypes.AttachCodingProviderIntermediateMessages(gi, llmtypes.CodingProviderIntermediateMessages{
 			Provider:  "claude-code",
 			Transport: llmtypes.CodingProviderTransportTmux,
@@ -804,14 +777,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		})
 	}
 
-	// Claude's committed end_turn transcript message is authoritative, matching
-	// the Codex rollout path. The tmux pane is a rendering and may contain tool
-	// progress, spinners, token counters, or tips beside the answer. Keep pane
-	// parsing only as a compatibility fallback for CLI versions/environments in
-	// which the transcript cannot be read.
-	additional["claude_code_final_extraction_source"] = finalExtractionSource
+	// Answer, history and usage all come from the mod, never the pane.
+	additional["claude_code_final_extraction_source"] = "claude_mod"
 	additional["claude_code_completion_source"] = "claude_mod"
-	additional["native_continuation_roots"] = transcriptResponse.IncludedRoots
+	additional["native_continuation_roots"] = record.roots
 	// Chat surfaces want the whole turn (narration before tool calls too), not
 	// only the committed end_turn answer that final_result keeps for workflows.
 	if turnText != "" && turnText != content {
