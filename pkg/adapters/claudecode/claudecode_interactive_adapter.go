@@ -123,15 +123,6 @@ var claudeInteractiveSessionRegistry = struct {
 	sessions: map[string]struct{}{},
 }
 
-var claudeLiveInputSubmitBackoff = []time.Duration{
-	250 * time.Millisecond,
-	500 * time.Millisecond,
-	time.Second,
-	2 * time.Second,
-}
-
-const claudeLiveInputPasteSettlementMaxWait = 5 * time.Second
-
 var claudeInteractiveOwnerRegistry = sessionregistry.NewOwnerRegistry[string]()
 
 type claudeInteractivePersistentSession struct {
@@ -570,7 +561,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 				}
 			}
 		}
-		result, compactErr := runClaudeTmuxIdleCompact(callCtx, sessionName, nativeSessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"], emit)
+		result, compactErr := runClaudeTmuxIdleCompact(callCtx, sessionName, emit)
 		if compactErr != nil {
 			discardPersistentSession(compactErr)
 			return nil, compactErr
@@ -629,13 +620,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 	}()
 	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
-	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.CLIHomeEnvironment(opts)["HOME"])
-	var transcriptOffset int64
-	if info, statErr := os.Stat(transcriptPath); statErr == nil {
-		transcriptOffset = info.Size()
-	}
-	if err := claudeConfirmInitialSubmitAfterPaneError(ctx, nativeSessionID, workingDir, llmtypes.CLIHomeEnvironment(opts)["HOME"], prompt, turnStart, transcriptOffset,
-		sendPromptToTmux(callCtx, sessionName, prompt)); err != nil {
+	if _, err := deliverClaudeModInput(callCtx, sessionName, prompt); err != nil {
 		discardPersistentSession(err)
 		return nil, err
 	}
@@ -660,6 +645,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// Claude Code says when the turn ends, through the mod in this terminal.
 	var content string
 	end, ok := waitForClaudeModTurnComplete(callCtx, sessionName, turnStart)
+	if ok && end.Reason == "error" {
+		// The turn died on an API error; Claude Code's answer is that error.
+		ok, err = false, claudeModTurnError(sessionName, end.Answer)
+	} else if !ok && end.Type == "force_complete" {
+		err = tmuxcontrol.ErrForceComplete
+	}
 	if ok {
 		content = end.Answer
 		if persistentInteractive && persistentSession != nil {
@@ -668,7 +659,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 			nativeSessionID = persistentSession.nativeSessionID
 		}
 		c.logger.Infof("[CLAUDE_MOD] turn complete tmux=%s session=%s reason=%s duration_ms=%d context=%d/%d", sessionName, end.SessionID, end.Reason, end.DurationMS, end.ContextTokens, end.ContextWindow)
-	} else {
+	} else if err == nil {
 		err = callCtx.Err()
 	}
 	if ok && persistentInteractive {
@@ -2274,189 +2265,6 @@ func sendPromptToTmuxUnserialized(ctx context.Context, sessionName, prompt strin
 	return fmt.Errorf("Claude Code prompt did not start after submit retries: %w", lastErr)
 }
 
-// claudeLiveInputDeliveryMaxWait bounds the detached delivery operation. It has
-// to clear claudeCompactionMaxWait plus the submit/verify backoff, because the
-// operation owns the session's input slot for its whole life.
-const claudeLiveInputDeliveryMaxWait = claudeCompactionMaxWait + time.Minute
-
-// sendInputToActiveTmuxWithProof delivers live input, with recovery for a
-// send the submit check could not confirm. taken reports whether Claude's own
-// transcript already holds the message (a user row or a queue row); when the
-// submit retries run out and the transcript still has neither, the message
-// never reached Claude (RTS 2026-09-24 13:20: the text vanished and the
-// composer was left holding two blank lines). The composer is then emptied
-// and the message sent once more, inside the same input slot so nothing can
-// interleave. The server's durable watch keeps judging the outcome.
-func sendInputToActiveTmuxWithProof(ctx context.Context, sessionName, message string, taken func() bool) error {
-	// Delivery is synchronous, verification is not. The verify+retry loop only
-	// re-presses Enter on a draft the TUI swallowed — it cannot change what
-	// Claude Code already received — so putting a TUI repaint on the caller's
-	// clock would add latency to every live send and buy nothing. It still runs
-	// inside the broker operation, which means it holds this session's input slot
-	// and a following message cannot interleave with a retry.
-	handoff := make(chan error, 1)
-
-	// The caller's context is typically an HTTP request context that is canceled
-	// the instant we return, which would kill the verify half before its first
-	// look. Detach the cancellation but keep a ceiling.
-	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claudeLiveInputDeliveryMaxWait)
-	go func() {
-		defer cancel()
-		_, err := tmuxinput.Default.Do(opCtx, tmuxinput.Request{
-			SessionID: sessionName,
-			Source:    "claude-code",
-		}, func(ctx context.Context) error {
-			if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
-				return err
-			}
-			err := sendInputToActiveTmuxUnserialized(ctx, sessionName, message, func(err error) {
-				handoff <- err
-			})
-			if err == nil || taken == nil || !errors.Is(err, errClaudeInputUnsubmitted) {
-				return err
-			}
-			if claudeWaitForTranscriptProof(ctx, taken, claudeLiveInputProofWait) {
-				return nil
-			}
-			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s not in transcript after submit retries; clearing the composer and sending once more", sessionName)
-			if clearErr := clearClaudeComposerBlind(ctx, sessionName, message); clearErr != nil {
-				return fmt.Errorf("%w; clearing the composer for a resend failed: %w", err, clearErr)
-			}
-			if resendErr := sendInputToActiveTmuxUnserialized(ctx, sessionName, message, nil); resendErr != nil && !errors.Is(resendErr, errClaudeInputUnsubmitted) {
-				return fmt.Errorf("%w; resend failed: %w", err, resendErr)
-			}
-			return nil
-		})
-		// Do can fail before the operation body ever runs — readiness wait, enqueue,
-		// context death — and in that case nothing has released the caller yet.
-		select {
-		case handoff <- err:
-		default:
-		}
-	}()
-
-	select {
-	case err := <-handoff:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// sendInputToActiveTmuxUnserialized pastes message into sessionName and submits
-// it, then verifies the prompt actually cleared and re-presses Enter if it did
-// not. delivered is invoked exactly once, as soon as the paste and the first
-// Enter are in the pty (or earlier with the error that stopped them) — see
-// sendInputToActiveTmux for why the verify half must not be on the caller's
-// clock.
-func sendInputToActiveTmuxUnserialized(ctx context.Context, sessionName, message string, delivered func(error)) (err error) {
-	if delivered == nil {
-		delivered = func(error) {}
-	}
-	var releaseOnce sync.Once
-	release := func(err error) { releaseOnce.Do(func() { delivered(err) }) }
-	// Every path that returns before the explicit release below must still hand
-	// the caller its real error rather than leaving it blocked.
-	defer func() { release(err) }()
-
-	// [LATENCY_DEBUG] timing — see codexcli's equivalent function for why this
-	// matters: "pasted" is the mechanical delivery cost, "handoff" is what the
-	// caller actually waits for, and "confirmed" is however many submit/verify
-	// retries it took to prove Claude picked the input up.
-	start := time.Now()
-	bufferName := "mlp-claude-steer-" + randomHex(6)
-	message = strings.TrimRight(message, "\r\n")
-	if strings.TrimSpace(message) == "" {
-		return fmt.Errorf("Claude Code tmux input is empty")
-	}
-	if err := clearClaudePromptDraftBeforePaste(ctx, sessionName); err != nil {
-		return err
-	}
-	paneBeforePaste, _ := captureTmuxPane(ctx, sessionName)
-	wholePaste, err := deliverClaudeComposerText(ctx, sessionName, bufferName, message)
-	if err != nil {
-		return err
-	}
-	pasted := time.Since(start)
-	verifier := &claudeSubmitVerifier{message: message}
-	// Claude Code turns a bracketed multiline/large paste into an attachment
-	// chip asynchronously. Pressing Enter before that conversion settles can
-	// submit an empty prompt while the attachment remains in the editor (the UI
-	// then says "paste again to expand"). Wait only for attachment-shaped input;
-	// ordinary one-line steering keeps the immediate low-latency path.
-	if claudeLiveInputNeedsPasteSettlement(message) {
-		if _, err := waitForClaudeLiveInputPasteSettled(ctx, sessionName, paneBeforePaste, message, claudeLiveInputPasteSettlementMaxWait); err != nil {
-			// Nothing was submitted. Remove the half-verified text we typed so it
-			// does not sit in the composer as a stale draft and block every later
-			// live input (RTS 2026-09-24 04:29-04:30).
-			if !isClaudeTmuxSessionLostError(err) {
-				_, _ = clearClaudeComposerDraftRounds(context.WithoutCancel(ctx), sessionName)
-			}
-			return fmt.Errorf("Claude Code multiline live input did not settle before submit: %w", err)
-		}
-		if settledPane, captureErr := captureTmuxPane(ctx, sessionName); captureErr == nil {
-			_ = verifier.submitted(settledPane)
-		}
-		if wholePaste {
-			if err := typeClaudePasteAuthorization(ctx, sessionName, message); err != nil {
-				return err
-			}
-		}
-	}
-	// Submit immediately after the paste. The pty delivers the pasted bytes and
-	// the C-e/Enter keystrokes in order for ordinary one-line input, so waiting
-	// for that draft to *render* first adds latency without changing what Claude
-	// Code receives. Attachment-shaped input is settled above. (The old
-	// pre-submit waitForPromptPasteWithTimeout(250ms) could never confirm within
-	// its own deadline — its stability window was 900ms — so every live send
-	// burned a fixed 250ms and then submitted anyway.) The submitted-draft
-	// verify + retry loop below remains the safety net for a swallowed Enter.
-	var lastErr error
-	var handoff time.Duration
-	for i, submitWait := range claudeLiveInputSubmitBackoff {
-		releasePaste := false
-		if i > 0 {
-			pane, _ := captureTmuxPane(ctx, sessionName)
-			releasePaste = claudeRetryNeedsPasteRelease(i+1, pane)
-		}
-		if err := sendClaudeSubmitKeys(ctx, sessionName, releasePaste); err != nil {
-			return fmt.Errorf("failed to submit input to Claude Code tmux session: %w", err)
-		}
-		if i == 0 {
-			// The pty has the pasted bytes and the Enter, in order. Nothing the
-			// verify loop does from here changes what Claude Code receives — it
-			// only re-presses Enter if the draft is still sitting there — so the
-			// caller is released now instead of paying for a repaint it does not
-			// need to see.
-			handoff = time.Since(start)
-			release(nil)
-		}
-		if err := waitForClaudeLiveInputSubmitted(ctx, sessionName, verifier, submitWait); err == nil {
-			log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=%d",
-				sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), i)
-			return nil
-		} else {
-			lastErr = err
-		}
-	}
-	// The caller was already told the message went out, so this log is the only
-	// place a genuinely swallowed Enter surfaces. Keep it loud.
-	log.Printf("[LATENCY_DEBUG] claude tmux delivery | session=%s pasted=%dms handoff=%dms confirmed=%dms retries=exhausted err=%v",
-		sessionName, pasted.Milliseconds(), handoff.Milliseconds(), time.Since(start).Milliseconds(), lastErr)
-	return fmt.Errorf("%w: %w", errClaudeInputUnsubmitted, lastErr)
-}
-
-// errClaudeInputUnsubmitted marks a send whose submit check ran out of
-// retries after the caller was already released. The check can miss a fast
-// submit, so the transcript decides whether it really was lost.
-var errClaudeInputUnsubmitted = errors.New("Claude Code tmux input remained unsubmitted after submit retries")
-
-// claudeLiveInputProofWait is how long a send the submit check could not
-// confirm waits for its transcript row before it is treated as lost. Claude
-// writes a queue row within ~0.5 s of a steer and a user row within ~3 s of
-// an idle submit.
-const claudeLiveInputProofWait = 6 * time.Second
-
 func claudeWaitForTranscriptProof(ctx context.Context, taken func() bool, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {
@@ -2468,25 +2276,6 @@ func claudeWaitForTranscriptProof(ctx context.Context, taken func() bool, wait t
 		}
 		sleepCtx(ctx, claudeDurableAckPollInterval)
 	}
-}
-
-// clearClaudeComposerBlind empties the composer without reading the pane:
-// one C-e C-u BSpace round per line the message could have left (plus a few
-// for stray blank lines). On an already empty composer the keys do nothing.
-func clearClaudeComposerBlind(ctx context.Context, sessionName, message string) error {
-	rounds := strings.Count(message, "\n") + 4
-	if rounds > 64 {
-		rounds = 64
-	}
-	args := []string{"send-keys", "-t", sessionName}
-	for i := 0; i < rounds; i++ {
-		args = append(args, "C-e", "C-u", "BSpace")
-	}
-	if err := runCommand(ctx, nil, "tmux", args...); err != nil {
-		return err
-	}
-	sleepCtx(ctx, claudeDraftClearSettle)
-	return nil
 }
 
 // claudeLeadingSlashCommand matches a prompt whose first line is only a slash
@@ -2890,26 +2679,17 @@ func closeClaudeSessionForResume(sessionName, knownSessionID string, logger inte
 }
 
 func interruptClaudeInteractiveSession(sessionName string, logger interfaces.Logger) error {
-	interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	_, err := tmuxinput.Default.Do(interruptCtx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "claude-code-internal-interrupt",
-		Priority:  tmuxinput.PriorityInterrupt,
-	}, func(ctx context.Context) error {
-		if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, "Escape"); err != nil {
-			return err
-		}
-		return waitForReadyInputPrompt(ctx, sessionName)
-	})
-	if err != nil {
-		if logger != nil {
-			logger.Debugf("Failed to interrupt Claude Code tmux session %s: %v", sessionName, err)
-		}
-		return err
+	since := time.Now()
+	event, err := claudeModRequest(ctx, sessionName, "abort", "")
+	if err == nil && event.Delivery == "aborted" {
+		_, err = waitForClaudeModEvent(ctx, sessionName, "turn_complete", since)
 	}
-	return nil
+	if err != nil && logger != nil {
+		logger.Debugf("Failed to interrupt Claude Code tmux session %s: %v", sessionName, err)
+	}
+	return err
 }
 
 func isContextCanceledError(err error) bool {
@@ -3109,52 +2889,6 @@ func claudeComposerText(captured string) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// waitForClaudeLiveInputPasteSettled waits until a multi-line live message has
-// landed in the composer before submit: either Claude turned it into a
-// "[Pasted text" chip, or the input box visibly holds the whole message.
-// Short multi-line pastes stay inline as plain text in current Claude Code,
-// and a running turn's spinner keeps the pane changing, so the old wait (chip
-// or whole-pane stability) could only time out even though the paste had
-// landed. The pane stability path remains as the final fallback.
-func waitForClaudeLiveInputPasteSettled(ctx context.Context, sessionName, paneBeforePaste, message string, timeout time.Duration) (bool, error) {
-	visibleCtx, cancelVisible := context.WithTimeout(ctx, timeout)
-	defer cancelVisible()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-visibleCtx.Done():
-			if ctx.Err() != nil {
-				return false, ctx.Err()
-			}
-			return waitForPromptPasteWithTimeout(ctx, sessionName, paneBeforePaste, time.Second)
-		case <-ticker.C:
-			captured, err := captureTmuxPane(visibleCtx, sessionName)
-			if err != nil {
-				if isClaudeTmuxSessionLostError(err) {
-					return false, err
-				}
-				continue
-			}
-			if strings.Contains(captured, "[Pasted text") {
-				return false, nil
-			}
-			composer := claudeComposerText(captured)
-			if composer != "" && claudePromptDraftStillMatchesMessage(composer, message) &&
-				strings.Contains(strings.Join(strings.Fields(composer), " "), strings.Join(strings.Fields(message), " ")) {
-				return false, nil
-			}
-			// A long multi-line message does not fit the visible composer (the
-			// editor keeps its end, where the cursor is, in view), so the whole
-			// message can never be seen. Its tail being present proves the
-			// paste finished landing.
-			if claudeComposerHoldsMessageTail(composer, message) {
-				return false, nil
-			}
-		}
-	}
-}
-
 // claudeComposerHoldsMessageTail reports whether the visible composer ends
 // with the end of message. Whitespace is ignored entirely so terminal soft
 // wraps (which can split a word) and line-number gutters do not matter.
@@ -3345,46 +3079,6 @@ func (v *claudeSubmitVerifier) submitted(captured string) bool {
 	}
 	// A different, non-empty draft means the prompt moved on from our message.
 	return true
-}
-
-func waitForClaudeLiveInputSubmitted(ctx context.Context, sessionName string, verifier *claudeSubmitVerifier, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-	deadline, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Check immediately, then on a short interval: a ticker-only loop wastes a
-	// full interval before the first look even when the draft cleared instantly.
-	ticker := time.NewTicker(75 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastCaptured string
-	for {
-		captured, err := captureTmuxPane(deadline, sessionName)
-		if err != nil {
-			if isClaudeTmuxSessionLostError(err) {
-				return err
-			}
-		} else {
-			lastCaptured = captured
-			if verifier.submitted(captured) {
-				return nil
-			}
-		}
-		select {
-		case <-deadline.Done():
-			captured := lastCaptured
-			if strings.TrimSpace(captured) == "" {
-				captured, _ = captureTmuxPane(context.Background(), sessionName)
-			}
-			if strings.TrimSpace(captured) != "" {
-				return fmt.Errorf("timed out waiting for Claude Code live input draft to clear; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
-			}
-			return fmt.Errorf("timed out waiting for Claude Code live input draft to clear")
-		case <-ticker.C:
-		}
-	}
 }
 
 func latestClaudePromptDraft(captured string) (string, bool) {
@@ -4555,10 +4249,14 @@ func SendClaudeCodeInput(ctx context.Context, ownerSessionID, message string) er
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
-	since := time.Now()
-	stashClaudeDurableReceiptForSend(ownerSessionID, message, since)
-	taken := claudeTranscriptTookSend(ownerSessionID, message)
-	return claudeConfirmLiveSubmitAfterPaneError(ctx, ownerSessionID, message, sendInputToActiveTmuxWithProof(ctx, sessionName, message, taken))
+	started := time.Now()
+	delivery, err := deliverClaudeModInput(ctx, sessionName, message)
+	if err != nil {
+		return err
+	}
+	recordClaudeModInputTaken(ownerSessionID, message, time.Since(started))
+	log.Printf("[CLAUDE_MOD] input taken owner=%s tmux=%s delivery=%s", ownerSessionID, sessionName, delivery)
+	return nil
 }
 
 func claudeConfirmLiveSubmitAfterPaneError(ctx context.Context, ownerSessionID, message string, submitErr error) error {

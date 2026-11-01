@@ -576,41 +576,15 @@ func AwaitClaudeInputDurable(ctx context.Context, ownerSessionID, message string
 	if strings.TrimSpace(message) == "" {
 		return ClaudeDurableAck{}, fmt.Errorf("message is empty")
 	}
-	if timeout <= 0 {
-		timeout = claudeDurableAckBudget()
-	}
-	session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID)
-	if !ok || session == nil {
+	if session, ok := claudeInteractivePersistentRegistry.Get(ownerSessionID); !ok || session == nil {
 		return ClaudeDurableAck{}, fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
-	receipt, ok := takeClaudeDurableReceipt(session, message)
-	awaitStart := time.Now()
-	since := awaitStart.Add(-2 * time.Minute)
-	var minOffset int64
-	occurrence := 1
-	if ok {
-		since = receipt.since
-		minOffset = receipt.offset
-		occurrence = receipt.occurrence
-	}
-	ack, err := pollClaudeDurableAck(ctx, message, since, minOffset, timeout, claudeDurableAckPoll{
-		resolve:    func() string { return resolveClaudeTranscriptPathNoMu(session) },
-		occurrence: occurrence,
-	})
-	if err != nil {
-		return ClaudeDurableAck{}, err
-	}
-	// With no pending receipt the search window starts two minutes back, so the poll reports that offset as
-	// latency (a constant 120 s on every receipt); report the time actually waited.
+	// The mod confirmed the send once Claude took it: a new turn started, or a
+	// row stored in the running turn.
+	input, ok := takeClaudeModInputTaken(ownerSessionID, message)
 	if !ok {
-		if waited := time.Since(awaitStart); ack.Latency > waited {
-			ack.Latency = waited
-		}
+		return ClaudeDurableAck{}, fmt.Errorf("no input sent to Claude Code session %s matches this message", ownerSessionID)
 	}
-	if ack.Outcome == ClaudeDurableAckConfirmed {
-		log.Printf("[claude-durable-ack] owner=%s latency=%dms proof=%s", ownerSessionID, ack.Latency.Milliseconds(), ack.ProofPath)
-	} else {
-		log.Printf("[claude-durable-ack] owner=%s UNFLUSHED after %dms (still natively queued)", ownerSessionID, ack.Latency.Milliseconds())
-	}
-	return ack, nil
+	log.Printf("[claude-durable-ack] owner=%s latency=%dms proof=claude_mod", ownerSessionID, input.latency.Milliseconds())
+	return ClaudeDurableAck{Outcome: ClaudeDurableAckConfirmed, Latency: input.latency, ProofPath: "claude_mod", RowTimestamp: input.at}, nil
 }

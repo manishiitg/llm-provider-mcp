@@ -26,6 +26,11 @@ func SendClaudeCodeControlKey(ctx context.Context, ownerSessionID, key string) e
 	if !ok {
 		return fmt.Errorf("no active Claude Code tmux session registered for owner session %s", ownerSessionID)
 	}
+	if key == "Escape" || key == "C-c" {
+		// Stop is the mod's: Claude Code ends the turn itself.
+		_, err := claudeModRequest(ctx, sessionName, "abort", "")
+		return err
+	}
 	_, err := tmuxinput.Default.Do(ctx, tmuxinput.Request{
 		SessionID: sessionName,
 		Source:    "claude-code-control",

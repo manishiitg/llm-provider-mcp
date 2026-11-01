@@ -8,15 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -124,8 +127,10 @@ func prepareClaudeModSessionDir(sessionName string) (string, error) {
 	if base, _ := claudeModBaseFor(sessionName); base.shared {
 		mode = 0o770
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "events"), mode); err != nil {
-		return "", fmt.Errorf("prepare Claude mod folder: %w", err)
+	for _, sub := range []string{"events", "inbox"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), mode); err != nil {
+			return "", fmt.Errorf("prepare Claude mod folder: %w", err)
+		}
 	}
 	return dir, nil
 }
@@ -159,6 +164,12 @@ type claudeModEvent struct {
 	ContextTokens int64   `json:"context_tokens,omitempty"`
 	ContextWindow int64   `json:"context_window,omitempty"`
 	CostUSD       float64 `json:"cost_usd,omitempty"`
+	InputID       string  `json:"input_id,omitempty"`
+	Delivery      string  `json:"delivery,omitempty"`
+	Error         string  `json:"error,omitempty"`
+	Trigger       string  `json:"trigger,omitempty"`
+	TokensBefore  int64   `json:"tokens_before,omitempty"`
+	TokensAfter   int64   `json:"tokens_after,omitempty"`
 }
 
 // readClaudeModEvents returns the session's events in the order they happened.
@@ -257,6 +268,10 @@ func waitForClaudeModTurnComplete(ctx context.Context, sessionName string, since
 		} else {
 			pending = -1
 		}
+		// An operator marked the visible terminal complete.
+		if tmuxcontrol.ConsumeForceComplete(sessionName) {
+			return claudeModEvent{Type: "force_complete"}, false
+		}
 		select {
 		case <-ctx.Done():
 			return claudeModEvent{}, false
@@ -344,4 +359,130 @@ func claudeModOwnedByProcess(path string) bool {
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Getuid()
+}
+
+// claudeModInputTimeout bounds the wait for the mod to take a message. A new
+// turn is confirmed as it starts, so a busy Claude can hold it a while.
+const claudeModInputTimeout = 2 * time.Minute
+
+var claudeModInputSeq atomic.Int64
+
+// deliverClaudeModInput puts text in the terminal's mod inbox and waits until
+// the mod has handed it to Claude: a new turn when Claude was idle, or a row
+// the running turn reads at its next step. It returns how it was delivered.
+func deliverClaudeModInput(ctx context.Context, sessionName, text string) (string, error) {
+	event, err := claudeModRequest(ctx, sessionName, "input", text)
+	return event.Delivery, err
+}
+
+// claudeModRequest asks the terminal's mod for one thing (input, abort,
+// compact) and waits for its answer.
+func claudeModRequest(ctx context.Context, sessionName, kind, text string) (claudeModEvent, error) {
+	dir := claudeModSessionDir(sessionName)
+	if dir == "" {
+		return claudeModEvent{}, fmt.Errorf("Claude Code session %s does not run the AgentWorks mod", sessionName)
+	}
+	id := fmt.Sprintf("%019d-%06d-%s", time.Now().UnixNano(), claudeModInputSeq.Add(1), kind)
+	data, _ := json.Marshal(map[string]string{"id": id, "kind": kind, "text": text})
+	inbox := filepath.Join(dir, "inbox")
+	// Written aside and renamed in, so the mod never reads half a request.
+	tmp := filepath.Join(inbox, id+".tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return claudeModEvent{}, fmt.Errorf("queue %s for Claude Code: %w", kind, err)
+	}
+	final := filepath.Join(inbox, id+".json")
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return claudeModEvent{}, fmt.Errorf("queue %s for Claude Code: %w", kind, err)
+	}
+	defer os.Remove(final)
+	ctx, cancel := context.WithTimeout(ctx, claudeModInputTimeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, event := range readClaudeModEvents(sessionName) {
+			if event.Type != "input" || event.InputID != id {
+				continue
+			}
+			if event.Error != "" {
+				return event, fmt.Errorf("Claude Code did not take the %s: %s", kind, event.Error)
+			}
+			return event, nil
+		}
+		select {
+		case <-ctx.Done():
+			return claudeModEvent{}, fmt.Errorf("Claude Code did not take the %s in %s: %w", kind, claudeModInputTimeout, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// claudeModTaken remembers each owner's messages the mod confirmed, for the
+// durable receipt the server asks for after a send.
+var (
+	claudeModTakenMu sync.Mutex
+	claudeModTaken   = map[string][]claudeModTakenInput{}
+)
+
+type claudeModTakenInput struct {
+	message string
+	latency time.Duration
+	at      time.Time
+}
+
+func recordClaudeModInputTaken(ownerSessionID, message string, latency time.Duration) {
+	claudeModTakenMu.Lock()
+	defer claudeModTakenMu.Unlock()
+	taken := append(claudeModTaken[ownerSessionID], claudeModTakenInput{message: message, latency: latency, at: time.Now()})
+	if len(taken) > 64 {
+		taken = taken[len(taken)-64:]
+	}
+	claudeModTaken[ownerSessionID] = taken
+}
+
+func takeClaudeModInputTaken(ownerSessionID, message string) (claudeModTakenInput, bool) {
+	claudeModTakenMu.Lock()
+	defer claudeModTakenMu.Unlock()
+	for i, input := range claudeModTaken[ownerSessionID] {
+		if input.message == message {
+			claudeModTaken[ownerSessionID] = append(claudeModTaken[ownerSessionID][:i:i], claudeModTaken[ownerSessionID][i+1:]...)
+			return input, true
+		}
+	}
+	return claudeModTakenInput{}, false
+}
+
+// waitForClaudeModEvent waits for the first event of a type written at or
+// after since.
+func waitForClaudeModEvent(ctx context.Context, sessionName, eventType string, since time.Time) (claudeModEvent, error) {
+	sinceMS := since.UnixMilli()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, event := range readClaudeModEvents(sessionName) {
+			if event.Type == eventType && event.At >= sinceMS {
+				return event, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return claudeModEvent{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// claudeModTurnError turns an API error that ended a turn into the error the
+// stack acts on: a usage limit suspends until its reset, low credit stops.
+func claudeModTurnError(sessionName, text string) error {
+	switch {
+	case IsClaudeUsageLimitText(text):
+		return NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, text, time.Now())
+	case IsClaudeCreditLowText(text):
+		log.Printf("[TURN] stalled cause=credit_low provider=claude-code tmux=%s", sessionName)
+		return &ClaudeCreditLowError{}
+	default:
+		return fmt.Errorf("claude code turn failed: %s", strings.TrimSpace(text))
+	}
 }
