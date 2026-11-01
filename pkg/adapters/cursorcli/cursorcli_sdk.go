@@ -383,6 +383,9 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	start := map[string]any{"type": "start", "cwd": cwd, "model": startModel}
 	if storeRoot != "" {
 		start["store_root"] = storeRoot
+		if resume != "" && len(opts.CodingProviderHistory) == 0 {
+			start["require_native_resume"] = true
+		}
 		if _, err := os.Stat(filepath.Join(storeRoot, ".agentworks-native-handoff.json")); err == nil {
 			start["require_native_resume"] = resume != ""
 		}

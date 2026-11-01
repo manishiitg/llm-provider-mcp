@@ -24,7 +24,7 @@ func TestCursorSDKNativeTransferRoundTripLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
 	sourceWork, destWork, sourceRuntime, destRuntime := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
-	adapter := cursorcli.NewCursorCLIAdapter("", "composer-2.5", nil)
+	adapter := cursorcli.NewCursorCLIAdapter("", "composer-2.5[fast=false]", nil)
 	adapter.SetSDKTransport(true)
 	turn := func(work, runtime, id, marker, prompt string) (*llmtypes.ContentResponse, string) {
 		t.Helper()
@@ -71,6 +71,12 @@ func TestCursorSDKNativeTransferRoundTripLive(t *testing.T) {
 	text = response.Choices[0].Content
 	if !strings.Contains(text, "NATIVE_AMBER_714") || !strings.Contains(text, "NATIVE_JADE_936") || !strings.Contains(text, "SOURCE_AMBER") {
 		t.Fatalf("return lost native history or current instructions: %s", text)
+	}
+	// A pre-private-store chat cannot silently become a fresh empty agent.
+	missingRuntime := t.TempDir()
+	_, e = adapter.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What were the public codes?")}, cursorcli.WithWorkingDir(sourceWork), cursorcli.WithInteractiveSessionID("missing-native-"+filepath.Base(missingRuntime)), cursorcli.WithPersistentInteractiveSession(false), cursorcli.WithResumeSessionID(id), llmtypes.WithCLIRuntimeDir(missingRuntime))
+	if e == nil {
+		t.Fatal("missing private native history silently started an empty chat")
 	}
 	t.Logf("same native SDK agent %s: source/destination/return memory and instructions passed", id)
 }

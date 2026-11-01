@@ -88,6 +88,37 @@ func TestCursorSDKSnapshotRejectsForeignAgentsAndOfflineFork(t *testing.T) {
 	if e = db.QueryRow(`SELECT COUNT(*) FROM runs WHERE run_id='offline-turn'`).Scan(&kept); e != nil || kept != 1 {
 		t.Fatalf("offline data lost: %d %v", kept, e)
 	}
+	// Both computers may export an offline branch; export must not make
+	// that branch safe to overwrite with the other computer's child of A.
+	if _, e = ExportCursorSDK(store, work, id, t.TempDir(), true); e != nil {
+		t.Fatal(e)
+	}
+	remoteDB, e := sql.Open("sqlite", filepath.Join(target, "index.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = remoteDB.Exec("INSERT INTO runs VALUES('remote-turn',?)", id); e != nil {
+		t.Fatal(e)
+	}
+	remoteDB.Close()
+	remote, e := ExportCursorSDK(target, targetWork, id, t.TempDir(), true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = ImportCursorSDK(store, work, remote); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+		t.Fatalf("dual-export fork overwritten: %v", e)
+	}
+	// An older packet cannot roll back a destination that accepted a newer one.
+	clean, cleanWork := t.TempDir(), t.TempDir()
+	if e = ImportCursorSDK(clean, cleanWork, bundle); e != nil {
+		t.Fatal(e)
+	}
+	if e = ImportCursorSDK(clean, cleanWork, remote); e != nil {
+		t.Fatal(e)
+	}
+	if e = ImportCursorSDK(clean, cleanWork, bundle); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+		t.Fatalf("older snapshot rolled history back: %v", e)
+	}
 	// Refusal must come from the mixed-agent rule with a usable store.
 	if _, e = db.Exec(`INSERT INTO agents VALUES('agent-other',?,'IDLE',NULL,'{}')`, work); e != nil {
 		t.Fatal(e)
@@ -123,6 +154,20 @@ func TestCursorCLISnapshotPreservesBlobsAndRefusesSchemaAndFork(t *testing.T) {
 	b, e := ExportCursorCLI(config, work, id, t.TempDir(), true)
 	if e != nil {
 		t.Fatal(e)
+	}
+	escapedConfig, escaped := t.TempDir(), t.TempDir()
+	linked, _ := CursorCLIPath(escapedConfig, targetWork, id)
+	if e = os.MkdirAll(filepath.Dir(linked), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Symlink(escaped, linked); e != nil {
+		t.Fatal(e)
+	}
+	if e = ImportCursorCLI(escapedConfig, targetWork, b); e == nil || !strings.Contains(e.Error(), "link") {
+		t.Fatalf("chat-directory link accepted: %v", e)
+	}
+	if _, e = os.Stat(filepath.Join(escaped, "store.db")); !os.IsNotExist(e) {
+		t.Fatal("import escaped account chat root")
 	}
 	if e = ImportCursorCLI(destination, targetWork, b); e != nil {
 		t.Fatal(e)
