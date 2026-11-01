@@ -63,9 +63,11 @@ async function deliverInbox($: any) {
     for (const name of names) {
       if (delivered.has(name)) continue
       delivered.add(name)
-      const request = JSON.parse(await $.fs.read(`${inbox}/${name}`))
-      const id = String(request.id ?? name)
+      // A request that cannot be read is answered with its error, never left to time out.
+      let id = name.replace(/\.json$/, '')
       try {
+        const request = JSON.parse(await $.fs.read(`${inbox}/${name}`))
+        id = String(request.id ?? id)
         await emit($, 'input', { input_id: id, ...(await handle($, request)) })
       } catch (err) {
         await emit($, 'input', { input_id: id, error: String(err) })
@@ -371,7 +373,8 @@ export const register: Register = on => {
     if (!(e as any).agentId) {
       running = false
       void refreshStatus($).catch(() => undefined)
-      const usage = await $.session.usage()
+      // The turn ends whatever the usage read does.
+      const usage: any = (await $.session.usage().catch(() => null)) ?? {}
       await emit($, 'turn_complete', {
         turn_id: e.turnId,
         reason: e.reason,

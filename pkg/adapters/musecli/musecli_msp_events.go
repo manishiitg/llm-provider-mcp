@@ -476,11 +476,13 @@ func (a *MuseCLIAdapter) pumpMuseMSP(s *museMSPSession) {
 			listener := s.listener
 			s.mu.Unlock()
 			if listener != nil {
+				// Never drop an event of a running turn: its turn/completed may be the one.
 				select {
 				case listener <- msg:
-					continue
-				default:
+				case <-s.rpc.done:
+					return
 				}
+				continue
 			}
 			a.handleIdleMuseMSP(s, msg)
 		}
