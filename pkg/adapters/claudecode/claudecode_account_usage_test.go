@@ -1,8 +1,9 @@
 package claudecode
 
 import (
-	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // PLAT-872-52: get_usage percentages are already 0-100 (stream events are 0-1).

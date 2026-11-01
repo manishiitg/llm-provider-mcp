@@ -409,51 +409,6 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	return result
 }
 
-// waitForClaudeTurnEndInTranscript is the structured done_detection gate
-// (PLAT-354): it returns once the current turn's latest record is a committed
-// end_turn answer and the transcript has been quiet for quiet. The pane plays
-// no part. ok is false when ctx ends first or no transcript exists for the
-// session; callers then keep the pane-based completion as a fallback.
-func waitForClaudeTurnEndInTranscript(ctx context.Context, sessionID, workingDir string, turnStart time.Time, quiet time.Duration, accountHome ...string) (claudeCompletedTranscriptResponse, bool) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	var lastSize int64 = -1
-	var lastModTime time.Time
-	var endSeenAt time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return claudeCompletedTranscriptResponse{}, false
-		case <-ticker.C:
-		}
-		transcriptPath, _ := resolveClaudeTranscriptPath(sessionID, workingDir, true, accountHome...)
-		if transcriptPath == "" {
-			continue
-		}
-		info, err := os.Stat(transcriptPath)
-		if err != nil {
-			continue
-		}
-		if info.Size() != lastSize || !info.ModTime().Equal(lastModTime) {
-			lastSize, lastModTime = info.Size(), info.ModTime()
-			response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
-			if response.LastIsEndTurn && strings.TrimSpace(response.Text) != "" {
-				endSeenAt = time.Now()
-			} else {
-				endSeenAt = time.Time{}
-			}
-			continue
-		}
-		if !endSeenAt.IsZero() && time.Since(endSeenAt) >= quiet {
-			response := completedAssistantResponseFromTranscript(sessionID, workingDir, turnStart, accountHome...)
-			if response.LastIsEndTurn && strings.TrimSpace(response.Text) != "" {
-				return response, true
-			}
-			endSeenAt = time.Time{}
-		}
-	}
-}
-
 // waitForCompletedAssistantResponseFromTranscript waits for Claude Code's
 // authoritative end_turn record after its TUI appears to have returned to the
 // prompt. Pane readiness is only a display/transport hint: Claude may render

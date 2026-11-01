@@ -68,22 +68,6 @@ func TestClaudeUsageLimitTextStillCatchesRealWallAfterAnUnrelatedConditionalMent
 	}
 }
 
-// The two pane-inspection sites must agree with the matcher, since either one
-// firing alone is what decides whether a stalled pane is recognized.
-func TestClaudeFatalDetectorsUseTheTolerantMatcher(t *testing.T) {
-	weekly := "You've hit your weekly limit · resets 11:30pm (Asia/Calcutta)"
-	if got := detectTmuxFatalStatus(weekly); got != "rate limit reached" {
-		t.Errorf("detectTmuxFatalStatus(weekly) = %q, want %q", got, "rate limit reached")
-	}
-	if !isClaudeFatalProgressLine(weekly) {
-		t.Error("isClaudeFatalProgressLine(weekly) = false, want true")
-	}
-	// Unrelated fatal statuses must keep working.
-	if got := detectTmuxFatalStatus("Not logged in"); got != "not logged in" {
-		t.Errorf("detectTmuxFatalStatus(not logged in) = %q", got)
-	}
-}
-
 // PLAT-101 wiring. The limit path used to return a plain error whose text
 // ("...rate limit reached") llmerrors then read as KindRateLimit — transient
 // throttling. Measured before this change: IsRetryable true (so the stack

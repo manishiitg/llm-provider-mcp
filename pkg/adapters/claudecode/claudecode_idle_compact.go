@@ -1,13 +1,8 @@
 package claudecode
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -24,9 +19,6 @@ const claudeIdleCompactCommand = "/compact"
 // claudeIdleCompactTrigger marks idle compaction events so the chat can say
 // the chat was tidied while the person was away.
 const claudeIdleCompactTrigger = "idle"
-
-// claudeIdleCompactPoll is how often the tmux path reads the transcript tail.
-var claudeIdleCompactPoll = time.Second
 
 // claudeIdleCompactObserved collects the compaction a compaction-only turn ran.
 type claudeIdleCompactObserved struct {
@@ -122,39 +114,4 @@ func emitClaudeIdleCompactEnd(emit func(llmtypes.StreamChunk), id string, starte
 	}
 	emit(llmtypes.ContextCompactionChunk(end))
 	return end
-}
-
-// readClaudeCompactBoundary reads complete transcript rows written after
-// offset and reports the first main-chain compact_boundary, plus the offset
-// of the first unread byte.
-func readClaudeCompactBoundary(path string, offset int64) (*claudeCompactMetadata, bool, int64) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, offset
-	}
-	defer f.Close()
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, false, offset
-	}
-	reader := bufio.NewReaderSize(f, 64*1024)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			// An unterminated last row is still being written: read it next time.
-			return nil, false, offset
-		}
-		offset += int64(len(line))
-		var row struct {
-			Type            string                 `json:"type"`
-			Subtype         string                 `json:"subtype"`
-			IsSidechain     bool                   `json:"isSidechain"`
-			CompactMetadata *claudeCompactMetadata `json:"compactMetadata"`
-		}
-		if json.Unmarshal([]byte(strings.TrimSpace(string(line))), &row) != nil || row.IsSidechain {
-			continue
-		}
-		if row.Type == "system" && row.Subtype == "compact_boundary" {
-			return row.CompactMetadata, true, offset
-		}
-	}
 }

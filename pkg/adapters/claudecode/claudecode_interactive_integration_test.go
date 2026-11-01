@@ -678,72 +678,6 @@ func TestClaudeCodeTmuxRealFinalExtractionFromTmuxAgentJudgeE2E(t *testing.T) {
 	})
 }
 
-func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
-	skipClaudeInteractivePersistentE2E(t)
-
-	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
-
-	ownerSessionID := "claude-stale-draft-e2e-" + randomHex(4)
-	options := []llmtypes.CallOption{
-		WithInteractiveSessionID(ownerSessionID),
-		WithPersistentInteractiveSession(true),
-		WithEffort("low"),
-	}
-
-	first, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{
-			Role: llmtypes.ChatMessageTypeSystem,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep answers short."},
-			},
-		},
-		{
-			Role: llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Reply exactly: ready"},
-			},
-		},
-	}, options...)
-	if err != nil {
-		t.Fatalf("first GenerateContent error = %v", err)
-	}
-	if got := firstChoiceText(first); !containsFold(got, "ready") {
-		t.Fatalf("first content = %q, want ready", got)
-	}
-
-	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
-	if !ok {
-		t.Fatalf("persistent interactive session not registered for %s", ownerSessionID)
-	}
-	staleDraft := "go with option B"
-	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, staleDraft); err != nil {
-		t.Fatalf("seed stale tmux draft: %v", err)
-	}
-	waitForClaudeInteractiveDraft(t, sessionName, staleDraft, 5*time.Second)
-
-	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
-		{
-			Role: llmtypes.ChatMessageTypeHuman,
-			Parts: []llmtypes.ContentPart{
-				llmtypes.TextContent{Text: "Reply exactly: CURRENT_TURN_STALE_DRAFT_OK. Do not mention options."},
-			},
-		},
-	}, options...)
-	if err != nil {
-		t.Fatalf("second GenerateContent error = %v", err)
-	}
-	got := firstChoiceText(second)
-	if !containsFold(got, "CURRENT_TURN_STALE_DRAFT_OK") {
-		t.Fatalf("second content = %q, want current turn marker", got)
-	}
-	if containsFold(got, "option b") {
-		t.Fatalf("second content = %q, stale draft leaked into submitted turn", got)
-	}
-}
-
 func TestClaudeCodeTmuxIntegrationPersistentCancelDoesNotLeaveBusySessionReusable(t *testing.T) {
 	skipClaudeInteractivePersistentE2E(t)
 
@@ -941,22 +875,6 @@ func waitForClaudeInteractiveFile(t *testing.T, path, label string, timeout time
 			}
 		}
 	}
-}
-
-func waitForClaudeInteractiveDraft(t *testing.T, sessionName, want string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		captured, err := captureTmuxPane(context.Background(), sessionName)
-		if err == nil {
-			if draft, ok := latestClaudePromptDraft(captured); ok && strings.Contains(draft, want) {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	captured, _ := captureTmuxPane(context.Background(), sessionName)
-	t.Fatalf("timed out waiting for Claude Code draft %q; latest pane:\n%s", want, captured)
 }
 
 type claudeInteractiveRealResult struct {
@@ -1561,4 +1479,86 @@ func experimentalClaudeSessionID(resp *llmtypes.ContentResponse) string {
 	}
 	sessionID, _ := resp.Choices[0].GenerationInfo.Additional["claude_code_session_id"].(string)
 	return sessionID
+}
+
+// A half-typed draft left in the composer must not join the next chat turn:
+// the mod starts the turn itself and leaves the person's draft alone.
+func TestClaudeCodeTmuxIntegrationPersistentClearsStaleDraftBeforeNextTurn(t *testing.T) {
+	skipClaudeInteractivePersistentE2E(t)
+
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+
+	ownerSessionID := "claude-stale-draft-e2e-" + randomHex(4)
+	options := []llmtypes.CallOption{
+		WithInteractiveSessionID(ownerSessionID),
+		WithPersistentInteractiveSession(true),
+		WithEffort("low"),
+	}
+
+	first, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeSystem,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "This is a Claude Code transport test. Do not use tools. Keep answers short."},
+			},
+		},
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply exactly: ready"},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("first GenerateContent error = %v", err)
+	}
+	if got := firstChoiceText(first); !containsFold(got, "ready") {
+		t.Fatalf("first content = %q, want ready", got)
+	}
+
+	sessionName, ok := activeClaudeInteractiveOwner(ownerSessionID)
+	if !ok {
+		t.Fatalf("persistent interactive session not registered for %s", ownerSessionID)
+	}
+	staleDraft := "go with option B"
+	if err := runCommand(ctx, nil, "tmux", "send-keys", "-t", sessionName, staleDraft); err != nil {
+		t.Fatalf("seed stale tmux draft: %v", err)
+	}
+	waitForClaudeInteractiveDraft(t, sessionName, staleDraft, 5*time.Second)
+
+	second, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{
+		{
+			Role: llmtypes.ChatMessageTypeHuman,
+			Parts: []llmtypes.ContentPart{
+				llmtypes.TextContent{Text: "Reply exactly: CURRENT_TURN_STALE_DRAFT_OK. Do not mention options."},
+			},
+		},
+	}, options...)
+	if err != nil {
+		t.Fatalf("second GenerateContent error = %v", err)
+	}
+	got := firstChoiceText(second)
+	if !containsFold(got, "CURRENT_TURN_STALE_DRAFT_OK") {
+		t.Fatalf("second content = %q, want current turn marker", got)
+	}
+	if containsFold(got, "option b") {
+		t.Fatalf("second content = %q, stale draft leaked into submitted turn", got)
+	}
+}
+
+// waitForClaudeInteractiveDraft waits until the seeded text shows in the pane
+// (test setup only).
+func waitForClaudeInteractiveDraft(t *testing.T, sessionName, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if captured, err := captureTmuxPane(context.Background(), sessionName); err == nil && strings.Contains(captured, want) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for Claude Code draft %q", want)
 }

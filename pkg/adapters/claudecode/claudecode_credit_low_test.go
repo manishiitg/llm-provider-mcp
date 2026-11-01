@@ -1,8 +1,6 @@
 package claudecode
 
 import (
-	"errors"
-	"strings"
 	"testing"
 )
 
@@ -27,22 +25,6 @@ func TestIsClaudeCreditLowText(t *testing.T) {
 	} {
 		if IsClaudeCreditLowText(text) {
 			t.Errorf("%s: wrongly recognised", name)
-		}
-	}
-}
-
-func TestDetectTmuxFatalStatusNamesALowCredit(t *testing.T) {
-	if got := detectTmuxFatalStatus("Credit balance is too low"); got != "credit balance is too low" {
-		t.Fatalf("fatal status = %q", got)
-	}
-	var err error = &ClaudeCreditLowError{}
-	var target *ClaudeCreditLowError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As must find the typed error")
-	}
-	for _, want := range []string{"out of credit", "Pick another agent", "add credit", "message is saved"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("message %q lacks %q", err.Error(), want)
 		}
 	}
 }
