@@ -35,8 +35,16 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 			}
 			opts.CLISecurity = &policy
 		} else if opts.CLISecurity != nil && copy["HOME"] != "" {
+			// Seatbelt (a Mac): the account home is the CLI's home and also its only login source. Without this the
+			// sandbox fell back to the person's own home and linked their own login (~/.codex/auth.json) into the
+			// account, even copying an account's newer login over the person's.
 			policy := opts.CLISecurity.Clone()
 			policy.PrivateHome = copy["HOME"]
+			policy.CredentialHome = copy["HOME"]
+			policy.CredentialEnv = map[string]string{}
+			for key, value := range copy {
+				policy.CredentialEnv[key] = value
+			}
 			policy.HostReadPaths = append(policy.HostReadPaths, copy["HOME"])
 			policy.HostWritePaths = append(policy.HostWritePaths, copy["HOME"])
 			opts.CLISecurity = &policy

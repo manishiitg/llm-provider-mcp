@@ -78,3 +78,13 @@ func TestProviderAccountCredentialsOverrideAndLoginCannotInheritKey(t *testing.T
 		t.Fatal("tmux launch does not scrub ambient identity")
 	}
 }
+
+// On a Mac (Seatbelt, no Landlock runner) an account's own home is its only login source: an empty CredentialHome
+// made the sandbox link the person's own ~/.codex/auth.json into a company account's home (PLAT-856-441).
+func TestSeatbeltAccountHomeIsItsLoginSource(t *testing.T) {
+	opts := &CallOptions{CLISecurity: &CLISecurityPolicy{Provider: "codex-cli"}}
+	WithProviderAccountEnvironment(map[string]string{"HOME": "/accounts/a/home", "CODEX_HOME": "/accounts/a/home/.codex"})(opts)
+	if opts.CLISecurity.PrivateHome != "/accounts/a/home" || opts.CLISecurity.CredentialHome != "/accounts/a/home" || opts.CLISecurity.CredentialEnv["CODEX_HOME"] != "/accounts/a/home/.codex" {
+		t.Fatalf("policy = %+v", opts.CLISecurity)
+	}
+}
