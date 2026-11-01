@@ -54,5 +54,10 @@ func (a *MuseCLIAdapter) GenerateContent(ctx context.Context, messages []llmtype
 	if museStructuredTransportRequested(opts) {
 		return a.generateContentExec(ctx, messages, options...)
 	}
+	// `muse serve` is the default; tmux stays for a server that selects it, or a
+	// caller that pins it.
+	if MuseMSPSelected() && !museTmuxTransportRequested(opts) {
+		return a.generateContentMSP(ctx, messages, opts)
+	}
 	return a.generateContentTmux(ctx, messages, opts)
 }
