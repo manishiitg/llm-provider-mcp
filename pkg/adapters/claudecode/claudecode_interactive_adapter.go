@@ -662,6 +662,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	end, ok := waitForClaudeModTurnComplete(callCtx, sessionName, turnStart)
 	if ok {
 		content = end.Answer
+		if persistentInteractive && persistentSession != nil {
+			// A /clear typed before this turn has a transcript of its own by now.
+			adoptClaudeModSession(persistentSession, c.logger)
+			nativeSessionID = persistentSession.nativeSessionID
+		}
 		c.logger.Infof("[CLAUDE_MOD] turn complete tmux=%s session=%s reason=%s duration_ms=%d context=%d/%d", sessionName, end.SessionID, end.Reason, end.DurationMS, end.ContextTokens, end.ContextWindow)
 	} else {
 		err = callCtx.Err()
@@ -1044,9 +1049,12 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 	}
 	args := []string{"claude", "--permission-mode", permissionMode, "--no-chrome"}
 	if sessionName != "" {
-		base := claudeModBaseDir(opts)
+		base, err := claudeModBaseDir(opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prepare the AgentWorks Claude mod: %w", err)
+		}
 		claudeModBases.Store(sessionName, base)
-		pluginDir, err := claudeModPluginDir(base)
+		pluginDir, err := claudeModPluginDir(base.dir)
 		if err != nil {
 			return nil, nil, fmt.Errorf("prepare the AgentWorks Claude mod: %w", err)
 		}
