@@ -422,4 +422,28 @@ func TestCursorSDKRememberedParamsSkipTheLookup(t *testing.T) {
 			t.Fatalf("%s: params %v", tc.name, model["params"])
 		}
 	}
+
+	// The account is the one the launch really uses: a selected account's key or home replaces the adapter's key.
+	adapter := &CursorCLIAdapter{apiKey: "server-key"}
+	key := func(options ...llmtypes.CallOption) string {
+		opts := &llmtypes.CallOptions{}
+		for _, option := range options {
+			option(opts)
+		}
+		return adapter.cursorAccountKey(opts)
+	}
+	account := func(apiKey string) string {
+		return key(llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": "/home/shared"}),
+			llmtypes.WithProviderAccountCredentials(map[string]string{"CURSOR_API_KEY": apiKey}))
+	}
+	if account("key-a") == account("key-b") {
+		t.Fatal("two selected API keys share remembered settings")
+	}
+	if account("key-a") != account("key-a") {
+		t.Fatal("the same account got a different key")
+	}
+	if key(llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": "/home/a"})) ==
+		key(llmtypes.WithProviderAccountEnvironment(map[string]string{"HOME": "/home/b"})) {
+		t.Fatal("two login homes share remembered settings")
+	}
 }
