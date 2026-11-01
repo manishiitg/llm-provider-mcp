@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
@@ -182,8 +183,24 @@ func confinedJournalPath(root, relative string, create bool) (string, error) {
 		return "", fmt.Errorf("Muse store must be absolute")
 	}
 	if create {
-		if err := os.MkdirAll(root, 0700); err != nil {
-			return "", err
+		var missing []string
+		for p := root; ; p = filepath.Dir(p) {
+			_, err := os.Lstat(p)
+			if err == nil {
+				break
+			}
+			if !os.IsNotExist(err) || p == filepath.Dir(p) {
+				return "", err
+			}
+			missing = append(missing, p)
+		}
+		for i := len(missing) - 1; i >= 0; i-- {
+			if err := os.Mkdir(missing[i], 0700); err != nil && !os.IsExist(err) {
+				return "", err
+			}
+			if err := slotfs.ShareTree(root, missing[i]); err != nil {
+				return "", err
+			}
 		}
 	}
 	base, err := filepath.EvalSymlinks(root)
@@ -197,7 +214,11 @@ func confinedJournalPath(root, relative string, create bool) (string, error) {
 		}
 		base = filepath.Join(base, part)
 		if create && i < len(parts)-1 {
-			if err := os.Mkdir(base, 0700); err != nil && !os.IsExist(err) {
+			if err := os.Mkdir(base, 0700); err != nil {
+				if !os.IsExist(err) {
+					return "", err
+				}
+			} else if err := slotfs.ShareTree(root, base); err != nil {
 				return "", err
 			}
 		}
@@ -303,6 +324,15 @@ func ImportNativeSession(dataHome, workspace string, b *NativeSessionBundle) err
 			return fmt.Errorf("Muse session already exists at a different journal location")
 		}
 	}
+	lockPath, err := confinedJournalPath(dataHome, "muse/sessions/"+b.Date+"/"+b.SessionID+"/.session.lock", true)
+	if err != nil {
+		return err
+	}
+	unlock, err := lockNativeHandoff(dataHome, lockPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	paths := map[string]string{}
 	if _, err := os.Stat(filepath.Dir(want)); err == nil {
 		if err = filepath.WalkDir(filepath.Dir(want), func(path string, d fs.DirEntry, e error) error {
@@ -357,7 +387,7 @@ func ImportNativeSession(dataHome, workspace string, b *NativeSessionBundle) err
 		if err != nil {
 			return err
 		}
-		if err := copyNativeHandoffFile(p, source); err != nil {
+		if err := copyNativeHandoffFile(dataHome, p, source); err != nil {
 			return err
 		}
 	}
@@ -365,10 +395,10 @@ func ImportNativeSession(dataHome, workspace string, b *NativeSessionBundle) err
 		SessionID string `json:"session_id"`
 		Workspace string `json:"workspace"`
 	}{b.SessionID, destination})
-	return writeNativeHandoffFile(marker, raw)
+	return writeNativeHandoffFile(dataHome, marker, raw)
 }
 
-func copyNativeHandoffFile(path, source string) error {
+func copyNativeHandoffFile(dataHome, path, source string) error {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
@@ -386,10 +416,13 @@ func copyNativeHandoffFile(path, source string) error {
 	if err != nil {
 		return err
 	}
+	if err := slotfs.ShareTree(dataHome, f.Name()); err != nil {
+		return err
+	}
 	return os.Rename(f.Name(), path)
 }
 
-func writeNativeHandoffFile(path string, data []byte) error {
+func writeNativeHandoffFile(dataHome, path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".handoff-")
 	if err != nil {
 		return err
@@ -400,6 +433,9 @@ func writeNativeHandoffFile(path string, data []byte) error {
 		return err
 	}
 	if err = f.Close(); err != nil {
+		return err
+	}
+	if err := slotfs.ShareTree(dataHome, f.Name()); err != nil {
 		return err
 	}
 	return os.Rename(f.Name(), path)

@@ -62,6 +62,16 @@ func TestMuseNativeHandoffPreservesIDAndRejectsDivergence(t *testing.T) {
 	}
 	path := museSessionLogPath(id, homeA)
 	before, _ := os.ReadFile(path)
+	// PR59: importing must refuse a live writer rather than replace its inode.
+	unlock, err := lockNativeHandoff(homeA, filepath.Join(filepath.Dir(path), ".session.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportNativeSession(homeA, from, second); err == nil || !strings.Contains(err.Error(), "still using this session") {
+		unlock()
+		t.Fatalf("active writer was not excluded: %v", err)
+	}
+	unlock()
 	if err = ImportNativeSession(homeA, from, first); err == nil {
 		t.Fatal("older divergent session overwrote new local turns")
 	}
