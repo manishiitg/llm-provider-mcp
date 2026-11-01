@@ -1060,19 +1060,6 @@ func TestParseClaudeResponseFromCapturedFallbackPreservesLongFinal(t *testing.T)
 	}
 }
 
-func TestParseClaudeResumeSessionID(t *testing.T) {
-	pane := `
-Resume this session with:
-claude --resume 7aa21987-0003-4d71-b887-ad73e29d2faf
-Pane is dead (status 0)
-`
-	got := parseClaudeResumeSessionID(pane)
-	want := "7aa21987-0003-4d71-b887-ad73e29d2faf"
-	if got != want {
-		t.Fatalf("parseClaudeResumeSessionID = %q, want %q", got, want)
-	}
-}
-
 func TestIsClaudeResumeCompressionPrompt(t *testing.T) {
 	pane := `
 This resumed conversation is large.

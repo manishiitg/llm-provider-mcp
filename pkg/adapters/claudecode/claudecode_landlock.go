@@ -34,7 +34,8 @@ func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, s
 	if f, err := os.OpenFile(statusline, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		_ = f.Close()
 	}
-	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, read, []string{statusline})
+	read, write := claudeModSandboxPaths(args, sessionName, read, []string{statusline})
+	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, read, write)
 }
 
 // claudeAdoptResumedConversation copies the conversation a confined launch resumes into the

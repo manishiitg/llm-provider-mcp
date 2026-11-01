@@ -25,7 +25,6 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/shelllaunch"
-	"github.com/manishiitg/multi-llm-provider-go/internal/stalldiag"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxsize"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -516,6 +515,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 		releasePersistentSession = true
 		sessionName = persistentSession.tmuxSessionName
+		adoptClaudeModSession(persistentSession, c.logger)
 		nativeSessionID = persistentSession.nativeSessionID
 	} else {
 		sessionName = newTmuxSessionName()
@@ -554,6 +554,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		// than block the turn. Only cold (createdSession) sessions pay this;
 		// reused persistent sessions are already connected.
 		waitForMCPReadyFile(callCtx, opts, sessionName, c.logger)
+		if err := waitForClaudeModReady(callCtx, sessionName); err != nil {
+			discardPersistentSession(err)
+			return nil, err
+		}
 	}
 
 	if idleCompact {
@@ -625,7 +629,6 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		}
 	}()
 	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
-	paneBaseline, _ := captureTmuxPane(callCtx, sessionName)
 	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	var transcriptOffset int64
 	if info, statErr := os.Stat(transcriptPath); statErr == nil {
@@ -654,47 +657,16 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		defer stopTranscriptStream()
 	}
 
-	// done_detection (PLAT-354): the current turn's final end_turn in the JSONL
-	// transcript is the primary completion signal; the pane wait below is the
-	// fallback when no transcript is readable. Whichever finishes first ends the
-	// wait. The structured waiter publishes its result before cancelling the
-	// pane wait, so a cancelled pane wait always finds that result here.
-	accountHome := llmtypes.CLIHomeEnvironment(opts)["HOME"]
-	paneCtx, cancelPaneWait := context.WithCancel(callCtx)
-	structuredEnd := make(chan claudeCompletedTranscriptResponse, 1)
-	go func() {
-		if response, ok := waitForClaudeTurnEndInTranscript(paneCtx, nativeSessionID, workingDir, turnStart, claudeTranscriptTurnEndQuiet, accountHome); ok {
-			structuredEnd <- response
-			cancelPaneWait()
-		}
-	}()
-	content, err := waitForMarkedResponse(paneCtx, sessionName, "", "", paneBaseline, opts.StreamChan, claudeInteractiveStreamTmuxScreenEnabled(opts))
-	completionSource := "tmux_pane"
-	select {
-	case response := <-structuredEnd:
-		if callCtx.Err() == nil {
-			content, err = response.Text, nil
-			completionSource = "jsonl_end_turn"
-		}
-	default:
-		// The pane looked finished first. When a transcript exists it is still
-		// the authority: wait for the current turn's final end_turn and quiet
-		// window instead of trusting pane idleness (a brief prompt can appear
-		// between tool rounds, or before Claude continues with a queued message).
-		// Only a session with no readable transcript keeps the pane result.
-		if err == nil && callCtx.Err() == nil {
-			if transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, accountHome); transcriptPath != "" {
-				select {
-				case response := <-structuredEnd:
-					content = response.Text
-					completionSource = "jsonl_end_turn"
-				case <-callCtx.Done():
-				}
-			}
-		}
+	// Claude Code says when the turn ends, through the mod in this terminal.
+	var content string
+	end, ok := waitForClaudeModTurnComplete(callCtx, sessionName, turnStart)
+	if ok {
+		content = end.Answer
+		c.logger.Infof("[CLAUDE_MOD] turn complete tmux=%s session=%s reason=%s duration_ms=%d context=%d/%d", sessionName, end.SessionID, end.Reason, end.DurationMS, end.ContextTokens, end.ContextWindow)
+	} else {
+		err = callCtx.Err()
 	}
-	cancelPaneWait()
-	if completionSource == "jsonl_end_turn" && persistentInteractive {
+	if ok && persistentInteractive {
 		// The answer is committed, but the retained pane may still be finishing
 		// its render; the next turn pastes into it without its own readiness
 		// wait. Give it a short, bounded chance to settle. A pane that never
@@ -879,7 +851,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	// parsing only as a compatibility fallback for CLI versions/environments in
 	// which the transcript cannot be read.
 	additional["claude_code_final_extraction_source"] = finalExtractionSource
-	additional["claude_code_completion_source"] = completionSource
+	additional["claude_code_completion_source"] = "claude_mod"
 	additional["native_continuation_roots"] = transcriptResponse.IncludedRoots
 	// Chat surfaces want the whole turn (narration before tool calls too), not
 	// only the committed end_turn answer that final_result keeps for workflows.
@@ -1071,6 +1043,15 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 		}
 	}
 	args := []string{"claude", "--permission-mode", permissionMode, "--no-chrome"}
+	if sessionName != "" {
+		base := claudeModBaseDir(opts)
+		claudeModBases.Store(sessionName, base)
+		pluginDir, err := claudeModPluginDir(base)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prepare the AgentWorks Claude mod: %w", err)
+		}
+		args = append(args, "--plugin-dir", pluginDir)
+	}
 	args = append(args, claudeSeatbeltAddDirs(opts, claudeWorkingDirFromOptions(opts))...)
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
@@ -1242,6 +1223,13 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	}
 	finalEnv := append(claudeInteractiveFinalEnv(c.oauthToken), claudeSkillScopeEnv()...)
+	if claudeArgsHavePluginDir(args) {
+		modDir, err := prepareClaudeModSessionDir(sessionName)
+		if err != nil {
+			return err
+		}
+		finalEnv = append(finalEnv, claudeModDirEnv+"="+modDir)
+	}
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
 	// environment is a separate contract that the structured path applies when
 	// it builds cmd.Env -- a tmux pane has no such slice, it inherits the tmux
@@ -2886,95 +2874,11 @@ func waitForClaudePromptDraftCleared(ctx context.Context, sessionName string) er
 }
 
 func closeClaudeSessionForResume(sessionName, knownSessionID string, logger interfaces.Logger) string {
-	knownSessionID = strings.TrimSpace(knownSessionID)
-	timeout := 30 * time.Second
-	if isUUIDLike(knownSessionID) {
-		timeout = 5 * time.Second
+	// The mod reports the session the terminal is on; the caller kills it.
+	if id := claudeModCurrentSessionID(sessionName); id != "" {
+		return id
 	}
-	closeCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	closedSessionID := ""
-	_, err := tmuxinput.Default.Do(closeCtx, tmuxinput.Request{
-		SessionID: sessionName,
-		Source:    "claude-code-close",
-		Priority:  tmuxinput.PriorityInterrupt,
-	}, func(ctx context.Context) error {
-		closedSessionID = closeClaudeSessionForResumeUnserialized(ctx, sessionName, knownSessionID, logger)
-		return nil
-	})
-	if err != nil {
-		if logger != nil {
-			logger.Errorf("Failed to acquire Claude Code close transaction for session %s: %v", sessionName, err)
-		}
-		if isUUIDLike(knownSessionID) {
-			return knownSessionID
-		}
-		return ""
-	}
-	return closedSessionID
-}
-
-func closeClaudeSessionForResumeUnserialized(closeCtx context.Context, sessionName, knownSessionID string, logger interfaces.Logger) string {
-	promptCtx, promptCancel := context.WithTimeout(closeCtx, 10*time.Second)
-	if err := waitForReadyInputPrompt(promptCtx, sessionName); err != nil && logger != nil {
-		logger.Debugf("Claude Code tmux session %s was not visibly idle before close: %v", sessionName, err)
-	}
-	promptCancel()
-
-	// Exit with Ctrl-C twice, not "/exit". A typed /exit is recorded in the
-	// transcript as a local command (a <local-command-caveat> telling the model
-	// "DO NOT respond to these messages", then <command-name>/exit and its
-	// stdout), so a resumed conversation's next prompt arrived right after that
-	// caveat, and Sonnet 5 refused it as mixed with command output (2026-09-23).
-	// Ctrl-C on the idle composer prints "Press Ctrl-C again to exit"; the second
-	// exits with the same "claude --resume <id>" hint and records no rows.
-	if err := runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-u", "C-c"); err != nil {
-		if logger != nil {
-			logger.Errorf("Failed to close Claude Code tmux session %s cleanly: %v", sessionName, err)
-		}
-		if isUUIDLike(knownSessionID) {
-			return knownSessionID
-		}
-		return ""
-	}
-	select {
-	case <-closeCtx.Done():
-	case <-time.After(250 * time.Millisecond):
-		_ = runCommand(closeCtx, nil, "tmux", "send-keys", "-t", sessionName, "C-c")
-	}
-	if isUUIDLike(knownSessionID) {
-		return knownSessionID
-	}
-
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-closeCtx.Done():
-			if logger != nil {
-				logger.Errorf("Timed out waiting for Claude Code resume id from session %s", sessionName)
-			}
-			return ""
-		case <-ticker.C:
-			captured, err := captureTmuxPane(closeCtx, sessionName)
-			if err != nil {
-				if logger != nil {
-					logger.Errorf("Failed to capture Claude Code close output for session %s: %v", sessionName, err)
-				}
-				return ""
-			}
-			if sessionID := parseClaudeResumeSessionID(captured); sessionID != "" {
-				return sessionID
-			}
-			if strings.Contains(captured, "Pane is dead") {
-				if logger != nil {
-					logger.Errorf("Claude Code tmux session %s closed without a resume id", sessionName)
-				}
-				return ""
-			}
-		}
-	}
+	return strings.TrimSpace(knownSessionID)
 }
 
 func interruptClaudeInteractiveSession(sessionName string, logger interfaces.Logger) error {
@@ -3145,20 +3049,6 @@ func lastClaudePromptLineIndex(lines []string) int {
 		}
 	}
 	return -1
-}
-
-func parseClaudeResumeSessionID(captured string) string {
-	idx := strings.LastIndex(captured, "claude --resume")
-	if idx < 0 {
-		return ""
-	}
-	fields := strings.Fields(captured[idx:])
-	for i := 0; i < len(fields)-1; i++ {
-		if fields[i] == "--resume" {
-			return strings.Trim(fields[i+1], "\"'`")
-		}
-	}
-	return ""
 }
 
 func isUUIDLike(value string) bool {
@@ -3533,30 +3423,6 @@ func hasNewAssistantOutput(delta string) bool {
 	return false
 }
 
-func waitForMarkedResponse(ctx context.Context, sessionName, startMarker, endMarker, paneBaseline string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
-	captured, err := waitForClaudeIdleAfterActivity(ctx, sessionName, false, paneBaseline, endMarker, streamChan, streamTerminalScreen)
-	forcedComplete := errors.Is(err, tmuxcontrol.ErrForceComplete)
-	if err != nil && !forcedComplete {
-		if isClaudeTmuxSessionLostError(err) {
-			return "", fmt.Errorf("Claude Code tmux session ended before response could be captured: %w", err)
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("timed out waiting for Claude Code response: %w", err)
-		}
-		return "", fmt.Errorf("Claude Code response wait failed: %w", err)
-	}
-
-	if content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker); ok {
-		return content, nil
-	}
-	if forcedComplete {
-		if content := forcedClaudeResponseFromCaptured(captured, paneBaseline); strings.TrimSpace(content) != "" {
-			return content, nil
-		}
-	}
-	return "", fmt.Errorf("Claude Code tmux session returned to idle without a parseable response; %s", llmtypes.CompactTerminalPaneForError(sessionName, captured))
-}
-
 func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMarker string) (string, bool) {
 	newOutput := capturedAfterPaneBaseline(captured, paneBaseline)
 	// A running pane is never a final response. In particular this rejects a
@@ -3583,148 +3449,6 @@ func parseClaudeResponseFromCaptured(captured, paneBaseline, startMarker, endMar
 		return strings.TrimSpace(content), true
 	}
 	return "", false
-}
-
-func forcedClaudeResponseFromCaptured(captured, paneBaseline string) string {
-	newOutput := capturedAfterPaneBaseline(captured, paneBaseline)
-	if content, ok := extractLatestUnmarkedAssistantResponse(newOutput); ok {
-		return strings.TrimSpace(content)
-	}
-	if content, ok := extractTrailingUnmarkedAssistantResponse(newOutput); ok {
-		return strings.TrimSpace(content)
-	}
-	return strings.TrimSpace(newOutput)
-}
-
-func waitForClaudeIdleAfterActivity(ctx context.Context, sessionName string, activityAlreadySeen bool, paneBaseline, endMarker string, streamChan chan<- llmtypes.StreamChunk, streamTerminalScreen bool) (string, error) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	quietWatch := &stalldiag.Watch{Provider: "claude-code", Session: sessionName}
-
-	sawActivity := activityAlreadySeen
-	var idleSince time.Time
-	var lastCaptured string
-	var lastTerminalSnapshot string
-	var lastTerminalStreamedAt time.Time
-	stalePaneBackstop := claudeInteractiveStalePaneBackstop()
-	// Stale-pane backstop tracking: the raw capture from the previous tick and
-	// the time it last changed. Tracked at the top of every tick, independent of
-	// all the branch logic below, so a ready-prompt detection bug that keeps the
-	// loop in a "not ready" branch can never suppress it.
-	var backstopPrevCapture string
-	var paneUnchangedSince time.Time
-	var loggedOutStatus claudeLoggedOutStatus
-
-	for {
-		select {
-		case <-ctx.Done():
-			captured, _ := captureTmuxPane(context.Background(), sessionName)
-			if strings.TrimSpace(captured) != "" {
-				return captured, fmt.Errorf("%w; %s", ctx.Err(), llmtypes.CompactTerminalPaneForError(sessionName, captured))
-			}
-			return "", ctx.Err()
-		case <-ticker.C:
-			captured, err := captureTmuxPane(ctx, sessionName)
-			if err != nil {
-				if ctx.Err() != nil {
-					latest, _ := captureTmuxPane(context.Background(), sessionName)
-					if strings.TrimSpace(latest) != "" {
-						return latest, fmt.Errorf("%w; %s", ctx.Err(), llmtypes.CompactTerminalPaneForError(sessionName, latest))
-					}
-					if strings.TrimSpace(lastCaptured) != "" {
-						return lastCaptured, ctx.Err()
-					}
-				}
-				if strings.TrimSpace(lastCaptured) != "" {
-					return lastCaptured, err
-				}
-				return "", err
-			}
-			quietWatch.Observe(time.Now(), captured, true)
-			delta := capturedAfterPaneBaseline(captured, paneBaseline)
-			quotaText := claudeUsageLimitTextForTurn(captured, paneBaseline)
-			errText := detectTmuxFatalStatusWithQuotaText(delta, quotaText)
-			authPending, authConfirmed := loggedOutStatus.observe(captured, errText == "not logged in", time.Now())
-			if errText != "" {
-				// A usage-limit wall is not the same failure as a dead pane or a
-				// logged-out CLI: it is expected, temporary, and carries a time
-				// at which work can continue. Returning it typed lets the stack
-				// skip retries that cannot succeed and lets a workflow suspend
-				// on the stated reset instead of losing the run (PLAT-101).
-				if IsClaudeUsageLimitText(quotaText) {
-					if shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, quotaText, time.Now()) {
-						return "", NewClaudeUsageLimitErrorForSession("claudecode", "", sessionName, quotaText, time.Now())
-					}
-					// A pane phrase contradicted by the current structured statusline is
-					// stale transcript text, not a provider wall. Keep waiting for the
-					// actual turn outcome.
-				} else if errText == "credit balance is too low" {
-					log.Printf("[TURN] stalled cause=credit_low provider=claude-code tmux=%s", sessionName)
-					return "", &ClaudeCreditLowError{}
-				} else if errText != "not logged in" || authConfirmed {
-					return "", fmt.Errorf("claude code tmux session failed: %s", errText)
-				}
-			}
-			if tmuxcontrol.ConsumeForceComplete(sessionName) {
-				return captured, tmuxcontrol.ErrForceComplete
-			}
-			// Legacy opt-in stale-pane backstop. This is disabled by default
-			// because an unchanged pane is not a delivery acknowledgement. When
-			// explicitly enabled it remains an operator-selected recovery policy.
-			if captured != backstopPrevCapture {
-				backstopPrevCapture = captured
-				paneUnchangedSince = time.Now()
-			} else if sawActivity && stalePaneBackstop > 0 && !paneUnchangedSince.IsZero() &&
-				time.Since(paneUnchangedSince) >= stalePaneBackstop {
-				content, ok := parseClaudeResponseFromCaptured(captured, paneBaseline, "", endMarker)
-				if !ok || strings.TrimSpace(content) == "" {
-					content = forcedClaudeResponseFromCaptured(captured, paneBaseline)
-				}
-				if strings.TrimSpace(content) != "" {
-					return captured, nil
-				}
-				return captured, fmt.Errorf("Claude Code CLI pane went unchanged for %s after activity but no ready prompt or visible assistant output was detected; latest pane:\n%s", stalePaneBackstop, captured)
-			}
-			if streamChan != nil && streamTerminalScreen {
-				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
-					lastTerminalStreamedAt = time.Now()
-				}
-			}
-			if authPending {
-				// Do not mistake a transient footer repaint for a lost login, or
-				// finish the turn successfully while a real auth wall is settling.
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			if hasClaudeActivity(captured) {
-				sawActivity = true
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			if hasNewAssistantOutput(delta) || (endMarker != "" && strings.Contains(delta, endMarker)) {
-				sawActivity = true
-			}
-			if !sawActivity || !hasReadyEmptyInputPrompt(captured) {
-				idleSince = time.Time{}
-				lastCaptured = captured
-				continue
-			}
-			if captured != lastCaptured {
-				lastCaptured = captured
-				idleSince = time.Now()
-				continue
-			}
-			if idleSince.IsZero() {
-				idleSince = time.Now()
-				continue
-			}
-			if time.Since(idleSince) >= claudeIdleStableWindow {
-				return captured, nil
-			}
-		}
-	}
 }
 
 func streamClaudeTerminalSnapshot(ctx context.Context, sessionName string, streamChan chan<- llmtypes.StreamChunk, lastTerminalSnapshot *string) bool {
@@ -4869,6 +4593,7 @@ func killClaudeInteractiveSession(ctx context.Context, sessionName string) error
 	if strings.TrimSpace(sessionName) == "" {
 		return nil
 	}
+	defer removeClaudeModSessionDir(sessionName)
 	// Reap the pane process trees (CLI + spawned MCP node subprocesses) before
 	// killing the session — kill-session only SIGHUPs the pane process, so the
 	// children would otherwise orphan and leak.
