@@ -475,11 +475,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		sessionName = newTmuxSessionName()
 		args, tempFiles, err := c.buildClaudeArgs(opts, sessionName, nativeSessionID, systemPrompt)
 		if err != nil {
+			removeClaudeModSessionDir(sessionName)
 			return nil, err
 		}
 		defer removeFiles(tempFiles)
 
 		if err := c.startSession(callCtx, sessionName, args, workingDir, opts); err != nil {
+			removeClaudeModSessionDir(sessionName)
 			return nil, err
 		}
 		registerClaudeInteractiveSession(sessionName)
@@ -969,7 +971,7 @@ func (c *ClaudeCodeInteractiveAdapter) buildClaudeArgs(opts *llmtypes.CallOption
 			return nil, nil, fmt.Errorf("prepare the AgentWorks Claude mod: %w", err)
 		}
 		claudeModBases.Store(sessionName, base)
-		pluginDir, err := claudeModPluginDir(base.dir)
+		pluginDir, err := claudeModPluginDir(base.plugin)
 		if err != nil {
 			return nil, nil, fmt.Errorf("prepare the AgentWorks Claude mod: %w", err)
 		}
@@ -2817,6 +2819,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 
 	args, tempFiles, err := c.buildClaudeArgs(opts, session.tmuxSessionName, nativeSessionID, systemPrompt)
 	if err != nil {
+		removeClaudeModSessionDir(session.tmuxSessionName)
 		session.initErr = err
 		session.mu.Unlock()
 		removeClaudePersistentInteractiveSession(ownerSessionID, session)
@@ -2825,6 +2828,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 	session.tempFiles = tempFiles
 
 	if err := c.startSession(ctx, session.tmuxSessionName, args, workingDir, opts); err != nil {
+		removeClaudeModSessionDir(session.tmuxSessionName)
 		session.initErr = err
 		session.mu.Unlock()
 		removeClaudePersistentInteractiveSession(ownerSessionID, session)

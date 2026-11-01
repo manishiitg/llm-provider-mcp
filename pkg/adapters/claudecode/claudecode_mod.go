@@ -72,13 +72,21 @@ func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 		if err != nil {
 			return claudeModBase{}, err
 		}
-		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: inbox, shared: true}, nil
+		// The mod's own code runs inside Claude Code, which holds the login: like
+		// the inbox it sits outside everything the sandbox may write, written
+		// fresh for this launch, so the agent can never change what runs next.
+		plugin, err := os.MkdirTemp("", "agentworks-mod-plugin-")
+		if err != nil {
+			_ = os.RemoveAll(inbox)
+			return claudeModBase{}, err
+		}
+		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: inbox, plugin: plugin, shared: true}, nil
 	}
 	dir, err := os.MkdirTemp("", "agentworks-mod-")
 	if err != nil {
 		return claudeModBase{}, err
 	}
-	return claudeModBase{dir: dir, inbox: filepath.Join(dir, "inbox"), private: true}, nil
+	return claudeModBase{dir: dir, inbox: filepath.Join(dir, "inbox"), plugin: dir, private: true}, nil
 }
 
 // claudeModBase is a launch's mod folders: dir holds the events the mod writes,
@@ -89,6 +97,7 @@ func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 type claudeModBase struct {
 	dir     string
 	inbox   string
+	plugin  string
 	shared  bool
 	private bool
 }
@@ -100,7 +109,8 @@ var claudeModBases sync.Map
 var claudeModPluginMu sync.Mutex
 
 // claudeModPluginDir writes the embedded mod under base, in a folder named
-// after its content, so a new build never loads an older copy.
+// after its content, so a new build never loads an older copy. It writes it
+// every time: a copy already there is never trusted.
 func claudeModPluginDir(base string) (string, error) {
 	sum := sha256.New()
 	_ = fs.WalkDir(claudeModFiles, "agentworksmod", func(path string, d fs.DirEntry, err error) error {
@@ -114,9 +124,6 @@ func claudeModPluginDir(base string) (string, error) {
 	dir := filepath.Join(base, "plugin-"+hex.EncodeToString(sum.Sum(nil))[:12])
 	claudeModPluginMu.Lock()
 	defer claudeModPluginMu.Unlock()
-	if _, err := os.Stat(filepath.Join(dir, "hooks", "hooks.json")); err == nil {
-		return dir, nil
-	}
 	err := fs.WalkDir(claudeModFiles, "agentworksmod", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -189,6 +196,9 @@ func removeClaudeModSessionDir(sessionName string) {
 	}
 	if !base.private {
 		_ = os.RemoveAll(base.inbox)
+		if base.plugin != "" {
+			_ = os.RemoveAll(base.plugin)
+		}
 	}
 	if base.private {
 		_ = os.RemoveAll(base.dir)
@@ -453,7 +463,9 @@ func claudeModRequest(ctx context.Context, sessionName, kind, text string) (clau
 	inbox := claudeModInboxDir(sessionName)
 	// Written aside and renamed in, so the mod never reads half a request.
 	tmp := filepath.Join(inbox, id+".tmp")
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// 0640: on a slot server the CLI reads requests through a group ACL, and
+	// the ACL mask comes from the group bits.
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
 		return claudeModEvent{}, fmt.Errorf("queue %s for Claude Code: %w", kind, err)
 	}
 	final := filepath.Join(inbox, id+".json")
@@ -639,8 +651,12 @@ func claudeModInboxOutsideWrites(policy *llmtypes.CLISecurityPolicy, workingDir 
 	if inbox == "" || policy == nil || !policy.LandlockEnforced() {
 		return nil
 	}
-	if clisandbox.WritableUnder(clisandbox.LandlockWritePaths(policy, workingDir, runtimeWrites), inbox) {
+	writes := clisandbox.LandlockWritePaths(policy, workingDir, runtimeWrites)
+	if clisandbox.WritableUnder(writes, inbox) {
 		return fmt.Errorf("the AgentWorks mod inbox %s would be writable by the confined CLI; not starting it", inbox)
+	}
+	if base, ok := claudeModBaseFor(sessionName); ok && base.plugin != "" && clisandbox.WritableUnder(writes, base.plugin) {
+		return fmt.Errorf("the AgentWorks mod %s would be writable by the confined CLI; not starting it", base.plugin)
 	}
 	return nil
 }
