@@ -151,25 +151,32 @@ func removeClaudeModSessionDir(sessionName string) {
 // claudeModEvent is one event the mod wrote. Every event names the session
 // that was current when it happened.
 type claudeModEvent struct {
-	Type          string  `json:"type"`
-	At            int64   `json:"at"`
-	Seq           int64   `json:"seq"`
-	SessionID     string  `json:"session_id"`
-	Reason        string  `json:"reason,omitempty"`
-	Command       string  `json:"command,omitempty"`
-	TurnID        string  `json:"turn_id,omitempty"`
-	Aborted       bool    `json:"aborted,omitempty"`
-	Answer        string  `json:"answer,omitempty"`
-	DurationMS    int64   `json:"duration_ms,omitempty"`
-	ContextTokens int64   `json:"context_tokens,omitempty"`
-	ContextWindow int64   `json:"context_window,omitempty"`
-	CostUSD       float64 `json:"cost_usd,omitempty"`
-	InputID       string  `json:"input_id,omitempty"`
-	Delivery      string  `json:"delivery,omitempty"`
-	Error         string  `json:"error,omitempty"`
-	Trigger       string  `json:"trigger,omitempty"`
-	TokensBefore  int64   `json:"tokens_before,omitempty"`
-	TokensAfter   int64   `json:"tokens_after,omitempty"`
+	Type          string                `json:"type"`
+	At            int64                 `json:"at"`
+	Seq           int64                 `json:"seq"`
+	SessionID     string                `json:"session_id"`
+	Reason        string                `json:"reason,omitempty"`
+	Command       string                `json:"command,omitempty"`
+	TurnID        string                `json:"turn_id,omitempty"`
+	Aborted       bool                  `json:"aborted,omitempty"`
+	Answer        string                `json:"answer,omitempty"`
+	DurationMS    int64                 `json:"duration_ms,omitempty"`
+	ContextTokens int64                 `json:"context_tokens,omitempty"`
+	ContextWindow int64                 `json:"context_window,omitempty"`
+	CostUSD       float64               `json:"cost_usd,omitempty"`
+	InputID       string                `json:"input_id,omitempty"`
+	Delivery      string                `json:"delivery,omitempty"`
+	Error         string                `json:"error,omitempty"`
+	Trigger       string                `json:"trigger,omitempty"`
+	TokensBefore  int64                 `json:"tokens_before,omitempty"`
+	TokensAfter   int64                 `json:"tokens_after,omitempty"`
+	Step          string                `json:"step,omitempty"`
+	Items         []claudeModStreamItem `json:"items,omitempty"`
+	Door          string                `json:"door,omitempty"`
+	UUID          string                `json:"uuid,omitempty"`
+	Message       json.RawMessage       `json:"message,omitempty"`
+	// name is the event's file name: unique, and its order is event order.
+	name string
 }
 
 // readClaudeModEvents returns the session's events in the order they happened.
@@ -210,6 +217,7 @@ func readClaudeModEvents(sessionName string) []claudeModEvent {
 		}
 		var event claudeModEvent
 		if json.Unmarshal(data, &event) == nil && event.Type != "" {
+			event.name = name
 			events = append(events, event)
 		}
 	}

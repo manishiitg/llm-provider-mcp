@@ -99,6 +99,11 @@ const (
 	StreamChunkTypeToolCall      StreamChunkType = "tool_call" // Complete tool call
 	StreamChunkTypeToolCallStart StreamChunkType = "tool_call_start"
 	StreamChunkTypeToolCallEnd   StreamChunkType = "tool_call_end"
+	// StreamChunkTypeToolCallDelta carries a tool call's arguments while the
+	// model is still writing them (ToolArgs holds everything so far), so a
+	// surface can render a tool's input as it forms. ToolCallStart follows
+	// with the complete arguments.
+	StreamChunkTypeToolCallDelta StreamChunkType = "tool_call_delta"
 	StreamChunkTypeTerminal      StreamChunkType = "terminal"    // Live terminal/screen snapshot
 	StreamChunkTypeStatusLine    StreamChunkType = "status_line" // Generic real-time statusline snapshot
 	// StreamChunkTypePromptAccepted says the coding CLI took the prompt (the launch is over and the turn really
