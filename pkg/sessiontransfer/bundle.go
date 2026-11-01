@@ -26,6 +26,8 @@ type Bundle struct {
 	Provider  string          `json:"provider"`
 	Format    string          `json:"format"`
 	Transport string          `json:"transport"`
+	Snapshot  string          `json:"snapshot,omitempty"`
+	Parent    string          `json:"parent_snapshot,omitempty"`
 	SessionID string          `json:"session_id"`
 	Workspace string          `json:"workspace"`
 	Date      string          `json:"date,omitempty"`
@@ -69,6 +71,9 @@ func (b *Bundle) Validate() error {
 		}
 	} else if !UUID.MatchString(b.SessionID) {
 		return fmt.Errorf("invalid native session identity")
+	}
+	if strings.HasSuffix(b.Format, "sqlite") && (!digest.MatchString(b.Snapshot) || b.Parent != "" && !digest.MatchString(b.Parent)) {
+		return fmt.Errorf("invalid native snapshot lineage")
 	}
 	var total int64
 	for name, f := range b.Files {

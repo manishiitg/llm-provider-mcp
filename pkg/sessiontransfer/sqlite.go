@@ -107,6 +107,9 @@ func ExportCursorCLI(config, workspace, id, out string, remember bool) (*Bundle,
 		}
 		b.Files[name] = f
 	}
+	if e = setSnapshotLineage(root, b); e != nil {
+		return nil, e
+	}
 	if e = b.ValidateFiles(); e != nil {
 		return nil, e
 	}
@@ -135,6 +138,17 @@ func ImportCursorCLI(config, workspace string, b *Bundle) error {
 	if e != nil {
 		return e
 	}
+	if e = os.MkdirAll(config, 0700); e != nil {
+		return e
+	}
+	rel, e := filepath.Rel(config, root)
+	if e != nil {
+		return e
+	}
+	root, e = PathDirectory(config, filepath.ToSlash(rel), true)
+	if e != nil {
+		return e
+	}
 	if _, e = Path(root, "store.db", false); e == nil {
 		tmp, e := os.MkdirTemp("", "cursor-native-check-")
 		if e != nil {
@@ -145,7 +159,7 @@ func ImportCursorCLI(config, workspace string, b *Bundle) error {
 		if e != nil {
 			return e
 		}
-		if e = CheckSnapshotBaseline(root, current); e != nil {
+		if e = CheckSnapshotReplacement(root, current, b); e != nil {
 			return e
 		}
 	} else if !os.IsNotExist(e) {
@@ -197,8 +211,11 @@ func ImportCursorCLI(config, workspace string, b *Bundle) error {
 		return e
 	}
 	defer os.RemoveAll(tmp)
-	_, e = ExportCursorCLI(config, workspace, b.SessionID, tmp, true)
-	return e
+	current, e := ExportCursorCLI(config, workspace, b.SessionID, tmp, false)
+	if e != nil {
+		return e
+	}
+	return rememberSnapshotImport(root, current, b)
 }
 
 func ExportCursorSDK(store, workspace, id, out string, remember bool) (*Bundle, error) {
@@ -230,6 +247,9 @@ func ExportCursorSDK(store, workspace, id, out string, remember bool) (*Bundle, 
 			return nil, e
 		}
 		b.Files[name] = f
+	}
+	if e := setSnapshotLineage(store, b); e != nil {
+		return nil, e
 	}
 	if e := b.ValidateFiles(); e != nil {
 		return nil, e
@@ -267,7 +287,7 @@ func ImportCursorSDK(store, workspace string, b *Bundle) error {
 		if e != nil {
 			return e
 		}
-		if e = CheckSnapshotBaseline(store, current); e != nil {
+		if e = CheckSnapshotReplacement(store, current, b); e != nil {
 			return e
 		}
 	} else if !os.IsNotExist(e) {
@@ -326,8 +346,11 @@ func ImportCursorSDK(store, workspace string, b *Bundle) error {
 		return e
 	}
 	defer os.RemoveAll(tmp)
-	_, e = ExportCursorSDK(store, workspace, b.SessionID, tmp, true)
-	return e
+	current, e := ExportCursorSDK(store, workspace, b.SessionID, tmp, false)
+	if e != nil {
+		return e
+	}
+	return rememberSnapshotImport(store, current, b)
 }
 
 // The stopped SDK may leave a committed WAL behind. Checkpoint the old copy
@@ -498,53 +521,99 @@ func validateSDKStore(root, id, workspace string) error {
 	return nil
 }
 
-// Before a snapshot format replaces a prior destination, that prior copy
-// must still equal the last state exported from this computer. Byte-prefix
-// ancestry cannot validate SQLite pages or SDK metadata updates.
-func CheckSnapshotBaseline(root string, current *Bundle) error {
+// A local file baseline detects unexported edits; the parent snapshot detects
+// branches even when both computers independently exported their local changes.
+type snapshotState struct {
+	Baseline Bundle `json:"baseline"`
+	Parent   string `json:"parent_snapshot,omitempty"`
+}
+
+func loadSnapshotState(root string) (snapshotState, error) {
+	var state snapshotState
 	p, e := Path(root, ".agentworks-last-export.json", false)
+	if e != nil {
+		return state, e
+	}
+	raw, e := os.ReadFile(p)
+	if e != nil {
+		return state, e
+	}
+	if len(raw) > 2<<20 {
+		return state, fmt.Errorf("invalid native baseline")
+	}
+	if json.Unmarshal(raw, &state) != nil || state.Baseline.Validate() != nil || state.Parent != "" && !digest.MatchString(state.Parent) {
+		return state, fmt.Errorf("invalid native baseline")
+	}
+	return state, nil
+}
+func setSnapshotLineage(root string, b *Bundle) error {
+	raw, _ := json.Marshal(struct {
+		Provider, Format, Session string
+		Files                     map[string]File
+	}{b.Provider, b.Format, b.SessionID, b.Files})
+	b.Snapshot = fmt.Sprintf("%x", sha256.Sum256(raw))
+	state, e := loadSnapshotState(root)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	if state.Baseline.Provider != b.Provider || state.Baseline.Format != b.Format || state.Baseline.SessionID != b.SessionID {
+		return fmt.Errorf("native baseline belongs to another conversation")
+	}
+	b.Parent = state.Parent
+	// Import changes only the local cwd binding, not the conversation revision.
+	if reflect.DeepEqual(state.Baseline.Files, b.Files) {
+		b.Snapshot = state.Baseline.Snapshot
+	}
+	return nil
+}
+func CheckSnapshotBaseline(root string, current *Bundle) error {
+	state, e := loadSnapshotState(root)
 	if os.IsNotExist(e) {
 		return Diverged()
 	}
 	if e != nil {
 		return e
 	}
-	raw, e := os.ReadFile(p)
-	if e != nil {
-		return e
-	}
-	if len(raw) > 2<<20 {
-		return fmt.Errorf("invalid native baseline")
-	}
-	var baseline Bundle
-	if json.Unmarshal(raw, &baseline) != nil || baseline.Validate() != nil || baseline.Provider != current.Provider || baseline.Format != current.Format || baseline.SessionID != current.SessionID || !reflect.DeepEqual(baseline.Files, current.Files) {
+	baseline := state.Baseline
+	if baseline.Provider != current.Provider || baseline.Format != current.Format || baseline.SessionID != current.SessionID || !reflect.DeepEqual(baseline.Files, current.Files) {
 		return Diverged()
 	}
 	return nil
 }
-
+func CheckSnapshotReplacement(root string, current, incoming *Bundle) error {
+	if e := CheckSnapshotBaseline(root, current); e != nil {
+		return e
+	}
+	state, e := loadSnapshotState(root)
+	if e != nil {
+		return e
+	}
+	if incoming.Provider != current.Provider || incoming.Format != current.Format || incoming.SessionID != current.SessionID || incoming.Snapshot != state.Baseline.Snapshot && incoming.Parent != state.Baseline.Snapshot {
+		return Diverged()
+	}
+	return nil
+}
 func RememberSnapshotExport(root string, b *Bundle) error {
+	return writeSnapshotState(root, snapshotState{Baseline: *b, Parent: b.Parent})
+}
+func rememberSnapshotImport(root string, current, incoming *Bundle) error {
+	current.Snapshot = incoming.Snapshot
+	current.Parent = incoming.Parent
+	return writeSnapshotState(root, snapshotState{Baseline: *current, Parent: incoming.Snapshot})
+}
+func writeSnapshotState(root string, state snapshotState) error {
 	p, e := Path(root, ".agentworks-last-export.json", true)
 	if e != nil {
 		return e
 	}
-	raw, e := json.Marshal(b)
+	raw, e := json.Marshal(state)
 	if e != nil {
 		return e
 	}
-	f, e := os.CreateTemp(filepath.Dir(p), ".export-")
-	if e != nil {
-		return e
-	}
-	defer os.Remove(f.Name())
-	if _, e = f.Write(raw); e != nil {
-		f.Close()
-		return e
-	}
-	if e = f.Close(); e != nil {
-		return e
-	}
-	return os.Rename(f.Name(), p)
+	return Write(root, p, raw)
 }
 
 // Native agent state has no views or triggers. A writable remote runtime must
