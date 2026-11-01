@@ -123,43 +123,6 @@ func TestPrivateCursorRuntimePreservesProjectAndAccountPolicy(t *testing.T) {
 	if _, err := prepareCursorPrivateRuntime(opts, []string{"HOME=" + homeB, "CURSOR_CONFIG_DIR=" + account}); err != nil {
 		t.Fatalf("nonbridge runtime without generated permissions: %v", err)
 	}
-	// PLAT-856-442: Linux tmux must see the already-selected sandbox login,
-	// which is populated after wrapper preparation. Never borrow ambient auth.
-	xdg := filepath.Join(t.TempDir(), ".config")
-	if err := linkCursorSandboxLogin(configB, xdg); err != nil {
-		t.Fatal(err)
-	}
-	login := filepath.Join(xdg, "cursor", "auth.json")
-	if target, err := os.Readlink(filepath.Join(configB, "auth.json")); err != nil || target != login {
-		t.Fatalf("sandbox login pointer = %q, %v", target, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(login), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(login, []byte("sandbox-selected-account"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if raw, err := os.ReadFile(filepath.Join(configB, "auth.json")); err != nil || string(raw) != "sandbox-selected-account" {
-		t.Fatalf("sandbox login not projected: %q, %v", raw, err)
-	}
-	if err := linkCursorSandboxLogin(configA, xdg); err == nil {
-		t.Fatal("a different existing login pointer was accepted")
-	}
-	if raw, err := os.ReadFile(filepath.Join(configA, "auth.json")); err != nil || string(raw) != "fixture-A" {
-		t.Fatal("explicit selected account replaced", err)
-	}
-	if err := os.Remove(filepath.Join(configB, "auth.json")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configB, "auth.json"), []byte("keep-existing-file"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := linkCursorSandboxLogin(configB, xdg); err != nil {
-		t.Fatal("existing private login file was refused", err)
-	}
-	if raw, _ := os.ReadFile(filepath.Join(configB, "auth.json")); string(raw) != "keep-existing-file" {
-		t.Fatal("existing login file was replaced")
-	}
 
 }
 

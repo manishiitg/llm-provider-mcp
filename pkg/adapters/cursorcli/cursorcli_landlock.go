@@ -26,5 +26,15 @@ func cursorLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir st
 	if opts == nil {
 		return args, func() {}, nil
 	}
+	if opts.CLISecurity.LandlockEnforced() {
+		var err error
+		writes := []string{workingDir, opts.CLISecurity.PrivateHome, "/tmp"}
+		writes = append(writes, opts.CLISecurity.WorkspaceWritePaths...)
+		writes = append(writes, opts.CLISecurity.HostWritePaths...)
+		args, err = cursorNativeEntry(args, writes)
+		if err != nil {
+			return nil, func() {}, err
+		}
+	}
 	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, cursorLandlockReads(opts, args, workingDir), nil)
 }
