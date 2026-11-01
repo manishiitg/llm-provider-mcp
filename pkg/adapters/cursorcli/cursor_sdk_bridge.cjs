@@ -14,22 +14,30 @@ async function main() {
   const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, followups = [], early = [], busy = false;
   // This process belongs to one account; keep a successful discovery across starts/resumes. The lookup begins as
-  // the bridge starts, so a start rarely waits; a start waits at most 3 s and never keeps a failed or empty result:
-  // the next start asks again (PLAT-872-64: an empty result cached for the bridge's life sent the bare model without
-  // the account's fixed settings, and a Plus account refused it).
-  let accountModels, catalog = 'not_needed', lookup;
+  // the bridge starts, so a start rarely waits, and never keeps a failed or empty result: the next start asks again
+  // (PLAT-872-64: an empty result cached for the bridge's life sent the bare model without the account's fixed
+  // settings, and a Plus account refused it). A start waits up to 15 s, asking again after a quick failure: the
+  // earlier 3 s limit started about one Cursor chat in six without the settings, and Plus refused it (PLAT-872-93).
+  // Go remembers the settings a start found, so later chats of this account skip the lookup.
+  let accountModels, catalog = 'not_needed', lookup, lookupMs;
   const listModels = () => lookup ??= Cursor.models.list({ apiKey: process.env.CURSOR_API_KEY || undefined })
     .then(models => { if (Array.isArray(models) && models.length) accountModels = models; else catalog = 'empty'; return models; },
           error => { catalog = 'error: ' + short(error); })
     .finally(() => { lookup = undefined; });
   listModels();
-  const modelDefaults = async () => {
-    if (!accountModels) {
+  const modelDefaults = async (limit = 15000) => { // limit: tests shorten the wait
+    const began = Date.now();
+    while (!accountModels) {
+      const left = limit - (Date.now() - began);
+      if (left <= 0) { catalog = 'timeout'; break; }
       let timer;
-      const waited = await Promise.race([listModels().then(() => 'done'), new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 3000); })]);
+      const waited = await Promise.race([listModels().then(() => 'done'), new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), left); })]);
       clearTimeout(timer);
-      if (!accountModels) { if (waited === 'timeout') catalog = 'timeout'; return []; } // Discovery trouble must not prevent an otherwise valid chat.
+      if (waited === 'timeout') { catalog = 'timeout'; break; }
+      if (!accountModels) await new Promise(resolve => setTimeout(resolve, Math.min(1000, Math.max(0, limit - (Date.now() - began)))));
     }
+    lookupMs = Date.now() - began;
+    if (!accountModels) return []; // Discovery trouble must not prevent an otherwise valid chat.
     catalog = 'ok';
     return accountModels;
   };
@@ -124,7 +132,7 @@ async function main() {
       // Composer's account catalog, for example, supplies explicit fast=false.
       // Preserve explicit selections; resolve bare IDs with this account only.
       if (!start.model.params?.length) {
-        const models = await modelDefaults();
+        const models = await modelDefaults(start.catalog_wait_ms);
         const variant = models.find(model => model.id === start.model.id)?.variants?.find(variant => variant.isDefault);
         if (variant?.params?.length) start.model = {...start.model, params: variant.params};
       }
@@ -146,7 +154,7 @@ async function main() {
       }
       const resumed = Boolean(agent);
       if (!agent) agent = await Agent.create(options());
-      emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}), model_catalog: catalog, model_params: (start.model.params || []).map(p => p.id + '=' + p.value).join(',') });
+      emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}), model_catalog: catalog, ...(lookupMs !== undefined ? { model_lookup_ms: lookupMs } : {}), model_params: (start.model.params || []).map(p => p.id + '=' + p.value).join(',') });
       continue;
     }
     if (request.type !== 'prompt') continue;
