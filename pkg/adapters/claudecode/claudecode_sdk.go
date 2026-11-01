@@ -95,6 +95,13 @@ func ReleaseAnsweredSDKTurn(owner string) bool {
 
 var claudeSDKProcesses = sessionregistry.NewOwnerRegistry[*claudeSDKProcess]()
 
+// ClaudeSDKSessionActive reports whether an owner's chat runs Claude through
+// the Agent SDK right now.
+func ClaudeSDKSessionActive(ownerSessionID string) bool {
+	_, ok := claudeSDKProcesses.Get(strings.TrimSpace(ownerSessionID))
+	return ok
+}
+
 func (p *claudeSDKProcess) write(value any) error {
 	return p.session.input.write(value)
 }

@@ -56,7 +56,8 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 
 	switch normalizedProvider {
 	case ProviderClaudeCode:
-		if contract.Transport == CodingAgentTransportSDK {
+		// Each chat chooses its Claude transport: send to the one running for it.
+		if claudecode.ClaudeSDKSessionActive(ownerSessionID) {
 			return claudecode.SendClaudeCodeSDKInput(ctx, ownerSessionID, message)
 		}
 		return SendClaudeCodeInput(ctx, ownerSessionID, message)

@@ -538,6 +538,13 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 // GetCodingAgentProviderContract returns the shared coding-agent contract for a
 // provider/model pair.
 func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAgentProviderContract, bool) {
+	return GetCodingAgentProviderContractForTransport(provider, modelID, "")
+}
+
+// GetCodingAgentProviderContractForTransport is the contract of a chat whose
+// Claude Code runs on the transport it chose ("sdk" or "tmux"); empty uses
+// the server's setting. Other providers ignore it.
+func GetCodingAgentProviderContractForTransport(provider Provider, modelID, claudeTransport string) (CodingAgentProviderContract, bool) {
 	normalizedProvider := Provider(strings.ToLower(strings.TrimSpace(string(provider))))
 	contract, ok := codingAgentProviderContracts[normalizedProvider]
 	if !ok {
@@ -572,7 +579,7 @@ func GetCodingAgentProviderContract(provider Provider, modelID string) (CodingAg
 		}
 	}
 	if normalizedProvider == ProviderClaudeCode {
-		if transport, err := resolveClaudeCodeTransport(""); err == nil && transport == ClaudeCodeTransportSDK {
+		if transport, err := resolveClaudeCodeTransport(claudeTransport); err == nil && transport == ClaudeCodeTransportSDK {
 			contract.Transport = CodingAgentTransportSDK
 			contract.SupportsTerminalStream = false
 			contract.SupportsLiveInput = true // Native SDK priority-now input, confirmed by the CLI message UUID.
