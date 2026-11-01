@@ -225,7 +225,16 @@ func (b *Bundle) ValidateFiles() error {
 		if e != nil {
 			return e
 		}
-		got, e := Inspect(p)
+		var got File
+		if b.Format == "muse-jsonl" {
+			var workspace string
+			got, workspace, e = inspectMuseJournal(p, name == "session.jsonl", b.SessionID)
+			if e == nil && name == "session.jsonl" && workspace != b.Workspace {
+				return fmt.Errorf("Muse journal workspace changed during transfer")
+			}
+		} else {
+			got, e = Inspect(p)
+		}
 		if e != nil {
 			return e
 		}

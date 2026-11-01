@@ -1,9 +1,9 @@
 //go:build !darwin && !linux
 
-package musecli
+package sessiontransfer
 
 import "fmt"
 
-func lockNativeHandoff(_, _ string) (func(), error) {
+func lockMuseSession(_, _ string) (func(), error) {
 	return nil, fmt.Errorf("Muse native session moves are available on Mac and Linux")
 }
