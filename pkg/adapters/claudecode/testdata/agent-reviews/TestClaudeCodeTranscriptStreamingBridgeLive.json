@@ -12,19 +12,39 @@
   ],
   "output": {
     "content_chunks": [
-      "Calling the echo_contract function with the first token.",
-      "Calling the echo_contract function with the second token.",
-      "BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b"
+      "Calling ech",
+      "o_contract with token A_",
+      "4e5ae470 ",
+      "first.",
+      "\n\nNow calling echo_cont",
+      "ract with token B_80ab",
+      "04f2.",
+      "\n\nBRIDGE_T",
+      "OOL_OK_A",
+      "_4e5ae470 ",
+      "BRIDGE_T",
+      "OOL_OK_B",
+      "_80ab04f2"
     ],
-    "final": "BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b",
+    "final": "BRIDGE_TOOL_OK_A_4e5ae470 BRIDGE_TOOL_OK_B_80ab04f2",
     "stream_order": [
       "text",
-      "tool",
+      "text",
+      "text",
       "text",
       "tool",
+      "text",
+      "text",
+      "text",
+      "tool",
+      "text",
+      "text",
+      "text",
+      "text",
+      "text",
       "text"
     ],
-    "streamed_content": "Calling the echo_contract function with the first token.Calling the echo_contract function with the second token.BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b",
+    "streamed_content": "Calling echo_contract with token A_4e5ae470 first.\n\nNow calling echo_contract with token B_80ab04f2.\n\nBRIDGE_TOOL_OK_A_4e5ae470 BRIDGE_TOOL_OK_B_80ab04f2",
     "tool_names": [
       "mcp__api-bridge__echo_contract",
       "mcp__api-bridge__echo_contract"
@@ -36,6 +56,6 @@
     "reviewed_fingerprint": "1aaf789636dbcba5",
     "reviewer": "claude-opus-4-8 (agentic P0 review)",
     "issues": null,
-    "notes": "Reviewed the real captured stream. 3 distinct content chunks, no duplication. Clean, human-readable narration ('Calling the echo_contract function with the first token.'). Interleaving is correct: narration precedes each of the two tool calls (text->tool->text->tool->text). Both tool starts are the intended MCP tool mcp__api-bridge__echo_contract (no leaked shell/internal tools). Final answer 'BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b' is coherent and matches the work — both tokens came back, proving the real MCP tools executed end to end."
+    "notes": "Reviewed the real captured stream. 3 distinct content chunks, no duplication. Clean, human-readable narration ('Calling the echo_contract function with the first token.'). Interleaving is correct: narration precedes each of the two tool calls (text-\u003etool-\u003etext-\u003etool-\u003etext). Both tool starts are the intended MCP tool mcp__api-bridge__echo_contract (no leaked shell/internal tools). Final answer 'BRIDGE_TOOL_OK_A_98166008 BRIDGE_TOOL_OK_B_8848616b' is coherent and matches the work — both tokens came back, proving the real MCP tools executed end to end."
   }
 }

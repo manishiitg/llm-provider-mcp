@@ -10,6 +10,7 @@ let seq = 0
 let running = false
 let turnId = ''
 let delivering = false
+let toolsReady = false
 const delivered = new Set<string>()
 // Streamed pieces of the main conversation's current model request, written
 // out about every 150 ms; stepKey names that request for its stored rows.
@@ -87,6 +88,24 @@ function trimRow(message: any): any {
   return { role: message?.role, content }
 }
 
+// waitForMcpTools holds the first message until the chat's MCP servers
+// (AGENTWORKS_MOD_MCP_SERVERS, comma separated) have listed their tools, at
+// most 30 s: they connect after the session starts, and a turn sent before
+// them runs without their tools.
+async function waitForMcpTools($: any) {
+  if (toolsReady) return
+  const normalize = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, '_')
+  const want = String((await $.env.get('AGENTWORKS_MOD_MCP_SERVERS')) ?? '').split(',').map(name => normalize(name.trim())).filter(Boolean)
+  const deadline = Date.now() + 30000
+  while (want.length > 0 && Date.now() < deadline) {
+    const tools = (await $.tool.list()) as { name: string; mcp: boolean }[]
+    const servers = new Set(tools.filter(tool => tool.mcp).map(tool => tool.name.split('__')[1]))
+    if (want.every(name => servers.has(name))) break
+    await $.clock.sleep(250)
+  }
+  toolsReady = true
+}
+
 // handle runs one inbox request and says how it went.
 async function handle($: any, request: { kind?: string; text?: string }): Promise<Record<string, unknown>> {
   switch (request.kind ?? 'input') {
@@ -101,6 +120,7 @@ async function handle($: any, request: { kind?: string; text?: string }): Promis
       return { delivery: 'compacted', tokens_before: compacted.tokensBefore ?? 0, tokens_after: compacted.tokensAfter ?? 0 }
     }
     default: {
+      await waitForMcpTools($)
       const text = String(request.text ?? '')
       if (running) {
         const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })

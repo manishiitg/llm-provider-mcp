@@ -1159,7 +1159,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		if err != nil {
 			return err
 		}
-		finalEnv = append(finalEnv, claudeModDirEnv+"="+modDir)
+		finalEnv = append(finalEnv, claudeModDirEnv+"="+modDir, claudeModMCPServersEnv+"="+strings.Join(claudeMCPServerNames(opts), ","))
 	}
 	// This already scrubs Claude's own ambient auth keys. The caller's scoped
 	// environment is a separate contract that the structured path applies when
