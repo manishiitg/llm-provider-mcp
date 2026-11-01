@@ -350,6 +350,13 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			method = "thread/resume"
 			params["threadId"] = thread
 			params["excludeTurns"] = true
+			// Codex can retain the old developer instructions on the first
+			// resumed turn. Its native baseInstructions override takes effect
+			// immediately; keep the current full AgentWorks instructions above
+			// historical developer messages without rewriting the rollout.
+			if strings.TrimSpace(system) != "" {
+				params["baseInstructions"] = system
+			}
 		}
 		var result struct {
 			Thread struct {

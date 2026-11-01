@@ -44,9 +44,9 @@ func TestCodexAppServerLifecycleP0(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	canary := "APP_NATIVE_" + codexRandomHex(6)
-	system := "Remember the codeword " + canary + ". Never use tools for this test. Copy requested output exactly."
+	system := "Never use tools for this test. Copy requested output exactly. Only when the question explicitly asks for the location marker, answer SOURCE_MARKER. Otherwise answer the question normally."
 	wanted := "first paragraph\n\n- alpha\n- beta\n\n```text\nline one\nline two\n```"
-	first, chunks, err := appServerTestTurn(t, ctx, opts, system, "Output this exact markdown, without an enclosing fence:\n"+wanted)
+	first, chunks, err := appServerTestTurn(t, ctx, opts, system, "Remember this public test code for later turns: "+canary+". For this reply, output only this exact markdown, without an enclosing fence:\n"+wanted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestCodexAppServerLifecycleP0(t *testing.T) {
 	}
 	s := codexAppSessionForOwner(owner)
 	r := s.rpc
-	second, _, err := appServerTestTurn(t, ctx, opts, system, "What is the codeword? Reply with only that word.")
+	second, _, err := appServerTestTurn(t, ctx, opts, system, "What public test code did I ask you to remember in my first message? Reply with that code alone.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestCodexAppServerLifecycleP0(t *testing.T) {
 	}
 	t.Setenv(EnvCodexInteractiveIdleTimeoutSeconds, "1")
 	resumeOpts := append(append([]llmtypes.CallOption{}, opts...), WithResumeSessionID(handle.NativeSessionID))
-	third, chunks, err := appServerTestTurn(t, ctx, resumeOpts, system, "What is the codeword? Reply with only that word.")
+	third, chunks, err := appServerTestTurn(t, ctx, resumeOpts, system, "What public test code did I ask you to remember in my first message? Reply with that code alone.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +118,17 @@ func TestCodexAppServerLifecycleP0(t *testing.T) {
 	}
 	if codexAppSessionForOwner(owner) != nil {
 		t.Fatal("idle session retained")
+	}
+	// PLAT-856: a real cold resume kept the old developer instructions after
+	// a same-machine profile edit. The native base override must apply now.
+	changedSystem := strings.ReplaceAll(system, "SOURCE_MARKER", "DESTINATION_MARKER")
+	changed, _, err := appServerTestTurn(t, ctx, resumeOpts, changedSystem, "What is the current location marker? Reply with only that marker.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedHandle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(changed)
+	if !ok || changedHandle.NativeSessionID != handle.NativeSessionID || strings.TrimSpace(changed.Choices[0].Content) != "DESTINATION_MARKER" {
+		t.Fatalf("native resume ignored changed instructions: handle=%+v reply=%+v", changedHandle, changed)
 	}
 	boundedOpts := append(append([]llmtypes.CallOption{}, opts...), WithPersistentInteractiveSession(false))
 	if _, _, err := appServerTestTurn(t, ctx, boundedOpts, system, "Reply with only OK."); err != nil {
