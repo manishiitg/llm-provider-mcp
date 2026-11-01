@@ -2,6 +2,7 @@ package musecli
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,11 @@ func TestMuseMSPEnvironmentKeyReachesServe(t *testing.T) {
 	defer cancel()
 	_, err := NewMuseCLIAdapter("", "", nil).GenerateContent(ctx, museMSPHuman("Reply with only: ok"), WithWorkingDir(work), WithInteractiveSessionID(owner), liveConfined(t, "muse-cli", work), llmtypes.WithReasoningEffort("low"))
 	t.Logf("turn: %v", err)
-	if err == nil || !strings.Contains(err.Error(), "saved API key was rejected") {
+	want := "saved API key was rejected" // Linux: the launch key file
+	if runtime.GOOS == "darwin" {
+		want = "API key from META_API_KEY was rejected" // a Mac keeps the key in the environment
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("want the dummy key used from the key file, got %v", err)
 	}
 }

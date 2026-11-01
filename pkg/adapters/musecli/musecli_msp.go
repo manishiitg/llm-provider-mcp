@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -198,6 +199,15 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	key := a.apiKey
 	if key == "" {
 		key = museEnvValue(cmd.Env, "META_API_KEY")
+	}
+	if key != "" && runtime.GOOS == "darwin" {
+		// On a Mac `muse auth set` saves into the macOS Keychain, not a file: a
+		// launch folder has no keychain, so it hangs and macOS asks the person
+		// about a missing keychain. The Mac keeps the key in the environment.
+		if a.apiKey != "" {
+			cmd.Env = append(museWithoutEnv(cmd.Env, "META_API_KEY"), "META_API_KEY="+a.apiKey)
+		}
+		key = ""
 	}
 	if key != "" {
 		cmd.Env = museWithoutEnv(cmd.Env, "META_API_KEY")
