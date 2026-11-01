@@ -1659,6 +1659,11 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 				}
 				continue
 			}
+			// Claude Code exited while starting: fail now, so the caller can relaunch,
+			// instead of waiting out the inactivity window on a dead pane.
+			if status, dead := claudeTmuxPaneExited(deadline, sessionName); dead {
+				return &llmtypes.CodingAgentTmuxSessionLostError{Provider: "claude-code", SessionName: sessionName, Reason: fmt.Sprintf("Claude Code exited while starting (status %s): %s", status, llmtypes.CompactTerminalPaneForError(sessionName, captured))}
+			}
 			if streamChan != nil && streamTerminalScreen {
 				if time.Since(lastTerminalStreamedAt) >= time.Second && streamClaudeTerminalSnapshot(ctx, sessionName, streamChan, &lastTerminalSnapshot) {
 					lastTerminalStreamedAt = time.Now()
@@ -3592,4 +3597,21 @@ func (c *ClaudeCodeInteractiveAdapter) GetStatusLine(ctx context.Context, sessio
 	recordClaudeSessionRateLimitWindows(tmuxSessionName, status.RateLimitWindows(), time.Now().UTC())
 
 	return status, nil
+}
+
+// claudeTmuxPaneExited reports whether the session's pane process has exited,
+// with its exit status, as tmux records it (remain-on-exit keeps the pane).
+func claudeTmuxPaneExited(ctx context.Context, sessionName string) (string, bool) {
+	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", sessionName, "#{pane_dead} #{pane_dead_status}").Output()
+	if err != nil {
+		return "", false
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 || fields[0] != "1" {
+		return "", false
+	}
+	if len(fields) > 1 {
+		return fields[1], true
+	}
+	return "unknown", true
 }
