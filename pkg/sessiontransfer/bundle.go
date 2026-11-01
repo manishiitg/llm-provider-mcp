@@ -45,7 +45,7 @@ func (b *Bundle) Validate() error {
 	if b == nil || !filepath.IsAbs(b.Workspace) || len(b.Files) == 0 || len(b.Files) > 4096 {
 		return fmt.Errorf("invalid native session descriptor")
 	}
-	if b.Transport != "sdk" && b.Transport != "acp" && b.Transport != "tmux" && b.Transport != "structured" && b.Transport != "exec" && b.Transport != "app-server" {
+	if b.Transport != "sdk" && b.Transport != "acp" && b.Transport != "tmux" && b.Transport != "structured" && b.Transport != "exec" && b.Transport != "app-server" && b.Transport != "msp" {
 		return fmt.Errorf("unsupported native runtime")
 	}
 	switch b.Provider {
@@ -58,7 +58,9 @@ func (b *Bundle) Validate() error {
 			return fmt.Errorf("unsupported Codex native runtime")
 		}
 	case "muse-cli":
-		if b.Transport != "structured" && b.Transport != "tmux" {
+		// One journal for every Muse lane; the destination runs it on its own
+		// configured lane.
+		if b.Transport != "structured" && b.Transport != "tmux" && b.Transport != "msp" {
 			return fmt.Errorf("unsupported Muse native runtime")
 		}
 	case "cursor-cli":

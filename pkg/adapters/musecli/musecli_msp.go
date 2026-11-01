@@ -60,6 +60,32 @@ type museMSPSession struct {
 	usage          *museMSPPlanUsage
 	context        museMSPContext
 	cleanup        func()
+	// steered: messages turn/steer accepted, for the durable receipt.
+	steered map[string]time.Time
+}
+
+func (s *museMSPSession) steerReceipt(message string) (MuseDurableAck, error) {
+	s.mu.Lock()
+	at, ok := s.steered[message]
+	delete(s.steered, message)
+	path := museSessionLogPath(s.sessionID, s.dataHome)
+	s.mu.Unlock()
+	if !ok {
+		return MuseDurableAck{}, fmt.Errorf("Muse did not take the message")
+	}
+	return MuseDurableAck{Outcome: MuseDurableAckConfirmed, Latency: time.Since(at), ProofPath: path, RowTimestamp: at}, nil
+}
+
+func closeAllMuseMSPSessions() {
+	museMSPSessions.Lock()
+	owners := make([]string, 0, len(museMSPSessions.m))
+	for owner := range museMSPSessions.m {
+		owners = append(owners, owner)
+	}
+	museMSPSessions.Unlock()
+	for _, owner := range owners {
+		CloseMuseMSPSession(owner)
+	}
 }
 
 type museMSPContext struct {

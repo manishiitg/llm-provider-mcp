@@ -887,7 +887,7 @@ func TestBestEffortToolRestrictionsRequireExplicitMuseGaps(t *testing.T) {
 // screen text): either it surfaces them from a named source, or it states why
 // it cannot. A new provider cannot silently skip the question.
 func TestPlanUsageContractIsWellFormed(t *testing.T) {
-	valid := map[string]bool{"app-server": true, "statusline-sidecar": true, "transcript-file": true}
+	valid := map[string]bool{"app-server": true, "msp": true, "statusline-sidecar": true, "transcript-file": true}
 	for _, c := range CodingAgentProviderContracts() {
 		if c.SurfacesPlanUsage {
 			if !valid[c.PlanUsageSource] {

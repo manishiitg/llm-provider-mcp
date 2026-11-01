@@ -284,6 +284,7 @@ func KillMusePersistentSession(owner string) {
 // providers so no live pane leaks across matrix entries. No tmux binary is
 // a no-op (returns nil), never an error.
 func CleanupMuseCLIInteractiveSessions(ctx context.Context) error {
+	closeAllMuseMSPSessions()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}
@@ -310,6 +311,7 @@ func CleanupMuseCLIInteractiveSessions(ctx context.Context) error {
 func CloseMuseCLIInteractiveSessionForOwner(owner, reason string) {
 	_ = reason
 	KillMusePersistentSession(owner)
+	CloseMuseMSPSession(owner)
 }
 
 // CloseMuseCLIInteractiveSessionByTmux tears down a persistent muse session

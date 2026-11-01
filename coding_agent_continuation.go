@@ -203,7 +203,8 @@ func CompactCodingAgentSession(ctx context.Context, model llmtypes.Model, handle
 // IdleCompactSupported reports whether a provider transport has a reliable
 // native compaction trigger: Claude Code (/compact on its SDK, stream-json and
 // tmux transports), Codex app-server (thread/compact/start) and Pi RPC
-// (compact). Codex tmux/exec, Cursor, Muse and AGY have none.
+// (compact) and Muse serve (session/compact). Codex tmux/exec, Cursor, Muse
+// tmux/exec and AGY have none.
 func IdleCompactSupported(provider Provider, transport string) bool {
 	switch normalizeCodingAgentProvider(provider) {
 	case ProviderClaudeCode:
@@ -215,6 +216,8 @@ func IdleCompactSupported(provider Provider, transport string) bool {
 		return transport == llmtypes.CodingProviderTransportAppServer
 	case ProviderPiCLI:
 		return transport == llmtypes.CodingProviderTransportRPC
+	case ProviderMuseCLI:
+		return transport == llmtypes.CodingProviderTransportMSP
 	}
 	return false
 }

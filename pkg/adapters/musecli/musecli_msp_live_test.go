@@ -208,3 +208,25 @@ func TestMuseMSPRealResumeAndCompact(t *testing.T) {
 		t.Fatal("no usage for a live chat")
 	}
 }
+
+// The account's plan windows reach the chat's usage line from muse serve.
+func TestMuseMSPRealPlanUsage(t *testing.T) {
+	skipMuseMSPLive(t)
+	_, options := museMSPLiveChat(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	resp, err := NewMuseCLIAdapter("", "", nil).GenerateContent(ctx, museMSPHuman("Reply with only: ok"), options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows, _ := resp.Choices[0].GenerationInfo.Additional[llmtypes.RateLimitWindowsMetaKey].([]llmtypes.RateLimitWindow)
+	if len(windows) == 0 {
+		t.Fatal("no plan windows on the response")
+	}
+	for _, w := range windows {
+		if w.Name == "" || w.ResetsAt.IsZero() || w.UsedPercent < 0 {
+			t.Fatalf("plan window not well formed: %+v", w)
+		}
+	}
+	t.Logf("plan windows: %+v", windows)
+}

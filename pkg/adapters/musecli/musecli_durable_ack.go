@@ -487,6 +487,10 @@ func AwaitMuseInputDurable(ctx context.Context, ownerSessionID, message string, 
 	if timeout <= 0 {
 		timeout = museDurableAckBudget()
 	}
+	if s := museMSPSessionFor(ownerSessionID); s != nil {
+		// turn/steer answers only after the host recorded the message.
+		return s.steerReceipt(message)
+	}
 	key, err := musePersistentKey(ownerSessionID)
 	if err != nil {
 		return MuseDurableAck{}, err

@@ -46,6 +46,9 @@ func InteractiveSessionRegistered(ownerSessionID string) bool {
 // SendMuseInteractiveInput types a follow-up message into the owner's live
 // pooled TUI and submits it.
 func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message string) error {
+	if MuseMSPSessionActive(ownerSessionID) {
+		return SendMuseMSPInput(ctx, ownerSessionID, message)
+	}
 	key, err := musePersistentKey(ownerSessionID)
 	if err != nil {
 		return err
@@ -127,6 +130,10 @@ func SendMuseInteractiveInput(ctx context.Context, ownerSessionID, message strin
 // Up, Down — see IsAllowedCodingAgentControlKey) into the owner's live
 // pooled TUI.
 func SendMuseInteractiveControlKey(ctx context.Context, ownerSessionID, key string) error {
+	if MuseMSPSessionActive(ownerSessionID) {
+		// A serve chat has no screen: Esc and Ctrl-C mean stop the turn.
+		return InterruptMuseMSP(ctx, ownerSessionID)
+	}
 	tmuxName, ok := musePersistentTmuxForOwner(ownerSessionID)
 	if !ok {
 		return fmt.Errorf("no active Muse interactive session registered for owner session %s", ownerSessionID)
