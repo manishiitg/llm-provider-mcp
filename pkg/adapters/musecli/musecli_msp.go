@@ -67,6 +67,9 @@ type museMSPSession struct {
 	usage          *museMSPPlanUsage
 	context        museMSPContext
 	cleanup        func()
+	// listener receives the host's events while one of this chat's own turns
+	// (or a compaction) runs; between them pumpMuseMSP handles them.
+	listener chan museRPCMessage
 	// steered: messages turn/steer accepted, for the durable receipt.
 	steered map[string]time.Time
 }
@@ -410,6 +413,7 @@ func (a *MuseCLIAdapter) museMSPOpen(ctx context.Context, opts *llmtypes.CallOpt
 	}
 	museMSPSessions.Lock()
 	museMSPSessions.m[owner] = s
+	go a.pumpMuseMSP(s)
 	museMSPSessions.Unlock()
 	return s, true, nil
 }
@@ -494,6 +498,8 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	var started struct {
 		TurnID string `json:"turnId"`
 	}
+	events := s.listen()
+	defer s.stopListening()
 	if err := s.rpc.call(ctx, "turn/start", params, &started); err != nil {
 		CloseMuseMSPSession(owner)
 		return nil, err
@@ -502,7 +508,7 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	s.turnID = started.TurnID
 	s.mu.Unlock()
 	llmtypes.SignalPromptAccepted(opts.StreamChan)
-	response, err := a.consumeMuseMSPTurn(ctx, s, started.TurnID, opts, emit)
+	response, err := a.consumeMuseMSPTurn(ctx, s, events, started.TurnID, opts, emit)
 	s.mu.Lock()
 	s.turnID = ""
 	if handoff && err == nil {
