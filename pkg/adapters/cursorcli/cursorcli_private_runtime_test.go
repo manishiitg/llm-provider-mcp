@@ -2,10 +2,12 @@ package cursorcli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -89,6 +91,33 @@ func TestPrivateCursorRuntimePreservesProjectAndAccountPolicy(t *testing.T) {
 	if raw, err := os.ReadFile(filepath.Join(configA, "auth.json")); err != nil || string(raw) != "fixture-A" {
 		t.Fatal("selected account overridden", err)
 	}
+	// Parallel launches of the same selected account must never unlink its
+	// authentication in between another launch's configuration and read.
+	var launches sync.WaitGroup
+	results := make(chan error, 24)
+	for i := 0; i < 24; i++ {
+		launches.Add(1)
+		go func() {
+			defer launches.Done()
+			dir, err := prepareCursorPrivateRuntime(opts, []string{"HOME=" + home})
+			if err == nil {
+				var raw []byte
+				raw, err = os.ReadFile(filepath.Join(dir, "auth.json"))
+				if err == nil && string(raw) != "fixture-A" {
+					err = fmt.Errorf("selected authentication changed during parallel launch")
+				}
+			}
+			results <- err
+		}()
+	}
+	launches.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Join(configA, "acp-sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}

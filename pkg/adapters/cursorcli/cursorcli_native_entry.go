@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,12 +21,16 @@ import (
 // the outer CLI layer; Cursor's later tool shells still enter the inner layer.
 // Unknown/custom launchers retain their original command.
 func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
-	if len(args) == 0 || (filepath.Base(args[0]) != "cursor-agent" && filepath.Base(args[0]) != "agent") {
+	fallback := func(reason string) ([]string, error) {
+		log.Printf("[CURSOR_NATIVE_ENTRY] mode=bootstrap reason=%s", reason)
 		return args, nil
+	}
+	if len(args) == 0 || (filepath.Base(args[0]) != "cursor-agent" && filepath.Base(args[0]) != "agent") {
+		return fallback("unsupported_launcher")
 	}
 	binary, err := exec.LookPath(args[0])
 	if err != nil {
-		return args, nil
+		return fallback("executable_unavailable")
 	}
 	binary, err = filepath.EvalSymlinks(binary)
 	if err != nil {
@@ -40,11 +45,11 @@ func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
 	home = pathidentity.Key(home)
 	install := filepath.Join(home, ".local", "share", "cursor-agent")
 	if pathidentity.Key(install) != install {
-		return args, nil
+		return fallback("linked_install_root")
 	}
 	root := filepath.Dir(binary)
 	if filepath.Dir(filepath.Dir(root)) != install || filepath.Base(filepath.Dir(root)) != "versions" {
-		return args, nil
+		return fallback("unmanaged_installation")
 	}
 	for _, grant := range toolWrites {
 		if grant == "" {
@@ -54,7 +59,7 @@ func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
 		for _, path := range []string{root, binary, filepath.Join(root, "node"), filepath.Join(root, "index.js")} {
 			path = pathidentity.Key(path)
 			if path == grant || strings.HasPrefix(path, grant+string(filepath.Separator)) || grant == string(filepath.Separator) {
-				return args, nil
+				return fallback("installation_is_tool_writable")
 			}
 		}
 	}
@@ -72,7 +77,7 @@ func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
 		!strings.Contains(shim, `NODE_BIN="$SCRIPT_DIR/node"`) ||
 		!strings.Contains(shim, `exec -a "$0" "$NODE_BIN"`) ||
 		!strings.Contains(shim, `"$SCRIPT_DIR/index.js" "$@"`) {
-		return args, nil
+		return fallback("unrecognized_bootstrap")
 	}
 	node, entry := filepath.Join(root, "node"), filepath.Join(root, "index.js")
 	groupChecked, privateGroup := false, false
@@ -83,17 +88,17 @@ func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) || info.Mode().Perm()&0002 != 0 {
-			return args, nil
+			return fallback("untrusted_owner_or_world_writable")
 		}
 		if info.Mode().Perm()&0020 != 0 {
 			if int(stat.Gid) != os.Getegid() {
-				return args, nil
+				return fallback("untrusted_group")
 			}
 			if !groupChecked {
 				groupChecked, privateGroup = true, cursorAppGroupPrivate()
 			}
 			if !privateGroup {
-				return args, nil
+				return fallback("shared_install_group")
 			}
 		}
 		if path == binary || path == node || path == entry {
