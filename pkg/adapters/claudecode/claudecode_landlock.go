@@ -35,6 +35,9 @@ func claudeLandlockArgs(opts *llmtypes.CallOptions, args []string, workingDir, s
 		_ = f.Close()
 	}
 	read, write := claudeModSandboxPaths(args, sessionName, read, []string{statusline})
+	if err := claudeModInboxOutsideWrites(opts.CLISecurity, workingDir, write, sessionName); err != nil {
+		return nil, func() {}, err
+	}
 	return clisandbox.LandlockArgs(opts.CLISecurity, args, workingDir, read, write)
 }
 

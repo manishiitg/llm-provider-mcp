@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -63,10 +64,15 @@ func claudeModSlashCommands() string {
 // this launch, so no other local account can read answers or plant events.
 func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 	if home := llmtypes.SandboxHomeEnvironment(opts)["HOME"]; strings.TrimSpace(home) != "" {
-		// Requests sit beside the private home, outside the sandbox's write paths:
+		// Requests sit in a folder of their own, outside everything the sandbox
+		// may write (the working folder can be the runtime that holds the home):
 		// the agent can read them, never write one (it would act as the person).
-		parent := filepath.Dir(filepath.Clean(home))
-		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: filepath.Join(parent, ".agentworks-mod-inbox"), shared: true}, nil
+		// The launcher gives a slot account read access to it.
+		inbox, err := os.MkdirTemp("", "agentworks-mod-inbox-")
+		if err != nil {
+			return claudeModBase{}, err
+		}
+		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: inbox, shared: true}, nil
 	}
 	dir, err := os.MkdirTemp("", "agentworks-mod-")
 	if err != nil {
@@ -77,9 +83,9 @@ func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 
 // claudeModBase is a launch's mod folders: dir holds the events the mod writes,
 // inbox the requests AgentWorks writes. shared: dir is inside a confined CLI's
-// home (group-writable for a slot account) and the inbox beside it, readable
-// only. private: made for this launch alone (an unconfined CLI, which already
-// has its person's rights).
+// home (group-writable for a slot account) and the inbox is a folder of its own
+// the CLI may only read. private: made for this launch alone (an unconfined
+// CLI, which already has its person's rights).
 type claudeModBase struct {
 	dir     string
 	inbox   string
@@ -156,7 +162,7 @@ func prepareClaudeModSessionDir(sessionName string) (string, error) {
 	base, _ := claudeModBaseFor(sessionName)
 	eventsMode, inboxMode := os.FileMode(0o700), os.FileMode(0o700)
 	if base.shared {
-		eventsMode, inboxMode = 0o770, 0o750 // a slot account writes events, only reads requests
+		eventsMode = 0o770 // a slot account writes events; it reads requests through the launcher's grant
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "events"), eventsMode); err != nil {
 		return "", fmt.Errorf("prepare Claude mod folder: %w", err)
@@ -173,10 +179,7 @@ func claudeModInboxDir(sessionName string) string {
 	if !ok {
 		return ""
 	}
-	if base.private {
-		return base.inbox
-	}
-	return filepath.Join(base.inbox, "session-"+sessionName)
+	return base.inbox
 }
 
 func removeClaudeModSessionDir(sessionName string) {
@@ -185,7 +188,7 @@ func removeClaudeModSessionDir(sessionName string) {
 		return
 	}
 	if !base.private {
-		_ = os.RemoveAll(claudeModInboxDir(sessionName))
+		_ = os.RemoveAll(base.inbox)
 	}
 	if base.private {
 		_ = os.RemoveAll(base.dir)
@@ -450,11 +453,7 @@ func claudeModRequest(ctx context.Context, sessionName, kind, text string) (clau
 	inbox := claudeModInboxDir(sessionName)
 	// Written aside and renamed in, so the mod never reads half a request.
 	tmp := filepath.Join(inbox, id+".tmp")
-	mode := os.FileMode(0o600)
-	if base, _ := claudeModBaseFor(sessionName); base.shared {
-		mode = 0o640 // a slot account reads it through its group
-	}
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return claudeModEvent{}, fmt.Errorf("queue %s for Claude Code: %w", kind, err)
 	}
 	final := filepath.Join(inbox, id+".json")
@@ -631,4 +630,17 @@ func claudeModRateLimitWindows(sessionName string) ([]llmtypes.RateLimitWindow, 
 		return windows, true
 	}
 	return nil, false
+}
+
+// claudeModInboxOutsideWrites refuses a confined launch whose request inbox the
+// CLI could write: the mod acts on each request as the person.
+func claudeModInboxOutsideWrites(policy *llmtypes.CLISecurityPolicy, workingDir string, runtimeWrites []string, sessionName string) error {
+	inbox := claudeModInboxDir(sessionName)
+	if inbox == "" || policy == nil || !policy.LandlockEnforced() {
+		return nil
+	}
+	if clisandbox.WritableUnder(clisandbox.LandlockWritePaths(policy, workingDir, runtimeWrites), inbox) {
+		return fmt.Errorf("the AgentWorks mod inbox %s would be writable by the confined CLI; not starting it", inbox)
+	}
+	return nil
 }

@@ -119,6 +119,41 @@ func credentialSource(file credentialFile, home string, env func(string) string)
 // runtimeReadPaths/runtimeWritePaths are files the adapter prepared for this
 // launch (MCP config, settings, hooks, status files) that live outside the
 // granted folders.
+// LandlockWritePaths is every folder a Landlock-confined CLI may write, before
+// blocked paths are split out of them: its working folder, its private home,
+// the policy's write grants and the launch's own write paths. A file the CLI
+// must not change (a request it would act on as its person) must lie outside
+// all of them; WritableUnder says whether one does.
+func LandlockWritePaths(policy *llmtypes.CLISecurityPolicy, workingDir string, runtimeWritePaths []string) []string {
+	write := []string{workingDir, canonical(policy.PrivateHome)}
+	// Only Cursor gets the shared /tmp: it keeps sockets at fixed /tmp paths
+	// (cursor-askpass-*.sock, and .cursor/<project> when its home path is too long for a socket).
+	// Every other CLI uses the private TMPDIR from CLIHomeEnvironment and starts without it (Muse,
+	// Pi and Agy verified under the real launcher; Claude and Codex ran confined without it), so
+	// one CLI's temp files are not readable by another. See docs/DECISIONS.md in the builder.
+	if strings.EqualFold(strings.TrimSpace(policy.Provider), "cursor-cli") {
+		write = append(write, "/tmp")
+	}
+	write = append(write, policy.WorkspaceWritePaths...)
+	write = append(write, policy.HostWritePaths...)
+	return append(write, runtimeWritePaths...)
+}
+
+// WritableUnder reports whether path is one of the write paths or inside one.
+func WritableUnder(writePaths []string, path string) bool {
+	target := canonicalThroughExisting(path)
+	for _, write := range writePaths {
+		dir := canonicalThroughExisting(write)
+		if dir == "" {
+			continue
+		}
+		if target == dir || strings.HasPrefix(target, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths []string) ([]string, func(), error) {
 	return landlockArgs(policy, args, workingDir, runtimeReadPaths, runtimeWritePaths, nil)
 }
@@ -224,19 +259,7 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	read = append(read, policy.HostReadPaths...)
 	read = append(read, runtimeReadPaths...)
 	read = append(read, executableDirs(args)...)
-	write := []string{workingDir, home}
-	// Only Cursor gets the shared /tmp: it keeps sockets at fixed /tmp paths
-	// (cursor-askpass-*.sock, and .cursor/<project> when its home path is too long for a socket).
-	// Every other CLI uses the private TMPDIR from CLIHomeEnvironment and starts without it (Muse,
-	// Pi and Agy verified under the real launcher; Claude and Codex ran confined without it), so
-	// one CLI's temp files are not readable by another. See docs/DECISIONS.md in the builder.
-	if strings.EqualFold(strings.TrimSpace(policy.Provider), "cursor-cli") {
-		write = append(write, "/tmp")
-	}
-	write = append(write, policy.WorkspaceWritePaths...)
-	write = append(write, policy.HostWritePaths...)
-	write = append(write, runtimeWritePaths...)
-	write = append(write, credentials...)
+	write := append(LandlockWritePaths(policy, workingDir, runtimeWritePaths), credentials...)
 	// Blocked paths inside a grant (planning/, the raw database, AGENTS.md):
 	// Landlock cannot take them back, so the grants are split around them.
 	// The CLI's own working folder is never split: for Code it is the project,
@@ -730,4 +753,26 @@ func appendGitConfig(env []string, pairs ...string) []string {
 		count++
 	}
 	return append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(count))
+}
+
+// canonicalThroughExisting resolves a path that may not exist yet through its
+// nearest existing folder, so a link above it (/var on a Mac) is followed.
+func canonicalThroughExisting(path string) string {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || clean == "." {
+		return ""
+	}
+	rest := ""
+	for dir := clean; ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); err == nil {
+			if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+				return filepath.Join(resolved, rest)
+			}
+			return filepath.Join(dir, rest)
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return clean
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+	}
 }

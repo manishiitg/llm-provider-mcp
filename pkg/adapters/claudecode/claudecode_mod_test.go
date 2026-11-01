@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
+
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 func writeClaudeModTestEvents(t *testing.T, sessionName string, events ...claudeModEvent) {
@@ -84,26 +87,36 @@ func TestClaudeModFollowsSessionSwitchAndQueuedTurns(t *testing.T) {
 }
 
 // The mod runs each inbox request as the person (a prompt, a slash command),
-// so in a confined launch the agent must not be able to write one: the inbox
-// is read, never in the sandbox's write paths, while the events folder is.
-func TestClaudeModInboxIsReadOnlyForTheConfinedAgent(t *testing.T) {
+// so a confined agent must not be able to write one. A Crew launch works in its
+// private runtime, which also holds the CLI home: everything under it is
+// writable, so the inbox has to be outside the sandbox's whole write set, not
+// just the mod's own write paths.
+func TestClaudeModInboxIsOutsideTheConfinedWriteSet(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "cli-home", "claude-code")
-	sessionName := fmt.Sprintf("mod-inbox-test-%d", time.Now().UnixNano())
-	claudeModBases.Store(sessionName, claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: filepath.Join(filepath.Dir(home), ".agentworks-mod-inbox"), shared: true})
-	t.Cleanup(func() { claudeModBases.Delete(sessionName) })
+	runtime := filepath.Join(root, "slots", "slot01", "cli-runtimes", "v1", "digest")
+	home := filepath.Join(runtime, ".sandbox-cache", "cli-home", "claude-code")
+	project := filepath.Join(root, "docs", "Crew", "abc")
+	policy := &llmtypes.CLISecurityPolicy{Provider: "claude-code", PrivateHome: home, WorkspaceWritePaths: []string{project}}
+	for _, dir := range []string{home, project} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	read, write := claudeModSandboxPaths([]string{"claude", "--plugin-dir", "/plugin"}, sessionName, nil, []string{home})
-	inbox := claudeModInboxDir(sessionName)
+	sessionName := fmt.Sprintf("mod-inbox-test-%d", time.Now().UnixNano())
+	inbox := t.TempDir()
+	claudeModBases.Store(sessionName, claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: inbox, shared: true})
+	t.Cleanup(func() { claudeModBases.Delete(sessionName) })
+	read, write := claudeModSandboxPaths([]string{"claude", "--plugin-dir", "/plugin"}, sessionName, nil, nil)
 	if !slices.Contains(read, inbox) {
 		t.Fatalf("read paths %v do not include the inbox %s", read, inbox)
 	}
-	for _, path := range write {
-		if rel, err := filepath.Rel(path, inbox); err == nil && !strings.HasPrefix(rel, "..") {
-			t.Fatalf("inbox %s is writable through %s", inbox, path)
-		}
+	writeSet := clisandbox.LandlockWritePaths(policy, runtime, write)
+	if clisandbox.WritableUnder(writeSet, inbox) {
+		t.Fatalf("inbox %s is writable through the sandbox's write set %v", inbox, writeSet)
 	}
-	if !slices.Contains(write, filepath.Join(claudeModSessionDir(sessionName), "events")) {
-		t.Fatalf("write paths %v do not include the events folder", write)
+	// The earlier place, beside the private home, is inside the runtime the CLI works in.
+	if beside := filepath.Join(filepath.Dir(home), ".agentworks-mod-inbox"); !clisandbox.WritableUnder(writeSet, beside) {
+		t.Fatalf("expected %s to be writable through the working folder %s", beside, runtime)
 	}
 }
