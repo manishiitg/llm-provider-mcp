@@ -45,11 +45,16 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 }
 func providerAccountPathKey(key string) bool {
 	switch key {
-	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR":
+	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", MuseBaseURLKey:
 		return true
 	}
 	return false
 }
+
+// MuseBaseURLKey is the account's Meta API address for Muse (passed as --base-url), for an account that reaches
+// Meta through another server rather than directly. Muse has no setting or variable for it.
+const MuseBaseURLKey = "MUSE_BASE_URL"
+
 func ProviderAccountEnvironment(opts *CallOptions) map[string]string {
 	result := map[string]string{}
 	if opts == nil || opts.Metadata == nil {
