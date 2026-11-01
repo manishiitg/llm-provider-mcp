@@ -625,17 +625,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 	} else if err == nil {
 		err = callCtx.Err()
 	}
-	if ok && persistentInteractive {
-		// The answer is committed, but the retained pane may still be finishing
-		// its render; the next turn pastes into it without its own readiness
-		// wait. Give it a short, bounded chance to settle. A pane that never
-		// settles no longer hangs the finished turn.
-		settleCtx, cancelSettle := context.WithTimeout(callCtx, 10*time.Second)
-		if settleErr := waitForTmuxPrompt(settleCtx, sessionName, nil, false); settleErr != nil && c.logger != nil {
-			c.logger.Infof("claude-code: turn completed from transcript end_turn but pane %s did not settle: %v", sessionName, settleErr)
-		}
-		cancelSettle()
-	}
+
 	if err != nil {
 		if isClaudeTmuxSessionLostError(err) {
 			discardPersistentSession(err)
@@ -1726,7 +1716,10 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			// menu with "no thanks" in it; pressing keys at a ready prompt then
 			// is harmful (two Escapes open Claude's Rewind list, and the next live
 			// input could not be delivered -- local 2026-09-25 07:49).
-			if hasReadyInputPrompt(captured) && !isClaudeRewindSelector(captured) {
+			// Ready is the mod's to say: it reports once Claude Code's session has
+			// started. The screen is read only for the startup dialogs above and
+			// below, which come before that.
+			if claudeModCurrentSessionID(sessionName) != "" && !isClaudeRewindSelector(captured) {
 				return nil
 			}
 			if isClaudeRewindSelector(captured) {
@@ -1752,7 +1745,7 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			// it can be prevented too. Guessing at it with Escape once misread
 			// redrawn conversation as a popup and opened Claude's Rewind list
 			// (local 2026-09-25).
-			if hasReadyInputPrompt(captured) {
+			if claudeModCurrentSessionID(sessionName) != "" {
 				return nil
 			}
 			// Reset the inactivity window while Claude is busy (compacting,
