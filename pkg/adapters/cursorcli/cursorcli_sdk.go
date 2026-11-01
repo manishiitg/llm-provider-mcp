@@ -23,6 +23,7 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
 )
 
 // The Cursor SDK transport (CURSOR_CLI_TRANSPORT=sdk) runs the official @cursor/sdk local agent in a
@@ -286,6 +287,14 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	if err != nil {
 		return nil, "", false, err
 	}
+	storeRoot := ""
+	if llmtypes.CLIHasPrivateRuntime(opts) {
+		storeRoot, err = sessiontransfer.PathDirectory(opts.CLIRuntimeDir, ".sandbox-cache/cursor-sdk-state", true)
+		if err != nil {
+			cleanup()
+			return nil, "", false, err
+		}
+	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 		if err = c.ProjectSkills(artifacts, skills); err != nil {
 			cleanup()
@@ -372,6 +381,12 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	account := c.cursorAccountKey(opts)
 	startModel, remembered := withRememberedParams(cursorSDKModel(model), account, time.Now())
 	start := map[string]any{"type": "start", "cwd": cwd, "model": startModel}
+	if storeRoot != "" {
+		start["store_root"] = storeRoot
+		if _, err := os.Stat(filepath.Join(storeRoot, ".agentworks-native-handoff.json")); err == nil {
+			start["require_native_resume"] = resume != ""
+		}
+	}
 	if artifacts != cwd {
 		start["dirs"] = []string{artifacts}
 		// The SDK documents rules and skills from local.dirs, not MCP: pass the prepared servers (with the
@@ -768,3 +783,6 @@ func cursorSDKResponse(s *cursorSDKSession, text string, usage *llmtypes.Usage) 
 	llmtypes.AttachCodingProviderSessionHandle(gi, cursorSDKSessionHandle(s))
 	return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{Content: text, StopReason: "stop", GenerationInfo: gi}}, Usage: usage}
 }
+
+// SDKRuntimeAvailable checks the installed component without starting an agent.
+func SDKRuntimeAvailable() error { _, err := cursorSDKEntry(); return err }

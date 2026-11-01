@@ -80,7 +80,17 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("codex-cli app-server adapter does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if c.tmuxTransport {
+	tmux := c.tmuxTransport
+	switch opts.CodingProviderTransport {
+	case "":
+	case "app-server":
+		tmux = false
+	case "tmux":
+		tmux = true
+	default:
+		return nil, fmt.Errorf("unsupported Codex native transport %q", opts.CodingProviderTransport)
+	}
+	if tmux {
 		return c.generateContentInteractive(ctx, messages, opts)
 	}
 	return c.generateContentAppServer(ctx, messages, opts)

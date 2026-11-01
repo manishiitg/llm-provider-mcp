@@ -16,8 +16,7 @@ import (
 // user config directory for CLI permissions. The ACP session keeps the real cwd.
 // Account files stay in the already-selected private account home; links retain
 // its authentication and native records without copying credentials to a project.
-func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (string, error) {
-	runtimeDir := llmtypes.CLIArtifactDirectory(opts, "")
+func cursorPrivateSourceConfig(env []string) (string, error) {
 	values := map[string]string{}
 	for _, entry := range env {
 		if k, v, ok := strings.Cut(entry, "="); ok {
@@ -35,11 +34,76 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	if err != nil {
 		return "", err
 	}
+	return source, nil
+}
+
+// PrivateRuntimeConfigDirectory uses the same selected account environment as
+// launch, so a native importer never guesses another account's storage path.
+func PrivateRuntimeConfigDirectory(runtimeDir string, env []string) (string, error) {
+	source, err := cursorPrivateSourceConfig(env)
+	if err != nil {
+		return "", err
+	}
+	accountKey := fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
+	return filepath.Join(runtimeDir, "cursor-accounts", accountKey), nil
+}
+
+// NativeRuntimeConfigDirectory follows only the link our launcher creates to
+// this exact account's ordinary chat directory. Other links are refused.
+func NativeRuntimeConfigDirectory(runtimeDir string, env []string) (string, error) {
+	config, err := PrivateRuntimeConfigDirectory(runtimeDir, env)
+	if err != nil {
+		return "", err
+	}
+	link := filepath.Join(config, "chats")
+	info, err := os.Lstat(link)
+	if os.IsNotExist(err) {
+		return config, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return config, nil
+	}
+	source, err := cursorPrivateSourceConfig(env)
+	if err != nil {
+		return "", err
+	}
+	expected := filepath.Join(source, "chats")
+	target, err := os.Readlink(link)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(config, target)
+	}
+	if filepath.Clean(target) != filepath.Clean(expected) {
+		return "", fmt.Errorf("native Cursor chats point outside the selected account")
+	}
+	info, err = os.Lstat(expected)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("native Cursor account chats contain a link")
+	}
+	return source, nil
+}
+
+func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (string, error) {
+	runtimeDir := llmtypes.CLIArtifactDirectory(opts, "")
+	source, err := cursorPrivateSourceConfig(env)
+	if err != nil {
+		return "", err
+	}
 	// Native records created by Cursor also belong to the selected account.
 	// Keep each account's generated config separate, including newly-created
 	// stores that have no corresponding link in its account home yet.
-	accountKey := fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
-	configDir := filepath.Join(runtimeDir, "cursor-accounts", accountKey)
+	configDir, err := PrivateRuntimeConfigDirectory(runtimeDir, env)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return "", err
 	}

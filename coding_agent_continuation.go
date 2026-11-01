@@ -266,7 +266,7 @@ func appendCodingAgentContinuationOptions(provider Provider, handle llmtypes.Cod
 	if resumeOption == nil {
 		return nil, &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonApplicable, Provider: provider, Reason: "provider-native coding-agent continuation is not implemented"}
 	}
-	out = append(out, resumeOption)
+	out = append(out, resumeOption, llmtypes.WithCodingProviderTransport(handle.Transport))
 	if handle.RuntimeDir != "" {
 		out = append(out, llmtypes.WithCLIRuntimeDir(handle.RuntimeDir))
 	}

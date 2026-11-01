@@ -107,10 +107,22 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	if c.tmuxTransport {
+	tmux, sdk := c.tmuxTransport, c.sdkTransport
+	switch opts.CodingProviderTransport {
+	case "":
+	case "sdk":
+		tmux, sdk = false, true
+	case "tmux":
+		tmux, sdk = true, false
+	case "acp":
+		tmux, sdk = false, false
+	default:
+		return nil, fmt.Errorf("unsupported Cursor native transport %q", opts.CodingProviderTransport)
+	}
+	if tmux {
 		return c.generateContentTmux(ctx, messages, opts)
 	}
-	if c.sdkTransport {
+	if sdk {
 		return c.generateContentSDK(ctx, messages, opts)
 	}
 	return c.generateContentACP(ctx, messages, opts)
