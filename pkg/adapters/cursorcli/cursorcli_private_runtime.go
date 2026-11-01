@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -158,6 +159,11 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
+	if sandbox := llmtypes.SandboxHomeEnvironment(opts); sandbox["XDG_CONFIG_HOME"] != "" {
+		if err := linkCursorSandboxLogin(configDir, sandbox["XDG_CONFIG_HOME"]); err != nil {
+			return "", err
+		}
+	}
 	raw, err := os.ReadFile(filepath.Join(runtimeDir, ".cursor", "cli.json"))
 	if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("read generated Cursor policy: %w", err)
@@ -247,4 +253,29 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 		return "", err
 	}
 	return configDir, nil
+}
+
+// The launcher populates this exact selected-account login after preparing the
+// wrapper. A dangling link is intentional; no ambient account is consulted.
+func linkCursorSandboxLogin(configDir, sandboxConfigHome string) error {
+	if !filepath.IsAbs(sandboxConfigHome) {
+		return fmt.Errorf("Cursor sandbox login requires an absolute private config home")
+	}
+	link := filepath.Join(configDir, "auth.json")
+	target := filepath.Join(sandboxConfigHome, "cursor", "auth.json")
+	if info, err := os.Lstat(link); err == nil {
+		if info.Mode().IsRegular() {
+			log.Print("[CURSOR_CONFIG] Existing private login file retained")
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if existing, e := os.Readlink(link); e == nil && existing == target {
+				return nil
+			}
+		}
+		return fmt.Errorf("Cursor sandbox login pointer conflicts with existing auth.json")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(target, link)
 }
