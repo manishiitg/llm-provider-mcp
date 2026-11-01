@@ -13,6 +13,8 @@ const (
 	CodingProviderTransportRPC        = "rpc"
 	CodingProviderTransportACP        = "acp"
 	CodingProviderTransportSDK        = "sdk"
+	// CodingProviderTransportMSP is Muse's session protocol (`muse serve`).
+	CodingProviderTransportMSP = "msp"
 
 	CodingProviderSessionStatusIdle   = "idle"
 	CodingProviderSessionStatusActive = "active"
