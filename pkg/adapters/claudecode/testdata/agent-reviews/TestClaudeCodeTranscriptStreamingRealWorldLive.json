@@ -1,11 +1,11 @@
 {
   "test": "TestClaudeCodeTranscriptStreamingRealWorldLive",
-  "summary": "Claude bridge-only: web_search -\u003e write_file (to disk) -\u003e read_file, streamed live",
+  "summary": "Claude bridge-only: web_search -> write_file (to disk) -> read_file, streamed live",
   "review_criteria": [
     "no duplicated lines or chunks",
     "proper formatting — clean segmentation, no run-on/garbled/merged text, no stray control chars or terminal escape codes",
     "human-readable — reads like an assistant working, coherent and natural",
-    "correct text \u003c-\u003e tool interleaving order (narration then the tool it describes)",
+    "correct text <-> tool interleaving order (narration then the tool it describes)",
     "tool calls are the real intended tools (not leaked internal/shell noise where MCP tools were expected)",
     "the final answer is coherent and matches the work performed",
     "real work actually happened (e.g. the file was written to disk)"
@@ -15,25 +15,20 @@
       "I'll start",
       " by searching the",
       " web for the code word.",
-      "The search returned the code word,",
-      " so I'll save it to result",
-      ".txt.",
-      "Now I'll read result",
+      "\n\nSearch",
+      " found the code word, so",
+      " I'll save it to result.",
+      "txt next.",
+      "\n\nNow I",
+      "'ll read result",
       ".txt back to confirm",
-      " what was saved.",
-      "The search",
-      " found",
-      " the code word, I",
-      " saved it to",
-      " result.txt, and re",
-      "ading the",
-      " file back retur",
-      "ned the same value.\n\nZ",
-      "EBRA_232e953",
-      "b"
+      " what",
+      " was saved.",
+      "\n\nZEBRA_d",
+      "91359b8"
     ],
-    "file_on_disk": "ZEBRA_232e953b",
-    "final": "The search found the code word, I saved it to result.txt, and reading the file back returned the same value.\n\nZEBRA_232e953b",
+    "file_on_disk": "ZEBRA_d91359b8",
+    "final": "ZEBRA_d91359b8",
     "stream_order": [
       "text",
       "text",
@@ -42,9 +37,6 @@
       "text",
       "text",
       "text",
-      "tool",
-      "text",
-      "text",
       "text",
       "tool",
       "text",
@@ -52,13 +44,11 @@
       "text",
       "text",
       "text",
-      "text",
-      "text",
-      "text",
+      "tool",
       "text",
       "text"
     ],
-    "streamed_content": "I'll start by searching the web for the code word.The search returned the code word, so I'll save it to result.txt.Now I'll read result.txt back to confirm what was saved.The search found the code word, I saved it to result.txt, and reading the file back returned the same value.\n\nZEBRA_232e953b",
+    "streamed_content": "I'll start by searching the web for the code word.\n\nSearch found the code word, so I'll save it to result.txt next.\n\nNow I'll read result.txt back to confirm what was saved.\n\nZEBRA_d91359b8",
     "tool_names": [
       "mcp__workbench__web_search",
       "mcp__workbench__write_file",
@@ -69,8 +59,8 @@
   "agent_review": {
     "verdict": "good",
     "reviewed_fingerprint": "55b87deedd819814",
-    "reviewer": "claude-code-agent",
-    "issues": [],
-    "notes": "Reviewed discrete chunks: 4 clean lines (search/save/verify/answer), no duplication, proper formatting, correct interleaving across web_search-\u003ewrite_file-\u003eread_file, result.txt written to disk. Human-readable. GOOD."
+    "reviewer": "claude-rts-op (Claude Opus 5.5)",
+    "issues": null,
+    "notes": "Streamed through the AgentWorks mod (turn.step deltas): no duplicate chunks, paragraphs separated by blank lines, narration precedes each of the three real workbench MCP tools in order, file written to disk with the code word, final answer matches."
   }
 }
