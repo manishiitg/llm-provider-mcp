@@ -446,7 +446,7 @@ func SnapshotDB(source, destination string) error {
 	if e != nil {
 		return e
 	}
-	if i.Size() > MaxBytes {
+	if i.Size() > MaxBytes() {
 		return fmt.Errorf("native database exceeds transfer capacity")
 	}
 	if e = os.Chmod(tmp, 0600); e != nil {
@@ -561,33 +561,34 @@ func setSnapshotLineage(root string, b *Bundle) error {
 	b.Parent = state.Parent
 	return nil
 }
-func CheckSnapshotBaseline(root string, current *Bundle) error {
-	state, e := loadSnapshotState(root)
-	if os.IsNotExist(e) {
-		return Diverged()
+func loadSnapshotBaseline(root string, current *Bundle) (snapshotState, error) {
+	state, err := loadSnapshotState(root)
+	if os.IsNotExist(err) {
+		return state, ErrDiverged
 	}
-	if e != nil {
-		return e
+	if err != nil {
+		return state, err
 	}
 	baseline := state.Baseline
 	if baseline.Provider != current.Provider || baseline.Format != current.Format || baseline.SessionID != current.SessionID || !reflect.DeepEqual(baseline.Files, current.Files) {
-		return Diverged()
+		return state, ErrDiverged
 	}
-	return nil
+	return state, nil
+}
+func CheckSnapshotBaseline(root string, current *Bundle) error {
+	_, err := loadSnapshotBaseline(root, current)
+	return err
 }
 func CheckSnapshotReplacement(root string, current, incoming *Bundle) error {
 	if incoming.Snapshot != snapshotHash(incoming) {
 		return fmt.Errorf("native snapshot identity does not match its files")
 	}
-	if e := CheckSnapshotBaseline(root, current); e != nil {
-		return e
-	}
-	state, e := loadSnapshotState(root)
-	if e != nil {
-		return e
+	state, err := loadSnapshotBaseline(root, current)
+	if err != nil {
+		return err
 	}
 	if incoming.Provider != current.Provider || incoming.Format != current.Format || incoming.SessionID != current.SessionID || incoming.Snapshot != state.Baseline.Snapshot && incoming.Parent != state.Baseline.Snapshot {
-		return Diverged()
+		return ErrDiverged
 	}
 	return nil
 }

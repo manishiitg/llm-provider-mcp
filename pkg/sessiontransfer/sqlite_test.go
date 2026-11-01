@@ -2,6 +2,7 @@ package sessiontransfer
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -81,7 +82,7 @@ func TestCursorSDKSnapshotRejectsForeignAgentsAndOfflineFork(t *testing.T) {
 	if _, e = db.Exec(`INSERT INTO runs VALUES('offline-turn',?)`, id); e != nil {
 		t.Fatal(e)
 	}
-	if e = ImportCursorSDK(store, work, returned); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+	if e = ImportCursorSDK(store, work, returned); e == nil || !errors.Is(e, ErrDiverged) {
 		t.Fatalf("offline fork accepted: %v", e)
 	}
 	var kept int
@@ -105,7 +106,7 @@ func TestCursorSDKSnapshotRejectsForeignAgentsAndOfflineFork(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = ImportCursorSDK(store, work, remote); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+	if e = ImportCursorSDK(store, work, remote); e == nil || !errors.Is(e, ErrDiverged) {
 		t.Fatalf("dual-export fork overwritten: %v", e)
 	}
 	// A malformed packet cannot call different file bytes an identical replay.
@@ -126,7 +127,7 @@ func TestCursorSDKSnapshotRejectsForeignAgentsAndOfflineFork(t *testing.T) {
 	if e = ImportCursorSDK(clean, cleanWork, remote); e != nil {
 		t.Fatal(e)
 	}
-	if e = ImportCursorSDK(clean, cleanWork, bundle); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+	if e = ImportCursorSDK(clean, cleanWork, bundle); e == nil || !errors.Is(e, ErrDiverged) {
 		t.Fatalf("older snapshot rolled history back: %v", e)
 	}
 	// Refusal must come from the mixed-agent rule with a usable store.
@@ -224,7 +225,7 @@ func TestCursorCLISnapshotPreservesBlobsAndRefusesSchemaAndFork(t *testing.T) {
 	if _, e = db.Exec(`INSERT INTO blobs VALUES('offline',X'05')`); e != nil {
 		t.Fatal(e)
 	}
-	if e = ImportCursorCLI(config, work, back); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+	if e = ImportCursorCLI(config, work, back); e == nil || !errors.Is(e, ErrDiverged) {
 		t.Fatalf("offline terminal fork accepted: %v", e)
 	}
 	// A link below the resolved account root must still be refused.

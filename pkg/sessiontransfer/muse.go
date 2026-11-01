@@ -22,7 +22,7 @@ func inspectMuseJournal(path string, root bool, id string) (File, string, error)
 	}
 	defer f.Close()
 	hash := sha256.New()
-	reader := bufio.NewReaderSize(io.TeeReader(io.LimitReader(f, MaxBytes+1), hash), 64<<10)
+	reader := bufio.NewReaderSize(io.TeeReader(io.LimitReader(f, MaxBytes()+1), hash), 64<<10)
 	var size int64
 	workspace := ""
 	for {
@@ -34,7 +34,7 @@ func inspectMuseJournal(path string, root bool, id string) (File, string, error)
 			return File{}, "", fmt.Errorf("incomplete or invalid Muse journal")
 		}
 		size += int64(len(line))
-		if size > MaxBytes {
+		if size > MaxBytes() {
 			return File{}, "", fmt.Errorf("Muse journal exceeds transfer capacity")
 		}
 		if root {
@@ -120,7 +120,7 @@ func ExportMuse(dataHome, id, workspace, transport string) (*Bundle, error) {
 			return e
 		}
 		total += info.Size()
-		if total > MaxBytes || len(b.Files) >= 4096 {
+		if total > MaxBytes() || len(b.Files) >= 4096 {
 			return fmt.Errorf("Muse journal is too large")
 		}
 		var workspace string
@@ -191,7 +191,7 @@ func ImportMuse(dataHome, workspace string, b *Bundle) error {
 			name = filepath.ToSlash(name)
 			if b.allowed(name) {
 				if _, exists := b.Files[name]; !exists {
-					return fmt.Errorf("Muse session has additional local history; both copies were kept")
+					return fmt.Errorf("Muse session has additional local history: %w", ErrDiverged)
 				}
 			}
 			return nil

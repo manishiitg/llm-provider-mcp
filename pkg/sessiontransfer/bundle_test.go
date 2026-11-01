@@ -2,6 +2,7 @@ package sessiontransfer
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +91,7 @@ func TestNativeJournalTransferRejectsForeignIDsLinksAndDivergence(t *testing.T) 
 			if e = ImportJSONL(destination, targetWork, &local); e != nil {
 				t.Fatal(e)
 			}
-			if e = ImportJSONL(destination, targetWork, &remote); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
+			if e = ImportJSONL(destination, targetWork, &remote); e == nil || !errors.Is(e, ErrDiverged) {
 				t.Fatalf("fork accepted or wrong refusal: %v", e)
 			}
 			preserved, e := ExportJSONL(provider, transport, destination, targetWork, id, t.TempDir())
@@ -101,5 +102,27 @@ func TestNativeJournalTransferRejectsForeignIDsLinksAndDivergence(t *testing.T) 
 				t.Fatal("local branch overwritten")
 			}
 		})
+	}
+}
+
+// The same installation limit applies to descriptors as journal readers and
+// the transport; a peer cannot send a larger file by changing its metadata.
+func TestNativeCapacityBoundsInstallationConfigurationAndPayload(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want int64
+	}{{"", 2 << 30}, {"bad", 2 << 30}, {"1048575", 2 << 30}, {"34359738369", 2 << 30}, {"1048576", 1 << 20}, {"34359738368", 32 << 30}} {
+		t.Setenv("AGENTWORKS_NATIVE_SYNC_MAX_BYTES", tc.env)
+		if MaxBytes() != tc.want {
+			t.Fatalf("unexpected capacity for %q", tc.env)
+		}
+		b := Bundle{Provider: "claude-code", Transport: "sdk", Format: "claude-jsonl", SessionID: "11111111-1111-4111-8111-111111111111", Workspace: t.TempDir(), Files: map[string]File{"session.jsonl": {Size: tc.want, SHA256: strings.Repeat("0", 64)}}}
+		if err := b.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		b.Files["session.jsonl"] = File{Size: tc.want + 1, SHA256: strings.Repeat("0", 64)}
+		if err := b.Validate(); err == nil {
+			t.Fatal("peer payload exceeded installation capacity")
+		}
 	}
 }
