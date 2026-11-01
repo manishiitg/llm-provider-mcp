@@ -409,12 +409,6 @@ func completedAssistantResponseFromTranscript(sessionID, workingDir string, turn
 	return result
 }
 
-// claudeTranscriptTurnEndQuiet is how long the transcript must stay unchanged
-// after the current turn's final end_turn before that turn counts as finished.
-// It absorbs a continuation Claude starts right after end_turn (a queued
-// message or background result arrives as a new record and resets the wait).
-const claudeTranscriptTurnEndQuiet = 1500 * time.Millisecond
-
 // waitForClaudeTurnEndInTranscript is the structured done_detection gate
 // (PLAT-354): it returns once the current turn's latest record is a committed
 // end_turn answer and the transcript has been quiet for quiet. The pane plays
