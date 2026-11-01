@@ -161,9 +161,24 @@ func TestCursorCLISnapshotPreservesBlobsAndRefusesSchemaAndFork(t *testing.T) {
 	if _, e = db.Exec(`CREATE TABLE blobs(id TEXT PRIMARY KEY,data BLOB); INSERT INTO blobs VALUES('checkpoint',X'01020304')`); e != nil {
 		t.Fatal(e)
 	}
+	// The private wrapper can link its admitted login. It is not chat state
+	// and must never enter a native transfer (PLAT-856-442).
+	login := filepath.Join(t.TempDir(), "auth.json")
+	if e = os.WriteFile(login, []byte("private-login-fixture"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Symlink(login, filepath.Join(config, "auth.json")); e != nil {
+		t.Fatal(e)
+	}
 	b, e := ExportCursorCLI(config, work, id, t.TempDir(), true)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if _, ok := b.Files["auth.json"]; ok {
+		t.Fatal("login was declared as native chat state")
+	}
+	if _, e = os.Lstat(filepath.Join(b.Root, "auth.json")); !os.IsNotExist(e) {
+		t.Fatal("login entered native transfer staging")
 	}
 	escapedConfig, escaped := t.TempDir(), t.TempDir()
 	linked, _ := CursorCLIPath(escapedConfig, targetWork, id)
