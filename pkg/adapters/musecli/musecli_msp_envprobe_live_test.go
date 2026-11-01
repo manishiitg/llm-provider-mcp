@@ -3,6 +3,7 @@ package musecli
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -37,12 +38,16 @@ func TestMuseMSPEnvProbe(t *testing.T) {
 			for i := 0; i < 30; i++ {
 				if raw, _ := os.ReadFile(shellOut); len(raw) > 0 {
 					t.Logf("Muse shell child saw: %s", strings.TrimSpace(string(raw)))
-					if strings.Contains(string(raw), "META_API_KEY=set") {
+					if runtime.GOOS != "darwin" && strings.Contains(string(raw), "META_API_KEY=set") {
 						t.Fatal("the selected key reached Muse's shell")
 					}
 					// The stored key is the one Muse uses: the dummy fails auth.
 					_, turnErr := NewMuseCLIAdapter("dummy-presence-probe", "", nil).GenerateContent(ctx, museMSPHuman("Reply with only: ok"), WithWorkingDir(t.TempDir()), WithInteractiveSessionID(owner+"-turn"), llmtypes.WithReasoningEffort("low"))
 					t.Cleanup(func() { CloseMuseMSPSession(owner + "-turn") })
+					if runtime.GOOS == "darwin" {
+						t.Log("Mac: the key stays in the environment (muse auth set writes the Keychain)")
+						return
+					}
 					if turnErr == nil {
 						t.Fatal("a turn with the dummy key succeeded: Muse ignored the selected key")
 					}
