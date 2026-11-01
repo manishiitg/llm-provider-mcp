@@ -195,6 +195,12 @@ async function handle($: any, request: { kind?: string; text?: string }): Promis
         lastMessage = `${framed.label}: ${framed.body.split('\n')[0].slice(0, 80)}`
         $.ui.invalidate('ui.render')
       }
+      // A slash command (a skill, /compact, ...) runs as the person typing it would.
+      const command = text.match(/^\/([A-Za-z0-9_:.-]+)\s*([\s\S]*)$/)
+      if (command) {
+        await $.command.run({ command: command[1], args: command[2] ?? '' })
+        return { delivery: 'command' }
+      }
       await $.prompt.submit({ text, asUser: true })
       return { delivery: 'new_turn' }
     }
