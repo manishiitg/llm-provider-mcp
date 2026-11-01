@@ -53,6 +53,10 @@ func (a *AgyCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes
 		opt(opts)
 	}
 	if agyStringMetadata(opts, MetadataKeyPersistentInteractive) == "true" {
+		// Chats run on `agy acp` by default; tmux stays selectable (AGY_CLI_TRANSPORT=tmux).
+		if AgyACPSelected() {
+			return a.generateContentACP(ctx, messages, opts)
+		}
 		return a.generateContentInteractive(ctx, messages, opts)
 	}
 	return a.generateContentExec(ctx, messages, opts)
