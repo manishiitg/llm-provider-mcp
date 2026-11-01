@@ -3,6 +3,8 @@ package llmproviders
 import (
 	"sort"
 	"strings"
+
+	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 )
 
 // CodingAgentTransport describes the native process interface. App-server
@@ -16,6 +18,7 @@ const (
 	CodingAgentTransportRPC        CodingAgentTransport = "rpc"
 	CodingAgentTransportACP        CodingAgentTransport = "acp"
 	CodingAgentTransportSDK        CodingAgentTransport = "sdk"
+	CodingAgentTransportMSP        CodingAgentTransport = "msp"
 )
 
 // CodingAgentProviderContract is the provider-level contract that host apps can
@@ -478,7 +481,8 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		ImageInputInteractive:       false,
 		SurfacesTokenUsage:          true,
 		TokenUsageSource:            "transcript-file",
-		PlanUsageUnavailableReason:  "Muse reports usage only over its MSP host (usage/read, usage/changed); the TUI/exec adapter does not consume it yet",
+		SurfacesPlanUsage:           true,
+		PlanUsageSource:             "msp",
 		AdapterReadsTranscript:      true,
 		TranscriptPathTemplate:      "$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl",
 		SupportsStructuredStreaming: false,
@@ -595,6 +599,18 @@ func GetCodingAgentProviderContractForTransport(provider Provider, modelID, clau
 			contract.PlanUsageSource = ""
 			contract.PlanUsageUnavailableReason = "The Claude Agent SDK reports per-turn token usage; this adapter does not read account plan windows"
 		}
+	}
+	if normalizedProvider == ProviderMuseCLI && musecli.MuseMSPSelected() {
+		// muse serve: protocol events, no screen.
+		contract.Transport = CodingAgentTransportMSP
+		contract.SupportsTerminalStream = false
+		contract.SupportsStructuredStreaming = true
+		contract.LaunchesViaLoginShell = false
+		contract.TokenUsageSource = "msp"
+	} else if normalizedProvider == ProviderMuseCLI {
+		contract.SurfacesPlanUsage = false
+		contract.PlanUsageSource = ""
+		contract.PlanUsageUnavailableReason = "Muse reports plan usage only over muse serve (MUSE_CLI_TRANSPORT=msp)"
 	}
 	if normalizedProvider == ProviderCodexCLI {
 		if transport, err := resolveCodexCLITransport(); err == nil && transport == CodexCLITransportTmux {

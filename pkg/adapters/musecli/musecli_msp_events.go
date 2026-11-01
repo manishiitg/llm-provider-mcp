@@ -135,6 +135,8 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 					if p.ModelID != "" {
 						model = p.ModelID
 					}
+					status := s.statusLine(model, input, output, cacheRead, cacheWrite)
+					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeStatusLine, StatusLine: status, Metadata: meta(nil)})
 				}
 			case "session/contextUsage":
 				var p struct {
@@ -283,6 +285,11 @@ func (a *MuseCLIAdapter) museMSPResponse(s *museMSPSession, answer, turnText, mo
 	if model == "" {
 		model = a.modelID
 	}
+	s.mu.Lock()
+	if windows := s.windowsLocked(); len(windows) > 0 {
+		gi.Additional[llmtypes.RateLimitWindowsMetaKey] = windows
+	}
+	s.mu.Unlock()
 	if turnText != "" && turnText != answer {
 		gi.Additional["assistant_turn_text"] = turnText
 	}
@@ -351,7 +358,16 @@ func SendMuseMSPInput(ctx context.Context, owner, message string) error {
 	if turnID == "" {
 		return fmt.Errorf("%w: no Muse turn is running", llmtypes.ErrCodingAgentInputNotSent)
 	}
-	return s.rpc.call(ctx, "turn/steer", map[string]any{"commandId": museCommandID(), "sessionId": sessionID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": message}}}, nil)
+	if err := s.rpc.call(ctx, "turn/steer", map[string]any{"commandId": museCommandID(), "sessionId": sessionID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": message}}}, nil); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.steered == nil {
+		s.steered = map[string]time.Time{}
+	}
+	s.steered[message] = time.Now()
+	s.mu.Unlock()
+	return nil
 }
 
 // InterruptMuseMSP stops the chat's running turn.
@@ -381,15 +397,40 @@ func MuseMSPUsage(owner string) (windows []llmtypes.RateLimitWindow, contextUsed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if u := s.usage; u != nil {
-		if u.Window != nil {
-			windows = append(windows, llmtypes.RateLimitWindow{Name: "five_hour", UsedPercent: float64(u.Window.UsedPercent), ResetsAt: time.UnixMilli(u.Window.ResetsAtMs).UTC()})
-		}
-		if u.Weekly != nil {
-			windows = append(windows, llmtypes.RateLimitWindow{Name: "seven_day", UsedPercent: float64(u.Weekly.UsedPercent), ResetsAt: time.UnixMilli(u.Weekly.ResetsAtMs).UTC()})
-		}
+	return s.windowsLocked(), s.context.used, s.context.window, true
+}
+
+// windowsLocked turns the host's plan usage into the shared window shape.
+func (s *museMSPSession) windowsLocked() []llmtypes.RateLimitWindow {
+	u := s.usage
+	if u == nil {
+		return nil
 	}
-	return windows, s.context.used, s.context.window, true
+	var windows []llmtypes.RateLimitWindow
+	if u.Window != nil {
+		name := "five_hour"
+		if m := u.Window.WindowDurationMins; m > 0 && m != 300 {
+			name = fmt.Sprintf("%d_minute", m)
+		}
+		windows = append(windows, llmtypes.RateLimitWindow{Name: name, UsedPercent: float64(u.Window.UsedPercent), ResetsAt: time.UnixMilli(u.Window.ResetsAtMs).UTC()})
+	}
+	if u.Weekly != nil {
+		windows = append(windows, llmtypes.RateLimitWindow{Name: "seven_day", UsedPercent: float64(u.Weekly.UsedPercent), ResetsAt: time.UnixMilli(u.Weekly.ResetsAtMs).UTC()})
+	}
+	return windows
+}
+
+func (s *museMSPSession) statusLine(model string, input, output, cacheRead, cacheWrite int) *llmtypes.StatusLine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := &llmtypes.StatusLine{Provider: "muse-cli", Model: model, InputTokens: input, OutputTokens: output, CacheReadInputTokens: cacheRead, CacheCreationInputTokens: cacheWrite, Metadata: map[string]interface{}{"muse_session_id": s.sessionID}}
+	if s.context.window > 0 {
+		status.SetContextUsage(s.context.used, s.context.window)
+	}
+	if windows := s.windowsLocked(); len(windows) > 0 {
+		status.Metadata[llmtypes.RateLimitWindowsMetaKey] = windows
+	}
+	return status
 }
 
 func museMSPUserChoice(opts *llmtypes.CallOptions) bool {

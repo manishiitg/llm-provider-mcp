@@ -472,6 +472,20 @@ var codingAgentProviderCertifications = map[Provider][]CodingAgentCertification{
 	},
 	ProviderMuseCLI: {
 		{
+			ID:          CertStructuredStreaming,
+			TestFile:    "pkg/adapters/musecli/musecli_msp_live_test.go",
+			TestName:    "TestMuseMSPRealStreamSteerStop",
+			Description: "muse serve streams text deltas and tool start/end events, takes a mid-turn message, stops at once and takes the next message",
+			RealE2E:     true,
+		},
+		{
+			ID:          CertPlanUsage,
+			TestFile:    "pkg/adapters/musecli/musecli_msp_live_test.go",
+			TestName:    "TestMuseMSPRealPlanUsage",
+			Description: "a real muse serve turn carries the account's plan windows (used %, reset) from usage/read and usage/changed",
+			RealE2E:     true,
+		},
+		{
 			ID:          CertRuntimeAvailability,
 			TestFile:    "pkg/adapters/musecli/musecli_runtime_availability_live_test.go",
 			TestName:    "TestMuseRuntimeAvailabilityLive",
