@@ -118,45 +118,59 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	if config == nil {
 		return "", fmt.Errorf("Cursor account configuration must be an object")
 	}
-	// This directory belongs only to the generated runtime. Clear every old
-	// account link before projecting the selected account, including names that
-	// are absent from the new account. Remove symlinks, never their targets.
+	sourceEntries, err := os.ReadDir(source)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	desired := map[string]bool{}
+	for _, entry := range sourceEntries {
+		if entry.Name() != "cli-config.json" && entry.Name() != "hooks.json" {
+			desired[entry.Name()] = true
+		}
+	}
+	// Keep existing selected-account links in place while another chat starts.
+	// Only links whose source disappeared are removed; targets are never removed.
 	entries, err := os.ReadDir(configDir)
 	if err != nil {
 		return "", err
 	}
 	for _, entry := range entries {
-		if entry.Name() == "cli-config.json" {
+		if entry.Name() == "cli-config.json" || desired[entry.Name()] {
 			continue
 		}
 		target := filepath.Join(configDir, entry.Name())
 		info, err := os.Lstat(target)
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			return "", err
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		if err := os.Remove(target); err != nil {
-			return "", err
-		}
-	}
-	if entries, err := os.ReadDir(source); err == nil {
-		for _, entry := range entries {
-			if entry.Name() == "cli-config.json" || entry.Name() == "hooks.json" {
-				continue
-			}
-			target := filepath.Join(configDir, entry.Name())
-			if _, err := os.Lstat(target); os.IsNotExist(err) {
-				if err := os.Symlink(filepath.Join(source, entry.Name()), target); err != nil {
-					return "", err
-				}
-			} else if err != nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 				return "", err
 			}
 		}
-	} else if !os.IsNotExist(err) {
-		return "", err
+	}
+	for _, entry := range sourceEntries {
+		if !desired[entry.Name()] {
+			continue
+		}
+		target := filepath.Join(configDir, entry.Name())
+		info, err := os.Lstat(target)
+		if err == nil && info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		from := filepath.Join(source, entry.Name())
+		if link, err := os.Readlink(target); err == nil && link == from {
+			continue
+		}
+		if err := replaceCursorAccountLink(from, target); err != nil {
+			return "", err
+		}
 	}
 	raw, err := os.ReadFile(filepath.Join(runtimeDir, ".cursor", "cli.json"))
 	if err != nil && !os.IsNotExist(err) {
@@ -184,7 +198,7 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	if err != nil {
 		return "", err
 	}
-	if err = os.WriteFile(filepath.Join(configDir, "cli-config.json"), encoded, 0600); err != nil {
+	if err = writeCursorPrivateFile(filepath.Join(configDir, "cli-config.json"), encoded); err != nil {
 		return "", err
 	}
 	manifest := map[string]any{"name": "agentworks-runtime", "rules": ".cursor/rules", "skills": ".cursor/skills"}
@@ -213,7 +227,7 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 		if err != nil {
 			return "", err
 		}
-		if err = os.WriteFile(hooksPath, encoded, 0600); err != nil {
+		if err = writeCursorPrivateFile(hooksPath, encoded); err != nil {
 			return "", err
 		}
 		manifest["hooks"] = ".cursor/hooks.json"
@@ -227,7 +241,7 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 	if err != nil {
 		return "", err
 	}
-	if err = os.WriteFile(filepath.Join(runtimeDir, ".cursor-plugin", "plugin.json"), encoded, 0600); err != nil {
+	if err = writeCursorPrivateFile(filepath.Join(runtimeDir, ".cursor-plugin", "plugin.json"), encoded); err != nil {
 		return "", err
 	}
 	// Transcript readers follow the active account, while old records remain
@@ -237,14 +251,46 @@ func prepareCursorPrivateRuntime(opts *llmtypes.CallOptions, env []string) (stri
 		if info.Mode()&os.ModeSymlink == 0 {
 			return "", fmt.Errorf("private Cursor config pointer must be a link")
 		}
-		if err := os.Remove(current); err != nil {
-			return "", err
-		}
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := os.Symlink(configDir, current); err != nil {
-		return "", err
+	if target, err := os.Readlink(current); err != nil || target != configDir {
+		if err := replaceCursorAccountLink(configDir, current); err != nil {
+			return "", err
+		}
 	}
 	return configDir, nil
+}
+
+// A temp directory is ignored by other launchers' symlink cleanup. Rename
+// publishes a complete link without making an existing login path disappear.
+func replaceCursorAccountLink(source, target string) error {
+	tmp, err := os.MkdirTemp(filepath.Dir(target), ".account-link-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	link := filepath.Join(tmp, "entry")
+	if err := os.Symlink(source, link); err != nil {
+		return err
+	}
+	return os.Rename(link, target)
+}
+
+// A parallel launch must see a complete policy/hook document, never a file
+// another launch has truncated but not written yet.
+func writeCursorPrivateFile(path string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".cursor-config-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err = file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }
