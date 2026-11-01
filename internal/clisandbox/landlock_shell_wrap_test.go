@@ -30,7 +30,15 @@ func TestConfinedLaunchWrapsShellsWithoutTheLogin(t *testing.T) {
 	}
 	policy := &llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner,
 		PrivateHome: filepath.Join(dir, "home"), CredentialHome: account}
-	args, cleanup, err := LandlockArgs(policy, []string{"claude"}, dir, nil, nil)
+	// A key file the adapter made for this launch (Muse serve) is a login too.
+	launchKey := filepath.Join(dir, "launch-key", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(launchKey), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launchKey, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args, cleanup, err := landlockArgs(policy, []string{"claude"}, dir, nil, nil, nil, []string{launchKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +58,13 @@ func TestConfinedLaunchWrapsShellsWithoutTheLogin(t *testing.T) {
 	if got.ShellWrap == nil {
 		t.Fatalf("no shell wrap: %s", raw)
 	}
-	if slices.Contains(got.ShellWrap.Inner.WritePaths, src) || slices.Contains(got.ShellWrap.Inner.ReadPaths, src) {
-		t.Fatalf("a shell may reach the login: %s", raw)
+	for _, login := range []string{src, canonical(launchKey)} {
+		if !slices.Contains(got.WritePaths, login) {
+			t.Fatalf("the CLI lost a login %s: %s", login, raw)
+		}
+		if slices.Contains(got.ShellWrap.Inner.WritePaths, login) || slices.Contains(got.ShellWrap.Inner.ReadPaths, login) {
+			t.Fatalf("a shell may reach the login %s: %s", login, raw)
+		}
 	}
 	if !slices.Contains(got.ShellWrap.ScrubEnv, "CLAUDE_CODE_OAUTH_TOKEN") {
 		t.Fatalf("a shell keeps the login variable: %s", raw)

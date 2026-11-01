@@ -155,12 +155,12 @@ func WritableUnder(writePaths []string, path string) bool {
 }
 
 func LandlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths []string) ([]string, func(), error) {
-	return landlockArgs(policy, args, workingDir, runtimeReadPaths, runtimeWritePaths, nil)
+	return landlockArgs(policy, args, workingDir, runtimeReadPaths, runtimeWritePaths, nil, nil)
 }
 
 // landlockArgs is LandlockArgs for a command whose environment is known: the sandbox's git settings are added after
 // the git settings env already carries (GIT_CONFIG_COUNT/KEY_n/VALUE_n), so neither replaces the other.
-func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths, env []string) ([]string, func(), error) {
+func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir string, runtimeReadPaths, runtimeWritePaths, env, launchCredentials []string) ([]string, func(), error) {
 	noop := func() {}
 	if policy.SeatbeltEnforced() {
 		return SeatbeltArgs(policy, args, workingDir, SeatbeltGrants{ReadPaths: runtimeReadPaths, WritePaths: runtimeWritePaths})
@@ -202,6 +202,8 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	if err != nil {
 		return nil, noop, err
 	}
+	// Login files the adapter made for this launch: the CLI reads them, its shells never.
+	credentials = append(credentials, existing(canonicalUnique(launchCredentials))...)
 
 	launchedAs := "app"
 	if slot, ok := slotfs.SlotOf(home); ok {
@@ -617,6 +619,14 @@ func JSONFilePaths(configFiles []string) []string {
 // home paths (MergeCodingAgentSecretEnvironment). It is a no-op when the
 // policy does not confine the CLI on this host.
 func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir string, runtimeReadPaths, runtimeWritePaths []string) (func(), error) {
+	return LandlockCmdWithCredentials(policy, cmd, workingDir, runtimeReadPaths, runtimeWritePaths, nil)
+}
+
+// LandlockCmdWithCredentials is LandlockCmd with login files the adapter made
+// for this launch (a key file): the CLI may read them, the shells it starts may
+// not, exactly as for the account's own login files. Each must sit outside
+// every folder the shells are granted.
+func LandlockCmdWithCredentials(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir string, runtimeReadPaths, runtimeWritePaths, credentials []string) (func(), error) {
 	if policy.SeatbeltEnforced() {
 		return SeatbeltCmd(policy, cmd, workingDir, SeatbeltGrants{ReadPaths: runtimeReadPaths, WritePaths: runtimeWritePaths})
 	}
@@ -630,7 +640,7 @@ func LandlockCmd(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cmd, workingDir s
 		workingDir = cmd.Dir
 	}
 	args := append([]string{cmd.Path}, cmd.Args[1:]...)
-	wrapped, cleanup, err := landlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), runtimeWritePaths, cmd.Env)
+	wrapped, cleanup, err := landlockArgs(policy, args, workingDir, append(runtimeReadPaths, ArgFilePaths(args)...), runtimeWritePaths, cmd.Env, credentials)
 	if err != nil {
 		return func() {}, err
 	}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
@@ -188,17 +189,23 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(museEnvironmentWithConfigHome(configHome), opts)
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+configHome)
 	cmd.Env = append(cmd.Env, museRuntimeEnv(opts)...)
+	var keyFiles []string
+	removeKey := func() {}
 	if a.apiKey != "" {
-		// The selected key is in this launch's own auth file (museMSPStoreKey),
+		// The selected key is in this launch's own key file (museMSPStoreKey),
 		// never in the environment Muse's shells inherit.
 		cmd.Env = museWithoutEnv(cmd.Env, "META_API_KEY")
-		if err := a.museMSPStoreKey(ctx, opts, workdir, cmd.Env); err != nil {
+		keyFile, cleanupKey, err := a.museMSPStoreKey(ctx, opts, workdir, configHome, cmd.Env)
+		if err != nil {
 			stop()
 			return nil, err
 		}
+		keyFiles, removeKey = []string{keyFile}, cleanupKey
 	}
-	cleanupSandbox, err := museLandlockCmd(opts, cmd, workdir)
+	cleanupLandlock, err := museLandlockCmdWithCredentials(opts, cmd, workdir, keyFiles)
+	cleanupSandbox := func() { cleanupLandlock(); removeKey() }
 	if err != nil {
+		removeKey()
 		stop()
 		return nil, err
 	}
@@ -246,20 +253,47 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	return r, nil
 }
 
-// museMSPStoreKey saves the selected Meta key in this launch's private config
-// folder (XDG_CONFIG_HOME/muse/auth.json) with `muse auth set`, the key on
-// stdin, run as the same account as serve. stdin carries the protocol for serve
-// itself, and an environment variable would reach every shell Muse starts.
-func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.CallOptions, workdir string, env []string) error {
+// museMSPStoreKey saves the selected Meta key with `muse auth set`, the key on
+// stdin, run as the same account as serve (stdin carries the protocol for serve
+// itself, and an environment variable would reach every shell Muse starts).
+// The file lives in its own private folder, outside every folder Muse's shells
+// are granted; the launch's config folder links to it, and the Landlock policy
+// treats it as a login file: Muse reads it, its shells cannot (as for the
+// account's own login file). It is removed when the chat closes.
+func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.CallOptions, workdir, configHome string, env []string) (string, func(), error) {
+	keyHome, err := os.MkdirTemp("", "agentworks-muse-key-*")
+	if err != nil {
+		return "", nil, err
+	}
+	remove := func() { _ = os.RemoveAll(keyHome) }
+	if opts != nil && opts.CLISecurity != nil {
+		if err := slotfs.ShareTree(opts.CLISecurity.PrivateHome, keyHome); err != nil {
+			remove()
+			return "", nil, err
+		}
+	}
 	argv := musePreludeArgv(opts, []string{"muse", "auth", "set", "--api-key-stdin"})
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workdir
-	cmd.Env = env
+	cmd.Env = append(museWithoutEnv(env, "XDG_CONFIG_HOME"), "XDG_CONFIG_HOME="+keyHome)
 	cmd.Stdin = strings.NewReader(a.apiKey + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
+		remove()
+		return "", nil, fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	keyFile := filepath.Join(keyHome, "muse", "auth.json")
+	_ = os.Chmod(keyFile, 0o600)
+	link := filepath.Join(configHome, "muse", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		remove()
+		return "", nil, err
+	}
+	_ = os.Remove(link)
+	if err := os.Symlink(keyFile, link); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("link the Muse key for this chat: %w", err)
+	}
+	return keyFile, remove, nil
 }
 
 func museWithoutEnv(env []string, name string) []string {
