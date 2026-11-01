@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
 	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 )
 
@@ -599,6 +600,14 @@ func GetCodingAgentProviderContractForTransport(provider Provider, modelID, clau
 			contract.PlanUsageSource = ""
 			contract.PlanUsageUnavailableReason = "The Claude Agent SDK reports per-turn token usage; this adapter does not read account plan windows"
 		}
+	}
+	if normalizedProvider == ProviderAgyCLI && agycli.AgyACPSelected() {
+		// agy acp: protocol events, no screen; ACP has no mid-turn input, so a
+		// message sent during a turn waits for the next one.
+		contract.Transport = CodingAgentTransportACP
+		contract.SupportsTerminalStream = false
+		contract.SupportsLiveInput = false
+		contract.LaunchesViaLoginShell = false
 	}
 	if normalizedProvider == ProviderMuseCLI && musecli.MuseMSPSelected() {
 		// muse serve: protocol events, no screen.

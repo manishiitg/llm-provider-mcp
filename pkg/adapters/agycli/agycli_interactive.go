@@ -578,6 +578,7 @@ func sendAgyInteractiveMessage(ctx context.Context, ownerSessionID, message stri
 // CleanupAgyCLIInteractiveSessions kills every agy tmux sidecar registered
 // by this process.
 func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
+	closeAllAgyACPSessions()
 	agyInteractiveRegistry.Lock()
 	sessions := make([]*agyInteractiveSession, 0, len(agyInteractiveRegistry.sessions))
 	for _, session := range agyInteractiveRegistry.sessions {
@@ -601,6 +602,7 @@ func CleanupAgyCLIInteractiveSessions(ctx context.Context) error {
 // CloseAgyCLIInteractiveSessionForOwner tears down the sidecar owned by
 // ownerSessionID. No-op when none is registered.
 func CloseAgyCLIInteractiveSessionForOwner(ownerSessionID, reason string) {
+	CloseAgyACPSession(strings.TrimSpace(ownerSessionID))
 	agyInteractiveRegistry.Lock()
 	session, ok := agyInteractiveRegistry.sessions[strings.TrimSpace(ownerSessionID)]
 	if ok {

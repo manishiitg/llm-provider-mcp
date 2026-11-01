@@ -21,20 +21,12 @@ type knownAgyModel struct {
 	cached float64
 }
 
+// Only Gemini 3.8 Flash (owner, 2026-11-02: "use only 3.8 gemini"); the
+// Claude ids no live agy lane offered are gone.
 var knownAgyCLIModels = []knownAgyModel{
 	{id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", input: 0.75, out: 3.75, cached: 0.075},
 	{id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", input: 0.75, out: 3.75, cached: 0.075},
 	{id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.7-flash-medium", name: "Gemini 3.7 Flash (Medium)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.7-flash-low", name: "Gemini 3.7 Flash (Low)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)"},
-	{id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Medium)"},
-	{id: "gemini-3.6-flash-low", name: "Gemini 3.6 Flash (Low)"},
-	{id: "gemini-3.1-pro-high", name: "Gemini 3.1 Pro (High)", input: 2, out: 12, cached: 0.2},
-	{id: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)", input: 2, out: 12, cached: 0.2},
-	{id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)"},
-	{id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)"},
 }
 
 // agyReasoningEffortLevels mirrors the effort tiers baked into agy model
