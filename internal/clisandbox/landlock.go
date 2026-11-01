@@ -456,7 +456,7 @@ func executableDirs(args []string) []string {
 		args = args[5:]
 	}
 	for _, arg := range args {
-		if arg == "env" || strings.Contains(arg, "=") {
+		if arg == "env" || arg == "/usr/bin/env" || strings.Contains(arg, "=") {
 			continue
 		}
 		resolved, err := exec.LookPath(arg)
