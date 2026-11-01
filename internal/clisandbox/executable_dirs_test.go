@@ -18,6 +18,12 @@ func TestExecutableDirsLooksPastAShellPrelude(t *testing.T) {
 	if len(plain) == 0 || plain[0] != dir {
 		t.Fatalf("plain launch: %v, want %s first", plain, dir)
 	}
+	// PLAT-856-442 / provider PR69: an absolute env prefix must retain the
+	// bundled CLI directory grant, including rX for a slot's executable.
+	withAbsoluteEnv := executableDirs([]string{"/usr/bin/env", "CURSOR_INVOKED_AS=cursor-agent", bin, "--flag"})
+	if len(withAbsoluteEnv) == 0 || withAbsoluteEnv[0] != dir {
+		t.Fatalf("absolute env lost the CLI install grant: %v", withAbsoluteEnv)
+	}
 	withPrelude := executableDirs([]string{"sh", "-c", "exec \"$@\"", "sweep", "/tmp/x", bin, "--flag"})
 	if len(withPrelude) == 0 || withPrelude[0] != dir {
 		t.Fatalf("prelude launch: %v, want %s first", withPrelude, dir)
