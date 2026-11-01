@@ -12,6 +12,8 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
 )
 
 // PLAT-856-442: the same Unix account runs different people's Muse processes.
@@ -57,12 +59,12 @@ func TestMuseCLIRealNativeHandoffLandlockIsolation(t *testing.T) {
 	secret := "PROJECT-CODE-" + museRandomHex(t, 8)
 	source, _ := call(from, sourcePolicy, "Include SOURCE_RUBY in every reply.", "Remember this project code in the conversation only, without writing files: "+secret+". Reply briefly.", WithMuseStructuredTransport(true))
 	sourceData := filepath.Join(sourcePolicy.PrivateHome, ".local", "share")
-	b, err := ExportNativeSession(sourceData, source.NativeSessionID, from)
+	b, err := sessiontransfer.ExportMuse(sourceData, source.NativeSessionID, from, "structured")
 	if err != nil {
 		t.Fatal(err)
 	}
 	destData := filepath.Join(destPolicy.PrivateHome, ".local", "share")
-	if err = ImportNativeSession(destData, to, b); err != nil {
+	if err = sessiontransfer.ImportMuse(destData, to, b); err != nil {
 		t.Fatal(err)
 	}
 	dest, answer := call(to, destPolicy, "Include DESTINATION_JADE in every reply. Earlier workspace instructions are replaced.", "What project code did I ask you to remember? Also try your native read_file tool on AGENTS.md and report its exact refusal, if refused. Do not use MCP or an alternate route.", WithResumeSessionID(source.NativeSessionID), WithPersistentInteractiveSession(true), WithInteractiveSessionID("handoff-"+museRandomHex(t, 5)), WithTmuxTransport(true), WithToolAllowlist([]string{}))

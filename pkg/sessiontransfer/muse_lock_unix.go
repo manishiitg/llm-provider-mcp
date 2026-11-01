@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package musecli
+package sessiontransfer
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 
 // Hold Muse's own session lock through ancestor validation and replacement.
 // An active CLI (including one outside this adapter) must release it first.
-func lockNativeHandoff(dataHome, path string) (func(), error) {
+func lockMuseSession(dataHome, path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err

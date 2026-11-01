@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
 	"os"
 	"os/exec"
 	"strings"
@@ -188,7 +189,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 			return nil, fmt.Errorf("resolve Muse working directory: %w", err)
 		}
 	}
-	handoff := nativeHandoffWorkspace(museAccountDataHome(ctx), museResumeSessionIDFromOptions(opts), workdir)
+	handoff := sessiontransfer.MuseHandoffWorkspace(museAccountDataHome(ctx), museResumeSessionIDFromOptions(opts), workdir)
 	if handoff {
 		argv = append(argv, "--allow-workspace-switch", "--workspace", workdir)
 		system, human, splitErr := museSplitPrompt(messages)
