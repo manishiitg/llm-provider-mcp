@@ -21,7 +21,7 @@ func TestConfinedLaunchPreloadsNodeMemoryShim(t *testing.T) {
 	}
 	home := filepath.Join(dir, "home")
 	policy := &llmtypes.CLISecurityPolicy{Mode: llmtypes.CLISecurityModeIsolated, Provider: "muse-cli", LandlockRunner: runner, PrivateHome: home, CredentialHome: dir}
-	args, cleanup, err := landlockArgs(policy, []string{"sh"}, dir, nil, nil, []string{"NODE_OPTIONS=--max-old-space-size=4096"})
+	args, cleanup, err := landlockArgs(policy, []string{"sh"}, dir, nil, nil, []string{"NODE_OPTIONS=--max-old-space-size=4096"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

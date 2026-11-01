@@ -63,11 +63,17 @@ func museLandlockArgs(opts *llmtypes.CallOptions, args []string, workdir string)
 }
 
 func museLandlockCmd(opts *llmtypes.CallOptions, cmd *exec.Cmd, workdir string) (func(), error) {
+	return museLandlockCmdWithCredentials(opts, cmd, workdir, nil)
+}
+
+// museLandlockCmdWithCredentials also names login files made for this launch:
+// Muse reads them, its shells cannot.
+func museLandlockCmdWithCredentials(opts *llmtypes.CallOptions, cmd *exec.Cmd, workdir string, credentials []string) (func(), error) {
 	if opts == nil || !opts.CLISecurity.Confined() {
 		return func() {}, nil
 	}
 	read, write := museLandlockGrants(cmd.Args, cmd.Env)
-	cleanup, err := clisandbox.LandlockCmd(opts.CLISecurity, cmd, workdir, read, write)
+	cleanup, err := clisandbox.LandlockCmdWithCredentials(opts.CLISecurity, cmd, workdir, read, write, credentials)
 	if err != nil {
 		return func() {}, fmt.Errorf("confine Muse: %w", err)
 	}
