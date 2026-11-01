@@ -39,6 +39,9 @@ func musePersistentTmuxForOwner(owner string) (string, bool) {
 // is registered — the live-injection transport exists. Cheap map lookup
 // (no tmux round-trip) for steer gating; delivery re-verifies liveness.
 func InteractiveSessionRegistered(ownerSessionID string) bool {
+	if MuseMSPSessionActive(ownerSessionID) {
+		return true
+	}
 	_, ok := musePersistentTmuxForOwner(ownerSessionID)
 	return ok
 }
