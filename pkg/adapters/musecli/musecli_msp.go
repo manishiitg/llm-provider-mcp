@@ -41,6 +41,10 @@ func MuseMSPSelected() bool {
 // the laptop live tests set it.
 var museMSPKeepMuseSandbox = false
 
+// museMSPTestCapabilities: AgentWorks asks for no MSP capabilities; a live
+// probe may ask for userShell.
+var museMSPTestCapabilities []string
+
 type museMSPSession struct {
 	turnMu    sync.Mutex
 	mu        sync.Mutex
@@ -185,8 +189,13 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+configHome)
 	cmd.Env = append(cmd.Env, museRuntimeEnv(opts)...)
 	if a.apiKey != "" {
-		// stdin carries the protocol, so the key goes in the environment.
-		cmd.Env = append(cmd.Env, "META_API_KEY="+a.apiKey)
+		// The selected key is in this launch's own auth file (museMSPStoreKey),
+		// never in the environment Muse's shells inherit.
+		cmd.Env = museWithoutEnv(cmd.Env, "META_API_KEY")
+		if err := a.museMSPStoreKey(ctx, opts, workdir, cmd.Env); err != nil {
+			stop()
+			return nil, err
+		}
 	}
 	cleanupSandbox, err := museLandlockCmd(opts, cmd, workdir)
 	if err != nil {
@@ -222,7 +231,11 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	}()
 	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if err := r.call(initCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "agentworks", "version": "1"}}, nil); err != nil {
+	initParams := map[string]any{"clientInfo": map[string]string{"name": "agentworks", "version": "1"}}
+	if len(museMSPTestCapabilities) > 0 {
+		initParams["capabilities"] = map[string]any{"requestedCapabilities": museMSPTestCapabilities}
+	}
+	if err := r.call(initCtx, "initialize", initParams, nil); err != nil {
 		r.close()
 		return nil, err
 	}
@@ -231,6 +244,32 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 		return nil, err
 	}
 	return r, nil
+}
+
+// museMSPStoreKey saves the selected Meta key in this launch's private config
+// folder (XDG_CONFIG_HOME/muse/auth.json) with `muse auth set`, the key on
+// stdin, run as the same account as serve. stdin carries the protocol for serve
+// itself, and an environment variable would reach every shell Muse starts.
+func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.CallOptions, workdir string, env []string) error {
+	argv := musePreludeArgv(opts, []string{"muse", "auth", "set", "--api-key-stdin"})
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = workdir
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(a.apiKey + "\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func museWithoutEnv(env []string, name string) []string {
+	out := env[:0:0]
+	for _, entry := range env {
+		if key, _, _ := strings.Cut(entry, "="); key != name {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 type museMSPSessionResult struct {
