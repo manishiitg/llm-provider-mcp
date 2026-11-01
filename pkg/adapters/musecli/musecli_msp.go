@@ -2,6 +2,7 @@ package musecli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -179,8 +180,8 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	if _, err := exec.LookPath("muse"); err != nil {
 		return nil, fmt.Errorf("muse CLI not in PATH: %w", err)
 	}
-	argv := append([]string{"muse"}, museBaseURLArgv(opts)...)
-	argv = append(argv, a.museMSPLaunchArgs(opts)...)
+	argv := append([]string{"muse"}, a.museMSPLaunchArgs(opts)...)
+	argv = append(argv, museMSPBaseURLArgv(opts)...)
 	launch := musePreludeArgv(opts, argv)
 	life, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(life, launch[0], launch[1:]...)
@@ -514,4 +515,16 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 		cancel()
 	}
 	return response, err
+}
+
+// museMSPBaseURLArgv points serve at an account's own Meta address (a company account reaches Meta through this
+// Mac's backend). serve takes no --base-url flag (it exits at once, "unknown argument"); the address is its
+// endpoint_transport setting, with the bearer key pinned to it so Muse sends the key there.
+func museMSPBaseURLArgv(opts *llmtypes.CallOptions) []string {
+	url := llmtypes.ProviderAccountEnvironment(opts)[llmtypes.MuseBaseURLKey]
+	if url == "" {
+		return nil
+	}
+	quoted, _ := json.Marshal(url)
+	return []string{"-c", "endpoint_transport.base_url=" + string(quoted), "-c", `endpoint_transport.auth="bearer"`}
 }
