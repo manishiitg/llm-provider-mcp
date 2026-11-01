@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ type museMSPTokenUsage struct {
 // they are written, each tool call is reported when it starts and when it
 // ends, and the host's questions and approvals are answered as the tmux lane
 // answers them. turn/completed ends it.
-func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSession, turnID string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSession, events <-chan museRPCMessage, turnID string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
 	meta := func(extra map[string]interface{}) map[string]interface{} {
 		m := map[string]interface{}{"muse_session_id": s.sessionID, "muse_cli_stream_source": "transcript"}
 		for k, v := range extra {
@@ -65,7 +66,7 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 			return nil, ctx.Err()
 		case <-s.rpc.done:
 			return nil, s.rpc.failure()
-		case msg := <-s.rpc.events:
+		case msg := <-events:
 			if len(msg.ID) > 0 && msg.Method != "" {
 				a.answerMuseMSPRequest(ctx, s, opts, msg)
 				continue
@@ -310,6 +311,8 @@ func (a *MuseCLIAdapter) compactMuseMSP(ctx context.Context, s *museMSPSession, 
 	started := time.Now().UTC()
 	id := fmt.Sprintf("muse-compact-%d", started.UnixMilli())
 	emit(llmtypes.ContextCompactionChunk(llmtypes.ContextCompaction{Provider: "muse-cli", Phase: llmtypes.ContextCompactionPhaseStart, ID: id, StartedAt: started}))
+	events := s.listen()
+	defer s.stopListening()
 	if err := s.rpc.call(ctx, "session/compact", map[string]any{"commandId": museCommandID(), "sessionId": s.sessionID}, nil); err != nil {
 		return nil, err
 	}
@@ -319,7 +322,7 @@ func (a *MuseCLIAdapter) compactMuseMSP(ctx context.Context, s *museMSPSession, 
 			return nil, ctx.Err()
 		case <-s.rpc.done:
 			return nil, s.rpc.failure()
-		case msg := <-s.rpc.events:
+		case msg := <-events:
 			if msg.Method != "item/completed" {
 				continue
 			}
@@ -439,4 +442,89 @@ func museMSPUserChoice(opts *llmtypes.CallOptions) bool {
 	}
 	choice, _ := opts.Metadata.Custom[metadataMuseUserChoice].(bool)
 	return choice
+}
+
+// listen hands the host's events to the caller until stopListening.
+func (s *museMSPSession) listen() <-chan museRPCMessage {
+	ch := make(chan museRPCMessage, 4096)
+	s.mu.Lock()
+	s.listener = ch
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *museMSPSession) stopListening() {
+	s.mu.Lock()
+	s.listener = nil
+	s.mu.Unlock()
+}
+
+// pumpMuseMSP reads every event the host sends for the life of the session.
+// During one of the chat's own turns it passes them on; between turns, Muse
+// can still run turns of its own (a Monitor waking it, a background task
+// finishing): their approvals and questions are answered as a turn answers
+// them (a question takes its first option, nobody is waiting), the usage stays
+// current, and the reply is logged. Unanswered, such a request would hold that
+// turn and every message queued behind it.
+func (a *MuseCLIAdapter) pumpMuseMSP(s *museMSPSession) {
+	for {
+		select {
+		case <-s.rpc.done:
+			return
+		case msg := <-s.rpc.events:
+			s.mu.Lock()
+			listener := s.listener
+			s.mu.Unlock()
+			if listener != nil {
+				select {
+				case listener <- msg:
+					continue
+				default:
+				}
+			}
+			a.handleIdleMuseMSP(s, msg)
+		}
+	}
+}
+
+func (a *MuseCLIAdapter) handleIdleMuseMSP(s *museMSPSession, msg museRPCMessage) {
+	if len(msg.ID) > 0 && msg.Method != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		a.answerMuseMSPRequest(ctx, s, nil, msg)
+		cancel()
+		return
+	}
+	switch msg.Method {
+	case "usage/changed":
+		var p museMSPPlanUsage
+		if json.Unmarshal(msg.Params, &p) == nil {
+			s.mu.Lock()
+			s.usage = &p
+			s.mu.Unlock()
+		}
+	case "session/contextUsage":
+		var p struct {
+			UsedTokens   int `json:"usedTokens"`
+			WindowTokens int `json:"windowTokens"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			s.mu.Lock()
+			s.context = museMSPContext{used: p.UsedTokens, window: p.WindowTokens}
+			s.mu.Unlock()
+		}
+	case "turn/started", "turn/completed":
+		var p struct {
+			TurnID   string `json:"turnId"`
+			Terminal string `json:"terminal"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		log.Printf("[MUSE_MSP] session=%s own turn %s %s %s (between chat turns)", s.sessionID, p.TurnID, msg.Method, p.Terminal)
+	case "item/completed":
+		var p struct {
+			Item museMSPItem `json:"item"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Item.Kind == "agentMessage" && strings.TrimSpace(p.Item.Text) != "" {
+			log.Printf("[MUSE_MSP] session=%s reply between chat turns (turn %s): %d chars", s.sessionID, p.Item.TurnID, len(p.Item.Text))
+		}
+	}
 }
