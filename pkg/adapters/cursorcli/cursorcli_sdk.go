@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -423,6 +424,11 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	case event := <-p.events:
 		if event.Type != "ready" || event.AgentID == "" {
 			p.close()
+			if m := cursorModelRefusal.FindStringSubmatch(event.Error); m != nil {
+				// The account's model list (on a company account, the models its administrator allows) has no such
+				// model: say so plainly, with what is allowed.
+				return nil, "", false, fmt.Errorf("%s is not allowed on this account; allowed: %s. Pick another model.", m[1], strings.TrimSpace(m[2]))
+			}
 			return nil, "", false, fmt.Errorf("Cursor SDK did not start: %s", event.Error)
 		}
 		if event.Stale != "" && c.logger != nil {
@@ -789,3 +795,6 @@ func cursorSDKResponse(s *cursorSDKSession, text string, usage *llmtypes.Usage) 
 
 // SDKRuntimeAvailable checks the installed component without starting an agent.
 func SDKRuntimeAvailable() error { _, err := cursorSDKEntry(); return err }
+
+// cursorModelRefusal matches the Cursor SDK's refusal of a model missing from the account's model list.
+var cursorModelRefusal = regexp.MustCompile(`Cannot use this model: ([^.\s]+(?:\.[^.\s]+)*)\. Available models: ([^.]*(?:\.[0-9][^.]*)*)\.`)
