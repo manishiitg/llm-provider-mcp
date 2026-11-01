@@ -45,7 +45,7 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 }
 func providerAccountPathKey(key string) bool {
 	switch key {
-	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", MuseBaseURLKey:
+	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", MuseBaseURLKey, AnthropicBaseURLKey:
 		return true
 	}
 	return false
@@ -54,6 +54,10 @@ func providerAccountPathKey(key string) bool {
 // MuseBaseURLKey is the account's Meta API address for Muse (passed as --base-url), for an account that reaches
 // Meta through another server rather than directly. Muse has no setting or variable for it.
 const MuseBaseURLKey = "MUSE_BASE_URL"
+
+// AnthropicBaseURLKey is the account's Anthropic API address for Claude Code, for an account that reaches Anthropic
+// through another server. Claude Code reads it from its environment like the other account paths.
+const AnthropicBaseURLKey = "ANTHROPIC_BASE_URL"
 
 func ProviderAccountEnvironment(opts *CallOptions) map[string]string {
 	result := map[string]string{}
