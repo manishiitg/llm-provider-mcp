@@ -47,8 +47,17 @@ func museAccountConfig(ctx context.Context, mcpJSON string, tools []string) (str
 	}
 	return configHome, cleanup, nil
 }
+
+// museBaseURLArgv points Muse at the account's Meta API address, when the account has one.
+func museBaseURLArgv(opts *llmtypes.CallOptions) []string {
+	if url := llmtypes.ProviderAccountEnvironment(opts)[llmtypes.MuseBaseURLKey]; url != "" {
+		return []string{"--base-url", url}
+	}
+	return nil
+}
 func museAccountLaunch(ctx context.Context, argv []string, workdir string) (string, func(), error) {
 	runtime := museAccount(ctx)
+	argv = append(argv, museBaseURLArgv(runtime.opts)...)
 	env, unset := llmtypes.ScopedCodingAgentEnvironmentPlan(os.Environ(), nil, runtime.opts)
 	env = append(env, museRuntimeEnv(runtime.opts)...)
 	argv = musePreludeArgv(runtime.opts, argv)

@@ -195,6 +195,7 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		argv = append(argv, "--disable-approval")
 	}
 	argv = append(argv, museToolArgv(toolAllowlistSet)...)
+	argv = append(argv, museBaseURLArgv(opts)...)
 	argv = append(argv, prompt)
 
 	launch := musePreludeArgv(opts, append([]string{"muse"}, argv...))
