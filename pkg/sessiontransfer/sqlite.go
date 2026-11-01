@@ -547,11 +547,7 @@ func loadSnapshotState(root string) (snapshotState, error) {
 	return state, nil
 }
 func setSnapshotLineage(root string, b *Bundle) error {
-	raw, _ := json.Marshal(struct {
-		Provider, Format, Session string
-		Files                     map[string]File
-	}{b.Provider, b.Format, b.SessionID, b.Files})
-	b.Snapshot = fmt.Sprintf("%x", sha256.Sum256(raw))
+	b.Snapshot = snapshotHash(b)
 	state, e := loadSnapshotState(root)
 	if os.IsNotExist(e) {
 		return nil
@@ -563,10 +559,6 @@ func setSnapshotLineage(root string, b *Bundle) error {
 		return fmt.Errorf("native baseline belongs to another conversation")
 	}
 	b.Parent = state.Parent
-	// Import changes only the local cwd binding, not the conversation revision.
-	if reflect.DeepEqual(state.Baseline.Files, b.Files) {
-		b.Snapshot = state.Baseline.Snapshot
-	}
 	return nil
 }
 func CheckSnapshotBaseline(root string, current *Bundle) error {
@@ -584,6 +576,9 @@ func CheckSnapshotBaseline(root string, current *Bundle) error {
 	return nil
 }
 func CheckSnapshotReplacement(root string, current, incoming *Bundle) error {
+	if incoming.Snapshot != snapshotHash(incoming) {
+		return fmt.Errorf("native snapshot identity does not match its files")
+	}
 	if e := CheckSnapshotBaseline(root, current); e != nil {
 		return e
 	}
@@ -631,4 +626,12 @@ func secureNativeDB(db *sql.DB) error {
 		return fmt.Errorf("native SQLite schema contains unsupported triggers or views")
 	}
 	return nil
+}
+
+func snapshotHash(b *Bundle) string {
+	raw, _ := json.Marshal(struct {
+		Provider, Format, Session string
+		Files                     map[string]File
+	}{b.Provider, b.Format, b.SessionID, b.Files})
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
 }
