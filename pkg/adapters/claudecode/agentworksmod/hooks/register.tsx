@@ -22,15 +22,28 @@ let stepKey = ''
 const ROW_DOORS = new Set(['prompt', 'response', 'tool-result', 'delivery', 'note'])
 const ROW_TEXT_LIMIT = 200000
 
+// What the terminal shows besides Claude Code itself: the status line, the band
+// above the prompt and the Changes pane.
+const CHANGES_PANE = 'agentworks-changes'
+const editedFiles = new Set<string>()
+type RepoChanges = { repo: string; branch: string; files: { path: string; added: string; removed: string }[] }
+let changes: RepoChanges[] = []
+let lastMessage = ''
+
 async function emit($: any, type: string, fields: Record<string, unknown> = {}) {
   // Numbered before any await, so concurrent events keep their order.
   const n = ++seq
   const at = Date.now()
-  const dir = await $.env.get('AGENTWORKS_MOD_DIR')
-  if (!dir) return
-  const name = `${String(at).padStart(14, '0')}-${String(n).padStart(6, '0')}-${type}.json`
-  const sessionId = await $.session.id()
-  await $.fs.write(`${dir}/events/${name}`, JSON.stringify({ type, at, seq: n, session_id: sessionId, ...fields }))
+  // Never fails the hook it reports from: Claude Code's own work goes on.
+  try {
+    const dir = await $.env.get('AGENTWORKS_MOD_DIR')
+    if (!dir) return
+    const name = `${String(at).padStart(14, '0')}-${String(n).padStart(6, '0')}-${type}.json`
+    const sessionId = await $.session.id()
+    await $.fs.write(`${dir}/events/${name}`, JSON.stringify({ type, at, seq: n, session_id: sessionId, ...fields }))
+  } catch {
+    // A lost event shows as a missing step in AgentWorks' log, not a broken turn.
+  }
 }
 
 // deliverInbox hands Claude the messages AgentWorks put in $AGENTWORKS_MOD_DIR/inbox,
@@ -106,6 +119,56 @@ async function waitForMcpTools($: any) {
   toolsReady = true
 }
 
+// A message AgentWorks framed for Claude: an automatic notice, or a message
+// from another agent or Crew. The band names its source; Claude Code draws the
+// row itself (a mod's render hooks skip the messages the mod submitted).
+function framedMessage(text: string): { label: string; body: string } | null {
+  if (text.startsWith('[AUTO-NOTIFICATION]')) return { label: 'Automatic message', body: text.slice('[AUTO-NOTIFICATION]'.length).trim() }
+  const agent = text.match(/^\[(?:Agent message|Message from another person's agent) (?:from )?([^.(]+)[^\]]*\]\s*/)
+  if (agent) return { label: `Message from ${agent[1].trim()}`, body: text.slice(agent[0].length).replace(/^<<<BEGIN [^>]+>>>\n?|\n?<<<END [^>]+>>>$/g, '').trim() }
+  return null
+}
+
+// refreshChanges asks git which of the files Claude edited this session
+// changed, grouped by repository.
+async function refreshChanges($: any) {
+  const byRepo = new Map<string, string[]>()
+  for (const file of editedFiles) {
+    const dir = file.slice(0, file.lastIndexOf('/')) || '.'
+    const top = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel']).catch(() => null)
+    const repo = top && top.exitCode === 0 ? top.stdout.trim() : ''
+    if (!repo) continue
+    byRepo.set(repo, [...(byRepo.get(repo) ?? []), file])
+  }
+  const next: RepoChanges[] = []
+  for (const [repo, files] of byRepo) {
+    const branch = await $.process.run(['git', '-C', repo, 'branch', '--show-current']).catch(() => null)
+    const stat = await $.process.run(['git', '-C', repo, 'diff', '--numstat', 'HEAD', '--', ...files]).catch(() => null)
+    const counts = new Map<string, { added: string; removed: string }>()
+    for (const line of String(stat?.stdout ?? '').split('\n')) {
+      const [added, removed, path] = line.split('\t')
+      if (path) counts.set(`${repo}/${path}`, { added, removed })
+    }
+    const listed = files.map(file => ({ path: file.slice(repo.length + 1), ...(counts.get(file) ?? { added: 'new', removed: '' }) }))
+    next.push({ repo, branch: String(branch?.stdout ?? '').trim(), files: listed })
+  }
+  changes = next
+  $.ui.invalidate('ui.render')
+}
+
+async function refreshStatus($: any) {
+  const usage = await $.session.usage().catch(() => null)
+  if (!usage) return
+  const model = await $.session.model().catch(() => '')
+  const parts: string[] = []
+  if (model) parts.push(String(typeof model === 'string' ? model : model?.id ?? ''))
+  if (usage.context?.tokens) parts.push(`context ${Math.round(usage.context.tokens / 1000)}k${usage.context.window ? ` of ${Math.round(usage.context.window / 1000)}k` : ''}`)
+  const names: Record<string, string> = { five_hour: '5-hour', seven_day: '7-day', seven_day_opus: '7-day Opus', seven_day_sonnet: '7-day Sonnet' }
+  for (const limit of usage.rateLimits ?? []) parts.push(`${names[limit.kind] ?? String(limit.kind).replace(/_/g, ' ')} ${Math.round(limit.percentUsed)}%`)
+  if (usage.cost?.usd) parts.push(`$${usage.cost.usd.toFixed(2)}`)
+  $.ui.status(parts.filter(Boolean).join(' · ') || undefined)
+}
+
 // handle runs one inbox request and says how it went.
 async function handle($: any, request: { kind?: string; text?: string }): Promise<Record<string, unknown>> {
   switch (request.kind ?? 'input') {
@@ -127,6 +190,11 @@ async function handle($: any, request: { kind?: string; text?: string }): Promis
         if (stored.deny) throw new Error(String(stored.deny))
         return { delivery: 'running_turn' }
       }
+      const framed = framedMessage(text)
+      if (framed) {
+        lastMessage = `${framed.label}: ${framed.body.split('\n')[0].slice(0, 80)}`
+        $.ui.invalidate('ui.render')
+      }
       await $.prompt.submit({ text, asUser: true })
       return { delivery: 'new_turn' }
     }
@@ -136,6 +204,7 @@ async function handle($: any, request: { kind?: string; text?: string }): Promis
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    await $.command.register({ name: 'changes', description: "Show the files Claude changed in this chat, with Commit and Pull request" })
     await emit($, 'session')
     $.clock.every(250, () => {
       void deliverInbox($)
@@ -209,6 +278,64 @@ export const register: Register = on => {
     return stored
   })
 
+  // Files Claude edits, for the Changes pane.
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    const input: any = e
+    const path = String(input.file_path ?? input.notebook_path ?? '')
+    if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(String(input.tool)) && path.startsWith('/') && !ran?.deny) {
+      editedFiles.add(path)
+      void refreshChanges($).catch(() => undefined)
+    }
+    return ran
+  })
+
+  on('session.measure', async ($, e, next) => {
+    const result = await next(e)
+    void refreshStatus($).catch(() => undefined)
+    return result
+  })
+
+  on('command.run', { command: 'changes' }, async $ => {
+    await refreshChanges($)
+    await $.ui.open({ id: CHANGES_PANE, title: 'Changes in this chat' })
+    return { text: changes.length ? 'Changes pane opened.' : 'No file changes in this chat yet.' }
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const files = changes.reduce((sum, repo) => sum + repo.files.length, 0)
+    if ((e as any).props?.hasSurvey || (!lastMessage && files === 0)) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box gap={1}>
+        {lastMessage && <Text dimColor>{lastMessage}</Text>}
+        {files > 0 && <Button key="changes" label={`${files} file${files === 1 ? '' : 's'} changed · Open`} onPress={() => $.ui.open({ id: CHANGES_PANE, title: 'Changes in this chat' })} />}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: CHANGES_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    if (changes.length === 0) return <Text dimColor>No file changes in this chat yet.</Text>
+    const ask = (text: string) => () => $.prompt.submit({ text, asUser: true })
+    return (
+      <Box flexDirection="column" gap={1}>
+        {changes.map(repo => (
+          <Box key={repo.repo} flexDirection="column">
+            <Text weight="semibold">{repo.repo.split('/').pop()}{repo.branch ? ` · ${repo.branch}` : ''}</Text>
+            {repo.files.map(file => (
+              <Text key={file.path}>{file.path} <Text color="green">{file.added === 'new' ? 'new' : `+${file.added}`}</Text>{file.removed ? <Text color="red"> −{file.removed}</Text> : null}</Text>
+            ))}
+            <Box gap={1}>
+              <Button key={`commit-${repo.repo}`} label="Commit" onPress={ask(`Commit the changes in ${repo.repo} with a clear message.`)} />
+              <Button key={`pr-${repo.repo}`} variant="primary" label="Push & open PR" onPress={ask(`Push the branch in ${repo.repo} and open a pull request for it.`)} />
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    )
+  })
+
   // Every compaction, whoever asked for it: /compact, Claude's own threshold, AgentWorks.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
@@ -220,6 +347,7 @@ export const register: Register = on => {
     const result = await next(e)
     if (!(e as any).agentId) {
       running = false
+      void refreshStatus($).catch(() => undefined)
       const usage = await $.session.usage()
       await emit($, 'turn_complete', {
         turn_id: e.turnId,
