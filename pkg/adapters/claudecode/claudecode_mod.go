@@ -34,6 +34,10 @@ var claudeModFiles embed.FS
 
 const claudeModDirEnv = "AGENTWORKS_MOD_DIR"
 
+// claudeModMCPServersEnv names the chat's MCP servers, whose tools the mod
+// waits for before it sends the first message.
+const claudeModMCPServersEnv = "AGENTWORKS_MOD_MCP_SERVERS"
+
 // claudeModBaseDir is where a launch keeps the mod and its events: inside a
 // confined CLI's private home (the shared /tmp is outside its sandbox, and a
 // slot account must be able to write there), else a private folder made for
@@ -493,4 +497,24 @@ func claudeModTurnError(sessionName, text string) error {
 	default:
 		return fmt.Errorf("claude code turn failed: %s", strings.TrimSpace(text))
 	}
+}
+
+// claudeMCPServerNames lists the servers in the launch's MCP config.
+func claudeMCPServerNames(opts *llmtypes.CallOptions) []string {
+	if opts == nil || opts.Metadata == nil || opts.Metadata.Custom == nil {
+		return nil
+	}
+	raw, _ := opts.Metadata.Custom[MetadataKeyMCPConfig].(string)
+	var config struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if json.Unmarshal([]byte(raw), &config) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(config.MCPServers))
+	for name := range config.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

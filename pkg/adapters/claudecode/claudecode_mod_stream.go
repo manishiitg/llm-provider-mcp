@@ -45,6 +45,7 @@ type claudeModStreamer struct {
 	seen        map[string]bool
 	tools       map[string]*claudeModPendingTool // step:index -> tool being written
 	toolStarts  map[string]time.Time             // tool call id -> when it was complete
+	textBlock   string                           // step:index of the text block being streamed
 }
 
 func newClaudeModStreamer(sessionName string, turnStart time.Time) *claudeModStreamer {
@@ -71,7 +72,8 @@ func (s *claudeModStreamer) poll() []llmtypes.StreamChunk {
 
 func (s *claudeModStreamer) chunks(event claudeModEvent) []llmtypes.StreamChunk {
 	meta := func() map[string]interface{} {
-		return map[string]interface{}{"claude_code_session_id": event.SessionID, "claude_code_stream_source": "claude_mod"}
+		// "transcript": clean structured output, not a screen capture.
+		return map[string]interface{}{"claude_code_session_id": event.SessionID, "claude_code_stream_source": "transcript", "claude_code_stream_origin": "claude_mod"}
 	}
 	var out []llmtypes.StreamChunk
 	switch event.Type {
@@ -81,11 +83,20 @@ func (s *claudeModStreamer) chunks(event claudeModEvent) []llmtypes.StreamChunk 
 			switch item.Kind {
 			case "text":
 				if item.Text != "" {
-					out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: item.Text, Metadata: meta()})
+					text := item.Text
+					// A new text block (after a tool call, or a new request) starts a paragraph.
+					if s.textBlock != "" && s.textBlock != key {
+						text = "\n\n" + text
+					}
+					s.textBlock = key
+					m := meta()
+					m[llmtypes.ContentDeltaMetadataKey] = true
+					out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text, Metadata: m})
 				}
 			case "thinking":
 				m := meta()
 				m["thinking_active"] = true
+				m[llmtypes.ContentDeltaMetadataKey] = true
 				out = append(out, llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: item.Text, Metadata: m})
 			case "tool":
 				s.tools[key] = &claudeModPendingTool{id: item.ID, name: item.Name}
