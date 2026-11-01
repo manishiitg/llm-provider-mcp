@@ -5,17 +5,26 @@ package sessiontransfer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 )
 
-const MaxBytes int64 = 32 << 30
+// MaxBytes is shared by exporters, importers and the rsync transport. The
+// installation chooses its capacity; a peer cannot enlarge it in a payload.
+func MaxBytes() int64 {
+	if n, err := strconv.ParseInt(os.Getenv("AGENTWORKS_NATIVE_SYNC_MAX_BYTES"), 10, 64); err == nil && n >= 1<<20 && n <= 32<<30 {
+		return n
+	}
+	return 2 << 30
+}
 
 type File struct {
 	Size   int64  `json:"size"`
@@ -79,11 +88,11 @@ func (b *Bundle) Validate() error {
 	}
 	var total int64
 	for name, f := range b.Files {
-		if !b.allowed(name) || f.Size <= 0 || f.Size > MaxBytes || !digest.MatchString(f.SHA256) {
+		if !b.allowed(name) || f.Size <= 0 || f.Size > MaxBytes() || !digest.MatchString(f.SHA256) {
 			return fmt.Errorf("invalid native session file")
 		}
 		total += f.Size
-		if total > MaxBytes {
+		if total > MaxBytes() {
 			return fmt.Errorf("native session exceeds transfer capacity")
 		}
 	}
@@ -208,11 +217,11 @@ func Inspect(path string) (File, error) {
 		return File{}, fmt.Errorf("native state is not a regular file")
 	}
 	h := sha256.New()
-	n, e := io.Copy(h, io.LimitReader(f, MaxBytes+1))
+	n, e := io.Copy(h, io.LimitReader(f, MaxBytes()+1))
 	if e != nil {
 		return File{}, e
 	}
-	if n > MaxBytes {
+	if n > MaxBytes() {
 		return File{}, fmt.Errorf("native file exceeds capacity")
 	}
 	return File{Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
@@ -297,7 +306,7 @@ func Ancestor(old, next *Bundle) error {
 	for name, want := range old.Files {
 		got, ok := next.Files[name]
 		if !ok || got.Size < want.Size {
-			return Diverged()
+			return ErrDiverged
 		}
 		p, e := Path(next.Root, name, false)
 		if e != nil {
@@ -311,12 +320,10 @@ func Ancestor(old, next *Bundle) error {
 		n, e := io.CopyN(h, f, want.Size)
 		f.Close()
 		if e != nil || n != want.Size || hex.EncodeToString(h.Sum(nil)) != want.SHA256 {
-			return Diverged()
+			return ErrDiverged
 		}
 	}
 	return nil
 }
 
-func Diverged() error {
-	return fmt.Errorf("native history changed on both computers; both copies were kept")
-}
+var ErrDiverged = errors.New("native history changed on both computers; both copies were kept")
