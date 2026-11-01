@@ -75,17 +75,20 @@ type cursorParamsEntry struct {
 
 const cursorRememberedParamsTTL = 24 * time.Hour
 
-// cursorAccountKey names the Cursor account a launch uses: its API key, else the login home it reads.
+// cursorAccountKey names the Cursor account a launch uses, from the environment the bridge really gets (the selected
+// account's key or login paths replace the adapter's own) plus the login home a confined launch reads.
 func (c *CursorCLIAdapter) cursorAccountKey(opts *llmtypes.CallOptions) string {
-	account := "login:"
+	sum := sha256.New()
+	for _, entry := range llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts) {
+		switch key, _, _ := strings.Cut(entry, "="); key {
+		case "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "HOME", "XDG_CONFIG_HOME":
+			sum.Write([]byte(entry + "\n"))
+		}
+	}
 	if opts != nil && opts.CLISecurity != nil {
-		account += strings.TrimSpace(opts.CLISecurity.CredentialHome)
+		sum.Write([]byte("login=" + strings.TrimSpace(opts.CLISecurity.CredentialHome)))
 	}
-	if strings.TrimSpace(c.apiKey) != "" {
-		sum := sha256.Sum256([]byte(c.apiKey))
-		account = "key:" + hex.EncodeToString(sum[:8])
-	}
-	return account
+	return hex.EncodeToString(sum.Sum(nil)[:8])
 }
 
 // withRememberedParams adds the remembered settings to a bare model; explicit settings are kept.
