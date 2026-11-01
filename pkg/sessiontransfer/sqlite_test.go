@@ -108,6 +108,16 @@ func TestCursorSDKSnapshotRejectsForeignAgentsAndOfflineFork(t *testing.T) {
 	if e = ImportCursorSDK(store, work, remote); e == nil || !strings.Contains(e.Error(), "both copies were kept") {
 		t.Fatalf("dual-export fork overwritten: %v", e)
 	}
+	// A malformed packet cannot call different file bytes an identical replay.
+	forged := *remote
+	localCurrent, e := ExportCursorSDK(store, work, id, t.TempDir(), false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	forged.Snapshot = localCurrent.Snapshot
+	if e = ImportCursorSDK(store, work, &forged); e == nil || !strings.Contains(e.Error(), "identity does not match") {
+		t.Fatalf("forged replay accepted: %v", e)
+	}
 	// An older packet cannot roll back a destination that accepted a newer one.
 	clean, cleanWork := t.TempDir(), t.TempDir()
 	if e = ImportCursorSDK(clean, cleanWork, bundle); e != nil {
