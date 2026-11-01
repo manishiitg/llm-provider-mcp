@@ -191,11 +191,17 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	cmd.Env = append(cmd.Env, museRuntimeEnv(opts)...)
 	var keyFiles []string
 	removeKey := func() {}
-	if a.apiKey != "" {
-		// The selected key is in this launch's own key file (museMSPStoreKey),
-		// never in the environment Muse's shells inherit.
+	// The key Muse uses (the selected one, else one the account or the server
+	// gives in the environment, such as a company account's model-proxy key)
+	// goes in this launch's own key file, never in the environment Muse's
+	// shells inherit.
+	key := a.apiKey
+	if key == "" {
+		key = museEnvValue(cmd.Env, "META_API_KEY")
+	}
+	if key != "" {
 		cmd.Env = museWithoutEnv(cmd.Env, "META_API_KEY")
-		keyFile, cleanupKey, err := a.museMSPStoreKey(ctx, opts, workdir, configHome, cmd.Env)
+		keyFile, cleanupKey, err := a.museMSPStoreKey(ctx, opts, workdir, configHome, key, cmd.Env)
 		if err != nil {
 			stop()
 			return nil, err
@@ -260,7 +266,7 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 // are granted; the launch's config folder links to it, and the Landlock policy
 // treats it as a login file: Muse reads it, its shells cannot (as for the
 // account's own login file). It is removed when the chat closes.
-func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.CallOptions, workdir, configHome string, env []string) (string, func(), error) {
+func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.CallOptions, workdir, configHome, key string, env []string) (string, func(), error) {
 	keyHome, err := os.MkdirTemp("", "agentworks-muse-key-*")
 	if err != nil {
 		return "", nil, err
@@ -276,7 +282,7 @@ func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.Cal
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workdir
 	cmd.Env = append(museWithoutEnv(env, "XDG_CONFIG_HOME"), "XDG_CONFIG_HOME="+keyHome)
-	cmd.Stdin = strings.NewReader(a.apiKey + "\n")
+	cmd.Stdin = strings.NewReader(key + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		remove()
 		return "", nil, fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
@@ -294,6 +300,17 @@ func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.Cal
 		return "", nil, fmt.Errorf("link the Muse key for this chat: %w", err)
 	}
 	return keyFile, remove, nil
+}
+
+// museEnvValue is the last value of name in env (the one a process sees).
+func museEnvValue(env []string, name string) string {
+	value := ""
+	for _, entry := range env {
+		if key, v, ok := strings.Cut(entry, "="); ok && key == name {
+			value = v
+		}
+	}
+	return value
 }
 
 func museWithoutEnv(env []string, name string) []string {
