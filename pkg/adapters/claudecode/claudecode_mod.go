@@ -518,3 +518,24 @@ func claudeMCPServerNames(opts *llmtypes.CallOptions) []string {
 	sort.Strings(names)
 	return names
 }
+
+// ClaudeModIdle reports whether a Claude terminal running the mod is between
+// turns: its session has started and every turn it started has ended. known
+// is false for a terminal without the mod.
+func ClaudeModIdle(tmuxSessionName string) (idle, known bool) {
+	if !ClaudeModRunsIn(tmuxSessionName) {
+		return false, false
+	}
+	started, running := false, false
+	for _, event := range readClaudeModEvents(tmuxSessionName) {
+		switch event.Type {
+		case "session":
+			started = true
+		case "turn_start":
+			running = true
+		case "turn_complete":
+			running = false
+		}
+	}
+	return started && !running, true
+}
