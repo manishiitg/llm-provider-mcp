@@ -604,6 +604,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		return nil, err
 	}
 
+	var rememberInstructions func()
+	prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, nativeSessionID, systemPrompt, prompt, resumeID != "")
+	defer func() {
+		if err == nil {
+			rememberInstructions()
+		}
+	}()
 	c.logger.Infof("Executing Claude Code tmux session: %s", sessionName)
 	paneBaseline, _ := captureTmuxPane(callCtx, sessionName)
 	transcriptPath, _ := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, llmtypes.CLIHomeEnvironment(opts)["HOME"])

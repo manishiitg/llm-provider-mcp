@@ -137,7 +137,7 @@ type claudeStreamUsage struct {
 // adapters. Multi-turn continuity is native --resume (claude persists the
 // session under --session-id and continues it via --resume). See
 // MetadataKeyStructuredTransport for when this is selected instead of tmux.
-func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (*llmtypes.ContentResponse, error) {
+func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Context, messages []llmtypes.MessageContent, opts *llmtypes.CallOptions) (response *llmtypes.ContentResponse, err error) {
 	if c.sdkTransport {
 		ctx = llmtypes.ScopeCodingAgentQuestions(ctx, "claude-code", claudeInteractiveSessionIDFromOptions(opts))
 	}
@@ -298,6 +298,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		launchPrompt = ""
 	}
 	args, sessionID := buildClaudeStructuredArgs(c.modelID, launchPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
+	var rememberInstructions func()
+	prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, sessionID, systemPrompt, prompt, resumeSessionID != "")
+	defer func() {
+		if err == nil {
+			rememberInstructions()
+		}
+	}()
 	if c.sdkTransport && opts != nil && opts.Metadata != nil {
 		if effort, ok := opts.Metadata.Custom[MetadataKeyEffort].(string); ok && effort != "" {
 			args = append(args, "--effort", effort)
