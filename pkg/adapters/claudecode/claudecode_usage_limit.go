@@ -78,28 +78,6 @@ func IsClaudeUsageLimitText(text string) bool {
 	return false
 }
 
-// A resumed terminal redraw can defeat the byte/line baseline comparison and
-// return the entire scrollback as "new" output. A quota notice above the latest
-// nonempty user prompt belongs to an earlier turn, even if the statusline has
-// not been written yet. RTS 2026-10-03: an October 1 limit notice was read again
-// after resume, failing a healthy October 3 turn while Claude kept working.
-// Empty composer prompts are not boundaries: a fresh rejection is drawn just
-// above that empty prompt and must still be reported.
-func claudeUsageLimitTextForTurn(captured, baseline string) string {
-	lines := strings.Split(capturedAfterPaneBaseline(captured, baseline), "\n")
-	start := 0
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		for _, marker := range []string{"❯", ">"} {
-			if strings.HasPrefix(trimmed, marker) && strings.TrimSpace(strings.TrimPrefix(trimmed, marker)) != "" {
-				start = i + 1
-				break
-			}
-		}
-	}
-	return strings.Join(lines[start:], "\n")
-}
-
 func isClaudeUsageLimitLine(line string) bool {
 	line = strings.TrimLeft(line, claudeUsageLimitLineMarkers)
 	if line == "" {
@@ -248,18 +226,6 @@ func claudeStatuslineUsageLimitState(sessionName string, now time.Time) (known, 
 	}
 	resetAt, window = llmtypes.MostConstrainedReset(windows, now)
 	return true, true, resetAt, window
-}
-
-// shouldTreatClaudeUsageLimitPaneAsFatal prevents stale terminal text from
-// turning a healthy account into a quota error. If no structured statusline is
-// available yet, retain the pane fallback for a wall that occurs before the
-// first statusline render.
-func shouldTreatClaudeUsageLimitPaneAsFatal(sessionName, paneText string, now time.Time) bool {
-	if !IsClaudeUsageLimitText(paneText) {
-		return false
-	}
-	known, exhausted, _, _ := claudeStatuslineUsageLimitState(sessionName, now)
-	return !known || exhausted
 }
 
 func newClaudeUsageLimitError(provider, model string, retryAt time.Time, window string) error {

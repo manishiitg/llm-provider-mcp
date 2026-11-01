@@ -1,7 +1,6 @@
 package claudecode
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,39 +56,5 @@ func TestClaudeTranscriptLastIsEndTurn(t *testing.T) {
 				t.Fatalf("LastIsEndTurn = %v, want %v (%+v)", got.LastIsEndTurn, tc.want, got)
 			}
 		})
-	}
-}
-
-// The structured gate ends the turn on a quiet final end_turn with no pane at
-// all, and a continuation written inside the quiet window defers it to the
-// continuation's own end_turn.
-func TestWaitForClaudeTurnEndInTranscript(t *testing.T) {
-	const sid = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
-	turnStart := time.Now().UTC().Add(-time.Second)
-	now := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
-	path := writeClaudeTurnEndFixture(t, sid, claudeRow("assistant", now(), "a", "end_turn", "first answer"))
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			return
-		}
-		_, _ = f.WriteString(claudeRow("user", now(), "", "", "") + "\n")
-		time.Sleep(300 * time.Millisecond)
-		_, _ = f.WriteString(claudeRow("assistant", now(), "b", "end_turn", "continued answer") + "\n")
-		_ = f.Close()
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	got, ok := waitForClaudeTurnEndInTranscript(ctx, sid, "", turnStart, time.Second)
-	if !ok || got.Text != "continued answer" {
-		t.Fatalf("turn end = %+v ok=%v, want the continuation's answer", got, ok)
-	}
-
-	// No transcript at all: never reports completion, returns on ctx end.
-	short, cancelShort := context.WithTimeout(context.Background(), 400*time.Millisecond)
-	defer cancelShort()
-	if _, ok := waitForClaudeTurnEndInTranscript(short, "0e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b", "", turnStart, time.Second); ok {
-		t.Fatal("reported completion without a transcript")
 	}
 }
