@@ -55,8 +55,61 @@ type cursorSDKEvent struct {
 	Action     string `json:"action"`
 	// ModelCatalog is how the bridge found the account's default model settings: ok, not_needed, timeout, empty or
 	// error; ModelParams the settings it sent.
-	ModelCatalog string `json:"model_catalog"`
-	ModelParams  string `json:"model_params"`
+	ModelCatalog  string `json:"model_catalog"`
+	ModelLookupMS *int   `json:"model_lookup_ms"`
+	ModelParams   string `json:"model_params"`
+}
+
+// cursorRememberedParams keeps, per Cursor account and model, the default settings a start found in the account's
+// catalog (PLAT-872-93). A later chat sends them itself, so it starts without waiting for the lookup; after a day
+// the next start asks Cursor again.
+var cursorRememberedParams = struct {
+	sync.Mutex
+	byKey map[string]cursorParamsEntry
+}{byKey: map[string]cursorParamsEntry{}}
+
+type cursorParamsEntry struct {
+	params string
+	at     time.Time
+}
+
+const cursorRememberedParamsTTL = 24 * time.Hour
+
+// cursorAccountKey names the Cursor account a launch uses: its API key, else the login home it reads.
+func (c *CursorCLIAdapter) cursorAccountKey(opts *llmtypes.CallOptions) string {
+	account := "login:"
+	if opts != nil && opts.CLISecurity != nil {
+		account += strings.TrimSpace(opts.CLISecurity.CredentialHome)
+	}
+	if strings.TrimSpace(c.apiKey) != "" {
+		sum := sha256.Sum256([]byte(c.apiKey))
+		account = "key:" + hex.EncodeToString(sum[:8])
+	}
+	return account
+}
+
+// withRememberedParams adds the remembered settings to a bare model; explicit settings are kept.
+func withRememberedParams(model map[string]any, account string, now time.Time) (map[string]any, bool) {
+	if _, explicit := model["params"]; explicit {
+		return model, false
+	}
+	id, _ := model["id"].(string)
+	cursorRememberedParams.Lock()
+	entry, ok := cursorRememberedParams.byKey[account+"\x00"+id]
+	cursorRememberedParams.Unlock()
+	if !ok || entry.params == "" || now.Sub(entry.at) > cursorRememberedParamsTTL {
+		return model, false
+	}
+	return cursorSDKModel(id + "[" + entry.params + "]"), true
+}
+
+func rememberParams(account, id, params string, now time.Time) {
+	if params == "" {
+		return
+	}
+	cursorRememberedParams.Lock()
+	cursorRememberedParams.byKey[account+"\x00"+id] = cursorParamsEntry{params: params, at: now}
+	cursorRememberedParams.Unlock()
 }
 
 type cursorSDKUsage struct {
@@ -313,7 +366,9 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		allCleanup()
 		close(p.exited)
 	}()
-	start := map[string]any{"type": "start", "cwd": cwd, "model": cursorSDKModel(model)}
+	account := c.cursorAccountKey(opts)
+	startModel, remembered := withRememberedParams(cursorSDKModel(model), account, time.Now())
+	start := map[string]any{"type": "start", "cwd": cwd, "model": startModel}
 	if artifacts != cwd {
 		start["dirs"] = []string{artifacts}
 		// The SDK documents rules and skills from local.dirs, not MCP: pass the prepared servers (with the
@@ -352,8 +407,18 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		if event.Stale != "" && c.logger != nil {
 			c.logger.Infof("[CURSOR_SDK] stale_active_run agent=%s action=%s new=%s", event.StaleAgent, event.Stale, event.AgentID)
 		}
+		catalog := event.ModelCatalog
+		if remembered {
+			catalog = "remembered"
+		} else if catalog == "ok" {
+			rememberParams(account, startModel["id"].(string), event.ModelParams, time.Now())
+		}
 		if c.logger != nil {
-			c.logger.Infof("[CURSOR_SDK] start agent=%s catalog=%s params=%q", event.AgentID, event.ModelCatalog, event.ModelParams)
+			lookup := "-"
+			if event.ModelLookupMS != nil {
+				lookup = fmt.Sprintf("%dms", *event.ModelLookupMS)
+			}
+			c.logger.Infof("[CURSOR_SDK] start agent=%s catalog=%s lookup=%s params=%q", event.AgentID, catalog, lookup, event.ModelParams)
 		}
 		return p, event.AgentID, event.Resumed, nil
 	case <-p.done:

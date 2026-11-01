@@ -3,6 +3,7 @@ package cursorcli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,8 @@ func TestCursorSDKModelDiscoveryDoesNotBlockOrOverrideSelection(t *testing.T) {
 		{"cached default", `if (++calls > 1) throw Error('second lookup'); return [{id:'composer',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]`, `{"id":"composer"}`, `[{"id":"fast","value":"false"}]`},
 		{"explicit selection", `throw Error('must not discover')`, `{"id":"composer","params":[{"id":"fast","value":"true"}]}`, `[{"id":"fast","value":"true"}]`},
 		{"unavailable catalog", `throw Error('network unavailable')`, `{"id":"composer"}`, `undefined`},
+		// PLAT-872-93: a lookup that fails once is asked again within the start's wait.
+		{"catalog fails once", `if (++calls === 1) throw Error('network blip'); return [{id:'composer',variants:[{isDefault:true,params:[{id:'fast',value:'false'}]}]}]`, `{"id":"composer"}`, `[{"id":"fast","value":"false"}]`},
 		{"stalled catalog", `return new Promise(() => {})`, `{"id":"composer"}`, `undefined`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,7 +79,7 @@ func TestCursorSDKModelDiscoveryDoesNotBlockOrOverrideSelection(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "node", bridge, entry)
-			start := `{"type":"start","model":` + tc.model + `}` + "\n"
+			start := `{"type":"start","catalog_wait_ms":1500,"model":` + tc.model + `}` + "\n"
 			cmd.Stdin = strings.NewReader(start + start + "{\"type\":\"close\"}\n")
 			out, err := cmd.CombinedOutput()
 			if err != nil || strings.Count(string(out), `"type":"ready"`) != 2 {
@@ -164,7 +167,7 @@ exports.Agent={
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "node", bridge, entry)
-			cmd.Stdin = strings.NewReader(`{"type":"start","agent_id":"agent-existing","model":{"id":"composer-2.5"}}
+			cmd.Stdin = strings.NewReader(`{"type":"start","agent_id":"agent-existing","catalog_wait_ms":500,"model":{"id":"composer-2.5"}}
 {"type":"prompt","text":"hi"}
 {"type":"close"}
 `)
@@ -393,5 +396,30 @@ func TestCursorSDKSteerDuringFailedLaunchIsNotSent(t *testing.T) {
 	}
 	if !errors.Is(steerErr, llmtypes.ErrCodingAgentInputNotSent) {
 		t.Fatalf("steer during a failed launch = %v, want not sent", steerErr)
+	}
+}
+
+// PLAT-872-93: a later chat of the same Cursor account starts with the settings an earlier start found, without
+// the lookup; an explicit choice, another account or a day-old entry does not use them.
+func TestCursorSDKRememberedParamsSkipTheLookup(t *testing.T) {
+	now := time.Now()
+	rememberParams("acct-a", "composer-2.5", "fast=false", now)
+	for _, tc := range []struct {
+		name, account, model string
+		at                   time.Time
+		want                 bool
+	}{
+		{"same account", "acct-a", "composer-2.5", now, true},
+		{"explicit choice", "acct-a", "composer-2.5[fast=true]", now, false},
+		{"other account", "acct-b", "composer-2.5", now, false},
+		{"after a day", "acct-a", "composer-2.5", now.Add(25 * time.Hour), false},
+	} {
+		model, used := withRememberedParams(cursorSDKModel(tc.model), tc.account, tc.at)
+		if used != tc.want {
+			t.Fatalf("%s: remembered=%v, want %v (model %v)", tc.name, used, tc.want, model)
+		}
+		if used && fmt.Sprint(model["params"]) != "[map[id:fast value:false]]" {
+			t.Fatalf("%s: params %v", tc.name, model["params"])
+		}
 	}
 }
