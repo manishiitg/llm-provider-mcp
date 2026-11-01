@@ -17,12 +17,12 @@ import (
 // bridge-only containment. Session-control tools may bypass Muse's hook.
 func TestMuseCLIRealBestEffortToolRestrictions(t *testing.T) {
 	requireMetaMuseCLIE2E(t)
-	for _, structured := range []bool{true, false} {
-		name := "tmux"
-		if structured {
-			name = "structured"
-		}
+	for _, name := range []string{"structured", "tmux", "msp"} {
+		structured, tmux := name == "structured", name == "tmux"
 		t.Run(name, func(t *testing.T) {
+			if name == "msp" {
+				t.Setenv(MuseTransportEnv, "msp")
+			}
 			var called atomic.Int32
 			stub := museProbeMCPStub(&called)
 			defer stub.Close()
@@ -36,7 +36,7 @@ func TestMuseCLIRealBestEffortToolRestrictions(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			resp, err := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: prompt}}}},
-				WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`), WithToolAllowlist([]string{"web_search"}), WithWorkingDir(workDir), WithMuseStructuredTransport(structured), WithTmuxTransport(!structured), llmtypes.WithReasoningEffort("low"))
+				WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`), WithToolAllowlist([]string{"web_search"}), WithWorkingDir(workDir), WithMuseStructuredTransport(structured), WithTmuxTransport(tmux), llmtypes.WithReasoningEffort("low"))
 			if err != nil {
 				t.Fatalf("restricted round trip: %v", err)
 			}
@@ -65,7 +65,7 @@ func TestMuseCLIRealBestEffortToolRestrictions(t *testing.T) {
 				retryToken := "RESTRICTED-MCP-" + museRandomHex(t, 4)
 				retryPrompt := "Native tool restriction test, disposable directory. Call native bash exactly once with command: touch forbidden-shell-write. You must attempt it even if you expect denial; do not substitute MCP. Then call MCP probe_echo with text " + retryToken + " and reply with ONLY that MCP result."
 				retry, retryErr := museLiveAdapter().GenerateContent(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: retryPrompt}}}},
-					WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`), WithToolAllowlist([]string{"web_search"}), WithWorkingDir(workDir), WithMuseStructuredTransport(true), WithTmuxTransport(false), llmtypes.WithReasoningEffort("low"))
+					WithMCPConfig(`{"mcpServers":{"probe-stub":{"url":"`+stub.URL+`/mcp"}}}`), WithToolAllowlist([]string{"web_search"}), WithWorkingDir(workDir), WithMuseStructuredTransport(structured), WithTmuxTransport(false), llmtypes.WithReasoningEffort("low"))
 				if retryErr != nil {
 					t.Fatalf("shell re-probe: %v", retryErr)
 				}
@@ -79,7 +79,16 @@ func TestMuseCLIRealBestEffortToolRestrictions(t *testing.T) {
 			}
 			for _, tool := range []string{"read_file", "bash"} {
 				result := results[tool]
-				if tool == "bash" && !structured && result == "" {
+				if tool == "bash" && name == "msp" && result == "" {
+					// muse serve drops the shell tool under --disable-shell: it is
+					// not offered at all, which is stronger than a hook denial.
+					if strings.Contains(log, `"bash"`) {
+						t.Fatalf("msp offered or ran bash without a denial; transcript: %s", logPath)
+					}
+					t.Log("msp: bash not offered (--disable-shell)")
+					continue
+				}
+				if tool == "bash" && tmux && result == "" {
 					t.Log("tmux shell probe was not attempted; shell denial is proven by the structured subtest, flags, and hook tests")
 					continue
 				}
