@@ -107,6 +107,9 @@ func TestContinueCodingAgentSessionSendsOnlyLatestMessageAndResumeOptions(t *tes
 			if got := model.opts[0].Metadata.Custom[tt.resumeKey]; got != tt.handle.NativeSessionID {
 				t.Fatalf("%s = %#v, want %q", tt.resumeKey, got, tt.handle.NativeSessionID)
 			}
+			if got := model.opts[0].CodingProviderTransport; got != tt.handle.Transport {
+				t.Fatalf("native transport = %q, want %q", got, tt.handle.Transport)
+			}
 			if tt.workdirKey != "" {
 				if got := model.opts[0].Metadata.Custom[tt.workdirKey]; got != tt.handle.WorkingDir {
 					t.Fatalf("%s = %#v, want %q", tt.workdirKey, got, tt.handle.WorkingDir)

@@ -92,6 +92,19 @@ func TestResolveClaudeTranscriptPathUsesWorkingDirectoryWithoutGlobalScan(t *tes
 			t.Fatalf("resolve %d = %q, want %q", i, got, path)
 		}
 	}
+	// PLAT-856-442: moving this nativeID to another cwd must not keep the
+	// cached source journal and miss the destination's committed end_turn.
+	destination := filepath.Join(t.TempDir(), "destination")
+	target := transcriptPathForWorkingDir(t, home, destination, sessionID)
+	appendLine(t, target, "{}\n")
+	got, e := resolveClaudeTranscriptPath(sessionID, destination, true)
+	if e != nil || got != target {
+		t.Fatalf("relocated nativeID used source: %s %v", got, e)
+	}
+	got, e = resolveClaudeTranscriptPath(sessionID, workingDir, true)
+	if e != nil || got != path {
+		t.Fatal("return lost source mapping")
+	}
 	if got := globCalls.Load(); got != 0 {
 		t.Fatalf("global glob calls = %d, want 0 for known working directory", got)
 	}

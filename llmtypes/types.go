@@ -573,6 +573,8 @@ type CallOptions struct {
 	// CLIRuntimeDir keeps generated artifacts out of a caller-owned working
 	// directory. Native cwd and session identity still refer to that directory.
 	CLIRuntimeDir string
+	// Host-owned native continuation transport. Never inferred from chat content.
+	CodingProviderTransport string `json:"-"`
 
 	// Sampling controls supported by most modern providers. Zero values
 	// mean "do not set" — adapters should only forward these to the

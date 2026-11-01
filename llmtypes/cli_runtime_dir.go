@@ -31,3 +31,9 @@ func CLIPrivateSkillInstructions(o *CallOptions, subdir string) string {
 	}
 	return fmt.Sprintf("\nAgentWorks skills for this turn are stored at %q. Read each relevant skill's SKILL.md there, or use read_skill. Keep generated instructions and configuration in the private runtime; preserve the project's existing instructions and configuration.\n", filepath.Join(o.CLIRuntimeDir, subdir))
 }
+
+// WithCodingProviderTransport preserves the runtime of an admitted native handle.
+// New sessions use the provider's configured transport when this is empty.
+func WithCodingProviderTransport(transport string) CallOption {
+	return func(o *CallOptions) { o.CodingProviderTransport = strings.TrimSpace(transport) }
+}

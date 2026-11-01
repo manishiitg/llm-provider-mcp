@@ -211,6 +211,11 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 	// we never have hooks codex needs to trust-bypass for.)
 	if resumeSessionID != "" {
 		args = append(args, "resume")
+		// An explicit destination cwd suppresses Codex's native directory chooser.
+		// The process cwd alone leaves resumed chats waiting at that chooser.
+		if workingDir != "" {
+			args = append(args, "--cd", workingDir)
+		}
 	}
 	if sessionProfile != "" {
 		args = append(args, "--profile", sessionProfile)

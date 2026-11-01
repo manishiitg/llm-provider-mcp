@@ -12,7 +12,7 @@ async function main() {
   // the SDK itself; otherwise every grep/glob fails "Ripgrep path not configured".
   process.argv[1] = process.argv[2];
   const { Agent, Cursor } = require(process.argv[2]);
-  let agent, run, start, followups = [], early = [], busy = false;
+  let agent, run, start, store, followups = [], early = [], busy = false;
   // This process belongs to one account; keep a successful discovery across starts/resumes. The lookup begins as
   // the bridge starts, so a start rarely waits, and never keeps a failed or empty result: the next start asks again
   // (PLAT-872-64: an empty result cached for the bridge's life sent the bare model without the account's fixed
@@ -79,7 +79,7 @@ async function main() {
     model: start.model,
     // Rules (system prompt) and MCP servers come from the .cursor files Go prepared; a bound folder's
     // servers also arrive explicitly in start.mcp_servers.
-    local: { cwd: start.cwd, ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'] },
+    local: { cwd: start.cwd, ...(store ? { store } : {}), ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'] },
     ...(start.mode ? { mode: start.mode } : {}),
     ...(start.tools ? { tools: start.tools } : {}),
     ...(start.mcp_servers ? { mcpServers: start.mcp_servers } : {}),
@@ -125,6 +125,12 @@ async function main() {
     if (control(request)) continue;
     if (request.type === 'start') {
       start = request;
+      if (start.store_root) {
+        // One private store per AgentWorks chat. The shared SDK index may
+        // contain other conversations and must never enter a transfer.
+        const { SqliteLocalAgentStore } = require(require('node:path').join(require('node:path').dirname(process.argv[2]), 'sqlite.js'));
+        store = await SqliteLocalAgentStore.open({ workspaceRef: start.cwd, stateRoot: start.store_root });
+      }
       if (!process.env.CURSOR_API_KEY && (await Cursor.auth.status()).status !== 'logged-in') {
         throw new Error('Sign in again to use Cursor. Open Providers, select this account, and choose Sign in.');
       }
@@ -140,7 +146,7 @@ async function main() {
         try { agent = await Agent.resume(start.agent_id, options()); }
         catch (error) {
           // A saved agent this store does not have: start fresh and let Go send the history.
-          if (!/not.?found|unknown agent|does not exist/i.test(short(error))) throw error;
+          if (start.require_native_resume || !/not.?found|unknown agent|does not exist/i.test(short(error))) throw error;
           agent = undefined;
         }
       }
@@ -153,6 +159,8 @@ async function main() {
         catch { stale = 'new_agent'; agent = undefined; }
       }
       const resumed = Boolean(agent);
+      if (start.require_native_resume && !resumed) throw new Error('The transferred native Cursor agent could not be resumed. Its saved history was kept.');
+      if (start.require_native_resume && agent.agentId !== start.agent_id) throw new Error('Cursor returned a different native agent. The transferred chat was kept.');
       if (!agent) agent = await Agent.create(options());
       emit({ type: 'ready', agent_id: agent.agentId, resumed, ...(stale ? { stale, stale_agent: start.agent_id } : {}), model_catalog: catalog, ...(lookupMs !== undefined ? { model_lookup_ms: lookupMs } : {}), model_params: (start.model.params || []).map(p => p.id + '=' + p.value).join(',') });
       continue;

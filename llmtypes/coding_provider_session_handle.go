@@ -41,6 +41,8 @@ const (
 // provider adapter owns interpreting native session IDs, tmux names, and project
 // directories.
 type CodingProviderSessionHandle struct {
+	// Native storage format, set by the host after validating a native import.
+	NativeFormat    string `json:"native_format,omitempty"`
 	Provider        string `json:"provider,omitempty"`
 	Transport       string `json:"transport,omitempty"`
 	NativeSessionID string `json:"native_session_id,omitempty"`

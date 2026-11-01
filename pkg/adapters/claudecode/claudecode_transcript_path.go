@@ -15,7 +15,8 @@ import (
 // session-ID glob is retained only as a compatibility fallback.
 //
 // Cache keys include HOME because tests and embedded runtimes can change it
-// between calls while reusing a session ID.
+// between calls while reusing a session ID. Cwd is included because a native
+// conversation can move to another project folder and retain that same ID.
 var claudeTranscriptPathCache = struct {
 	sync.RWMutex
 	paths map[string]string
@@ -39,7 +40,7 @@ func resolveClaudeTranscriptPath(sessionID, workingDir string, allowGlobalFallba
 	if len(accountHome) > 0 && accountHome[0] != "" {
 		home = accountHome[0]
 	}
-	cacheKey := claudeTranscriptCacheKey(home, sessionID)
+	cacheKey := claudeTranscriptCacheKey(home, sessionID, workingDir)
 	if path := cachedClaudeTranscriptPath(cacheKey); path != "" {
 		return path, nil
 	}
@@ -125,8 +126,11 @@ func claudeTranscriptProjectSlug(workingDir string) string {
 	).Replace(workingDir)
 }
 
-func claudeTranscriptCacheKey(home, sessionID string) string {
-	return filepath.Clean(home) + "\x00" + sessionID
+func claudeTranscriptCacheKey(home, sessionID, workingDir string) string {
+	if physical, e := filepath.EvalSymlinks(workingDir); e == nil {
+		workingDir = physical
+	}
+	return filepath.Clean(home) + "\x00" + sessionID + "\x00" + filepath.Clean(workingDir)
 }
 
 func cachedClaudeTranscriptPath(cacheKey string) string {
@@ -158,10 +162,12 @@ func forgetClaudeTranscriptPath(sessionID, path string, accountHome ...string) {
 	if len(accountHome) > 0 && accountHome[0] != "" {
 		home = accountHome[0]
 	}
-	cacheKey := claudeTranscriptCacheKey(home, sessionID)
+	prefix := filepath.Clean(home) + "\x00" + sessionID + "\x00"
 	claudeTranscriptPathCache.Lock()
-	if claudeTranscriptPathCache.paths[cacheKey] == path {
-		delete(claudeTranscriptPathCache.paths, cacheKey)
+	for key, saved := range claudeTranscriptPathCache.paths {
+		if strings.HasPrefix(key, prefix) && saved == path {
+			delete(claudeTranscriptPathCache.paths, key)
+		}
 	}
 	claudeTranscriptPathCache.Unlock()
 }

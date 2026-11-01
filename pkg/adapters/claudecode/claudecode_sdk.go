@@ -285,3 +285,6 @@ func SendClaudeCodeSDKInput(ctx context.Context, owner, message string) error {
 	}
 	return process.steer(ctx, message)
 }
+
+// SDKRuntimeAvailable checks the installed component without starting an agent.
+func SDKRuntimeAvailable() error { _, err := claudeSDKEntry(); return err }

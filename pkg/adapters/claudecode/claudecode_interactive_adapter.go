@@ -385,7 +385,20 @@ func (c *ClaudeCodeInteractiveAdapter) GenerateContent(ctx context.Context, mess
 		return nil, err
 	}
 
-	if c.sdkTransport {
+	sdk := c.sdkTransport
+	switch opts.CodingProviderTransport {
+	case "":
+	case "sdk":
+		sdk = true
+	case "tmux", "structured":
+		sdk = false
+	default:
+		return nil, fmt.Errorf("unsupported Claude native transport %q", opts.CodingProviderTransport)
+	}
+	selected := *c // Adapter configuration has no locks or mutable session state.
+	selected.sdkTransport = sdk
+	c = &selected
+	if sdk || opts.CodingProviderTransport == "structured" {
 		return c.generateContentStructured(ctx, messages, opts)
 	}
 
