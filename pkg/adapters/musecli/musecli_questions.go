@@ -99,6 +99,13 @@ func (r *QuestionReader) Poll() ([]QuestionEvent, error) {
 		}
 	}
 	musePersistentPool.Unlock()
+	if nativeID == "" {
+		if s := museMSPSessionFor(r.owner); s != nil {
+			s.mu.Lock()
+			nativeID, path = s.sessionID, museSessionLogPath(s.sessionID, s.dataHome)
+			s.mu.Unlock()
+		}
+	}
 	if nativeID == "" || path == "" {
 		return nil, nil
 	}
@@ -428,6 +435,9 @@ func SubmitQuestionAnswers(ctx context.Context, owner, promptID string, answers 
 			return err
 		}
 	}
+	if s := museMSPSessionFor(owner); s != nil {
+		return museMSPAnswer(ctx, s, promptID, answers)
+	}
 	key, err := musePersistentKey(owner)
 	if err != nil {
 		return err
@@ -534,6 +544,9 @@ func museSendQuestionKey(ctx context.Context, session, key string) error {
 // interrupts the Muse run. It is the last resort when not even the first
 // option can be entered, so the chat is never left hanging on the widget.
 func InterruptPendingQuestion(ctx context.Context, owner string) error {
+	if MuseMSPSessionActive(owner) {
+		return InterruptMuseMSP(ctx, owner)
+	}
 	key, err := musePersistentKey(owner)
 	if err != nil {
 		return err

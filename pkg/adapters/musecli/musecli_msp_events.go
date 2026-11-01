@@ -225,9 +225,18 @@ func (a *MuseCLIAdapter) answerMuseMSPRequest(ctx context.Context, s *museMSPSes
 			return
 		}
 		if museMSPUserChoice(opts) {
-			s.mu.Lock()
-			s.pending = &museMSPQuestion{userInputID: p.UserInputID, questions: p.Questions}
-			s.mu.Unlock()
+			// The chat's question card answers it; if the person has not
+			// answered by museUserChoiceWait, the first option is taken.
+			go func(id string, questions []Question) {
+				select {
+				case <-time.After(museUserChoiceWait):
+				case <-s.rpc.done:
+					return
+				}
+				if prompt, err := pendingQuestionPrompt(s.owner); err == nil && prompt != nil && prompt.PromptID == id {
+					_ = museMSPAnswer(context.Background(), s, id, FirstOptionAnswers(questions))
+				}
+			}(p.UserInputID, p.Questions)
 			return
 		}
 		_ = museMSPAnswer(ctx, s, p.UserInputID, FirstOptionAnswers(p.Questions))
@@ -251,7 +260,7 @@ func museMSPAnswer(ctx context.Context, s *museMSPSession, userInputID string, a
 func museMSPCompactionChunk(item museMSPItem) llmtypes.StreamChunk {
 	now := time.Now().UTC()
 	end := llmtypes.ContextCompaction{Provider: "muse-cli", Phase: llmtypes.ContextCompactionPhaseEnd, ID: item.ItemID, Trigger: item.Trigger, TokensBefore: item.TokensBefore, TokensAfter: item.TokensAfter, EndedAt: now, Outcome: llmtypes.ContextCompactionOutcomeSuccess}
-	if item.Outcome != "" && item.Outcome != "installed" {
+	if item.Outcome != "" && item.Outcome != "compacted" {
 		end.Outcome = llmtypes.ContextCompactionOutcomeFailed
 	}
 	return llmtypes.ContextCompactionChunk(end)
@@ -315,9 +324,12 @@ func (a *MuseCLIAdapter) compactMuseMSP(ctx context.Context, s *museMSPSession, 
 			}
 			end := museMSPCompactionChunk(p.Item)
 			emit(end)
-			result := llmtypes.IdleCompactResult{Compacted: p.Item.Outcome == "" || p.Item.Outcome == "installed", Reason: llmtypes.IdleCompactReasonCompacted, TokensBefore: p.Item.TokensBefore, TokensAfter: p.Item.TokensAfter}
+			result := llmtypes.IdleCompactResult{Compacted: p.Item.Outcome == "compacted", Reason: llmtypes.IdleCompactReasonCompacted, TokensBefore: p.Item.TokensBefore, TokensAfter: p.Item.TokensAfter}
 			if !result.Compacted {
 				result.Reason = llmtypes.IdleCompactReasonNoSession
+				if p.Item.Outcome == "failed" || p.Item.Outcome == "cancelled" {
+					return nil, fmt.Errorf("Muse compaction %s: %s", p.Item.Outcome, p.Item.Reason)
+				}
 			}
 			gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"provider": "muse-cli", "muse_cli_mode": "msp", "muse_session_id": s.sessionID}}
 			llmtypes.AttachIdleCompactResult(gi, result)

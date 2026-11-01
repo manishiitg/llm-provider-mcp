@@ -37,12 +37,18 @@ func MuseMSPSelected() bool {
 	return true
 }
 
+// museMSPKeepMuseSandbox keeps Muse's own sandbox on in Full CLI mode; only
+// the laptop live tests set it.
+var museMSPKeepMuseSandbox = false
+
 type museMSPSession struct {
 	turnMu    sync.Mutex
 	mu        sync.Mutex
 	rpc       *museRPC
+	owner     string
 	sessionID string
 	workdir   string
+	dataHome  string
 	// roots is set when a transferred chat moved to this folder: every turn
 	// names it, since Muse otherwise runs in the journal's original folder.
 	roots []string
@@ -53,7 +59,6 @@ type museMSPSession struct {
 	turnID         string
 	usage          *museMSPPlanUsage
 	context        museMSPContext
-	pending        *museMSPQuestion
 	cleanup        func()
 }
 
@@ -72,11 +77,6 @@ type museMSPPlanUsage struct {
 		ResetsAtMs  int64 `json:"resetsAtMs"`
 	} `json:"weekly,omitempty"`
 	Tier string `json:"tier,omitempty"`
-}
-
-type museMSPQuestion struct {
-	userInputID string
-	questions   []Question
 }
 
 var museMSPSessions = struct {
@@ -137,7 +137,7 @@ func (a *MuseCLIAdapter) museMSPLaunchArgs(opts *llmtypes.CallOptions) []string 
 	}
 	if _, allowlist := museToolAllowlistFromOptions(opts); allowlist {
 		argv = append(argv, museNativeContainmentArgv()...)
-	} else {
+	} else if !museMSPKeepMuseSandbox {
 		argv = append(argv, "--disable-sandbox")
 	}
 	return argv
@@ -248,7 +248,7 @@ func (a *MuseCLIAdapter) museMSPOpen(ctx context.Context, opts *llmtypes.CallOpt
 		cleanupConfig()
 		return nil, false, err
 	}
-	s := &museMSPSession{rpc: rpc, workdir: workdir, fingerprint: fingerprint, cleanup: cleanupConfig}
+	s := &museMSPSession{owner: owner, rpc: rpc, workdir: workdir, dataHome: museAccountDataHome(ctx), fingerprint: fingerprint, cleanup: cleanupConfig}
 	var opened museMSPSessionResult
 	if resumeID != "" {
 		err = rpc.call(ctx, "session/resume", map[string]any{"commandId": museCommandID(), "sessionId": resumeID}, &opened)
@@ -329,6 +329,11 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
 
+	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
+		gi := &llmtypes.GenerationInfo{Additional: map[string]interface{}{"provider": "muse-cli", "muse_cli_mode": "msp", "muse_session_id": s.sessionID}}
+		llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{Provider: "muse-cli", Transport: llmtypes.CodingProviderTransportMSP, NativeSessionID: s.sessionID, WorkingDir: s.workdir, Status: llmtypes.CodingProviderSessionStatusIdle})
+		return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{GenerationInfo: gi}}}, nil
+	}
 	if llmtypes.CodingProviderIdleCompactFromOptions(opts) {
 		return a.compactMuseMSP(ctx, s, emit)
 	}
