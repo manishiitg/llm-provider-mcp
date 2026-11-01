@@ -93,42 +93,23 @@ func claudeIdleCompactResponse(sessionID, workingDir, model string, sdk bool, ob
 // runClaudeTmuxIdleCompact pastes /compact into the resumed pane and waits for
 // the compaction record Claude writes to the native transcript. ctx bounds the
 // wait (the host gives up and treats it as failed).
-func runClaudeTmuxIdleCompact(ctx context.Context, sessionName, nativeSessionID, workingDir, accountHome string, emit func(llmtypes.StreamChunk)) (llmtypes.IdleCompactResult, error) {
-	path, err := resolveClaudeTranscriptPath(nativeSessionID, workingDir, true, accountHome)
-	if err != nil || path == "" {
-		return llmtypes.IdleCompactResult{Reason: llmtypes.IdleCompactReasonNoSession}, nil
-	}
-	var offset int64
-	if info, statErr := os.Stat(path); statErr == nil {
-		offset = info.Size()
-	}
-	if err := waitForClaudeCompactionToSettle(ctx, sessionName); err != nil {
-		return llmtypes.IdleCompactResult{}, err
-	}
+func runClaudeTmuxIdleCompact(ctx context.Context, sessionName string, emit func(llmtypes.StreamChunk)) (llmtypes.IdleCompactResult, error) {
 	started := time.Now().UTC()
 	id := fmt.Sprintf("claude-compact-%d", started.UnixMilli())
 	emit(llmtypes.ContextCompactionChunk(llmtypes.ContextCompaction{Provider: "claude-code", Phase: llmtypes.ContextCompactionPhaseStart, ID: id, Trigger: claudeIdleCompactTrigger, StartedAt: started}))
-	if err := sendPromptToTmux(ctx, sessionName, claudeIdleCompactCommand); err != nil {
+	// The mod asks Claude Code to compact and reports the sizes it got.
+	event, err := claudeModRequest(ctx, sessionName, "compact", "")
+	if err != nil {
 		emitClaudeIdleCompactEnd(emit, id, started, nil, false)
 		return llmtypes.IdleCompactResult{}, err
 	}
-	ticker := time.NewTicker(claudeIdleCompactPoll)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			emitClaudeIdleCompactEnd(emit, id, started, nil, false)
-			return llmtypes.IdleCompactResult{}, ctx.Err()
-		case <-ticker.C:
-		}
-		meta, found, next := readClaudeCompactBoundary(path, offset)
-		offset = next
-		if !found {
-			continue
-		}
-		end := emitClaudeIdleCompactEnd(emit, id, started, meta, true)
-		return llmtypes.IdleCompactResult{Compacted: true, Reason: llmtypes.IdleCompactReasonCompacted, TokensBefore: end.TokensBefore, TokensAfter: end.TokensAfter}, nil
+	if event.Delivery != "compacted" {
+		emitClaudeIdleCompactEnd(emit, id, started, nil, false)
+		return llmtypes.IdleCompactResult{Reason: llmtypes.IdleCompactReasonNoSession}, nil
 	}
+	meta := &claudeCompactMetadata{PreTokens: int(event.TokensBefore), PostTokens: int(event.TokensAfter)}
+	end := emitClaudeIdleCompactEnd(emit, id, started, meta, true)
+	return llmtypes.IdleCompactResult{Compacted: true, Reason: llmtypes.IdleCompactReasonCompacted, TokensBefore: end.TokensBefore, TokensAfter: end.TokensAfter}, nil
 }
 
 func emitClaudeIdleCompactEnd(emit func(llmtypes.StreamChunk), id string, started time.Time, meta *claudeCompactMetadata, ok bool) llmtypes.ContextCompaction {
