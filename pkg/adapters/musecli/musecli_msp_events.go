@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
@@ -23,10 +24,12 @@ type museMSPItem struct {
 	VisibleOutput string `json:"visibleOutput"`
 	FailureReason string `json:"failureReason"`
 	TokensBefore  int    `json:"tokensBefore"`
-	TokensAfter   int    `json:"tokensAfter"`
-	Outcome       string `json:"outcome"`
-	Reason        string `json:"reason"`
-	Trigger       string `json:"trigger"`
+	// WakeSourceDescriptions names the Monitors that woke Muse for this reply.
+	WakeSourceDescriptions []string `json:"wakeSourceDescriptions"`
+	TokensAfter            int      `json:"tokensAfter"`
+	Outcome                string   `json:"outcome"`
+	Reason                 string   `json:"reason"`
+	Trigger                string   `json:"trigger"`
 }
 
 type museMSPTokenUsage struct {
@@ -76,7 +79,12 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 				var p struct {
 					Item museMSPItem `json:"item"`
 				}
-				if json.Unmarshal(msg.Params, &p) != nil || (p.Item.TurnID != "" && p.Item.TurnID != turnID) {
+				if json.Unmarshal(msg.Params, &p) != nil {
+					continue
+				}
+				if p.Item.TurnID != "" && p.Item.TurnID != turnID {
+					// A turn Muse runs on its own (a Monitor) while this one runs.
+					a.handleIdleMuseMSP(s, msg)
 					continue
 				}
 				item := p.Item
@@ -170,7 +178,11 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 						} `json:"quota"`
 					} `json:"error"`
 				}
-				if json.Unmarshal(msg.Params, &p) != nil || p.TurnID != turnID {
+				if json.Unmarshal(msg.Params, &p) != nil {
+					continue
+				}
+				if p.TurnID != turnID {
+					a.handleIdleMuseMSP(s, msg)
 					continue
 				}
 				switch p.Terminal {
@@ -521,12 +533,62 @@ func (a *MuseCLIAdapter) handleIdleMuseMSP(s *museMSPSession, msg museRPCMessage
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		log.Printf("[MUSE_MSP] session=%s own turn %s %s %s (between chat turns)", s.sessionID, p.TurnID, msg.Method, p.Terminal)
+		if msg.Method == "turn/completed" {
+			s.mu.Lock()
+			wake := s.wake[p.TurnID]
+			delete(s.wake, p.TurnID)
+			s.mu.Unlock()
+			if wake != nil && strings.TrimSpace(strings.Join(wake.texts, "")) != "" {
+				if handler := museMSPReplyHandler.Load(); handler != nil {
+					(*handler)(MuseMSPReply{Owner: s.owner, NativeSessionID: s.sessionID, TurnID: p.TurnID, Text: strings.Join(wake.texts, "\n\n"), Sources: wake.sources})
+				}
+			}
+		}
 	case "item/completed":
 		var p struct {
 			Item museMSPItem `json:"item"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil && p.Item.Kind == "agentMessage" && strings.TrimSpace(p.Item.Text) != "" {
 			log.Printf("[MUSE_MSP] session=%s reply between chat turns (turn %s): %d chars", s.sessionID, p.Item.TurnID, len(p.Item.Text))
+			s.mu.Lock()
+			if s.wake == nil {
+				s.wake = map[string]*museMSPWake{}
+			}
+			wake := s.wake[p.Item.TurnID]
+			if wake == nil {
+				wake = &museMSPWake{}
+				s.wake[p.Item.TurnID] = wake
+			}
+			wake.texts = append(wake.texts, strings.TrimSpace(p.Item.Text))
+			wake.sources = append(wake.sources, p.Item.WakeSourceDescriptions...)
+			s.mu.Unlock()
 		}
 	}
+}
+
+// MuseMSPReply is a reply Muse wrote between the chat's turns: a turn it ran
+// on its own, usually because a Monitor fired. Sources names those Monitors.
+type MuseMSPReply struct {
+	Owner           string
+	NativeSessionID string
+	TurnID          string
+	Text            string
+	Sources         []string
+}
+
+type museMSPWake struct {
+	texts   []string
+	sources []string
+}
+
+var museMSPReplyHandler atomic.Pointer[func(MuseMSPReply)]
+
+// SetMuseMSPReplyHandler gives the host the replies Muse writes between the
+// chat's turns, so they reach the chat like any reply.
+func SetMuseMSPReplyHandler(handler func(MuseMSPReply)) {
+	if handler == nil {
+		museMSPReplyHandler.Store(nil)
+		return
+	}
+	museMSPReplyHandler.Store(&handler)
 }
