@@ -273,3 +273,11 @@ func waitForClaudeModReady(ctx context.Context, sessionName string) error {
 	}
 	return nil
 }
+
+// ClaudeModRunsIn reports whether a Claude terminal this process launched runs
+// the AgentWorks mod. Its session switches are followed, so every slash
+// command may be typed into it.
+func ClaudeModRunsIn(tmuxSessionName string) bool {
+	_, ok := claudeModBases.Load(tmuxSessionName)
+	return ok
+}
