@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -32,12 +33,25 @@ const claudeModDirEnv = "AGENTWORKS_MOD_DIR"
 
 // claudeModBaseDir is where a launch keeps the mod and its events: inside a
 // confined CLI's private home (the shared /tmp is outside its sandbox, and a
-// slot account must be able to write there), else the process temp folder.
-func claudeModBaseDir(opts *llmtypes.CallOptions) string {
+// slot account must be able to write there), else a private folder made for
+// this launch, so no other local account can read answers or plant events.
+func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 	if home := llmtypes.SandboxHomeEnvironment(opts)["HOME"]; strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".agentworks-mod")
+		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), shared: true}, nil
 	}
-	return filepath.Join(os.TempDir(), "agentworks-mod")
+	dir, err := os.MkdirTemp("", "agentworks-mod-")
+	if err != nil {
+		return claudeModBase{}, err
+	}
+	return claudeModBase{dir: dir, private: true}, nil
+}
+
+// claudeModBase is a launch's mod folder. shared: inside a confined CLI's home,
+// group-writable for a slot account. private: made for this launch alone.
+type claudeModBase struct {
+	dir     string
+	shared  bool
+	private bool
 }
 
 // claudeModBases remembers each tmux session's base folder, so readers that
@@ -81,30 +95,52 @@ func claudeModPluginDir(base string) (string, error) {
 	return dir, err
 }
 
-// claudeModSessionDir is where one tmux session's mod writes its events.
-func claudeModSessionDir(sessionName string) string {
-	base := filepath.Join(os.TempDir(), "agentworks-mod")
-	if value, ok := claudeModBases.Load(sessionName); ok {
-		base = value.(string)
+func claudeModBaseFor(sessionName string) (claudeModBase, bool) {
+	value, ok := claudeModBases.Load(sessionName)
+	if !ok {
+		return claudeModBase{}, false
 	}
-	return filepath.Join(base, "session-"+sessionName)
+	return value.(claudeModBase), true
+}
+
+// claudeModSessionDir is where one tmux session's mod writes its events;
+// empty for a session this process did not launch with the mod.
+func claudeModSessionDir(sessionName string) string {
+	base, ok := claudeModBaseFor(sessionName)
+	if !ok {
+		return ""
+	}
+	return filepath.Join(base.dir, "session-"+sessionName)
 }
 
 // prepareClaudeModSessionDir creates the session's event folder. Group
 // writable: a slot account runs the CLI in a folder shared with its group.
 func prepareClaudeModSessionDir(sessionName string) (string, error) {
 	dir := claudeModSessionDir(sessionName)
-	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o770); err != nil {
+	if dir == "" {
+		return "", fmt.Errorf("prepare Claude mod folder: %s was not launched with the mod", sessionName)
+	}
+	mode := os.FileMode(0o700)
+	if base, _ := claudeModBaseFor(sessionName); base.shared {
+		mode = 0o770
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "events"), mode); err != nil {
 		return "", fmt.Errorf("prepare Claude mod folder: %w", err)
 	}
 	return dir, nil
 }
 
 func removeClaudeModSessionDir(sessionName string) {
-	if strings.TrimSpace(sessionName) != "" {
-		_ = os.RemoveAll(claudeModSessionDir(sessionName))
-		claudeModBases.Delete(sessionName)
+	base, ok := claudeModBaseFor(sessionName)
+	if !ok {
+		return
 	}
+	if base.private {
+		_ = os.RemoveAll(base.dir)
+	} else {
+		_ = os.RemoveAll(claudeModSessionDir(sessionName))
+	}
+	claudeModBases.Delete(sessionName)
 }
 
 // claudeModEvent is one event the mod wrote. Every event names the session
@@ -128,17 +164,31 @@ type claudeModEvent struct {
 // readClaudeModEvents returns the session's events in the order they happened.
 // File names start with the time and the mod's own counter, so name order is
 // event order.
+//
+// Anything in the session can write the folder, the agent's own shell too, so
+// events only time turns and name a session that is then checked; links and
+// other non-regular files are skipped, and a private folder takes only files
+// this process's account wrote.
 func readClaudeModEvents(sessionName string) []claudeModEvent {
-	dir := filepath.Join(claudeModSessionDir(sessionName), "events")
+	sessionDir := claudeModSessionDir(sessionName)
+	if sessionDir == "" {
+		return nil
+	}
+	base, _ := claudeModBaseFor(sessionName)
+	dir := filepath.Join(sessionDir, "events")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			names = append(names, entry.Name())
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
 		}
+		if base.private && !claudeModOwnedByProcess(filepath.Join(dir, entry.Name())) {
+			continue
+		}
+		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
 	events := make([]claudeModEvent, 0, len(names))
@@ -244,7 +294,12 @@ func adoptClaudeModSession(session *claudeInteractivePersistentSession, logger i
 		return
 	}
 	current := claudeModCurrentSessionID(session.tmuxSessionName)
-	if current == "" || current == session.nativeSessionID {
+	if current == "" || current == session.nativeSessionID || !isUUIDLike(current) {
+		return
+	}
+	// Only a session of this launch's own project folder: never one an event
+	// names from elsewhere.
+	if path, _ := resolveClaudeTranscriptPath(current, session.workingDir, false, session.accountHome); path == "" {
 		return
 	}
 	if logger != nil {
@@ -278,6 +333,15 @@ func waitForClaudeModReady(ctx context.Context, sessionName string) error {
 // the AgentWorks mod. Its session switches are followed, so every slash
 // command may be typed into it.
 func ClaudeModRunsIn(tmuxSessionName string) bool {
-	_, ok := claudeModBases.Load(tmuxSessionName)
+	_, ok := claudeModBaseFor(tmuxSessionName)
 	return ok
+}
+
+func claudeModOwnedByProcess(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Getuid()
 }
