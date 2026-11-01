@@ -438,7 +438,7 @@ func museAcquirePersistentSession(ctx context.Context, owner, workdir, provider,
 		return nil, false, err
 	}
 	entry = &musePersistentSession{accountFingerprint: llmtypes.CodingAgentScopeFingerprint(museAccount(ctx).opts), accountDataHome: museAccountDataHome(ctx), nativeSessionID: strings.TrimSpace(resumeNativeID), logPath: museSessionLogPath(resumeNativeID, museAccountDataHome(ctx)), autoAnswer: &museAutoAnswerState{}, tmuxName: tmuxName, workdir: workdir, mcpJSON: mcpJSON, toolAllowlist: slices.Clone(toolAllowlist), restoreMCP: restore}
-	entry.resumeNotePending = strings.TrimSpace(resumeNativeID) != "" && museMCPJSONHasBridge(mcpJSON)
+	entry.resumeNotePending = strings.TrimSpace(resumeNativeID) != "" && (museMCPJSONHasBridge(mcpJSON) || nativeHandoffWorkspace(museAccountDataHome(ctx), resumeNativeID, workdir))
 	if wantAgents {
 		// Remember the requested prompt even when projection fell back to
 		// inline. Otherwise an oversized prompt would relaunch the same
@@ -488,6 +488,9 @@ func museLaunchPersistentTUI(ctx context.Context, tmuxName, workdir, provider, m
 		return nil, err
 	}
 	argv := []string{"--trust-workspace", "--provider", provider}
+	if nativeHandoffWorkspace(museAccountDataHome(ctx), resumeNativeID, workdir) {
+		argv = append(argv, "--workspace", workdir)
+	}
 	if strings.TrimSpace(modelID) != "" {
 		argv = append(argv, "--model", strings.TrimSpace(modelID))
 	}

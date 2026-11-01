@@ -58,7 +58,10 @@ func museDiscoverSessionSince(dataHome string, since time.Time, promptSnippet, w
 		// answered with worker 0's build id). The native log records its
 		// TUI's workspace_root in runtime.session.metadata, and pooled
 		// workdirs are unique per owner — filter on it when known.
-		if workdir != "" && !museLogMatchesWorkspace(raw, workdir) {
+		// A transferred journal deliberately keeps its original metadata. Its
+		// owner-bound handoff marker names the only additional workspace we
+		// may use for intake discovery; ordinary sessions keep the old check.
+		if workdir != "" && !museLogMatchesWorkspace(raw, workdir) && !nativeHandoffWorkspace(dataHome, filepath.Base(filepath.Dir(path)), workdir) {
 			return nil
 		}
 		if info.ModTime().After(bestMod) {
@@ -383,6 +386,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		if entry.resumeNotePending && strings.TrimSpace(human) != "" {
 			entry.resumeNotePending = false
 			human = museWithResumeNote(human, true, entry.mcpJSON)
+			if nativeHandoffWorkspace(entry.accountDataHome, entry.nativeSessionID, workdir) {
+				human = nativeHandoffInstructions(human, strings.Join(system, "\n\n"))
+			}
 		}
 		musePersistentPool.Unlock()
 		if nativeIDAtLaunch == "" {
@@ -568,6 +574,9 @@ func (a *MuseCLIAdapter) generateContentTmux(ctx context.Context, messages []llm
 		return nil, fmt.Errorf("muse TUI turn produced no assistant text (session %s)", nativeSessionID)
 	}
 	gi := &llmtypes.GenerationInfo{}
+	if expected := museResumeSessionIDFromOptions(opts); expected != "" && nativeHandoffWorkspace(museAccountDataHome(ctx), expected, workdir) && nativeSessionID != expected {
+		return nil, fmt.Errorf("Muse started a different native session after handoff; the saved conversation was preserved")
+	}
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider:        "muse-cli",
 		Transport:       llmtypes.CodingProviderTransportTmux,

@@ -181,6 +181,22 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 		toolAllowlist = nil
 	}
 	ctx = museWithAccount(ctx, opts, a.apiKey)
+	workdir := strings.TrimSpace(museWorkingDirFromOptions(opts))
+	if workdir == "" {
+		workdir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Muse working directory: %w", err)
+		}
+	}
+	handoff := nativeHandoffWorkspace(museAccountDataHome(ctx), museResumeSessionIDFromOptions(opts), workdir)
+	if handoff {
+		argv = append(argv, "--allow-workspace-switch", "--workspace", workdir)
+		system, human, splitErr := museSplitPrompt(messages)
+		if splitErr != nil {
+			return nil, splitErr
+		}
+		prompt = nativeHandoffInstructions(museWithResumeNote(human, true, mcpJSON), llmtypes.CLIPrivateSkillInstructions(opts, museSkillsSubdir)+strings.Join(system, "\n\n"))
+	}
 	configHome, cleanupConfig, err := museAccountConfig(ctx, mcpJSON, toolAllowlist)
 	if err != nil {
 		return nil, err
@@ -207,13 +223,6 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	// The CLI treats the process cwd as the workspace root (skills, trust,
 	// transcript scoping), so pin it when the caller asks. Empty keeps the
 	// inherited cwd — the working_directory cert pins the explicit case.
-	workdir := strings.TrimSpace(museWorkingDirFromOptions(opts))
-	if workdir == "" {
-		workdir, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("resolve Muse working directory: %w", err)
-		}
-	}
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 		_ = a.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workdir), skills)
 	}
@@ -331,6 +340,9 @@ func (a *MuseCLIAdapter) generateContentExec(ctx context.Context, messages []llm
 	}
 	turnUsage, hasTurnUsage := museUsageForTurn(sessionID, commandID)
 	gi := &llmtypes.GenerationInfo{}
+	if handoff && sessionID != museResumeSessionIDFromOptions(opts) {
+		return nil, fmt.Errorf("Muse started a different native session after handoff; the saved conversation was preserved")
+	}
 	if sawNativeSubagent {
 		if children := readMuseNativeSubagents(sessionID); len(children) > 0 {
 			gi.Additional = map[string]interface{}{"native_subagents": children}
