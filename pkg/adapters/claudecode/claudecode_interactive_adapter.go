@@ -613,6 +613,8 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentTmuxBody(ctx context.Conte
 		ok, err = false, claudeModTurnError(sessionName, end.Answer)
 	} else if !ok && end.Type == "force_complete" {
 		err = tmuxcontrol.ErrForceComplete
+	} else if !ok && end.Type == "terminal_lost" {
+		err = claudeModTerminalLost(context.Background(), sessionName)
 	}
 	if ok {
 		content = end.Answer

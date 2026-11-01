@@ -255,7 +255,10 @@ func waitForClaudeModTurnComplete(ctx context.Context, sessionName string, since
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	var pending int64 = -1
-	for {
+	for polls := 0; ; polls++ {
+		if polls%10 == 0 && claudeModTerminalLost(ctx, sessionName) != nil {
+			return claudeModEvent{Type: "terminal_lost"}, false
+		}
 		started := false
 		var end claudeModEvent
 		ended := false
@@ -412,7 +415,13 @@ func claudeModRequest(ctx context.Context, sessionName, kind, text string) (clau
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	for {
+	for polls := 0; ; polls++ {
+		// A terminal that is gone takes nothing; say so the way the stack recovers from.
+		if polls%10 == 0 {
+			if lost := claudeModTerminalLost(ctx, sessionName); lost != nil {
+				return claudeModEvent{}, lost
+			}
+		}
 		for _, event := range readClaudeModEvents(sessionName) {
 			if event.Type != "input" || event.InputID != id {
 				continue
@@ -538,4 +547,15 @@ func ClaudeModIdle(tmuxSessionName string) (idle, known bool) {
 		}
 	}
 	return started && !running, true
+}
+
+// claudeModTerminalLost is the session-lost error when the terminal's tmux
+// session no longer exists; nil while it does, or when tmux cannot say.
+func claudeModTerminalLost(ctx context.Context, sessionName string) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if exists, err := claudeTmuxSessionExists(checkCtx, sessionName); err == nil && !exists {
+		return &llmtypes.CodingAgentTmuxSessionLostError{Provider: "claude-code", SessionName: sessionName, Reason: "the Claude Code terminal is gone"}
+	}
+	return nil
 }
