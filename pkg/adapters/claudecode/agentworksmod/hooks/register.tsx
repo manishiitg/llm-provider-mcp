@@ -53,16 +53,17 @@ async function deliverInbox($: any) {
   if (delivering) return
   delivering = true
   try {
-    const dir = await $.env.get('AGENTWORKS_MOD_DIR')
-    if (!dir) return
-    const entries = (await $.fs.list(`${dir}/inbox`).catch(() => [])) as { name: string; kind: string }[]
+    // AgentWorks' requests: a folder the agent in this session can read but not write.
+    const inbox = await $.env.get('AGENTWORKS_MOD_INBOX')
+    if (!inbox) return
+    const entries = (await $.fs.list(inbox).catch(() => [])) as { name: string; kind: string }[]
     const names = entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.json')).map(entry => entry.name).sort()
     // A stop goes first: a message queued behind it must not hold it up.
     names.sort((a, b) => Number(b.includes('-abort')) - Number(a.includes('-abort')))
     for (const name of names) {
       if (delivered.has(name)) continue
       delivered.add(name)
-      const request = JSON.parse(await $.fs.read(`${dir}/inbox/${name}`))
+      const request = JSON.parse(await $.fs.read(`${inbox}/${name}`))
       const id = String(request.id ?? name)
       try {
         await emit($, 'input', { input_id: id, ...(await handle($, request)) })
@@ -169,6 +170,16 @@ async function refreshStatus($: any) {
   $.ui.status(parts.filter(Boolean).join(' · ') || undefined)
 }
 
+// slashAllowed: a built-in command only when AGENTWORKS_MOD_SLASH_COMMANDS
+// lists it; skills, custom and MCP prompt commands always.
+async function slashAllowed($: any, name: string): Promise<boolean> {
+  const allowed = String((await $.env.get('AGENTWORKS_MOD_SLASH_COMMANDS')) ?? '').split(',').map(entry => entry.trim().replace(/^\//, '').toLowerCase()).filter(Boolean)
+  if (allowed.includes(name.toLowerCase())) return true
+  const commands = (await $.command.list().catch(() => [])) as { name: string; source: string }[]
+  const found = commands.find(entry => entry.name === name)
+  return Boolean(found && found.source !== 'builtin')
+}
+
 // handle runs one inbox request and says how it went.
 async function handle($: any, request: { kind?: string; text?: string }): Promise<Record<string, unknown>> {
   switch (request.kind ?? 'input') {
@@ -195,9 +206,12 @@ async function handle($: any, request: { kind?: string; text?: string }): Promis
         lastMessage = `${framed.label}: ${framed.body.split('\n')[0].slice(0, 80)}`
         $.ui.invalidate('ui.render')
       }
-      // A slash command (a skill, /compact, ...) runs as the person typing it would.
+      // A slash command runs as the person typing it would: a skill or custom
+      // command, or a built-in on the allowed list. A built-in that changes the
+      // CLI's login or settings (/login, /config, /permissions, /hooks, ...) never.
       const command = text.match(/^\/([A-Za-z0-9_:.-]+)\s*([\s\S]*)$/)
       if (command) {
+        if (!(await slashAllowed($, command[1]))) throw new Error(`/${command[1]} is not allowed here`)
         await $.command.run({ command: command[1], args: command[2] ?? '' })
         return { delivery: 'command' }
       }
