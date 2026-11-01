@@ -155,30 +155,35 @@ func removeClaudeModSessionDir(sessionName string) {
 // claudeModEvent is one event the mod wrote. Every event names the session
 // that was current when it happened.
 type claudeModEvent struct {
-	Type          string                `json:"type"`
-	At            int64                 `json:"at"`
-	Seq           int64                 `json:"seq"`
-	SessionID     string                `json:"session_id"`
-	Reason        string                `json:"reason,omitempty"`
-	Command       string                `json:"command,omitempty"`
-	TurnID        string                `json:"turn_id,omitempty"`
-	Aborted       bool                  `json:"aborted,omitempty"`
-	Answer        string                `json:"answer,omitempty"`
-	DurationMS    int64                 `json:"duration_ms,omitempty"`
-	ContextTokens int64                 `json:"context_tokens,omitempty"`
-	ContextWindow int64                 `json:"context_window,omitempty"`
-	CostUSD       float64               `json:"cost_usd,omitempty"`
-	InputID       string                `json:"input_id,omitempty"`
-	Delivery      string                `json:"delivery,omitempty"`
-	Error         string                `json:"error,omitempty"`
-	Trigger       string                `json:"trigger,omitempty"`
-	TokensBefore  int64                 `json:"tokens_before,omitempty"`
-	TokensAfter   int64                 `json:"tokens_after,omitempty"`
-	Step          string                `json:"step,omitempty"`
-	Items         []claudeModStreamItem `json:"items,omitempty"`
-	Door          string                `json:"door,omitempty"`
-	UUID          string                `json:"uuid,omitempty"`
-	Message       json.RawMessage       `json:"message,omitempty"`
+	Type          string  `json:"type"`
+	At            int64   `json:"at"`
+	Seq           int64   `json:"seq"`
+	SessionID     string  `json:"session_id"`
+	Reason        string  `json:"reason,omitempty"`
+	Command       string  `json:"command,omitempty"`
+	TurnID        string  `json:"turn_id,omitempty"`
+	Aborted       bool    `json:"aborted,omitempty"`
+	Answer        string  `json:"answer,omitempty"`
+	DurationMS    int64   `json:"duration_ms,omitempty"`
+	ContextTokens int64   `json:"context_tokens,omitempty"`
+	ContextWindow int64   `json:"context_window,omitempty"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	InputID       string  `json:"input_id,omitempty"`
+	Delivery      string  `json:"delivery,omitempty"`
+	Error         string  `json:"error,omitempty"`
+	Trigger       string  `json:"trigger,omitempty"`
+	TokensBefore  int64   `json:"tokens_before,omitempty"`
+	TokensAfter   int64   `json:"tokens_after,omitempty"`
+	RateLimits    []struct {
+		Kind        string  `json:"kind"`
+		PercentUsed float64 `json:"percentUsed"`
+		ResetsAt    string  `json:"resetsAt"`
+	} `json:"rate_limits,omitempty"`
+	Step    string                `json:"step,omitempty"`
+	Items   []claudeModStreamItem `json:"items,omitempty"`
+	Door    string                `json:"door,omitempty"`
+	UUID    string                `json:"uuid,omitempty"`
+	Message json.RawMessage       `json:"message,omitempty"`
 	// name is the event's file name: unique, and its order is event order.
 	name string
 }
@@ -558,4 +563,25 @@ func claudeModTerminalLost(ctx context.Context, sessionName string) error {
 		return &llmtypes.CodingAgentTmuxSessionLostError{Provider: "claude-code", SessionName: sessionName, Reason: "the Claude Code terminal is gone"}
 	}
 	return nil
+}
+
+// claudeModRateLimitWindows is the plan usage the mod last reported (after a
+// turn, or when a limit's use changed); false when it has reported none.
+func claudeModRateLimitWindows(sessionName string) ([]llmtypes.RateLimitWindow, bool) {
+	events := readClaudeModEvents(sessionName)
+	for i := len(events) - 1; i >= 0; i-- {
+		if len(events[i].RateLimits) == 0 {
+			continue
+		}
+		windows := make([]llmtypes.RateLimitWindow, 0, len(events[i].RateLimits))
+		for _, limit := range events[i].RateLimits {
+			window := llmtypes.RateLimitWindow{Name: limit.Kind, UsedPercent: limit.PercentUsed}
+			if at, err := time.Parse(time.RFC3339, limit.ResetsAt); err == nil {
+				window.ResetsAt = at.UTC()
+			}
+			windows = append(windows, window)
+		}
+		return windows, true
+	}
+	return nil, false
 }

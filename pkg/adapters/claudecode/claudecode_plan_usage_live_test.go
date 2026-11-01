@@ -2,8 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,25 +38,13 @@ func TestClaudePlanUsageLive(t *testing.T) {
 		t.Fatalf("turn did not produce the marker: %+v", resp)
 	}
 
-	var windows []llmtypes.RateLimitWindow
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) && len(windows) == 0 {
-		paths, _ := filepath.Glob(filepath.Join(os.TempDir(), "claude_statusline_*.json"))
-		for _, path := range paths {
-			info, err := os.Stat(path)
-			if err != nil || info.ModTime().Before(started) {
-				continue
-			}
-			name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "claude_statusline_"), ".json")
-			if found, ok := readClaudeStatuslineRateLimitWindows(name); ok && len(found) > 0 {
-				windows = found
-				break
-			}
-		}
-		if len(windows) == 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	// The mod reports Claude Code's plan windows with the turn; read them by the
+	// terminal's own session before it is cleaned up.
+	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
+	if !ok || handle.TmuxSession == "" {
+		t.Fatalf("response has no terminal session: %+v", resp.Choices[0].GenerationInfo)
 	}
+	windows, _ := readClaudeStatuslineRateLimitWindows(handle.TmuxSession)
 	assertLivePlanUsageWindows(t, windows, started)
 	if known, _ := UsageLimitState(""); known {
 		t.Fatal("UsageLimitState must be unknown for an empty session")

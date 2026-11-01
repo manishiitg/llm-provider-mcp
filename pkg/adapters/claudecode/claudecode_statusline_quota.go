@@ -29,6 +29,10 @@ func readClaudeStatuslineRateLimitWindows(sessionName string) ([]llmtypes.RateLi
 	if sessionName == "" {
 		return nil, false
 	}
+	// A terminal running the mod: Claude Code's own figures, as of its latest report.
+	if windows, ok := claudeModRateLimitWindows(sessionName); ok {
+		return windows, true
+	}
 	raw, err := os.ReadFile(claudeStatuslinePath(sessionName))
 	if err != nil {
 		return nil, false

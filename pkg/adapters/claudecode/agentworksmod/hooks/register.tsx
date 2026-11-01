@@ -296,9 +296,12 @@ export const register: Register = on => {
     return ran
   })
 
+  // Usage changed (after a turn, or a plan limit's use moved): status line and AgentWorks' plan figures.
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
     void refreshStatus($).catch(() => undefined)
+    const usage = await $.session.usage().catch(() => null)
+    if (usage?.rateLimits?.length) await emit($, 'usage', { rate_limits: usage.rateLimits, context_tokens: usage.context?.tokens ?? 0, context_window: usage.context?.window ?? 0 })
     return result
   })
 
