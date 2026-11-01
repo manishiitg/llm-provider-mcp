@@ -38,25 +38,51 @@ const claudeModDirEnv = "AGENTWORKS_MOD_DIR"
 // waits for before it sends the first message.
 const claudeModMCPServersEnv = "AGENTWORKS_MOD_MCP_SERVERS"
 
+// claudeModInboxEnv is the folder of requests for the mod; claudeModSlashEnv the
+// built-in slash commands it may run for them.
+const (
+	claudeModInboxEnv = "AGENTWORKS_MOD_INBOX"
+	claudeModSlashEnv = "AGENTWORKS_MOD_SLASH_COMMANDS"
+)
+
+// claudeModSlashCommands is the built-in commands a request may run: the
+// server's terminal allowlist (AGENTWORKS_TERMINAL_SLASH_COMMANDS, usage by
+// default) and the session commands the mod follows. A built-in that changes
+// the CLI's login or settings (/login, /config, /permissions, ...) is not one.
+func claudeModSlashCommands() string {
+	configured := strings.TrimSpace(os.Getenv("AGENTWORKS_TERMINAL_SLASH_COMMANDS"))
+	if configured == "" || strings.EqualFold(configured, "allow") || strings.EqualFold(configured, "none") {
+		configured = "usage"
+	}
+	return configured + ",clear,new,resume,branch,fork"
+}
+
 // claudeModBaseDir is where a launch keeps the mod and its events: inside a
 // confined CLI's private home (the shared /tmp is outside its sandbox, and a
 // slot account must be able to write there), else a private folder made for
 // this launch, so no other local account can read answers or plant events.
 func claudeModBaseDir(opts *llmtypes.CallOptions) (claudeModBase, error) {
 	if home := llmtypes.SandboxHomeEnvironment(opts)["HOME"]; strings.TrimSpace(home) != "" {
-		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), shared: true}, nil
+		// Requests sit beside the private home, outside the sandbox's write paths:
+		// the agent can read them, never write one (it would act as the person).
+		parent := filepath.Dir(filepath.Clean(home))
+		return claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: filepath.Join(parent, ".agentworks-mod-inbox"), shared: true}, nil
 	}
 	dir, err := os.MkdirTemp("", "agentworks-mod-")
 	if err != nil {
 		return claudeModBase{}, err
 	}
-	return claudeModBase{dir: dir, private: true}, nil
+	return claudeModBase{dir: dir, inbox: filepath.Join(dir, "inbox"), private: true}, nil
 }
 
-// claudeModBase is a launch's mod folder. shared: inside a confined CLI's home,
-// group-writable for a slot account. private: made for this launch alone.
+// claudeModBase is a launch's mod folders: dir holds the events the mod writes,
+// inbox the requests AgentWorks writes. shared: dir is inside a confined CLI's
+// home (group-writable for a slot account) and the inbox beside it, readable
+// only. private: made for this launch alone (an unconfined CLI, which already
+// has its person's rights).
 type claudeModBase struct {
 	dir     string
+	inbox   string
 	shared  bool
 	private bool
 }
@@ -127,22 +153,39 @@ func prepareClaudeModSessionDir(sessionName string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("prepare Claude mod folder: %s was not launched with the mod", sessionName)
 	}
-	mode := os.FileMode(0o700)
-	if base, _ := claudeModBaseFor(sessionName); base.shared {
-		mode = 0o770
+	base, _ := claudeModBaseFor(sessionName)
+	eventsMode, inboxMode := os.FileMode(0o700), os.FileMode(0o700)
+	if base.shared {
+		eventsMode, inboxMode = 0o770, 0o750 // a slot account writes events, only reads requests
 	}
-	for _, sub := range []string{"events", "inbox"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), mode); err != nil {
-			return "", fmt.Errorf("prepare Claude mod folder: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Join(dir, "events"), eventsMode); err != nil {
+		return "", fmt.Errorf("prepare Claude mod folder: %w", err)
+	}
+	if err := os.MkdirAll(claudeModInboxDir(sessionName), inboxMode); err != nil {
+		return "", fmt.Errorf("prepare Claude mod inbox: %w", err)
 	}
 	return dir, nil
+}
+
+// claudeModInboxDir is where AgentWorks puts one session's requests for its mod.
+func claudeModInboxDir(sessionName string) string {
+	base, ok := claudeModBaseFor(sessionName)
+	if !ok {
+		return ""
+	}
+	if base.private {
+		return base.inbox
+	}
+	return filepath.Join(base.inbox, "session-"+sessionName)
 }
 
 func removeClaudeModSessionDir(sessionName string) {
 	base, ok := claudeModBaseFor(sessionName)
 	if !ok {
 		return
+	}
+	if !base.private {
+		_ = os.RemoveAll(claudeModInboxDir(sessionName))
 	}
 	if base.private {
 		_ = os.RemoveAll(base.dir)
@@ -261,7 +304,7 @@ func waitForClaudeModTurnComplete(ctx context.Context, sessionName string, since
 	defer ticker.Stop()
 	var pending int64 = -1
 	for polls := 0; ; polls++ {
-		if polls%10 == 0 && claudeModTerminalLost(ctx, sessionName) != nil {
+		if polls > 0 && polls%10 == 0 && claudeModTerminalLost(ctx, sessionName) != nil {
 			return claudeModEvent{Type: "terminal_lost"}, false
 		}
 		started := false
@@ -309,13 +352,13 @@ func claudeArgsHavePluginDir(args []string) bool {
 	return false
 }
 
-// claudeModSandboxPaths adds the mod to a confined launch: its code is read,
-// its session folder written.
+// claudeModSandboxPaths adds the mod to a confined launch: its code and its
+// request inbox are read, only its event folder is written.
 func claudeModSandboxPaths(args []string, sessionName string, read, write []string) ([]string, []string) {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "--plugin-dir" {
-			read = append(read, args[i+1])
-			write = append(write, claudeModSessionDir(sessionName))
+			read = append(read, args[i+1], claudeModInboxDir(sessionName))
+			write = append(write, filepath.Join(claudeModSessionDir(sessionName), "events"))
 		}
 	}
 	return read, write
@@ -404,10 +447,14 @@ func claudeModRequest(ctx context.Context, sessionName, kind, text string) (clau
 	}
 	id := fmt.Sprintf("%019d-%06d-%s", time.Now().UnixNano(), claudeModInputSeq.Add(1), kind)
 	data, _ := json.Marshal(map[string]string{"id": id, "kind": kind, "text": text})
-	inbox := filepath.Join(dir, "inbox")
+	inbox := claudeModInboxDir(sessionName)
 	// Written aside and renamed in, so the mod never reads half a request.
 	tmp := filepath.Join(inbox, id+".tmp")
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	mode := os.FileMode(0o600)
+	if base, _ := claudeModBaseFor(sessionName); base.shared {
+		mode = 0o640 // a slot account reads it through its group
+	}
+	if err := os.WriteFile(tmp, data, mode); err != nil {
 		return claudeModEvent{}, fmt.Errorf("queue %s for Claude Code: %w", kind, err)
 	}
 	final := filepath.Join(inbox, id+".json")
@@ -422,7 +469,7 @@ func claudeModRequest(ctx context.Context, sessionName, kind, text string) (clau
 	defer ticker.Stop()
 	for polls := 0; ; polls++ {
 		// A terminal that is gone takes nothing; say so the way the stack recovers from.
-		if polls%10 == 0 {
+		if polls > 0 && polls%10 == 0 {
 			if lost := claudeModTerminalLost(ctx, sessionName); lost != nil {
 				return claudeModEvent{}, lost
 			}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,7 +15,8 @@ import (
 func writeClaudeModTestEvents(t *testing.T, sessionName string, events ...claudeModEvent) {
 	t.Helper()
 	if _, ok := claudeModBaseFor(sessionName); !ok {
-		claudeModBases.Store(sessionName, claudeModBase{dir: t.TempDir(), private: true})
+		dir := t.TempDir()
+		claudeModBases.Store(sessionName, claudeModBase{dir: dir, inbox: filepath.Join(dir, "inbox"), private: true})
 	}
 	dir, err := prepareClaudeModSessionDir(sessionName)
 	if err != nil {
@@ -77,5 +80,30 @@ func TestClaudeModFollowsSessionSwitchAndQueuedTurns(t *testing.T) {
 	adoptClaudeModSession(session, nil)
 	if session.nativeSessionID != newID {
 		t.Fatalf("native session = %q, adopted a session named from elsewhere", session.nativeSessionID)
+	}
+}
+
+// The mod runs each inbox request as the person (a prompt, a slash command),
+// so in a confined launch the agent must not be able to write one: the inbox
+// is read, never in the sandbox's write paths, while the events folder is.
+func TestClaudeModInboxIsReadOnlyForTheConfinedAgent(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "cli-home", "claude-code")
+	sessionName := fmt.Sprintf("mod-inbox-test-%d", time.Now().UnixNano())
+	claudeModBases.Store(sessionName, claudeModBase{dir: filepath.Join(home, ".agentworks-mod"), inbox: filepath.Join(filepath.Dir(home), ".agentworks-mod-inbox"), shared: true})
+	t.Cleanup(func() { claudeModBases.Delete(sessionName) })
+
+	read, write := claudeModSandboxPaths([]string{"claude", "--plugin-dir", "/plugin"}, sessionName, nil, []string{home})
+	inbox := claudeModInboxDir(sessionName)
+	if !slices.Contains(read, inbox) {
+		t.Fatalf("read paths %v do not include the inbox %s", read, inbox)
+	}
+	for _, path := range write {
+		if rel, err := filepath.Rel(path, inbox); err == nil && !strings.HasPrefix(rel, "..") {
+			t.Fatalf("inbox %s is writable through %s", inbox, path)
+		}
+	}
+	if !slices.Contains(write, filepath.Join(claudeModSessionDir(sessionName), "events")) {
+		t.Fatalf("write paths %v do not include the events folder", write)
 	}
 }

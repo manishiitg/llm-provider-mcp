@@ -1562,3 +1562,17 @@ func waitForClaudeInteractiveDraft(t *testing.T, sessionName, want string, timeo
 	}
 	t.Fatalf("timed out waiting for Claude Code draft %q", want)
 }
+
+// A request reaching the mod runs as the person, so a built-in command that
+// changes the CLI's login or settings is refused even when it gets there.
+func TestClaudeModRefusesBuiltinSettingsCommand(t *testing.T) {
+	skipClaudeInteractiveIntegration(t)
+	t.Cleanup(func() { _ = CleanupClaudeCodeTmuxSessions(context.Background()) })
+	adapter := NewClaudeCodeInteractiveAdapter(defaultClaudeInteractiveTestModel, &MockLogger{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	_, err := adapter.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "/logout")}, WithWorkingDir(t.TempDir()))
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("/logout through the mod: err = %v, want refused", err)
+	}
+}
