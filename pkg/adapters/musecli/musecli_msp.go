@@ -70,6 +70,8 @@ type museMSPSession struct {
 	// listener receives the host's events while one of this chat's own turns
 	// (or a compaction) runs; between them pumpMuseMSP handles them.
 	listener chan museRPCMessage
+	// wake: replies of turns Muse ran on its own, by turn, until the turn ends.
+	wake map[string]*museMSPWake
 	// steered: messages turn/steer accepted, for the durable receipt.
 	steered map[string]time.Time
 }
