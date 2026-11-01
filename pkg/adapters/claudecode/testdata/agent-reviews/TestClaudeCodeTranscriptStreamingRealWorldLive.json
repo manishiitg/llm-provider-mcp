@@ -16,19 +16,19 @@
       " by searching the",
       " web for the code word.",
       "\n\nSearch",
-      " found the code word, so",
-      " I'll save it to result.",
-      "txt next.",
-      "\n\nNow I",
-      "'ll read result",
+      " retur",
+      "ned the code word, so I'",
+      "ll save it to result.txt",
+      ".",
+      "\n\nNow I'll read result",
       ".txt back to confirm",
       " what",
       " was saved.",
-      "\n\nZEBRA_d",
-      "91359b8"
+      "\n\nZEBRA_04869",
+      "df1"
     ],
-    "file_on_disk": "ZEBRA_d91359b8",
-    "final": "ZEBRA_d91359b8",
+    "file_on_disk": "ZEBRA_04869df1",
+    "final": "ZEBRA_04869df1",
     "stream_order": [
       "text",
       "text",
@@ -38,8 +38,8 @@
       "text",
       "text",
       "text",
-      "tool",
       "text",
+      "tool",
       "text",
       "text",
       "text",
@@ -48,7 +48,7 @@
       "text",
       "text"
     ],
-    "streamed_content": "I'll start by searching the web for the code word.\n\nSearch found the code word, so I'll save it to result.txt next.\n\nNow I'll read result.txt back to confirm what was saved.\n\nZEBRA_d91359b8",
+    "streamed_content": "I'll start by searching the web for the code word.\n\nSearch returned the code word, so I'll save it to result.txt.\n\nNow I'll read result.txt back to confirm what was saved.\n\nZEBRA_04869df1",
     "tool_names": [
       "mcp__workbench__web_search",
       "mcp__workbench__write_file",
@@ -61,6 +61,6 @@
     "reviewed_fingerprint": "55b87deedd819814",
     "reviewer": "claude-rts-op (Claude Opus 5.5)",
     "issues": null,
-    "notes": "Streamed through the AgentWorks mod (turn.step deltas): no duplicate chunks, paragraphs separated by blank lines, narration precedes each of the three real workbench MCP tools in order, file written to disk with the code word, final answer matches."
+    "notes": "Mod stream (turn.step): no duplicates, paragraphs separated, narration before each of the three real workbench tools in order, file written with the code word, final matches. Re-run after the inbox move."
   }
 }
