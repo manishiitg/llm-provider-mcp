@@ -127,8 +127,8 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 			env = append(env, entry)
 		}
 	}
-	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(append(env, "HOME="+privateHome, "NO_OPEN_BROWSER=1"), opts)
-	agyLogLaunch(cmd.Env, privateHome)
+	cmd.Env = agyPinHome(llmtypes.MergeCodingAgentSecretEnvironment(append(env, "HOME="+privateHome, "NO_OPEN_BROWSER=1"), opts), privateHome)
+	agyLogLaunch(cmd.Env)
 	cleanupSandbox, err := agyLandlockCmd(opts, cmd, workdir, privateHome)
 	if err != nil {
 		stop()
@@ -604,9 +604,12 @@ func closeAllAgyACPSessions() {
 
 // agyLogLaunch records what an agy launch gets, names only: its HOME, whether a Gemini key is in its environment, and
 // the mode of the settings that select key mode (a slot's agy kept asking for a Google login, PLAT-872-86).
-func agyLogLaunch(env []string, home string) {
-	key := false
+func agyLogLaunch(env []string) {
+	key, home := false, ""
 	for _, entry := range env {
+		if strings.HasPrefix(entry, "HOME=") {
+			home = strings.TrimPrefix(entry, "HOME=")
+		}
 		if strings.HasPrefix(entry, "GEMINI_API_KEY=") && len(entry) > len("GEMINI_API_KEY=") {
 			key = true
 		}
@@ -616,4 +619,20 @@ func agyLogLaunch(env []string, home string) {
 		settings = info.Mode().String()
 	}
 	log.Printf("[AGY_LAUNCH] home=%s gemini_key=%t settings=%s", home, key, settings)
+}
+
+// agyPinHome makes HOME the run's own agy home again after the account merge: a confined CLI's sandbox home replaces
+// HOME there, so agy ran in the plain sandbox home without its per-run settings (modelProvider gemini, MCP catalogue,
+// hooks) and asked for a Google login ("Authentication required", PLAT-872-86).
+func agyPinHome(env []string, home string) []string {
+	if home == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "HOME=") {
+			out = append(out, entry)
+		}
+	}
+	return append(out, "HOME="+home)
 }

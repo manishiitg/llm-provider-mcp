@@ -392,6 +392,9 @@ func (a *AgyCLIAdapter) generateContentExec(ctx context.Context, messages []llmt
 		baseEnv = append(filtered, "HOME="+home)
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(baseEnv, opts)
+	if privateHome != "" && agyStringMetadata(opts, agyTestOnlyMetadataKeyHomeOverride) == "" {
+		cmd.Env = agyPinHome(cmd.Env, privateHome)
+	}
 	// The CLI treats the process cwd as the workspace root (trust,
 	// conversation scoping), so pin it when the caller asks. Empty keeps
 	// the inherited cwd — the working_directory cert pins the explicit case.
