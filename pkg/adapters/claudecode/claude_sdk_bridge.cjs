@@ -94,7 +94,8 @@ async function main() {
     if (context.signal.aborted) return deny();
     const response = new Promise(resolve => permissions.set(id, resolve));
     context.signal.addEventListener('abort', abort, { once: true });
-    emit({ type: 'sdk_permission', request_id: id, tool_name: tool, input: toolInput });
+    // Claude's own "always allow" rule for this request, offered as a choice; the host scopes it to this chat.
+    emit({ type: 'sdk_permission', request_id: id, tool_name: tool, input: toolInput, ...(context.suggestions?.length ? { suggestions: context.suggestions } : {}) });
     try { return await response; }
     finally { context.signal.removeEventListener('abort', abort); permissions.delete(id); }
   };
