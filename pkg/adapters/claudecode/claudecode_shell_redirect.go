@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/fileowner"
 )
 
 // The bridge's platform credentials (MCP_CUSTOM, MCP_AUTH, ...) exist only in
@@ -127,8 +127,7 @@ func claudeHookDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("check claude hook dir: %w", err)
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !ok || int(stat.Uid) != os.Getuid() {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !fileowner.OwnedByMe(dir, info) {
 		return "", fmt.Errorf("claude hook dir %s is not a directory owned by this user", dir)
 	}
 	if info.Mode().Perm() != mode {

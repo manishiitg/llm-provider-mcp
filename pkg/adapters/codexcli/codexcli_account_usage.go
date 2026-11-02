@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -27,7 +26,7 @@ func ReadAccountUsage(ctx context.Context, environment []string) (llmtypes.Accou
 	cmd := exec.CommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, environment...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

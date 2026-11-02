@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -80,7 +79,7 @@ func ReapSessionProcessTree(ctx context.Context, sessionName string) {
 		return
 	}
 	for _, pid := range all {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		_ = termProcess(pid)
 	}
 	timer := time.NewTimer(reapGraceTimeout)
 	select {
@@ -91,7 +90,7 @@ func ReapSessionProcessTree(ctx context.Context, sessionName string) {
 	// Reverse order: children before parents, so grandchildren can't briefly
 	// reparent to init between their parent's death and their own.
 	for i := len(all) - 1; i >= 0; i-- {
-		_ = syscall.Kill(all[i], syscall.SIGKILL)
+		_ = killProcess(all[i])
 	}
 }
 

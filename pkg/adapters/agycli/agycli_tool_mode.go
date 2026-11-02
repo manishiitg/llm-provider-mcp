@@ -2,6 +2,7 @@ package agycli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,9 +11,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/filelock"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/nativeshell"
 )
 
@@ -201,14 +202,17 @@ func agyHoldToolModeHook(workingDir, mode string, hostPorts ...string) (func(), 
 		lockFile.Close()
 		return nil, err
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if ok, err := filelock.TryLock(lockFile); err != nil || !ok {
 		lockFile.Close()
+		if err == nil {
+			err = errors.New("lock is held")
+		}
 		return nil, fmt.Errorf("agy workspace %q already has a hook holder in another process: %w", workingDir, err)
 	}
 	locked := true
 	defer func() {
 		if locked {
-			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			filelock.Unlock(lockFile)
 			_ = lockFile.Close()
 		}
 	}()
@@ -463,7 +467,7 @@ func agyReleaseToolModeHook(workingDir string) {
 		if removeBackup {
 			_ = os.Remove(path + ".agentworks-backup")
 		}
-		_ = syscall.Flock(int(hold.lockFile.Fd()), syscall.LOCK_UN)
+		filelock.Unlock(hold.lockFile)
 		_ = hold.lockFile.Close()
 	}()
 	raw, err := os.ReadFile(path)

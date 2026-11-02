@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/fileowner"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
@@ -86,12 +86,12 @@ func cursorNativeEntry(args, toolWrites []string) ([]string, error) {
 		if e != nil {
 			return nil, fmt.Errorf("Cursor's bundled Node entry is unavailable; update the installed Cursor CLI")
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) || info.Mode().Perm()&0002 != 0 {
+		uid, gid, ok := fileowner.IDs(info)
+		if !ok || (uid != os.Geteuid() && uid != 0) || info.Mode().Perm()&0002 != 0 {
 			return fallback("untrusted_owner_or_world_writable")
 		}
 		if info.Mode().Perm()&0020 != 0 {
-			if int(stat.Gid) != os.Getegid() {
+			if gid != os.Getegid() {
 				return fallback("untrusted_group")
 			}
 			if !groupChecked {

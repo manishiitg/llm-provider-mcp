@@ -6,7 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 var agyPrivateHomesSweepOnce sync.Once
@@ -15,7 +16,7 @@ func agyPIDDead(pid int) bool {
 	if pid <= 0 || pid == os.Getpid() {
 		return false
 	}
-	return syscall.Kill(pid, 0) == syscall.ESRCH
+	return !procshutdown.Alive(pid)
 }
 
 // Private homes from a killed backend hold only that backend's MCP config,

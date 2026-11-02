@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
@@ -174,7 +173,7 @@ func (p *cursorSDKProcess) finish(err error) {
 		close(p.done)
 		p.stop()
 		if p.cmd.Process != nil {
-			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+			_ = procshutdown.KillGroup(p.cmd.Process.Pid)
 		}
 		_ = p.stdin.Close()
 	})
@@ -349,7 +348,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	processCtx, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(processCtx, node, bridge, entry)
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	cmd.Env = append(llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts), "NO_OPEN_BROWSER=1")
 	if llmtypes.CLIHasPrivateRuntime(opts) {

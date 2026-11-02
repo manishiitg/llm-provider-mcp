@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"io"
 	"os/exec"
 	"sync"
 	"sync/atomic"
-	"syscall"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // Pi RPC uses LF-delimited JSON, not terminal output. Replies are dispatched
@@ -102,7 +103,7 @@ func (r *piRPC) finish(err error) {
 		close(r.done)
 		r.stop()
 		if r.cmd != nil && r.cmd.Process != nil {
-			_ = syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
+			_ = procshutdown.KillGroup(r.cmd.Process.Pid)
 		}
 		_ = r.stdin.Close()
 	})

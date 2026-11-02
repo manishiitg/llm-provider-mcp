@@ -16,6 +16,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
+	golang.org/x/sys v0.45.0
 	google.golang.org/genai v1.57.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.49.1
@@ -105,7 +106,6 @@ require (
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.83.1 // indirect
