@@ -77,8 +77,8 @@ async function main() {
   const options = () => ({
     apiKey: process.env.CURSOR_API_KEY || undefined,
     model: start.model,
-    // Rules (system prompt) and skills come from this chat's own folder Go prepared (start.dirs); its MCP
-    // servers arrive explicitly in start.mcp_servers.
+    // Rules (system prompt) and MCP servers come from the .cursor files Go prepared; a bound folder's
+    // servers also arrive explicitly in start.mcp_servers.
     local: { cwd: start.cwd, ...(store ? { store } : {}), ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'] },
     ...(start.mode ? { mode: start.mode } : {}),
     ...(start.tools ? { tools: start.tools } : {}),
