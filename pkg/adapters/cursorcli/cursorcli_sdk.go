@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -383,6 +384,26 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		allCleanup()
 		return nil, "", false, err
 	}
+	// The SDK reports MCP server start failures only on stderr. Keep its MCP and error lines (bounded), or a
+	// missing bridge shows up only as "MCP server does not exist" with no reason.
+	if stderr, stderrErr := cmd.StderrPipe(); stderrErr == nil && c.logger != nil {
+		go func() {
+			scanner := bufio.NewScanner(stderr)
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+			for kept := 0; scanner.Scan(); {
+				line := strings.TrimSpace(scanner.Text())
+				lower := strings.ToLower(line)
+				if kept >= 200 || !(strings.Contains(lower, "mcp") || strings.Contains(lower, "error") || strings.Contains(lower, "warn")) {
+					continue
+				}
+				kept++
+				if len(line) > 400 {
+					line = line[:400]
+				}
+				c.logger.Infof("[CURSOR_SDK] stderr owner=%s %s", owner, line)
+			}
+		}()
+	}
 	p := &cursorSDKProcess{cmd: cmd, stdin: stdin, events: make(chan cursorSDKEvent, 4096), done: make(chan struct{}), exited: make(chan struct{}), acks: map[string]chan bool{}, stop: stop}
 	if err = cmd.Start(); err != nil {
 		stop()
@@ -471,6 +492,14 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 			rememberParams(account, startModel["id"].(string), event.ModelParams, time.Now())
 		}
 		if c.logger != nil {
+			servers, _ := start["mcp_servers"].(map[string]any)
+			names := make([]string, 0, len(servers))
+			for name := range servers {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			// Names only: which MCP servers this agent was given ("MCP server does not exist" shows here).
+			c.logger.Infof("[CURSOR_SDK] mcp agent=%s servers=%v artifacts_private=%t", event.AgentID, names, artifacts != cwd)
 			lookup := "-"
 			if event.ModelLookupMS != nil {
 				lookup = fmt.Sprintf("%dms", *event.ModelLookupMS)
