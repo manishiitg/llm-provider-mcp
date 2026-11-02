@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -230,6 +231,8 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 		stop()
 		return nil, err
 	}
+	stderr := &clisandbox.StderrTail{}
+	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		stop()
@@ -253,6 +256,9 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
+		if tail := strings.TrimSpace(stderr.String()); tail != "" {
+			a.logger.Infof("[CLI_EXIT] provider=muse-cli serve exited (%v): %s", err, tail)
+		}
 		r.finish(fmt.Errorf("muse serve exited: %v", err))
 		cleanupSandbox()
 		close(r.exited)

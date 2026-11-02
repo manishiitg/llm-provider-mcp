@@ -150,6 +150,8 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 		return nil, err
 	}
 	cleanup := func() { cleanupSandbox() }
+	stderr := &clisandbox.StderrTail{}
+	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		stop()
@@ -173,6 +175,9 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
+		if tail := strings.TrimSpace(stderr.String()); tail != "" {
+			c.logger.Infof("[CLI_EXIT] provider=codex-cli app-server exited (%v): %s", err, tail)
+		}
 		r.finish(fmt.Errorf("codex app-server exited: %v", err))
 		cleanup()
 		close(r.exited)

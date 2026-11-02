@@ -472,6 +472,27 @@ func groupOwns(slot, dir string) bool {
 	return ok && strconv.Itoa(gid) == group.Gid
 }
 
+// groupCovers reports whether path belongs to the slot's own group and the group's permission bits already give
+// what a grant asks for: read (and search, for a folder), plus write when asked.
+func groupCovers(slot, path string, info os.FileInfo, write bool) bool {
+	group, err := user.LookupGroup(slot)
+	if err != nil {
+		return false
+	}
+	gid, ok := fileGID(info)
+	if !ok || strconv.Itoa(gid) != group.Gid {
+		return false
+	}
+	need := os.FileMode(0o040)
+	if write {
+		need |= 0o020
+	}
+	if info.IsDir() {
+		need |= 0o010
+	}
+	return info.Mode().Perm()&need == need
+}
+
 // GrantAccess gives one slot read and write on a shared file the platform owns (a CLI login that
 // rotates its tokens and so cannot be copied), and lets it reach the file. Done once per slot and path.
 func GrantAccess(slot, path string) error {
@@ -541,6 +562,17 @@ func grantLocked(slot, path string, write bool) error {
 	}
 	if err := traverse(slot, clean); err != nil {
 		return err
+	}
+	// Something already the slot's through its group (its own CLI home, made group slot by ShareTree) needs no
+	// entry: a named-user entry outranks the group's, so a read grant there left the slot unable to write its own
+	// temp folder (Cursor's slot launch: "agentworks-private-pts-*.json: permission denied", PLAT-872-86). Drop one
+	// an earlier launch left.
+	if groupCovers(slot, clean, info, write) {
+		if info.IsDir() {
+			_ = setfacl("-d", "-x", "u:"+slot, clean)
+		}
+		_ = setfacl("-x", "u:"+slot, clean)
+		return nil
 	}
 	perm := "r"
 	if write {
