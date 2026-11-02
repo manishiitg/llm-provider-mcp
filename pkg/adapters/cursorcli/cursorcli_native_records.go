@@ -20,9 +20,6 @@ func NativeRecordPath(workingDir, sessionID, home string) string {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	if path := cursorACPStoredSessionPath(home, sessionID); path != "" {
-		return path
-	}
 	return cursorStoreDBForNativeSession(home, workingDir, sessionID)
 }
 
@@ -101,10 +98,6 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 func NativeRecordPathFromConfigDir(configDir, workingDir, sessionID string) string {
 	if !filepath.IsAbs(configDir) || sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
 		return ""
-	}
-	acp := filepath.Join(configDir, "acp-sessions", sessionID, "store.db")
-	if info, err := os.Stat(acp); err == nil && !info.IsDir() {
-		return acp
 	}
 	if workingDir == "" {
 		return ""

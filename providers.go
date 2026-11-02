@@ -62,9 +62,8 @@ const (
 	CodexCLITransportTmux      = "tmux"
 
 	// EnvCursorCLITransport selects the Cursor transport: "sdk" (default, official Cursor SDK
-	// local runtime, which steers a running turn) or "acp".
+	// local runtime, which steers a running turn) or "tmux".
 	EnvCursorCLITransport  = "CURSOR_CLI_TRANSPORT"
-	CursorCLITransportACP  = "acp"
 	CursorCLITransportTmux = "tmux"
 	CursorCLITransportSDK  = "sdk"
 

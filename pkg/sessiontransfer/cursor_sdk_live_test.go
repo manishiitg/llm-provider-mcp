@@ -25,7 +25,6 @@ func TestCursorSDKNativeTransferRoundTripLive(t *testing.T) {
 	defer cancel()
 	sourceWork, destWork, sourceRuntime, destRuntime := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	adapter := cursorcli.NewCursorCLIAdapter("", "composer-2.5[fast=false]", nil)
-	adapter.SetSDKTransport(true)
 	turn := func(work, runtime, id, marker, prompt string) (*llmtypes.ContentResponse, string) {
 		t.Helper()
 		opts := []llmtypes.CallOption{cursorcli.WithWorkingDir(work), cursorcli.WithInteractiveSessionID("native-sdk-" + filepath.Base(runtime)), cursorcli.WithPersistentInteractiveSession(false), llmtypes.WithCLIRuntimeDir(runtime)}

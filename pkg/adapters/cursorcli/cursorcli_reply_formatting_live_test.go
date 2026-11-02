@@ -27,7 +27,7 @@ import (
 // real pane wraps the way we think. Only a live run closes that gap.
 func TestCursorCLIRealReplyFormattingFidelityE2E(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupACP(context.Background()) })
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	ownerSessionID := "cursor-real-reply-format-" + cursorRandomHex(4)
@@ -68,29 +68,16 @@ Second paragraph for %s, also one single long line of at least one hundred and f
 	}
 	content := strings.TrimSpace(resp.Choices[0].Content)
 
-	handle, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(resp)
-	if !ok {
-		t.Fatal("missing native handle")
-	}
-	transcript, ok, err := ReadNativeTranscript(handle.WorkingDir, handle.NativeSessionID)
-	if err != nil || !ok || len(transcript.Messages) == 0 {
-		t.Fatalf("native transcript: %v", err)
-	}
-	var nativeFinal strings.Builder
-	for _, p := range transcript.Messages[len(transcript.Messages)-1].Parts {
-		if text, ok := p.(llmtypes.TextContent); ok {
-			nativeFinal.WriteString(text.Text)
-		}
-	}
-	_ = drainCursorStream(streamChan)
+	// The SDK keeps no transcript we read; the streamed reply is what the person watched arrive.
+	streamed := drainCursorStream(streamChan)
 
 	testcontracts.AssertFinalAnswerPreservesStructure(t, testcontracts.ReplyFormattingCase{
 		Provider:       "cursor-cli",
-		NativeFinal:    nativeFinal.String(),
+		NativeFinal:    streamed.content,
 		Extracted:      content,
 		WantParagraphs: 2,
 		WantBullets:    3,
 		UserGoal:       "Return the two long paragraphs and the three-item list with their markdown structure intact.",
-		ExpectedNote:   "Real ACP markdown is compared against this same session’s committed native answer.",
+		ExpectedNote:   "Real Cursor SDK markdown is compared against the same turn’s streamed reply.",
 	})
 }

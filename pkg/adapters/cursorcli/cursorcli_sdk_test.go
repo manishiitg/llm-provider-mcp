@@ -190,7 +190,6 @@ func TestCursorSDKSteersTheRunningTurn(t *testing.T) {
 	}
 	t.Setenv("CURSOR_SDK_PATH", entry)
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
-	c.SetSDKTransport(true)
 	stream := make(chan llmtypes.StreamChunk, 64)
 	owner := "chat-steer-test"
 	type result struct {
@@ -245,7 +244,6 @@ func TestCursorSDKStopCancelsTheRunningTurn(t *testing.T) {
 	}
 	t.Setenv("CURSOR_SDK_PATH", entry)
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
-	c.SetSDKTransport(true)
 	stream := make(chan llmtypes.StreamChunk, 64)
 	owner := "chat-stop-test"
 	done := make(chan error, 1)
@@ -256,7 +254,7 @@ func TestCursorSDKStopCancelsTheRunningTurn(t *testing.T) {
 	}()
 	for chunk := range stream {
 		if chunk.Type == llmtypes.StreamChunkTypeToolCallStart {
-			if err := InterruptACP(context.Background(), owner, "Escape"); err != nil {
+			if err := SendCursorInteractiveControlKey(context.Background(), owner, "Escape"); err != nil {
 				t.Fatalf("stop did not reach the SDK turn: %v", err)
 			}
 		}
@@ -280,7 +278,6 @@ func TestCursorSDKEarlySteerJoinsTheSameTurn(t *testing.T) {
 	}
 	t.Setenv("CURSOR_SDK_PATH", entry)
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
-	c.SetSDKTransport(true)
 	stream := make(chan llmtypes.StreamChunk, 256)
 	owner := "chat-early-steer"
 	done := make(chan *llmtypes.ContentResponse, 1)
@@ -330,7 +327,6 @@ func testCursorSDKFollowUpRun(t *testing.T, steer string) {
 	}
 	t.Setenv("CURSOR_SDK_PATH", entry)
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
-	c.SetSDKTransport(true)
 	stream := make(chan llmtypes.StreamChunk, 256)
 	owner := "chat-followup-paragraph-" + steer
 	done := make(chan *llmtypes.ContentResponse, 1)
@@ -368,7 +364,6 @@ func TestCursorSDKSteerDuringFailedLaunchIsNotSent(t *testing.T) {
 	}
 	t.Setenv("CURSOR_SDK_PATH", entry)
 	c := NewCursorCLIAdapter("", "composer-2.5", nil)
-	c.SetSDKTransport(true)
 	owner := "chat-failed-launch"
 	done := make(chan error, 1)
 	go func() {
