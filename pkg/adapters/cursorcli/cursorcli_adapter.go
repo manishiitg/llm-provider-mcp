@@ -59,18 +59,14 @@ func isCursorLegacyModelSelector(modelID string) bool {
 	}
 }
 
-// CursorCLIAdapter uses a persistent native ACP process for every turn, or the Cursor SDK bridge
-// when the server selects CURSOR_CLI_TRANSPORT=sdk.
+// CursorCLIAdapter runs every turn on the Cursor SDK bridge, or in a tmux terminal
+// when the server selects CURSOR_CLI_TRANSPORT=tmux.
 type CursorCLIAdapter struct {
 	tmuxTransport bool
 	apiKey        string
 	modelID       string
 	logger        interfaces.Logger
-	sdkTransport  bool
 }
-
-// SetSDKTransport selects the Cursor SDK bridge instead of ACP for this adapter.
-func (c *CursorCLIAdapter) SetSDKTransport(enabled bool) { c.sdkTransport = enabled }
 
 // NewCursorCLIAdapter creates a new CursorCLIAdapter.
 func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger) *CursorCLIAdapter {
@@ -81,13 +77,13 @@ func NewCursorCLIAdapter(apiKey string, modelID string, logger interfaces.Logger
 	}
 }
 
-// GenerateContent streams the native ACP turn and handles attended questions.
+// GenerateContent streams the Cursor turn.
 func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.MessageContent, options ...llmtypes.CallOption) (*llmtypes.ContentResponse, error) {
 	opts := &llmtypes.CallOptions{}
 	for _, opt := range options {
 		opt(opts)
 	}
-	// Native ACP runs inside the configured CLI confinement.
+	// Cursor runs inside the configured CLI confinement.
 	if err := llmtypes.ValidateCLISecurityLaunch(opts, llmtypes.ConfinedModes(opts)...); err != nil {
 		return nil, err
 	}
@@ -107,25 +103,20 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
 	}
 
-	tmux, sdk := c.tmuxTransport, c.sdkTransport
+	tmux := c.tmuxTransport
 	switch opts.CodingProviderTransport {
 	case "":
 	case "sdk":
-		tmux, sdk = false, true
+		tmux = false
 	case "tmux":
-		tmux, sdk = true, false
-	case "acp":
-		tmux, sdk = false, false
+		tmux = true
 	default:
 		return nil, fmt.Errorf("unsupported Cursor native transport %q", opts.CodingProviderTransport)
 	}
 	if tmux {
 		return c.generateContentTmux(ctx, messages, opts)
 	}
-	if sdk {
-		return c.generateContentSDK(ctx, messages, opts)
-	}
-	return c.generateContentACP(ctx, messages, opts)
+	return c.generateContentSDK(ctx, messages, opts)
 }
 
 // SearchWeb asks Cursor Agent CLI to use its web search capability and returns

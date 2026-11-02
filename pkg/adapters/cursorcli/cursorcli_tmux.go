@@ -1,6 +1,6 @@
 package cursorcli
 
-// The terminal transport is selected explicitly; ACP remains independent.
+// The terminal transport is selected explicitly (CURSOR_CLI_TRANSPORT=tmux).
 import (
 	"context"
 	"crypto/rand"
@@ -690,7 +690,7 @@ func (c *CursorCLIAdapter) buildCursorInteractiveLaunch(opts *llmtypes.CallOptio
 	}
 	if opts != nil && opts.Metadata != nil && opts.Metadata.Custom != nil {
 		// Match native ACP: --force must not bypass bridge-only or full-mode hooks.
-		if cursorACPBool(opts, MetadataKeyForce) && !cursorACPBool(opts, MetadataKeyDenyBuiltinTools) && !cursorFullNativeFromOptions(opts) {
+		if cursorMetaBool(opts, MetadataKeyForce) && !cursorMetaBool(opts, MetadataKeyDenyBuiltinTools) && !cursorFullNativeFromOptions(opts) {
 			args = append(args, "--force")
 		}
 		if autoReview, ok := opts.Metadata.Custom[MetadataKeyAutoReview].(bool); ok && autoReview {

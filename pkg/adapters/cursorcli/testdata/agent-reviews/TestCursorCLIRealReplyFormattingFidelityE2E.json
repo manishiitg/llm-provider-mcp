@@ -9,9 +9,9 @@
     "content is unchanged — this is about structure only; wording, numbers and punctuation must match what the model wrote"
   ],
   "output": {
-    "expected_note": "Real ACP markdown is compared against this same session’s committed native answer.",
-    "extracted_final": "First paragraph for FMT_72cbfee156, written as one single long line of at least one hundred and forty characters so that it is certain to be wrapped by a narrow terminal window.\n\nSecond paragraph for FMT_72cbfee156, also one single long line of at least one hundred and forty characters, again long enough that the terminal will certainly wrap it onto several rows.\n\n- first bullet for FMT_72cbfee156\n- second bullet for FMT_72cbfee156\n- third bullet for FMT_72cbfee156",
-    "native_final": "First paragraph for FMT_72cbfee156, written as one single long line of at least one hundred and forty characters so that it is certain to be wrapped by a narrow terminal window.\n\nSecond paragraph for FMT_72cbfee156, also one single long line of at least one hundred and forty characters, again long enough that the terminal will certainly wrap it onto several rows.\n\n- first bullet for FMT_72cbfee156\n- second bullet for FMT_72cbfee156\n- third bullet for FMT_72cbfee156",
+    "expected_note": "Real Cursor SDK markdown is compared against the same turn’s streamed reply.",
+    "extracted_final": "First paragraph for FMT_76f939a5b4, written as one single long line of at least one hundred and forty characters so that it is certain to be wrapped by a narrow terminal window.\n\nSecond paragraph for FMT_76f939a5b4, also one single long line of at least one hundred and forty characters, again long enough that the terminal will certainly wrap it onto several rows.\n\n- first bullet for FMT_76f939a5b4\n- second bullet for FMT_76f939a5b4\n- third bullet for FMT_76f939a5b4",
+    "native_final": "First paragraph for FMT_76f939a5b4, written as one single long line of at least one hundred and forty characters so that it is certain to be wrapped by a narrow terminal window.\n\nSecond paragraph for FMT_76f939a5b4, also one single long line of at least one hundred and forty characters, again long enough that the terminal will certainly wrap it onto several rows.\n\n- first bullet for FMT_76f939a5b4\n- second bullet for FMT_76f939a5b4\n- third bullet for FMT_76f939a5b4",
     "provider": "cursor-cli",
     "raw_provider_output": "",
     "user_goal": "Return the two long paragraphs and the three-item list with their markdown structure intact.",

@@ -368,7 +368,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		Provider:                    ProviderCursorCLI,
 		DisplayName:                 "Cursor CLI",
 		CLIName:                     "cursor-agent",
-		Transport:                   CodingAgentTransportACP,
+		Transport:                   CodingAgentTransportSDK,
 		RuntimeBinary:               "cursor-agent",
 		InstallCommand:              "curl --proto '=https' --proto-redir '=https' --tlsv1.2 https://cursor.com/install | bash",
 		VersionProbeArgs:            []string{"--version"},
@@ -376,7 +376,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		RequiresWorkingDir:          true,
 		RequiresOwnerSessionID:      true,
 		UsesPersistentSession:       true,
-		SupportsLiveInput:           false,
+		SupportsLiveInput:           true, // run.steer adds the message at the next safe step.
 		SupportsInterrupt:           true,
 		SupportsTerminalStream:      false,
 		SupportsFinalExtraction:     true,
@@ -390,11 +390,11 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		HandlesTmuxSessionLoss:      false,
 		StructuredFallback:          false,
 		ImageInputInteractive:       true,
-		SurfacesTokenUsage:          false,
-		TokenUsageSource:            "",
+		SurfacesTokenUsage:          true,
+		TokenUsageSource:            "sdk-events",
 		PlanUsageUnavailableReason:  "Cursor CLI exposes no local or structured plan usage; only its private account API",
-		AdapterReadsTranscript:      true,
-		TranscriptPathTemplate:      "~/.cursor/acp-sessions/<sessionId>/store.db",
+		AdapterReadsTranscript:      false,
+		TranscriptPathTemplate:      "",
 		SupportsStructuredStreaming: true,
 		RequiresWorkspaceTrust:      false,
 		APIKeyEnvVars:               []string{"CURSOR_API_KEY"},
@@ -560,17 +560,6 @@ func GetCodingAgentProviderContractForTransport(provider Provider, modelID, clau
 		return CodingAgentProviderContract{}, false
 	}
 	if normalizedProvider == ProviderCursorCLI {
-		if transport, err := resolveCursorCLITransport(); err == nil && transport == CursorCLITransportSDK {
-			contract.Transport = CodingAgentTransportSDK
-			contract.SupportsLiveInput = true // run.steer adds the message at the next safe step.
-			contract.TranscriptPathTemplate = ""
-			contract.AdapterReadsTranscript = false
-			contract.SurfacesTokenUsage = true
-			contract.TokenUsageSource = "sdk-events"
-		}
-	}
-
-	if normalizedProvider == ProviderCursorCLI {
 		if transport, err := resolveCursorCLITransport(); err == nil && transport == CursorCLITransportTmux {
 			contract.Transport = CodingAgentTransportTmux
 			contract.SupportsLiveInput = true
@@ -580,6 +569,7 @@ func GetCodingAgentProviderContractForTransport(provider Provider, modelID, clau
 			contract.HandlesTmuxSessionLoss = true
 			contract.SurfacesTokenUsage = true
 			contract.TokenUsageSource = "estimated"
+			contract.AdapterReadsTranscript = true
 			contract.TranscriptPathTemplate = "~/.cursor/chats/<cwd-hash>/<sessionId>/store.db"
 		}
 	}

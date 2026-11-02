@@ -22,13 +22,14 @@ import (
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
 )
 
 // The Cursor SDK transport (CURSOR_CLI_TRANSPORT=sdk) runs the official @cursor/sdk local agent in a
-// node bridge, one per chat, kept between turns. Unlike ACP it steers a running turn: run.steer adds
+// node bridge, one per chat, kept between turns. It steers a running turn: run.steer adds
 // the message at the next safe step (owner decision 2026-10-27, PLAT-872).
 
 //go:embed cursor_sdk_bridge.cjs
@@ -150,6 +151,8 @@ type cursorSDKSession struct {
 	running     bool
 	prompted    bool // the bridge has this turn's prompt: a steer handed over now cannot be lost to a failed launch
 }
+
+var cursorSDKSharedStoreStart sync.Mutex
 
 var cursorSDKSessions = struct {
 	sync.Mutex
@@ -281,7 +284,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	if err := llmtypes.PrepareCodingSDK(ctx, "cursor-cli", opts.StreamChan); err != nil {
 		return nil, "", false, err
 	}
-	// Rules, MCP and skills go where ACP puts them: the private runtime for a Crew bound to a person's own
+	// Rules, MCP and skills go to the private runtime for a Crew bound to a person's own
 	// folder (PLAT-856-145), never .cursor/ inside that folder.
 	artifacts := llmtypes.CLIArtifactDirectory(opts, cwd)
 	cleanup, err := prepareCursorProjectFiles(artifacts, system, opts, owner)
@@ -393,26 +396,41 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	}
 	if artifacts != cwd {
 		start["dirs"] = []string{artifacts}
-		// The SDK documents rules and skills from local.dirs, not MCP: pass the prepared servers (with the
-		// AgentWorks bridge) explicitly so a bound-folder chat never loses its tools.
-		if raw, readErr := os.ReadFile(filepath.Join(artifacts, ".cursor", "mcp.json")); readErr == nil {
-			var mcp struct {
-				Servers map[string]any `json:"mcpServers"`
-			}
-			if json.Unmarshal(raw, &mcp) == nil && len(mcp.Servers) > 0 {
-				start["mcp_servers"] = mcp.Servers
-			}
+	}
+	// Pass this chat's own MCP servers (with the AgentWorks bridge) explicitly. The SDK reads rules and skills
+	// from local.dirs, not MCP, and .cursor/mcp.json in a folder two chats share holds whichever chat wrote
+	// it last: read from the file, one chat's tools reached the other chat's servers.
+	if mcpJSON := cursorMetaString(opts, MetadataKeyMCPConfig); mcpJSON != "" {
+		normalized, normErr := normalizeCursorMCPConfigForCLI(mcpJSON)
+		if normErr == nil {
+			normalized, _, normErr = externalizeCursorBridgeTokens(normalized, artifacts)
+		}
+		if normErr != nil {
+			p.close()
+			return nil, "", false, normErr
+		}
+		var mcp struct {
+			Servers map[string]any `json:"mcpServers"`
+		}
+		if json.Unmarshal([]byte(normalized), &mcp) == nil && len(mcp.Servers) > 0 {
+			start["mcp_servers"] = mcp.Servers
 		}
 	}
-	// Only an SDK agent handle can be resumed; an ACP session ID starts a new agent with saved history.
+	// Only an SDK agent handle can be resumed; any other ID starts a new agent with saved history.
 	if strings.HasPrefix(resume, "agent-") {
 		start["agent_id"] = resume
 	}
-	if mode := cursorACPString(opts, MetadataKeyMode); mode == "plan" {
+	if mode := cursorMetaString(opts, MetadataKeyMode); mode == "plan" {
 		start["mode"] = mode
 	}
-	if cursorACPBool(opts, MetadataKeyDenyBuiltinTools) && !cursorFullNativeFromOptions(opts) {
+	if cursorMetaBool(opts, MetadataKeyDenyBuiltinTools) && !cursorFullNativeFromOptions(opts) {
 		start["tools"] = []string{"mcp"}
+	}
+	if storeRoot == "" {
+		// Without a private runtime every bridge opens the SDK's one shared store; two opening it at the same
+		// moment fail with "database is locked". Start them one at a time; runs still go in parallel.
+		cursorSDKSharedStoreStart.Lock()
+		defer cursorSDKSharedStoreStart.Unlock()
 	}
 	if err = p.send(start); err != nil {
 		p.close()
@@ -427,7 +445,8 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 			if m := cursorModelRefusal.FindStringSubmatch(event.Error); m != nil {
 				// The account's model list (on a company account, the models its administrator allows) has no such
 				// model: say so plainly, with what is allowed.
-				return nil, "", false, fmt.Errorf("%s is not allowed on this account; allowed: %s. Pick another model.", m[1], strings.TrimSpace(m[2]))
+				return nil, "", false, &llmerrors.Error{Kind: llmerrors.KindModelNotFound, Provider: "cursor-cli", Model: m[1],
+					Err: fmt.Errorf("%s is not allowed on this account; allowed: %s. Pick another model.", m[1], strings.TrimSpace(m[2]))}
 			}
 			return nil, "", false, fmt.Errorf("Cursor SDK did not start: %s", event.Error)
 		}
@@ -511,7 +530,7 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 		system = llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts)
 	}
 	model := cursorModelWithReasoning(cursorCLIModelForLaunch(c.modelID), opts)
-	if override := cursorACPString(opts, MetadataKeyCursorModel); override != "" {
+	if override := cursorMetaString(opts, MetadataKeyCursorModel); override != "" {
 		model = cursorModelWithReasoning(override, opts)
 	}
 	config := map[string]any{"cwd": cwd, "runtime": opts.CLIRuntimeDir, "system": system, "model": model, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCursorStructuredEnv(c.apiKey), opts), "security": opts.CLISecurity, "skills": llmtypes.AttachedSkillsFromOptions(opts)}
@@ -664,7 +683,9 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					if args == "" || args == "null" {
 						args = "{}"
 					}
-					t = &tool{name: event.Name, args: args, started: time.Now()}
+					name := event.Name
+					name, args = cursorSDKMCPToolCall(name, args)
+					t = &tool{name: name, args: args, started: time.Now()}
 					tools[event.CallID] = t
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, Metadata: meta})
 				}
@@ -674,6 +695,8 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					var plain string
 					if json.Unmarshal(event.Result, &plain) == nil {
 						result = plain
+					} else if text, ok := cursorSDKMCPToolResult(event.Result); ok {
+						result = text
 					}
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
 				}
@@ -700,7 +723,7 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					return nil, fmt.Errorf("Cursor SDK turn failed: %s", event.Error)
 				}
 				if len(tools) == 0 {
-					if err := cursorACPPlanFailure(text.String(), s.model); err != nil {
+					if err := cursorPlanFailure(text.String(), s.model); err != nil {
 						return nil, err
 					}
 				}
@@ -798,3 +821,50 @@ func SDKRuntimeAvailable() error { _, err := cursorSDKEntry(); return err }
 
 // cursorModelRefusal matches the Cursor SDK's refusal of a model missing from the account's model list.
 var cursorModelRefusal = regexp.MustCompile(`Cannot use this model: ([^.\s]+(?:\.[^.\s]+)*)\. Available models: ([^.]*(?:\.[0-9][^.]*)*)\.`)
+
+// cursorSDKMCPToolCall names an MCP call by its server and tool (mcp__<server>__<tool>) with the tool's own
+// arguments, as people and receipts expect; the SDK reports every MCP call as "mcp" with a wrapper.
+func cursorSDKMCPToolCall(name, args string) (string, string) {
+	var mcp struct {
+		Server string          `json:"providerIdentifier"`
+		Tool   string          `json:"toolName"`
+		Args   json.RawMessage `json:"args"`
+	}
+	if json.Unmarshal([]byte(args), &mcp) != nil || mcp.Server == "" || mcp.Tool == "" {
+		return name, args
+	}
+	inner := string(mcp.Args)
+	if inner == "" || inner == "null" {
+		inner = "{}"
+	}
+	return "mcp__" + mcp.Server + "__" + mcp.Tool, inner
+}
+
+// cursorSDKMCPToolResult returns the text of an MCP result the SDK wraps as
+// {"status":"success","value":{"content":[{"text":{"text":"..."}}]}}.
+func cursorSDKMCPToolResult(raw json.RawMessage) (string, bool) {
+	var wrapped struct {
+		Status string `json:"status"`
+		Value  struct {
+			Content []struct {
+				Text struct {
+					Text string `json:"text"`
+				} `json:"text"`
+			} `json:"content"`
+		} `json:"value"`
+		Error any `json:"error"`
+	}
+	if json.Unmarshal(raw, &wrapped) != nil || wrapped.Status == "" || len(wrapped.Value.Content) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(wrapped.Value.Content))
+	for _, c := range wrapped.Value.Content {
+		if c.Text.Text != "" {
+			parts = append(parts, c.Text.Text)
+		}
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}

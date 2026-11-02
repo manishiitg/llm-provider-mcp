@@ -65,10 +65,7 @@ func sendCodingAgentInput(ctx context.Context, provider Provider, modelID, owner
 		if contract.Transport == CodingAgentTransportTmux {
 			return cursorcli.SendCursorInteractiveInput(ctx, ownerSessionID, message)
 		}
-		if contract.Transport == CodingAgentTransportSDK {
-			return cursorcli.SendCursorSDKInput(ctx, ownerSessionID, message)
-		}
-		return &CodingAgentContinuationError{Kind: CodingAgentContinuationErrorNonContinuable, Provider: normalizedProvider, Reason: "Cursor ACP has no live input"}
+		return cursorcli.SendCursorSDKInput(ctx, ownerSessionID, message)
 	case ProviderCodexCLI:
 		return SendCodexCLIInteractiveInput(ctx, ownerSessionID, message)
 	case ProviderPiCLI:

@@ -12,7 +12,7 @@ import (
 
 func TestCursorCLIRealRuntimeSelfCheckContract(t *testing.T) {
 	requireRealCursorCLIE2E(t)
-	t.Cleanup(func() { _ = CleanupACP(context.Background()) })
+	t.Cleanup(func() { _ = CleanupCursorCLIInteractiveSessions(context.Background()) })
 
 	adapter := NewCursorCLIAdapter("", "cursor-cli", &MockLogger{})
 	sessionPrefix := "cursor-runtime-self-check-" + cursorRandomHex(4)

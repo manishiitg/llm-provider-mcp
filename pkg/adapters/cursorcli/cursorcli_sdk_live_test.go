@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-func TestCursorACPCancelAndReuseLive(t *testing.T) {
+func TestCursorSDKCancelAndReuseLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	owner := t.Name()
-	defer closeCursorACP(owner)
+	defer closeCursorSDKInstance(owner, nil)
 	cwd := t.TempDir()
 	marker := filepath.Join(cwd, "started.json")
 	script := writeCursorSlowContractMCPServer(t, marker)
@@ -46,7 +46,7 @@ func TestCursorACPCancelAndReuseLive(t *testing.T) {
 		t.Fatalf("slow tool reported completion early: %v", err)
 	case <-time.After(2 * time.Second):
 	}
-	if err := InterruptACP(ctx, owner, "Escape"); err != nil {
+	if err := SendCursorInteractiveControlKey(ctx, owner, "Escape"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -63,7 +63,61 @@ func TestCursorACPCancelAndReuseLive(t *testing.T) {
 	}
 }
 
-func TestCursorACPParallelMCPIsolationLive(t *testing.T) {
+// A message sent while the turn waits on a slow tool joins that same turn (steer); nothing is dropped.
+func TestCursorSDKSteerDuringSlowToolLive(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	owner := t.Name()
+	defer closeCursorSDKInstance(owner, nil)
+	cwd := t.TempDir()
+	marker := filepath.Join(cwd, "started.json")
+	script := writeCursorSlowContractMCPServer(t, marker)
+	config := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, script)
+	opts := []llmtypes.CallOption{WithWorkingDir(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithMCPConfig(config), WithDenyBuiltinTools(true)}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	a := NewCursorCLIAdapter("", "composer-2.5", nil)
+	steerToken := "STEER_" + cursorRandomHex(4)
+	type result struct {
+		resp *llmtypes.ContentResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call api-bridge contract_echo_token with token STEER_TEST. Wait for the result and report it.")}, opts...)
+		done <- result{r, err}
+	}()
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		select {
+		case r := <-done:
+			t.Fatalf("turn ended before tool started: %v", r.err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if err := SendCursorSDKInput(ctx, owner, "Also, at the end of your reply, write the word "+steerToken+" on its own line."); err != nil {
+		t.Fatalf("steer not taken: %v", err)
+	}
+	var r result
+	select {
+	case r = <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	text := r.resp.Choices[0].Content
+	if !strings.Contains(text, "SLOW_BRIDGE_TOOL_OK_") || !strings.Contains(text, steerToken) {
+		t.Fatalf("steered turn must answer both the tool and the steer: %q", text)
+	}
+	t.Logf("steered answer: %q", text)
+}
+
+func TestCursorSDKParallelMCPIsolationLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	cwd := t.TempDir()
 	type result struct {
@@ -74,13 +128,13 @@ func TestCursorACPParallelMCPIsolationLive(t *testing.T) {
 	results := make(chan result, 2)
 	for _, label := range []string{"one", "two"} {
 		owner := t.Name() + label
-		defer closeCursorACP(owner)
+		defer closeCursorSDKInstance(owner, nil)
 		script := writeCursorIsolationMCPServer(t, label, filepath.Join(cwd, label+".json"))
 		config := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, script)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			a := NewCursorCLIAdapter("", "composer-2.5", nil)
+			a := NewCursorCLIAdapter("", "composer-2.5", &MockLogger{})
 			r, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Call api-bridge write_contract with token isolated. Reply only with its result.")}, WithWorkingDir(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithMCPConfig(config), WithDenyBuiltinTools(true))
 			text := ""
 			if r != nil && len(r.Choices) > 0 {
@@ -98,10 +152,10 @@ func TestCursorACPParallelMCPIsolationLive(t *testing.T) {
 }
 
 // PLAT-872-21: same-process continuity, restart resume, no replay and scoped cleanup.
-func TestCursorACPLifecycleLive(t *testing.T) {
+func TestCursorSDKLifecycleLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
 	owner := t.Name()
-	defer closeCursorACP(owner)
+	defer closeCursorSDKInstance(owner, nil)
 	cwd := t.TempDir()
 	// PLAT-872: unavailable selectors used to become EOF/network retries.
 	rejected := NewCursorCLIAdapter("", "agentworks-unavailable-model", nil)
@@ -117,7 +171,7 @@ func TestCursorACPLifecycleLive(t *testing.T) {
 	a := NewCursorCLIAdapter("", "composer-2.5", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	token := "ACP_MEMORY_" + cursorRandomHex(5)
+	token := "SDK_MEMORY_" + cursorRandomHex(5)
 	options := []llmtypes.CallOption{WithWorkingDir(cwd), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithForce()}
 	run := func(prompt, resume string) *llmtypes.ContentResponse {
 		t.Helper()
@@ -143,23 +197,24 @@ func TestCursorACPLifecycleLive(t *testing.T) {
 	}
 	first := run("Remember "+token+". Reply exactly ACK.", "")
 	h, ok := llmtypes.ExtractCodingProviderSessionHandleFromResponse(first)
-	if !ok || h.Transport != "acp" || h.NativeSessionID == "" || h.TmuxSession != "" {
+	if !ok || h.Transport != "sdk" || h.NativeSessionID == "" || h.TmuxSession != "" {
 		t.Fatalf("invalid handle %+v", h)
 	}
-	cursorACPSessions.Lock()
-	s := cursorACPSessions.sessions[owner]
-	cursorACPSessions.Unlock()
-	pid := s.rpc.cmd.Process.Pid
+	cursorSDKSessions.Lock()
+	s := cursorSDKSessions.sessions[owner]
+	cursorSDKSessions.Unlock()
+	proc := s.proc
+	pid := proc.cmd.Process.Pid
 	second := run("What token did I ask you to remember? Reply only that token.", "")
 	if strings.TrimSpace(second.Choices[0].Content) != token {
 		t.Fatal("lost context: " + second.Choices[0].Content)
 	}
-	if s.rpc.cmd.Process.Pid != pid {
+	if s.proc == nil || s.proc.cmd.Process.Pid != pid {
 		t.Fatal("warm process replaced")
 	}
-	closeCursorACP(owner)
+	closeCursorSDKInstance(owner, nil)
 	select {
-	case <-s.rpc.exited:
+	case <-proc.exited:
 	default:
 		t.Fatal("cleanup left native process running")
 	}

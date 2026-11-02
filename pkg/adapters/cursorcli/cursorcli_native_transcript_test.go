@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/pathidentity"
 )
 
 // writeCursorStoreFixture builds a store.db shaped like cursor-agent's own
@@ -20,7 +21,8 @@ import (
 func writeCursorStoreFixture(t *testing.T, workingDir, agentID string, blobs []string) string {
 	t.Helper()
 	home, _ := os.UserHomeDir()
-	agentDir := filepath.Join(home, ".cursor", "acp-sessions", agentID)
+	sum := md5.Sum([]byte(filepath.Clean(pathidentity.Key(workingDir)))) //nolint:gosec
+	agentDir := filepath.Join(home, ".cursor", "chats", hex.EncodeToString(sum[:]), agentID)
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +119,11 @@ func TestReadNativeTranscriptKeepsTypedQueriesAndAssistantProse(t *testing.T) {
 		}
 	}
 	// PLAT-856-145: private config lookup must retain the exact native ID.
-	private, found, readErr := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "agent-1")
+	private, found, readErr := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "agent-1", workingDir)
 	if readErr != nil || !found || private.Path != dbPath || len(private.Messages) != len(want) {
 		t.Fatalf("private config transcript: %+v %v", private, readErr)
 	}
-	if _, found, err := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "../agent-1"); found || err != nil {
+	if _, found, err := ReadNativeTranscriptFromConfigDir(filepath.Join(home, ".cursor"), "../agent-1", workingDir); found || err != nil {
 		t.Fatal("relative native ID accepted")
 	}
 	// PLAT-872-55: terminal stores must stay in the issued config, never another

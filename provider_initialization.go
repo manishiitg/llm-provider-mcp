@@ -892,12 +892,10 @@ func resolveCursorCLITransport() (string, error) {
 	switch raw := strings.ToLower(strings.TrimSpace(os.Getenv(EnvCursorCLITransport))); raw {
 	case "", CursorCLITransportSDK:
 		return CursorCLITransportSDK, nil
-	case CursorCLITransportACP:
-		return CursorCLITransportACP, nil
 	case CursorCLITransportTmux:
 		return CursorCLITransportTmux, nil
 	default:
-		return "", fmt.Errorf("unsupported Cursor transport %q; use %s=sdk, acp or tmux", raw, EnvCursorCLITransport)
+		return "", fmt.Errorf("unsupported Cursor transport %q; use %s=sdk or tmux", raw, EnvCursorCLITransport)
 	}
 }
 
@@ -1183,7 +1181,6 @@ func initializeCursorCLI(config Config) (llmtypes.Model, error) {
 	}
 	logger.Infof("Cursor CLI transport: %s", transport)
 	llm := cursorcli.NewCursorCLIAdapter(apiKey, modelID, logger)
-	llm.SetSDKTransport(transport == CursorCLITransportSDK)
 	llm.SetTmuxTransport(transport == CursorCLITransportTmux)
 
 	successMetadata := LLMMetadata{

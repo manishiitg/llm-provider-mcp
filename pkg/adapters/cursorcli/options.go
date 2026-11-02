@@ -34,7 +34,7 @@ func WithCursorModel(model string) llmtypes.CallOption {
 	}
 }
 
-// WithResumeSessionID resumes a native Cursor ACP session.
+// WithResumeSessionID resumes a native Cursor session.
 func WithResumeSessionID(sessionID string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -87,7 +87,7 @@ func WithMode(mode string) llmtypes.CallOption {
 	}
 }
 
-// WithWorkingDir sets the Cursor Agent workspace/cwd for native ACP launch.
+// WithWorkingDir sets the Cursor Agent workspace/cwd.
 func WithWorkingDir(dir string) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
 		ensureMetadata(opts)
@@ -146,7 +146,7 @@ func WithPluginDirs(dirs []string) llmtypes.CallOption {
 	}
 }
 
-// WithAutoApproveWebSearch allows native ACP permission requests for
+// WithAutoApproveWebSearch allows terminal permission prompts for
 // web search, web fetch, and opening URLs in an already user-initiated agent
 // turn. It does not enable --force.
 func WithAutoApproveWebSearch() llmtypes.CallOption {
@@ -164,7 +164,7 @@ func WithInteractiveSessionID(sessionID string) llmtypes.CallOption {
 	}
 }
 
-// WithPersistentInteractiveSession keeps the native Cursor ACP process alive
+// WithPersistentInteractiveSession keeps the native Cursor process alive
 // across completed chat turns.
 func WithPersistentInteractiveSession(enabled bool) llmtypes.CallOption {
 	return func(opts *llmtypes.CallOptions) {
