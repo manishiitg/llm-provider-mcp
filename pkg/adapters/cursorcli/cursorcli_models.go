@@ -8,6 +8,9 @@ import (
 
 var knownCursorCLIModels = []string{
 	"composer-2.5",
+	// Cursor's Auto router (owner, 2 Nov): offered when a model's own allowance runs out ("You're out of usage.
+	// Switch to Auto"). An account without Auto answers with Cursor's own error.
+	"auto",
 	"grok-4.7",
 	"grok-4.6",
 	"glm-5.3",
