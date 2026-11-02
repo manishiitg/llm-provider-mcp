@@ -298,6 +298,8 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		}
 		privateArtifacts, artifacts = dir, dir
 	}
+	ensureMetadata(opts)
+	opts.Metadata.Custom[metadataKeySDKSubagents] = true
 	cleanup, err := prepareCursorProjectFiles(artifacts, system, opts, owner)
 	if err != nil {
 		if privateArtifacts != "" {
@@ -675,6 +677,7 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 		ended      bool
 	}
 	tools := map[string]*tool{}
+	var subagents []llmtypes.NativeSubagentTranscript
 	for {
 		select {
 		case event := <-p.events:
@@ -714,6 +717,16 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 						result = plain
 					} else if text, ok := cursorSDKMCPToolResult(event.Result); ok {
 						result = text
+					}
+					if t.name == "task" {
+						if child, answer, ok := cursorSDKSubagent(s.agentID, event.CallID, t.args, event.Result, event.Status == "error"); ok {
+							result = answer
+							subagents = append(subagents, child)
+							if c.logger != nil {
+								c.logger.Infof("[CURSOR_SDK] subagent agent=%s child=%s status=%s messages=%d", s.agentID, child.ID, child.Status, len(child.Messages))
+							}
+							emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeSubagentTranscript, Metadata: map[string]interface{}{"native_subagents": subagents}})
+						}
 					}
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
 				}
@@ -758,7 +771,15 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					cached := u.CacheReadTokens
 					usage = &llmtypes.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens, CacheTokens: &cached}
 				}
-				return cursorSDKResponse(s, final, usage), nil
+				response := cursorSDKResponse(s, final, usage)
+				if len(subagents) > 0 {
+					gi := response.Choices[0].GenerationInfo
+					if gi.Additional == nil {
+						gi.Additional = map[string]interface{}{}
+					}
+					gi.Additional["native_subagents"] = subagents
+				}
+				return response, nil
 			}
 		case <-ctx.Done():
 			_ = p.send(map[string]any{"type": "cancel"})

@@ -182,6 +182,78 @@ func TestCursorSDKOtherChatServersStayPrivateLive(t *testing.T) {
 	}
 }
 
+// PLAT-872-98: a Full CLI chat's Task subagent becomes a child chat with its own tool calls; a bridge-only
+// chat has no Task tool at all.
+func TestCursorSDKSubagentChildChatLive(t *testing.T) {
+	requireRealCursorCLIE2E(t)
+	config := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"type":"stdio","command":"node","args":[%q]}}}`, writeCursorTmuxContractMCPServer(t))
+	ask := "Use your Task tool to launch exactly one subagent. The subagent must call the api-bridge MCP tool contract_echo_token with token CHILD_CHAT and report the result. If you have no Task tool, reply exactly NO_TASK_TOOL."
+	run := func(owner string, extra ...llmtypes.CallOption) (*llmtypes.ContentResponse, []llmtypes.StreamChunk) {
+		t.Helper()
+		defer closeCursorSDKInstance(owner, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		stream := make(chan llmtypes.StreamChunk, 4096)
+		opts := append([]llmtypes.CallOption{WithWorkingDir(t.TempDir()), WithInteractiveSessionID(owner), WithPersistentInteractiveSession(true), WithMCPConfig(config), llmtypes.WithStreamingChan(stream)}, extra...)
+		type res struct {
+			r   *llmtypes.ContentResponse
+			err error
+		}
+		done := make(chan res, 1)
+		go func() {
+			r, err := NewCursorCLIAdapter("", "composer-2.5", nil).GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, ask)}, opts...)
+			done <- res{r, err}
+		}()
+		var chunks []llmtypes.StreamChunk
+		for ch := range stream {
+			chunks = append(chunks, ch)
+		}
+		out := <-done
+		if out.err != nil {
+			t.Fatal(out.err)
+		}
+		return out.r, chunks
+	}
+	r, chunks := run(t.Name()+"full", WithFullNativeTools())
+	var child *llmtypes.NativeSubagentTranscript
+	for _, ch := range chunks {
+		if ch.Type == llmtypes.StreamChunkTypeNativeSubagentTranscript {
+			children, _ := ch.Metadata["native_subagents"].([]llmtypes.NativeSubagentTranscript)
+			if len(children) > 0 {
+				child = &children[len(children)-1]
+			}
+		}
+		if ch.Type == llmtypes.StreamChunkTypeToolCallEnd && ch.ToolName == "task" && strings.Contains(ch.ToolResult, "conversationSteps") {
+			t.Fatal("the task row shows the raw SDK result")
+		}
+	}
+	if child == nil {
+		t.Fatalf("no child chat; answer %q", r.Choices[0].Content)
+	}
+	sawTool := false
+	for _, m := range child.Messages {
+		for _, p := range m.Parts {
+			if out, ok := p.(llmtypes.ToolCallResponse); ok && strings.Contains(out.Content, "BRIDGE_TOOL_OK_CHILD_CHAT") && out.Name == "mcp__api-bridge__contract_echo_token" {
+				sawTool = true
+			}
+		}
+	}
+	if !sawTool || child.Status != "completed" || child.Provider != "cursor-cli" {
+		t.Fatalf("child chat lacks its tool call: %+v", child)
+	}
+	if _, ok := r.Choices[0].GenerationInfo.Additional["native_subagents"]; !ok {
+		t.Fatal("final answer does not carry the child chat")
+	}
+	t.Logf("child %q: %d messages", child.Name, len(child.Messages))
+
+	_, chunks = run(t.Name()+"bridge", WithDenyBuiltinTools(true))
+	for _, ch := range chunks {
+		if ch.Type == llmtypes.StreamChunkTypeNativeSubagentTranscript || (ch.Type == llmtypes.StreamChunkTypeToolCallStart && ch.ToolName == "task") {
+			t.Fatal("a bridge-only chat started a subagent")
+		}
+	}
+}
+
 // PLAT-872-21: same-process continuity, restart resume, no replay and scoped cleanup.
 func TestCursorSDKLifecycleLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
