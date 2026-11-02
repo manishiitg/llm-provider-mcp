@@ -25,6 +25,26 @@ const ROW_TEXT_LIMIT = 200000
 // What the terminal shows besides Claude Code itself: the status line, the band
 // above the prompt and the Changes pane.
 const CHANGES_PANE = 'agentworks-changes'
+const BLOCKED_COMMANDS: Record<string, string> = {
+  login: 'AgentWorks signs Claude in with the chat\'s account.',
+  logout: 'AgentWorks signs Claude in with the chat\'s account.',
+  model: 'Pick the model with the model chip in the chat box.',
+  permissions: 'AgentWorks sets what Claude may do in this Crew.',
+  'allowed-tools': 'AgentWorks sets what Claude may do in this Crew.',
+  hooks: 'AgentWorks sets what Claude may do in this Crew.',
+  plugin: 'AgentWorks manages Claude\'s add-ons here.',
+  plugins: 'AgentWorks manages Claude\'s add-ons here.',
+  mcp: 'Add tools through the Crew\'s Connections.',
+  'add-dir': 'Claude works in this Crew\'s folder.',
+  cd: 'Claude works in this Crew\'s folder.',
+  background: 'Claude stays attached to this chat.',
+  bug: 'Use the app to report a problem.',
+  feedback: 'Use the app to report a problem.',
+  upgrade: 'AgentWorks keeps Claude Code up to date.',
+  'terminal-setup': 'The terminal is set up by AgentWorks.',
+  ide: 'The terminal is set up by AgentWorks.',
+  'install-github-app': 'Connect GitHub from the Crew\'s Connections.',
+}
 const editedFiles = new Set<string>()
 type RepoChanges = { repo: string; branch: string; files: { path: string; added: string; removed: string }[] }
 let changes: RepoChanges[] = []
@@ -293,6 +313,15 @@ export const register: Register = on => {
   })
 
   on('command.run', async ($, e, next) => {
+    // The few built-ins AgentWorks keeps for itself (it chooses and bills the login and model, sets the
+    // tools and rules, keeps Claude in the Crew's folder and attached to the chat). Blocked here, however the
+    // command was picked (typed, or chosen from the menu with the arrow keys), so the terminal lets the menu
+    // work normally.
+    const blocked = BLOCKED_COMMANDS[e.command]
+    if (blocked) {
+      await emit($, 'command_blocked', { command: e.command })
+      return { text: `/${e.command} isn't available in AgentWorks. ${blocked}` }
+    }
     const result = await next(e)
     await emit($, 'command', { command: e.command })
     return result
