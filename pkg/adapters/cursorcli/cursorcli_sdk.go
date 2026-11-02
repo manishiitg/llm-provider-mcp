@@ -289,7 +289,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	// folder (PLAT-856-145), never .cursor/ inside that folder.
 	artifacts := llmtypes.CLIArtifactDirectory(opts, cwd)
 	privateArtifacts := ""
-	if false && artifacts == cwd { // Bisect (PLAT-872-97): no private temp folder for a shared working folder.
+	if artifacts == cwd {
 		// Never write this chat's .cursor files into the working folder either: the SDK merges the MCP
 		// servers of every project folder it loads, so a folder two chats share gave each chat the other's
 		// servers. This chat's own folder is passed as an extra root (local.dirs), as with a private runtime.
