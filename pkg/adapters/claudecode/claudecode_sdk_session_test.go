@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"sync"
@@ -125,5 +126,18 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	defer mu.Unlock()
 	if got := strings.Join(closed, ","); got != "chat-finished:finished,chat-replaced:replaced,chat-kept:finished" {
 		t.Fatalf("closed updates = %q", got)
+	}
+}
+
+// "Allow for this chat" must never write a lasting rule into the project or the account: every rule Claude
+// suggests is kept to this chat's session, and only allow rules pass.
+func TestClaudeSDKAlwaysAllowStaysInThisChat(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"addRules","behavior":"allow","destination":"localSettings","rules":[{"toolName":"Bash","ruleContent":"git commit:*"}]},{"type":"addRules","behavior":"deny","destination":"userSettings","rules":[]},{"type":"setMode","mode":"bypassPermissions","destination":"session"}]`)
+	rules := claudeSDKChatScopedRules(raw)
+	if len(rules) != 1 || rules[0]["destination"] != "session" || rules[0]["behavior"] != "allow" {
+		t.Fatalf("rules = %+v, want one allow rule scoped to the session", rules)
+	}
+	if claudeSDKChatScopedRules() != nil || claudeSDKChatScopedRules(json.RawMessage(`not json`)) != nil {
+		t.Fatal("no suggestion must offer no always-allow")
 	}
 }

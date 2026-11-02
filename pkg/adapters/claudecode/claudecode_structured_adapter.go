@@ -45,6 +45,7 @@ type claudeStreamEvent struct {
 	RequestID    string          `json:"request_id,omitempty"`
 	ToolName     string          `json:"tool_name,omitempty"`
 	Input        json.RawMessage `json:"input,omitempty"`
+	Suggestions  json.RawMessage `json:"suggestions,omitempty"`
 	Event        *struct {
 		Type  string `json:"type"`
 		Delta struct {
@@ -570,7 +571,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				if sdkProcess != nil {
 					request := ev
 					questions.Start(ctx, request.RequestID, func(questionCtx context.Context) {
-						response := claudeSDKPermission(questionCtx, request.ToolName, request.Input)
+						response := claudeSDKPermission(questionCtx, request.ToolName, request.Input, request.Suggestions)
 						_ = sdkProcess.write(map[string]any{"type": "permission", "id": request.RequestID, "response": response})
 					})
 				}

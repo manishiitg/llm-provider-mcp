@@ -163,7 +163,7 @@ func claudeSDKCommand(ctx context.Context, executable string, args []string) (*e
 	return exec.CommandContext(ctx, node, append([]string{bridge, entry, executable}, args...)...), cleanup, nil
 }
 
-func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage) map[string]any {
+func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage, suggestions ...json.RawMessage) map[string]any {
 	deny := map[string]any{"behavior": "deny", "message": "This request was not approved. Use the chat or account setup to continue."}
 	// Tool policy still runs natively (including the existing deny hooks). Only
 	// native requests that reach canUseTool use attended cards.
@@ -207,12 +207,17 @@ func claudeSDKPermission(ctx context.Context, tool string, input json.RawMessage
 		if strings.TrimSpace(command) == "" {
 			return deny
 		}
-		allowed, err := nativeinput.ApproveCommand(ctx, "Allow Claude to run this command?\n\n"+command)
+		rules := claudeSDKChatScopedRules(suggestions...)
+		choice, err := nativeinput.ApproveCommandChoice(ctx, "Allow Claude to run this command?\n\n"+command, len(rules) > 0)
 		if err != nil {
 			return map[string]any{"behavior": "deny", "message": "Command not run: no answer. Ask again in chat when you are ready."}
 		}
-		if !allowed {
+		switch choice {
+		case nativeinput.ApprovalDeny:
 			return map[string]any{"behavior": "deny", "message": "Command not run: you chose Deny."}
+		case nativeinput.ApprovalAlways:
+			// Claude's own rule, kept for this chat's Claude session only: never written to the Crew's folder.
+			return map[string]any{"behavior": "allow", "updatedInput": value, "updatedPermissions": rules}
 		}
 	default:
 		return deny
@@ -295,3 +300,25 @@ func SendClaudeCodeSDKInput(ctx context.Context, owner, message string) error {
 
 // SDKRuntimeAvailable checks the installed component without starting an agent.
 func SDKRuntimeAvailable() error { _, err := claudeSDKEntry(); return err }
+
+// claudeSDKChatScopedRules turns Claude's suggested "always allow" updates for a request into ones that last
+// for this chat's Claude session: a suggestion aimed at a settings file would write a lasting rule into the
+// project or the account, which the person did not ask for.
+func claudeSDKChatScopedRules(suggestions ...json.RawMessage) []map[string]any {
+	if len(suggestions) == 0 || len(suggestions[0]) == 0 {
+		return nil
+	}
+	var updates []map[string]any
+	if json.Unmarshal(suggestions[0], &updates) != nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(updates))
+	for _, update := range updates {
+		if update["type"] != "addRules" || update["behavior"] != "allow" {
+			continue
+		}
+		update["destination"] = "session"
+		out = append(out, update)
+	}
+	return out
+}

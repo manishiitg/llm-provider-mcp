@@ -40,3 +40,45 @@ func ApproveCommand(ctx context.Context, description string) (bool, error) {
 	}
 	return len(answers) == 1 && len(answers[0].SelectedLabels) == 1 && strings.EqualFold(answers[0].SelectedLabels[0], "Allow"), nil
 }
+
+// ApprovalChoice is the person's answer to a command approval.
+type ApprovalChoice int
+
+const (
+	ApprovalDeny ApprovalChoice = iota
+	ApprovalOnce
+	ApprovalAlways
+)
+
+// ApproveCommandChoice is ApproveCommand with a third answer when the agent offers a rule for the rest of
+// the chat: "Allow for this chat" approves this command and ones like it until the chat's agent restarts.
+func ApproveCommandChoice(ctx context.Context, description string, offerAlways bool) (ApprovalChoice, error) {
+	if !offerAlways {
+		allowed, err := ApproveCommand(ctx, description)
+		if err != nil || !allowed {
+			return ApprovalDeny, err
+		}
+		return ApprovalOnce, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	options := []Option{{Label: "Deny"}, {Label: "Allow", Description: "Allow this command once."},
+		{Label: "Allow for this chat", Description: "Allow this command and ones like it until this chat's agent restarts."}}
+	answers, err := Ask(ctx, []Question{{ID: "command_permission", Question: approvalDisplay(description), Options: options}})
+	if err != nil {
+		return ApprovalDeny, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ApprovalDeny, err
+	}
+	if len(answers) != 1 || len(answers[0].SelectedLabels) != 1 {
+		return ApprovalDeny, nil
+	}
+	switch strings.ToLower(answers[0].SelectedLabels[0]) {
+	case "allow":
+		return ApprovalOnce, nil
+	case "allow for this chat":
+		return ApprovalAlways, nil
+	}
+	return ApprovalDeny, nil
+}
