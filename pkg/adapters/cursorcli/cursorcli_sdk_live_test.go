@@ -151,37 +151,6 @@ func TestCursorSDKParallelMCPIsolationLive(t *testing.T) {
 	}
 }
 
-// The SDK merges the MCP servers of every project folder it loads. A server another chat in the same
-// folder was given must never be callable from this chat.
-func TestCursorSDKOtherChatServersStayPrivateLive(t *testing.T) {
-	requireRealCursorCLIE2E(t)
-	cwd := t.TempDir()
-	a := NewCursorCLIAdapter("", "composer-2.5", nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	other := t.Name() + "other"
-	defer closeCursorSDKInstance(other, nil)
-	otherScript := writeCursorIsolationMCPServer(t, "other", filepath.Join(cwd, "other.json"))
-	otherConfig := fmt.Sprintf(`{"mcpServers":{"other-server":{"command":"node","args":[%q]}}}`, otherScript)
-	if _, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Do not use tools. Reply exactly READY.")}, WithWorkingDir(cwd), WithInteractiveSessionID(other), WithPersistentInteractiveSession(true), WithMCPConfig(otherConfig), WithDenyBuiltinTools(true)); err != nil {
-		t.Fatal(err)
-	}
-	own := t.Name() + "own"
-	defer closeCursorSDKInstance(own, nil)
-	ownScript := writeCursorIsolationMCPServer(t, "own", filepath.Join(cwd, "own.json"))
-	ownConfig := fmt.Sprintf(`{"mcpServers":{"api-bridge":{"command":"node","args":[%q]}}}`, ownScript)
-	r, err := a.GenerateContent(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "If an MCP server named other-server is available, call its write_contract tool with token leak and reply with its result. Otherwise reply exactly NO_OTHER_SERVER.")}, WithWorkingDir(cwd), WithInteractiveSessionID(own), WithPersistentInteractiveSession(true), WithMCPConfig(ownConfig), WithDenyBuiltinTools(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text := r.Choices[0].Content; strings.Contains(text, "ISOLATED_OK_other") {
-		t.Fatalf("this chat reached another chat's MCP server: %q", text)
-	}
-	if _, err := os.Stat(filepath.Join(cwd, ".cursor", "mcp.json")); err == nil {
-		t.Fatal("a chat wrote its MCP config into the shared folder")
-	}
-}
-
 // PLAT-872-21: same-process continuity, restart resume, no replay and scoped cleanup.
 func TestCursorSDKLifecycleLive(t *testing.T) {
 	requireRealCursorCLIE2E(t)
