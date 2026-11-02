@@ -159,6 +159,14 @@ func agyIsolatedHomeWithConversations(servers []agyMCPServer, conversationHome s
 		cleanup()
 		return "", nil, err
 	}
+	// The copied account files keep their private modes; a slot's agy could not read its own settings.json and
+	// asked for a Google login. Give the slot's group the whole per-run tree.
+	if parent != "" {
+		if err := slotfs.ShareTree(conversationHome, home); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("give the user's account its agy home: %w", err)
+		}
+	}
 	return home, cleanup, nil
 }
 
