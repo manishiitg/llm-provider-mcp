@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
@@ -47,12 +48,23 @@ func agyIsolatedHomeWithConversations(servers []agyMCPServer, conversationHome s
 		return "", nil, err
 	}
 	agyPrivateHomesSweepOnce.Do(agySweepStalePrivateHomes)
-	home, err := os.MkdirTemp("", fmt.Sprintf("agentworks-agy-%d-", os.Getpid()))
+	// A run as a person's slot keeps its per-run home inside that slot's own private home: one in the app's temp
+	// folder never reached the slot's agy, which then fell back to a Google login ("Authentication required",
+	// PLAT-872-86).
+	parent, mode := "", os.FileMode(0o700)
+	if conversationHome != "" && slotfs.IsSlotLaunch(conversationHome) {
+		parent = filepath.Join(conversationHome, ".agy-runs")
+		mode = slotfs.Mode(conversationHome, 0o700)
+		if err := os.MkdirAll(parent, mode); err != nil {
+			return "", nil, err
+		}
+	}
+	home, err := os.MkdirTemp(parent, fmt.Sprintf("agentworks-agy-%d-", os.Getpid()))
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(home) }
-	if err := os.Chmod(home, 0o700); err != nil {
+	if err := os.Chmod(home, mode); err != nil {
 		cleanup()
 		return "", nil, err
 	}
