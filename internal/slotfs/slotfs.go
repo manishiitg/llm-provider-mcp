@@ -490,11 +490,44 @@ func grant(slot, path string, write bool) error {
 	if !slotNameMatches(slot) {
 		return fmt.Errorf("invalid slot %q", slot)
 	}
-	clean := filepath.Clean(path)
 	// Applied at every launch, never cached: an adapter that re-tightens its folder (chmod 0700) resets
 	// the ACL mask and cancels the entry, so a remembered grant would be wrong.
 	grantMu.Lock()
 	defer grantMu.Unlock()
+	return grantLocked(slot, path, write)
+}
+
+// sharedGrants remembers the shared folders (another person's Crew or Code) already granted to a slot in
+// this run, and sharedGrantMu keeps those long recursive passes apart from the launch's own grants.
+var (
+	sharedGrants  sync.Map
+	sharedGrantMu sync.Mutex
+)
+
+// GrantSharedOnce gives a slot access to a folder someone shared with its user, once per server run and
+// in the background. A large Crew (hundreds of thousands of files) took ~20s of setfacl on every launch,
+// before the CLI started, and never finished where a few files belong to another account. The launch never
+// waits: the slot reaches what its group allows, and the default ACL covers files made later. report gets
+// what could not be granted.
+func GrantSharedOnce(slot, path string, write bool, report func(error)) {
+	if !slotNameMatches(slot) {
+		return
+	}
+	key := slot + "\x00" + filepath.Clean(path) + "\x00" + strconv.FormatBool(write)
+	if _, done := sharedGrants.LoadOrStore(key, true); done {
+		return
+	}
+	go func() {
+		sharedGrantMu.Lock()
+		defer sharedGrantMu.Unlock()
+		if err := grantLocked(slot, path, write); err != nil && report != nil {
+			report(err)
+		}
+	}()
+}
+
+func grantLocked(slot, path string, write bool) error {
+	clean := filepath.Clean(path)
 	info, err := os.Stat(clean)
 	if os.IsNotExist(err) && write {
 		f, cerr := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY, 0o600)
@@ -522,12 +555,9 @@ func grant(slot, path string, write bool) error {
 		if !write && info.Mode().Perm()&0o005 == 0o005 {
 			return nil // a folder everyone can read and enter
 		}
-		if err := setfacl("-R", "-m", "u:"+slot+":"+perm, clean); err != nil {
-			return err
-		}
-		if err := setfacl("-R", "-d", "-m", "u:"+slot+":"+perm, clean); err != nil {
-			return err
-		}
+		// Both passes run even when a few files refuse (another account owns them): the default ACL is what
+		// gives files made later the same access.
+		return errors.Join(setfacl("-R", "-m", "u:"+slot+":"+perm, clean), setfacl("-R", "-d", "-m", "u:"+slot+":"+perm, clean))
 	} else {
 		if !write && info.Mode().Perm()&0o004 != 0 {
 			return nil
