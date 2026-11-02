@@ -749,7 +749,7 @@ func slotLaunchEnv(policy *llmtypes.CLISecurityPolicy, env []string) []string {
 	out := env[:0:0]
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if llmtypes.IsServerOwnedSecretKey(name) || (!own[name] && (login[name] || isLoginEnvName(name))) {
+		if llmtypes.IsServerOwnedSecretKey(name) || llmtypes.IsPlatformSecretEnvName(name) || (!own[name] && (login[name] || isLoginEnvName(name))) {
 			continue
 		}
 		out = append(out, entry)

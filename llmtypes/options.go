@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -301,6 +302,36 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 // secret, the app's login password and legacy user list, the server and bridge tokens, and the
 // deployment's global secrets. A coding agent launched from the host never inherits these, whether or not
 // a secret scope was declared for the call.
+// PlatformSecretEnvNames and PlatformSecretEnvPrefixes are the server's own secrets and settings that no process started
+// as a person's slot may hold (the Claude SDK bridge held GOG_KEYRING_PASSWORD, SUPABASE_*, ADMIN_USERS, AUTH_*,
+// PLAT-872-86). The same list as the workspace launcher's platformSecretEnvNames; a workspace test keeps them equal.
+var (
+	PlatformSecretEnvNames = []string{"AUTH_SECRET", "GOG_KEYRING_PASSWORD", "ADMIN_USERS", "CAPLAYER_SERVICE_TOKEN_FILE",
+		"WORKSPACE_API_TOKEN", "MCP_SERVER_API_TOKEN", "MCP_BRIDGE_TOKEN_SECRET", "ACCESS_PASSWORD", "AUTH_USERS", "SSH_AUTH_SOCK"}
+	PlatformSecretEnvPrefixes = []string{"VAULT_", "GLOBAL_SECRET_", "CAPLAYER_SERVICE_", "DATABASE_URL", "JWT_SECRET",
+		"LANGFUSE_", "SUPABASE_", "AUTH_", "GATEWAY_"}
+)
+
+// IsPlatformSecretEnvName reports a name in PlatformSecretEnvNames/Prefixes or in AGENTWORKS_CLI_ENV_DENY.
+func IsPlatformSecretEnvName(name string) bool {
+	for _, n := range PlatformSecretEnvNames {
+		if n == name {
+			return true
+		}
+	}
+	for _, extra := range strings.Split(os.Getenv("AGENTWORKS_CLI_ENV_DENY"), ",") {
+		if name != "" && strings.TrimSpace(extra) == name {
+			return true
+		}
+	}
+	for _, prefix := range PlatformSecretEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsServerOwnedSecretKey reports a variable the host holds for its own use (see isServerOwnedSecretKey).
 func IsServerOwnedSecretKey(key string) bool { return isServerOwnedSecretKey(key) }
 
