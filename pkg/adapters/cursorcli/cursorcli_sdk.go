@@ -724,9 +724,8 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					if args == "" || args == "null" {
 						args = "{}"
 					}
-					name := event.Name
-					name, args = cursorSDKMCPToolCall(name, args)
-					t = &tool{name: name, args: args, started: time.Now()}
+					// Bisect (PLAT-872-97): the main stream keeps the SDK's own tool name and arguments.
+					t = &tool{name: event.Name, args: args, started: time.Now()}
 					tools[event.CallID] = t
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallStart, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, Metadata: meta})
 				}
@@ -736,8 +735,6 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					var plain string
 					if json.Unmarshal(event.Result, &plain) == nil {
 						result = plain
-					} else if text, ok := cursorSDKMCPToolResult(event.Result); ok {
-						result = text
 					}
 					if t.name == "task" {
 						if child, answer, ok := cursorSDKSubagent(s.agentID, event.CallID, t.args, event.Result, event.Status == "error"); ok {
