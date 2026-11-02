@@ -191,17 +191,34 @@ async function refreshChanges($: any) {
   $.ui.invalidate('ui.render')
 }
 
+// modelName turns a model id into the name people know ("claude-sonnet-5-5" -> "Sonnet 5.5").
+function modelName(id: string): string {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(id)
+  if (!match) return id
+  return `${match[1][0].toUpperCase()}${match[1].slice(1)} ${match[2]}${match[3] ? `.${match[3]}` : ''}`
+}
+
+function tokens(n: number): string {
+  return n >= 1_000_000 ? `${Math.round(n / 100_000) / 10}M` : `${Math.round(n / 1000)}k`
+}
+
+// The status line: model, how full the context is, and the plan's 5-hour and weekly use. No cost: the app
+// shows spend where it is counted.
 async function refreshStatus($: any) {
   const usage = await $.session.usage().catch(() => null)
   if (!usage) return
   const model = await $.session.model().catch(() => '')
   const parts: string[] = []
-  if (model) parts.push(String(typeof model === 'string' ? model : model?.id ?? ''))
-  if (usage.context?.tokens) parts.push(`context ${Math.round(usage.context.tokens / 1000)}k${usage.context.window ? ` of ${Math.round(usage.context.window / 1000)}k` : ''}`)
-  const names: Record<string, string> = { five_hour: '5-hour', seven_day: '7-day', seven_day_opus: '7-day Opus', seven_day_sonnet: '7-day Sonnet' }
+  const id = String(typeof model === 'string' ? model : model?.id ?? '')
+  if (id) parts.push(modelName(id))
+  if (usage.context?.tokens) {
+    const used = usage.context.tokens
+    const window = usage.context.window
+    parts.push(window ? `context ${tokens(used)}/${tokens(window)} (${Math.round((used / window) * 100)}%)` : `context ${tokens(used)}`)
+  }
+  const names: Record<string, string> = { five_hour: '5h', seven_day: '7d', seven_day_opus: '7d Opus', seven_day_sonnet: '7d Sonnet' }
   for (const limit of usage.rateLimits ?? []) parts.push(`${names[limit.kind] ?? String(limit.kind).replace(/_/g, ' ')} ${Math.round(limit.percentUsed)}%`)
-  if (usage.cost?.usd) parts.push(`$${usage.cost.usd.toFixed(2)}`)
-  $.ui.status(parts.filter(Boolean).join(' · ') || undefined)
+  $.ui.status(parts.filter(Boolean).join('  ·  ') || undefined)
 }
 
 // slashAllowed: a built-in command only when AGENTWORKS_MOD_SLASH_COMMANDS
