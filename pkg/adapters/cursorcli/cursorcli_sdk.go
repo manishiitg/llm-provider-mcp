@@ -288,7 +288,11 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	// folder (PLAT-856-145), never .cursor/ inside that folder.
 	artifacts := llmtypes.CLIArtifactDirectory(opts, cwd)
 	privateArtifacts := ""
-	if artifacts == cwd {
+	// A server chat's working folder is already its own runtime folder (…/cli-runtimes/v1/<id>), private to that
+	// chat: its .cursor files stay there, where the SDK reads the project's MCP servers and tool permissions.
+	// Moving them out (a temporary folder passed as local.dirs) left the SDK without api-bridge on Linux servers:
+	// "MCP server does not exist: api-bridge" on every tool call (PLAT-872-97).
+	if artifacts == cwd && !cursorChatRuntimeFolder(cwd) {
 		// Never write this chat's .cursor files into the working folder either: the SDK merges the MCP
 		// servers of every project folder it loads, so a folder two chats share gave each chat the other's
 		// servers. This chat's own folder is passed as an extra root (local.dirs), as with a private runtime.
@@ -931,4 +935,11 @@ func cursorSDKMCPToolResult(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return strings.Join(parts, "\n"), true
+}
+
+// cursorChatRuntimeFolder reports whether dir is a per-chat runtime folder the application made for this chat
+// (state/cli-runtimes/v1/<id>, in the app's or a slot's state), never a folder two chats share.
+func cursorChatRuntimeFolder(dir string) bool {
+	parent := filepath.Dir(filepath.Clean(dir))
+	return filepath.Base(parent) == "v1" && filepath.Base(filepath.Dir(parent)) == "cli-runtimes"
 }
