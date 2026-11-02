@@ -660,3 +660,29 @@ func claudeModInboxOutsideWrites(policy *llmtypes.CLISecurityPolicy, workingDir 
 	}
 	return nil
 }
+
+// ClaudeModChangedFile is one file AgentWorks' snapshots saw change in a chat: an absolute path and a status
+// (added, modified, deleted, renamed).
+type ClaudeModChangedFile struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+}
+
+// SetClaudeModChanges gives a Claude terminal's mod the files this chat changed, as AgentWorks' file
+// snapshots see them (every file, git or not), so its band and Changes pane match the app's Changes. The
+// file is not a request (not .json), so the mod's inbox delivery never takes it.
+func SetClaudeModChanges(tmuxSessionName string, files []ClaudeModChangedFile) error {
+	inbox := claudeModInboxDir(tmuxSessionName)
+	if inbox == "" {
+		return fmt.Errorf("Claude Code session %s does not run the AgentWorks mod", tmuxSessionName)
+	}
+	data, err := json.Marshal(map[string]any{"files": files, "at": time.Now().UTC().Format(time.RFC3339Nano)})
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(inbox, "changes.state.tmp")
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(inbox, "changes.state"))
+}

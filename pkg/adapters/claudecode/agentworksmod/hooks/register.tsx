@@ -28,6 +28,9 @@ const CHANGES_PANE = 'agentworks-changes'
 const editedFiles = new Set<string>()
 type RepoChanges = { repo: string; branch: string; files: { path: string; added: string; removed: string }[] }
 let changes: RepoChanges[] = []
+// The files AgentWorks' snapshots saw this chat change (every file, git or not), from $AGENTWORKS_MOD_INBOX/changes.state.
+let platformFiles: { path: string; status: string }[] = []
+let platformStamp = ''
 let lastMessage = ''
 
 async function emit($: any, type: string, fields: Record<string, unknown> = {}) {
@@ -134,9 +137,38 @@ function framedMessage(text: string): { label: string; body: string } | null {
 
 // refreshChanges asks git which of the files Claude edited this session
 // changed, grouped by repository.
+// readPlatformChanges picks up the chat's changed files when AgentWorks writes a new list.
+async function readPlatformChanges($: any) {
+  const inbox = await $.env.get('AGENTWORKS_MOD_INBOX')
+  if (!inbox) return
+  const raw = await $.fs.read(`${inbox}/changes.state`).catch(() => '')
+  if (!raw || raw === platformStamp) return
+  platformStamp = raw
+  try {
+    const parsed = JSON.parse(raw)
+    platformFiles = Array.isArray(parsed.files) ? parsed.files.filter((file: any) => typeof file?.path === 'string') : []
+  } catch {
+    return
+  }
+  await refreshChanges($)
+}
+
+// shortPaths drops the folder every changed file shares, so the list reads like the app's.
+function shortPaths(paths: string[]): Map<string, string> {
+  const dirs = paths.map(path => path.split('/').slice(0, -1))
+  let common = dirs[0] ?? []
+  for (const dir of dirs) {
+    let i = 0
+    while (i < common.length && i < dir.length && common[i] === dir[i]) i++
+    common = common.slice(0, i)
+  }
+  const prefix = common.length ? common.join('/') + '/' : ''
+  return new Map(paths.map(path => [path, path.startsWith(prefix) ? path.slice(prefix.length) : path]))
+}
+
 async function refreshChanges($: any) {
   const byRepo = new Map<string, string[]>()
-  for (const file of editedFiles) {
+  for (const file of new Set([...editedFiles, ...platformFiles.map(file => file.path)])) {
     const dir = file.slice(0, file.lastIndexOf('/')) || '.'
     const top = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel']).catch(() => null)
     const repo = top && top.exitCode === 0 ? top.stdout.trim() : ''
@@ -230,6 +262,7 @@ export const register: Register = on => {
     await emit($, 'session')
     $.clock.every(250, () => {
       void deliverInbox($)
+      void readPlatformChanges($).catch(() => undefined)
     })
     return result
   })
@@ -328,7 +361,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const files = changes.reduce((sum, repo) => sum + repo.files.length, 0)
+    // AgentWorks' list counts every changed file; without it, the files Claude edited inside git repositories.
+    const files = platformFiles.length || changes.reduce((sum, repo) => sum + repo.files.length, 0)
     if ((e as any).props?.hasSurvey || (!lastMessage && files === 0)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     return (
@@ -341,10 +375,19 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: CHANGES_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    if (changes.length === 0) return <Text dimColor>No file changes in this chat yet.</Text>
+    if (changes.length === 0 && platformFiles.length === 0) return <Text dimColor>No file changes in this chat yet.</Text>
     const ask = (text: string) => () => $.prompt.submit({ text, asUser: true })
+    const short = shortPaths(platformFiles.map(file => file.path))
     return (
       <Box flexDirection="column" gap={1}>
+        {platformFiles.length > 0 && (
+          <Box key="all" flexDirection="column">
+            <Text weight="semibold">Changed in this chat</Text>
+            {platformFiles.map(file => (
+              <Text key={file.path}>{short.get(file.path)} <Text dimColor>{file.status}</Text></Text>
+            ))}
+          </Box>
+        )}
         {changes.map(repo => (
           <Box key={repo.repo} flexDirection="column">
             <Text weight="semibold">{repo.repo.split('/').pop()}{repo.branch ? ` · ${repo.branch}` : ''}</Text>
