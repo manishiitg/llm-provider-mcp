@@ -134,9 +134,7 @@ func cursorDeniedToolMatcher(fullNative bool) string {
 	return strings.Join(denied, "|")
 }
 
-// cursorBridgeOnlySystemPrompt adds the session rules. flags[0]: Cursor's own tools are on (Full CLI);
-// flags[1]: the SDK lane runs Task subagents inside this session (children keep its tool limits).
-func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, flags ...bool) string {
+func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, fullNative ...bool) string {
 	if !denyBuiltin {
 		return systemPrompt
 	}
@@ -144,19 +142,15 @@ func cursorBridgeOnlySystemPrompt(systemPrompt string, denyBuiltin bool, flags .
 - Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Nested Cursor agents do not reliably inherit the api-bridge MCP config and can stall on interactive mode-switch prompts.
 - Complete the task in this same Cursor session using the api-bridge MCP tools.
 - Built-in filesystem, shell, edit, search, and delegation tools are intentionally denied by the orchestrator.`)
-	if len(flags) > 0 && flags[0] {
+	if len(fullNative) > 0 && fullNative[0] {
 		tools := "Your own Read, List, Glob, Grep, Search, Edit and Write tools are enabled; use them directly for files. Native Shell and the Delete tool are disabled; use a permitted api-bridge MCP shell for commands and file deletion."
 		if nativeshell.Enabled() {
 			tools = "Your own Shell, Read, List, Glob, Grep, Search, Edit and Write tools are enabled; use them directly for files and commands (delete files with the shell, e.g. rm; the Delete tool is denied)."
 		}
-		agents := "Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session."
-		if len(flags) > 1 && flags[1] {
-			agents = "You may use your Task tool for a focused subtask; each subagent appears to the person as its own child chat. Run subagents in the foreground only: never background or cloud agents, and never request a mode switch."
-		}
 		guidance = strings.TrimSpace(`Cursor session rules:
 - ` + tools + ` They run inside this session's sandbox: only the folders granted to this chat are reachable, and protected files (a workflow's planning/, its raw database, instruction files) are refused even inside them.
 - Use the api-bridge MCP tools for platform actions, integrations, the workflow database and anything outside your folders.
-- Computer use, screen recording and image tools are denied. ` + agents + `
+- Computer use, screen recording and image tools are denied. Do not start Cursor subagents, background agents, cloud agents, workers, delegated agents, or request a mode switch. Complete the task in this same session.
 - Do not use Cursor's own goal tools (CreateGoal, UpdateGoal). Goals and scheduling belong to the platform. Native AskQuestion and the shared clarification tool are connected to chat when a person is attending. A chat nobody is watching must never wait on a question.`)
 	}
 	if strings.TrimSpace(systemPrompt) == "" {
@@ -186,7 +180,7 @@ func prepareCursorProjectFiles(workingDir, systemPrompt string, opts *llmtypes.C
 		denyBuiltin, _ = opts.Metadata.Custom[MetadataKeyDenyBuiltinTools].(bool)
 	}
 	fullNative := cursorFullNativeFromOptions(opts)
-	systemPrompt = cursorBridgeOnlySystemPrompt(systemPrompt, denyBuiltin, fullNative, fullNative && cursorMetaBool(opts, metadataKeySDKSubagents))
+	systemPrompt = cursorBridgeOnlySystemPrompt(systemPrompt, denyBuiltin, fullNative)
 
 	// cursor-agent uses the git project root for .cursor/mcp.json discovery.
 	// An empty .git/ directory is not enough for the interactive TUI: when the
