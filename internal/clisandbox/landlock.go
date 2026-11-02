@@ -250,9 +250,10 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 				// A Crew's folders already belong to its owner's slot group; a file another account owns cannot take
 				// an ACL from the platform (setfacl: Operation not permitted). Launch anyway: the
 				// slot reaches what its group allows.
-				if err := slotfs.GrantRuntime(slot, path, shared.write); err != nil {
-					log.Printf("[CLI_LANDLOCK] launch provider=%s as %s: shared folder %s not fully granted: %v", strings.TrimSpace(policy.Provider), slot, path, err)
-				}
+				provider, folder := strings.TrimSpace(policy.Provider), path
+				slotfs.GrantSharedOnce(slot, path, shared.write, func(err error) {
+					log.Printf("[CLI_LANDLOCK] launch provider=%s as %s: shared folder %s not fully granted (granted once per server run; the next restart tries again): %v", provider, slot, folder, err)
+				})
 			}
 		}
 	}
