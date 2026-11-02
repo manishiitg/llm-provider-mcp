@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
@@ -126,12 +128,15 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 		}
 	}
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(append(env, "HOME="+privateHome, "NO_OPEN_BROWSER=1"), opts)
+	agyLogLaunch(cmd.Env, privateHome)
 	cleanupSandbox, err := agyLandlockCmd(opts, cmd, workdir, privateHome)
 	if err != nil {
 		stop()
 		release()
 		return nil, err
 	}
+	stderr := &clisandbox.StderrTail{}
+	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		stop()
@@ -161,6 +166,9 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
+		if tail := strings.TrimSpace(stderr.String()); tail != "" {
+			log.Printf("[CLI_EXIT] provider=agy-cli acp exited (%v): %s", err, tail)
+		}
 		r.finish(fmt.Errorf("agy acp exited: %v", err))
 		cleanupSandbox()
 		close(r.exited)
@@ -592,4 +600,20 @@ func closeAllAgyACPSessions() {
 	for _, owner := range owners {
 		CloseAgyACPSession(owner)
 	}
+}
+
+// agyLogLaunch records what an agy launch gets, names only: its HOME, whether a Gemini key is in its environment, and
+// the mode of the settings that select key mode (a slot's agy kept asking for a Google login, PLAT-872-86).
+func agyLogLaunch(env []string, home string) {
+	key := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GEMINI_API_KEY=") && len(entry) > len("GEMINI_API_KEY=") {
+			key = true
+		}
+	}
+	settings := "missing"
+	if info, err := os.Stat(agySettingsPath(home)); err == nil {
+		settings = info.Mode().String()
+	}
+	log.Printf("[AGY_LAUNCH] home=%s gemini_key=%t settings=%s", home, key, settings)
 }
