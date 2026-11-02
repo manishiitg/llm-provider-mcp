@@ -22,9 +22,6 @@ const (
 	MetadataKeyPersistentInteractive = "cursor_persistent_interactive"
 	MetadataKeyDenyBuiltinTools      = "cursor_deny_builtin_tools"
 	MetadataKeyFullNativeTools       = "cursor_full_native_tools"
-	// metadataKeySDKSubagents is set by the SDK lane only: its Task children run in the same confined process
-	// and inherit the parent's tool allowlist (subagentInherit), so a Full CLI chat may use them.
-	metadataKeySDKSubagents = "cursor_sdk_subagents"
 )
 
 // WithCursorModel sets the Cursor Agent CLI --model flag. Use "auto" to select

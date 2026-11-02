@@ -79,9 +79,7 @@ async function main() {
     model: start.model,
     // Rules (system prompt) and skills come from this chat's own folder Go prepared (start.dirs); its MCP
     // servers arrive explicitly in start.mcp_servers.
-    local: { cwd: start.cwd, ...(store ? { store } : {}), ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'],
-      // Task subagents get this agent's tool allowlist; without it a child gets Cursor's full toolset.
-      subagentInherit: {} },
+    local: { cwd: start.cwd, ...(store ? { store } : {}), ...(start.dirs ? { dirs: start.dirs } : {}), settingSources: ['project', 'user'] },
     ...(start.mode ? { mode: start.mode } : {}),
     ...(start.tools ? { tools: start.tools } : {}),
     ...(start.mcp_servers ? { mcpServers: start.mcp_servers } : {}),
