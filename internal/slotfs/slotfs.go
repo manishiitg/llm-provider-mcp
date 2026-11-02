@@ -28,7 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -469,8 +468,8 @@ func groupOwns(slot, dir string) bool {
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o010 == 0 {
 		return false
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && strconv.Itoa(int(st.Gid)) == group.Gid
+	gid, ok := fileGID(info)
+	return ok && strconv.Itoa(gid) == group.Gid
 }
 
 // GrantAccess gives one slot read and write on a shared file the platform owns (a CLI login that
@@ -607,7 +606,7 @@ func ShareTree(hint, root string) error {
 		// What the slot made itself (a CLI cache, its sessions) is already the slot's, and only its owner or root may
 		// change it: skip it, with everything under it (PLAT-872-90: the next launch failed "lchown ...: operation not
 		// permitted").
-		if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		if uid, ok := fileUID(info); ok && uid != os.Getuid() {
 			if info.IsDir() {
 				return fs.SkipDir
 			}

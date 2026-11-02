@@ -9,7 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
-	"syscall"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
 
 // agyACP is one `agy acp` process: JSON-RPC 2.0 lines on stdio (Agent Client
@@ -104,7 +105,7 @@ func (r *agyACP) finish(err error) {
 		close(r.done)
 		r.stop()
 		if r.cmd != nil && r.cmd.Process != nil {
-			_ = syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
+			_ = procshutdown.KillGroup(r.cmd.Process.Pid)
 		}
 		_ = r.stdin.Close()
 	})

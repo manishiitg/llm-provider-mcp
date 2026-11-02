@@ -15,13 +15,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/tmuxcontrol"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/fileowner"
 )
 
 // The AgentWorks mod (a Claude Code plugin with a hooks module) runs inside a
@@ -433,8 +433,7 @@ func claudeModOwnedByProcess(path string) bool {
 	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Getuid()
+	return fileowner.OwnedByMe(path, info)
 }
 
 // claudeModInputTimeout bounds the wait for the mod to take a message. A new

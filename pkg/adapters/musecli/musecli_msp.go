@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
@@ -191,7 +190,7 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	life, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(life, launch[0], launch[1:]...)
 	cmd.Dir = workdir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	cmd.Env = llmtypes.MergeCodingAgentSecretEnvironment(museEnvironmentWithConfigHome(configHome), opts)
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+configHome)

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -371,7 +370,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				cleanupBridge()
 				return nil, err
 			}
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			procshutdown.SetGroup(cmd)
 			procshutdown.KillGroupOnCancel(cmd)
 			if workingDir != "" {
 				cmd.Dir = workingDir
@@ -436,7 +435,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		runCtx, cancelRun := context.WithCancel(ctx)
 		defer cancelRun()
 		cmd = exec.CommandContext(runCtx, binPath, args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		procshutdown.SetGroup(cmd)
 		procshutdown.KillGroupOnCancel(cmd)
 		if workingDir != "" {
 			cmd.Dir = workingDir

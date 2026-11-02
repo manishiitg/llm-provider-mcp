@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -118,7 +117,7 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 	life, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(life, "agy", args...)
 	cmd.Dir = workdir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {

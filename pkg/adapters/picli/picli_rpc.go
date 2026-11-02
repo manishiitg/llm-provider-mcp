@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -148,7 +147,7 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 	cmd := exec.CommandContext(life, prefix[0], args...)
 	cmd.Dir = cwd
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	cleanupSandbox, err := piLandlockCmd(opts, cmd, cwd, agentDir)
 	if err != nil {

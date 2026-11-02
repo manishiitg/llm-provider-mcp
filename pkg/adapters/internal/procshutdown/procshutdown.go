@@ -21,8 +21,8 @@
 package procshutdown
 
 import (
+	"errors"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/interfaces"
@@ -94,7 +94,7 @@ func Graceful(cmd *exec.Cmd, terminated <-chan struct{}, logger interfaces.Logge
 	// SIGKILL — unblockable by the kernel. After this, the process is dead
 	// within microseconds and stdout will close (terminated will fire).
 	logger.Infof("[SHUTDOWN] all 3 SIGTERMs exhausted for pid %d — sending SIGKILL", pid)
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+	if err := killGroup(pid); err != nil {
 		logger.Errorf("[SHUTDOWN] SIGKILL to pgrp %d failed: %v", pid, err)
 	}
 }
@@ -173,8 +173,8 @@ func Reap(cmd *exec.Cmd, grace time.Duration, logger interfaces.Logger) error {
 // already exited (or the kill failed with ESRCH) and we can return early.
 func sigtermAndWait(pid int, terminated <-chan struct{}, grace time.Duration, attempt int, logger interfaces.Logger) (proceed bool) {
 	logger.Infof("[SHUTDOWN] SIGTERM attempt %d/3 to pgrp %d (grace=%s)", attempt, pid, grace)
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
-		if err == syscall.ESRCH {
+	if err := termGroup(pid); err != nil {
+		if errors.Is(err, errProcessGone) {
 			logger.Infof("[SHUTDOWN] SIGTERM #%d: pgrp %d already gone", attempt, pid)
 			return false
 		}
@@ -215,9 +215,6 @@ func KillGroupOnCancel(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			return err
-		}
-		return nil
+		return killGroup(cmd.Process.Pid)
 	}
 }

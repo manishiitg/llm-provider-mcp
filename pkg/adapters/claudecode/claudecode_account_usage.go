@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -53,7 +52,7 @@ func ReadAccountUsage(ctx context.Context, environment []string) (llmtypes.Accou
 	cmd := exec.CommandContext(ctx, "node", "-e", claudeAccountUsageScript, entry, binary)
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, environment...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procshutdown.SetGroup(cmd)
 	procshutdown.KillGroupOnCancel(cmd)
 	output, err := cmd.Output()
 	if ctx.Err() != nil {
