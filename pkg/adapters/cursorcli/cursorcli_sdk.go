@@ -421,22 +421,14 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	if artifacts != cwd {
 		start["dirs"] = []string{artifacts}
 	}
-	// Pass this chat's own MCP servers (with the AgentWorks bridge) explicitly. The SDK reads rules and skills
-	// from local.dirs, not MCP, and .cursor/mcp.json in a folder two chats share holds whichever chat wrote
-	// it last: read from the file, one chat's tools reached the other chat's servers.
-	if mcpJSON := cursorMetaString(opts, MetadataKeyMCPConfig); mcpJSON != "" {
-		normalized, normErr := normalizeCursorMCPConfigForCLI(mcpJSON)
-		if normErr == nil {
-			normalized, _, normErr = externalizeCursorBridgeTokens(normalized, artifacts)
-		}
-		if normErr != nil {
-			p.close()
-			return nil, "", false, normErr
-		}
+	// Pass this chat's own MCP servers (with the AgentWorks bridge) explicitly, from the files prepared for
+	// it above. Those files are always in this chat's own folder (never a shared working folder): the SDK
+	// merges the MCP servers of every project folder it loads.
+	if raw, readErr := os.ReadFile(filepath.Join(artifacts, ".cursor", "mcp.json")); readErr == nil {
 		var mcp struct {
 			Servers map[string]any `json:"mcpServers"`
 		}
-		if json.Unmarshal([]byte(normalized), &mcp) == nil && len(mcp.Servers) > 0 {
+		if json.Unmarshal(raw, &mcp) == nil && len(mcp.Servers) > 0 {
 			start["mcp_servers"] = mcp.Servers
 		}
 	}
