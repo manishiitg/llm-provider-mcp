@@ -650,7 +650,7 @@ func LandlockCmdWithCredentials(policy *llmtypes.CLISecurityPolicy, cmd *exec.Cm
 	if slotfs.IsSlotLaunch(policy.PrivateHome) {
 		// The user's own Linux account runs the CLI; the request travels in a file so the CLI keeps
 		// its standard input and output.
-		unwrap, wrapErr := slotfs.WrapCmd(cmd, policy.PrivateHome, cmd.Env)
+		unwrap, wrapErr := slotfs.WrapCmd(cmd, policy.PrivateHome, slotLaunchEnv(policy, cmd.Env))
 		if wrapErr != nil {
 			cleanup()
 			return func() {}, wrapErr
@@ -725,8 +725,49 @@ func LandlockChild(policy *llmtypes.CLISecurityPolicy, host *exec.Cmd, cliArgs [
 			env = append(env, entry)
 		}
 	}
-	host.Env = env
+	host.Env = slotLaunchEnv(policy, env)
 	return slotfs.WrapCmd(host, policy.PrivateHome, host.Env)
+}
+
+// slotLaunchEnv is what a launch run as a person's slot starts with: no secret the server holds for itself
+// (WORKSPACE_API_TOKEN, the bridge secret, the global secrets) and no login but this CLI's own. The launcher
+// removed them before it started the CLI, but itself kept them, as the slot, for its whole run; a process of
+// the slot's uid can read another's environment (PLAT-872-86, found on a live server).
+func slotLaunchEnv(policy *llmtypes.CLISecurityPolicy, env []string) []string {
+	own := map[string]bool{}
+	names := policy.OwnLoginEnv
+	if len(names) == 0 {
+		names = ownLoginEnv[strings.TrimSpace(policy.Provider)]
+	}
+	for _, name := range names {
+		own[name] = true
+	}
+	login := map[string]bool{}
+	for _, name := range cliLoginEnv {
+		login[name] = true
+	}
+	out := env[:0:0]
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if llmtypes.IsServerOwnedSecretKey(name) || (!own[name] && (login[name] || isLoginEnvName(name))) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// isLoginEnvName matches the launcher's rule for a login-like variable (workspace security.isLoginEnvName).
+func isLoginEnvName(name string) bool {
+	if strings.HasPrefix(name, "SECRET_") {
+		return false
+	}
+	for _, suffix := range []string{"_API_KEY", "_AUTH_TOKEN", "_OAUTH_TOKEN"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfigDirFiles lists the JSON files directly inside dir (e.g. a working

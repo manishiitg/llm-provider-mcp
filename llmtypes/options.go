@@ -301,6 +301,9 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 // secret, the app's login password and legacy user list, the server and bridge tokens, and the
 // deployment's global secrets. A coding agent launched from the host never inherits these, whether or not
 // a secret scope was declared for the call.
+// IsServerOwnedSecretKey reports a variable the host holds for its own use (see isServerOwnedSecretKey).
+func IsServerOwnedSecretKey(key string) bool { return isServerOwnedSecretKey(key) }
+
 func isServerOwnedSecretKey(key string) bool {
 	key = strings.TrimSpace(key)
 	if strings.HasPrefix(key, "GLOBAL_SECRET_") {
