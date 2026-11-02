@@ -749,12 +749,40 @@ func slotLaunchEnv(policy *llmtypes.CLISecurityPolicy, env []string) []string {
 	out := env[:0:0]
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if llmtypes.IsServerOwnedSecretKey(name) || (!own[name] && (login[name] || isLoginEnvName(name))) {
+		if llmtypes.IsServerOwnedSecretKey(name) || isPlatformEnvName(name) || (!own[name] && (login[name] || isLoginEnvName(name))) {
 			continue
 		}
 		out = append(out, entry)
 	}
 	return out
+}
+
+// slotPlatformEnvNames and slotPlatformEnvPrefixes are the server's own secrets and settings, the same list the
+// launcher scrubs from a CLI (workspace security platformSecretEnvNames): every process started as a slot, the
+// Claude SDK bridge included, starts without them (it held GOG_KEYRING_PASSWORD, SUPABASE_*, ADMIN_USERS, AUTH_*).
+var (
+	slotPlatformEnvNames = map[string]bool{"AUTH_SECRET": true, "GOG_KEYRING_PASSWORD": true, "ADMIN_USERS": true,
+		"ACCESS_PASSWORD": true, "AUTH_USERS": true, "SSH_AUTH_SOCK": true, "WORKSPACE_API_TOKEN": true,
+		"MCP_SERVER_API_TOKEN": true, "MCP_BRIDGE_TOKEN_SECRET": true}
+	slotPlatformEnvPrefixes = []string{"VAULT_", "GLOBAL_SECRET_", "CAPLAYER_SERVICE_", "DATABASE_URL", "JWT_SECRET",
+		"LANGFUSE_", "SUPABASE_", "AUTH_", "GATEWAY_"}
+)
+
+func isPlatformEnvName(name string) bool {
+	if slotPlatformEnvNames[name] {
+		return true
+	}
+	for _, extra := range strings.Split(os.Getenv("AGENTWORKS_CLI_ENV_DENY"), ",") {
+		if strings.TrimSpace(extra) == name && name != "" {
+			return true
+		}
+	}
+	for _, prefix := range slotPlatformEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoginEnvName matches the launcher's rule for a login-like variable (workspace security.isLoginEnvName).
