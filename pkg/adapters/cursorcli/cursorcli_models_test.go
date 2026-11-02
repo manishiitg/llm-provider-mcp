@@ -31,14 +31,15 @@ func TestResolveCursorCLIModelIDKeepsExplicitModel(t *testing.T) {
 	}
 }
 
-// PLAT-872: Auto is not available on all Cursor accounts. Keep it as an
-// explicit selector, but do not advertise it without the live CLI catalog.
-func TestCursorSuggestedModelsDoNotAdvertiseUnavailableAuto(t *testing.T) {
+// Owner, 2 Nov: Auto is listed, so a person whose Composer allowance ran out can switch to it; it keeps its
+// estimated-average pricing label.
+func TestCursorModelsListAuto(t *testing.T) {
 	for _, model := range GetAllCursorCLIModels() {
 		if model.ModelID == "auto" {
-			t.Fatal("static catalog advertised Auto")
+			return
 		}
 	}
+	t.Fatal("Cursor's model list has no Auto")
 }
 
 func TestGrok47PricingModes(t *testing.T) {
