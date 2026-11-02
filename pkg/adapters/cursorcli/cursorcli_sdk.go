@@ -287,9 +287,26 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 	// Rules, MCP and skills go to the private runtime for a Crew bound to a person's own
 	// folder (PLAT-856-145), never .cursor/ inside that folder.
 	artifacts := llmtypes.CLIArtifactDirectory(opts, cwd)
+	privateArtifacts := ""
+	if artifacts == cwd {
+		// Never write this chat's .cursor files into the working folder either: the SDK merges the MCP
+		// servers of every project folder it loads, so a folder two chats share gave each chat the other's
+		// servers. This chat's own folder is passed as an extra root (local.dirs), as with a private runtime.
+		dir, err := os.MkdirTemp("", "agentworks-cursor-chat-*")
+		if err != nil {
+			return nil, "", false, err
+		}
+		privateArtifacts, artifacts = dir, dir
+	}
 	cleanup, err := prepareCursorProjectFiles(artifacts, system, opts, owner)
 	if err != nil {
+		if privateArtifacts != "" {
+			_ = os.RemoveAll(privateArtifacts)
+		}
 		return nil, "", false, err
+	}
+	if privateArtifacts != "" {
+		cleanup = func(inner func()) func() { return func() { inner(); _ = os.RemoveAll(privateArtifacts) } }(cleanup)
 	}
 	storeRoot := ""
 	if llmtypes.CLIHasPrivateRuntime(opts) {
