@@ -387,11 +387,10 @@ func nodeMemoryShimEnv(home string, env []string) (string, error) {
 // file is moved back to the account first so no session loses a refresh.
 // It returns the credential files to grant.
 func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]string, error) {
-	// A CLI run as a person's slot gets the server's shared account only from its environment, never as a linked
-	// file the slot could read (PLAT-872-84). The person's own account (CredentialHome set) is theirs to read.
-	if _, slot := slotfs.SlotOf(home); slot && strings.TrimSpace(policy.CredentialHome) == "" {
-		return nil, nil
-	}
+	// A CLI run as a person's slot reaches the server's shared login the same way as its own account's: a link to
+	// the one login file plus that slot's grant on it, so token rotations stay in one file. The shells it starts
+	// never see it: the paths returned here join the Landlock layer that keeps logins out of shell commands
+	// (PLAT-872-84, owner 2 Nov: "hide the login via landlock only", PLAT-872-86).
 	source := canonical(policy.CredentialHome)
 	if source == "" {
 		if userHome, err := os.UserHomeDir(); err == nil {
@@ -434,6 +433,7 @@ func linkCredentialFiles(policy *llmtypes.CLISecurityPolicy, home string) ([]str
 			if err := slotfs.GrantAccess(slot, src); err != nil {
 				return nil, fmt.Errorf("give the user's account access to the CLI login: %w", err)
 			}
+			log.Printf("[CLI_LOGIN] provider=%s slot=%s action=grant", strings.TrimSpace(policy.Provider), slot)
 		}
 		granted = append(granted, src)
 	}
