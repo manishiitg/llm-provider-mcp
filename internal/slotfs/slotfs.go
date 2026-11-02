@@ -475,12 +475,26 @@ func groupOwns(slot, dir string) bool {
 // groupCovers reports whether path belongs to the slot's own group and the group's permission bits already give
 // what a grant asks for: read (and search, for a folder), plus write when asked.
 func groupCovers(slot, path string, info os.FileInfo, write bool) bool {
-	group, err := user.LookupGroup(slot)
+	gid, ok := fileGID(info)
+	if !ok {
+		return false
+	}
+	// Any group the slot belongs to, not only its own: a workflow folder owned by the shared group (slotshared, rwx)
+	// took a read-only entry for slot01, which outranked the group, and its steps could not write their run folder
+	// ("Permission denied: …/runs/…/route_selection.json", 2 Nov).
+	account, err := user.Lookup(slot)
 	if err != nil {
 		return false
 	}
-	gid, ok := fileGID(info)
-	if !ok || strconv.Itoa(gid) != group.Gid {
+	groups, err := account.GroupIds()
+	if err != nil {
+		return false
+	}
+	member := false
+	for _, id := range groups {
+		member = member || id == strconv.Itoa(gid)
+	}
+	if !member {
 		return false
 	}
 	need := os.FileMode(0o040)
