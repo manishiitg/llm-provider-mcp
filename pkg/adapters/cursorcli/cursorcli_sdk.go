@@ -350,6 +350,8 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		return nil, "", false, err
 	}
 	allCleanup := func() { sandboxCleanup(); cleanup() }
+	stderr := &stderrTail{}
+	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		stop()
@@ -376,6 +378,10 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		err := cmd.Wait()
 		if err == nil {
 			err = fmt.Errorf("Cursor SDK bridge exited")
+		}
+		// The launcher's own refusal (a slot launch, PLAT-872-86) is only on stderr; without it an exit read as a bare 125.
+		if tail := strings.TrimSpace(stderr.String()); tail != "" {
+			err = fmt.Errorf("%w: %s", err, tail)
 		}
 		p.finish(err)
 		allCleanup()
@@ -866,4 +872,26 @@ func cursorSDKMCPToolResult(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return strings.Join(parts, "\n"), true
+}
+
+// stderrTail keeps the last few hundred bytes a process wrote to stderr.
+type stderrTail struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *stderrTail) Write(b []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, b...)
+	if len(t.buf) > 512 {
+		t.buf = t.buf[len(t.buf)-512:]
+	}
+	return len(b), nil
+}
+
+func (t *stderrTail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
 }
