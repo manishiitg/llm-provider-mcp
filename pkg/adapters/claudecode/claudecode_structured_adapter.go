@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -509,6 +510,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// no name/args at all — family-server's history reconstruction reads
 	// exclusively from End chunks, so every reconstructed tool call had a
 	// blank name and arguments.
+	// Claude events this chat does not show, counted per turn and logged with the result, so a
+	// missing event can be found in the logs before deciding to show it.
+	unshown := map[string]int{}
 	pendingToolCalls := map[string]struct {
 		name      string
 		args      string
@@ -565,6 +569,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			}
 			text.observe(ev, emitChunk)
+			if kind := claudeUnshownEvent(ev); kind != "" {
+				unshown[kind]++
+			}
 			switch ev.Type {
 			case "sdk_permission":
 				if sdkProcess != nil {
@@ -679,6 +686,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 			case "result":
+				if len(unshown) > 0 {
+					c.logger.Infof("[CLAUDE_SDK] unshown events session=%s %s", sessionID, claudeUnshownSummary(unshown))
+					unshown = map[string]int{}
+				}
 				// The turn ends only when sdk_continues is false; log why it stays open.
 				if ev.SDKHold != nil {
 					c.logger.Infof("[CLAUDE_SDK] result session=%s continues=%t unsettled=%d moved_aside=%d queued=%d background=%d", sessionID, ev.SDKContinues, ev.SDKHold.Unsettled, ev.SDKHold.MovedAside, ev.SDKHold.Queued, ev.SDKHold.Background)
@@ -1011,4 +1022,29 @@ func claudeContinuedResultText(previous string, event claudeStreamEvent, continu
 		return previous + "\n\n" + text
 	}
 	return text
+}
+
+// claudeUnshownEvent names a Claude stream event the chat does not show, or "".
+func claudeUnshownEvent(ev claudeStreamEvent) string {
+	switch ev.Type {
+	case "stream_event", "assistant", "user", "result", "rate_limit_event",
+		"sdk_permission", "sdk_permission_cancel", "sdk_control_result", "sdk_background":
+		return ""
+	case "system":
+		switch ev.Subtype {
+		case "init", "status", "compact_boundary":
+			return ""
+		}
+		return "system:" + ev.Subtype
+	}
+	return ev.Type
+}
+
+func claudeUnshownSummary(counts map[string]int) string {
+	parts := make([]string, 0, len(counts))
+	for kind, n := range counts {
+		parts = append(parts, fmt.Sprintf("%s=%d", kind, n))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
 }
