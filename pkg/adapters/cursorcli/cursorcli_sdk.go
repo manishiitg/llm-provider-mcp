@@ -759,6 +759,16 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 						}
 					}
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeToolCallEnd, ToolCallID: event.CallID, ToolName: t.name, ToolArgs: t.args, ToolResult: result, ToolDuration: time.Since(t.started), Metadata: meta})
+					// Cursor ends its run once a plan is made, waiting for approval. The plan lives only in the
+					// tool's arguments, so the person saw a bare "retrying" line; make the plan the reply.
+					if plan := cursorSDKPlanText(t.name, t.args); plan != "" && event.Status == "completed" {
+						if text.Len() > 0 && !strings.HasSuffix(text.String(), "\n") {
+							plan = "\n\n" + plan
+						}
+						afterTool = false
+						text.WriteString(plan)
+						emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: plan, Metadata: map[string]any{"cursor_session_id": s.agentID, "cursor_stream_source": "sdk", llmtypes.ContentDeltaMetadataKey: true}})
+					}
 				}
 			case "stale":
 				if c.logger != nil {
@@ -942,4 +952,26 @@ func cursorSDKMCPToolResult(raw json.RawMessage) (string, bool) {
 func cursorChatRuntimeFolder(dir string) bool {
 	parent := filepath.Dir(filepath.Clean(dir))
 	return filepath.Base(parent) == "v1" && filepath.Base(filepath.Dir(parent)) == "cli-runtimes"
+}
+
+// cursorSDKPlanText returns the reply text for a plan Cursor made with its createPlan tool, or "".
+func cursorSDKPlanText(name, args string) string {
+	if name != "createPlan" {
+		return ""
+	}
+	var plan struct {
+		Plan     string `json:"plan"`
+		Overview string `json:"overview"`
+	}
+	if json.Unmarshal([]byte(args), &plan) != nil {
+		return ""
+	}
+	body := strings.TrimSpace(plan.Plan)
+	if body == "" {
+		body = strings.TrimSpace(plan.Overview)
+	}
+	if body == "" {
+		return ""
+	}
+	return body + "\n\nReply \"go\" to build this plan, or say what to change."
 }
