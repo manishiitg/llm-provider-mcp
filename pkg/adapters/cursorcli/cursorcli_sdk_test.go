@@ -442,3 +442,14 @@ func TestCursorSDKRememberedParamsSkipTheLookup(t *testing.T) {
 		t.Fatal("two login homes share remembered settings")
 	}
 }
+
+// RTS 2026-11-03: Cursor ended its run after createPlan and the person saw only "Retrying CreatePlan".
+func TestCursorSDKPlanTextBecomesReply(t *testing.T) {
+	got := cursorSDKPlanText("createPlan", `{"name":"x","plan":"# Plan\n1. Do it","todos":[]}`)
+	if !strings.HasPrefix(got, "# Plan\n1. Do it\n\n") {
+		t.Fatalf("plan reply = %q", got)
+	}
+	if cursorSDKPlanText("Shell", `{"plan":"no"}`) != "" || cursorSDKPlanText("createPlan", `{"plan":" "}`) != "" {
+		t.Fatal("only a non-empty createPlan becomes the reply")
+	}
+}
