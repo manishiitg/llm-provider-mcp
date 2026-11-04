@@ -1664,6 +1664,11 @@ func waitForTmuxPrompt(ctx context.Context, sessionName string, streamChan chan<
 			// Claude Code exited while starting: fail now, so the caller can relaunch,
 			// instead of waiting out the inactivity window on a dead pane.
 			if status, dead := claudeTmuxPaneExited(deadline, sessionName); dead {
+				// Re-capture: the snapshot above can predate the exit, and the CLI's last words (e.g. "No conversation
+				// found with session ID") stay on the dead pane because remain-on-exit keeps it.
+				if final, err := captureTmuxPane(context.Background(), sessionName); err == nil && strings.TrimSpace(final) != "" {
+					captured = final
+				}
 				return &llmtypes.CodingAgentTmuxSessionLostError{Provider: "claude-code", SessionName: sessionName, Reason: fmt.Sprintf("Claude Code exited while starting (status %s): %s", status, llmtypes.CompactTerminalPaneForError(sessionName, captured))}
 			}
 			if streamChan != nil && streamTerminalScreen {
