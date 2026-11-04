@@ -25,3 +25,17 @@ func TestMuseMSPWakeTurnReplyReachesTheHost(t *testing.T) {
 		t.Fatalf("wake reply = %+v", got)
 	}
 }
+
+// Muse's inputTokens already includes the cached part; adding cacheRead again doubled every msp turn's prompt
+// tokens and halved its cache share (Excellence, 3 Nov: 100.9M recorded against 50.8M in Muse's own file).
+func TestMuseMSPTurnCountsCachedTokensOnce(t *testing.T) {
+	a := &MuseCLIAdapter{modelID: "muse-model"}
+	resp := a.museMSPResponse(&museMSPSession{sessionID: "s"}, "ok", "ok", "muse-model", 314134, 151, 313460, 0)
+	gi := resp.Choices[0].GenerationInfo
+	if gi.PromptTokens == nil || *gi.PromptTokens != 314134 {
+		t.Fatalf("prompt tokens = %v, want 314134", gi.PromptTokens)
+	}
+	if gi.Additional["prompt_tokens_include_cache"] != true {
+		t.Fatal("prompt tokens not marked as including the cached part")
+	}
+}
