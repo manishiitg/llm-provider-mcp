@@ -605,7 +605,17 @@ func grantLocked(slot, path string, write bool) error {
 		return errors.Join(setfacl("-R", "-m", "u:"+slot+":"+perm, clean), setfacl("-R", "-d", "-m", "u:"+slot+":"+perm, clean))
 	} else {
 		if !write && info.Mode().Perm()&0o004 != 0 {
+			// Everyone may read it. A read-only entry an earlier launch left (while the file was private) outranks
+			// "other", so once a CLI update made the program runnable by everyone again, those slots still could
+			// not run it (Codex: "Permission denied", exit 126). Drop such an entry from a program.
+			if info.Mode().Perm()&0o001 != 0 {
+				_ = setfacl("-x", "u:"+slot, clean)
+			}
 			return nil
+		}
+		// A program (the CLI's own launcher) must stay runnable for the slot, not just readable.
+		if info.Mode().Perm()&0o111 != 0 {
+			perm += "x"
 		}
 		if err := setfacl("-m", "u:"+slot+":"+perm, clean); err != nil {
 			return err
