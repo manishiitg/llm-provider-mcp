@@ -327,7 +327,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	}
 
 	owner := claudeInteractiveSessionIDFromOptions(opts)
-	environment := append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...)
+	environment := append(append(claudeStructuredProcessEnv(os.Environ(), opts, c.oauthToken), claudeSkillScopeEnv()...), claudeAutoCompactEnv()...)
 	var cmd *exec.Cmd
 	var lines <-chan string
 	var reader *claudeLineReader
