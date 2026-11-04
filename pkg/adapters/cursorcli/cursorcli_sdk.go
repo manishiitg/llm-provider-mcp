@@ -890,6 +890,14 @@ func cursorSDKSessionHandle(s *cursorSDKSession) llmtypes.CodingProviderSessionH
 
 func cursorSDKResponse(s *cursorSDKSession, text string, usage *llmtypes.Usage) *llmtypes.ContentResponse {
 	gi := &llmtypes.GenerationInfo{Additional: map[string]any{"cursor_session_id": s.agentID}}
+	if usage != nil {
+		// The SDK's inputTokens already contains cached input (its totalTokens is input + output; only the
+		// Cursor CLI subtracts cache). Without this flag the cost ledger added cache reads a second time.
+		gi.Additional["prompt_tokens_include_cache"] = true
+		if usage.CacheTokens != nil {
+			gi.Additional["cache_read_input_tokens"] = *usage.CacheTokens
+		}
+	}
 	llmtypes.AttachCodingProviderSessionHandle(gi, cursorSDKSessionHandle(s))
 	return &llmtypes.ContentResponse{Choices: []*llmtypes.ContentChoice{{Content: text, StopReason: "stop", GenerationInfo: gi}}, Usage: usage}
 }
