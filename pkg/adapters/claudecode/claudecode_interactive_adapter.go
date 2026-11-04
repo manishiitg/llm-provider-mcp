@@ -221,6 +221,19 @@ func claudeSkillScopeEnv() []string {
 	return []string{"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1", "CLAUDE_CODE_DISABLE_POLICY_SKILLS=1"}
 }
 
+// claudeAutoCompactWindow makes Claude compact a busy chat at about this size instead of near its full context
+// window (about 1M tokens). A chat that grew to 616K re-read all of it on every step: 43 steps, 14.8M tokens in
+// one turn. Claude's own compaction is the trigger; a CLAUDE_CODE_AUTO_COMPACT_WINDOW already set by the
+// operator wins.
+const claudeAutoCompactWindow = "300000"
+
+func claudeAutoCompactEnv() []string {
+	if strings.TrimSpace(os.Getenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW")) != "" {
+		return nil
+	}
+	return []string{"CLAUDE_CODE_AUTO_COMPACT_WINDOW=" + claudeAutoCompactWindow}
+}
+
 // claudeAddSkillScopeSettings adds to a launch's --settings what the env
 // switches above do not cover (owner, 2026-10-29: an AgentWorks-launched Claude
 // uses only AgentWorks's skills): the built-in "mods" plugin, the built-in
@@ -1147,7 +1160,7 @@ func (c *ClaudeCodeInteractiveAdapter) startSession(ctx context.Context, session
 		// the adapter cannot dismiss in tmux mode and would cause a timeout.
 		prepareClaudeUserConfig(workingDir, c.oauthToken, llmtypes.CLIHomeEnvironment(opts)["HOME"])
 	}
-	finalEnv := append(claudeInteractiveFinalEnv(c.oauthToken), claudeSkillScopeEnv()...)
+	finalEnv := append(append(claudeInteractiveFinalEnv(c.oauthToken), claudeSkillScopeEnv()...), claudeAutoCompactEnv()...)
 	if claudeArgsHavePluginDir(args) {
 		modDir, err := prepareClaudeModSessionDir(sessionName)
 		if err != nil {
