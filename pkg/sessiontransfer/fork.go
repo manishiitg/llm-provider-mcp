@@ -119,10 +119,18 @@ func forkJournal(input, output, provider, workspace string, ids map[string]strin
 					if json.Unmarshal(raw, &source) == nil {
 						var sub, spawn map[string]json.RawMessage
 						if json.Unmarshal(source["subagent"], &sub) == nil && json.Unmarshal(sub["thread_spawn"], &spawn) == nil {
-							replaceNativeID(spawn, "parent_thread_id", ids)
-							sub["thread_spawn"], _ = json.Marshal(spawn)
-							source["subagent"], _ = json.Marshal(sub)
-							meta["source"], _ = json.Marshal(source)
+							var parent string
+							_ = json.Unmarshal(spawn["parent_thread_id"], &parent)
+							if parent != "" && ids[parent] == "" {
+								// A selected subagent becomes an independent root. Keeping
+								// its old parent would attach the fork to the original tree.
+								meta["source"], _ = json.Marshal("cli")
+							} else {
+								replaceNativeID(spawn, "parent_thread_id", ids)
+								sub["thread_spawn"], _ = json.Marshal(spawn)
+								source["subagent"], _ = json.Marshal(sub)
+								meta["source"], _ = json.Marshal(source)
+							}
 						}
 					}
 				}

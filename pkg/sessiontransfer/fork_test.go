@@ -2,6 +2,7 @@ package sessiontransfer
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestForkJSONLKeepsOriginalAndSeparatesNativeIdentities(t *testing.T) {
 			if provider == "codex-cli" {
 				transport = "app-server"
 				name = "sessions/2026/11/05/rollout-2026-11-05T00-00-00-" + id + ".jsonl"
-				body = fmt.Sprintf("{\"type\":\"session_meta\",\"payload\":{\"id\":%q,\"cwd\":%q}}\n{\"type\":\"response_item\",\"payload\":{\"content\":[{\"text\":%q}]}}\n", id, cwd, id)
+				body = fmt.Sprintf("{\"type\":\"session_meta\",\"payload\":{\"id\":%q,\"cwd\":%q,\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"33333333-3333-4333-8333-333333333333\"}}}}}\n{\"type\":\"response_item\",\"payload\":{\"content\":[{\"text\":%q}]}}\n", id, cwd, id)
 				childPath, err := Path(store, "sessions/2026/11/05/rollout-2026-11-05T00-00-00-"+child+".jsonl", true)
 				if err != nil {
 					t.Fatal(err)
@@ -58,6 +59,18 @@ func TestForkJSONLKeepsOriginalAndSeparatesNativeIdentities(t *testing.T) {
 			copied, err := os.ReadFile(filepath.Join(fork.Root, "session.jsonl"))
 			if err != nil || !bytes.Contains(copied, []byte(id)) {
 				t.Fatal("fork changed message text")
+			}
+			if provider == "codex-cli" {
+				var row struct {
+					Payload codexMeta `json:"payload"`
+				}
+				line := bytes.SplitN(copied, []byte("\n"), 2)[0]
+				if err := json.Unmarshal(line, &row); err != nil {
+					t.Fatal(err)
+				}
+				if codexParent(row.Payload) != "" {
+					t.Fatal("fork root remains a child of the original conversation")
+				}
 			}
 			for name := range fork.Files {
 				if name == "children/"+child+".jsonl" {
