@@ -8,9 +8,10 @@
 //
 // The helper is intentionally simple: idempotent overwrite. Callers can
 // invoke it at both session launch and resume; if the skill content is
-// unchanged on disk the write is a (cheap) no-op rewrite. There is no
-// cleanup of stale skill folders from prior sessions — adapters that
-// need session-scoped cleanup should track the directory themselves.
+// unchanged on disk the write is a (cheap) no-op rewrite. Folders an
+// earlier write projected (they carry the marker) for skills that are no
+// longer in the set are removed, so a skill dropped from the product stops
+// being listed to the model; folders without the marker are never touched.
 package skillproject
 
 import (
@@ -38,6 +39,7 @@ func Write(targetDir string, skills []*llmtypes.Skill) error {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("skillproject: create %s: %w", targetDir, err)
 	}
+	written := map[string]bool{}
 	for _, skill := range skills {
 		if skill == nil {
 			continue
@@ -46,6 +48,7 @@ func Write(targetDir string, skills []*llmtypes.Skill) error {
 		if folder == "" {
 			continue
 		}
+		written[folder] = true
 		skillDir := filepath.Join(targetDir, folder)
 		markerPath := filepath.Join(skillDir, projectfile.SkillMarkerFile)
 		// A folder of this name with no marker was written by an earlier
@@ -84,7 +87,28 @@ func Write(targetDir string, skills []*llmtypes.Skill) error {
 			}
 		}
 	}
+	pruneStale(targetDir, written)
 	return nil
+}
+
+// pruneStale removes marked folders of skills this write did not project. A
+// chat's runtime kept six skills for days after they left the product, and the
+// CLI listed them to the model on every turn (5 Nov).
+func pruneStale(targetDir string, written map[string]bool) {
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || written[entry.Name()] {
+			continue
+		}
+		dir := filepath.Join(targetDir, entry.Name())
+		if info, err := os.Lstat(filepath.Join(dir, projectfile.SkillMarkerFile)); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // renderSkillMarkdown builds the SKILL.md file content: YAML frontmatter
