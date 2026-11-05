@@ -193,3 +193,15 @@ func TestWithSlotDockerPointsTheCommandAtItsOwnSocket(t *testing.T) {
 		t.Fatalf("a host without slot Docker must not change the environment: %v", got)
 	}
 }
+
+// A missing write grant is never created: made as an empty file, a Crew's runtime folders (db/, assets/,
+// reports/ …) became 0-byte files the website's Files could not open (5 Nov).
+func TestMissingWriteGrantIsNotCreated(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "db")
+	if err := grantLocked("slot05", missing, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing grant %s was created (stat err %v)", missing, err)
+	}
+}

@@ -514,8 +514,8 @@ func GrantAccess(slot, path string) error {
 }
 
 // GrantRuntime gives one slot access to a file or folder the platform prepared for a launch (MCP
-// config, hooks, status file): read, plus write when the CLI writes there. A missing file the CLI
-// writes is created empty first. Something already readable by everyone needs nothing but a way in.
+// config, hooks, status file): read, plus write when the CLI writes there. A missing path is skipped,
+// never created: the adapter makes it first. Something already readable by everyone needs nothing but a way in.
 func GrantRuntime(slot, path string, write bool) error {
 	return grant(slot, path, write)
 }
@@ -564,12 +564,11 @@ func grantLocked(slot, path string, write bool) error {
 	clean := filepath.Clean(path)
 	info, err := os.Stat(clean)
 	if os.IsNotExist(err) && write {
-		f, cerr := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY, 0o600)
-		if cerr != nil {
-			return nil // the adapter creates it; nothing to grant yet
-		}
-		_ = f.Close()
-		info, err = os.Stat(clean)
+		// Never create it: a grant does not say whether it is a file or a folder, and a missing folder grant made
+		// here as an empty file left a Crew's db/, assets/, reports/ … as 0-byte files that Files could not open
+		// (5 Nov). Whoever owns the path makes it (as a folder or file) before granting.
+		log.Printf("[SLOTFS] grant skipped: slot=%s path=%s does not exist yet", slot, clean)
+		return nil
 	}
 	if err != nil {
 		return nil // nothing there to grant (a path granted "in case")
