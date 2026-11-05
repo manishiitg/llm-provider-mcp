@@ -161,4 +161,13 @@ func TestWriteAdoptsOldSkillsAndKeepsOthers(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(old, "SKILL.md")); !strings.Contains(string(b), "V3") {
 		t.Fatalf("second update lost: %q", b)
 	}
+	// A projected skill that left the set is removed; the project's own skill stays (5 Nov: six
+	// removed skills stayed listed to the model for days).
+	Write(dir, []*llmtypes.Skill{{Name: "panel-data", Content: "D"}})
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("removed projected skill kept: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(own, "SKILL.md")); string(b) != "MINE" {
+		t.Fatalf("project's own skill removed or changed: %q", b)
+	}
 }
