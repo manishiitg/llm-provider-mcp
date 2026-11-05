@@ -15,7 +15,7 @@ import (
 // ForkJSONL copies a validated native conversation into independent identities.
 // Only native routing fields change; user text and message/tool ancestry remain
 // intact. The source bundle and the provider's original store are never written.
-func ForkJSONL(source *Bundle, out string) (*Bundle, error) {
+func ForkJSONL(source *Bundle, out, workspace string) (*Bundle, error) {
 	if err := source.ValidateFiles(); err != nil {
 		return nil, err
 	}
@@ -24,6 +24,9 @@ func ForkJSONL(source *Bundle, out string) (*Bundle, error) {
 	}
 	if source.Format != "claude-jsonl" && source.Format != "codex-rollout" {
 		return nil, fmt.Errorf("this native format cannot be forked")
+	}
+	if !filepath.IsAbs(workspace) {
+		return nil, fmt.Errorf("fork needs an absolute workspace")
 	}
 	if filepath.Clean(out) == filepath.Clean(source.Root) {
 		return nil, fmt.Errorf("fork needs a separate destination")
@@ -35,7 +38,7 @@ func ForkJSONL(source *Bundle, out string) (*Bundle, error) {
 		}
 	}
 	fork := *source
-	fork.Root, fork.SessionID, fork.Files = out, ids[source.SessionID], map[string]File{}
+	fork.Root, fork.SessionID, fork.Workspace, fork.Files = out, ids[source.SessionID], workspace, map[string]File{}
 	for name := range source.Files {
 		destName := name
 		if strings.HasPrefix(name, "children/") {
@@ -50,7 +53,7 @@ func ForkJSONL(source *Bundle, out string) (*Bundle, error) {
 			return nil, err
 		}
 		if strings.HasSuffix(name, ".jsonl") {
-			if err = forkJournal(input, output, source.Provider, ids); err != nil {
+			if err = forkJournal(input, output, source.Provider, workspace, ids); err != nil {
 				return nil, err
 			}
 		} else if err = Copy(out, output, input); err != nil {
@@ -71,7 +74,7 @@ func ForkJSONL(source *Bundle, out string) (*Bundle, error) {
 	return &fork, nil
 }
 
-func forkJournal(input, output, provider string, ids map[string]string) error {
+func forkJournal(input, output, provider, workspace string, ids map[string]string) error {
 	in, err := os.Open(input)
 	if err != nil {
 		return err
@@ -97,6 +100,9 @@ func forkJournal(input, output, provider string, ids map[string]string) error {
 		}
 		if provider == "claude-code" {
 			replaceNativeID(row, "sessionId", ids)
+			if _, ok := row["cwd"]; ok {
+				row["cwd"], _ = json.Marshal(workspace)
+			}
 		} else {
 			var kind string
 			_ = json.Unmarshal(row["type"], &kind)
@@ -106,6 +112,7 @@ func forkJournal(input, output, provider string, ids map[string]string) error {
 					return err
 				}
 				replaceNativeID(meta, "id", ids)
+				meta["cwd"], _ = json.Marshal(workspace)
 				// Child sessions must point to the copied parent, never the original.
 				if raw := meta["source"]; len(raw) > 0 {
 					var source map[string]json.RawMessage

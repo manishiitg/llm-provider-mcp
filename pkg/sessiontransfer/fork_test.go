@@ -41,7 +41,7 @@ func TestForkJSONLKeepsOriginalAndSeparatesNativeIdentities(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			fork, err := ForkJSONL(source, t.TempDir())
+			fork, err := ForkJSONL(source, t.TempDir(), cwd)
 			if err != nil {
 				t.Fatal(err)
 			}
