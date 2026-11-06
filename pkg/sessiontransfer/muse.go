@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -98,6 +99,13 @@ func ExportMuse(dataHome, id, workspace, transport string) (*Bundle, error) {
 	total := int64(0)
 	err = filepath.WalkDir(sessionRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// A folder Muse made for itself that this account may not read (approval-review, owned by the slot it
+			// ran in) holds no journal: it is left out. Only a folder that may hold journals must be readable.
+			if d != nil && d.IsDir() && errors.Is(walkErr, fs.ErrPermission) {
+				if rel, e := filepath.Rel(sessionRoot, path); e == nil && rel != "." && rel != "subagent" && !strings.HasPrefix(filepath.ToSlash(rel), "subagent/") {
+					return filepath.SkipDir
+				}
+			}
 			return walkErr
 		}
 		if d.Type()&os.ModeSymlink != 0 {
