@@ -72,7 +72,7 @@ func codexParent(meta codexMeta) string {
 // Subagent journals keep native IDs; no home configuration or global index is
 // part of the bundle. The caller closes its native writer before a handoff.
 func ExportJSONL(provider, transport, store, workspace, id, out string) (*Bundle, error) {
-	if !UUID.MatchString(id) || !filepath.IsAbs(store) || !filepath.IsAbs(out) {
+	if provider == "pi-cli" && !piID.MatchString(id) || provider != "pi-cli" && !UUID.MatchString(id) || !filepath.IsAbs(store) || !filepath.IsAbs(out) {
 		return nil, fmt.Errorf("invalid native export identity")
 	}
 	b := &Bundle{Provider: provider, Transport: transport, SessionID: id, Workspace: workspace, Root: out, Files: map[string]File{}}
@@ -169,6 +169,29 @@ func ExportJSONL(provider, transport, store, workspace, id, out string) (*Bundle
 				}
 			}
 		}
+	case "pi-cli":
+		b.Format = "pi-jsonl"
+		rel, e := piFind(store, id)
+		if e != nil {
+			if os.IsNotExist(e) {
+				return nil, fmt.Errorf("the native Pi session is missing")
+			}
+			return nil, e
+		}
+		p, e := Path(store, rel, false)
+		if e != nil {
+			return nil, e
+		}
+		h, e := readPiHeader(p)
+		if e != nil {
+			return nil, e
+		}
+		if h.ID != id {
+			return nil, fmt.Errorf("the Pi session file belongs to another session")
+		}
+		// The real cwd is descriptive (Workspace); the bundled header carries a placeholder.
+		b.Workspace = *h.Cwd
+		sources["session.jsonl"] = p
 	default:
 		return nil, fmt.Errorf("unsupported native journal provider")
 	}
@@ -183,7 +206,12 @@ func ExportJSONL(provider, transport, store, workspace, id, out string) (*Bundle
 		if e != nil {
 			return nil, e
 		}
-		if e = Copy(out, dest, source); e != nil {
+		if provider == "pi-cli" {
+			e = piCopyWithCwd(out, dest, source, piWorkspacePlaceholder, "")
+		} else {
+			e = Copy(out, dest, source)
+		}
+		if e != nil {
 			return nil, e
 		}
 		f, e := Inspect(dest)
@@ -251,6 +279,7 @@ func (b *Bundle) ValidateJournals() error {
 		}
 		reader := bufio.NewReaderSize(f, 64<<10)
 		seen := false
+		pi := &piJournalCheck{}
 		for {
 			line, err := reader.ReadBytes('\n')
 			if err == io.EOF && len(line) == 0 {
@@ -259,6 +288,12 @@ func (b *Bundle) ValidateJournals() error {
 			if err != nil || !json.Valid(line) {
 				f.Close()
 				return fmt.Errorf("native journal is incomplete")
+			}
+			if b.Provider == "pi-cli" {
+				if e := pi.line(line, b.SessionID); e != nil {
+					f.Close()
+					return e
+				}
 			}
 			if b.Provider == "claude-code" {
 				var row struct {
@@ -327,6 +362,18 @@ func ImportJSONL(store, workspace string, b *Bundle) error {
 			return e
 		}
 	}
+	piCwd := ""
+	if b.Provider == "pi-cli" {
+		var e error
+		if piCwd, e = piDestinationCwd(workspace); e != nil {
+			return e
+		}
+		if _, e = piFind(store, b.SessionID); e == nil {
+			rootExists = true
+		} else if !os.IsNotExist(e) {
+			return e
+		}
+	}
 	if b.Provider == "codex-cli" {
 		matches, e := filepath.Glob(filepath.Join(store, "sessions", "*", "*", "*", "rollout-*-"+b.SessionID+".jsonl"))
 		if e != nil {
@@ -381,6 +428,24 @@ func ImportJSONL(store, workspace string, b *Bundle) error {
 				}
 				relative = filepath.ToSlash(rel)
 			}
+		case "pi-jsonl":
+			// Keep the file where Pi (or an earlier import) put it; a new one gets Pi's own name.
+			existing, e := piFind(store, b.SessionID)
+			if e == nil {
+				relative = existing
+			} else if os.IsNotExist(e) {
+				source, e := Path(b.Root, name, false)
+				if e != nil {
+					return e
+				}
+				h, e := readPiHeader(source)
+				if e != nil {
+					return e
+				}
+				relative = piFileName(h)
+			} else {
+				return e
+			}
 		default:
 			return fmt.Errorf("unsupported native journal import")
 		}
@@ -392,7 +457,12 @@ func ImportJSONL(store, workspace string, b *Bundle) error {
 		if e != nil {
 			return e
 		}
-		if e = Copy(store, p, source); e != nil {
+		if b.Format == "pi-jsonl" {
+			e = piCopyWithCwd(store, p, source, piCwd, "")
+		} else {
+			e = Copy(store, p, source)
+		}
+		if e != nil {
 			return e
 		}
 	}

@@ -22,7 +22,7 @@ func ForkJSONL(source *Bundle, out, workspace string) (*Bundle, error) {
 	if err := source.ValidateJournals(); err != nil {
 		return nil, err
 	}
-	if source.Format != "claude-jsonl" && source.Format != "codex-rollout" {
+	if source.Format != "claude-jsonl" && source.Format != "codex-rollout" && source.Format != "pi-jsonl" {
 		return nil, fmt.Errorf("this native format cannot be forked")
 	}
 	if !filepath.IsAbs(workspace) {
@@ -98,7 +98,15 @@ func forkJournal(input, output, provider, workspace string, ids map[string]strin
 		if err := json.Unmarshal(line, &row); err != nil {
 			return err
 		}
-		if provider == "claude-code" {
+		if provider == "pi-cli" {
+			// Only the header names the session; entries keep their own ids and parent links. The cwd stays the
+			// transfer placeholder until import writes the destination's.
+			var kind string
+			_ = json.Unmarshal(row["type"], &kind)
+			if kind == "session" {
+				replaceNativeID(row, "id", ids)
+			}
+		} else if provider == "claude-code" {
 			replaceNativeID(row, "sessionId", ids)
 			if _, ok := row["cwd"]; ok {
 				row["cwd"], _ = json.Marshal(workspace)

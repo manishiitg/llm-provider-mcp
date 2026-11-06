@@ -55,7 +55,7 @@ func (b *Bundle) Validate() error {
 	if b == nil || !filepath.IsAbs(b.Workspace) || len(b.Files) == 0 || len(b.Files) > 4096 {
 		return fmt.Errorf("invalid native session descriptor")
 	}
-	if b.Transport != "sdk" && b.Transport != "acp" && b.Transport != "tmux" && b.Transport != "structured" && b.Transport != "exec" && b.Transport != "app-server" && b.Transport != "msp" {
+	if b.Transport != "sdk" && b.Transport != "acp" && b.Transport != "tmux" && b.Transport != "structured" && b.Transport != "exec" && b.Transport != "app-server" && b.Transport != "msp" && b.Transport != "rpc" {
 		return fmt.Errorf("unsupported native runtime")
 	}
 	switch b.Provider {
@@ -73,6 +73,11 @@ func (b *Bundle) Validate() error {
 		if b.Transport != "structured" && b.Transport != "tmux" && b.Transport != "msp" {
 			return fmt.Errorf("unsupported Muse native runtime")
 		}
+	case "pi-cli":
+		// Pi's RPC lane (AgentWorks' default) and its terminal lane keep the same journal.
+		if b.Transport != "rpc" && b.Transport != "tmux" {
+			return fmt.Errorf("unsupported Pi native runtime")
+		}
 	case "cursor-cli":
 	default:
 		return fmt.Errorf("unsupported native program")
@@ -80,6 +85,10 @@ func (b *Bundle) Validate() error {
 	if b.Format == "cursor-sdk-sqlite" {
 		if b.Provider != "cursor-cli" || b.Transport != "sdk" || !sdkID.MatchString(b.SessionID) {
 			return fmt.Errorf("invalid Cursor SDK identity")
+		}
+	} else if b.Provider == "pi-cli" {
+		if !piID.MatchString(b.SessionID) {
+			return fmt.Errorf("invalid native session identity")
 		}
 	} else if !UUID.MatchString(b.SessionID) {
 		return fmt.Errorf("invalid native session identity")
@@ -139,6 +148,8 @@ func (b *Bundle) allowed(name string) bool {
 		return name == "session.jsonl" || len(p) == 2 && (p[0] == "subagents" || p[0] == "tool-results") && leaf.MatchString(p[1])
 	case "codex-rollout":
 		return b.Provider == "codex-cli" && date.MatchString(b.Date) && (name == "session.jsonl" || len(p) == 2 && p[0] == "children" && strings.HasSuffix(p[1], ".jsonl") && UUID.MatchString(strings.TrimSuffix(p[1], ".jsonl")))
+	case "pi-jsonl":
+		return b.Provider == "pi-cli" && name == "session.jsonl"
 	case "cursor-cli-sqlite":
 		return b.Provider == "cursor-cli" && b.Transport == "tmux" && (name == "store.db" || name == "meta.json" || name == "prompt_history.json")
 	case "cursor-sdk-sqlite":
