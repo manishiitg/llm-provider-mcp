@@ -5,6 +5,7 @@ package sessiontransfer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -305,25 +306,98 @@ func Ancestor(old, next *Bundle) error {
 	}
 	for name, want := range old.Files {
 		got, ok := next.Files[name]
-		if !ok || got.Size < want.Size {
+		if !ok {
 			return ErrDiverged
 		}
 		p, e := Path(next.Root, name, false)
 		if e != nil {
 			return e
 		}
-		f, e := os.Open(p)
+		if got.Size >= want.Size {
+			if sum, e := prefixSHA256(p, want.Size); e != nil {
+				return e
+			} else if sum == want.SHA256 {
+				continue
+			}
+		}
+		// A Muse journal ends with a session.end record each time its run closes (and again when the session is
+		// restored), so two copies that both continued from the same point differ only by that last line. The older
+		// copy without it, if it still starts the newer one, is its ancestor.
+		trimmed, ok, e := sizeWithoutSessionEnd(old.Root, name, want.Size)
 		if e != nil {
 			return e
 		}
-		h := sha256.New()
-		n, e := io.CopyN(h, f, want.Size)
-		f.Close()
-		if e != nil || n != want.Size || hex.EncodeToString(h.Sum(nil)) != want.SHA256 {
+		if !ok || got.Size < trimmed {
+			return ErrDiverged
+		}
+		oldPath, e := Path(old.Root, name, false)
+		if e != nil {
+			return e
+		}
+		oldSum, e := prefixSHA256(oldPath, trimmed)
+		if e != nil {
+			return e
+		}
+		if sum, e := prefixSHA256(p, trimmed); e != nil {
+			return e
+		} else if sum != oldSum {
 			return ErrDiverged
 		}
 	}
 	return nil
+}
+
+func prefixSHA256(path string, size int64) (string, error) {
+	f, e := os.Open(path)
+	if e != nil {
+		return "", e
+	}
+	defer f.Close()
+	h := sha256.New()
+	if n, e := io.CopyN(h, f, size); e != nil || n != size {
+		return "", ErrDiverged
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sizeWithoutSessionEnd: the length of a journal file without its last line when that line is a session.end record
+// (ok); ok is false for any other file.
+func sizeWithoutSessionEnd(root, name string, size int64) (int64, bool, error) {
+	if root == "" || !strings.HasSuffix(name, ".jsonl") || size < 2 {
+		return 0, false, nil
+	}
+	p, e := Path(root, name, false)
+	if e != nil {
+		return 0, false, e
+	}
+	f, e := os.Open(p)
+	if e != nil {
+		return 0, false, e
+	}
+	defer f.Close()
+	tail := int64(64 << 10)
+	if tail > size {
+		tail = size
+	}
+	buf := make([]byte, tail)
+	if _, e = f.ReadAt(buf, size-tail); e != nil {
+		return 0, false, e
+	}
+	if buf[len(buf)-1] != '\n' {
+		return 0, false, nil
+	}
+	body := buf[:len(buf)-1]
+	start := strings.LastIndexByte(string(body), '\n') + 1
+	if start == 0 && tail < size {
+		return 0, false, nil // the last line is longer than what was read
+	}
+	var line struct {
+		PayloadType string `json:"payload_type"`
+	}
+	if json.Unmarshal(body[start:], &line) != nil || line.PayloadType != "session.end" {
+		return 0, false, nil
+	}
+	return size - tail + int64(start), true, nil
 }
 
 var ErrDiverged = errors.New("native history changed on both computers; both copies were kept")
