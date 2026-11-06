@@ -79,8 +79,8 @@ func (b *Bundle) Validate() error {
 			return fmt.Errorf("unsupported Pi native runtime")
 		}
 	case "agy-cli":
-		// The conversation file is the same for agy's headless and terminal lanes.
-		if b.Transport != "exec" && b.Transport != "tmux" {
+		// The conversation file is the same for agy's terminal, headless (structured) and ACP lanes.
+		if b.Transport != "tmux" && b.Transport != "structured" && b.Transport != "acp" && b.Transport != "exec" {
 			return fmt.Errorf("unsupported Antigravity native runtime")
 		}
 	case "cursor-cli":
