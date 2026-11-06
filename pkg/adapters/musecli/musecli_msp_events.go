@@ -49,7 +49,7 @@ type museMSPTokenUsage struct {
 // they are written, each tool call is reported when it starts and when it
 // ends, and the host's questions and approvals are answered as the tmux lane
 // answers them. turn/completed ends it.
-func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSession, events <-chan museRPCMessage, turnID string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSession, events <-chan museRPCMessage, turnID string, totals *museMSPTurnTotals, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
 	meta := func(extra map[string]interface{}) map[string]interface{} {
 		m := map[string]interface{}{"muse_session_id": s.sessionID, "muse_cli_stream_source": "transcript"}
 		for k, v := range extra {
@@ -59,10 +59,6 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 	}
 	items := map[string]*museMSPItem{}
 	toolStarts := map[string]time.Time{}
-	var answers []string
-	var lastAnswer string
-	var input, output, cacheRead, cacheWrite int
-	model := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -107,8 +103,8 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 					}
 				case "agentMessage":
 					if msg.Method == "item/completed" && strings.TrimSpace(item.Text) != "" {
-						lastAnswer = strings.TrimSpace(item.Text)
-						answers = append(answers, lastAnswer)
+						totals.lastAnswer = strings.TrimSpace(item.Text)
+						totals.answers = append(totals.answers, totals.lastAnswer)
 					}
 				case "compaction":
 					if msg.Method == "item/completed" {
@@ -137,14 +133,14 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 			case "session/tokenUsage":
 				var p museMSPTokenUsage
 				if json.Unmarshal(msg.Params, &p) == nil && (p.TurnID == "" || p.TurnID == turnID) {
-					input += p.Usage.InputTokens
-					output += p.Usage.OutputTokens
-					cacheRead += p.Usage.CacheReadTokens
-					cacheWrite += p.Usage.CacheWriteTokens
+					totals.input += p.Usage.InputTokens
+					totals.output += p.Usage.OutputTokens
+					totals.cacheRead += p.Usage.CacheReadTokens
+					totals.cacheWrite += p.Usage.CacheWriteTokens
 					if p.ModelID != "" {
-						model = p.ModelID
+						totals.model = p.ModelID
 					}
-					status := s.statusLine(model, input, output, cacheRead, cacheWrite)
+					status := s.statusLine(totals.model, totals.input, totals.output, totals.cacheRead, totals.cacheWrite)
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeStatusLine, StatusLine: status, Metadata: meta(nil)})
 				}
 			case "session/contextUsage":
@@ -200,7 +196,13 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 					}
 					return nil, fmt.Errorf("muse turn %s: %s", p.Terminal, strings.TrimSpace(reason))
 				}
-				return a.museMSPResponse(s, lastAnswer, strings.Join(answers, "\n\n"), model, input, output, cacheRead, cacheWrite), nil
+				turnText := strings.Join(totals.answers, "\n\n")
+				answer := totals.lastAnswer
+				if totals.followups > 0 {
+					// Each reply answers a different message: keep both in the saved chat.
+					answer = turnText
+				}
+				return a.museMSPResponse(s, answer, turnText, totals.model, totals.input, totals.output, totals.cacheRead, totals.cacheWrite), nil
 			}
 		}
 	}
@@ -368,7 +370,9 @@ func (a *MuseCLIAdapter) compactMuseMSP(ctx context.Context, s *museMSPSession, 
 	}
 }
 
-// SendMuseMSPInput adds a message to the chat's running turn (turn/steer).
+// SendMuseMSPInput adds a message to the chat's running turn (turn/steer). The
+// host's answer does not prove the turn will read it: runMuseMSPTurns checks
+// that when the turn ends.
 func SendMuseMSPInput(ctx context.Context, owner, message string) error {
 	s := museMSPSessionFor(owner)
 	if s == nil {
@@ -376,19 +380,23 @@ func SendMuseMSPInput(ctx context.Context, owner, message string) error {
 	}
 	s.mu.Lock()
 	turnID, sessionID := s.turnID, s.sessionID
-	s.mu.Unlock()
 	if turnID == "" {
+		s.mu.Unlock()
 		return fmt.Errorf("%w: no Muse turn is running", llmtypes.ErrCodingAgentInputNotSent)
 	}
-	if err := s.rpc.call(ctx, "turn/steer", map[string]any{"commandId": museCommandID(), "sessionId": sessionID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": message}}}, nil); err != nil {
+	steer := s.addSteerLocked(message)
+	s.mu.Unlock()
+	err := s.rpc.call(ctx, "turn/steer", map[string]any{"commandId": steer.commandID, "sessionId": sessionID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": message}}}, nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finishSteerLocked(steer, err == nil)
+	if err != nil {
 		return err
 	}
-	s.mu.Lock()
 	if s.steered == nil {
 		s.steered = map[string]time.Time{}
 	}
 	s.steered[message] = time.Now()
-	s.mu.Unlock()
 	return nil
 }
 
