@@ -41,7 +41,14 @@ func validateCursorCLIMetadata(root, workspace string) error {
 		Cwd           string `json:"cwd"`
 		SchemaVersion int    `json:"schemaVersion"`
 	}
-	if json.Unmarshal(raw, &meta) != nil || meta.SchemaVersion != 1 || filepath.Clean(meta.Cwd) != filepath.Clean(workspace) {
+	if json.Unmarshal(raw, &meta) != nil {
+		return fmt.Errorf("Cursor CLI native metadata is unreadable")
+	}
+	// schemaVersion is Cursor's session store layout, not its app version: every Cursor CLI writes 1 today.
+	if meta.SchemaVersion != 1 {
+		return fmt.Errorf("Cursor CLI session store schema %d is unsupported", meta.SchemaVersion)
+	}
+	if filepath.Clean(meta.Cwd) != filepath.Clean(workspace) {
 		return fmt.Errorf("Cursor CLI native workspace does not match")
 	}
 	p, e = Path(root, "store.db", false)
