@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +75,8 @@ type museMSPSession struct {
 	wake map[string]*museMSPWake
 	// steered: messages turn/steer accepted, for the durable receipt.
 	steered map[string]time.Time
+	// steers: what the running turn was given; see museMSPMissedSteers.
+	steers []*museMSPSteer
 }
 
 func (s *museMSPSession) steerReceipt(message string) (MuseDurableAck, error) {
@@ -502,32 +505,58 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	if len(s.roots) > 0 {
 		params["workspaceRoots"] = s.roots
 	}
-	var started struct {
-		TurnID string `json:"turnId"`
-	}
+	return a.runMuseMSPTurns(ctx, s, owner, params, handoff, opts, emit)
+}
+
+// runMuseMSPTurns runs the turn in params, then one more for any message that
+// turn was given and never read. The caller's Run stays open across them, so
+// the message is answered inside the same completion that a steer read in time
+// would have been.
+func (a *MuseCLIAdapter) runMuseMSPTurns(ctx context.Context, s *museMSPSession, owner string, params map[string]any, handoff bool, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
 	events := s.listen()
 	defer s.stopListening()
-	if err := s.rpc.call(ctx, "turn/start", params, &started); err != nil {
-		CloseMuseMSPSession(owner)
-		return nil, err
+	totals := &museMSPTurnTotals{}
+	for {
+		var started struct {
+			TurnID string `json:"turnId"`
+		}
+		if err := s.rpc.call(ctx, "turn/start", params, &started); err != nil {
+			CloseMuseMSPSession(owner)
+			return nil, err
+		}
+		s.mu.Lock()
+		s.turnID = started.TurnID
+		s.mu.Unlock()
+		if totals.followups == 0 {
+			llmtypes.SignalPromptAccepted(opts.StreamChan)
+		} else {
+			log.Printf("[MUSE_MSP] steer handover session=%s owner=%s next_turn=%s", s.sessionID, owner, started.TurnID)
+		}
+		response, err := a.consumeMuseMSPTurn(ctx, s, events, started.TurnID, totals, opts, emit)
+		s.mu.Lock()
+		s.turnID = ""
+		if handoff && err == nil {
+			s.handoffPending = false
+		}
+		s.mu.Unlock()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = s.rpc.call(interruptCtx, "turn/interrupt", map[string]any{"commandId": museCommandID(), "sessionId": s.sessionID, "turnId": started.TurnID}, nil)
+			cancel()
+		}
+		if err != nil {
+			s.clearSteers()
+			return response, err
+		}
+		missed := a.museMSPMissedSteers(ctx, s, events)
+		if len(missed) == 0 {
+			return response, nil
+		}
+		log.Printf("[MUSE_MSP] steer handover session=%s owner=%s finished_turn=%s missed=%d: the turn ended before reading them, running them as the next turn", s.sessionID, owner, started.TurnID, len(missed))
+		totals.followups++
+		params["commandId"] = museCommandID()
+		params["input"] = []map[string]any{{"type": "text", "text": strings.Join(missed, "\n\n")}}
 	}
-	s.mu.Lock()
-	s.turnID = started.TurnID
-	s.mu.Unlock()
-	llmtypes.SignalPromptAccepted(opts.StreamChan)
-	response, err := a.consumeMuseMSPTurn(ctx, s, events, started.TurnID, opts, emit)
-	s.mu.Lock()
-	s.turnID = ""
-	if handoff && err == nil {
-		s.handoffPending = false
-	}
-	s.mu.Unlock()
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		interruptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = s.rpc.call(interruptCtx, "turn/interrupt", map[string]any{"commandId": museCommandID(), "sessionId": s.sessionID, "turnId": started.TurnID}, nil)
-		cancel()
-	}
-	return response, err
 }
 
 // museMSPBaseURLArgv points serve at an account's own Meta address (a company account reaches Meta through this
