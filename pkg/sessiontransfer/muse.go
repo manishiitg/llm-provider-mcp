@@ -55,8 +55,10 @@ func inspectMuseJournal(path string, root bool, id string) (File, string, error)
 				return File{}, "", fmt.Errorf("Muse journal belongs to another session")
 			}
 			if row.PayloadType == "runtime.session.metadata" {
-				if row.Payload.Record.Build.Semver != "1.4.14" {
-					return File{}, "", fmt.Errorf("Muse journal format is unsupported")
+				// The journal records the Muse that created the session, which may be older than the one running now;
+				// the journal format is stable across Muse 1.x.
+				if semver := row.Payload.Record.Build.Semver; !strings.HasPrefix(semver, "1.") {
+					return File{}, "", fmt.Errorf("Muse journal format %q is unsupported", semver)
 				}
 				workspace = row.Payload.Record.Workspace
 			}
