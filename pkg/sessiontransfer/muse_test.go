@@ -76,14 +76,14 @@ func TestMuseNativeHandoffRejectsPathsLinksAndForeignSession(t *testing.T) {
 	}
 }
 
-// PLAT-856-551: a Muse session keeps the version of the Muse that created it in its journal, so a session started on
-// an older Muse 1.x must still move; only another major version is refused, and the refusal names the version.
+// PLAT-856-551: a Muse journal from any Muse 1.x moves, and current Muse writes no build version at all (live test,
+// 6 Nov: "Muse journal format \"\" is unsupported"); only another major version is refused, naming it.
 func TestMuseJournalAcceptsOlderSameMajorVersion(t *testing.T) {
 	id := "11111111-1111-4111-8111-111111111111"
 	for _, c := range []struct {
 		semver string
 		ok     bool
-	}{{"1.3.2", true}, {"1.4.14-R7309.1", true}, {"2.0.0", false}} {
+	}{{"1.3.2", true}, {"1.4.14-R7309.1", true}, {"", true}, {"2.0.0", false}} {
 		row := map[string]any{"stream": map[string]string{"kind": "session", "id": id}, "payload_type": "runtime.session.metadata", "payload": map[string]any{"record": map[string]any{"workspace_root": t.TempDir(), "build": map[string]string{"semver": c.semver}}}}
 		raw, _ := json.Marshal(row)
 		path := filepath.Join(t.TempDir(), "session.jsonl")
@@ -91,7 +91,7 @@ func TestMuseJournalAcceptsOlderSameMajorVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _, err := inspectMuseJournal(path, true, id)
-		if c.ok && err != nil || !c.ok && (err == nil || !strings.Contains(err.Error(), c.semver)) {
+		if c.ok && err != nil || !c.ok && (err == nil || !strings.Contains(err.Error(), c.semver)) { // "": current Muse writes no build version
 			t.Fatalf("Muse %s: %v", c.semver, err)
 		}
 	}
