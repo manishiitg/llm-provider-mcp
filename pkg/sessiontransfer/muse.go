@@ -39,9 +39,10 @@ func inspectMuseJournal(path string, root bool, id string) (File, string, error)
 		}
 		if root {
 			var row struct {
-				Stream      struct{ Kind, ID string }
-				PayloadType string `json:"payload_type"`
-				Payload     struct {
+				Stream        struct{ Kind, ID string }
+				PayloadType   string `json:"payload_type"`
+				PayloadSchema int    `json:"payload_schema_version"`
+				Payload       struct {
 					Record struct {
 						Workspace string `json:"workspace_root"`
 						Build     struct{ Semver string }
@@ -55,10 +56,10 @@ func inspectMuseJournal(path string, root bool, id string) (File, string, error)
 				return File{}, "", fmt.Errorf("Muse journal belongs to another session")
 			}
 			if row.PayloadType == "runtime.session.metadata" {
-				// The journal records the Muse that created the session, which may be older than the one running now;
-				// the journal format is stable across Muse 1.x.
-				if semver := row.Payload.Record.Build.Semver; !strings.HasPrefix(semver, "1.") {
-					return File{}, "", fmt.Errorf("Muse journal format %q is unsupported", semver)
+				// The format is the metadata's payload schema; older Muse also wrote its build version (any 1.x reads the
+				// same journal), current Muse writes none.
+				if semver := row.Payload.Record.Build.Semver; semver != "" && !strings.HasPrefix(semver, "1.") || row.PayloadSchema > 1 {
+					return File{}, "", fmt.Errorf("Muse journal format (build %q, schema %d) is unsupported", semver, row.PayloadSchema)
 				}
 				workspace = row.Payload.Record.Workspace
 			}
