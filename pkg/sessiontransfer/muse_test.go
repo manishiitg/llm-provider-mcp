@@ -96,3 +96,31 @@ func TestMuseJournalAcceptsOlderSameMajorVersion(t *testing.T) {
 		}
 	}
 }
+
+// Live round 3, 6 Nov: on a server the CLI runs as another account, and its approval-review folder in the Muse session
+// is unreadable to the app; exporting the session must leave that folder out instead of failing the hand back.
+func TestExportMuseSkipsAnUnreadableApprovalReviewFolder(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every folder")
+	}
+	id := "11111111-1111-4111-8111-111111111111"
+	workspace := t.TempDir()
+	home := t.TempDir()
+	dir := filepath.Join(home, "muse", "sessions", "2026", "11", "06", id)
+	if err := os.MkdirAll(filepath.Join(dir, "approval-review"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{"stream": map[string]string{"kind": "session", "id": id}, "payload_type": "runtime.session.metadata", "payload": map[string]any{"record": map[string]any{"workspace_root": workspace}}}
+	raw, _ := json.Marshal(row)
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "approval-review"), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(dir, "approval-review"), 0o700)
+	b, err := ExportMuse(home, id, workspace, "structured")
+	if err != nil || b.Files["session.jsonl"].Size == 0 {
+		t.Fatalf("an unreadable approval-review folder must not fail the export: %v", err)
+	}
+}
