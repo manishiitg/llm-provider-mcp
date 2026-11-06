@@ -220,7 +220,7 @@ func ImportMuse(dataHome, workspace string, b *Bundle) error {
 			if e != nil {
 				return e
 			}
-			if e = Ancestor(&Bundle{Provider: b.Provider, Format: b.Format, SessionID: b.SessionID, Files: map[string]File{name: old}}, b); e != nil {
+			if e = Ancestor(&Bundle{Provider: b.Provider, Format: b.Format, SessionID: b.SessionID, Root: strings.TrimSuffix(p, string(filepath.Separator)+filepath.FromSlash(name)), Files: map[string]File{name: old}}, b); e != nil {
 				return e
 			}
 		} else if !os.IsNotExist(statErr) {

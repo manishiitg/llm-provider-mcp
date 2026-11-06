@@ -124,3 +124,37 @@ func TestExportMuseSkipsAnUnreadableApprovalReviewFolder(t *testing.T) {
 		t.Fatalf("an unreadable approval-review folder must not fail the export: %v", err)
 	}
 }
+
+// PLAT-856 final round, 6 Nov: the Mac's own Muse journal ended with its own session.end while the server's copy went on
+// from the same point; importing the server's copy was refused as "changed on both". The local session.end alone does
+// not make the copies diverge.
+func TestImportMuseOverALocalCopyThatOnlyHasItsOwnSessionEnd(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	workspace := t.TempDir()
+	row := func(payloadType string, payload map[string]any) string {
+		raw, _ := json.Marshal(map[string]any{"stream": map[string]string{"kind": "session", "id": id}, "payload_type": payloadType, "payload": payload})
+		return string(raw) + "\n"
+	}
+	metadata := row("runtime.session.metadata", map[string]any{"record": map[string]any{"workspace_root": workspace, "build": map[string]string{"semver": "1.4.14"}}})
+	bundleOf := func(content string) *Bundle {
+		root := t.TempDir()
+		path := filepath.Join(root, "session.jsonl")
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		descriptor, _, err := inspectMuseJournal(path, true, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &Bundle{Provider: "muse-cli", Format: "muse-jsonl", Transport: "structured", SessionID: id, Date: "2026/11/01", Workspace: workspace, Root: root, Files: map[string]File{"session.jsonl": descriptor}}
+	}
+	home := t.TempDir()
+	shared := metadata + row("message", map[string]any{"n": 1})
+	if err := ImportMuse(home, workspace, bundleOf(shared+row("session.end", nil))); err != nil {
+		t.Fatal(err)
+	}
+	server := bundleOf(shared + row("session.end", map[string]any{"server": true}) + row("message", map[string]any{"n": 2}))
+	if err := ImportMuse(home, workspace, server); err != nil {
+		t.Fatalf("a local copy that only ends with its own session.end is older than the server's: %v", err)
+	}
+}
