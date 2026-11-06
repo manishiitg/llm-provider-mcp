@@ -22,7 +22,7 @@ func ForkJSONL(source *Bundle, out, workspace string) (*Bundle, error) {
 	if err := source.ValidateJournals(); err != nil {
 		return nil, err
 	}
-	if source.Format != "claude-jsonl" && source.Format != "codex-rollout" && source.Format != "pi-jsonl" {
+	if source.Format != "claude-jsonl" && source.Format != "codex-rollout" && source.Format != "pi-jsonl" && source.Format != agyFormat {
 		return nil, fmt.Errorf("this native format cannot be forked")
 	}
 	if !filepath.IsAbs(workspace) {
@@ -30,6 +30,9 @@ func ForkJSONL(source *Bundle, out, workspace string) (*Bundle, error) {
 	}
 	if filepath.Clean(out) == filepath.Clean(source.Root) {
 		return nil, fmt.Errorf("fork needs a separate destination")
+	}
+	if source.Format == agyFormat {
+		return forkAgy(source, out, workspace)
 	}
 	ids := map[string]string{source.SessionID: uuid.NewString()}
 	for name := range source.Files {

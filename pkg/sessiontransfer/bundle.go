@@ -78,6 +78,11 @@ func (b *Bundle) Validate() error {
 		if b.Transport != "rpc" && b.Transport != "tmux" {
 			return fmt.Errorf("unsupported Pi native runtime")
 		}
+	case "agy-cli":
+		// The conversation file is the same for agy's headless and terminal lanes.
+		if b.Transport != "exec" && b.Transport != "tmux" {
+			return fmt.Errorf("unsupported Antigravity native runtime")
+		}
 	case "cursor-cli":
 	default:
 		return fmt.Errorf("unsupported native program")
@@ -109,6 +114,9 @@ func (b *Bundle) Validate() error {
 	root := "session.jsonl"
 	if b.Format == "cursor-sdk-sqlite" {
 		root = "index.db"
+	}
+	if b.Format == agyFormat {
+		root = agyRoot
 	}
 	if b.Format == "cursor-cli-sqlite" {
 		root = "store.db"
@@ -150,6 +158,8 @@ func (b *Bundle) allowed(name string) bool {
 		return b.Provider == "codex-cli" && date.MatchString(b.Date) && (name == "session.jsonl" || len(p) == 2 && p[0] == "children" && strings.HasSuffix(p[1], ".jsonl") && UUID.MatchString(strings.TrimSuffix(p[1], ".jsonl")))
 	case "pi-jsonl":
 		return b.Provider == "pi-cli" && name == "session.jsonl"
+	case agyFormat:
+		return b.Provider == "agy-cli" && name == agyRoot
 	case "cursor-cli-sqlite":
 		return b.Provider == "cursor-cli" && b.Transport == "tmux" && (name == "store.db" || name == "meta.json" || name == "prompt_history.json")
 	case "cursor-sdk-sqlite":
@@ -314,6 +324,9 @@ func Write(root, destination string, raw []byte) error {
 func Ancestor(old, next *Bundle) error {
 	if old.Provider != next.Provider || old.Format != next.Format || old.SessionID != next.SessionID {
 		return fmt.Errorf("native session identity changed")
+	}
+	if old.Format == agyFormat {
+		return agyAncestor(old, next)
 	}
 	for name, want := range old.Files {
 		got, ok := next.Files[name]

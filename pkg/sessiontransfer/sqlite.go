@@ -375,36 +375,43 @@ func quiesceNativeDatabases(root string, b *Bundle) error {
 		if e != nil {
 			return e
 		}
-		u := url.URL{Scheme: "file", Path: p}
-		db, e := sql.Open("sqlite", u.String())
-		if e != nil {
+		if e = quiesceDB(p); e != nil {
 			return e
 		}
-		if e = secureNativeDB(db); e != nil {
-			db.Close()
-			return e
-		}
-		_, e = db.Exec("PRAGMA busy_timeout=1000")
-		if e != nil {
-			db.Close()
-			return e
-		}
-		var busy, log, checkpointed int
-		e = db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &checkpointed)
-		if e != nil || busy != 0 {
-			db.Close()
-			return fmt.Errorf("finish the current native Cursor reply before replacing its state")
-		}
-		var mode string
-		e = db.QueryRow("PRAGMA journal_mode=DELETE").Scan(&mode)
+	}
+	return nil
+}
+
+// quiesceDB folds one database's WAL into the file and removes its sidecars.
+func quiesceDB(p string) error {
+	u := url.URL{Scheme: "file", Path: p}
+	db, e := sql.Open("sqlite", u.String())
+	if e != nil {
+		return e
+	}
+	if e = secureNativeDB(db); e != nil {
 		db.Close()
-		if e != nil || !strings.EqualFold(mode, "delete") {
-			return fmt.Errorf("the native Cursor database is still in use")
-		}
-		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-			if e = os.Remove(p + suffix); e != nil && !os.IsNotExist(e) {
-				return e
-			}
+		return e
+	}
+	if _, e = db.Exec("PRAGMA busy_timeout=1000"); e != nil {
+		db.Close()
+		return e
+	}
+	var busy, log, checkpointed int
+	e = db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &checkpointed)
+	if e != nil || busy != 0 {
+		db.Close()
+		return fmt.Errorf("finish the current native reply before replacing its state")
+	}
+	var mode string
+	e = db.QueryRow("PRAGMA journal_mode=DELETE").Scan(&mode)
+	db.Close()
+	if e != nil || !strings.EqualFold(mode, "delete") {
+		return fmt.Errorf("the native database is still in use")
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if e = os.Remove(p + suffix); e != nil && !os.IsNotExist(e) {
+			return e
 		}
 	}
 	return nil

@@ -264,6 +264,9 @@ func PathDirectory(root, name string, create bool) (string, error) {
 }
 
 func (b *Bundle) ValidateJournals() error {
+	if b.Format == agyFormat {
+		return b.validateAgy()
+	}
 	parents := map[string]string{}
 	for name := range b.Files {
 		if !strings.HasSuffix(name, ".jsonl") {
