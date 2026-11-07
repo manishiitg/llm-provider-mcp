@@ -3,13 +3,18 @@ package llmtypes
 import "testing"
 
 func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) {
-	base := []string{"PATH=/bin", "SECRET_PRESENT=old", "OTHER=value"}
+	base := []string{"PATH=/bin", "SECRET_PRESENT=old", "OTHER=value", "STEP_OUTPUT_DIR=/old/output", "PYTHONPATH=/old/imports"}
 	opts := &CallOptions{}
 	WithCodingAgentSecretEnvironment(map[string]string{
-		"SECRET_PRESENT": "new",
-		"SECRET_ONLY":    "value",
-		"MCP_CUSTOM":     "http://127.0.0.1/s/session/tools/custom",
-		"PATH":           "must-not-pass",
+		"SECRET_PRESENT":     "new",
+		"SECRET_ONLY":        "value",
+		"MCP_CUSTOM":         "http://127.0.0.1/s/session/tools/custom",
+		"PATH":               "must-not-pass",
+		"STEP_OUTPUT_DIR":    "/run/current/output",
+		"WORKFLOW_CODE_ROOT": "/crew/.agentworks/code/workflow",
+		"PYTHONPATH":         "/crew/.agentworks/code/workflow",
+		"WORKFLOW_KB_FACTS":  "/knowledge/facts",
+		"UNRELATED":          "must-not-pass",
 	})(opts)
 
 	got := MergeCodingAgentSecretEnvironment(base, opts)
@@ -20,12 +25,12 @@ func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) 
 	for _, item := range got {
 		joined += item + "\n"
 	}
-	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value", "MCP_CUSTOM=http://127.0.0.1/s/session/tools/custom"} {
+	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value", "MCP_CUSTOM=http://127.0.0.1/s/session/tools/custom", "STEP_OUTPUT_DIR=/run/current/output", "WORKFLOW_CODE_ROOT=/crew/.agentworks/code/workflow", "WORKFLOW_KB_FACTS=/knowledge/facts", "PYTHONPATH=/crew/.agentworks/code/workflow"} {
 		if !containsEnvironmentEntry(joined, want) {
 			t.Fatalf("merged environment missing %q: %q", want, joined)
 		}
 	}
-	if containsEnvironmentEntry(joined, "PATH=must-not-pass") {
+	if containsEnvironmentEntry(joined, "PATH=must-not-pass") || containsEnvironmentEntry(joined, "UNRELATED=must-not-pass") || containsEnvironmentEntry(joined, "STEP_OUTPUT_DIR=/old/output") || containsEnvironmentEntry(joined, "PYTHONPATH=/old/imports") {
 		t.Fatalf("non-secret environment entry escaped: %q", joined)
 	}
 }

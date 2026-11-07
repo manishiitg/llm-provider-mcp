@@ -265,13 +265,14 @@ func WithCodingAgentSecretEnvironment(environment map[string]string) CallOption 
 // already-filtered environment. Nothing errored — the child simply did not see
 // the key, which is indistinguishable from the feature not existing.
 //
-// Three prefixes and one provider control are admitted, matching what the
-// shell whitelist already promises (MCP_*, SECRET_*, VAR_*):
+// Selected values, session routes and the backend-built workflow runtime
+// environment are admitted:
 //
 //	SECRET_*  selected secret values
 //	VAR_*     workflow variables, VAR_WORKSPACE_PATH, VAR_GROUP_NAME
 //	MCP_*     the session-bound API routes, closed set below
 //	CLAUDE_CODE_DISABLE_AUTO_MEMORY  disables Claude's private provider memory
+//	workflow paths and access flags use the same child scope as the bridge
 //
 // VAR_* is not optional. mcpagent's prompt builder documents $VAR_<NAME> to
 // every coding agent as the way to read workflow config and tells it to fail
@@ -290,7 +291,23 @@ func IsScopedCodingAgentEnvironmentKey(key string) bool {
 	if key == "CLAUDE_CODE_DISABLE_AUTO_MEMORY" {
 		return true
 	}
-	return isScopedCodingAgentMCPEnvironmentKey(key)
+	return isScopedCodingAgentMCPEnvironmentKey(key) || isScopedWorkflowEnvironmentKey(key)
+}
+
+// These names are built by the workflow runtime. Admission here does not
+// change a regular chat's inherited environment.
+func isScopedWorkflowEnvironmentKey(key string) bool {
+	if strings.HasPrefix(key, "WORKFLOW_FOLDER_") || strings.HasPrefix(key, "WORKFLOW_KB_") || strings.HasPrefix(key, "WORKFLOW_CREW_") {
+		return true
+	}
+	switch key {
+	case "STEP_OUTPUT_DIR", "STEP_EXECUTION_DIR", "DB_PATH", "RUN_FOLDER",
+		"WORKFLOW_CODE_ROOT", "WORKFLOW_CODE_DEPS", "PYTHONPATH",
+		"WORKFLOW_TRIGGER_INPUT_FILE", "WORKFLOW_TRIGGER_CONTEXT_FILE", "WORKFLOW_DB_ACCESS":
+		return true
+	default:
+		return false
+	}
 }
 
 // isScopedCredentialEnvironmentKey is the subset of the scoped namespace that
