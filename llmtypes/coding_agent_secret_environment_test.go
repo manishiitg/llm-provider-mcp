@@ -12,6 +12,7 @@ func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) 
 		"PATH":               "must-not-pass",
 		"STEP_OUTPUT_DIR":    "/run/current/output",
 		"WORKFLOW_CODE_ROOT": "/crew/.agentworks/code/workflow",
+		"SCRIPT_SOURCE_DIR":  "/run/code",
 		"PYTHONPATH":         "/crew/.agentworks/code/workflow",
 		"WORKFLOW_KB_FACTS":  "/knowledge/facts",
 		"UNRELATED":          "must-not-pass",
@@ -25,7 +26,7 @@ func TestCodingAgentSecretEnvironmentIsScopedAndDoesNotMutateBase(t *testing.T) 
 	for _, item := range got {
 		joined += item + "\n"
 	}
-	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value", "MCP_CUSTOM=http://127.0.0.1/s/session/tools/custom", "STEP_OUTPUT_DIR=/run/current/output", "WORKFLOW_CODE_ROOT=/crew/.agentworks/code/workflow", "WORKFLOW_KB_FACTS=/knowledge/facts", "PYTHONPATH=/crew/.agentworks/code/workflow"} {
+	for _, want := range []string{"PATH=/bin", "SECRET_PRESENT=new", "SECRET_ONLY=value", "MCP_CUSTOM=http://127.0.0.1/s/session/tools/custom", "STEP_OUTPUT_DIR=/run/current/output", "WORKFLOW_CODE_ROOT=/crew/.agentworks/code/workflow", "SCRIPT_SOURCE_DIR=/run/code", "WORKFLOW_KB_FACTS=/knowledge/facts", "PYTHONPATH=/crew/.agentworks/code/workflow"} {
 		if !containsEnvironmentEntry(joined, want) {
 			t.Fatalf("merged environment missing %q: %q", want, joined)
 		}
