@@ -34,3 +34,21 @@ func TestMuseWonderModelsPublishedWithEfforts(t *testing.T) {
 		}
 	}
 }
+
+// Ember is a catalog model: listed with the catalog's context window and efforts,
+// and without an invented price.
+func TestMuseEmberModelListed(t *testing.T) {
+	var found bool
+	for _, model := range GetAllMuseCLIModels() {
+		if model.ModelID != "muse-ember-1.0" {
+			continue
+		}
+		found = true
+		if model.ContextWindow != 1007997 || model.InputCostPer1MTokens != 0 || len(model.ReasoningEffortLevels) == 0 {
+			t.Fatalf("ember metadata = %+v", model)
+		}
+	}
+	if !found {
+		t.Fatal("muse-ember-1.0 is not listed")
+	}
+}
