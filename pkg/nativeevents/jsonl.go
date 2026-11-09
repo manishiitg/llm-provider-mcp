@@ -209,6 +209,17 @@ func decodeCodex(b *Batch, session string, row map[string]any) {
 		}
 		return
 	}
+	// Async questions have no item_completed mirror. The tool output merely
+	// acknowledges dispatch; only the person's later answer settles them.
+	if kind == "response_item" && text(p, "type") == "function_call" && text(p, "name") == "request_user_input_async" {
+		r.ID, r.Kind, r.State = text(p, "call_id"), "question", "requested"
+		r.Name, r.Text = "request_user_input_async", text(p, "arguments")
+		if metadata := object(row["internal_chat_message_metadata_passthrough"]); r.TurnID == "" {
+			r.TurnID = text(metadata, "turn_id")
+		}
+		emit(b, r)
+		return
+	}
 	if kind != "event_msg" {
 		// item_completed is the committed source; response_item mirrors it.
 		if kind != "response_item" && kind != "turn_context" && kind != "thread_settings_applied" && kind != "token_usage_record" && kind != "world_state" && kind != "compacted" {

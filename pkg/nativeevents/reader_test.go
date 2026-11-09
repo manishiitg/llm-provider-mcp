@@ -15,6 +15,13 @@ func TestNativeRecordConformance(t *testing.T) {
 		provider, rows string
 		want           []string
 	}{
+		// PLAT-746-764: an async dispatch acknowledgement and turn completion
+		// must not settle or discard a still-unanswered question.
+		{"codex-cli", `{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-question"}}
+{"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"call-question","arguments":"{\"questions\":[{\"title\":\"Which folder?\",\"options\":[\"Existing\",\"New\"]}]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-question","output":"{\"accepted\":true}"}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-question"}}
+`, []string{"turn:started", "question:requested", "turn:completed"}},
 		{"claude-code", `{"type":"user","uuid":"u1","sessionId":"session-test","origin":{"kind":"human"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"tool1","name":"Agent"},{"type":"thinking","thinking":"PRIVATE_THOUGHT"}]}}
 {"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":true},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
