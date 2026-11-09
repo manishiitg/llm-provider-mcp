@@ -30,6 +30,10 @@ type knownMuseModel struct {
 var knownMuseCLIModels = []knownMuseModel{
 	{id: "muse-wonder-1.0", name: "Muse Wonder"},
 	{id: "muse-wonder-full-1.0", name: "Muse Wonder Full (Muse Code subscribers)"},
+	// Ember: in the CLI catalog (schema_version 2, visible, released 2026-10-01,
+	// context 1007997, output 128000, efforts minimal..max). The catalog lists no
+	// price, so none is set here.
+	{id: "muse-ember-1.0", name: "Muse Ember", context: 1007997, output: 128000},
 	{id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", context: 1007997, output: 128000, input: 0.10, out: 0.20, cached: 0.002},
 	{id: "muse-spark-1.3", name: "Muse Spark 1.3", context: 1007997, output: 128000, input: 1.25, out: 4.25, cached: 0.15},
 }
