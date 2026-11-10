@@ -141,3 +141,27 @@ func TestClaudeSDKAlwaysAllowStaysInThisChat(t *testing.T) {
 		t.Fatal("no suggestion must offer no always-allow")
 	}
 }
+
+// PLAT-872: a crashed native helper must stop showing Running, while an
+// already-completed helper and an older resumed run keep their terminal state.
+func TestClaudeSDKHelperExitAndParentIdentity(t *testing.T) {
+	var updates []SDKHelperUpdate
+	SetSDKHelperListener(func(update SDKHelperUpdate) { updates = append(updates, update) })
+	defer SetSDKHelperListener(nil)
+	session := &claudeSDKSession{owner: "parent-chat", nativeID: "native-parent"}
+	session.observeHelper(SDKHelperTask{TaskID: "done", RunID: "2", State: "started", Description: "Review parser"})
+	session.observeHelper(SDKHelperTask{TaskID: "done", RunID: "2", State: "finished", Description: "Review parser"})
+	session.observeHelper(SDKHelperTask{TaskID: "done", RunID: "1", State: "started"})
+	session.observeHelper(SDKHelperTask{TaskID: "running", RunID: "1", State: "started"})
+	session.observeHelper(SDKHelperTask{TaskID: "running", RunID: "1", State: "progress"})
+	session.interruptHelpers()
+	session.interruptHelpers()
+	if len(updates) != 5 || updates[4].Task.State != "interrupted" || session.helpers["done"].State != "finished" {
+		t.Fatalf("wrong helper lifecycle: %+v", updates)
+	}
+	for _, update := range updates {
+		if update.Owner != "parent-chat" || update.NativeSessionID != "native-parent" {
+			t.Fatalf("helper escaped its parent: %+v", update)
+		}
+	}
+}

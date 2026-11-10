@@ -9,6 +9,44 @@ const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 let nativeErrorReported = false;
 const deny = () => ({ behavior: 'deny', message: 'The request was cancelled. Use the chat or account setup to continue.' });
 
+// Native Agent launches can be asynchronous without a run_in_background input.
+// Track their real task bookends (including resumed runs), never prose/tool output.
+function createHelperTracker(publish) {
+  const tools = new Map(), helpers = new Map();
+  const isHelper = event => event.task_type === 'local_agent' || ['Agent', 'Task'].includes(tools.get(event.tool_use_id));
+  const observe = event => {
+    if (event.type === 'assistant') {
+      for (const block of event.message?.content || []) {
+        if (block.type === 'tool_use' && ['Agent', 'Task'].includes(block.name)) tools.set(block.id, block.name);
+      }
+    }
+    if (event.type !== 'system') return;
+    const entries = event.subtype === 'background_tasks_changed' ? (event.tasks || []) :
+      ['task_started', 'task_progress', 'task_notification'].includes(event.subtype) ? [event] : [];
+    for (const entry of entries) {
+      if (!entry.task_id || entry.ambient || entry.skip_transcript) continue;
+      const previous = helpers.get(entry.task_id);
+      if (previous?.run_id && entry.run_id && entry.run_id < previous.run_id) continue;
+      if (!previous && !isHelper(entry)) continue;
+      if (event.subtype === 'task_progress') {
+        if (previous?.state === 'started') publish({ type: 'sdk_helper', helper: { ...previous, state: 'progress' } });
+        continue;
+      }
+      const sameRun = previous && previous.run_id === (entry.run_id || '');
+      const state = event.subtype === 'task_notification' ?
+        ({ completed: 'finished', failed: 'failed', stopped: 'interrupted' }[entry.status]) : 'started';
+      if (!state || (sameRun && previous.state !== 'started' && state === 'started')) continue;
+      const helper = { task_id: entry.task_id, run_id: entry.run_id || '',
+        tool_use_id: entry.tool_use_id || (sameRun ? previous.tool_use_id : '') || '',
+        description: entry.description || (sameRun ? previous.description : '') || 'Helper agent',
+        started_at: sameRun ? previous.started_at : Date.now(), state };
+      helpers.set(entry.task_id, helper);
+      if (!sameRun || previous.state !== state) publish({ type: 'sdk_helper', helper });
+    }
+  };
+  return { observe, running: () => [...helpers.values()].some(helper => helper.state === 'started') };
+}
+
 async function main() {
   const [sdkEntry, executable, ...argv] = process.argv.slice(2);
   const { query } = await import(pathToFileURL(sdkEntry).href);
@@ -63,6 +101,7 @@ async function main() {
     }
   }
   let run, wake, ended = false;
+  const helpers = createHelperTracker(emit);
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
   // were never moved aside, so they never hold the turn, even when they start while a steer waits.
@@ -162,6 +201,7 @@ async function main() {
   run = query({ prompt: messages(), options });
   try {
     for await (const event of run) {
+      helpers.observe(event);
       // Keep work moved aside by steering alive until its native completion.
       // An empty roster can precede task_notification, so only that terminal
       // notification retires a known task. Ambient watchers do not hold a turn.
@@ -213,12 +253,13 @@ async function main() {
       let park = false;
       if (event.type === 'result') {
         for (const uuid of consumed) unsettled.delete(uuid);
-        // A finished answer ends the person's turn. Background work holds it open only when a steer moved
+        // Native helpers keep their parent turn open to receive their result; a steer can still enter it.
+        // A finished answer otherwise ends the person's turn. Background work holds it open only when a steer moved
         // that work aside; a command Claude backgrounded on its own (a slow search past its timeout), before or
         // apart from any steer, must not keep the chat "working" (owner, 2026-10-28: an answer means done).
-        event.sdk_continues = !ended && (unsettled.size > 0 || movedAside.size > 0 || event.queued_turn_count > 0);
+        event.sdk_continues = !ended && (unsettled.size > 0 || movedAside.size > 0 || event.queued_turn_count > 0 || helpers.running());
         // Why a turn stays open, for the host log (counts only).
-        event.sdk_hold = { unsettled: unsettled.size, moved_aside: movedAside.size, queued: event.queued_turn_count || 0, background: background.size };
+        event.sdk_hold = { unsettled: unsettled.size, moved_aside: movedAside.size, queued: event.queued_turn_count || 0, background: background.size, helpers: helpers.running() };
         if (!event.sdk_continues) {
           turnActive = false; strayCheck = false;
           // Claude's own background tasks still run: keep the session so they keep running.
@@ -233,7 +274,8 @@ async function main() {
     }
   } finally { finishInput(); cancelPermissions(); lines.close(); run.close(); }
 }
-main().then(() => process.stdout.write("", () => process.exit(0)), error => {
+module.exports = { createHelperTracker };
+if (require.main === module) main().then(() => process.stdout.write("", () => process.exit(0)), error => {
   // SDK errors can contain command-line/environment details: report only a
   // stable category here. Native semantic errors still arrive as result events.
   if (!nativeErrorReported) emit({ type: 'result', is_error: true, result: `Claude Agent SDK failed (${error?.name || 'Error'}). Check SDK installation and the selected Claude login.` });
