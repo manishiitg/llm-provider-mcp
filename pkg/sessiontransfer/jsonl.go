@@ -72,6 +72,11 @@ func codexParent(meta codexMeta) string {
 // Subagent journals keep native IDs; no home configuration or global index is
 // part of the bundle. The caller closes its native writer before a handoff.
 func ExportJSONL(provider, transport, store, workspace, id, out string) (*Bundle, error) {
+	return ExportJSONLWithBudget(provider, transport, store, workspace, id, out, MaxBytes())
+}
+
+// ExportJSONLWithBudget checks every resolved source before staging native history.
+func ExportJSONLWithBudget(provider, transport, store, workspace, id, out string, maxBytes int64) (*Bundle, error) {
 	if provider == "pi-cli" && !piID.MatchString(id) || provider != "pi-cli" && !UUID.MatchString(id) || !filepath.IsAbs(store) || !filepath.IsAbs(out) {
 		return nil, fmt.Errorf("invalid native export identity")
 	}
@@ -194,6 +199,9 @@ func ExportJSONL(provider, transport, store, workspace, id, out string) (*Bundle
 		sources["session.jsonl"] = p
 	default:
 		return nil, fmt.Errorf("unsupported native journal provider")
+	}
+	if e := checkExportBudget(sources, maxBytes); e != nil {
+		return nil, e
 	}
 	if e := os.MkdirAll(out, 0700); e != nil {
 		return nil, e

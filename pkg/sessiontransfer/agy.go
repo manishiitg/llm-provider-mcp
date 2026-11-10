@@ -63,6 +63,10 @@ var agyCredentialMarkers = [][]byte{[]byte("ya29."), []byte("AIza"), []byte("ref
 // ExportAgy copies one conversation into private staging. The snapshot is taken
 // through SQLite so a committed WAL is never lost. The caller closes agy first.
 func ExportAgy(transport, store, workspace, id, out string) (*Bundle, error) {
+	return ExportAgyWithBudget(transport, store, workspace, id, out, MaxBytes())
+}
+
+func ExportAgyWithBudget(transport, store, workspace, id, out string, maxBytes int64) (*Bundle, error) {
 	if !UUID.MatchString(id) || !filepath.IsAbs(store) || !filepath.IsAbs(out) || !filepath.IsAbs(workspace) {
 		return nil, fmt.Errorf("invalid native export identity")
 	}
@@ -71,6 +75,15 @@ func ExportAgy(transport, store, workspace, id, out string) (*Bundle, error) {
 		if os.IsNotExist(e) {
 			return nil, fmt.Errorf("the native agy conversation is missing")
 		}
+		return nil, e
+	}
+	sources := map[string]string{"database": source}
+	if _, statErr := os.Stat(source + "-wal"); statErr == nil {
+		sources["wal"] = source + "-wal"
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	if e = checkExportBudget(sources, maxBytes); e != nil {
 		return nil, e
 	}
 	if e = os.MkdirAll(out, 0700); e != nil {
