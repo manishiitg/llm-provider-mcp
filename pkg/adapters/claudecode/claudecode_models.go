@@ -27,6 +27,7 @@ func CurrentClaudeCodeModel(modelID string) string {
 
 var knownClaudeCodeModels = []string{
 	"claude-code",
+	"claude-fable-5-2",
 	"claude-fable-5-1",
 	"claude-opus-5-5",
 	"claude-sonnet-5-5",
@@ -47,6 +48,8 @@ func GetAllClaudeCodeModels() []*llmtypes.ModelMetadata {
 		switch modelID {
 		case "claude-code":
 			meta.ModelName = "Auto (default, pricing varies)"
+		case "claude-fable-5-2":
+			meta.ModelName = "Fable 5.2"
 		case "claude-fable-5-1":
 			meta.ModelName = "Fable 5.1"
 		case "claude-opus-5-5":
